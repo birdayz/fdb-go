@@ -51,7 +51,10 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		if ref == nil {
 			return
 		}
-		if isExplodeExpression(ref) {
+		if explode := getExplodeExpression(ref); explode != nil {
+			if !isSupportedExplodeValue(explode.GetCollectionValue()) {
+				return
+			}
 			explodeQuantifiers = append(explodeQuantifiers, q)
 		} else if !hasInner {
 			innerQuantifier = q
@@ -133,9 +136,13 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					comparisonKeys[i] = p.Value
 				}
 
+				maxSize := 0
+				if call.Context != nil {
+					maxSize = call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
+				}
 				newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-				inUnionPlan := plans.NewRecordQueryInUnionPlan(
-					innerPlans[0], bindingNames, comparisonKeys, isReverse)
+				inUnionPlan := plans.NewRecordQueryInUnionPlanWithMaxSize(
+					innerPlans[0], bindingNames, comparisonKeys, isReverse, maxSize)
 				call.YieldFinalExpression(NewPhysicalInUnionWrapper(
 					inUnionPlan,
 					expressions.NewPhysicalQuantifier(newRef),

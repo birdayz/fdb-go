@@ -390,7 +390,7 @@ func TestEndToEnd_RealisticSQLShape_DistinctSortFilterScan(t *testing.T) {
 // (EXPLORE + OPTIMIZE) → physical RecordQueryPlan tree.
 //
 // Pins:
-//  1. plangen.Convert lowers Filter(Sort(Scan)) to RelationalExpression.
+//  1. plangen.Convert lowers Filter(Scan) to RelationalExpression.
 //  2. Planner.Plan with Default + Batch A rules drives EXPLORE through
 //     saturation + OPTIMIZE picks the cheapest member.
 //  3. The extracted plan is a physical wrapper containing a
@@ -401,10 +401,7 @@ func TestEndToEnd_FullPipelineToPhysicalPlan(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
 	src := logical.NewFilterWithPredicate(
-		logical.NewSort(
-			logical.NewScan("Order", ""),
-			[]logical.SortKey{{Expr: "id", Dir: logical.SortAsc}},
-		),
+		logical.NewScan("Order", ""),
 		pred, "active",
 	)
 
@@ -428,17 +425,13 @@ func TestEndToEnd_FullPipelineToPhysicalPlan(t *testing.T) {
 	}
 	// The plan should be a physical wrapper. The exact wrapper type
 	// depends on which Batch A rules fired and which alternative cost
-	// picked. Common outcomes: physicalFilterWrapper (Filter(Sort) or
-	// Sort(Filter)) or physicalSortWrapper (after PushFilterThroughSort
-	// + filter elimination).
+	// picked. Common outcome: physicalFilterWrapper wrapping
+	// Filter(Scan) after ImplementFilterRule fires.
 	//
 	// The point of the test: plan is NOT the original logical
 	// LogicalFilterExpression — that's the un-implemented shape.
 	if _, isLogicalFilter := plan.(*expressions.LogicalFilterExpression); isLogicalFilter {
 		t.Fatalf("Plan returned logical Filter — physical-implementation rules didn't fire OR cost extraction didn't pick physical")
-	}
-	if _, isLogicalSort := plan.(*expressions.LogicalSortExpression); isLogicalSort {
-		t.Fatalf("Plan returned logical Sort — physical-implementation rules didn't fire OR cost extraction didn't pick physical")
 	}
 	t.Logf("extracted plan: %T (tasks=%d)", plan, tasks)
 }

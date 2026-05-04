@@ -18,6 +18,7 @@ type RecordQueryInJoinPlan struct {
 	bindingName string
 	sorted      bool
 	reverse     bool
+	inValues    []any
 }
 
 func NewRecordQueryInJoinPlan(
@@ -38,6 +39,8 @@ func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return p.inner }
 func (p *RecordQueryInJoinPlan) GetBindingName() string    { return p.bindingName }
 func (p *RecordQueryInJoinPlan) IsSorted() bool            { return p.sorted }
 func (p *RecordQueryInJoinPlan) IsReverse() bool           { return p.reverse }
+func (p *RecordQueryInJoinPlan) GetInValues() []any        { return p.inValues }
+func (p *RecordQueryInJoinPlan) SetInValues(vals []any)    { p.inValues = vals }
 
 func (p *RecordQueryInJoinPlan) GetResultType() values.Type {
 	if p.inner != nil {

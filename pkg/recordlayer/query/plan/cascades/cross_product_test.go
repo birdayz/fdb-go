@@ -136,3 +136,90 @@ func TestProvidedSortOrder_IsAnyDescending(t *testing.T) {
 		t.Fatal("ascending should not be any-descending")
 	}
 }
+
+func TestCrossProductIterator_Basic(t *testing.T) {
+	t.Parallel()
+	iter := NewCrossProductIterator([][]string{{"a", "b"}, {"x", "y"}})
+	var result [][]string
+	for iter.HasNext() {
+		result = append(result, iter.Next())
+	}
+	if len(result) != 4 {
+		t.Fatalf("expected 4, got %d", len(result))
+	}
+	expected := [][]string{{"a", "x"}, {"a", "y"}, {"b", "x"}, {"b", "y"}}
+	for i, combo := range result {
+		if combo[0] != expected[i][0] || combo[1] != expected[i][1] {
+			t.Fatalf("combo %d: expected %v, got %v", i, expected[i], combo)
+		}
+	}
+}
+
+func TestCrossProductIterator_Skip(t *testing.T) {
+	t.Parallel()
+	// [a,b,c] x [x,y] — skip at depth 1 after seeing (a,x) should jump to (b,x)
+	iter := NewCrossProductIterator([][]string{{"a", "b", "c"}, {"x", "y"}})
+	first := iter.Next() // (a, x)
+	if first[0] != "a" || first[1] != "x" {
+		t.Fatalf("first: %v", first)
+	}
+	iter.Skip(1) // skip past all (a, ...) → next is (b, x)
+	second := iter.Next()
+	if second[0] != "b" || second[1] != "x" {
+		t.Fatalf("after skip(1): expected (b,x), got %v", second)
+	}
+}
+
+func TestCrossProductIterator_SkipDeep(t *testing.T) {
+	t.Parallel()
+	// [a,b] x [x,y] x [1,2] — skip(2) after (a,x,1) skips all (a,x,...) → (a,y,1)
+	iter := NewCrossProductIterator([][]string{{"a", "b"}, {"x", "y"}, {"1", "2"}})
+	first := iter.Next() // (a,x,1)
+	if first[0] != "a" || first[1] != "x" || first[2] != "1" {
+		t.Fatalf("first: %v", first)
+	}
+	iter.Skip(2) // skip past (a,x,...) → next is (a,y,1)
+	second := iter.Next()
+	if second[0] != "a" || second[1] != "y" || second[2] != "1" {
+		t.Fatalf("after skip(2): expected (a,y,1), got %v", second)
+	}
+}
+
+func TestCrossProductIterator_EmptyList(t *testing.T) {
+	t.Parallel()
+	iter := NewCrossProductIterator([][]string{{"a"}, {}})
+	if iter.HasNext() {
+		t.Fatal("empty inner list should produce no elements")
+	}
+}
+
+func FuzzCrossProductIterator_SkipNeverPanics(f *testing.F) {
+	f.Add(uint8(3), uint8(2), uint8(1))
+	f.Add(uint8(1), uint8(1), uint8(0))
+	f.Add(uint8(5), uint8(3), uint8(2))
+	f.Fuzz(func(t *testing.T, nLists, listSize, skipAt uint8) {
+		n := int(nLists%5) + 1
+		sz := int(listSize%4) + 1
+		lists := make([][]int, n)
+		for i := range lists {
+			lists[i] = make([]int, sz)
+			for j := range lists[i] {
+				lists[i][j] = i*10 + j
+			}
+		}
+		iter := NewCrossProductIterator(lists)
+		count := 0
+		skipAfter := int(skipAt) % (n*sz + 1)
+		for iter.HasNext() {
+			iter.Next()
+			count++
+			if count == skipAfter && n > 0 {
+				depth := (count % n) + 1
+				iter.Skip(depth)
+			}
+			if count > 10000 {
+				t.Fatal("too many iterations — likely infinite loop")
+			}
+		}
+	})
+}

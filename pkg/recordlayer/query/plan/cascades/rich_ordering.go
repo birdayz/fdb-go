@@ -505,6 +505,39 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 	return NewRichOrderingWithDeps(bm, keys, deps, outer.distinct || inner.distinct)
 }
 
+// PullUp translates this ordering through a value mapping. For each
+// ordering key, if the mapping contains a replacement, the key is
+// renamed. Bindings are preserved. Keys not in the mapping are dropped.
+//
+// Simplified port of Java's Ordering.pullUp — handles the common case
+// of FieldValue→FieldValue renaming through projections. The full
+// Java version uses Value.pullUp() which handles arbitrary value
+// hierarchies and correlation translation.
+func (o *RichOrdering) PullUp(mapping map[string]values.Value) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+	newBM := make(map[values.Value][]OrderingBinding, len(o.bindingMap))
+	var newKeys []values.Value
+	for _, key := range o.keys {
+		keyStr := values.ExplainValue(key)
+		if mapped, ok := mapping[keyStr]; ok {
+			newBM[mapped] = o.bindingMap[key]
+			newKeys = append(newKeys, mapped)
+		}
+	}
+	if len(newKeys) == 0 {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+	return NewRichOrdering(newBM, newKeys, o.distinct)
+}
+
+// PushDown is the inverse of PullUp — translates ordering keys
+// back through a reverse mapping.
+func (o *RichOrdering) PushDown(mapping map[string]values.Value) *RichOrdering {
+	return o.PullUp(mapping)
+}
+
 // CreateUnionOrdering creates a RichOrdering from a single provided
 // ordering, treating all sorted bindings as union-compatible.
 // Used as the starting point for union-merge in ImplementDistinctUnionRule.

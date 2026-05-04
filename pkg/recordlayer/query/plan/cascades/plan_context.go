@@ -48,6 +48,10 @@ type PlannerConfiguration struct {
 	// handles the duplicate emission). False by default; matches
 	// Java's `RecordQueryPlannerConfiguration.allowDuplicateProjections`.
 	AllowDuplicateProjections bool
+
+	// AttemptFailedInJoinAsUnionMaxSize controls when InUnionRule falls
+	// back from InJoin to InUnion. Java default is 0 (no fallback).
+	AttemptFailedInJoinAsUnionMaxSize int
 }
 
 // DefaultPlannerConfiguration mirrors Java's

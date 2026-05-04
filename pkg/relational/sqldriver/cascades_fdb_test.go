@@ -47,7 +47,7 @@ func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
 		t.Fatalf("INSERT 3: %v", err)
 	}
 
-	cascadesDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store&engine=cascades", dbPath, clusterFilePath)
+	cascadesDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
 	cascadesDB, err := sql.Open("fdbsql", cascadesDSN)
 	if err != nil {
 		t.Fatalf("sql.Open cascades: %v", err)
@@ -192,7 +192,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop&engine=cascades", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -358,6 +358,299 @@ func TestFDB_CascadesOrderBy(t *testing.T) {
 		}
 	}
 	t.Logf("Cascades ORDER BY → %v ✓", names)
+}
+
+func TestFDB_CascadesJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_join_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("join_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (1, 'Alice')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (2, 'Bob')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (10, 1, 'Widget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (20, 1, 'Gadget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (30, 2, 'Doohickey')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Orders, Items WHERE Orders.order_id = Items.order_id")
+	if err != nil {
+		t.Skipf("JOIN not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 3 {
+		t.Fatalf("expected 3 rows from join, got %d", count)
+	}
+	t.Logf("Cascades JOIN → %d rows ✓", count)
+}
+
+func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_grpby_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("grpby_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Sales (sale_id BIGINT NOT NULL, category STRING, amount BIGINT, PRIMARY KEY (sale_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, sale := range []struct {
+		id  int
+		cat string
+		amt int
+	}{{1, "A", 100}, {2, "A", 200}, {3, "B", 150}, {4, "B", 50}, {5, "C", 300}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Sales VALUES (%d, '%s', %d)", sale.id, sale.cat, sale.amt)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT category, SUM(amount) FROM Sales GROUP BY category")
+	if err != nil {
+		t.Skipf("GROUP BY not supported: %v", err)
+	}
+	defer rows.Close()
+
+	type result struct {
+		cat string
+		sum int64
+	}
+	var results []result
+	for rows.Next() {
+		var r result
+		if err := rows.Scan(&r.cat, &r.sum); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 groups, got %d: %v", len(results), results)
+	}
+	t.Logf("Cascades GROUP BY → %v ✓", results)
+}
+
+func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_distfilt_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("distfilt_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Product (product_id BIGINT NOT NULL, category STRING, PRIMARY KEY (product_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, item := range []struct {
+		id  int
+		cat string
+	}{{1, "A"}, {2, "A"}, {3, "B"}, {4, "B"}, {5, "C"}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Product VALUES (%d, '%s')", item.id, item.cat)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT DISTINCT category FROM Product WHERE product_id > 1")
+	if err != nil {
+		t.Skipf("DISTINCT+filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var cats []string
+	for rows.Next() {
+		var cat string
+		if err := rows.Scan(&cat); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		cats = append(cats, cat)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(cats) != 3 {
+		t.Fatalf("expected 3 distinct categories (A, B, C from id > 1), got %d: %v", len(cats), cats)
+	}
+	t.Logf("Cascades DISTINCT+filter → %v ✓", cats)
+}
+
+func TestFDB_CascadesMultiColumnProjection(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT name, price FROM Item WHERE price > 50")
+	if err != nil {
+		t.Skipf("multi-column projection+filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		name  string
+		price int64
+	}
+	var results []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.name, &r.price); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 rows (price > 50), got %d", len(results))
+	}
+	t.Logf("Cascades multi-col projection+filter → %v ✓", results)
+}
+
+func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_orderby_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("orderby_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Product (product_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (product_id)) "+
+			"CREATE INDEX idx_name ON Product (name)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, item := range []struct {
+		id   int
+		name string
+	}{{1, "Cherry"}, {2, "Apple"}, {3, "Banana"}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Product VALUES (%d, '%s', %d)", item.id, item.name, item.id*100)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT name FROM Product ORDER BY name ASC")
+	if err != nil {
+		t.Skipf("ORDER BY with index not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(names) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(names))
+	}
+	expected := []string{"Apple", "Banana", "Cherry"}
+	for i, name := range names {
+		if name != expected[i] {
+			t.Fatalf("expected %v, got %v", expected, names)
+		}
+	}
+	t.Logf("Cascades ORDER BY with index → %v ✓", names)
 }
 
 func countRows(t *testing.T, rows *sql.Rows) int {

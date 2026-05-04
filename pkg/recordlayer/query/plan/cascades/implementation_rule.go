@@ -26,6 +26,7 @@ type ImplementationRule interface {
 type ImplementationRuleCall struct {
 	Bindings       *matching.PlannerBindings
 	Reference      *expressions.Reference
+	Context        PlanContext
 	Constraints    *ConstraintMap
 	yielded        []expressions.RelationalExpression
 	constraintOnly bool
@@ -108,6 +109,7 @@ func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference,
 			call := &ImplementationRuleCall{
 				Bindings:    b,
 				Reference:   ref,
+				Context:     EmptyPlanContext(),
 				Constraints: cm,
 			}
 			rule.OnMatch(call)

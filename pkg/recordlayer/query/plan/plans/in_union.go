@@ -16,6 +16,7 @@ type RecordQueryInUnionPlan struct {
 	bindingNames   []string
 	comparisonKeys []values.Value
 	reverse        bool
+	maxSize        int
 }
 
 func NewRecordQueryInUnionPlan(
@@ -36,10 +37,23 @@ func NewRecordQueryInUnionPlan(
 	}
 }
 
+func NewRecordQueryInUnionPlanWithMaxSize(
+	inner RecordQueryPlan,
+	bindingNames []string,
+	comparisonKeys []values.Value,
+	reverse bool,
+	maxSize int,
+) *RecordQueryInUnionPlan {
+	p := NewRecordQueryInUnionPlan(inner, bindingNames, comparisonKeys, reverse)
+	p.maxSize = maxSize
+	return p
+}
+
 func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan         { return p.inner }
 func (p *RecordQueryInUnionPlan) GetBindingNames() []string         { return p.bindingNames }
 func (p *RecordQueryInUnionPlan) GetComparisonKeys() []values.Value { return p.comparisonKeys }
 func (p *RecordQueryInUnionPlan) IsReverse() bool                   { return p.reverse }
+func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.maxSize }
 
 func (p *RecordQueryInUnionPlan) GetResultType() values.Type {
 	if p.inner != nil {

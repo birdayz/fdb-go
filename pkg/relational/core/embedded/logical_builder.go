@@ -301,6 +301,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		op = logical.NewProject(op, projs, aliases)
 	}
 
+	if sq.distinct {
+		op = logical.NewDistinct(op)
+	}
+
 	return op
 }
 

@@ -156,7 +156,7 @@ func TestIsExplodeExpression_True(t *testing.T) {
 	ref := expressions.InitialOf(
 		expressions.NewExplodeExpression(&values.ConstantValue{Value: []any{1}}),
 	)
-	if !isExplodeExpression(ref) {
+	if getExplodeExpression(ref) == nil {
 		t.Fatal("should detect ExplodeExpression")
 	}
 }
@@ -166,8 +166,27 @@ func TestIsExplodeExpression_False(t *testing.T) {
 	ref := expressions.InitialOf(
 		expressions.NewFullUnorderedScanExpression([]string{"T"}, nil),
 	)
-	if isExplodeExpression(ref) {
+	if getExplodeExpression(ref) != nil {
 		t.Fatal("should not detect scan as ExplodeExpression")
+	}
+}
+
+func TestIsSupportedExplodeValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		val  values.Value
+		ok   bool
+	}{
+		{"constant", &values.ConstantValue{Value: []any{1, 2}}, true},
+		{"quantified", values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()), true},
+		{"field", &values.FieldValue{Field: "x"}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range tests {
+		if got := isSupportedExplodeValue(tc.val); got != tc.ok {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.ok)
+		}
 	}
 }
 

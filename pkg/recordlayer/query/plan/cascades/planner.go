@@ -153,6 +153,12 @@ func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 	return p
 }
 
+// WithMaxTasks overrides the task cap. Returns p for chaining.
+func (p *Planner) WithMaxTasks(n int) *Planner {
+	p.MaxTasks = n
+	return p
+}
+
 // SetEvents installs an event handler. Pass nil to disable events.
 // Returns p for chaining.
 func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {
@@ -241,6 +247,7 @@ func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*
 				call := &ImplementationRuleCall{
 					Bindings:       b,
 					Reference:      ref,
+					Context:        p.ctx,
 					Constraints:    cm,
 					constraintOnly: true,
 				}

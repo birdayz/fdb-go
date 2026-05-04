@@ -176,3 +176,67 @@ func TestGetCommonPK_OneMissing(t *testing.T) {
 		t.Fatal("missing PK should return nil")
 	}
 }
+
+func TestRemoveCommonEqualityBoundParts_NoCommon(t *testing.T) {
+	t.Parallel()
+	keyA := &values.FieldValue{Field: "a"}
+	keyB := &values.FieldValue{Field: "b"}
+	o1 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{keyA: {FixedBinding(nil)}},
+		[]values.Value{keyA}, false,
+	)
+	o2 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{keyB: {FixedBinding(nil)}},
+		[]values.Value{keyB}, false,
+	)
+	result := removeCommonEqualityBoundParts([]*RichOrdering{o1, o2})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 orderings, got %d", len(result))
+	}
+	if len(result[0].GetKeys()) != 1 || len(result[1].GetKeys()) != 1 {
+		t.Fatal("no keys should be removed")
+	}
+}
+
+func TestRemoveCommonEqualityBoundParts_CommonRemoved(t *testing.T) {
+	t.Parallel()
+	keyA := &values.FieldValue{Field: "a"}
+	keyB := &values.FieldValue{Field: "b"}
+	o1 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyA: {FixedBinding(nil)},
+			keyB: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{keyA, keyB}, false,
+	)
+	o2 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyA: {FixedBinding(nil)},
+			keyB: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{keyA, keyB}, false,
+	)
+	result := removeCommonEqualityBoundParts([]*RichOrdering{o1, o2})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 orderings, got %d", len(result))
+	}
+	if len(result[0].GetKeys()) != 1 {
+		t.Fatalf("expected 1 key after removal, got %d", len(result[0].GetKeys()))
+	}
+	if values.ExplainValue(result[0].GetKeys()[0]) != "b" {
+		t.Fatalf("expected key 'b', got %q", values.ExplainValue(result[0].GetKeys()[0]))
+	}
+}
+
+func TestRemoveCommonEqualityBoundParts_SingleOrdering(t *testing.T) {
+	t.Parallel()
+	keyA := &values.FieldValue{Field: "a"}
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{keyA: {FixedBinding(nil)}},
+		[]values.Value{keyA}, false,
+	)
+	result := removeCommonEqualityBoundParts([]*RichOrdering{o})
+	if len(result) != 1 || len(result[0].GetKeys()) != 1 {
+		t.Fatal("single ordering should not be modified")
+	}
+}

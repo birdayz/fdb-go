@@ -106,17 +106,6 @@ type EmbeddedConnection struct {
 	// descriptor name. nil outside a proto scan — outerScopeFromMsg
 	// falls back to msg's descriptor name.
 	currentSourceAliases map[string]bool
-
-	// queryEngine selects which query engine to use for SELECT queries.
-	// Default (zero value) is QueryEngineNaive. Set to QueryEngineCascades
-	// to route through the Cascades planner. Temporary until Cascades
-	// fully replaces the naive executor.
-	queryEngine QueryEngine
-}
-
-// SetQueryEngine selects the query engine for SELECT queries.
-func (c *EmbeddedConnection) SetQueryEngine(engine QueryEngine) {
-	c.queryEngine = engine
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
@@ -283,12 +272,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return nil, err
 	}
-	var gen query.Generator
-	if c.queryEngine == QueryEngineCascades {
-		gen = newCascadesGenerator(c)
-	} else {
-		gen = &naiveGenerator{c: c}
-	}
+	gen := newCascadesGenerator(c)
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
 		return nil, err

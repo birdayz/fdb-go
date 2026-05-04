@@ -644,3 +644,64 @@ func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
 		t.Fatalf("expected 1 key in merged (both fixed), got %d", len(merged.GetKeys()))
 	}
 }
+
+func TestRichOrdering_PullUp(t *testing.T) {
+	t.Parallel()
+	keyA := fieldVal("a")
+	keyB := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyA: {SortedBinding(ProvidedSortOrderAscending)},
+			keyB: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{keyA, keyB}, false,
+	)
+
+	renamed := fieldVal("x")
+	mapping := map[string]values.Value{"a": renamed}
+	pulled := o.PullUp(mapping)
+
+	if len(pulled.GetKeys()) != 1 {
+		t.Fatalf("expected 1 key after pullup, got %d", len(pulled.GetKeys()))
+	}
+	if values.ExplainValue(pulled.GetKeys()[0]) != "x" {
+		t.Fatalf("expected key 'x', got %q", values.ExplainValue(pulled.GetKeys()[0]))
+	}
+	bindings := pulled.GetBindingMap()[renamed]
+	if len(bindings) != 1 || SortOrderOf(bindings) != ProvidedSortOrderAscending {
+		t.Fatal("expected ascending binding preserved")
+	}
+}
+
+func TestRichOrdering_PullUp_AllMapped(t *testing.T) {
+	t.Parallel()
+	keyA := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyA: {FixedBinding(nil)},
+		},
+		[]values.Value{keyA}, true,
+	)
+
+	mapped := fieldVal("b")
+	pulled := o.PullUp(map[string]values.Value{"a": mapped})
+	if len(pulled.GetKeys()) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(pulled.GetKeys()))
+	}
+	if !pulled.IsDistinct() {
+		t.Fatal("expected distinct flag preserved")
+	}
+}
+
+func TestRichOrdering_PullUp_NoMatch(t *testing.T) {
+	t.Parallel()
+	keyA := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{keyA: {SortedBinding(ProvidedSortOrderAscending)}},
+		[]values.Value{keyA}, false,
+	)
+	pulled := o.PullUp(map[string]values.Value{"z": fieldVal("w")})
+	if len(pulled.GetKeys()) != 0 {
+		t.Fatalf("expected 0 keys when no mapping matches, got %d", len(pulled.GetKeys()))
+	}
+}
