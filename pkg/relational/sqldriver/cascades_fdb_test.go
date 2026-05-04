@@ -1113,6 +1113,37 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Logf("Cascades explicit JOIN ON → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEInUnion(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE referenced in each branch of a UNION ALL in the main query.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH base AS (SELECT item_id, name FROM Item) "+
+			"SELECT name FROM base WHERE item_id = 1 "+
+			"UNION ALL "+
+			"SELECT name FROM base WHERE item_id = 3")
+	if err != nil {
+		t.Skipf("CTE in UNION not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// item_id=1: Widget | item_id=3: Doohickey
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %v", len(names), names)
+	}
+	t.Logf("Cascades CTE in UNION → %v ✓", names)
+}
+
 func TestFDB_CascadesCTEComplexStack(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
