@@ -2,10 +2,10 @@ package executor
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
@@ -152,7 +152,39 @@ func executeInJoin(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	_ = fmt.Sprintf("InJoin binding=%s", p.GetBindingName())
+	inValues := p.GetInValues()
+	if len(inValues) == 0 {
+		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	}
+
+	bindingID := values.NamedCorrelationIdentifier(p.GetBindingName())
+	var cursors []recordlayer.RecordCursor[QueryResult]
+	for _, val := range inValues {
+		boundCtx := evalCtx.WithBinding(bindingID, val)
+		cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, nil, props)
+		if err != nil {
+			for _, c := range cursors {
+				c.Close()
+			}
+			return nil, err
+		}
+		cursors = append(cursors, cursor)
+	}
+
+	if len(cursors) == 1 {
+		return cursors[0], nil
+	}
+	return newConcatCursor(cursors), nil
+}
+
+func executeInUnion(
+	ctx context.Context,
+	p *plans.RecordQueryInUnionPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
 	return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 }
 
@@ -167,6 +199,46 @@ func executeMergeSortUnion(
 	return executeUnorderedUnion(ctx,
 		plans.NewRecordQueryUnorderedUnionPlan(p.GetInners()),
 		store, evalCtx, continuation, props)
+}
+
+type concatCursor[T any] struct {
+	cursors []recordlayer.RecordCursor[T]
+	idx     int
+	closed  bool
+}
+
+func newConcatCursor[T any](cursors []recordlayer.RecordCursor[T]) *concatCursor[T] {
+	return &concatCursor[T]{cursors: cursors}
+}
+
+func (c *concatCursor[T]) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[T], error) {
+	for c.idx < len(c.cursors) {
+		result, err := c.cursors[c.idx].OnNext(ctx)
+		if err != nil {
+			return result, err
+		}
+		if result.HasNext() {
+			return result, nil
+		}
+		c.idx++
+	}
+	return recordlayer.NewResultNoNext[T](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+}
+
+func (c *concatCursor[T]) IsClosed() bool { return c.closed }
+
+func (c *concatCursor[T]) Close() error {
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	var firstErr error
+	for _, cur := range c.cursors {
+		if err := cur.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // singleResultCursor yields one result then ends.
