@@ -46,7 +46,7 @@ write_files:
           "https://api.github.com/repos/$REPO/actions/runs?status=queued&per_page=1" 2>/dev/null \
           | jq '.total_count // 0')
         if [ "$QUEUED" -gt 0 ]; then
-          echo "runner silent for ${AGE}s with $QUEUED queued runs, restarting"
+          echo "runner silent for $${AGE}s with $QUEUED queued runs, restarting"
           systemctl restart "$UNIT"
         fi
       fi
@@ -107,7 +107,7 @@ write_files:
         if [ -z "$started" ]; then continue; fi
         age=$(( $(date -u +%s) - $(date -u -d "$started" +%s 2>/dev/null || echo 0) ))
         if [ "$age" -gt 1800 ]; then
-          echo "killing orphan FDB container $id (running ${age}s)"
+          echo "killing orphan FDB container $id (running $${age}s)"
           docker kill "$id" 2>/dev/null || true
           docker rm -f "$id" 2>/dev/null || true
         fi
