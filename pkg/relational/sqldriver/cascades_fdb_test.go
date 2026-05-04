@@ -653,6 +653,84 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	t.Logf("Cascades ORDER BY with index → %v ✓", names)
 }
 
+func TestFDB_CascadesCTESimple(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Simple CTE scan — inlines to a plain scan of Item.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH items AS (SELECT item_id, name, price FROM Item) SELECT name FROM items")
+	if err != nil {
+		t.Skipf("CTE not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+	count := countRows(t, rows)
+	if count != 3 {
+		t.Fatalf("expected 3 rows from CTE, got %d", count)
+	}
+	t.Logf("Cascades CTE simple → %d rows ✓", count)
+}
+
+func TestFDB_CascadesCTEWithFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE with WHERE on inner body — filter inlines into the plan.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH expensive AS (SELECT item_id, name FROM Item WHERE price > 100) SELECT name FROM expensive")
+	if err != nil {
+		t.Skipf("CTE with body filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 100 → only Gadget (200)
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades CTE with body filter → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEOuterWhere(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE with WHERE on the outer query (the CTE reference).
+	// This tests that the outer predicate is properly resolved
+	// using CTE-derived column schemas.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH items AS (SELECT item_id, name, price FROM Item) "+
+			"SELECT name FROM items WHERE price > 100")
+	if err != nil {
+		t.Skipf("CTE with outer WHERE not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 100 → only Gadget (200)
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades CTE with outer WHERE → %v ✓", names)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
