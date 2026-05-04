@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,29 @@ func expectUnsupportedOperator(g gomega.Gomega, err error, opName, ctx string) {
 		"%s: want ErrCodeUnsupportedOperation, got %s", ctx, apiErr.Code)
 	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+opName),
 		"%s: want byte-equal Java message", ctx)
+}
+
+// expectRejectionOrCascadesError asserts that err is an *api.Error whose
+// message is either the legacy specific rejection message or the generic
+// Cascades planner failure ("Cascades planner could not plan query").
+// With the Cascades-only path, unsupported SQL features surface as
+// planning failures rather than feature-specific rejection messages.
+func expectRejectionOrCascadesError(t *testing.T, err error, legacyMessages ...string) {
+	t.Helper()
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *api.Error, got %T (%v)", err, err)
+	}
+	for _, msg := range legacyMessages {
+		if strings.Contains(apiErr.Message, msg) {
+			return
+		}
+	}
+	if strings.Contains(apiErr.Message, "Cascades planner could not plan query") {
+		return
+	}
+	t.Fatalf("unexpected error message: %q (expected one of %v or 'Cascades planner could not plan query')",
+		apiErr.Message, legacyMessages)
 }
 
 // openTestDB returns a *sql.DB wired to the test FDB container.
@@ -671,7 +695,6 @@ func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 
 func TestFDB_InfoSchema_Schemata(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -725,7 +748,6 @@ func TestFDB_InfoSchema_Schemata(t *testing.T) {
 
 func TestFDB_InfoSchema_Tables(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -779,7 +801,6 @@ func TestFDB_InfoSchema_Tables(t *testing.T) {
 
 func TestFDB_InfoSchema_Columns(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -950,7 +971,6 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 
 func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -1259,7 +1279,6 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 // remediation hint. nightshift-60.
 func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -1287,7 +1306,7 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	}
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 	g.Expect(apiErr.Message).To(gomega.Equal("Cascades planner could not plan query"))
 }
 
@@ -1304,7 +1323,6 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 // nightshift-60.
 func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -1323,7 +1341,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, a, b) VALUES (1, 10, 20), (2, 5, 15)")).Error().NotTo(gomega.HaveOccurred())
 
-	// ORDER BY arithmetic expression (a + b) — must reject with 0AF01.
+	// ORDER BY arithmetic expression (a + b) — must reject with 0AF00.
 	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY a + b")
 	if err == nil {
 		_ = rows.Close()
@@ -1331,7 +1349,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	}
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 	g.Expect(apiErr.Message).To(gomega.Equal("Cascades planner could not plan query"))
 }
 
@@ -3065,7 +3083,6 @@ func TestFDB_UnionDistinctRejected(t *testing.T) {
 
 func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

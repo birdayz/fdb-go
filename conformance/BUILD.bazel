@@ -54,7 +54,6 @@ java_binary(
 go_test(
     name = "conformance_test",
     size = "large",
-    tags = ["conformance_java"],
     srcs = [
         "aggregate_conformance_test.go",
         "benchmark_comparison_test.go",
@@ -119,6 +118,7 @@ go_test(
         "yamsql_cross_engine_conformance_test.go",
     ],
     data = [":conformance_server"],
+    tags = ["conformance_java"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

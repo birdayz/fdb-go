@@ -55,6 +55,12 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "malformed SELECT statement")
 	}
 
+	// INFORMATION_SCHEMA queries go through the system-table path (naive),
+	// not the Cascades planner. Go-only feature (#9 decision: keep).
+	if strings.Contains(strings.ToUpper(sql), "INFORMATION_SCHEMA") {
+		return g.naive.Plan(ctx, sql)
+	}
+
 	if err := g.c.ensureMetaData(ctx); err != nil {
 		return nil, err
 	}
