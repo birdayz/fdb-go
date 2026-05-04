@@ -289,8 +289,11 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		tables = append(tables, tableInfo{name: j.tableName, alias: j.alias})
 	}
 
-	// Walk the join chain to find LogicalJoin nodes.
-	joinIdx := 0
+	// Collect LogicalJoin nodes from the left-child spine. The builder
+	// chains joins left-to-right: Join(Join(Scan, R0), R1), so the
+	// outermost join wraps the LAST sq.joins entry. We collect them
+	// and then match in reverse.
+	var joins []*logical.LogicalJoin
 	for cur := op; cur != nil; {
 		j, ok := cur.(*logical.LogicalJoin)
 		if !ok {
@@ -301,37 +304,48 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			}
 			break
 		}
-		if joinIdx < len(sq.joins) && sq.joins[joinIdx].onExpr != nil && j.OnPredicate == nil {
-			scope := semantic.NewScope(nil)
-			scopeOK := true
-			for _, ti := range tables {
-				tbl := resolveTable(ti.name)
-				if tbl == nil {
-					scopeOK = false
-					break
-				}
-				aliasID := semantic.NewUnquoted(ti.alias)
-				if ti.alias == "" {
-					aliasID = semantic.NewUnquoted(ti.name)
-				}
-				if err := scope.AddSource(semantic.ScopeSource{
-					Table:           tbl,
-					Alias:           aliasID,
-					CorrelationName: aliasID.Name(),
-				}); err != nil {
-					scopeOK = false
-					break
-				}
-			}
-			if scopeOK {
-				resolver := expr.New(analyzer, scope)
-				if pred, walkErr := resolver.WalkPredicate(sq.joins[joinIdx].onExpr); walkErr == nil {
-					j.OnPredicate = predicates.SimplifyPredicateValues(pred)
-				}
+		joins = append(joins, j)
+		cur = j.Left
+	}
+
+	// Build the full scope for predicate resolution.
+	scope := semantic.NewScope(nil)
+	scopeOK := true
+	for _, ti := range tables {
+		tbl := resolveTable(ti.name)
+		if tbl == nil {
+			scopeOK = false
+			break
+		}
+		aliasID := semantic.NewUnquoted(ti.alias)
+		if ti.alias == "" {
+			aliasID = semantic.NewUnquoted(ti.name)
+		}
+		if err := scope.AddSource(semantic.ScopeSource{
+			Table:           tbl,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}); err != nil {
+			scopeOK = false
+			break
+		}
+	}
+	if !scopeOK {
+		return
+	}
+	resolver := expr.New(analyzer, scope)
+
+	// Match collected joins with sq.joins in reverse order.
+	for i, j := range joins {
+		sqIdx := len(sq.joins) - 1 - i
+		if sqIdx < 0 || sqIdx >= len(sq.joins) {
+			break
+		}
+		if sq.joins[sqIdx].onExpr != nil && j.OnPredicate == nil {
+			if pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr); walkErr == nil {
+				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
 			}
 		}
-		joinIdx++
-		cur = j.Left
 	}
 }
 
