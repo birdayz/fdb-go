@@ -4070,7 +4070,7 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 // projection, and ORDER BY on the CTE result.
 func TestFDB_CTE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: CTE + ORDER BY needs index-based ordering")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -4270,7 +4270,7 @@ func TestFDB_DerivedTable(t *testing.T) {
 
 func TestFDB_CTEChaining(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: CTE chaining with computed expressions")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4548,7 +4548,7 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 
 func TestFDB_AggregateOnCTE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: CTE + aggregate + ORDER BY")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6753,7 +6753,7 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 // clobber the outer map entirely.
 func TestFDB_CTEScopeIsolation(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: CTE scope isolation with Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6816,7 +6816,7 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 //   - LEFT/RIGHT/SUBSTRING float-length arg must error, not silently truncate
 func TestFDB_MediumAuditFixes(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: complex CTE/JOIN/ORDER BY")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
