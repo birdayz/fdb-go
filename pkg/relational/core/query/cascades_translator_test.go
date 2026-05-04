@@ -228,3 +228,105 @@ func TestTranslateNestedSortFilterScan(t *testing.T) {
 		t.Fatal("expected non-nil reference for nested tree")
 	}
 }
+
+func TestTranslateCTEInlines(t *testing.T) {
+	t.Parallel()
+	body := logical.NewScan("Product", "")
+	main := logical.NewScan("expensive", "")
+	cte := logical.NewCTE("expensive", body, main, false)
+
+	ref := TranslateToCascades(cte)
+	if ref == nil {
+		t.Fatal("expected non-nil reference for non-recursive CTE")
+	}
+	scan, ok := ref.Members()[0].(*expressions.FullUnorderedScanExpression)
+	if !ok {
+		t.Fatalf("expected inlined FullUnorderedScanExpression, got %T", ref.Members()[0])
+	}
+	if scan.GetRecordTypes()[0] != "Product" {
+		t.Fatalf("expected scan of Product, got %s", scan.GetRecordTypes()[0])
+	}
+}
+
+func TestTranslateCTEWithFilter(t *testing.T) {
+	t.Parallel()
+	body := logical.NewFilter(logical.NewScan("Product", ""), "price > 100")
+	main := logical.NewProject(
+		logical.NewScan("expensive", ""),
+		[]string{"name"}, []string{""},
+	)
+	cte := logical.NewCTE("expensive", body, main, false)
+
+	ref := TranslateToCascades(cte)
+	if ref == nil {
+		t.Fatal("expected non-nil reference")
+	}
+	proj, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+	}
+	innerRef := proj.GetQuantifiers()[0].GetRangesOver()
+	inner := innerRef.Members()[0]
+	if _, ok := inner.(*expressions.LogicalFilterExpression); !ok {
+		t.Fatalf("expected inlined LogicalFilterExpression under projection, got %T", inner)
+	}
+}
+
+func TestTranslateCTEChained(t *testing.T) {
+	t.Parallel()
+	bodyA := logical.NewScan("Product", "")
+	mainA := logical.NewScan("B", "")
+	bodyB := logical.NewScan("A", "")
+	cteA := logical.NewCTE("A", bodyA, mainA, false)
+	cteB := logical.NewCTE("B", bodyB, cteA, false)
+
+	ref := TranslateToCascades(cteB)
+	if ref == nil {
+		t.Fatal("expected non-nil reference for chained CTEs")
+	}
+	scan, ok := ref.Members()[0].(*expressions.FullUnorderedScanExpression)
+	if !ok {
+		t.Fatalf("expected FullUnorderedScanExpression, got %T", ref.Members()[0])
+	}
+	if scan.GetRecordTypes()[0] != "Product" {
+		t.Fatalf("expected scan of Product (A inlined into B's body), got %s", scan.GetRecordTypes()[0])
+	}
+}
+
+func TestTranslateCTEShadowsTableName(t *testing.T) {
+	t.Parallel()
+	// CTE name = table name in body — must not infinite-recurse.
+	body := logical.NewProject(logical.NewScan("T", ""), []string{"id"}, []string{""})
+	main := logical.NewProject(logical.NewScan("T", ""), []string{"id"}, []string{""})
+	cte := logical.NewCTE("T", body, main, false)
+
+	ref := TranslateToCascades(cte)
+	if ref == nil {
+		t.Fatal("expected non-nil reference when CTE name shadows table name")
+	}
+	proj, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+	}
+	innerRef := proj.GetQuantifiers()[0].GetRangesOver()
+	innerProj, ok := innerRef.Members()[0].(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("expected inlined projection from CTE body, got %T", innerRef.Members()[0])
+	}
+	innerScan := innerProj.GetQuantifiers()[0].GetRangesOver().Members()[0]
+	if _, ok := innerScan.(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("expected FullUnorderedScanExpression at leaf, got %T", innerScan)
+	}
+}
+
+func TestTranslateRecursiveCTEReturnsNil(t *testing.T) {
+	t.Parallel()
+	body := logical.NewScan("Product", "")
+	main := logical.NewScan("recursive_cte", "")
+	cte := logical.NewCTE("recursive_cte", body, main, true)
+
+	ref := TranslateToCascades(cte)
+	if ref != nil {
+		t.Fatal("expected nil for recursive CTE (not yet supported)")
+	}
+}

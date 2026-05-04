@@ -18,50 +18,72 @@ import (
 // Returns nil if the operator tree contains shapes that can't be
 // translated (unsupported operators fall through to nil).
 func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
-	expr := translateOp(op)
+	t := &cascadesTranslator{
+		cteScope: make(map[string]logical.LogicalOperator),
+	}
+	return t.translateRef(op)
+}
+
+type cascadesTranslator struct {
+	cteScope map[string]logical.LogicalOperator
+}
+
+func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
+	expr := t.translateOp(op)
 	if expr == nil {
 		return nil
 	}
 	return expressions.InitialOf(expr)
 }
 
-func translateOp(op logical.LogicalOperator) expressions.RelationalExpression {
+func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions.RelationalExpression {
 	if op == nil {
 		return nil
 	}
 	switch o := op.(type) {
 	case *logical.LogicalScan:
-		return translateScan(o)
+		return t.translateScan(o)
 	case *logical.LogicalFilter:
-		return translateFilter(o)
+		return t.translateFilter(o)
 	case *logical.LogicalLimit:
-		return translateLimit(o)
+		return t.translateLimit(o)
 	case *logical.LogicalUnion:
-		return translateUnion(o)
+		return t.translateUnion(o)
 	case *logical.LogicalSort:
-		return translateSort(o)
+		return t.translateSort(o)
 	case *logical.LogicalProject:
-		return translateProject(o)
+		return t.translateProject(o)
 	case *logical.LogicalJoin:
-		return translateJoin(o)
+		return t.translateJoin(o)
 	case *logical.LogicalAggregate:
-		return translateAggregate(o)
+		return t.translateAggregate(o)
 	case *logical.LogicalDistinct:
-		return translateDistinct(o)
+		return t.translateDistinct(o)
 	case *logical.LogicalCTE:
-		return nil
+		return t.translateCTE(o)
 	default:
 		return nil
 	}
 }
 
-func translateScan(s *logical.LogicalScan) expressions.RelationalExpression {
+func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.RelationalExpression {
+	key := strings.ToUpper(s.Table)
+	if body, ok := t.cteScope[key]; ok {
+		// Remove this CTE from scope while translating its body so that
+		// scans inside the body resolve to real tables, not back to the
+		// CTE itself (which would cause infinite recursion when the CTE
+		// name shadows the underlying table name).
+		delete(t.cteScope, key)
+		result := t.translateOp(body)
+		t.cteScope[key] = body
+		return result
+	}
 	return expressions.NewFullUnorderedScanExpression(
 		[]string{s.Table}, values.UnknownType)
 }
 
-func translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	innerRef := TranslateToCascades(f.Input)
+func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
+	innerRef := t.translateRef(f.Input)
 	if innerRef == nil {
 		return nil
 	}
@@ -75,8 +97,8 @@ func translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression 
 	)
 }
 
-func translateLimit(l *logical.LogicalLimit) expressions.RelationalExpression {
-	innerRef := TranslateToCascades(l.Input)
+func (t *cascadesTranslator) translateLimit(l *logical.LogicalLimit) expressions.RelationalExpression {
+	innerRef := t.translateRef(l.Input)
 	if innerRef == nil {
 		return nil
 	}
@@ -86,10 +108,10 @@ func translateLimit(l *logical.LogicalLimit) expressions.RelationalExpression {
 	)
 }
 
-func translateUnion(u *logical.LogicalUnion) expressions.RelationalExpression {
+func (t *cascadesTranslator) translateUnion(u *logical.LogicalUnion) expressions.RelationalExpression {
 	quantifiers := make([]expressions.Quantifier, 0, len(u.Inputs))
 	for _, branch := range u.Inputs {
-		ref := TranslateToCascades(branch)
+		ref := t.translateRef(branch)
 		if ref == nil {
 			return nil
 		}
@@ -104,8 +126,8 @@ func translateUnion(u *logical.LogicalUnion) expressions.RelationalExpression {
 	return union
 }
 
-func translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
-	innerRef := TranslateToCascades(s.Input)
+func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
+	innerRef := t.translateRef(s.Input)
 	if innerRef == nil {
 		return nil
 	}
@@ -122,8 +144,8 @@ func translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
 	)
 }
 
-func translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
-	innerRef := TranslateToCascades(p.Input)
+func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
+	innerRef := t.translateRef(p.Input)
 	if innerRef == nil {
 		return nil
 	}
@@ -141,8 +163,8 @@ func translateProject(p *logical.LogicalProject) expressions.RelationalExpressio
 	)
 }
 
-func translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {
-	innerRef := TranslateToCascades(d.Input)
+func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {
+	innerRef := t.translateRef(d.Input)
 	if innerRef == nil {
 		return nil
 	}
@@ -150,8 +172,8 @@ func translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpress
 		expressions.ForEachQuantifier(innerRef))
 }
 
-func translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
-	innerRef := TranslateToCascades(a.Input)
+func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
+	innerRef := t.translateRef(a.Input)
 	if innerRef == nil {
 		return nil
 	}
@@ -213,12 +235,12 @@ func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
 	return expressions.AggregateSpec{Function: fn, Operand: operand}, true
 }
 
-func translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
-	leftRef := TranslateToCascades(j.Left)
+func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
+	leftRef := t.translateRef(j.Left)
 	if leftRef == nil {
 		return nil
 	}
-	rightRef := TranslateToCascades(j.Right)
+	rightRef := t.translateRef(j.Right)
 	if rightRef == nil {
 		return nil
 	}
@@ -238,4 +260,14 @@ func translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
 		[]expressions.Quantifier{leftQ, rightQ},
 		preds,
 	)
+}
+
+func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
+	if c.Recursive {
+		return nil
+	}
+	t.cteScope[strings.ToUpper(c.Name)] = c.Body
+	result := t.translateOp(c.Main)
+	delete(t.cteScope, strings.ToUpper(c.Name))
+	return result
 }
