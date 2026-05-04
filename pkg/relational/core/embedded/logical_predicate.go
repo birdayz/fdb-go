@@ -298,6 +298,7 @@ func buildCTEColumnSource(
 	md *recordlayer.RecordMetaData,
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
+	priorCTEs map[string]semantic.ScopeSource,
 ) (semantic.ScopeSource, bool) {
 	if md == nil || cteName == "" || cteQuery == nil {
 		return semantic.ScopeSource{}, false
@@ -323,16 +324,24 @@ func buildCTEColumnSource(
 		}
 	}
 
+	// Resolve the inner table: try metadata first, then prior CTE schemas.
+	var innerTbl semantic.Table
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
-	innerTbl, resolveErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false))
-	if resolveErr != nil {
+	tbl, resolveErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false))
+	if resolveErr == nil {
+		innerTbl = tbl
+	} else if priorCTEs != nil {
+		if src, found := priorCTEs[strings.ToUpper(innerSQ.tableName)]; found {
+			innerTbl = src.Table
+		}
+	}
+	if innerTbl == nil {
 		return semantic.ScopeSource{}, false
 	}
 
 	var columns []semantic.Column
 	if innerSQ.projCols == nil {
-		// SELECT * — use all columns from the inner table.
 		allCols := innerTbl.Columns()
 		columns = make([]semantic.Column, len(allCols))
 		copy(columns, allCols)
@@ -622,15 +631,14 @@ func buildLogicalPlanForQueryWithCatalog(
 
 	ctesCtx := q.Ctes()
 
-	// Pre-scan CTE definitions to extract column schemas. The main
-	// query's WHERE predicate builder needs these when the FROM clause
-	// references a CTE name (which isn't a real table in metadata).
+	// Pre-scan CTE definitions to extract column schemas. Process in
+	// declaration order so CTE B can reference CTE A's derived schema.
 	var cteScopes map[string]semantic.ScopeSource
 	if ctesCtx != nil {
 		cteScopes = make(map[string]semantic.ScopeSource)
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
-			if src, ok := buildCTEColumnSource(md, name, nq.Query()); ok {
+			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
 				cteScopes[strings.ToUpper(name)] = src
 			}
 		}
