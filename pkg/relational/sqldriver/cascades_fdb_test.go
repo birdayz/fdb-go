@@ -957,6 +957,70 @@ func TestFDB_CascadesCTEDistinct(t *testing.T) {
 	t.Logf("Cascades CTE DISTINCT → %d rows ✓", count)
 }
 
+func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_joinon_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("joinon_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (1, 'Alice')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (10, 1, 'Widget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (20, 99, 'Orphan')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// Explicit INNER JOIN ON — tests that ON predicate is properly resolved.
+	rows, err := db.QueryContext(ctx,
+		"SELECT Items.name FROM Orders INNER JOIN Items ON Orders.order_id = Items.order_id")
+	if err != nil {
+		t.Skipf("Explicit JOIN ON not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// Only Widget matches (order_id=1); Orphan has order_id=99.
+	if len(names) != 1 || names[0] != "Widget" {
+		t.Fatalf("expected [Widget], got %v", names)
+	}
+	t.Logf("Cascades explicit JOIN ON → %v ✓", names)
+}
+
 func TestFDB_CascadesMultiFilter(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
