@@ -345,7 +345,7 @@ func TestFDB_CascadesOrderByNoIndex(t *testing.T) {
 
 func TestFDB_CascadesJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: NLJ cross-join instead of filtered join")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -803,7 +803,7 @@ func TestFDB_CascadesCTESelectStar(t *testing.T) {
 
 func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: CTE+WHERE text predicate not applied in Cascades")
 	_, cascadesDB := setupCascadesTestDB(t)
 	ctx := context.Background()
 
@@ -1037,7 +1037,7 @@ func TestFDB_CascadesCTEDistinct(t *testing.T) {
 
 func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: JOIN column derivation returns NULL")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -1313,7 +1313,6 @@ func TestFDB_CascadesMultiFilter(t *testing.T) {
 
 func TestFDB_CascadesCTEOrderByNoIndex(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	_, cascadesDB := setupCascadesTestDB(t)
 	ctx := context.Background()
 
@@ -1332,7 +1331,6 @@ func TestFDB_CascadesCTEOrderByNoIndex(t *testing.T) {
 
 func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
