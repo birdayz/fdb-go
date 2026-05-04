@@ -124,7 +124,7 @@ Concrete Go-Java divergences surfaced by subagent audit. Ordered by impact.
 
 ### MEDIUM — feature completeness gaps
 
-- [ ] **#72** Ordering: missing `pullUp`/`pushDown`/`translateCorrelations`. Java translates orderings through value hierarchies and correlation rebasing. Required for proper constraint propagation through complex plan trees.
+- [ ] **#72** Ordering: `pullUp`/`pushDown`/`translateCorrelations` — **partially landed dayshift-72**. Simple FieldValue→FieldValue mapping via PullUp/PushDown on RichOrdering. Full Value.pullUp/pushDown (arbitrary value hierarchies, correlation translation) deferred — requires porting Value.pullUp/pushDown methods.
 - [x] **#73** Ordering: SetOperationsOrdering semantics — **covered by existing Go design**. Go's RichOrdering already stores multiple fixed bindings per key with union/intersection combiners (combineBindingsForUnion/combineBindingsForIntersection). No separate subclass needed — Go's flat design is functionally equivalent.
 - [x] **#74** DistinctUnionRule: `removeCommonEqualityBoundParts` — **landed dayshift-72**. Strips equality-bound ordering keys common across all union legs before merge.
 - [x] **#75** InJoinRule: `isSupportedExplodeValue()` validation — **landed dayshift-72**. Validates explode collection values are ConstantValue, QuantifiedObjectValue, or constant-evaluable. Applied to both InJoinRule and InUnionRule.
