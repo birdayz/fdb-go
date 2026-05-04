@@ -121,6 +121,9 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 					source := orderedSources[i]
 					inJoinPlan := plans.NewRecordQueryInJoinPlan(
 						currentPlan, source.bindingName, source.sorted, source.reverse)
+					if inValues := extractInValues(source.quantifier); inValues != nil {
+						inJoinPlan.SetInValues(inValues)
+					}
 					wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
 						expressions.NewPhysicalQuantifier(currentRef))
 					currentRef = call.MemoizeFinalExpression(wrapper)
@@ -395,6 +398,26 @@ func getExplodeExpression(ref *expressions.Reference) *expressions.ExplodeExpres
 		if e, ok := m.(*expressions.ExplodeExpression); ok {
 			return e
 		}
+	}
+	return nil
+}
+
+func extractInValues(q expressions.Quantifier) []any {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	explode := getExplodeExpression(ref)
+	if explode == nil {
+		return nil
+	}
+	cv := explode.GetCollectionValue()
+	if cv == nil {
+		return nil
+	}
+	result := cv.Evaluate(nil)
+	if vals, ok := result.([]any); ok {
+		return vals
 	}
 	return nil
 }
