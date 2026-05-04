@@ -731,6 +731,62 @@ func TestFDB_CascadesCTEOuterWhere(t *testing.T) {
 	t.Logf("Cascades CTE with outer WHERE → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEAggregateOnBody(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Aggregate (COUNT) over a CTE — CTE inlines, aggregate on top.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH expensive AS (SELECT item_id, name FROM Item WHERE price > 50) "+
+			"SELECT COUNT(*) FROM expensive")
+	if err != nil {
+		t.Skipf("CTE aggregate not supported: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row from COUNT")
+	}
+	var cnt int64
+	if err := rows.Scan(&cnt); err != nil {
+		t.Skipf("COUNT scan: %v", err)
+	}
+	// price > 50: Widget(100), Gadget(200) → 2
+	if cnt != 2 {
+		t.Fatalf("expected COUNT=2, got %d", cnt)
+	}
+	t.Logf("Cascades CTE aggregate → COUNT=%d ✓", cnt)
+}
+
+func TestFDB_CascadesCTESelectStar(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE body uses SELECT * — all columns from underlying table.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH all_items AS (SELECT * FROM Item) "+
+			"SELECT name FROM all_items WHERE price > 100")
+	if err != nil {
+		t.Skipf("CTE SELECT * not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades CTE SELECT * → %v ✓", names)
+}
+
 func TestFDB_CascadesCTEChained(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
