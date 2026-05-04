@@ -48,6 +48,8 @@ func translateOp(op logical.LogicalOperator) expressions.RelationalExpression {
 		return translateAggregate(o)
 	case *logical.LogicalDistinct:
 		return translateDistinct(o)
+	case *logical.LogicalCTE:
+		return nil
 	default:
 		return nil
 	}
