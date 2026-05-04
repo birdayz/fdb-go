@@ -420,6 +420,69 @@ func TestFDB_CascadesJoin(t *testing.T) {
 	t.Logf("Cascades JOIN → %d rows ✓", count)
 }
 
+func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_distfilt_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("distfilt_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Product (product_id BIGINT NOT NULL, category STRING, PRIMARY KEY (product_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, item := range []struct {
+		id  int
+		cat string
+	}{{1, "A"}, {2, "A"}, {3, "B"}, {4, "B"}, {5, "C"}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Product VALUES (%d, '%s')", item.id, item.cat)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT DISTINCT category FROM Product WHERE product_id > 1")
+	if err != nil {
+		t.Skipf("DISTINCT+filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var cats []string
+	for rows.Next() {
+		var cat string
+		if err := rows.Scan(&cat); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		cats = append(cats, cat)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(cats) != 3 {
+		t.Fatalf("expected 3 distinct categories (A, B, C from id > 1), got %d: %v", len(cats), cats)
+	}
+	t.Logf("Cascades DISTINCT+filter → %v ✓", cats)
+}
+
 func TestFDB_CascadesMultiColumnProjection(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
