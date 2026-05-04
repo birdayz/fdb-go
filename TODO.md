@@ -118,7 +118,7 @@ Concrete Go-Java divergences surfaced by subagent audit. Ordered by impact.
 
 ### HIGH — optimization quality gaps
 
-- [ ] **#69** DistinctUnionRule: cross-product skip optimization. Java's `partitionsCrossProductIterator.skip(merge.size())` prunes impossible branches early (O(n*k)). Go evaluates all combos (O(n^k)). Performance-only for queries with many union legs.
+- [x] **#69** DistinctUnionRule: cross-product skip optimization — **landed dayshift-72**. CrossProductIterator with Skip(depth) prunes impossible branches. Incremental merge with memoization. O(n*k) instead of O(n^k).
 - [x] **#70** InJoinRule: permutation generation — **landed nightshift-71**. enumerateSourceOrderings() uses TopologicalSort.Permutations() to enumerate all valid orderings of remaining sources. Gate: #67.
 - [x] **#71** Ordering: `enumerateCompatibleRequestedOrderings` + `satisfiesGroupingValues` — **landed nightshift-71**. Uses TopologicalSort.satisfyingPermutations on the ordering set. Also added ProvidedSortOrder.ToRequestedSortOrder().
 
