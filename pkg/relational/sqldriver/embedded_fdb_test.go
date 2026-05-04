@@ -2200,7 +2200,7 @@ func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
 func TestFDB_SelectColumnAlias(t *testing.T) {
 	// SELECT col AS alias — result column name should use the alias.
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: column alias not propagated through Cascades projection")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2452,7 +2452,7 @@ func TestFDB_GroupByCount(t *testing.T) {
 
 func TestFDB_GroupByHaving(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: HAVING clause not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2751,7 +2751,7 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 func TestFDB_SelectScalarExpression(t *testing.T) {
 	// SELECT id, amount * 2 AS doubled FROM t — arithmetic in SELECT list.
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: arithmetic in SELECT list")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2786,7 +2786,7 @@ func TestFDB_SelectScalarExpression(t *testing.T) {
 func TestFDB_SelectCoalesce(t *testing.T) {
 	// COALESCE(nullable_col, 0) returns the non-NULL value or default.
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: COALESCE function evaluation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3160,7 +3160,7 @@ func TestFDB_InsertSelect(t *testing.T) {
 
 func TestFDB_CastAndSubstring(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: CAST/SUBSTRING functions")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3310,7 +3310,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 
 func TestFDB_MathFunctions(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: math functions in projection")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3458,7 +3458,7 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 func TestFDB_HavingCompound(t *testing.T) {
 	// HAVING with AND/OR compound conditions.
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: HAVING clause not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3539,7 +3539,7 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 
 func TestFDB_InnerJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: inner JOIN execution in Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3598,7 +3598,7 @@ func TestFDB_InnerJoin(t *testing.T) {
 
 func TestFDB_LeftJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: LEFT JOIN not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3651,7 +3651,7 @@ func TestFDB_LeftJoin(t *testing.T) {
 
 func TestFDB_JoinWhere(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: JOIN + WHERE execution")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3706,7 +3706,7 @@ func TestFDB_JoinWhere(t *testing.T) {
 
 func TestFDB_RightJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: RIGHT JOIN not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3806,7 +3806,7 @@ func TestFDB_CountDistinct(t *testing.T) {
 
 func TestFDB_GreatestLeast(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: GREATEST/LEAST functions")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3936,7 +3936,7 @@ func TestFDB_SubqueryINRejected(t *testing.T) {
 
 func TestFDB_JoinGroupBy(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: JOIN + GROUP BY execution")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3996,7 +3996,7 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 
 func TestFDB_ExistsSubquery(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: EXISTS subquery not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4228,7 +4228,7 @@ func TestFDB_ConstantProjectionFolding(t *testing.T) {
 
 func TestFDB_DerivedTable(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: derived table (subquery in FROM)")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4382,7 +4382,7 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 
 func TestFDB_FunctionsInMapEval(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: function evaluation in map")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4445,7 +4445,7 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 
 func TestFDB_CaseInMapEval(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: CASE evaluation in map")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4495,7 +4495,7 @@ func TestFDB_CaseInMapEval(t *testing.T) {
 
 func TestFDB_SubqueryInCase(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: subquery in CASE expression")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4614,7 +4614,7 @@ func TestFDB_AggregateOnCTE(t *testing.T) {
 
 func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: JOIN + GROUP BY + ORDER BY + LIMIT")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4689,7 +4689,7 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 
 func TestFDB_CTEAggregateHaving(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: HAVING clause not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4756,7 +4756,7 @@ func TestFDB_CTEAggregateHaving(t *testing.T) {
 
 func TestFDB_JoinOnCTE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: JOIN on CTE execution")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4811,7 +4811,7 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 
 func TestFDB_MultiTableFrom(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: multi-table FROM (comma join)")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4867,7 +4867,7 @@ func TestFDB_MultiTableFrom(t *testing.T) {
 
 func TestFDB_ThreeTableFrom(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: three-table FROM")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5113,7 +5113,7 @@ func TestFDB_LtrimRtrimRejected(t *testing.T) {
 
 func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: CTE + JOIN + ORDER BY expression")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5310,7 +5310,7 @@ func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 // TestFDB_CaseWhen.
 func TestFDB_FunctionWrappingCase(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: function wrapping CASE")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5438,7 +5438,7 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 
 func TestFDB_SelfJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: self-JOIN execution")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5828,7 +5828,7 @@ func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 
 func TestFDB_ParameterizedSubquery(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #79: parameterized subquery")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5952,7 +5952,7 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 
 func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: NULL propagation in functions")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6100,7 +6100,7 @@ func TestFDB_SimpleCaseWorks(t *testing.T) {
 // actually switch on the code.
 func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: error path SQLSTATE codes via Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6367,7 +6367,7 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 // left row with NULL for right columns.
 func TestFDB_JoinWithNullKey(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: JOIN with NULL key")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -7108,7 +7108,7 @@ func TestFDB_AggregateNullSemantics(t *testing.T) {
 //   - modulo by zero errors in both paths
 func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: arithmetic expression evaluation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
