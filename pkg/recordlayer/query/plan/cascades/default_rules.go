@@ -112,7 +112,6 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementFilterRule(),
 		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
-		NewPhysicalizeSortRule(),
 		NewImplementDistinctRule(),
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),

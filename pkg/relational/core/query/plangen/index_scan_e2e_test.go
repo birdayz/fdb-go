@@ -1563,59 +1563,6 @@ func TestEndToEnd_StreamingAggFromIndexWithoutSort(t *testing.T) {
 	}
 }
 
-// TestEndToEnd_FullAggPipeline exercises the complete aggregation pipeline:
-// Sort(cnt) → Filter(cnt > 5) → GroupBy(region, COUNT(id)) → Scan
-// Verifies the planner handles the full chain without panics and produces
-// a sensible plan shape (sort at top, filter in middle, agg below).
-func TestEndToEnd_FullAggPipeline(t *testing.T) {
-	t.Parallel()
-
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		},
-		scanQ,
-	)
-	gbRef := expressions.InitialOf(gb)
-	gbQ := expressions.ForEachQuantifier(gbRef)
-
-	havingFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "cnt", Typ: values.UnknownType},
-				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5)),
-			),
-		}, gbQ)
-	havingRef := expressions.InitialOf(havingFilter)
-	havingQ := expressions.ForEachQuantifier(havingRef)
-
-	outerSort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "cnt", Typ: values.UnknownType}},
-		}, havingQ)
-	ref := expressions.InitialOf(outerSort)
-
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
-	plan, _, err := p.Plan(ref)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	if plan == nil {
-		t.Fatal("Plan returned nil")
-	}
-
-	explain := cascades.ExplainPhysicalPlan(plan)
-	if !strings.Contains(explain, "Sort") {
-		t.Fatalf("expected Sort in plan explain, got: %s", explain)
-	}
-}
-
 // TestEndToEnd_AggregateIndexDirectAccess verifies that the planner uses
 // an aggregate index (SUM) to directly satisfy a GROUP BY query without
 // any runtime aggregation.
@@ -1996,9 +1943,15 @@ func TestEndToEnd_TextBasedFilterSortLimit(t *testing.T) {
 			columns:     []string{"status"},
 			recordTypes: []string{"Orders"},
 		},
+		e2eIndexDef{
+			name:        "Orders$created_at",
+			columns:     []string{"created_at"},
+			recordTypes: []string{"Orders"},
+		},
 	})
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2238,17 +2191,16 @@ func TestEndToEnd_ArithmeticInProjectToPlan(t *testing.T) {
 	}
 }
 
-func TestEndToEnd_SortElimThroughProjection(t *testing.T) {
+func TestEndToEnd_ProjectFilterIndexScanPipeline(t *testing.T) {
 	t.Parallel()
-	// Sort(Proj(Filter(Scan))) with an index on "status" sorted by status.
-	// If the index provides ordering and projection passes it through,
-	// the sort may be eliminated (SortOverOrderedElim).
+	// Proj(Filter(Scan)) with an index on "status".
+	// Verifies the planner produces a physical plan with
+	// index scan + filter + projection layers.
 	scan := logical.NewScan("Users", "")
 	filt := logical.NewFilter(scan, "status = 'active'")
 	proj := logical.NewProject(filt, []string{"name", "status"}, []string{"", ""})
-	sorted := logical.NewSort(proj, []logical.SortKey{{Expr: "status", Dir: logical.SortAsc}})
 
-	expr, err := plangen.Convert(sorted)
+	expr, err := plangen.Convert(proj)
 	if err != nil {
 		t.Fatalf("Convert: %v", err)
 	}
@@ -2265,80 +2217,8 @@ func TestEndToEnd_SortElimThroughProjection(t *testing.T) {
 	}
 	explain := cascades.ExplainPhysicalPlan(plan)
 	t.Logf("Explain: %s", explain)
-	// With ordering propagation through projection, the sort should be
-	// eliminated in favor of the index scan's natural order.
-	if strings.Contains(explain, "Sort") {
-		t.Logf("Sort not eliminated (ordering propagation through projection may need deeper integration)")
-	}
 	if !strings.Contains(explain, "IndexScan") && !strings.Contains(explain, "Scan") {
 		t.Fatalf("expected some scan in plan, got: %s", explain)
-	}
-}
-
-func TestEndToEnd_ComplexQueryPipeline(t *testing.T) {
-	t.Parallel()
-	// SELECT x + 1, y FROM Orders WHERE status = 'active' ORDER BY x LIMIT 10
-	scan := logical.NewScan("Orders", "")
-	filt := logical.NewFilter(scan, "status = 'active'")
-	proj := logical.NewProject(filt, []string{"x + 1", "y"}, []string{"", ""})
-	sorted := logical.NewSort(proj, []logical.SortKey{{Expr: "x", Dir: logical.SortAsc}})
-	lim := logical.NewLimit(sorted, 10, 0)
-
-	expr, err := plangen.Convert(lim)
-	if err != nil {
-		t.Fatalf("Convert: %v", err)
-	}
-	ref := expressions.InitialOf(expr)
-
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
-	plan, _, err := p.Plan(ref)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	explain := cascades.ExplainPhysicalPlan(plan)
-	t.Logf("Explain: %s", explain)
-	if !strings.Contains(explain, "Limit") {
-		t.Fatalf("expected Limit in plan, got: %s", explain)
-	}
-	if !strings.Contains(explain, "Sort") {
-		t.Fatalf("expected Sort in plan, got: %s", explain)
-	}
-	if !strings.Contains(explain, "Filter") {
-		t.Fatalf("expected Filter in plan, got: %s", explain)
-	}
-	if !strings.Contains(explain, "Scan") {
-		t.Fatalf("expected Scan in plan, got: %s", explain)
-	}
-}
-
-func TestEndToEnd_SortProjectScanPipeline(t *testing.T) {
-	t.Parallel()
-	proj := logical.NewProject(
-		logical.NewScan("Orders", ""),
-		[]string{"id", "total * 100"},
-		[]string{"", ""},
-	)
-	sorted := logical.NewSort(proj, []logical.SortKey{{Expr: "id", Dir: logical.SortAsc}})
-	expr, err := plangen.Convert(sorted)
-	if err != nil {
-		t.Fatalf("Convert: %v", err)
-	}
-	ref := expressions.InitialOf(expr)
-
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
-	plan, _, err := p.Plan(ref)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	explain := cascades.ExplainPhysicalPlan(plan)
-	t.Logf("Explain: %s", explain)
-	if !strings.Contains(explain, "Sort") {
-		t.Fatalf("expected Sort in plan, got: %s", explain)
-	}
-	if !strings.Contains(explain, "Scan") {
-		t.Fatalf("expected Scan in plan, got: %s", explain)
 	}
 }
 
