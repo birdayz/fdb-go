@@ -256,6 +256,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if u := findUnionPlan(plan); u != nil {
 		return deriveColumnsFromPlan(u[0], md)
 	}
+	if ip, ok := plan.(innerPlan); ok {
+		return deriveColumnsFromPlan(ip.GetInner(), md)
+	}
 	scan := findScanPlan(plan)
 	if scan == nil || len(scan.GetRecordTypes()) == 0 {
 		return nil
