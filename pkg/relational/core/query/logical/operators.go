@@ -170,6 +170,20 @@ func (l *LogicalLimit) Explain(indent string) string {
 	return fmt.Sprintf("%sLimit(%d)\n%s", indent, l.Limit, l.Input.Explain(indent+"  "))
 }
 
+// LogicalDistinct removes duplicate rows from its input.
+type LogicalDistinct struct {
+	Input LogicalOperator
+}
+
+func NewDistinct(input LogicalOperator) *LogicalDistinct {
+	return &LogicalDistinct{Input: input}
+}
+
+func (d *LogicalDistinct) Children() []LogicalOperator { return []LogicalOperator{d.Input} }
+func (d *LogicalDistinct) Explain(indent string) string {
+	return fmt.Sprintf("%sDistinct\n%s", indent, d.Input.Explain(indent+"  "))
+}
+
 // LogicalAggregate runs GROUP BY + aggregate functions on its child.
 // GroupKeys are the grouping-column expressions; Aggregates holds the
 // aggregate-call text with aliases.

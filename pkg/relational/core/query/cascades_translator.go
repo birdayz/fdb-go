@@ -46,6 +46,8 @@ func translateOp(op logical.LogicalOperator) expressions.RelationalExpression {
 		return translateJoin(o)
 	case *logical.LogicalAggregate:
 		return translateAggregate(o)
+	case *logical.LogicalDistinct:
+		return translateDistinct(o)
 	default:
 		return nil
 	}
@@ -135,6 +137,15 @@ func translateProject(p *logical.LogicalProject) expressions.RelationalExpressio
 		projected,
 		expressions.ForEachQuantifier(innerRef),
 	)
+}
+
+func translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {
+	innerRef := TranslateToCascades(d.Input)
+	if innerRef == nil {
+		return nil
+	}
+	return expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(innerRef))
 }
 
 func translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
