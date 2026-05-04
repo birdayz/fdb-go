@@ -129,4 +129,4 @@ Concrete Go-Java divergences surfaced by subagent audit. Ordered by impact.
 - [x] **#74** DistinctUnionRule: `removeCommonEqualityBoundParts` — **landed dayshift-72**. Strips equality-bound ordering keys common across all union legs before merge.
 - [x] **#75** InJoinRule: `isSupportedExplodeValue()` validation — **landed dayshift-72**. Validates explode collection values are ConstantValue, QuantifiedObjectValue, or constant-evaluable. Applied to both InJoinRule and InUnionRule.
 - [ ] **#76** Executor: InJoin/InUnion don't iterate IN-values (delegate to inner). MergeSortUnion delegates to concat (no merge-sort cursor).
-- [ ] **#77** InUnionRule: missing `attemptFailedInJoinAsUnionMaxSize` planner configuration parameter.
+- [x] **#77** InUnionRule: `attemptFailedInJoinAsUnionMaxSize` — **landed dayshift-72**. Added to PlannerConfiguration, wired through ImplementationRuleCall.Context → InUnionRule → RecordQueryInUnionPlan.
