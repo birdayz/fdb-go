@@ -247,6 +247,7 @@ func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*
 				call := &ImplementationRuleCall{
 					Bindings:       b,
 					Reference:      ref,
+					Context:        p.ctx,
 					Constraints:    cm,
 					constraintOnly: true,
 				}
