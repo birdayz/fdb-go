@@ -2501,7 +2501,7 @@ func TestFDB_GroupByHaving(t *testing.T) {
 
 func TestFDB_GroupByOrderBy(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: GROUP BY + ORDER BY interaction")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4950,7 +4950,7 @@ func TestFDB_UpdateSetWithFunctionRejected(t *testing.T) {
 
 func TestFDB_OrderByExpression(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: ORDER BY on expression")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5011,7 +5011,7 @@ func TestFDB_OrderByExpression(t *testing.T) {
 
 func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: ORDER BY expression in JOIN")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5342,7 +5342,7 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 
 func TestFDB_AggregateOrderByStrict(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: aggregate ORDER BY strict")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5390,7 +5390,7 @@ func TestFDB_AggregateOrderByStrict(t *testing.T) {
 
 func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: ORDER BY arithmetic on aggregate")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6316,7 +6316,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 // order" subset of the GROUP BY countStar bug.
 func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: GROUP BY + ORDER BY COUNT(*)")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6697,7 +6697,7 @@ func TestFDB_GroupByNullVsNilString(t *testing.T) {
 // so ASC put NULLs last — the opposite of Java.
 func TestFDB_OrderByNullOrdering(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: NULL ordering in ORDER BY")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
