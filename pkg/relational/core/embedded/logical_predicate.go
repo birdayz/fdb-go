@@ -881,9 +881,33 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		}
 		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
 	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCatalog(b, md)
+		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes)
 	}
 	return nil
+}
+
+func buildLogicalPlanForUnionWithCTECatalog(
+	setQ *antlrgen.SetQueryContext,
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
+) logical.LogicalOperator {
+	if setQ == nil {
+		return nil
+	}
+	distinct := true
+	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
+		distinct = false
+	}
+	left := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, cteScopes)
+	right := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetRight(), md, cteScopes)
+	if left == nil || right == nil {
+		return nil
+	}
+	inputs := []logical.LogicalOperator{left, right}
+	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
+		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
+	}
+	return logical.NewUnion(inputs, distinct)
 }
 
 // buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
