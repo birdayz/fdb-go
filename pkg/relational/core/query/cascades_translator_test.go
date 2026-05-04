@@ -133,6 +133,77 @@ func TestTranslateNil(t *testing.T) {
 	}
 }
 
+func TestTranslateAggregate(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("orders", "")
+	agg := logical.NewAggregate(scan, []string{"CATEGORY"}, []string{"SUM(PRICE)", "COUNT(*)"}, []string{"total", "cnt"}, "")
+	ref := TranslateToCascades(agg)
+	if ref == nil {
+		t.Fatal("expected non-nil reference for aggregate")
+	}
+	gb, ok := ref.Members()[0].(*expressions.GroupByExpression)
+	if !ok {
+		t.Fatalf("expected GroupByExpression, got %T", ref.Members()[0])
+	}
+	if len(gb.GetGroupingKeys()) != 1 {
+		t.Fatalf("expected 1 grouping key, got %d", len(gb.GetGroupingKeys()))
+	}
+	if len(gb.GetAggregates()) != 2 {
+		t.Fatalf("expected 2 aggregates, got %d", len(gb.GetAggregates()))
+	}
+	if gb.GetAggregates()[0].Function != expressions.AggSum {
+		t.Fatalf("expected AggSum, got %d", gb.GetAggregates()[0].Function)
+	}
+	if gb.GetAggregates()[1].Function != expressions.AggCount {
+		t.Fatalf("expected AggCount, got %d", gb.GetAggregates()[1].Function)
+	}
+}
+
+func TestTranslateAggregateNoGroup(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("orders", "")
+	agg := logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"cnt"}, "")
+	ref := TranslateToCascades(agg)
+	if ref == nil {
+		t.Fatal("expected non-nil reference for scalar aggregate")
+	}
+	gb, ok := ref.Members()[0].(*expressions.GroupByExpression)
+	if !ok {
+		t.Fatalf("expected GroupByExpression, got %T", ref.Members()[0])
+	}
+	if len(gb.GetGroupingKeys()) != 0 {
+		t.Fatalf("expected 0 grouping keys, got %d", len(gb.GetGroupingKeys()))
+	}
+}
+
+func TestParseAggregateText(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		fn    expressions.AggregateFunction
+		ok    bool
+	}{
+		{"COUNT(*)", expressions.AggCount, true},
+		{"SUM(PRICE)", expressions.AggSum, true},
+		{"AVG(X)", expressions.AggAvg, true},
+		{"MIN(Y)", expressions.AggMin, true},
+		{"MAX(Z)", expressions.AggMax, true},
+		{"count(*)", expressions.AggCount, true},
+		{"UNKNOWN(X)", 0, false},
+		{"noparen", 0, false},
+	}
+	for _, tc := range tests {
+		spec, ok := parseAggregateText(tc.input)
+		if ok != tc.ok {
+			t.Errorf("parseAggregateText(%q): ok=%v, want %v", tc.input, ok, tc.ok)
+			continue
+		}
+		if ok && spec.Function != tc.fn {
+			t.Errorf("parseAggregateText(%q): fn=%d, want %d", tc.input, spec.Function, tc.fn)
+		}
+	}
+}
+
 func TestTranslateNestedSortFilterScan(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")

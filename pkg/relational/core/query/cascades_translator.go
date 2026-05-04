@@ -1,6 +1,8 @@
 package query
 
 import (
+	"strings"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -42,6 +44,8 @@ func translateOp(op logical.LogicalOperator) expressions.RelationalExpression {
 		return translateProject(o)
 	case *logical.LogicalJoin:
 		return translateJoin(o)
+	case *logical.LogicalAggregate:
+		return translateAggregate(o)
 	default:
 		return nil
 	}
@@ -131,6 +135,69 @@ func translateProject(p *logical.LogicalProject) expressions.RelationalExpressio
 		projected,
 		expressions.ForEachQuantifier(innerRef),
 	)
+}
+
+func translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
+	innerRef := TranslateToCascades(a.Input)
+	if innerRef == nil {
+		return nil
+	}
+	groupKeys := make([]values.Value, len(a.GroupKeys))
+	for i, key := range a.GroupKeys {
+		groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
+	}
+	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
+	for _, aggText := range a.Aggregates {
+		spec, ok := parseAggregateText(aggText)
+		if !ok {
+			return nil
+		}
+		aggSpecs = append(aggSpecs, spec)
+	}
+	return expressions.NewGroupByExpression(
+		groupKeys,
+		aggSpecs,
+		expressions.ForEachQuantifier(innerRef),
+	)
+}
+
+func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
+	upper := strings.ToUpper(strings.TrimSpace(text))
+	lparen := strings.Index(upper, "(")
+	if lparen < 0 {
+		return expressions.AggregateSpec{}, false
+	}
+	rparen := strings.LastIndex(upper, ")")
+	if rparen < lparen {
+		return expressions.AggregateSpec{}, false
+	}
+	funcName := strings.TrimSpace(upper[:lparen])
+	operandText := strings.TrimSpace(upper[lparen+1 : rparen])
+
+	var fn expressions.AggregateFunction
+	switch funcName {
+	case "COUNT":
+		fn = expressions.AggCount
+	case "SUM":
+		fn = expressions.AggSum
+	case "MIN":
+		fn = expressions.AggMin
+	case "MAX":
+		fn = expressions.AggMax
+	case "AVG":
+		fn = expressions.AggAvg
+	default:
+		return expressions.AggregateSpec{}, false
+	}
+
+	var operand values.Value
+	if operandText == "*" {
+		operand = &values.ConstantValue{Value: nil, Typ: values.UnknownType}
+	} else {
+		operand = &values.FieldValue{Field: operandText, Typ: values.UnknownType}
+	}
+
+	return expressions.AggregateSpec{Function: fn, Operand: operand}, true
 }
 
 func translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
