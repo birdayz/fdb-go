@@ -257,6 +257,84 @@ func buildDerivedTableSource(
 	}, true
 }
 
+// upgradeJoinOnPredicates walks the logical plan tree to find LogicalJoin
+// nodes and upgrades their OnText to OnPredicate using the full join scope.
+// The join nodes are created in order matching sq.joins, so we match
+// them sequentially by walking the left-child spine (the builder chains
+// joins left-to-right with op = NewJoin(op, right, ...)).
+func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+
+	resolveTable := func(tableName string) semantic.Table {
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err == nil {
+			return tbl
+		}
+		if cteScopes != nil {
+			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+				return src.Table
+			}
+		}
+		return nil
+	}
+
+	// Collect all tables in the FROM clause for the join scope.
+	type tableInfo struct {
+		name  string
+		alias string
+	}
+	tables := []tableInfo{{name: sq.tableName, alias: sq.tableAlias}}
+	for _, j := range sq.joins {
+		tables = append(tables, tableInfo{name: j.tableName, alias: j.alias})
+	}
+
+	// Walk the join chain to find LogicalJoin nodes.
+	joinIdx := 0
+	for cur := op; cur != nil; {
+		j, ok := cur.(*logical.LogicalJoin)
+		if !ok {
+			ch := cur.Children()
+			if len(ch) > 0 {
+				cur = ch[0]
+				continue
+			}
+			break
+		}
+		if joinIdx < len(sq.joins) && sq.joins[joinIdx].onExpr != nil && j.OnPredicate == nil {
+			scope := semantic.NewScope(nil)
+			scopeOK := true
+			for _, ti := range tables {
+				tbl := resolveTable(ti.name)
+				if tbl == nil {
+					scopeOK = false
+					break
+				}
+				aliasID := semantic.NewUnquoted(ti.alias)
+				if ti.alias == "" {
+					aliasID = semantic.NewUnquoted(ti.name)
+				}
+				if err := scope.AddSource(semantic.ScopeSource{
+					Table:           tbl,
+					Alias:           aliasID,
+					CorrelationName: aliasID.Name(),
+				}); err != nil {
+					scopeOK = false
+					break
+				}
+			}
+			if scopeOK {
+				resolver := expr.New(analyzer, scope)
+				if pred, walkErr := resolver.WalkPredicate(sq.joins[joinIdx].onExpr); walkErr == nil {
+					j.OnPredicate = predicates.SimplifyPredicateValues(pred)
+				}
+			}
+		}
+		joinIdx++
+		cur = j.Left
+	}
+}
+
 // buildWherePredicateFromCTEScope builds a predicate using a CTE-derived
 // ScopeSource. Used when the main query's FROM references a CTE — the
 // CTE's column schema was derived from its body's SELECT projection and
@@ -509,7 +587,17 @@ func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.Recor
 
 func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) logical.LogicalOperator {
 	op := buildLogicalPlanForSelect(sq)
-	if op == nil || md == nil || sq == nil || sq.whereExpr == nil {
+	if op == nil || md == nil || sq == nil {
+		return op
+	}
+
+	// Upgrade JOIN ON predicates: walk the plan tree to find LogicalJoin
+	// nodes and try to build real ON predicates using the join scope.
+	if len(sq.joins) > 0 {
+		upgradeJoinOnPredicates(op, sq, md, cteScopes)
+	}
+
+	if sq.whereExpr == nil {
 		return op
 	}
 	var pred predicates.QueryPredicate
