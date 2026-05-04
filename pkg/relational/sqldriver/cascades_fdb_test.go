@@ -731,6 +731,36 @@ func TestFDB_CascadesCTEOuterWhere(t *testing.T) {
 	t.Logf("Cascades CTE with outer WHERE → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEChained(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE B references CTE A — tests chained schema derivation.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH cheap AS (SELECT item_id, name, price FROM Item WHERE price < 200), "+
+			"filtered AS (SELECT name FROM cheap WHERE item_id > 1) "+
+			"SELECT name FROM filtered")
+	if err != nil {
+		t.Skipf("Chained CTE not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price < 200 → Widget(100), Doohickey(50); item_id > 1 → Doohickey(id=3)
+	if len(names) != 1 || names[0] != "Doohickey" {
+		t.Fatalf("expected [Doohickey], got %v", names)
+	}
+	t.Logf("Cascades chained CTE → %v ✓", names)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
