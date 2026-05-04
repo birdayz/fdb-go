@@ -257,6 +257,275 @@ func buildDerivedTableSource(
 	}, true
 }
 
+// upgradeJoinOnPredicates walks the logical plan tree to find LogicalJoin
+// nodes and upgrades their OnText to OnPredicate using the full join scope.
+// The join nodes are created in order matching sq.joins, so we match
+// them sequentially by walking the left-child spine (the builder chains
+// joins left-to-right with op = NewJoin(op, right, ...)).
+func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+
+	resolveTable := func(tableName string) semantic.Table {
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err == nil {
+			return tbl
+		}
+		if cteScopes != nil {
+			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+				return src.Table
+			}
+		}
+		return nil
+	}
+
+	// Collect all tables in the FROM clause for the join scope.
+	type tableInfo struct {
+		name  string
+		alias string
+	}
+	tables := []tableInfo{{name: sq.tableName, alias: sq.tableAlias}}
+	for _, j := range sq.joins {
+		tables = append(tables, tableInfo{name: j.tableName, alias: j.alias})
+	}
+
+	// Collect LogicalJoin nodes from the left-child spine. The builder
+	// chains joins left-to-right: Join(Join(Scan, R0), R1), so the
+	// outermost join wraps the LAST sq.joins entry. We collect them
+	// and then match in reverse.
+	var joins []*logical.LogicalJoin
+	for cur := op; cur != nil; {
+		j, ok := cur.(*logical.LogicalJoin)
+		if !ok {
+			ch := cur.Children()
+			if len(ch) > 0 {
+				cur = ch[0]
+				continue
+			}
+			break
+		}
+		joins = append(joins, j)
+		cur = j.Left
+	}
+
+	// Build the full scope for predicate resolution.
+	scope := semantic.NewScope(nil)
+	scopeOK := true
+	for _, ti := range tables {
+		tbl := resolveTable(ti.name)
+		if tbl == nil {
+			scopeOK = false
+			break
+		}
+		aliasID := semantic.NewUnquoted(ti.alias)
+		if ti.alias == "" {
+			aliasID = semantic.NewUnquoted(ti.name)
+		}
+		if err := scope.AddSource(semantic.ScopeSource{
+			Table:           tbl,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}); err != nil {
+			scopeOK = false
+			break
+		}
+	}
+	if !scopeOK {
+		return
+	}
+	resolver := expr.New(analyzer, scope)
+
+	// Match collected joins with sq.joins in reverse order.
+	for i, j := range joins {
+		sqIdx := len(sq.joins) - 1 - i
+		if sqIdx < 0 || sqIdx >= len(sq.joins) {
+			break
+		}
+		if sq.joins[sqIdx].onExpr != nil && j.OnPredicate == nil {
+			if pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr); walkErr == nil {
+				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
+			}
+		}
+	}
+}
+
+// buildWherePredicateFromCTEScope builds a predicate using a CTE-derived
+// ScopeSource. Used when the main query's FROM references a CTE — the
+// CTE's column schema was derived from its body's SELECT projection and
+// the underlying table's metadata.
+func buildWherePredicateFromCTEScope(
+	src semantic.ScopeSource,
+	tableAlias string,
+	whereExpr antlrgen.IWhereExprContext,
+	md *recordlayer.RecordMetaData,
+) (predicates.QueryPredicate, bool) {
+	if whereExpr == nil || whereExpr.Expression() == nil || md == nil {
+		return nil, false
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+	if tableAlias != "" {
+		src.Alias = semantic.NewUnquoted(tableAlias)
+		src.CorrelationName = tableAlias
+	}
+	if err := scope.AddSource(src); err != nil {
+		return nil, false
+	}
+	resolver := expr.New(analyzer, scope)
+	pred, err := resolver.WalkPredicate(whereExpr.Expression())
+	if err != nil {
+		return nil, false
+	}
+	pred = predicates.SimplifyPredicateValues(pred)
+	return pred, true
+}
+
+// buildCTEColumnSource derives a ScopeSource from a CTE body's query
+// context. Extracts the projected column names and their types from the
+// underlying real table's metadata. Declines on complex shapes (SELECT *,
+// aggregates, computed expressions, derived tables, JOINs) — same
+// restrictions as buildDerivedTableSource.
+func buildCTEColumnSource(
+	md *recordlayer.RecordMetaData,
+	cteName string,
+	cteQuery antlrgen.IQueryContext,
+	priorCTEs map[string]semantic.ScopeSource,
+) (semantic.ScopeSource, bool) {
+	if md == nil || cteName == "" || cteQuery == nil {
+		return semantic.ScopeSource{}, false
+	}
+	body, ok := cteQuery.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return semantic.ScopeSource{}, false
+	}
+	innerSQ, err := extractFromQueryTerm(body)
+	if err != nil || innerSQ == nil {
+		return semantic.ScopeSource{}, false
+	}
+	if innerSQ.derivedQuery != nil ||
+		len(innerSQ.joins) > 0 ||
+		len(innerSQ.aggCols) > 0 ||
+		innerSQ.countStar ||
+		innerSQ.tableName == "" {
+		return semantic.ScopeSource{}, false
+	}
+	for _, e := range innerSQ.projExprs {
+		if e != nil {
+			return semantic.ScopeSource{}, false
+		}
+	}
+
+	// Resolve the inner table: try metadata first, then prior CTE schemas.
+	var innerTbl semantic.Table
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	tbl, resolveErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false))
+	if resolveErr == nil {
+		innerTbl = tbl
+	} else if priorCTEs != nil {
+		if src, found := priorCTEs[strings.ToUpper(innerSQ.tableName)]; found {
+			innerTbl = src.Table
+		}
+	}
+	if innerTbl == nil {
+		return semantic.ScopeSource{}, false
+	}
+
+	var columns []semantic.Column
+	if innerSQ.projCols == nil {
+		allCols := innerTbl.Columns()
+		columns = make([]semantic.Column, len(allCols))
+		copy(columns, allCols)
+	} else {
+		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
+		for i, col := range innerSQ.projCols {
+			bareName := col
+			if dot := strings.LastIndex(col, "."); dot >= 0 {
+				bareName = col[dot+1:]
+			}
+			innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+			if !found {
+				return semantic.ScopeSource{}, false
+			}
+			outName := bareName
+			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
+				outName = innerSQ.projAliases[i]
+			}
+			columns = append(columns, semantic.Column{
+				Id:       semantic.NewUnquoted(outName),
+				Type:     innerCol.Type,
+				Nullable: innerCol.Nullable,
+			})
+		}
+	}
+
+	aliasID := semantic.NewUnquoted(cteName)
+	virtualTable := &semantic.StaticTable{
+		TableName:    semantic.FromSegments([]string{cteName}, false),
+		TableColumns: columns,
+	}
+	return semantic.ScopeSource{
+		Table:           virtualTable,
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
+	}, true
+}
+
+// buildWherePredicateForJoinsWithCTEScopes is like
+// buildWherePredicateForJoins but resolves CTE table references
+// using pre-derived column schemas when metadata lookup fails.
+func buildWherePredicateForJoinsWithCTEScopes(
+	md *recordlayer.RecordMetaData,
+	sq *selectQuery,
+	whereExpr antlrgen.IWhereExprContext,
+	cteScopes map[string]semantic.ScopeSource,
+) (predicates.QueryPredicate, bool) {
+	if md == nil || sq == nil || sq.tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
+		return nil, false
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+
+	addSource := func(tableName, alias string) bool {
+		aliasID := semantic.NewUnquoted(alias)
+		if alias == "" {
+			aliasID = semantic.NewUnquoted(tableName)
+		}
+		// Try metadata first, then CTE scopes.
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err == nil {
+			return scope.AddSource(semantic.ScopeSource{
+				Table:           tbl,
+				Alias:           aliasID,
+				CorrelationName: aliasID.Name(),
+			}) == nil
+		}
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+			src.Alias = aliasID
+			src.CorrelationName = aliasID.Name()
+			return scope.AddSource(src) == nil
+		}
+		return false
+	}
+	if !addSource(sq.tableName, sq.tableAlias) {
+		return nil, false
+	}
+	for _, j := range sq.joins {
+		if !addSource(j.tableName, j.alias) {
+			return nil, false
+		}
+	}
+	resolver := expr.New(analyzer, scope)
+	pred, err := resolver.WalkPredicate(whereExpr.Expression())
+	if err != nil {
+		return nil, false
+	}
+	pred = predicates.SimplifyPredicateValues(pred)
+	return pred, true
+}
+
 // buildWherePredicateForJoins handles the JOIN case: builds a scope
 // with one source per (primary table, joined tables) entry, then
 // runs the walker. Bare columns ambiguous across sources fail at
@@ -327,20 +596,41 @@ func buildWherePredicateForJoins(
 // naive_generator's ExplainFn so Explain output shows simplified
 // predicate trees when metadata is available.
 func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData) logical.LogicalOperator {
+	return buildLogicalPlanForSelectWithCTECatalog(sq, md, nil)
+}
+
+func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) logical.LogicalOperator {
 	op := buildLogicalPlanForSelect(sq)
-	if op == nil || md == nil || sq == nil || sq.whereExpr == nil {
+	if op == nil || md == nil || sq == nil {
 		return op
 	}
-	pred, ok := buildWherePredicate(md, sq, sq.whereExpr)
+
+	// Upgrade JOIN ON predicates: walk the plan tree to find LogicalJoin
+	// nodes and try to build real ON predicates using the join scope.
+	if len(sq.joins) > 0 {
+		upgradeJoinOnPredicates(op, sq, md, cteScopes)
+	}
+
+	if sq.whereExpr == nil {
+		return op
+	}
+	var pred predicates.QueryPredicate
+	var ok bool
+	if cteScopes != nil && len(sq.joins) == 0 {
+		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found {
+			pred, ok = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, md)
+		}
+	}
+	if !ok && cteScopes != nil && len(sq.joins) > 0 {
+		pred, ok = buildWherePredicateForJoinsWithCTEScopes(md, sq, sq.whereExpr, cteScopes)
+	}
+	if !ok {
+		pred, ok = buildWherePredicate(md, sq, sq.whereExpr)
+	}
 	if !ok {
 		return op
 	}
-	// Locate the LogicalFilter and upgrade it in place. The builder
-	// always emits the Filter right below any Join/Aggregate/Sort/
-	// Limit/Project wrappers, so we walk down the unary chain to find
-	// the first (and only) Filter. Structural guarantee of the text
-	// builder — if that invariant ever breaks we revisit.
-	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
+	_ = upgradeFirstFilter(op, pred)
 	return op
 }
 
@@ -497,11 +787,26 @@ func buildLogicalPlanForQueryWithCatalog(
 	if md == nil {
 		return buildLogicalPlanForQuery(q)
 	}
-	main := buildLogicalPlanForQueryBodyWithCatalog(q.QueryExpressionBody(), md)
+
+	ctesCtx := q.Ctes()
+
+	// Pre-scan CTE definitions to extract column schemas. Process in
+	// declaration order so CTE B can reference CTE A's derived schema.
+	var cteScopes map[string]semantic.ScopeSource
+	if ctesCtx != nil {
+		cteScopes = make(map[string]semantic.ScopeSource)
+		for _, nq := range ctesCtx.AllNamedQuery() {
+			name := functions.FullIdToName(nq.GetName())
+			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
+				cteScopes[strings.ToUpper(name)] = src
+			}
+		}
+	}
+
+	main := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, cteScopes)
 	if main == nil {
 		return nil
 	}
-	ctesCtx := q.Ctes()
 	if ctesCtx == nil {
 		return main
 	}
@@ -547,6 +852,62 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 		return buildLogicalPlanForUnionWithCatalog(b, md)
 	}
 	return nil
+}
+
+// buildLogicalPlanForQueryBodyWithCTECatalog is like
+// buildLogicalPlanForQueryBodyWithCatalog but passes CTE-derived
+// column schemas to the predicate builder so WHERE clauses on CTE
+// references can produce real QueryPredicates.
+func buildLogicalPlanForQueryBodyWithCTECatalog(
+	body antlrgen.IQueryExpressionBodyContext,
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
+) logical.LogicalOperator {
+	if body == nil {
+		return nil
+	}
+	if len(cteScopes) == 0 {
+		return buildLogicalPlanForQueryBodyWithCatalog(body, md)
+	}
+	switch b := body.(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
+		if !ok {
+			return nil
+		}
+		sq, err := extractFromSimpleTable(simpleTable)
+		if err != nil {
+			return nil
+		}
+		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
+	case *antlrgen.SetQueryContext:
+		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes)
+	}
+	return nil
+}
+
+func buildLogicalPlanForUnionWithCTECatalog(
+	setQ *antlrgen.SetQueryContext,
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
+) logical.LogicalOperator {
+	if setQ == nil {
+		return nil
+	}
+	distinct := true
+	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
+		distinct = false
+	}
+	left := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, cteScopes)
+	right := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetRight(), md, cteScopes)
+	if left == nil || right == nil {
+		return nil
+	}
+	inputs := []logical.LogicalOperator{left, right}
+	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
+		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
+	}
+	return logical.NewUnion(inputs, distinct)
 }
 
 // buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion

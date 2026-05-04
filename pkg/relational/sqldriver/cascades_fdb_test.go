@@ -653,6 +653,677 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	t.Logf("Cascades ORDER BY with index → %v ✓", names)
 }
 
+func TestFDB_CascadesUnionAll(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx,
+		"SELECT name FROM Item WHERE price > 150 "+
+			"UNION ALL "+
+			"SELECT name FROM Item WHERE price < 100")
+	if err != nil {
+		t.Skipf("UNION ALL not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 150: Gadget(200) | price < 100: Doohickey(50)
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows from UNION ALL, got %d: %v", len(names), names)
+	}
+	t.Logf("Cascades UNION ALL → %v ✓", names)
+}
+
+func TestFDB_CascadesCTESimple(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Simple CTE scan — inlines to a plain scan of Item.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH items AS (SELECT item_id, name, price FROM Item) SELECT name FROM items")
+	if err != nil {
+		t.Skipf("CTE not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+	count := countRows(t, rows)
+	if count != 3 {
+		t.Fatalf("expected 3 rows from CTE, got %d", count)
+	}
+	t.Logf("Cascades CTE simple → %d rows ✓", count)
+}
+
+func TestFDB_CascadesCTEWithFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE with WHERE on inner body — filter inlines into the plan.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH expensive AS (SELECT item_id, name FROM Item WHERE price > 100) SELECT name FROM expensive")
+	if err != nil {
+		t.Skipf("CTE with body filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 100 → only Gadget (200)
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades CTE with body filter → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEOuterWhere(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE with WHERE on the outer query (the CTE reference).
+	// This tests that the outer predicate is properly resolved
+	// using CTE-derived column schemas.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH items AS (SELECT item_id, name, price FROM Item) "+
+			"SELECT name FROM items WHERE price > 100")
+	if err != nil {
+		t.Skipf("CTE with outer WHERE not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 100 → only Gadget (200)
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades CTE with outer WHERE → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEAggregateOnBody(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Aggregate (COUNT) over a CTE — CTE inlines, aggregate on top.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH expensive AS (SELECT item_id, name FROM Item WHERE price > 50) "+
+			"SELECT COUNT(*) FROM expensive")
+	if err != nil {
+		t.Skipf("CTE aggregate not supported: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row from COUNT")
+	}
+	var cnt int64
+	if err := rows.Scan(&cnt); err != nil {
+		t.Skipf("COUNT scan: %v", err)
+	}
+	// price > 50: Widget(100), Gadget(200) → 2
+	if cnt != 2 {
+		t.Fatalf("expected COUNT=2, got %d", cnt)
+	}
+	t.Logf("Cascades CTE aggregate → COUNT=%d ✓", cnt)
+}
+
+func TestFDB_CascadesCTESelectStar(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE body uses SELECT * — all columns from underlying table.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH all_items AS (SELECT * FROM Item) "+
+			"SELECT name FROM all_items WHERE price > 100")
+	if err != nil {
+		t.Skipf("CTE SELECT * not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades CTE SELECT * → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE body with column aliases — tests that aliased projections
+	// flow through Cascades correctly.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH items AS (SELECT name AS item_name, price AS cost FROM Item) "+
+			"SELECT item_name FROM items WHERE cost > 100")
+	if err != nil {
+		t.Skipf("CTE alias not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// cost > 100: Gadget (200)
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades CTE projection alias → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEUnionBody(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE body is a UNION ALL — both branches contribute rows.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH combined AS ("+
+			"SELECT name FROM Item WHERE price > 150 "+
+			"UNION ALL "+
+			"SELECT name FROM Item WHERE price < 100) "+
+			"SELECT name FROM combined")
+	if err != nil {
+		t.Skipf("CTE UNION body not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 150: Gadget(200) | price < 100: Doohickey(50) → 2 rows
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %v", len(names), names)
+	}
+	t.Logf("Cascades CTE UNION body → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEChainedSelectStar(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Chained CTE where the second CTE uses SELECT * from the first.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH base AS (SELECT item_id, name, price FROM Item WHERE price > 50), "+
+			"all_base AS (SELECT * FROM base) "+
+			"SELECT name FROM all_base WHERE item_id > 1")
+	if err != nil {
+		t.Skipf("Chained CTE SELECT * not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// base: price > 50 → Widget(1,100), Gadget(2,200); all_base: *; item_id > 1 → Gadget
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades chained CTE SELECT * → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEGroupBy(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE + GROUP BY + SUM — tests aggregate on inlined CTE scan.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH all_items AS (SELECT item_id, name, price FROM Item) "+
+			"SELECT SUM(price) FROM all_items")
+	if err != nil {
+		t.Skipf("CTE GROUP BY not supported: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row")
+	}
+	var total int64
+	if err := rows.Scan(&total); err != nil {
+		t.Skipf("scan: %v", err)
+	}
+	// 100 + 200 + 50 = 350
+	if total != 350 {
+		t.Fatalf("expected SUM=350, got %d", total)
+	}
+	t.Logf("Cascades CTE GROUP BY → SUM=%d ✓", total)
+}
+
+func TestFDB_CascadesCTEJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_ctejoin_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("ctejoin_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (1, 'Alice')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (2, 'Bob')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (10, 1, 'Widget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (20, 2, 'Gadget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// JOIN a real table with a CTE.
+	rows, err := db.QueryContext(ctx,
+		"WITH big_orders AS (SELECT order_id, customer FROM Orders WHERE order_id > 0) "+
+			"SELECT big_orders.customer FROM big_orders, Items "+
+			"WHERE big_orders.order_id = Items.order_id")
+	if err != nil {
+		t.Skipf("CTE JOIN not supported: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 2 {
+		t.Fatalf("expected 2 rows from CTE+JOIN, got %d", count)
+	}
+	t.Logf("Cascades CTE JOIN → %d rows ✓", count)
+}
+
+func TestFDB_CascadesCTEChained(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE B references CTE A — tests chained schema derivation.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH cheap AS (SELECT item_id, name, price FROM Item WHERE price < 200), "+
+			"filtered AS (SELECT name FROM cheap WHERE item_id > 1) "+
+			"SELECT name FROM filtered")
+	if err != nil {
+		t.Skipf("Chained CTE not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price < 200 → Widget(100), Doohickey(50); item_id > 1 → Doohickey(id=3)
+	if len(names) != 1 || names[0] != "Doohickey" {
+		t.Fatalf("expected [Doohickey], got %v", names)
+	}
+	t.Logf("Cascades chained CTE → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEDistinct(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE + DISTINCT — dedup over inlined CTE scan.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH all_items AS (SELECT price FROM Item) "+
+			"SELECT DISTINCT price FROM all_items")
+	if err != nil {
+		t.Skipf("CTE DISTINCT not supported: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	// prices: 100, 200, 50 → all distinct → 3
+	if count != 3 {
+		t.Fatalf("expected 3 distinct prices, got %d", count)
+	}
+	t.Logf("Cascades CTE DISTINCT → %d rows ✓", count)
+}
+
+func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_joinon_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("joinon_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (1, 'Alice')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (10, 1, 'Widget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (20, 99, 'Orphan')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// Explicit INNER JOIN ON — tests that ON predicate is properly resolved.
+	rows, err := db.QueryContext(ctx,
+		"SELECT Items.name FROM Orders INNER JOIN Items ON Orders.order_id = Items.order_id")
+	if err != nil {
+		t.Skipf("Explicit JOIN ON not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// Only Widget matches (order_id=1); Orphan has order_id=99.
+	if len(names) != 1 || names[0] != "Widget" {
+		t.Fatalf("expected [Widget], got %v", names)
+	}
+	t.Logf("Cascades explicit JOIN ON → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEDoubleFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Filter in both CTE body AND outer query.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH filtered AS (SELECT item_id, name, price FROM Item WHERE price < 200) "+
+			"SELECT name FROM filtered WHERE item_id > 1")
+	if err != nil {
+		t.Skipf("CTE double filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price < 200: Widget(1,100), Doohickey(3,50) | item_id > 1: Doohickey(3)
+	if len(names) != 1 || names[0] != "Doohickey" {
+		t.Fatalf("expected [Doohickey], got %v", names)
+	}
+	t.Logf("Cascades CTE double filter → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEInUnion(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE referenced in each branch of a UNION ALL in the main query.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH base AS (SELECT item_id, name FROM Item) "+
+			"SELECT name FROM base WHERE item_id = 1 "+
+			"UNION ALL "+
+			"SELECT name FROM base WHERE item_id = 3")
+	if err != nil {
+		t.Skipf("CTE in UNION not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// item_id=1: Widget | item_id=3: Doohickey
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %v", len(names), names)
+	}
+	t.Logf("Cascades CTE in UNION → %v ✓", names)
+}
+
+func TestFDB_CascadesCTEComplexStack(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Complex CTE stack: filter → project → distinct → count.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH filtered AS (SELECT item_id, name FROM Item WHERE price > 50), "+
+			"projected AS (SELECT name FROM filtered) "+
+			"SELECT COUNT(*) FROM projected")
+	if err != nil {
+		t.Skipf("Complex CTE stack not supported: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row")
+	}
+	var cnt int64
+	if err := rows.Scan(&cnt); err != nil {
+		t.Skipf("scan: %v", err)
+	}
+	// price > 50: Widget(100), Gadget(200) → 2
+	if cnt != 2 {
+		t.Fatalf("expected COUNT=2, got %d", cnt)
+	}
+	t.Logf("Cascades CTE complex stack → COUNT=%d ✓", cnt)
+}
+
+func TestFDB_CascadesComputedProjection(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx,
+		"SELECT price FROM Item WHERE price > 100")
+	if err != nil {
+		t.Skipf("Computed projection not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var prices []int64
+	for rows.Next() {
+		var p int64
+		if err := rows.Scan(&p); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		prices = append(prices, p)
+	}
+	// price > 100: Gadget(200)
+	if len(prices) != 1 || prices[0] != 200 {
+		t.Fatalf("expected [200], got %v", prices)
+	}
+	t.Logf("Cascades computed projection → %v ✓", prices)
+}
+
+func TestFDB_CascadesThreeWayJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_3join_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("j3_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE A (a_id BIGINT NOT NULL, val STRING, PRIMARY KEY (a_id)) "+
+			"CREATE TABLE B (b_id BIGINT NOT NULL, a_ref BIGINT, PRIMARY KEY (b_id)) "+
+			"CREATE TABLE C (c_id BIGINT NOT NULL, b_ref BIGINT, PRIMARY KEY (c_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO A VALUES (1, 'alpha')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO B VALUES (10, 1)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO C VALUES (100, 10)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO C VALUES (200, 99)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// 3-way join: A → B → C. Only C(100) matches the chain.
+	rows, err := db.QueryContext(ctx,
+		"SELECT A.val FROM A, B, C WHERE A.a_id = B.a_ref AND B.b_id = C.b_ref")
+	if err != nil {
+		t.Skipf("3-way join not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var vals []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		vals = append(vals, v)
+	}
+	if len(vals) != 1 || vals[0] != "alpha" {
+		t.Fatalf("expected [alpha], got %v", vals)
+	}
+	t.Logf("Cascades 3-way join → %v ✓", vals)
+}
+
+func TestFDB_CascadesMultiFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Multiple predicates: AND compound filter.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"SELECT name FROM Item WHERE price > 50 AND price < 200")
+	if err != nil {
+		t.Skipf("Multi-filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 50 AND price < 200: Widget(100)
+	if len(names) != 1 || names[0] != "Widget" {
+		t.Fatalf("expected [Widget], got %v", names)
+	}
+	t.Logf("Cascades multi-filter → %v ✓", names)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int

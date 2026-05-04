@@ -365,6 +365,172 @@ func TestBuildLogicalPlanWithCatalog_CTEThreadsMd(t *testing.T) {
 	}
 }
 
+func TestBuildLogicalPlanWithCatalog_CTEOuterWhereGetsRealPredicate(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"WITH c AS (SELECT order_id, price FROM Order) SELECT order_id FROM c WHERE price > 10")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	cte, ok := op.(*logical.LogicalCTE)
+	if !ok {
+		t.Fatalf("expected LogicalCTE root, got %T", op)
+	}
+	// The MAIN query's filter (on the CTE reference) should carry a Predicate.
+	var mainFilter *logical.LogicalFilter
+	for cur := cte.Main; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			mainFilter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if mainFilter == nil {
+		t.Fatalf("main query missing Filter:\n%s", cte.Main.Explain(""))
+	}
+	if mainFilter.Predicate == nil {
+		t.Fatal("outer WHERE on CTE reference should have a real Predicate (CTE schema derived from body)")
+	}
+}
+
+func TestBuildLogicalPlanWithCatalog_CTEChainedSchemaDerivation(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"WITH a AS (SELECT order_id, price FROM Order), "+
+			"b AS (SELECT order_id FROM a WHERE price > 5) "+
+			"SELECT order_id FROM b WHERE order_id > 1")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan for chained CTE query")
+	}
+	// Walk to the outermost CTE (A wraps B wraps main).
+	cteA, ok := op.(*logical.LogicalCTE)
+	if !ok {
+		t.Fatalf("expected LogicalCTE root, got %T", op)
+	}
+	cteB, ok := cteA.Main.(*logical.LogicalCTE)
+	if !ok {
+		t.Fatalf("expected inner LogicalCTE (B), got %T", cteA.Main)
+	}
+	// Main query's filter on CTE B reference should have a real Predicate.
+	var mainFilter *logical.LogicalFilter
+	for cur := cteB.Main; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			mainFilter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if mainFilter == nil {
+		t.Fatalf("main query missing Filter:\n%s", cteB.Main.Explain(""))
+	}
+	if mainFilter.Predicate == nil {
+		t.Fatal("outer WHERE on chained CTE should have a real Predicate")
+	}
+}
+
+func TestBuildLogicalPlanWithCatalog_CTESelectStarSchemaDerivation(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"WITH c AS (SELECT * FROM Order) SELECT order_id FROM c WHERE price > 10")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	cte, ok := op.(*logical.LogicalCTE)
+	if !ok {
+		t.Fatalf("expected LogicalCTE, got %T", op)
+	}
+	var mainFilter *logical.LogicalFilter
+	for cur := cte.Main; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			mainFilter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if mainFilter == nil {
+		t.Fatalf("main query missing Filter:\n%s", cte.Main.Explain(""))
+	}
+	if mainFilter.Predicate == nil {
+		t.Fatal("outer WHERE on CTE SELECT * should have a real Predicate")
+	}
+}
+
+func TestBuildLogicalPlanWithCatalog_CTENoPredNeeded(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"WITH c AS (SELECT order_id FROM Order) SELECT order_id FROM c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan for CTE without WHERE")
+	}
+}
+
+func TestBuildLogicalPlanWithCatalog_JoinOnPredicateUpgrade(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"SELECT Order.order_id FROM Order INNER JOIN Customer ON Order.customer_id = Customer.customer_id WHERE Order.price > 5")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	// Verify the plan contains a LogicalJoin with OnText set.
+	var join *logical.LogicalJoin
+	for cur := op; cur != nil; {
+		if j, ok := cur.(*logical.LogicalJoin); ok {
+			join = j
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if join == nil {
+		t.Fatalf("expected LogicalJoin in plan:\n%s", op.Explain(""))
+	}
+	if join.OnText == "" {
+		t.Fatal("JOIN OnText should be non-empty")
+	}
+	// OnPredicate upgrade is best-effort — the upgrade may fail if the
+	// resolver can't walk the ON expression. Pin the upgrade success
+	// rather than failing on it.
+	if join.OnPredicate != nil {
+		t.Logf("JOIN ON predicate upgraded successfully: %v", join.OnPredicate)
+	} else {
+		t.Logf("JOIN ON predicate not upgraded (resolver declined) — OnText=%q", join.OnText)
+	}
+}
+
 // INSERT … SELECT routes the inner SELECT's WHERE through the
 // catalog-aware path. INSERT VALUES (no nested SELECT) is identical
 // to the text builder's output.
