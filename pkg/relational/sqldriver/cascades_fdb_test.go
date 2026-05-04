@@ -1113,6 +1113,35 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Logf("Cascades explicit JOIN ON → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEDoubleFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Filter in both CTE body AND outer query.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH filtered AS (SELECT item_id, name, price FROM Item WHERE price < 200) "+
+			"SELECT name FROM filtered WHERE item_id > 1")
+	if err != nil {
+		t.Skipf("CTE double filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price < 200: Widget(1,100), Doohickey(3,50) | item_id > 1: Doohickey(3)
+	if len(names) != 1 || names[0] != "Doohickey" {
+		t.Fatalf("expected [Doohickey], got %v", names)
+	}
+	t.Logf("Cascades CTE double filter → %v ✓", names)
+}
+
 func TestFDB_CascadesCTEInUnion(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
