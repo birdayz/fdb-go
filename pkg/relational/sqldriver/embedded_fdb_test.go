@@ -3004,7 +3004,7 @@ func TestFDB_ConcatNullIfRejected(t *testing.T) {
 
 func TestFDB_UnionAll(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: UNION ALL execution issue in Cascades")
+	t.Skip("TODO #83: UNION ALL planner failure")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
