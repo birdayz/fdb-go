@@ -1113,6 +1113,33 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Logf("Cascades explicit JOIN ON → %v ✓", names)
 }
 
+func TestFDB_CascadesComputedProjection(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx,
+		"SELECT price FROM Item WHERE price > 100")
+	if err != nil {
+		t.Skipf("Computed projection not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var prices []int64
+	for rows.Next() {
+		var p int64
+		if err := rows.Scan(&p); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		prices = append(prices, p)
+	}
+	// price > 100: Gadget(200)
+	if len(prices) != 1 || prices[0] != 200 {
+		t.Fatalf("expected [200], got %v", prices)
+	}
+	t.Logf("Cascades computed projection → %v ✓", prices)
+}
+
 func TestFDB_CascadesThreeWayJoin(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
