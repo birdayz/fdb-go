@@ -246,6 +246,9 @@ func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
+	if j.Kind != logical.JoinInner {
+		return nil
+	}
 	leftRef := t.translateRef(j.Left)
 	if leftRef == nil {
 		return nil
