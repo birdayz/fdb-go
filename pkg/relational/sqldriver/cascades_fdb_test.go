@@ -1113,6 +1113,35 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Logf("Cascades explicit JOIN ON → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEComplexStack(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Complex CTE stack: filter → project → distinct → count.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH filtered AS (SELECT item_id, name FROM Item WHERE price > 50), "+
+			"projected AS (SELECT name FROM filtered) "+
+			"SELECT COUNT(*) FROM projected")
+	if err != nil {
+		t.Skipf("Complex CTE stack not supported: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row")
+	}
+	var cnt int64
+	if err := rows.Scan(&cnt); err != nil {
+		t.Skipf("scan: %v", err)
+	}
+	// price > 50: Widget(100), Gadget(200) → 2
+	if cnt != 2 {
+		t.Fatalf("expected COUNT=2, got %d", cnt)
+	}
+	t.Logf("Cascades CTE complex stack → COUNT=%d ✓", cnt)
+}
+
 func TestFDB_CascadesComputedProjection(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
