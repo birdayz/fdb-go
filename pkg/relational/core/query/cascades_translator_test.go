@@ -293,6 +293,21 @@ func TestTranslateCTEChained(t *testing.T) {
 	}
 }
 
+func TestTranslateCTEOuterTextFilterBailsToNaive(t *testing.T) {
+	t.Parallel()
+	// Main query has a text-only filter on the CTE reference.
+	// This must bail (return nil) so the planner falls back to naive
+	// rather than silently dropping the filter.
+	body := logical.NewScan("Product", "")
+	main := logical.NewFilter(logical.NewScan("expensive", ""), "id > 5")
+	cte := logical.NewCTE("expensive", body, main, false)
+
+	ref := TranslateToCascades(cte)
+	if ref != nil {
+		t.Fatal("expected nil — text-only filter on CTE reference should bail to naive")
+	}
+}
+
 func TestTranslateCTEShadowsTableName(t *testing.T) {
 	t.Parallel()
 	// CTE name = table name in body — must not infinite-recurse.

@@ -87,6 +87,13 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	if innerRef == nil {
 		return nil
 	}
+	if f.Predicate == nil && f.PredicateText != "" && len(t.cteScope) > 0 {
+		// Text-only predicate on a query that involves CTE references.
+		// The catalog-aware builder couldn't resolve column types for
+		// the CTE table name. Bail so the planner falls back to naive
+		// rather than silently dropping the filter.
+		return nil
+	}
 	var preds []predicates.QueryPredicate
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
