@@ -93,11 +93,13 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
 	}
 
 	return &cascadesPlan{
