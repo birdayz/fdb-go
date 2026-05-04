@@ -47,7 +47,7 @@ func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
 		t.Fatalf("INSERT 3: %v", err)
 	}
 
-	cascadesDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store&engine=cascades", dbPath, clusterFilePath)
+	cascadesDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
 	cascadesDB, err := sql.Open("fdbsql", cascadesDSN)
 	if err != nil {
 		t.Fatalf("sql.Open cascades: %v", err)
@@ -192,7 +192,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop&engine=cascades", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

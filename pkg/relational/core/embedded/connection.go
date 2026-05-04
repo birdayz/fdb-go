@@ -283,12 +283,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return nil, err
 	}
-	var gen query.Generator
-	if c.queryEngine == QueryEngineCascades {
-		gen = newCascadesGenerator(c)
-	} else {
-		gen = &naiveGenerator{c: c}
-	}
+	gen := newCascadesGenerator(c)
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
 		return nil, err

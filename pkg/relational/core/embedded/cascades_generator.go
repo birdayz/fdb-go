@@ -9,7 +9,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
@@ -17,13 +17,12 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// QueryEngine selects which query engine to use.
+// QueryEngine is retained for binary compatibility. Cascades is now the
+// only query engine; the enum value is ignored.
 type QueryEngine int
 
 const (
-	// QueryEngineNaive uses the naive executor (default).
 	QueryEngineNaive QueryEngine = iota
-	// QueryEngineCascades routes SELECT through the Cascades planner.
 	QueryEngineCascades
 )
 
@@ -80,88 +79,64 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return g.naive.Plan(ctx, sql)
 	}
 
-	naivePlan, _ := g.naive.Plan(ctx, sql)
+	if md == nil {
+		return g.naive.Plan(ctx, sql)
+	}
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	planCtx := buildCascadesPlanContext(md)
+	planner := cascades.NewPlanner(rules, planCtx).
+		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithMaxTasks(1_000)
+
+	bestExpr, _, planErr := planner.Plan(ref)
+	if planErr != nil || bestExpr == nil {
+		return g.naive.Plan(ctx, sql)
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		return g.naive.Plan(ctx, sql)
+	}
+	physPlan := ph.GetRecordQueryPlan()
+	if physPlan == nil {
+		return g.naive.Plan(ctx, sql)
+	}
 
 	return &cascadesPlan{
-		ref:     ref,
-		conn:    g.c,
-		md:      md,
-		naive:   naivePlan,
-		explain: logicalOp.Explain(""),
+		conn:         g.c,
+		md:           md,
+		physicalPlan: physPlan,
+		explain:      logicalOp.Explain(""),
 	}, nil
 }
 
-// cascadesPlan wraps a Cascades-planned SELECT query.
+// cascadesPlan wraps a Cascades-planned SELECT query with a pre-computed
+// physical plan. Planning happens at Plan-time; Execute only runs the plan.
 type cascadesPlan struct {
-	ref             *expressions.Reference
-	conn            *EmbeddedConnection
-	md              *recordlayer.RecordMetaData
-	naive           query.Plan
-	explain         string
-	physicalExplain string // set after Execute — the physical plan's Explain string
+	conn         *EmbeddedConnection
+	md           *recordlayer.RecordMetaData
+	physicalPlan plans.RecordQueryPlan
+	explain      string
 }
 
 func (p *cascadesPlan) IsUpdate() bool { return false }
 
 func (p *cascadesPlan) Explain() string {
-	if p.physicalExplain != "" {
-		return p.physicalExplain
+	if p.physicalPlan != nil {
+		return p.physicalPlan.Explain()
 	}
-	// Run the planner to get the physical plan without executing.
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	planCtx := buildCascadesPlanContext(p.md)
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules())
-	bestExpr, _, err := planner.Plan(p.ref)
-	if err != nil || bestExpr == nil {
-		return p.explain
-	}
-	type planExtractor interface {
-		GetRecordQueryPlan() plans.RecordQueryPlan
-	}
-	ph, ok := bestExpr.(planExtractor)
-	if !ok {
-		return p.explain
-	}
-	physPlan := ph.GetRecordQueryPlan()
-	if physPlan == nil {
-		return p.explain
-	}
-	return physPlan.Explain()
+	return p.explain
 }
 
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	planCtx := buildCascadesPlanContext(p.md)
-
-	planner := cascades.NewPlanner(rules, planCtx).
-		WithImplementationRules(cascades.DefaultImplementationRules())
-
-	bestExpr, _, err := planner.Plan(p.ref)
-	if err != nil || bestExpr == nil {
-		return p.fallback(ctx)
-	}
-
-	type planExtractor interface {
-		GetRecordQueryPlan() plans.RecordQueryPlan
-	}
-	ph, ok := bestExpr.(planExtractor)
-	if !ok {
-		return p.fallback(ctx)
-	}
-
-	physicalPlan := ph.GetRecordQueryPlan()
-	if physicalPlan == nil {
-		return p.fallback(ctx)
-	}
-
-	// Store the physical plan's Explain for introspection by tests.
-	p.physicalExplain = physicalPlan.Explain()
-
 	c := p.conn
 	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 	if ssErr != nil {
-		return p.fallback(ctx)
+		return query.Result{}, ssErr
 	}
 
 	var rows driver.Rows
@@ -176,29 +151,22 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		}
 
 		evalCtx := executor.EmptyEvaluationContext()
-		cursor, execErr := executor.ExecutePlan(ctx, physicalPlan, store, evalCtx, nil,
+		cursor, execErr := executor.ExecutePlan(ctx, p.physicalPlan, store, evalCtx, nil,
 			recordlayer.DefaultExecuteProperties())
 		if execErr != nil {
 			return nil, execErr
 		}
 
-		cols := deriveColumnsFromPlan(physicalPlan, p.md)
+		cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
 		rs := executor.NewRecordLayerResultSet(ctx, cursor, cols)
 		rows = newCascadesRows(rs)
 		return nil, nil
 	})
 	if txErr != nil {
-		return p.fallback(ctx)
+		return query.Result{}, txErr
 	}
 
 	return query.Result{Rows: rows}, nil
-}
-
-func (p *cascadesPlan) fallback(ctx context.Context) (query.Result, error) {
-	if p.naive != nil {
-		return p.naive.Execute(ctx)
-	}
-	return query.Result{}, nil
 }
 
 func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanContext {
@@ -271,8 +239,11 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if md == nil {
 		return nil
 	}
-	scan, ok := plan.(*plans.RecordQueryScanPlan)
-	if !ok || len(scan.GetRecordTypes()) == 0 {
+	if proj, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
+		return deriveColumnsFromProjection(proj, md)
+	}
+	scan := findScanPlan(plan)
+	if scan == nil || len(scan.GetRecordTypes()) == 0 {
 		return nil
 	}
 	rt := md.GetRecordType(scan.GetRecordTypes()[0])
@@ -289,6 +260,57 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 		}
 	}
 	return cols
+}
+
+type innerPlan interface {
+	GetInner() plans.RecordQueryPlan
+}
+
+func findScanPlan(p plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
+	for {
+		if s, ok := p.(*plans.RecordQueryScanPlan); ok {
+			return s
+		}
+		if ip, ok := p.(innerPlan); ok {
+			p = ip.GetInner()
+		} else {
+			return nil
+		}
+	}
+}
+
+func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	scan := findScanPlan(proj.GetInner())
+	if scan == nil || len(scan.GetRecordTypes()) == 0 {
+		return nil
+	}
+	rt := md.GetRecordType(scan.GetRecordTypes()[0])
+	if rt == nil || rt.Descriptor == nil {
+		return nil
+	}
+	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
+	for i, v := range proj.GetProjections() {
+		var name string
+		if fv, ok := v.(*values.FieldValue); ok {
+			name = fv.Field
+		} else {
+			name = v.Name()
+		}
+		cols[i] = executor.ColumnDef{
+			Name:     strings.ToUpper(name),
+			TypeName: protoFieldTypeName(rt.Descriptor, name),
+		}
+	}
+	return cols
+}
+
+func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
+	fields := desc.Fields()
+	fd := fields.ByName(protoreflect.Name(strings.ToLower(name)))
+	if fd != nil {
+		return protoKindToTypeName(fd.Kind())
+	}
+	return "UNKNOWN"
 }
 
 func protoKindToTypeName(k protoreflect.Kind) string {

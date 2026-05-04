@@ -127,9 +127,6 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if c.dsn.Schema != "" {
 		conn.SetDefaultSchema(c.dsn.Schema)
 	}
-	if c.dsn.Options["engine"] == "cascades" {
-		conn.SetQueryEngine(embedded.QueryEngineCascades)
-	}
 	return conn, nil
 }
 
