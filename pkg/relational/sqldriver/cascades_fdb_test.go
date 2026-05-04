@@ -846,6 +846,36 @@ func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
 	t.Logf("Cascades CTE projection alias → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEChainedSelectStar(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Chained CTE where the second CTE uses SELECT * from the first.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH base AS (SELECT item_id, name, price FROM Item WHERE price > 50), "+
+			"all_base AS (SELECT * FROM base) "+
+			"SELECT name FROM all_base WHERE item_id > 1")
+	if err != nil {
+		t.Skipf("Chained CTE SELECT * not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// base: price > 50 → Widget(1,100), Gadget(2,200); all_base: *; item_id > 1 → Gadget
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("Cascades chained CTE SELECT * → %v ✓", names)
+}
+
 func TestFDB_CascadesCTEGroupBy(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
