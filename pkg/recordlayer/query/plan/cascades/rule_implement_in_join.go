@@ -55,7 +55,10 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 		if ref == nil {
 			return
 		}
-		if isExplodeExpression(ref) {
+		if explode := getExplodeExpression(ref); explode != nil {
+			if !isSupportedExplodeValue(explode.GetCollectionValue()) {
+				return
+			}
 			explodeQuantifiers = append(explodeQuantifiers, q)
 		} else if !hasInner {
 			innerQuantifier = q
@@ -387,13 +390,24 @@ func (r *ImplementInJoinRule) enumerateDefaultSources(explodeQuantifiers []expre
 	return results
 }
 
-func isExplodeExpression(ref *expressions.Reference) bool {
+func getExplodeExpression(ref *expressions.Reference) *expressions.ExplodeExpression {
 	for _, m := range ref.AllMembers() {
-		if _, ok := m.(*expressions.ExplodeExpression); ok {
-			return true
+		if e, ok := m.(*expressions.ExplodeExpression); ok {
+			return e
 		}
 	}
-	return false
+	return nil
+}
+
+func isSupportedExplodeValue(v values.Value) bool {
+	if v == nil {
+		return false
+	}
+	switch v.(type) {
+	case *values.ConstantValue, *values.QuantifiedObjectValue:
+		return true
+	}
+	return values.IsConstantValue(v)
 }
 
 var _ ImplementationRule = (*ImplementInJoinRule)(nil)

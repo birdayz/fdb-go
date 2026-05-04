@@ -51,7 +51,10 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		if ref == nil {
 			return
 		}
-		if isExplodeExpression(ref) {
+		if explode := getExplodeExpression(ref); explode != nil {
+			if !isSupportedExplodeValue(explode.GetCollectionValue()) {
+				return
+			}
 			explodeQuantifiers = append(explodeQuantifiers, q)
 		} else if !hasInner {
 			innerQuantifier = q
