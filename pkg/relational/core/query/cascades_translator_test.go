@@ -334,6 +334,39 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 	}
 }
 
+func TestTranslateCTEMultipleReferences(t *testing.T) {
+	t.Parallel()
+	// CTE referenced twice in the main query (via join).
+	body := logical.NewScan("Product", "")
+	left := logical.NewScan("p", "")
+	right := logical.NewScan("p", "")
+	join := logical.NewJoin(left, right, logical.JoinInner, "")
+	cte := logical.NewCTE("p", body, join, false)
+
+	ref := TranslateToCascades(cte)
+	if ref == nil {
+		t.Fatal("expected non-nil reference for CTE with double reference")
+	}
+	sel, ok := ref.Members()[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression for join, got %T", ref.Members()[0])
+	}
+	quants := sel.GetQuantifiers()
+	if len(quants) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(quants))
+	}
+}
+
+func TestTranslateAggregateWithHavingReturnsNil(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("orders", "")
+	agg := logical.NewAggregate(scan, []string{"REGION"}, []string{"SUM(PRICE)"}, []string{"total"}, "SUM(PRICE) > 100")
+	ref := TranslateToCascades(agg)
+	if ref != nil {
+		t.Fatal("expected nil — aggregate with HAVING should bail to naive")
+	}
+}
+
 func TestTranslateRecursiveCTEReturnsNil(t *testing.T) {
 	t.Parallel()
 	body := logical.NewScan("Product", "")
