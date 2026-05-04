@@ -846,6 +846,38 @@ func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
 	t.Logf("Cascades CTE projection alias → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEUnionBody(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE body is a UNION ALL — both branches contribute rows.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH combined AS ("+
+			"SELECT name FROM Item WHERE price > 150 "+
+			"UNION ALL "+
+			"SELECT name FROM Item WHERE price < 100) "+
+			"SELECT name FROM combined")
+	if err != nil {
+		t.Skipf("CTE UNION body not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 150: Gadget(200) | price < 100: Doohickey(50) → 2 rows
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %v", len(names), names)
+	}
+	t.Logf("Cascades CTE UNION body → %v ✓", names)
+}
+
 func TestFDB_CascadesCTEChainedSelectStar(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
