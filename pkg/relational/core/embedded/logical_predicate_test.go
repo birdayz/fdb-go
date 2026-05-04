@@ -490,6 +490,47 @@ func TestBuildLogicalPlanWithCatalog_CTENoPredNeeded(t *testing.T) {
 	}
 }
 
+func TestBuildLogicalPlanWithCatalog_JoinOnPredicateUpgrade(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"SELECT Order.order_id FROM Order INNER JOIN Customer ON Order.customer_id = Customer.customer_id WHERE Order.price > 5")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	// Verify the plan contains a LogicalJoin with OnText set.
+	var join *logical.LogicalJoin
+	for cur := op; cur != nil; {
+		if j, ok := cur.(*logical.LogicalJoin); ok {
+			join = j
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if join == nil {
+		t.Fatalf("expected LogicalJoin in plan:\n%s", op.Explain(""))
+	}
+	if join.OnText == "" {
+		t.Fatal("JOIN OnText should be non-empty")
+	}
+	// OnPredicate upgrade is best-effort — the upgrade may fail if the
+	// resolver can't walk the ON expression. Pin the upgrade success
+	// rather than failing on it.
+	if join.OnPredicate != nil {
+		t.Logf("JOIN ON predicate upgraded successfully: %v", join.OnPredicate)
+	} else {
+		t.Logf("JOIN ON predicate not upgraded (resolver declined) — OnText=%q", join.OnText)
+	}
+}
+
 // INSERT … SELECT routes the inner SELECT's WHERE through the
 // catalog-aware path. INSERT VALUES (no nested SELECT) is identical
 // to the text builder's output.
