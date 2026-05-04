@@ -1189,7 +1189,7 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 // of bug. Now errors at execution.
 func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: type mismatch detection missing in Cascades")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -1714,7 +1714,7 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 
 func TestFDB_SelectDistinct(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: DISTINCT dedup not working in Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -1751,7 +1751,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 
 func TestFDB_SelectWhereIn(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: IN-list predicate not handled by Cascades filter")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3004,7 +3004,7 @@ func TestFDB_ConcatNullIfRejected(t *testing.T) {
 
 func TestFDB_UnionAll(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: UNION ALL execution issue in Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5589,7 +5589,7 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 
 func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: empty result + ORDER BY edge case")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -7178,7 +7178,7 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 // works, and IN-lists with all-compatible types still match.
 func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #65: type coercion missing in Cascades filter")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
