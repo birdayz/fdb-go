@@ -215,7 +215,7 @@ type metadataIndexDef struct {
 
 func (d *metadataIndexDef) IndexName() string          { return d.idx.Name }
 func (d *metadataIndexDef) IndexColumnNames() []string { return d.idx.RootExpression.FieldNames() }
-func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.Type == "value" && false }
+func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.IsUnique() }
 
 func (d *metadataIndexDef) IndexRecordTypes() []string {
 	rts := d.md.RecordTypesForIndex(d.idx)
