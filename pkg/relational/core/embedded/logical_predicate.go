@@ -223,10 +223,8 @@ func buildDerivedTableSource(
 	}
 
 	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
+	var colAliasMap map[string]string
 	for i, col := range innerSQ.projCols {
-		// Strip the qualifier from `t.col` references — projCols stores
-		// the raw text including any qualifier; the inner table's
-		// LookupColumn wants the bare name.
 		bareName := col
 		if dot := strings.LastIndex(col, "."); dot >= 0 {
 			bareName = col[dot+1:]
@@ -238,6 +236,12 @@ func buildDerivedTableSource(
 		outName := bareName
 		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 			outName = innerSQ.projAliases[i]
+		}
+		if !strings.EqualFold(outName, bareName) {
+			if colAliasMap == nil {
+				colAliasMap = make(map[string]string)
+			}
+			colAliasMap[strings.ToUpper(outName)] = strings.ToUpper(bareName)
 		}
 		columns = append(columns, semantic.Column{
 			Id:       semantic.NewUnquoted(outName),
@@ -255,6 +259,7 @@ func buildDerivedTableSource(
 		Table:           virtualTable,
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
+		ColumnAliasMap:  colAliasMap,
 	}, true
 }
 
@@ -616,6 +621,11 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 
 	if cteScopes != nil && len(sq.joins) == 0 {
 		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.ColumnAliasMap != nil {
+			rewriteProjectionAliases(op, src.ColumnAliasMap)
+		}
+	}
+	if sq.derivedQuery != nil {
+		if src, ok := buildDerivedTableSource(md, sq.tableName, sq.derivedQuery); ok && src.ColumnAliasMap != nil {
 			rewriteProjectionAliases(op, src.ColumnAliasMap)
 		}
 	}
