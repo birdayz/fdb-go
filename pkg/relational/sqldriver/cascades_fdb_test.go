@@ -1326,6 +1326,29 @@ func TestFDB_CascadesOrderByPK(t *testing.T) {
 		t.Fatalf("expected [Widget Gadget Doohickey], got %v", names)
 	}
 	t.Logf("Cascades ORDER BY PK → %v ✓", names)
+
+	rows2, err := cascadesDB.QueryContext(ctx,
+		"SELECT name FROM Item ORDER BY item_id DESC")
+	if err != nil {
+		t.Fatalf("ORDER BY PK DESC should succeed via reverse scan: %v", err)
+	}
+	defer rows2.Close()
+
+	var descNames []string
+	for rows2.Next() {
+		var name string
+		if err := rows2.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		descNames = append(descNames, name)
+	}
+	if len(descNames) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(descNames))
+	}
+	if descNames[0] != "Doohickey" || descNames[1] != "Gadget" || descNames[2] != "Widget" {
+		t.Fatalf("expected [Doohickey Gadget Widget], got %v", descNames)
+	}
+	t.Logf("Cascades ORDER BY PK DESC → %v ✓", descNames)
 }
 
 func TestFDB_CascadesCTEOrderByNoIndex(t *testing.T) {

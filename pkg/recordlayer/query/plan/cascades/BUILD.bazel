@@ -89,6 +89,7 @@ go_library(
         "rule_noop_filter.go",
         "rule_noop_limit_elim.go",
         "rule_ordered_index_scan.go",
+        "rule_ordered_primary_scan.go",
         "rule_primary_scan.go",
         "rule_projection_elim.go",
         "rule_projection_merge.go",

@@ -302,7 +302,13 @@ func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
 	if len(pk) == 0 {
 		return properties.Ordering{}
 	}
-	return properties.Ordering{IsKnown: true, Keys: pk}
+	desc := make([]bool, len(pk))
+	if w.plan.IsReverse() {
+		for i := range desc {
+			desc[i] = true
+		}
+	}
+	return properties.Ordering{IsKnown: true, Keys: pk, Descending: desc}
 }
 
 func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
