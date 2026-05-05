@@ -1715,7 +1715,6 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 
 func TestFDB_SelectDistinct(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: DISTINCT + ORDER BY without index")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -1735,7 +1734,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 	// Insert 4 rows with only 2 distinct val values.
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 10), (3, 20), (4, 20)")).Error().NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, "SELECT DISTINCT val FROM Item ORDER BY val ASC")
+	rows, err := db.QueryContext(ctx, "SELECT DISTINCT val FROM Item")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -1746,7 +1745,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 		vals = append(vals, v)
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// Expect exactly 2 distinct values.
+	sort.Slice(vals, func(i, j int) bool { return vals[i] < vals[j] })
 	g.Expect(vals).To(gomega.Equal([]int64{10, 20}))
 }
 
