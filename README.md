@@ -126,7 +126,7 @@ Not yet supported in the SQL engine:
 Records, indexes, cursors, and all the plumbing needed to share data with Java:
 
 - **CRUD** — save, load, delete, scan, existence checks, typed stores
-- **Indexes** — VALUE, VERSION, RANK, COUNT, SUM, MIN_EVER, MAX_EVER, MAX_EVER_VERSION, COUNT_NOT_NULL, COUNT_UPDATES, PERMUTED_MIN, PERMUTED_MAX
+- **Indexes** — VALUE, VERSION, RANK, COUNT, SUM, MIN_EVER, MAX_EVER, MAX_EVER_VERSION, COUNT_NOT_NULL, COUNT_UPDATES, PERMUTED_MIN, PERMUTED_MAX, TEXT, BITMAP_VALUE, MULTIDIMENSIONAL, TIME_WINDOW_LEADERBOARD, VECTOR (HNSW)
 - **Covering indexes** — KeyWithValueExpression (value columns stored in FDB value)
 - **Index operations** — scan (BY_VALUE, BY_RANK, BY_GROUP), rebuild, online build (BY_RECORDS), state management (READABLE/WRITE_ONLY/DISABLED/READABLE_UNIQUE_PENDING)
 - **Split records** — automatic chunking at 100KB, transparent reassembly
@@ -140,13 +140,11 @@ Records, indexes, cursors, and all the plumbing needed to share data with Java:
 - **Aggregate functions** — EvaluateAggregateFunction (COUNT, SUM, MIN, MAX, RANK functions)
 - **Store management** — format version 14, store locking (FORBID_RECORD_UPDATE, FULL_STORE), incarnation, header user fields
 - **Key expressions** — Field, RecordType, Empty, Composite (Then), Nesting, FanOut, Grouping, FunctionKey, KeyWithValue, Version
+- **Instrumentation** — StoreTimer with timed events and counters matching Java's FDBStoreTimer
+- **Store state caching** — FDBRecordStoreStateCache interface with PassThroughStoreStateCache default
 
 ## What doesn't (yet)
 
-- TEXT index (full-text with tokenizers)
-- BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD indexes
-- Store state caching
-- Timer/instrumentation
 - Synthetic record types (JoinedRecordType, UnnestedRecordType)
 
 Full gap analysis in [TODO.md](TODO.md).
