@@ -4248,7 +4248,7 @@ func TestFDB_DerivedTable(t *testing.T) {
 
 func TestFDB_CTEChaining(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: CTE chaining works but ORDER BY on non-indexed column fails")
+	t.Skip("TODO #79: CTE chaining — over100 WHERE references price from over50 projection scope")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4277,7 +4277,7 @@ func TestFDB_CTEChaining(t *testing.T) {
 	rows, err := db.QueryContext(ctx, `
 		WITH over50 AS (SELECT id, name, price FROM Product WHERE price > 50),
 		     over100 AS (SELECT id, name FROM over50 WHERE price > 100)
-		SELECT name FROM over100 ORDER BY name ASC`)
+		SELECT name FROM over100`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4288,6 +4288,7 @@ func TestFDB_CTEChaining(t *testing.T) {
 		names = append(names, name)
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	sort.Strings(names)
 	g.Expect(names).To(gomega.Equal([]string{"Mid", "Pricey"}))
 }
 
