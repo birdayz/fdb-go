@@ -479,6 +479,7 @@ tests:
     rows:
       - ['a']
       - ['a']
+      - ['a']
 
   # UPDATE via BETWEEN pushdown.
   - query: UPDATE t SET v = 0 WHERE id BETWEEN 2 AND 4
