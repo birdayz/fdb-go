@@ -261,6 +261,9 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return nil, nil
 	})
 	if txErr != nil {
+		if strings.Contains(txErr.Error(), "cannot aggregate non-numeric") {
+			return query.Result{}, api.NewError(api.ErrCodeInvalidParameter, txErr.Error())
+		}
 		return query.Result{}, txErr
 	}
 
