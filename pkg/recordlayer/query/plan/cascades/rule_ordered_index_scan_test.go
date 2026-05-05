@@ -117,7 +117,7 @@ func TestOrderedIndexScan_SortKeyMismatch(t *testing.T) {
 
 // TestOrderedIndexScan_DescSortNotSatisfied verifies that Sort(STATUS DESC)
 // does NOT match a forward index scan on STATUS.
-func TestOrderedIndexScan_DescSortNotSatisfied(t *testing.T) {
+func TestOrderedIndexScan_DescSortProducesReverseIndexScan(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -143,8 +143,15 @@ func TestOrderedIndexScan_DescSortNotSatisfied(t *testing.T) {
 	rule := NewOrderedIndexScanRule()
 	results := FireExpressionRuleWithMemo(rule, sortRef, ctx, nil)
 
-	if len(results) != 0 {
-		t.Fatalf("expected 0 yields (DESC sort can't use forward index scan), got %d", len(results))
+	if len(results) != 1 {
+		t.Fatalf("expected 1 yield (DESC sort → reverse index scan), got %d", len(results))
+	}
+	w, ok := results[0].(*physicalIndexScanWrapper)
+	if !ok {
+		t.Fatalf("expected physicalIndexScanWrapper, got %T", results[0])
+	}
+	if !w.plan.IsReverse() {
+		t.Fatal("expected reverse index scan for DESC sort")
 	}
 }
 

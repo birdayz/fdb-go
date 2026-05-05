@@ -1374,13 +1374,18 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 100), (2, 200), (3, 300)")).Error().NotTo(gomega.HaveOccurred())
 
-	// ORDER BY val DESC — reverse index scan is not supported by the Cascades
-	// planner; it rejects with UNSUPPORTED_QUERY (0AF00).
-	_, err = db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY val DESC")
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY val DESC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.id, &r.val)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{3, 300}, {2, 200}, {1, 100}}))
 }
 
 // TestFDB_SelectLimitRejected pins LIMIT-clause rejection.
@@ -6419,12 +6424,18 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids).To(gomega.Equal([]int64{2, 1, 3}), "ASC default must be NULLS FIRST per Java")
 
-	// ORDER BY n DESC — reverse scan not supported; rejects with 0AF00.
-	_, err = db.QueryContext(ctx, `SELECT id FROM T ORDER BY n DESC`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	// ORDER BY n DESC — reverse index scan, NULLs sort LAST (Java default for DESC).
+	rows2, err := db.QueryContext(ctx, `SELECT id FROM T ORDER BY n DESC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var descIds []int64
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		descIds = append(descIds, id)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(descIds).To(gomega.Equal([]int64{3, 1, 2}), "DESC default must be NULLS LAST per Java")
 }
 
 // TestFDB_CTEScopeIsolation pins down nested-query CTE scoping: a derived

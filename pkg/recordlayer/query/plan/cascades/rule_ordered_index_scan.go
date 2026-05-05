@@ -71,14 +71,9 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		// Check if the index's leading columns match the sort keys.
-		// Only ascending sorts can be satisfied by a forward index scan.
 		matches := true
+		reverse := false
 		for i, sk := range sortKeys {
-			if sk.Reverse {
-				matches = false
-				break
-			}
 			fv, ok := sk.Value.(*values.FieldValue)
 			if !ok {
 				matches = false
@@ -88,15 +83,19 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 				matches = false
 				break
 			}
+			if i == 0 {
+				reverse = sk.Reverse
+			} else if sk.Reverse != reverse {
+				matches = false
+				break
+			}
 		}
 		if !matches {
 			continue
 		}
 
-		// Build an unbound full index scan — all comparison ranges empty,
-		// scans the entire index in key order.
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		scanPlan := cand.ToScanPlan(emptyPrefix, false)
+		scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
 		idxPlan, ok := scanPlan.(*plans.RecordQueryIndexPlan)
 		if !ok {
 			continue

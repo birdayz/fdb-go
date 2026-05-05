@@ -118,8 +118,8 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
   **Remaining work discovered in dayshift-76:**
 
-  - [ ] **#85** JOIN alias threading: self-join returns 0 rows because both sides have same record type — `mergeRows` can't disambiguate without aliases flowing through the physical plan (`NestedLoopJoinPlan`). Fix: store table aliases in LogicalJoin → SelectExpression → NestedLoopJoinPlan → mergeRows. Test: `TestFDB_SelfJoin`.
-  - [ ] **#86** CTE+JOIN predicate resolution: CTE alias (e.g. `big_sales`) doesn't match underlying record type name (e.g. `SALES`) in the merged row map. Predicate `ON big_sales.customer_id = Customer.id` can't resolve `BIG_SALES.CUSTOMER_ID`. Fix: either use CTE alias as qualifier in mergeRows, or resolve predicates against underlying type names. Test: `TestFDB_JoinOnCTE`.
+  - [x] **#85** JOIN alias threading — **landed swingshift-77**. Threaded SQL aliases through SelectExpression → NLJ plan → mergeRows. Self-join now returns correct rows.
+  - [x] **#86** CTE+JOIN predicate resolution — **landed swingshift-77**. CTE aliases flow through translator's sourceAlias extraction from LogicalScan children.
   - [ ] **#87** Streaming aggregation ordering: `SELECT ... GROUP BY k ORDER BY k ASC` should work because StreamingAggregation produces output sorted by group keys. Currently rejected because ImplementSortRule doesn't detect streaming agg ordering via `computePartitionOrdering`. Fix: wire `physicalStreamingAggWrapper.HintOrdering()` through to partition ordering computation.
   - [ ] **#88** Reverse index scan for ORDER BY DESC: `ORDER BY indexed_col DESC` should use the index in reverse. Currently rejected because `computeWrapperRichOrdering` for index scans only reports ASC. Fix: either produce a reverse-scan plan variant, or report both orderings from the index scan wrapper.
   - [ ] **#89** Type mismatch in predicate resolver: `WHERE int_col = 'string'` correctly errors at runtime (TypeMismatchError → SQLSTATE 22000). However, `WHERE string_col = 5` only works when the predicate goes through the Cascades filter (RecordQueryFilterPlan). If the predicate isn't upgraded (stays text-based), the text filter silently returns 0 rows. Long-term: predicate resolver should ALWAYS produce typed ComparisonPredicates.
@@ -128,7 +128,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   - [ ] **#92** Type mismatch detection layer: Java catches type mismatches at semantic analysis (compile time via `SemanticAnalyzer`), not at eval time. Go's runtime panic+recover works but is architecturally different. Long-term: move type checking to the predicate resolver (compile time).
 
   **HN launch blockers (in priority order):**
-  - [ ] **#93** Fix #85 + #86 (alias threading) — self-join and CTE+JOIN silently return wrong results. Credibility-destroying if hit.
+  - [x] **#93** Fix #85 + #86 (alias threading) — **landed swingshift-77**.
   - [ ] **#94** Fix #88 (reverse index scan) — ORDER BY DESC on indexed columns. Users will hit immediately.
   - [ ] **#95** Fix #87 (streaming agg ordering) — GROUP BY + ORDER BY on group key rejected. Common pattern.
   - [ ] **#96** README / documentation — usage examples, supported SQL subset, wire compatibility claims, known limitations.

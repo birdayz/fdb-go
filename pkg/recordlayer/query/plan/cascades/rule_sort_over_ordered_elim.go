@@ -21,9 +21,7 @@ import (
 // (a, b, c) but the index only provides (a, b), the sort is NOT
 // redundant.
 //
-// Direction: a reverse-index scan matches DESC sort keys. The seed
-// currently ignores direction (all index scans are forward); when
-// reverse scans land, this rule should check direction per-key.
+// Direction: a reverse-index scan matches DESC sort keys.
 type SortOverOrderedElimRule struct {
 	matcher matching.BindingMatcher
 }
@@ -64,20 +62,17 @@ func (r *SortOverOrderedElimRule) OnMatch(call *ExpressionRuleCall) {
 	}
 }
 
-// orderingSatisfies checks whether the ordering provides at least
-// the sort keys in the same order. Each sort key must match the
-// corresponding ordering key by field name. DESC sort keys cannot be
-// satisfied by a forward index scan (which always produces ascending).
 func orderingSatisfies(ordering properties.Ordering, sortKeys []expressions.SortKey) bool {
 	if len(sortKeys) > len(ordering.Keys) {
 		return false
 	}
 	for i, sk := range sortKeys {
-		if sk.Reverse {
-			return false
-		}
 		orderKey := ordering.Keys[i]
 		if !sameFieldValue(sk.Value, orderKey) {
+			return false
+		}
+		orderDesc := i < len(ordering.Descending) && ordering.Descending[i]
+		if sk.Reverse != orderDesc {
 			return false
 		}
 	}

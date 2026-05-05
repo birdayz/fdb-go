@@ -37,6 +37,9 @@ type Ordering struct {
 	// sorted by Keys[0] first, then Keys[1], etc.). Empty when
 	// IsKnown=false.
 	Keys []values.Value
+	// Descending is parallel to Keys. true = descending order for that
+	// key. nil or shorter than Keys means all ascending.
+	Descending []bool
 }
 
 // EstimateOrdering returns the static ordering guarantee for an
@@ -66,12 +69,14 @@ type Ordering struct {
 func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 	switch v := e.(type) {
 	case *expressions.LogicalSortExpression:
-		// The sort produces rows ordered by its sort keys.
-		keys := make([]values.Value, 0, len(v.GetSortKeys()))
-		for _, sk := range v.GetSortKeys() {
+		sks := v.GetSortKeys()
+		keys := make([]values.Value, 0, len(sks))
+		desc := make([]bool, 0, len(sks))
+		for _, sk := range sks {
 			keys = append(keys, sk.Value)
+			desc = append(desc, sk.Reverse)
 		}
-		return Ordering{IsKnown: true, Keys: keys}
+		return Ordering{IsKnown: true, Keys: keys, Descending: desc}
 	case *expressions.LogicalFilterExpression:
 		return inheritFromInner(v.GetInner())
 	case *expressions.LogicalProjectionExpression:
