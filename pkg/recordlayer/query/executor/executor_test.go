@@ -866,7 +866,7 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 		&values.ConstantValue{Value: "hello", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 	})
 
-	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross)
+	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross, "", "")
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -901,6 +901,7 @@ func TestExecuteNestedLoopJoin_InnerJoin_WithPredicate(t *testing.T) {
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		plans.JoinInner,
+		"", "",
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -932,6 +933,7 @@ func TestExecuteNestedLoopJoin_InnerJoin_PredicateRejects(t *testing.T) {
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinInner,
+		"", "",
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -963,6 +965,7 @@ func TestExecuteNestedLoopJoin_LeftOuter_NoInnerMatch(t *testing.T) {
 		left, right,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinLeftOuter,
+		"", "",
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -1958,7 +1961,7 @@ func TestMergeRows_BothMaps(t *testing.T) {
 		Datum:      map[string]any{"C": 3, "D": 4},
 		PrimaryKey: tuple.Tuple{int64(2)},
 	}
-	merged := mergeRows(outer, inner)
+	merged := mergeRows(outer, inner, "", "")
 	m := merged.Datum.(map[string]any)
 	if m["A"] != 1 || m["B"] != 2 || m["C"] != 3 || m["D"] != 4 {
 		t.Fatalf("unexpected merged datum: %v", m)
@@ -1972,7 +1975,7 @@ func TestMergeRows_InnerOverridesOuter(t *testing.T) {
 	t.Parallel()
 	outer := QueryResult{Datum: map[string]any{"K": "outer"}}
 	inner := QueryResult{Datum: map[string]any{"K": "inner"}}
-	merged := mergeRows(outer, inner)
+	merged := mergeRows(outer, inner, "", "")
 	m := merged.Datum.(map[string]any)
 	if m["K"] != "inner" {
 		t.Fatalf("inner should override outer on key conflict, got %v", m["K"])
@@ -1983,7 +1986,7 @@ func TestMergeRows_NonMapDatum(t *testing.T) {
 	t.Parallel()
 	outer := QueryResult{Datum: "string-datum", PrimaryKey: tuple.Tuple{int64(1)}}
 	inner := QueryResult{Datum: map[string]any{"C": 3}}
-	merged := mergeRows(outer, inner)
+	merged := mergeRows(outer, inner, "", "")
 	if merged.Datum != "string-datum" {
 		t.Fatalf("expected outer datum passthrough, got %v", merged.Datum)
 	}

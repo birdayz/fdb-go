@@ -24,6 +24,8 @@ type RecordQueryNestedLoopJoinPlan struct {
 	inner      RecordQueryPlan
 	predicates []predicates.QueryPredicate
 	joinType   JoinType
+	outerAlias string
+	innerAlias string
 }
 
 // JoinType distinguishes inner vs outer vs cross joins.
@@ -48,10 +50,15 @@ func (jt JoinType) String() string {
 }
 
 // NewRecordQueryNestedLoopJoinPlan constructs a nested-loop join plan.
+// outerAlias/innerAlias are the SQL-level table aliases (e.g. "E", "M"
+// for `FROM Employee AS e, Employee AS m`). Used by the executor to
+// qualify merged-row keys so predicates can resolve alias-qualified
+// column references.
 func NewRecordQueryNestedLoopJoinPlan(
 	outer, inner RecordQueryPlan,
 	joinPredicates []predicates.QueryPredicate,
 	joinType JoinType,
+	outerAlias, innerAlias string,
 ) *RecordQueryNestedLoopJoinPlan {
 	preds := make([]predicates.QueryPredicate, len(joinPredicates))
 	copy(preds, joinPredicates)
@@ -60,6 +67,8 @@ func NewRecordQueryNestedLoopJoinPlan(
 		inner:      inner,
 		predicates: preds,
 		joinType:   joinType,
+		outerAlias: outerAlias,
+		innerAlias: innerAlias,
 	}
 }
 
@@ -72,6 +81,8 @@ func (p *RecordQueryNestedLoopJoinPlan) GetChildren() []RecordQueryPlan {
 func (p *RecordQueryNestedLoopJoinPlan) GetOuter() RecordQueryPlan { return p.outer }
 func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan { return p.inner }
 func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType     { return p.joinType }
+func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string     { return p.outerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string     { return p.innerAlias }
 
 func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredicate {
 	return p.predicates
@@ -83,6 +94,9 @@ func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other RecordQueryP
 		return false
 	}
 	if p.joinType != o.joinType {
+		return false
+	}
+	if p.outerAlias != o.outerAlias || p.innerAlias != o.innerAlias {
 		return false
 	}
 	if len(p.predicates) != len(o.predicates) {
@@ -100,6 +114,10 @@ func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("nljoin|"))
 	h.Write([]byte{byte(p.joinType)})
+	h.Write([]byte(p.outerAlias))
+	h.Write([]byte{0})
+	h.Write([]byte(p.innerAlias))
+	h.Write([]byte{0})
 	for _, pred := range p.predicates {
 		h.Write([]byte(pred.Explain()))
 		h.Write([]byte{0})

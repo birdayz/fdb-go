@@ -685,7 +685,7 @@ func executeNestedLoopJoin(
 
 		matched := false
 		for _, innerRow := range innerRows {
-			combined := mergeRows(outerRow, innerRow)
+			combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
 			if passesJoinPredicates(combined, preds, evalCtx) {
 				results = append(results, combined)
 				matched = true
@@ -700,7 +700,7 @@ func executeNestedLoopJoin(
 	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
 }
 
-func mergeRows(outer, inner QueryResult) QueryResult {
+func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryResult {
 	outerMap, ok1 := outer.Datum.(map[string]any)
 	innerMap, ok2 := inner.Datum.(map[string]any)
 	if !ok1 || !ok2 {
@@ -710,15 +710,33 @@ func mergeRows(outer, inner QueryResult) QueryResult {
 	merged := make(map[string]any, len(outerMap)+len(innerMap))
 	outerType := recordTypeName(outer)
 	innerType := recordTypeName(inner)
+
+	outerQual := outerAlias
+	if outerQual == "" {
+		outerQual = outerType
+	}
+	innerQual := innerAlias
+	if innerQual == "" {
+		innerQual = innerType
+	}
+
 	for k, v := range outerMap {
 		merged[k] = v
-		if outerType != "" {
+		if outerQual != "" {
+			merged[outerQual+"."+strings.ToUpper(k)] = v
+		}
+		if outerAlias != "" && outerType != "" && outerAlias != outerType {
 			merged[outerType+"."+strings.ToUpper(k)] = v
 		}
 	}
 	for k, v := range innerMap {
-		merged[k] = v
-		if innerType != "" {
+		if innerQual == "" || innerQual != outerQual {
+			merged[k] = v
+		}
+		if innerQual != "" {
+			merged[innerQual+"."+strings.ToUpper(k)] = v
+		}
+		if innerAlias != "" && innerType != "" && innerAlias != innerType {
 			merged[innerType+"."+strings.ToUpper(k)] = v
 		}
 	}

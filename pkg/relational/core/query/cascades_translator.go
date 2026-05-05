@@ -338,12 +338,30 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		}
 	}
 
+	leftAlias := sourceAlias(j.Left)
+	rightAlias := sourceAlias(j.Right)
+
 	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
-	return expressions.NewSelectExpression(
+	return expressions.NewSelectExpressionWithAliases(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
 		preds,
+		[]string{leftAlias, rightAlias},
 	)
+}
+
+func sourceAlias(op logical.LogicalOperator) string {
+	switch o := op.(type) {
+	case *logical.LogicalScan:
+		if o.Alias != "" {
+			return strings.ToUpper(o.Alias)
+		}
+		return strings.ToUpper(o.Table)
+	case *logical.LogicalJoin:
+		return sourceAlias(o.Right)
+	default:
+		return ""
+	}
 }
 
 func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {

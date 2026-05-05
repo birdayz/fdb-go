@@ -36,6 +36,7 @@ type SelectExpression struct {
 	resultValue     values.Value
 	quantifiers     []Quantifier
 	queryPredicates []predicates.QueryPredicate
+	sourceAliases   []string
 }
 
 // NewSelectExpression builds a SELECT. quantifiers and predicates are
@@ -51,6 +52,28 @@ func NewSelectExpression(resultValue values.Value, quantifiers []Quantifier, que
 		queryPredicates: copiedP,
 	}
 }
+
+// NewSelectExpressionWithAliases builds a SELECT with source aliases
+// parallel to quantifiers.
+func NewSelectExpressionWithAliases(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate, sourceAliases []string) *SelectExpression {
+	copiedQ := make([]Quantifier, len(quantifiers))
+	copy(copiedQ, quantifiers)
+	copiedP := make([]predicates.QueryPredicate, len(queryPredicates))
+	copy(copiedP, queryPredicates)
+	copiedA := make([]string, len(sourceAliases))
+	copy(copiedA, sourceAliases)
+	return &SelectExpression{
+		resultValue:     resultValue,
+		quantifiers:     copiedQ,
+		queryPredicates: copiedP,
+		sourceAliases:   copiedA,
+	}
+}
+
+// GetSourceAliases returns the SQL-level table aliases, parallel to
+// quantifiers. May be nil or shorter than quantifiers if aliases
+// weren't provided.
+func (e *SelectExpression) GetSourceAliases() []string { return e.sourceAliases }
 
 // GetResultValue returns the row-shape Value of this SELECT.
 func (e *SelectExpression) GetResultValue() values.Value { return e.resultValue }
@@ -144,6 +167,7 @@ func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) RelationalE
 		resultValue:     e.resultValue,
 		quantifiers:     copied,
 		queryPredicates: e.queryPredicates,
+		sourceAliases:   e.sourceAliases,
 	}
 }
 

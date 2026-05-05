@@ -4586,8 +4586,6 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 100)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE filters to big sales, then JOIN with Customer.
-	// No ORDER BY — Cascades has no physical sort operator.
 	rows, err := db.QueryContext(ctx, `
 		WITH big_sales AS (SELECT id, customer_id, amount FROM Sales WHERE amount > 100)
 		SELECT Customer.name, big_sales.amount
@@ -4606,10 +4604,7 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 		got = append(got, rr)
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// CTE alias (big_sales) doesn't match underlying record type (SALES)
-	// in qualified predicate resolution. Returns 0 rows until alias
-	// threading is implemented. Correct result: [{Alice, 500}].
-	g.Expect(len(got)).To(gomega.Equal(0))
+	g.Expect(got).To(gomega.ConsistOf(r{"Alice", 500}))
 }
 
 func TestFDB_MultiTableFrom(t *testing.T) {
@@ -5190,28 +5185,24 @@ func TestFDB_SelfJoin(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Employee (id, name, manager_id) VALUES (3, 'Eng', 2)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Self-join via implicit cross: employee paired with its manager.
-	// Alias-qualified predicate resolution requires alias threading
-	// through the physical plan (NestedLoopJoinPlan). Until then,
-	// the query executes but returns 0 rows because e.manager_id and
-	// m.id can't be distinguished in the merged row (same underlying
-	// record type). Correct result: [{VP, CEO}, {Eng, VP}].
 	rows, err := db.QueryContext(ctx, `
 		SELECT e.name, m.name
 		FROM Employee AS e, Employee AS m
 		WHERE e.manager_id = m.id`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
-	var count int
+	type pair struct{ emp, mgr string }
+	var got []pair
 	for rows.Next() {
-		var a, b string
-		g.Expect(rows.Scan(&a, &b)).To(gomega.Succeed())
-		count++
+		var p pair
+		g.Expect(rows.Scan(&p.emp, &p.mgr)).To(gomega.Succeed())
+		got = append(got, p)
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// Self-join needs alias threading — currently returns 0 rows (predicate
-	// can't resolve aliased qualified names against same-type merged rows).
-	g.Expect(count).To(gomega.Equal(0))
+	g.Expect(got).To(gomega.ConsistOf(
+		pair{"VP", "CEO"},
+		pair{"Eng", "VP"},
+	))
 }
 
 func TestFDB_CaseInWhere(t *testing.T) {
