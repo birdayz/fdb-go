@@ -1722,11 +1722,13 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			return float64(val)
 		case int64:
 			return float64(val)
+		case string:
+			f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+			if err != nil {
+				return nil
+			}
+			return f
 		case bool:
-			// Java doesn't define CAST(BOOLEAN AS FLOAT) directly —
-			// but the runtime path goes via CAST(b AS INT) AS FLOAT,
-			// folding to 1.0/0.0. Mirror that one-step here so a
-			// fold-time literal `CAST(TRUE AS FLOAT)` resolves cleanly.
 			if val {
 				return float64(1)
 			}
