@@ -86,7 +86,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(2_000)
+		WithMaxTasks(2_000) // CTE-inlined plans need ~1500 tasks for convergence; 1000 was too low
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
