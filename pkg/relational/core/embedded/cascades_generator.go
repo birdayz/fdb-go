@@ -82,7 +82,10 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"no schema metadata available")
 	}
 
-	logicalOp := buildLogicalPlanForQueryWithCatalog(q, md)
+	logicalOp, buildErr := buildLogicalPlanForQueryWithCatalog(q, md)
+	if buildErr != nil {
+		return nil, buildErr
+	}
 	if logicalOp == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")

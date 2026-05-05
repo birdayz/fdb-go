@@ -296,7 +296,7 @@ func TestBuildLogicalPlanWithCatalog_UnionThreadsMd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan")
 	}
@@ -339,7 +339,7 @@ func TestBuildLogicalPlanWithCatalog_CTEThreadsMd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	cte, ok := op.(*logical.LogicalCTE)
 	if !ok {
 		t.Fatalf("expected LogicalCTE root, got %T", op)
@@ -373,7 +373,7 @@ func TestBuildLogicalPlanWithCatalog_CTEOuterWhereGetsRealPredicate(t *testing.T
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	cte, ok := op.(*logical.LogicalCTE)
 	if !ok {
 		t.Fatalf("expected LogicalCTE root, got %T", op)
@@ -409,7 +409,7 @@ func TestBuildLogicalPlanWithCatalog_CTEChainedSchemaDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan for chained CTE query")
 	}
@@ -451,7 +451,7 @@ func TestBuildLogicalPlanWithCatalog_CTESelectStarSchemaDerivation(t *testing.T)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	cte, ok := op.(*logical.LogicalCTE)
 	if !ok {
 		t.Fatalf("expected LogicalCTE, got %T", op)
@@ -484,7 +484,7 @@ func TestBuildLogicalPlanWithCatalog_CTENoPredNeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan for CTE without WHERE")
 	}
@@ -498,7 +498,7 @@ func TestBuildLogicalPlanWithCatalog_JoinOnPredicateUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan")
 	}

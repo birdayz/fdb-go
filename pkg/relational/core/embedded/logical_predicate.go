@@ -1137,12 +1137,12 @@ func buildLogicalPlanForInsertWithCatalog(
 func buildLogicalPlanForQueryWithCatalog(
 	q antlrgen.IQueryContext,
 	md *recordlayer.RecordMetaData,
-) logical.LogicalOperator {
+) (logical.LogicalOperator, error) {
 	if q == nil {
-		return nil
+		return nil, nil
 	}
 	if md == nil {
-		return buildLogicalPlanForQuery(q)
+		return buildLogicalPlanForQuery(q), nil
 	}
 
 	ctesCtx := q.Ctes()
@@ -1160,12 +1160,15 @@ func buildLogicalPlanForQueryWithCatalog(
 		}
 	}
 
-	main := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, cteScopes)
+	main, err := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, cteScopes)
+	if err != nil {
+		return nil, err
+	}
 	if main == nil {
-		return nil
+		return nil, nil
 	}
 	if ctesCtx == nil {
-		return main
+		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
 	ctes := ctesCtx.AllNamedQuery()
@@ -1174,14 +1177,17 @@ func buildLogicalPlanForQueryWithCatalog(
 		name := functions.FullIdToName(nq.GetName())
 		var body logical.LogicalOperator
 		if inner := nq.Query(); inner != nil {
-			body = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, cteScopes)
+			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, cteScopes)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if body == nil {
-			return nil
+			return nil, nil
 		}
 		main = logical.NewCTE(name, body, main, recursive)
 	}
-	return main
+	return main, nil
 }
 
 // buildLogicalPlanForQueryBodyWithCatalog dispatches simple SELECT
@@ -1190,25 +1196,25 @@ func buildLogicalPlanForQueryWithCatalog(
 func buildLogicalPlanForQueryBodyWithCatalog(
 	body antlrgen.IQueryExpressionBodyContext,
 	md *recordlayer.RecordMetaData,
-) logical.LogicalOperator {
+) (logical.LogicalOperator, error) {
 	if body == nil {
-		return nil
+		return nil, nil
 	}
 	switch b := body.(type) {
 	case *antlrgen.QueryTermDefaultContext:
 		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		sq, err := extractFromSimpleTable(simpleTable)
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		return buildLogicalPlanForSelectWithCatalog(sq, md)
+		return buildLogicalPlanForSelectWithCatalog(sq, md), nil
 	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCatalog(b, md)
+		return buildLogicalPlanForUnionWithCatalog(b, md), nil
 	}
-	return nil
+	return nil, nil
 }
 
 // buildLogicalPlanForQueryBodyWithCTECatalog is like
@@ -1219,9 +1225,9 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 	body antlrgen.IQueryExpressionBodyContext,
 	md *recordlayer.RecordMetaData,
 	cteScopes map[string]semantic.ScopeSource,
-) logical.LogicalOperator {
+) (logical.LogicalOperator, error) {
 	if body == nil {
-		return nil
+		return nil, nil
 	}
 	if len(cteScopes) == 0 {
 		return buildLogicalPlanForQueryBodyWithCatalog(body, md)
@@ -1230,17 +1236,17 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 	case *antlrgen.QueryTermDefaultContext:
 		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		sq, err := extractFromSimpleTable(simpleTable)
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
+		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes), nil
 	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes)
+		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes), nil
 	}
-	return nil
+	return nil, nil
 }
 
 func buildLogicalPlanForUnionWithCTECatalog(
@@ -1255,8 +1261,14 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
 		distinct = false
 	}
-	left := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, cteScopes)
-	right := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetRight(), md, cteScopes)
+	left, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, cteScopes)
+	if err != nil {
+		return nil
+	}
+	right, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetRight(), md, cteScopes)
+	if err != nil {
+		return nil
+	}
 	if left == nil || right == nil {
 		return nil
 	}
@@ -1280,8 +1292,14 @@ func buildLogicalPlanForUnionWithCatalog(
 	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
 		distinct = false
 	}
-	left := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetLeft(), md)
-	right := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetRight(), md)
+	left, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetLeft(), md)
+	if err != nil {
+		return nil
+	}
+	right, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetRight(), md)
+	if err != nil {
+		return nil
+	}
 	if left == nil || right == nil {
 		return nil
 	}

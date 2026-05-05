@@ -250,7 +250,7 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 				if q := sel.Query(); q != nil {
 					md := c.cachedMetaData()
 					if md != nil {
-						if op := buildLogicalPlanForQueryWithCatalog(q, md); op != nil {
+						if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
 							return op.Explain("")
 						}
 					}
@@ -412,7 +412,7 @@ func (g *naiveGenerator) computeExplainText(d *antlrgen.DescribeStatementsContex
 	md := c.cachedMetaData()
 	if q := d.Query(); q != nil {
 		if md != nil {
-			if op := buildLogicalPlanForQueryWithCatalog(q, md); op != nil {
+			if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
 				return op.Explain("")
 			}
 		}
