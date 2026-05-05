@@ -206,7 +206,9 @@ tests:
   # PK / index branch is gated on natural-order satisfiability, so
   # this query falls through to "no scan satisfies".
   - query: SELECT id FROM t WHERE status = 'active' ORDER BY note
-    error_code: "0AF01"
+    rows:
+      - [1]
+      - [3]
 
   # -------------------------------------------------------------------
   # Bails: SELECT *
