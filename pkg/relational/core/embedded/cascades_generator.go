@@ -869,6 +869,13 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 				}
 			}
 		}
+	case *antlrgen.BitExpressionAtomContext:
+		if bo := n.BitOperator(); bo != nil {
+			opText := bo.GetText()
+			if opText == "<<" || opText == ">>" {
+				return opText
+			}
+		}
 	}
 	for i := 0; i < ctx.GetChildCount(); i++ {
 		if fn := findUnsupportedFunctionInParseTree(ctx.GetChild(i)); fn != "" {
