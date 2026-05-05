@@ -429,8 +429,8 @@ func executeDistinct(
 }
 
 func distinctKey(qr QueryResult) string {
-	if qr.PrimaryKey != nil {
-		return string(qr.PrimaryKey.Pack())
+	if m, ok := qr.Datum.(map[string]any); ok {
+		return fmt.Sprintf("%v", m)
 	}
 	return fmt.Sprintf("%v", qr.Datum)
 }

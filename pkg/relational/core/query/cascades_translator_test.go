@@ -67,11 +67,8 @@ func TestTranslateDistinctUnion(t *testing.T) {
 	scanB := logical.NewScan("B", "")
 	union := logical.NewUnion([]logical.LogicalOperator{scanA, scanB}, true)
 	ref := TranslateToCascades(union)
-	if ref == nil {
-		t.Fatal("expected non-nil reference for UNION DISTINCT")
-	}
-	if _, ok := ref.Members()[0].(*expressions.LogicalDistinctExpression); !ok {
-		t.Fatalf("expected LogicalDistinctExpression wrapping union, got %T", ref.Members()[0])
+	if ref != nil {
+		t.Fatal("expected nil: UNION DISTINCT is rejected (Java alignment)")
 	}
 }
 

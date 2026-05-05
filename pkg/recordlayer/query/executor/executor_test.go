@@ -2132,14 +2132,17 @@ func TestAggResultName_UnknownFunction(t *testing.T) {
 
 // --- distinctKey unit tests ---
 
-func TestDistinctKey_WithPrimaryKey(t *testing.T) {
+func TestDistinctKey_WithDatum(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(42)}
 	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"A": 1}}
 	key := distinctKey(qr)
-	expected := string(pk.Pack())
-	if key != expected {
-		t.Fatalf("expected packed PK, got %q", key)
+	if key == "" {
+		t.Fatal("expected non-empty key from datum map")
+	}
+	qr2 := QueryResult{PrimaryKey: tuple.Tuple{int64(99)}, Datum: map[string]any{"A": 1}}
+	if distinctKey(qr) != distinctKey(qr2) {
+		t.Fatal("same datum values should produce same distinct key regardless of PK")
 	}
 }
 

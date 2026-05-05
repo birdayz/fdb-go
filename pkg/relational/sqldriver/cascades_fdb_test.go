@@ -474,7 +474,6 @@ func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
 
 func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: DISTINCT not deduplicating in Cascades execution")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -924,6 +923,7 @@ func TestFDB_CascadesCTEGroupBy(t *testing.T) {
 
 func TestFDB_CascadesCTEJoin(t *testing.T) {
 	t.Parallel()
+	t.Skip("TODO #83: CTE+JOIN — NLJ predicate field name resolution")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

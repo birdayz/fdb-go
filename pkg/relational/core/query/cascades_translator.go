@@ -120,13 +120,10 @@ func (t *cascadesTranslator) translateUnion(u *logical.LogicalUnion) expressions
 		}
 		quantifiers = append(quantifiers, expressions.ForEachQuantifier(ref))
 	}
-	union := expressions.NewLogicalUnionExpression(quantifiers)
 	if u.Distinct {
-		unionRef := expressions.InitialOf(union)
-		return expressions.NewLogicalDistinctExpression(
-			expressions.ForEachQuantifier(unionRef))
+		return nil
 	}
-	return union
+	return expressions.NewLogicalUnionExpression(quantifiers)
 }
 
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
