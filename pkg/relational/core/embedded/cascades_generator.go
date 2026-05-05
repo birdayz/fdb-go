@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"io"
 	"strings"
 
@@ -549,6 +550,10 @@ func (r *cascadesRows) ColumnTypeDatabaseTypeName(index int) string {
 func (r *cascadesRows) Next(dest []driver.Value) error {
 	if !r.rs.Next() {
 		if err := r.rs.Err(); err != nil {
+			var divZero *values.ArithmeticDivisionByZeroError
+			if errors.As(err, &divZero) {
+				return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
+			}
 			return err
 		}
 		return io.EOF

@@ -4253,7 +4253,7 @@ func TestFDB_DerivedTable(t *testing.T) {
 
 func TestFDB_CTEChaining(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: CTE chaining with computed expressions")
+	t.Skip("TODO #81: CTE chaining works but ORDER BY on non-indexed column fails")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6075,7 +6075,7 @@ func TestFDB_SimpleCaseWorks(t *testing.T) {
 // actually switch on the code.
 func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: error path SQLSTATE codes via Cascades")
+	t.Skip("TODO #65: unknown table/column not validated during Cascades planning — needs schema validation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
