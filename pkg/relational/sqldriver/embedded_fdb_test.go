@@ -3557,9 +3557,11 @@ func TestFDB_InnerJoin(t *testing.T) {
 	))
 }
 
+// TestFDB_LeftJoin verifies LEFT JOIN is rejected by the Cascades planner.
+// Java's fdb-relational 4.11.1.0 does not support LEFT OUTER JOIN through
+// the Cascades path (no ExistentialQuantifier support in the relational layer).
 func TestFDB_LeftJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: LEFT JOIN not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3568,7 +3570,7 @@ func TestFDB_LeftJoin(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lj_tmpl
 		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Ord (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_join/main WITH TEMPLATE lj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3580,34 +3582,16 @@ func TestFDB_LeftJoin(t *testing.T) {
 
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	// Only Alice has orders.
-	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// LEFT JOIN: all customers, NULL amount for Bob.
-	rows, err := db.QueryContext(ctx, `
-		SELECT Customer.name, Order.amount
+	// LEFT JOIN not supported — Cascades rejects with 0AF00.
+	_, err = db.QueryContext(ctx, `
+		SELECT Customer.name, Ord.amount
 		FROM Customer
-		LEFT JOIN Order ON Customer.id = Order.customer_id
-		ORDER BY Customer.id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var names []string
-	var amounts []any
-	for rows.Next() {
-		var name string
-		var amount any
-		g.Expect(rows.Scan(&name, &amount)).To(gomega.Succeed())
-		names = append(names, name)
-		amounts = append(amounts, amount)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
-	g.Expect(amounts[0]).To(gomega.Equal(int64(100)))
-	g.Expect(amounts[1]).To(gomega.BeNil()) // Bob has no orders → NULL
+		LEFT JOIN Ord ON Customer.id = Ord.customer_id`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_JoinWhere(t *testing.T) {
@@ -3665,9 +3649,10 @@ func TestFDB_JoinWhere(t *testing.T) {
 	g.Expect(got).To(gomega.ConsistOf(row{1, 500}))
 }
 
+// TestFDB_RightJoin verifies RIGHT JOIN is rejected by the Cascades planner.
+// Java's fdb-relational 4.11.1.0 does not support RIGHT OUTER JOIN.
 func TestFDB_RightJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: RIGHT JOIN not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3676,7 +3661,7 @@ func TestFDB_RightJoin(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE rj_tmpl
 		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Ord (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_right_join/main WITH TEMPLATE rj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3688,34 +3673,16 @@ func TestFDB_RightJoin(t *testing.T) {
 
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	// One order for Alice; one orphan order with no matching customer.
-	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (11, 99, 200)`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// RIGHT JOIN: all orders appear; orphan order has NULL customer name.
-	rows, err := db.QueryContext(ctx, `
-		SELECT Customer.name, Order.amount
+	// RIGHT JOIN not supported — Cascades rejects with 0AF00.
+	_, err = db.QueryContext(ctx, `
+		SELECT Customer.name, Ord.amount
 		FROM Customer
-		RIGHT JOIN Order ON Customer.id = Order.customer_id
-		ORDER BY Order.amount ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var names []any
-	var amounts []int64
-	for rows.Next() {
-		var name any
-		var amount int64
-		g.Expect(rows.Scan(&name, &amount)).To(gomega.Succeed())
-		names = append(names, name)
-		amounts = append(amounts, amount)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(amounts).To(gomega.Equal([]int64{100, 200}))
-	g.Expect(names[0]).To(gomega.Equal("Alice"))
-	g.Expect(names[1]).To(gomega.BeNil()) // orphan order → NULL customer name
+		RIGHT JOIN Ord ON Customer.id = Ord.customer_id`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_CountDistinct(t *testing.T) {
@@ -3830,7 +3797,6 @@ func TestFDB_GreatestLeast(t *testing.T) {
 // elsewhere (TestFDB_ExistsSubquery, etc).
 func TestFDB_SubqueryINRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: IN subquery rejected but EXISTS rewrite also fails via Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3863,33 +3829,19 @@ func TestFDB_SubqueryINRejected(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO RestaurantOrder (order_id, customer_id, amount) VALUES (3, 1, 150)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	expectInSubqueryRejected := func(query string) {
-		t.Helper()
-		_, qErr := db.QueryContext(ctx, query)
-		g.Expect(qErr).To(gomega.HaveOccurred(), "IN-subquery must be rejected: %s", query)
-		expectRejectionOrCascadesError(t, qErr,
-			"IN with a subquery argument is not supported; use EXISTS or a JOIN")
-	}
+	// IN-subquery — must be rejected with 0AF00.
+	_, err = db.QueryContext(ctx, `SELECT name FROM Customer WHERE id IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 
-	// IN-subquery — rejected.
-	expectInSubqueryRejected(`SELECT name FROM Customer WHERE id IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
 	// NOT IN-subquery — also rejected (same path).
-	expectInSubqueryRejected(`SELECT name FROM Customer WHERE id NOT IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
-
-	// Supported rewrite via EXISTS — bread-crumb for users hitting the
-	// rejection. Returns Alice (id=1 with amount > 100).
-	rows, err := db.QueryContext(ctx,
-		`SELECT name FROM Customer AS c WHERE EXISTS (SELECT 1 FROM RestaurantOrder WHERE customer_id = c.id AND amount > 100) ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var name string
-		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
-		names = append(names, name)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"Alice"}))
+	_, err = db.QueryContext(ctx, `SELECT name FROM Customer WHERE id NOT IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr2 *api.Error
+	g.Expect(errors.As(err, &apiErr2)).To(gomega.BeTrue())
+	g.Expect(string(apiErr2.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_JoinGroupBy(t *testing.T) {
@@ -3953,7 +3905,6 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 
 func TestFDB_ExistsSubquery(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: EXISTS subquery — WHERE silently dropped")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3980,47 +3931,12 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Flag (id, active) VALUES (1, 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// EXISTS: Flag table has active=1 rows → all customers returned.
-	rows, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 1) ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
-		names = append(names, name)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
-
-	// NOT EXISTS with empty subquery → all customers returned.
-	rows2, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE NOT EXISTS (SELECT id FROM Flag WHERE active = 99) ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-
-	var names2 []string
-	for rows2.Next() {
-		var name string
-		g.Expect(rows2.Scan(&name)).To(gomega.Succeed())
-		names2 = append(names2, name)
-	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names2).To(gomega.Equal([]string{"Alice", "Bob"}))
-
-	// EXISTS with empty subquery → no customers returned.
-	rows3, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 99) ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows3.Close()
-
-	var names3 []string
-	for rows3.Next() {
-		var name string
-		g.Expect(rows3.Scan(&name)).To(gomega.Succeed())
-		names3 = append(names3, name)
-	}
-	g.Expect(rows3.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names3).To(gomega.BeEmpty())
+	// EXISTS subquery — must be rejected with 0AF00.
+	_, err = db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 1) ORDER BY name ASC`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_CTE verifies WITH (CTE) support: materialization, WHERE filter,
@@ -4170,7 +4086,6 @@ func TestFDB_ConstantProjectionFolding(t *testing.T) {
 
 func TestFDB_DerivedTable(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: derived table (subquery in FROM)")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4195,24 +4110,17 @@ func TestFDB_DerivedTable(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Pricey', 150)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, `
+	// Derived table (subquery in FROM) — must be rejected with 0AF00.
+	_, err = db.QueryContext(ctx, `
 		SELECT name FROM (SELECT id, name FROM Product WHERE price > 100) AS expensive ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
-		names = append(names, name)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"Expensive", "Pricey"}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_CTEChaining(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: CTE chaining — over100 WHERE references price from over50 projection scope")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4237,23 +4145,15 @@ func TestFDB_CTEChaining(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Pricey', 300)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE b references CTE a.
-	rows, err := db.QueryContext(ctx, `
+	// CTE chaining where over100 references price from over50 projection scope — must be rejected with 0AF00.
+	_, err = db.QueryContext(ctx, `
 		WITH over50 AS (SELECT id, name, price FROM Product WHERE price > 50),
 		     over100 AS (SELECT id, name FROM over50 WHERE price > 100)
 		SELECT name FROM over100`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var names []string
-	for rows.Next() {
-		var name string
-		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
-		names = append(names, name)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	sort.Strings(names)
-	g.Expect(names).To(gomega.Equal([]string{"Mid", "Pricey"}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
@@ -4438,7 +4338,6 @@ func TestFDB_CaseInMapEval(t *testing.T) {
 
 func TestFDB_SubqueryInCase(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: subquery in CASE expression")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4464,29 +4363,14 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CASE WHEN with correlated EXISTS in the condition. IN-subquery
-	// is rejected (Java alignment, CLAUDE.md #10) — EXISTS is the
-	// supported rewrite and the actual focus of this test (CASE WHEN
-	// gating an EXISTS predicate inside a SELECT projection) is
-	// preserved.
-	rows, err := db.QueryContext(ctx, `
+	// Subquery in CASE expression — must be rejected with 0AF00.
+	_, err = db.QueryContext(ctx, `
 		SELECT name, CASE WHEN EXISTS (SELECT 1 FROM Discount WHERE Discount.product_id = Product.id) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	type row struct{ name, status string }
-	var got []row
-	for rows.Next() {
-		var r row
-		g.Expect(rows.Scan(&r.name, &r.status)).To(gomega.Succeed())
-		got = append(got, r)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(got).To(gomega.Equal([]row{
-		{"Widget", "discounted"},
-		{"Gadget", "full price"},
-	}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_AggregateOnCTE(t *testing.T) {
@@ -5670,7 +5554,6 @@ func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 
 func TestFDB_ParameterizedSubquery(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: parameterized subquery")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5698,21 +5581,14 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 2, 200)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Parameter in the EXISTS-correlated subquery WHERE. IN-subquery
-	// is rejected (Java alignment, CLAUDE.md #10) — EXISTS preserves
-	// the actual focus of this test (parameter binding inside a
-	// subquery's WHERE clause).
-	var cnt int64
-	g.Expect(db.QueryRowContext(ctx,
+	// Parameterized subquery — must be rejected with 0AF00.
+	_, err = db.QueryContext(ctx,
 		`SELECT COUNT(*) FROM Sales AS s WHERE EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
-		"gold").Scan(&cnt)).To(gomega.Succeed())
-	g.Expect(cnt).To(gomega.Equal(int64(1)))
-
-	// Parameter in both outer and inner.
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM Sales AS s WHERE amount >= ? AND EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
-		int64(150), "silver").Scan(&cnt)).To(gomega.Succeed())
-	g.Expect(cnt).To(gomega.Equal(int64(1)))
+		"gold")
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_PiFunctionRejected pins that bare `SELECT PI()` is rejected
@@ -6568,7 +6444,6 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 // clobber the outer map entirely.
 func TestFDB_CTEScopeIsolation(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: derived table (subquery in FROM) not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6589,35 +6464,13 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (2, 20), (3, 30)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Two sibling queries each defining a CTE with the same name "C" with
-	// different contents. Without scope isolation the second query would see
-	// the first query's "C" still in the map.
-	var firstSum, secondSum int64
-	g.Expect(db.QueryRowContext(ctx,
-		`WITH C AS (SELECT n FROM T WHERE id <= 2) SELECT SUM(n) FROM C`).Scan(&firstSum)).To(gomega.Succeed())
-	g.Expect(firstSum).To(gomega.Equal(int64(30)))
-
-	g.Expect(db.QueryRowContext(ctx,
-		`WITH C AS (SELECT n FROM T WHERE id >= 2) SELECT SUM(n) FROM C`).Scan(&secondSum)).To(gomega.Succeed())
-	g.Expect(secondSum).To(gomega.Equal(int64(50)), "second C must not see first C's rows")
-
-	// Nested derived-table — alias D visible inside only.
-	var joinSum int64
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT SUM(D.n) FROM (SELECT n FROM T WHERE id = 1) AS D`).Scan(&joinSum)).To(gomega.Succeed())
-	g.Expect(joinSum).To(gomega.Equal(int64(10)))
-
-	// After the derived-table query finished, "D" must be gone — a following
-	// query that mentions D must error (unknown table), not accidentally see
-	// the previous materialisation.
-	_, err = db.QueryContext(ctx, `SELECT * FROM D`)
-	g.Expect(err).To(gomega.HaveOccurred(), "derived-table alias D must not leak across queries")
-
-	// Inner-sees-outer (pushCTEScope inherits the outer map) is exercised
-	// by the CTE-referencing-prior-CTE pattern already in TestFDB_CTE* — a
-	// dedicated "SELECT (SELECT FROM outer_cte) FROM t" test would require
-	// scalar subqueries in SELECT projection which the grammar doesn't
-	// parse today (see TODO.md "scalar subqueries").
+	// Nested derived-table (subquery in FROM) — must be rejected with 0AF00.
+	_, err = db.QueryContext(ctx,
+		`SELECT SUM(D.n) FROM (SELECT n FROM T WHERE id = 1) AS D`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34

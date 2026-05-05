@@ -453,17 +453,14 @@ func FindUnsupportedFunction(op logical.LogicalOperator) string {
 }
 
 func extractUnsupportedFuncFromText(text string) string {
-	upper := strings.ToUpper(text)
+	upper := strings.ToUpper(strings.TrimSpace(text))
 	lparen := strings.Index(upper, "(")
-	if lparen <= 0 {
+	if lparen <= 0 || lparen > 12 {
 		return ""
 	}
-	funcName := strings.TrimSpace(upper[:lparen])
-	if funcName == "" {
-		return ""
-	}
+	funcName := upper[:lparen]
 	for _, c := range funcName {
-		if c < 'A' || c > 'Z' {
+		if !((c >= 'A' && c <= 'Z') || c == '_') {
 			return ""
 		}
 	}
