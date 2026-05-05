@@ -3934,7 +3934,7 @@ func TestFDB_SubqueryINRejected(t *testing.T) {
 
 func TestFDB_JoinGroupBy(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: JOIN + GROUP BY execution")
+	t.Skip("TODO #83: JOIN + GROUP BY — planner failure")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6357,7 +6357,6 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 // left row with NULL for right columns.
 func TestFDB_JoinWithNullKey(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: JOIN with NULL key")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
