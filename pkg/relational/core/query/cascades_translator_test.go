@@ -435,3 +435,35 @@ func TestFindUnsupportedFunction(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractUnsupportedFuncFromText(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"ABS(x)", "ABS"},
+		{"SQRT(x)", "SQRT"},
+		{"SUBSTRING(a,1,2)", "SUBSTRING"},
+		{"COUNT(*)", ""},
+		{"SUM(amount)", ""},
+		{"COALESCE(a,b)", ""},
+		{"CAST(x AS INT)", ""},
+		{"name", ""},
+		{"a + b", ""},
+		{"", ""},
+		{"(x)", ""},
+		{"TOOLONGFUNCNAME(x)", ""},
+		{"123(x)", ""},
+		{"CASEWHENEXISTS(x)", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			got := extractUnsupportedFuncFromText(tc.input)
+			if got != tc.want {
+				t.Fatalf("extractUnsupportedFuncFromText(%q): got %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
