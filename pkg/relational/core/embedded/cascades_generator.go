@@ -888,6 +888,23 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 		if f.UserDefinedScalarFunctionName() != nil {
 			return strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
 		}
+	case *antlrgen.NonAggregateFunctionCallContext:
+		if wf := f.NonAggregateWindowedFunction(); wf != nil {
+			if wfc, ok := wf.(*antlrgen.NonAggregateWindowedFunctionContext); ok {
+				switch {
+				case wfc.ROW_NUMBER() != nil:
+					return "ROW_NUMBER"
+				case wfc.RANK() != nil:
+					return "RANK"
+				case wfc.DENSE_RANK() != nil:
+					return "DENSE_RANK"
+				case wfc.PERCENT_RANK() != nil:
+					return "PERCENT_RANK"
+				default:
+					return "WINDOW_FUNCTION"
+				}
+			}
+		}
 	case *antlrgen.SpecificFunctionCallContext:
 		if f.SpecificFunction() != nil {
 			switch sf := f.SpecificFunction().(type) {
