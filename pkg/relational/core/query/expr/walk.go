@@ -1193,7 +1193,7 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 				text := k.GetText()
 				f, err := strconv.ParseFloat(text, 64)
 				if err != nil {
-					return nil, fmt.Errorf("expr.walkConstant: float parse %q: %w", text, err)
+					return nil, &NumericOverflowLiteralError{Text: text}
 				}
 				return r.ResolveConstant(f)
 			}
@@ -1212,7 +1212,7 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 			if dl.REAL_LITERAL() != nil {
 				f, err := strconv.ParseFloat(text, 64)
 				if err != nil {
-					return nil, fmt.Errorf("expr.walkConstant: negative float parse %q: %w", text, err)
+					return nil, &NumericOverflowLiteralError{Text: text}
 				}
 				return r.ResolveConstant(f)
 			}
@@ -1264,4 +1264,15 @@ type UnsupportedExpressionShapeError struct {
 
 func (e *UnsupportedExpressionShapeError) Error() string {
 	return fmt.Sprintf("expr.WalkExpression: unsupported shape: %s", e.Shape)
+}
+
+// NumericOverflowLiteralError signals that a numeric literal overflows
+// its target type (e.g. 1e400 overflows float64). Should be mapped
+// to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+type NumericOverflowLiteralError struct {
+	Text string
+}
+
+func (e *NumericOverflowLiteralError) Error() string {
+	return fmt.Sprintf("numeric literal out of range: %s", e.Text)
 }

@@ -746,6 +746,21 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// structure, which interacts with countStar and outExpr in complex
 	// ways. TODO: port Java's SemanticAnalyzer.isComposableFrom.
 
+	// Detect overflow numeric literals in projection expressions.
+	if resolver != nil && len(sq.projExprs) > 0 {
+		for _, e := range sq.projExprs {
+			if e == nil {
+				continue
+			}
+			if _, walkErr := resolver.WalkExpressionForProjection(e); walkErr != nil {
+				var overflow *expr.NumericOverflowLiteralError
+				if errors.As(walkErr, &overflow) {
+					return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
+				}
+			}
+		}
+	}
+
 	if cteScopes != nil && len(sq.joins) == 0 {
 		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.ColumnAliasMap != nil {
 			rewriteProjectionAliases(op, src.ColumnAliasMap)
