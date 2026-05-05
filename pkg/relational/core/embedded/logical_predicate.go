@@ -48,6 +48,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic/rlcatalog"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // buildWherePredicateForTable converts a WHERE expression context
@@ -687,6 +688,42 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 // signals the invariant broke — tests assert on it so a future
 // builder change that drops the Filter doesn't silently throw
 // away the predicate.
+func validateOrderByColumns(sq *selectQuery, md *recordlayer.RecordMetaData) error {
+	if sq == nil || md == nil || len(sq.orderBy) == 0 || sq.tableName == "" {
+		return nil
+	}
+	if len(sq.joins) > 0 || sq.derivedQuery != nil || len(sq.aggCols) > 0 || sq.countStar {
+		return nil
+	}
+	rt := md.GetRecordType(sq.tableName)
+	if rt == nil || rt.Descriptor == nil {
+		return nil
+	}
+	projSet := make(map[string]bool)
+	for _, col := range sq.projCols {
+		projSet[strings.ToUpper(col)] = true
+	}
+	for i, alias := range sq.projAliases {
+		if alias != "" && i < len(sq.projCols) {
+			projSet[strings.ToUpper(alias)] = true
+		}
+	}
+	for _, ob := range sq.orderBy {
+		if ob.expr != nil || ob.colName == "" {
+			continue
+		}
+		upper := strings.ToUpper(ob.colName)
+		if projSet[upper] {
+			continue
+		}
+		if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) != nil {
+			continue
+		}
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", ob.colName)
+	}
+	return nil
+}
+
 func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaData) error {
 	if sq == nil || md == nil {
 		return nil
@@ -1257,6 +1294,9 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 		if err := validateQualifiedStarSources(sq, md); err != nil {
 			return nil, err
 		}
+		if err := validateOrderByColumns(sq, md); err != nil {
+			return nil, err
+		}
 		return buildLogicalPlanForSelectWithCatalog(sq, md), nil
 	case *antlrgen.SetQueryContext:
 		return buildLogicalPlanForUnionWithCatalog(b, md), nil
@@ -1294,6 +1334,9 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 				"Unsupported operator "+fn)
 		}
 		if err := validateQualifiedStarSources(sq, md); err != nil {
+			return nil, err
+		}
+		if err := validateOrderByColumns(sq, md); err != nil {
 			return nil, err
 		}
 		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes), nil
