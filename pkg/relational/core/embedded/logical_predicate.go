@@ -40,6 +40,7 @@ import (
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -611,6 +612,12 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		upgradeJoinOnPredicates(op, sq, md, cteScopes)
 	}
 
+	// Upgrade projections: walk projExprs through the Resolver to produce
+	// Value trees the Cascades translator can consume directly.
+	if len(sq.projExprs) > 0 {
+		upgradeProjectionValues(op, sq, md, cteScopes)
+	}
+
 	if sq.whereExpr == nil {
 		return op
 	}
@@ -656,6 +663,127 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredica
 		cur = ch[0]
 	}
 	return false
+}
+
+// upgradeProjectionValues walks the unary spine from op to find the
+// LogicalProject node, then attempts to resolve each projExpr through
+// the expr.Resolver to produce a values.Value tree. Successful slots
+// are stored in LogicalProject.ProjectedValues; failed slots remain nil
+// (the Cascades translator treats nil as "plain column reference" when
+// the text isn't a computed expression, or "cannot translate" otherwise).
+func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	proj := findProjection(op)
+	if proj == nil || len(sq.projExprs) == 0 {
+		return
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
+	}
+	vals := make([]values.Value, len(proj.Projections))
+	for i, e := range sq.projExprs {
+		if i >= len(vals) {
+			break
+		}
+		if e == nil {
+			continue
+		}
+		v, err := resolver.WalkExpression(e)
+		if err != nil {
+			continue
+		}
+		if !isCascadesSafeValue(v) {
+			continue
+		}
+		vals[i] = v
+	}
+	proj.ProjectedValues = vals
+}
+
+// isCascadesSafeValue checks whether v's tree contains only Value types
+// that Java's Cascades planner supports. Rejects ScalarFunctionValue
+// names not in the planner's function catalog (UPPER, SQRT, etc.).
+func isCascadesSafeValue(v values.Value) bool {
+	safe := true
+	values.WalkValue(v, func(node values.Value) bool {
+		if sf, ok := node.(*values.ScalarFunctionValue); ok {
+			if !cascadesSafeScalarFunction(sf.FuncName) {
+				safe = false
+				return false
+			}
+		}
+		return true
+	})
+	return safe
+}
+
+func cascadesSafeScalarFunction(name string) bool {
+	switch name {
+	case "COALESCE", "NULLIF", "IFNULL",
+		"GREATEST", "LEAST",
+		"IF", "IIF",
+		"ABS", "MOD":
+		return true
+	}
+	return false
+}
+
+func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
+	for cur := op; cur != nil; {
+		if p, ok := cur.(*logical.LogicalProject); ok {
+			return p
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return nil
+		}
+		cur = ch[0]
+	}
+	return nil
+}
+
+func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
+	if sq.tableName == "" && len(cteScopes) == 0 {
+		return nil
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+	addSource := func(tableName, alias string) bool {
+		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
+			aliasID := semantic.NewUnquoted(alias)
+			if alias == "" {
+				aliasID = semantic.NewUnquoted(tableName)
+			}
+			src.Alias = aliasID
+			src.CorrelationName = aliasID.Name()
+			return scope.AddSource(src) == nil
+		}
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err != nil {
+			return false
+		}
+		aliasID := semantic.NewUnquoted(alias)
+		if alias == "" {
+			aliasID = semantic.NewUnquoted(tableName)
+		}
+		return scope.AddSource(semantic.ScopeSource{
+			Table:           tbl,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}) == nil
+	}
+	if sq.tableName != "" {
+		if !addSource(sq.tableName, sq.tableAlias) {
+			return nil
+		}
+	}
+	for _, j := range sq.joins {
+		if !addSource(j.tableName, j.alias) {
+			return nil
+		}
+	}
+	return expr.New(analyzer, scope)
 }
 
 // buildLogicalPlanForDeleteWithCatalog is the catalog-aware variant

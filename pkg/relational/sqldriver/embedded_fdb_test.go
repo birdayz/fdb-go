@@ -2749,9 +2749,7 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 }
 
 func TestFDB_SelectScalarExpression(t *testing.T) {
-	// SELECT id, amount * 2 AS doubled FROM t — arithmetic in SELECT list.
 	t.Parallel()
-	t.Skip("TODO #78: arithmetic in SELECT list")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2775,18 +2773,15 @@ func TestFDB_SelectScalarExpression(t *testing.T) {
 	defer rows.Close()
 
 	g.Expect(rows.Next()).To(gomega.BeTrue())
-	var id int64
-	var doubled float64
+	var id, doubled int64
 	g.Expect(rows.Scan(&id, &doubled)).To(gomega.Succeed())
 	g.Expect(id).To(gomega.Equal(int64(1)))
-	g.Expect(doubled).To(gomega.Equal(float64(20)))
+	g.Expect(doubled).To(gomega.Equal(int64(20)))
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
 func TestFDB_SelectCoalesce(t *testing.T) {
-	// COALESCE(nullable_col, 0) returns the non-NULL value or default.
 	t.Parallel()
-	t.Skip("TODO #78: COALESCE function evaluation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

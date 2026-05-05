@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // --- Leaf operators (no children) ----------------------------------
@@ -82,10 +83,18 @@ func (f *LogicalFilter) Explain(indent string) string {
 // Each element of Projections is the canonical text of the projected
 // expression or column name. Aliases (parallel slice) hold the output
 // name; empty string means "use the underlying name."
+//
+// ProjectedValues (parallel to Projections) carries resolved Value
+// trees when the catalog-aware builder successfully walks the ANTLR
+// expression. nil slots mean the walker declined (unsupported shape)
+// — the Cascades translator treats nil as "cannot translate" and
+// returns nil for the whole query. Non-nil slots are used directly
+// as projection Values in the Cascades plan.
 type LogicalProject struct {
-	Input       LogicalOperator
-	Projections []string
-	Aliases     []string // parallel to Projections; "" means no alias
+	Input           LogicalOperator
+	Projections     []string
+	Aliases         []string       // parallel to Projections; "" means no alias
+	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
 }
 
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {
