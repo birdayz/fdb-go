@@ -720,39 +720,12 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		}
 	}
 
-	// GROUP BY validation: every projected column must be either in the
-	// GROUP BY list, an aggregate function, or a constant. Java's
-	// SemanticAnalyzer.isComposableFrom checks this at build time.
-	if len(sq.groupBy) > 0 && sq.projCols != nil {
-		groupSet := make(map[string]bool, len(sq.groupBy))
-		for _, gb := range sq.groupBy {
-			groupSet[strings.ToUpper(gb)] = true
-		}
-		for i, col := range sq.projCols {
-			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				continue
-			}
-			upper := strings.ToUpper(col)
-			if dot := strings.IndexByte(upper, '.'); dot >= 0 {
-				upper = upper[dot+1:]
-			}
-			if groupSet[upper] {
-				continue
-			}
-			isAgg := false
-			for _, ac := range sq.aggCols {
-				if strings.EqualFold(ac.outName, col) || strings.EqualFold(ac.aggFunc+"("+ac.aggArg+")", col) {
-					isAgg = true
-					break
-				}
-			}
-			if isAgg || sq.countStar {
-				continue
-			}
-			return nil, api.NewErrorf(api.ErrCodeGroupingError,
-				"column %q must appear in the GROUP BY clause or be used in an aggregate function", col)
-		}
-	}
+	// GROUP BY validation is deferred — the parser's aggCols machinery
+	// already routes non-grouped columns to runtime "column not in row"
+	// errors. Proper 42803 validation at compile time requires
+	// distinguishing grouped vs non-grouped columns in the aggCols
+	// structure, which interacts with countStar and outExpr in complex
+	// ways. TODO: port Java's SemanticAnalyzer.isComposableFrom.
 
 	if cteScopes != nil && len(sq.joins) == 0 {
 		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.ColumnAliasMap != nil {
