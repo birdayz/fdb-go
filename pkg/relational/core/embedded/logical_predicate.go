@@ -1358,8 +1358,13 @@ func buildLogicalPlanForQueryWithCatalog(
 		cteScopes = make(map[string]semantic.ScopeSource)
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
+			upper := strings.ToUpper(name)
+			if _, exists := cteScopes[upper]; exists {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
 			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
-				cteScopes[strings.ToUpper(name)] = src
+				cteScopes[upper] = src
 			}
 		}
 	}
