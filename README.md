@@ -184,22 +184,26 @@ Ginkgo specs against real FDB via testcontainers. **8000+ total test entry point
 | Area | Conformance specs |
 |------|------------------:|
 | CRUD + existence + isolation + conflicts | 49 |
-| Multi-type records (Customer) | 12 |
-| Split records | 9 |
-| Scanning (forward, reverse, limits) | 12 |
+| Multi-type records (Customer) | 15 |
+| Split records | 10 |
+| Scanning (forward, reverse, limits, tuple ordering) | 13 |
 | Continuation tokens (record + index level) | 6 |
 | VALUE indexes (single, composite, fan-out, covering) | 22 |
 | COUNT/SUM/MIN_EVER/MAX_EVER indexes | 38 |
 | COUNT_NOT_NULL/COUNT_UPDATES/CLEAR_WHEN_ZERO | 12 |
 | MAX_EVER_VERSION index | 7 |
 | PERMUTED_MIN/MAX indexes | 10 |
-| VERSION index | varies |
 | RANK index | 14 |
+| TEXT index | 12 |
+| BITMAP_VALUE index | 6 |
+| MULTIDIMENSIONAL index | 15 |
+| VECTOR index (HNSW) | 18 |
+| TIME_WINDOW_LEADERBOARD index | 11 |
 | Record versioning | 4 |
 | Record counting | 6 |
 | RangeSet wire format | 4 |
-| Store header (v1 + v2), index state, lifecycle | 25 |
-| DeleteAllRecords / DeleteRecordsWhere | 11 |
+| Store header (v1 + v2), index state, lifecycle | 28 |
+| DeleteAllRecords / DeleteRecordsWhere | 10 |
 | OnlineIndexer | 7 |
 | RecordMetaData proto serialization | 21 |
 | TypedRecord cross-language encoding | 11 |
