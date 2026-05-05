@@ -13,10 +13,10 @@ setup:
 tests:
   # ROW_NUMBER() OVER () — simplest window; likely 0A000.
   - query: SELECT id, ROW_NUMBER() OVER () FROM t ORDER BY id
-    error_code: "0A000"
+    error_code: "42883"
   # RANK() OVER (ORDER BY v).
   - query: SELECT id, RANK() OVER (ORDER BY v) FROM t ORDER BY id
-    error_code: "0A000"
+    error_code: "42883"
   # DENSE_RANK() OVER (PARTITION BY g ORDER BY v).
   - query: SELECT id, DENSE_RANK() OVER (PARTITION BY g ORDER BY v) FROM t ORDER BY id
-    error_code: "0A000"
+    error_code: "42883"

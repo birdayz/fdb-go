@@ -30,9 +30,9 @@ tests:
   # CLAUDE.md "Java↔Go conformance gotchas": doesn't work in Java →
   # doesn't work in Go.
   - query: SELECT a << 1 FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT a >> 1 FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   # NULL propagation — any op with NULL → NULL.
   - query: SELECT a & b FROM t WHERE id = 4
     rows:

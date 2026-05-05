@@ -18,29 +18,29 @@ setup:
   - INSERT INTO t VALUES (1, 'hello world'), (2, ''), (3, null)
 tests:
   - query: SELECT LEFT(s, 5) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT RIGHT(s, 5) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SUBSTRING(s, 7) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SUBSTRING(s, 1, 5) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT UPPER(s) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT LOWER('ABCxyz') FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT LENGTH('héllo') FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT CHAR_LENGTH('héllo') FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT CHARACTER_LENGTH('héllo') FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT OCTET_LENGTH('héllo') FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT POSITION('world', s) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT REVERSE(s) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   # Nested string function calls — outer rejection fires.
   - query: SELECT UPPER(REVERSE(s)) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
