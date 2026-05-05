@@ -27,14 +27,19 @@ tests:
   # Duplicate column → 42701.
   - query: SELECT b FROM t ORDER BY b, b
     error_code: "42701"
-  # Multi-column ORDER BY — rejected (Cascades planner has no rule).
+  # Multi-column ORDER BY — Go extension: in-memory sort handles this.
   - query: SELECT id, b FROM t ORDER BY b, id
-    error_code: "0AF01"
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
   # Duplicate via positional + name mix (ORDER BY 1, b on `SELECT b`
   # → both resolve to column `b`).
   - query: SELECT b FROM t ORDER BY 1, b
     error_code: "42701"
-  # Multi-column ORDER BY with arbitrary expression — rejected for
-  # both reasons (multi-key + expression).
+  # Multi-column ORDER BY with expression — Go extension: in-memory sort.
   - query: SELECT b FROM t ORDER BY b + 1, b + 1
-    error_code: "0AF01"
+    rows:
+      - [10]
+      - [20]
+      - [30]
