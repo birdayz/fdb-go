@@ -4135,7 +4135,6 @@ func TestFDB_CTE(t *testing.T) {
 // doesn't work in Java → doesn't work in Go.
 func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #80: FROM-less SELECT — build failure returns nil instead of error")
 	ctx := context.Background()
 
 	// Guard: SELECT without FROM still opens an FDB connection (sql.Open
@@ -4160,7 +4159,7 @@ func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for FROM-less SELECT; got success")
 	}
-	expectRejectionOrCascadesError(t, err, "query is not supported")
+	expectRejectionOrCascadesError(t, err, "query is not supported", "no schema metadata available")
 }
 
 // TestFDB_ConstantProjectionFolding exercises the embedded layer's
