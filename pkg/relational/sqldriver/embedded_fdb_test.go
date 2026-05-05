@@ -3743,7 +3743,7 @@ func TestFDB_RightJoin(t *testing.T) {
 
 func TestFDB_CountDistinct(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: COUNT(DISTINCT) not handled")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3776,16 +3776,13 @@ func TestFDB_CountDistinct(t *testing.T) {
 	// principle: doesn't work in Java → doesn't work in Go.
 	var n int64
 	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`).Scan(&n)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", err)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	g.Expect(err).To(gomega.HaveOccurred(), "COUNT(DISTINCT) must be rejected")
+	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT")
 
 	// COUNT(DISTINCT) inside GROUP BY is also rejected.
 	err = db.QueryRowContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`).Scan(new(string), &n)
-	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	g.Expect(err).To(gomega.HaveOccurred(), "COUNT(DISTINCT) in GROUP BY must be rejected")
+	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT")
 }
 
 func TestFDB_GreatestLeast(t *testing.T) {
@@ -6569,7 +6566,7 @@ func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 // insert from expression evaluation.
 func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: COUNT(DISTINCT) not handled")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6598,10 +6595,8 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 
 	var c int64
 	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", err)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	g.Expect(err).To(gomega.HaveOccurred(), "COUNT(DISTINCT) must be rejected")
+	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT")
 }
 
 // TestFDB_GroupByNullVsNilString pins that GROUP BY distinguishes between

@@ -289,6 +289,10 @@ func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
 		return expressions.AggregateSpec{}, false
 	}
 
+	if strings.HasPrefix(operandText, "DISTINCT ") {
+		return expressions.AggregateSpec{}, false
+	}
+
 	var operand values.Value
 	if operandText == "*" {
 		operand = &values.ConstantValue{Value: nil, Typ: values.UnknownType}
