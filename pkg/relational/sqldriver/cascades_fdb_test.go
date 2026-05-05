@@ -1311,6 +1311,35 @@ func TestFDB_CascadesMultiFilter(t *testing.T) {
 	t.Logf("Cascades multi-filter → %v ✓", names)
 }
 
+func TestFDB_CascadesOrderByPK(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx,
+		"SELECT name FROM Item ORDER BY item_id ASC")
+	if err != nil {
+		t.Fatalf("ORDER BY PK should succeed: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if len(names) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(names))
+	}
+	if names[0] != "Widget" || names[1] != "Gadget" || names[2] != "Doohickey" {
+		t.Fatalf("expected [Widget Gadget Doohickey], got %v", names)
+	}
+	t.Logf("Cascades ORDER BY PK → %v ✓", names)
+}
+
 func TestFDB_CascadesCTEOrderByNoIndex(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
