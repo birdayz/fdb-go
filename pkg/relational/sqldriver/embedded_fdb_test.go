@@ -7227,7 +7227,7 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 
 func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: column type metadata — ColumnTypeDatabaseTypeName wired but proto field lookup returns UNKNOWN in projection plan")
+	t.Skip("TODO #83: column type metadata — findScanPlan returns nil under projection (desc=nil)")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
