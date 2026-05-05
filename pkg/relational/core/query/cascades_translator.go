@@ -192,9 +192,11 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	}
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
+		nf := k.NullsFirst
 		sortKeys[i] = expressions.SortKey{
-			Value:   &values.FieldValue{Field: k.Expr, Typ: values.UnknownType},
-			Reverse: k.Dir == logical.SortDesc,
+			Value:      &values.FieldValue{Field: k.Expr, Typ: values.UnknownType},
+			Reverse:    k.Dir == logical.SortDesc,
+			NullsFirst: &nf,
 		}
 	}
 	return expressions.NewLogicalSortExpression(
@@ -338,12 +340,30 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		}
 	}
 
+	leftAlias := sourceAlias(j.Left)
+	rightAlias := sourceAlias(j.Right)
+
 	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
-	return expressions.NewSelectExpression(
+	return expressions.NewSelectExpressionWithAliases(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
 		preds,
+		[]string{leftAlias, rightAlias},
 	)
+}
+
+func sourceAlias(op logical.LogicalOperator) string {
+	switch o := op.(type) {
+	case *logical.LogicalScan:
+		if o.Alias != "" {
+			return strings.ToUpper(o.Alias)
+		}
+		return strings.ToUpper(o.Table)
+	case *logical.LogicalJoin:
+		return sourceAlias(o.Right)
+	default:
+		return ""
+	}
 }
 
 func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
@@ -431,11 +451,6 @@ func FindUnsupportedFunction(op logical.LogicalOperator) string {
 				return fn
 			}
 		}
-		for _, col := range proj.Projections {
-			if fn := extractUnsupportedFuncFromText(col); fn != "" {
-				return fn
-			}
-		}
 	}
 	if f, ok := op.(*logical.LogicalFilter); ok && f.Predicate != nil {
 		if fn := findUnsafeFuncInPredicate(f.Predicate); fn != "" {
@@ -448,30 +463,6 @@ func FindUnsupportedFunction(op logical.LogicalOperator) string {
 		}
 	}
 	return ""
-}
-
-func extractUnsupportedFuncFromText(text string) string {
-	upper := strings.ToUpper(strings.TrimSpace(text))
-	lparen := strings.Index(upper, "(")
-	if lparen <= 0 || lparen > 12 {
-		return ""
-	}
-	funcName := upper[:lparen]
-	for _, c := range funcName {
-		if !((c >= 'A' && c <= 'Z') || c == '_') {
-			return ""
-		}
-	}
-	switch funcName {
-	case "COUNT", "SUM", "MIN", "MAX", "AVG",
-		"CASE", "CAST", "IF":
-		return ""
-	default:
-		if values.IsCascadesSafeScalarFunction(funcName) {
-			return ""
-		}
-		return funcName
-	}
 }
 
 func findUnsafeFuncInValue(v values.Value) string {

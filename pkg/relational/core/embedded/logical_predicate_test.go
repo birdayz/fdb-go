@@ -1,12 +1,14 @@
 package embedded
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -51,7 +53,7 @@ func TestBuildLogicalPlanWithCatalog_WhereWalked(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE price > 5")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
@@ -79,7 +81,7 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE price > 5 AND order_id = 1")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -99,7 +101,7 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 func TestBuildLogicalPlanWithCatalog_NilMetaData(t *testing.T) {
 	t.Parallel()
 	sq := parseSelect(t, "SELECT * FROM t WHERE id > 5")
-	op := buildLogicalPlanForSelectWithCatalog(sq, nil)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, nil)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -119,7 +121,7 @@ func TestBuildLogicalPlanWithCatalog_UnknownTable(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM NoSuchTable WHERE id > 5")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -141,7 +143,7 @@ func TestBuildLogicalPlanWithCatalog_UnsupportedShape(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE FROBNICATE(price) = 1")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -163,7 +165,7 @@ func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE price = 1+2")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -183,7 +185,7 @@ func TestBuildLogicalPlanWithCatalog_RHSScalarFunctionFolded(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Customer WHERE name = UPPER('hi')")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -207,7 +209,7 @@ func TestBuildLogicalPlanWithCatalog_ScalarFunctionWalked(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM Order WHERE UPPER(price) = 'X'")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
 		t.Fatalf("expected LogicalFilter, got %T", op)
@@ -296,7 +298,7 @@ func TestBuildLogicalPlanWithCatalog_UnionThreadsMd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan")
 	}
@@ -339,7 +341,7 @@ func TestBuildLogicalPlanWithCatalog_CTEThreadsMd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	cte, ok := op.(*logical.LogicalCTE)
 	if !ok {
 		t.Fatalf("expected LogicalCTE root, got %T", op)
@@ -373,7 +375,7 @@ func TestBuildLogicalPlanWithCatalog_CTEOuterWhereGetsRealPredicate(t *testing.T
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	cte, ok := op.(*logical.LogicalCTE)
 	if !ok {
 		t.Fatalf("expected LogicalCTE root, got %T", op)
@@ -409,7 +411,7 @@ func TestBuildLogicalPlanWithCatalog_CTEChainedSchemaDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan for chained CTE query")
 	}
@@ -451,7 +453,7 @@ func TestBuildLogicalPlanWithCatalog_CTESelectStarSchemaDerivation(t *testing.T)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	cte, ok := op.(*logical.LogicalCTE)
 	if !ok {
 		t.Fatalf("expected LogicalCTE, got %T", op)
@@ -484,7 +486,7 @@ func TestBuildLogicalPlanWithCatalog_CTENoPredNeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan for CTE without WHERE")
 	}
@@ -498,7 +500,7 @@ func TestBuildLogicalPlanWithCatalog_JoinOnPredicateUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan")
 	}
@@ -720,7 +722,7 @@ func TestBuildLogicalPlanWithCatalog_JoinQualifiedColumn(t *testing.T) {
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE Order.price > 5")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	// Walk down to the Filter — the Join sits below.
 	var filter *logical.LogicalFilter
 	for cur := op; cur != nil; {
@@ -752,7 +754,7 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE quantity > 0")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	var filter *logical.LogicalFilter
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
@@ -783,7 +785,7 @@ func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FallsBackToText(t *tes
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Order ON Order.order_id = Order.order_id WHERE price > 5")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	if op == nil {
 		// Parser may reject the duplicate name before reaching the builder;
 		// in that case `parseSelect` would have already failed. If we get
@@ -821,7 +823,7 @@ func TestBuildLogicalPlanWithCatalog_ThreeWayJoin(t *testing.T) {
 			"JOIN Customer c ON o.order_id = c.customer_id "+
 			"JOIN TypedRecord t ON o.order_id = t.id "+
 			"WHERE o.price > 5 AND t.id > 0")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	if op == nil {
 		t.Fatal("expected non-nil plan")
 	}
@@ -856,28 +858,17 @@ func TestBuildLogicalPlanWithCatalog_ThreeWayJoin(t *testing.T) {
 // JOIN with ambiguous bare column — `price` exists in both Order
 // and Customer. Walker correctly fails on AmbiguousColumnError;
 // builder falls back to text.
-func TestBuildLogicalPlanWithCatalog_JoinAmbiguousBareColumn_FallsBackToText(t *testing.T) {
+func TestBuildLogicalPlanWithCatalog_JoinAmbiguousColumn_ErrorsProperly(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE price > 5")
-	op := buildLogicalPlanForSelectWithCatalog(sq, md)
-	var filter *logical.LogicalFilter
-	for cur := op; cur != nil; {
-		if f, ok := cur.(*logical.LogicalFilter); ok {
-			filter = f
-			break
-		}
-		ch := cur.Children()
-		if len(ch) != 1 {
-			break
-		}
-		cur = ch[0]
+	_, err := buildLogicalPlanForSelectWithCatalog(sq, md)
+	if err == nil {
+		t.Fatal("expected ambiguous column error for unqualified 'price' in JOIN (exists in both Order and Customer)")
 	}
-	if filter == nil {
-		t.Fatalf("expected LogicalFilter, got tree:\n%s", op.Explain(""))
-	}
-	if filter.Predicate != nil {
-		t.Fatalf("expected text fallback for ambiguous bare column; Predicate=%s", filter.Predicate.Explain())
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeAmbiguousColumn {
+		t.Fatalf("expected ErrCodeAmbiguousColumn, got: %v", err)
 	}
 }

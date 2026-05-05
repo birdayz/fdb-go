@@ -302,7 +302,13 @@ func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
 	if len(pk) == 0 {
 		return properties.Ordering{}
 	}
-	return properties.Ordering{IsKnown: true, Keys: pk}
+	desc := make([]bool, len(pk))
+	if w.plan.IsReverse() {
+		for i := range desc {
+			desc[i] = true
+		}
+	}
+	return properties.Ordering{IsKnown: true, Keys: pk, Descending: desc}
 }
 
 func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -378,11 +384,14 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 	if firstNonEq >= len(w.columnNames) {
 		return properties.Ordering{IsKnown: true}
 	}
+	rev := w.plan.IsReverse()
 	keys := make([]values.Value, 0, len(w.columnNames)-firstNonEq)
+	desc := make([]bool, 0, len(w.columnNames)-firstNonEq)
 	for i := firstNonEq; i < len(w.columnNames); i++ {
 		keys = append(keys, &values.FieldValue{Field: w.columnNames[i], Typ: values.UnknownType})
+		desc = append(desc, rev)
 	}
-	return properties.Ordering{IsKnown: true, Keys: keys}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
 }
 
 // HintRichOrdering returns the full ordering with bindings: equality-bound
@@ -397,13 +406,18 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 	bm := make(map[values.Value][]OrderingBinding)
 	keys := make([]values.Value, 0, len(w.columnNames))
 
+	rev := w.plan.IsReverse()
 	for i, col := range w.columnNames {
 		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
 		keys = append(keys, key)
 		if i < len(comps) && comps[i].IsEquality() {
 			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
 		} else {
-			bm[key] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+			dir := ProvidedSortOrderAscending
+			if rev {
+				dir = ProvidedSortOrderDescending
+			}
+			bm[key] = []OrderingBinding{SortedBinding(dir)}
 		}
 	}
 	return NewRichOrdering(bm, keys, w.unique)

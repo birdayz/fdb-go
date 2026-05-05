@@ -16,7 +16,6 @@ import (
 // it — the harness loses a regression sentinel.
 func TestSeedCorpus_GoEngineSucceedsOnAll(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path — plandiff corpus blocked on computed projections, JOINs, ORDER BY")
 	ctx := context.Background()
 	eng := NewGoEngine()
 	corpus := SeedCorpus()

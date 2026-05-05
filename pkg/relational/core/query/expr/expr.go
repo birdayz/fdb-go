@@ -65,6 +65,7 @@ package expr
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -167,6 +168,11 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		return nil, err
 	}
 	field := col.Id.Name()
+	if src.ColumnAliasMap != nil {
+		if real, ok := src.ColumnAliasMap[strings.ToUpper(field)]; ok {
+			field = real
+		}
+	}
 	if src.CorrelationName != "" && len(r.scope.Sources()) > 1 {
 		field = src.CorrelationName + "." + field
 	}

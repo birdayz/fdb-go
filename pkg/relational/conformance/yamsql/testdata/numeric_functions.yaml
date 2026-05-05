@@ -34,74 +34,74 @@ tests:
   # ABS / SQRT / POWER / POW.
   # ---------------------------------------------------------------
   - query: SELECT ABS(n) FROM t WHERE id = 2
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT ABS(v) FROM t WHERE id = 2
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SQRT(v * 4) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT POWER(v, 2) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT POW(v, 2) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   # NULL propagation does not apply once the function is rejected
   # at the registry layer — the rejection fires before evaluation.
   - query: SELECT ABS(v) FROM t WHERE id = 4
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT POWER(v, 2) FROM t WHERE id = 4
-    error_code: "0A000"
+    error_code: "42883"
 
   # ---------------------------------------------------------------
   # FLOOR / CEIL / CEILING / ROUND / SIGN / PI / EXP / LN / LOG —
   # also absent from Java's BuiltInFunction registry, also rejected.
   # ---------------------------------------------------------------
   - query: SELECT FLOOR(v) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT FLOOR(v) FROM t WHERE id = 2
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT CEIL(v) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT CEILING(v) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT ROUND(v) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT ROUND(3.14159, 2) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT ROUND(3.7, 0) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT ROUND(1234.5, -2) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SIGN(v) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SIGN(v) FROM t WHERE id = 2
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SIGN(v) FROM t WHERE id = 3
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT EXP(0) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT LN(1.0) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT LOG(2, 8) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   # PI must still be referenced from a FROM-bound query — bare
   # `SELECT PI()` is rejected as a FROM-less SimpleTable (TestFDB_PiFunctionRejected),
   # but here the rejection fires at function-registry lookup.
   - query: SELECT PI() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   # Rejection fires before evaluation, so NULL inputs don't even
   # reach the evaluator — same 0A000 surfaces.
   - query: SELECT FLOOR(v) FROM t WHERE id = 4
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SIGN(v) FROM t WHERE id = 4
-    error_code: "0A000"
+    error_code: "42883"
 
   # ---------------------------------------------------------------
   # MOD function form is rejected (Java has no MOD function, only
   # the `%` operator that the synonym map binds to "mod").
   # ---------------------------------------------------------------
   - query: SELECT MOD(n, 3) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT MOD(n, 3) FROM t WHERE id = 2
-    error_code: "0A000"
+    error_code: "42883"
 
   # ---------------------------------------------------------------
   # Modulo via `%` operator (Java synonym map: `%` -> "mod"). The

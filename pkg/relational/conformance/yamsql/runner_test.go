@@ -58,7 +58,7 @@ func TestMain(m *testing.M) {
 // Java returns" and pinning our behaviour against it.
 func TestYamsqlConformance(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path — yamsql conformance blocked on computed projections, JOINs, ORDER BY")
+	t.Skip("BUG: 58/111 scenarios fail (was 70 start-of-shift, 53 pass now)")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

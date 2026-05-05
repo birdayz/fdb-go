@@ -57,10 +57,18 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	aliases := sel.GetSourceAliases()
+	var leftAlias, rightAlias string
+	if len(aliases) >= 2 {
+		leftAlias = aliases[0]
+		rightAlias = aliases[1]
+	}
+
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
 		leftPlan, rightPlan,
 		sel.GetPredicates(),
 		plans.JoinInner,
+		leftAlias, rightAlias,
 	)
 
 	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))

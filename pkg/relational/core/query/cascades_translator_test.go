@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
@@ -400,12 +401,20 @@ func TestFindUnsupportedFunction(t *testing.T) {
 	}{
 		{"nil op", nil, ""},
 		{"plain scan", logical.NewScan("T", ""), ""},
-		{"projection with ABS", func() logical.LogicalOperator {
-			p := logical.NewProject(logical.NewScan("T", ""), []string{"ABS(x)"}, nil)
+		{"projection with ABS in Value tree", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
+			p.ProjectedValues = []values.Value{
+				values.NewScalarFunctionValue("ABS", values.UnknownType,
+					&values.FieldValue{Field: "x", Typ: values.UnknownType}),
+			}
 			return p
 		}(), "ABS"},
-		{"projection with SQRT", func() logical.LogicalOperator {
-			p := logical.NewProject(logical.NewScan("T", ""), []string{"SQRT(x)"}, nil)
+		{"projection with SQRT in Value tree", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
+			p.ProjectedValues = []values.Value{
+				values.NewScalarFunctionValue("SQRT", values.UnknownType,
+					&values.FieldValue{Field: "x", Typ: values.UnknownType}),
+			}
 			return p
 		}(), "SQRT"},
 		{"projection with COUNT (allowed)", func() logical.LogicalOperator {
@@ -436,34 +445,91 @@ func TestFindUnsupportedFunction(t *testing.T) {
 	}
 }
 
-func TestExtractUnsupportedFuncFromText(t *testing.T) {
+func TestFindUnsupportedFunction_ValueTree(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		input string
-		want  string
+		name string
+		op   logical.LogicalOperator
+		want string
 	}{
-		{"ABS(x)", "ABS"},
-		{"SQRT(x)", "SQRT"},
-		{"SUBSTRING(a,1,2)", "SUBSTRING"},
-		{"COUNT(*)", ""},
-		{"SUM(amount)", ""},
-		{"COALESCE(a,b)", ""},
-		{"CAST(x AS INT)", ""},
-		{"name", ""},
-		{"a + b", ""},
-		{"", ""},
-		{"(x)", ""},
-		{"TOOLONGFUNCNAME(x)", ""},
-		{"123(x)", ""},
-		{"CASEWHENEXISTS(x)", ""},
+		{"nil", nil, ""},
+		{"scan", logical.NewScan("T", ""), ""},
+		{"safe func in value", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
+			p.ProjectedValues = []values.Value{
+				values.NewScalarFunctionValue("COALESCE", values.UnknownType,
+					&values.FieldValue{Field: "a", Typ: values.UnknownType}),
+			}
+			return p
+		}(), ""},
+		{"unsafe func in value", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
+			p.ProjectedValues = []values.Value{
+				values.NewScalarFunctionValue("ABS", values.UnknownType,
+					&values.FieldValue{Field: "a", Typ: values.UnknownType}),
+			}
+			return p
+		}(), "ABS"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.input, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractUnsupportedFuncFromText(tc.input)
+			got := FindUnsupportedFunction(tc.op)
 			if got != tc.want {
-				t.Fatalf("extractUnsupportedFuncFromText(%q): got %q, want %q", tc.input, got, tc.want)
+				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
 	}
+}
+
+func FuzzTranslateToCascades(f *testing.F) {
+	tables := []string{"Orders", "Items", "Customer", "Sales"}
+	cols := []string{"id", "name", "price", "amount", "status"}
+
+	f.Add(byte(0), byte(0), byte(0), byte(0), byte(0), byte(0))
+	f.Add(byte(1), byte(2), byte(3), byte(1), byte(1), byte(0))
+	f.Add(byte(3), byte(4), byte(1), byte(2), byte(2), byte(1))
+
+	f.Fuzz(func(t *testing.T, opKind, tableIdx, colIdx, childKind, childCol, flags byte) {
+		tbl := tables[int(tableIdx)%len(tables)]
+		col := cols[int(colIdx)%len(cols)]
+		childTbl := tables[int(childKind)%len(tables)]
+		childField := cols[int(childCol)%len(cols)]
+
+		var op logical.LogicalOperator
+		scan := logical.NewScan(tbl, "")
+
+		switch opKind % 8 {
+		case 0:
+			op = scan
+		case 1:
+			op = logical.NewFilter(scan, col+" > 10")
+		case 2:
+			op = logical.NewProject(scan, []string{col, childField}, nil)
+		case 3:
+			right := logical.NewScan(childTbl, "a")
+			op = logical.NewJoin(scan, right, logical.JoinInner, "")
+		case 4:
+			op = logical.NewSort(scan, []logical.SortKey{{Expr: col, Dir: logical.SortAsc}})
+		case 5:
+			op = logical.NewDistinct(scan)
+		case 6:
+			body := logical.NewScan(tbl, "")
+			main := logical.NewFilter(logical.NewScan(tbl, ""), col+" > 0")
+			op = logical.NewCTE("cte1", body, main, false)
+		case 7:
+			left := logical.NewProject(scan, []string{col}, nil)
+			right := logical.NewProject(logical.NewScan(childTbl, ""), []string{childField}, nil)
+			op = logical.NewUnion([]logical.LogicalOperator{left, right}, true)
+		}
+
+		if flags&1 != 0 {
+			op = logical.NewFilter(op, col+" = 'test'")
+		}
+		if flags&2 != 0 {
+			op = logical.NewProject(op, []string{col}, nil)
+		}
+
+		TranslateToCascades(op)
+	})
 }

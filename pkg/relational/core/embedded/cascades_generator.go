@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
@@ -67,9 +69,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "malformed SELECT statement")
 	}
 
-	// INFORMATION_SCHEMA queries go through the system-table path (naive),
-	// not the Cascades planner. Go-only feature (#9 decision: keep).
-	if strings.Contains(strings.ToUpper(sql), "INFORMATION_SCHEMA") {
+	if referencesInformationSchema(q) {
 		return g.naive.Plan(ctx, sql)
 	}
 
@@ -82,14 +82,17 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"no schema metadata available")
 	}
 
-	logicalOp := buildLogicalPlanForQueryWithCatalog(q, md)
+	logicalOp, buildErr := buildLogicalPlanForQueryWithCatalog(q, md)
+	if buildErr != nil {
+		return nil, buildErr
+	}
 	if logicalOp == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewError(api.ErrCodeUndefinedFunction,
 			"Unsupported operator "+fn)
 	}
 
@@ -156,6 +159,11 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 	if logicalOp == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
+	}
+
+	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
+		return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			"Unsupported operator "+fn)
 	}
 
 	ref := query.TranslateToCascades(logicalOp)
@@ -784,4 +792,106 @@ func findLogicalScan(op logical.LogicalOperator) *logical.LogicalScan {
 		}
 	}
 	return nil
+}
+
+// referencesInformationSchema walks the ANTLR parse tree and returns
+// true if any table name contains "INFORMATION_SCHEMA". Uses typed
+// parse tree nodes — no string matching on raw SQL text.
+func referencesInformationSchema(ctx antlr.Tree) bool {
+	if ctx == nil {
+		return false
+	}
+	if atom, ok := ctx.(*antlrgen.AtomTableItemContext); ok {
+		if tn := atom.TableName(); tn != nil {
+			if strings.Contains(strings.ToUpper(tn.GetText()), "INFORMATION_SCHEMA") {
+				return true
+			}
+		}
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if referencesInformationSchema(ctx.GetChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// findUnsupportedFunctionInParseTree walks an ANTLR expression tree
+// and returns the name of the first scalar function call that isn't
+// in the Cascades-safe set. Uses typed parse tree nodes — no text
+// matching.
+func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
+	if ctx == nil {
+		return ""
+	}
+	switch n := ctx.(type) {
+	case *antlrgen.FunctionCallExpressionAtomContext:
+		if fc := n.FunctionCall(); fc != nil {
+			if name := extractFunctionNameFromCall(fc); name != "" {
+				if !isAllowedFunction(name) {
+					return name
+				}
+			}
+		}
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if fn := findUnsupportedFunctionInParseTree(ctx.GetChild(i)); fn != "" {
+			return fn
+		}
+	}
+	return ""
+}
+
+func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
+	switch f := fc.(type) {
+	case *antlrgen.ScalarFunctionCallContext:
+		if f.ScalarFunctionName() != nil {
+			return strings.ToUpper(f.ScalarFunctionName().GetText())
+		}
+	case *antlrgen.UserDefinedScalarFunctionCallContext:
+		if f.UserDefinedScalarFunctionName() != nil {
+			return strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
+		}
+	case *antlrgen.SpecificFunctionCallContext:
+		if f.SpecificFunction() != nil {
+			switch sf := f.SpecificFunction().(type) {
+			case *antlrgen.SimpleFunctionCallContext:
+				if sf.CURRENT_DATE() != nil {
+					return "CURRENT_DATE"
+				}
+				if sf.CURRENT_TIME() != nil {
+					return "CURRENT_TIME"
+				}
+				if sf.CURRENT_TIMESTAMP() != nil {
+					return "CURRENT_TIMESTAMP"
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func isAllowedFunction(name string) bool {
+	switch name {
+	case "COUNT", "SUM", "MIN", "MAX", "AVG",
+		"CASE", "CAST", "IF",
+		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME":
+		return true
+	}
+	return values.IsCascadesSafeScalarFunction(name)
+}
+
+// findUnsupportedFunctionInSelectQuery walks the ANTLR expression
+// contexts in a selectQuery's projections and returns the first
+// unsupported function name, or "".
+func findUnsupportedFunctionInSelectQuery(sq *selectQuery) string {
+	if sq == nil {
+		return ""
+	}
+	for _, expr := range sq.projExprs {
+		if fn := findUnsupportedFunctionInParseTree(expr); fn != "" {
+			return fn
+		}
+	}
+	return ""
 }

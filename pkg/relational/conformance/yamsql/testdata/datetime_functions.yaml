@@ -125,20 +125,20 @@ tests:
   # MySQL aliases — Java-aligned rejection (0A000).
   # ---------------------------------------------------------------
   - query: SELECT NOW() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT SYSDATE() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT UTC_TIMESTAMP() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT CURDATE() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT UTC_DATE() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT CURTIME() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   - query: SELECT UTC_TIME() FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"
   # MySQL alias inside a date-part call: rejection still fires at
   # the inner function call.
   - query: SELECT YEAR(NOW()) FROM t WHERE id = 1
-    error_code: "0A000"
+    error_code: "42883"

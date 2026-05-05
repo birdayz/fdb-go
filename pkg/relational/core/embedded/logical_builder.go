@@ -285,7 +285,11 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			if expr == "" && ob.rawExpr != nil {
 				expr = ob.rawExpr.GetText()
 			}
-			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir})
+			nullsFirst := ob.ascending
+			if ob.nullsFirst != nil {
+				nullsFirst = *ob.nullsFirst
+			}
+			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst})
 		}
 		op = logical.NewSort(op, keys)
 	}

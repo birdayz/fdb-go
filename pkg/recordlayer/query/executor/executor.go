@@ -101,6 +101,11 @@ func ExecutePlan(
 		return executeMergeSortUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryInUnionPlan:
 		return executeInUnion(ctx, p, store, evalCtx, continuation, props)
+
+	// --- Go extensions (no Java equivalent) ---
+	case *plans.RecordQueryInMemorySortPlan:
+		return executeInMemorySort(ctx, p, store, evalCtx, continuation, props)
+
 	default:
 		return nil, fmt.Errorf("executor: unsupported plan type %T", plan)
 	}
@@ -562,7 +567,8 @@ func executeUnion(
 	}
 
 	var all []QueryResult
-	for _, inner := range inners {
+	var firstBranchKeys []string
+	for branchIdx, inner := range inners {
 		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
 		if err != nil {
 			return nil, err
@@ -571,9 +577,54 @@ func executeUnion(
 		if err != nil {
 			return nil, err
 		}
+		if branchIdx == 0 && len(items) > 0 {
+			if m, ok := items[0].Datum.(map[string]any); ok {
+				firstBranchKeys = mapKeysOrdered(m)
+			}
+		}
+		if branchIdx > 0 && len(firstBranchKeys) > 0 {
+			for i := range items {
+				items[i] = remapUnionColumns(items[i], firstBranchKeys)
+			}
+		}
 		all = append(all, items...)
 	}
 	return applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func mapKeysOrdered(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func remapUnionColumns(qr QueryResult, targetKeys []string) QueryResult {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return qr
+	}
+	srcKeys := mapKeysOrdered(m)
+	if len(srcKeys) != len(targetKeys) {
+		return qr
+	}
+	needsRemap := false
+	for i := range srcKeys {
+		if srcKeys[i] != targetKeys[i] {
+			needsRemap = true
+			break
+		}
+	}
+	if !needsRemap {
+		return qr
+	}
+	remapped := make(map[string]any, len(m))
+	for i, srcKey := range srcKeys {
+		remapped[targetKeys[i]] = m[srcKey]
+	}
+	return QueryResult{Datum: remapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 }
 
 func executeIntersection(
@@ -685,7 +736,7 @@ func executeNestedLoopJoin(
 
 		matched := false
 		for _, innerRow := range innerRows {
-			combined := mergeRows(outerRow, innerRow)
+			combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
 			if passesJoinPredicates(combined, preds, evalCtx) {
 				results = append(results, combined)
 				matched = true
@@ -700,7 +751,7 @@ func executeNestedLoopJoin(
 	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
 }
 
-func mergeRows(outer, inner QueryResult) QueryResult {
+func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryResult {
 	outerMap, ok1 := outer.Datum.(map[string]any)
 	innerMap, ok2 := inner.Datum.(map[string]any)
 	if !ok1 || !ok2 {
@@ -710,15 +761,33 @@ func mergeRows(outer, inner QueryResult) QueryResult {
 	merged := make(map[string]any, len(outerMap)+len(innerMap))
 	outerType := recordTypeName(outer)
 	innerType := recordTypeName(inner)
+
+	outerQual := outerAlias
+	if outerQual == "" {
+		outerQual = outerType
+	}
+	innerQual := innerAlias
+	if innerQual == "" {
+		innerQual = innerType
+	}
+
 	for k, v := range outerMap {
 		merged[k] = v
-		if outerType != "" {
+		if outerQual != "" {
+			merged[outerQual+"."+strings.ToUpper(k)] = v
+		}
+		if outerAlias != "" && outerType != "" && outerAlias != outerType {
 			merged[outerType+"."+strings.ToUpper(k)] = v
 		}
 	}
 	for k, v := range innerMap {
-		merged[k] = v
-		if innerType != "" {
+		if innerQual == "" || innerQual != outerQual {
+			merged[k] = v
+		}
+		if innerQual != "" {
+			merged[innerQual+"."+strings.ToUpper(k)] = v
+		}
+		if innerAlias != "" && innerType != "" && innerAlias != innerType {
 			merged[innerType+"."+strings.ToUpper(k)] = v
 		}
 	}
@@ -1620,4 +1689,75 @@ func compareAny(a, b any) int {
 	default:
 		return 0
 	}
+}
+
+// --- Go extensions (no Java equivalent) ---
+
+// executeInMemorySort materializes the inner plan's output and sorts it.
+// Go extension — Java's Cascades has no physical sort operator.
+func executeInMemorySort(
+	ctx context.Context,
+	p *plans.RecordQueryInMemorySortPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+	results, err := CollectAll(ctx, innerCursor)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := p.GetSortKeys()
+	sort.SliceStable(results, func(i, j int) bool {
+		for _, k := range keys {
+			ci := compareByField(results[i], k.Field)
+			cj := compareByField(results[j], k.Field)
+			iNil := ci == nil
+			jNil := cj == nil
+			if iNil && jNil {
+				continue
+			}
+			if iNil || jNil {
+				if k.NullsFirst {
+					return iNil
+				}
+				return jNil
+			}
+			cmp := compareValues(ci, cj)
+			if cmp == 0 {
+				continue
+			}
+			if k.Desc {
+				return cmp > 0
+			}
+			return cmp < 0
+		}
+		return false
+	})
+
+	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func compareByField(qr QueryResult, field string) any {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, found := m[field]; found {
+		return v
+	}
+	if v, found := m[strings.ToUpper(field)]; found {
+		return v
+	}
+	for k, v := range m {
+		if strings.EqualFold(k, field) {
+			return v
+		}
+	}
+	return nil
 }

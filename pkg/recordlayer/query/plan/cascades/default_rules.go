@@ -112,6 +112,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementFilterRule(),
 		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
+		NewOrderedPrimaryScanRule(),
 		NewImplementDistinctRule(),
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
@@ -155,7 +156,8 @@ func DMLImplementationRules() []ExpressionRule {
 // PLANNING phase. FinalizeExpressionsRule is the catch-all; the
 // specific rules fire before it for expressions they recognize.
 func DefaultImplementationRules() []ImplementationRule {
-	return []ImplementationRule{
+	rules := []ImplementationRule{
+		// --- Java-ported rules (1:1 with fdb-record-layer-core) ---
 		NewImplementSimpleSelectRule(),
 		NewImplementDistinctUnionRule(),
 		NewImplementInJoinRule(),
@@ -165,6 +167,18 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
 		NewFinalizeExpressionsRule(),
+	}
+	rules = append(rules, GoExtensionImplementationRules()...)
+	return rules
+}
+
+// GoExtensionImplementationRules returns implementation rules that have
+// no Java equivalent. These extend the Cascades planner with in-memory
+// post-processing operators (RFC-001). Registered separately so the
+// boundary between Java-ported and Go-extension rules is explicit.
+func GoExtensionImplementationRules() []ImplementationRule {
+	return []ImplementationRule{
+		NewImplementInMemorySortRule(),
 	}
 }
 

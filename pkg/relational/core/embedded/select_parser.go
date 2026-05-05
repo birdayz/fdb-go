@@ -345,7 +345,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	}
 	display := argCol
 	if display == "" && argExpr != nil {
-		display = argExpr.GetText()
+		display = canonicalTextOf(argExpr)
 	}
 	switch {
 	case display == "":
@@ -527,7 +527,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						if alias != "" {
 							colName = alias
 						} else {
-							colName = e.Expression().GetText()
+							colName = canonicalTextOf(e.Expression())
 						}
 						expr = e.Expression()
 					}
@@ -1092,7 +1092,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					if i >= len(selectExprsSnapshot) || selectExprsSnapshot[i] == nil {
 						break
 					}
-					sq.groupBy = append(sq.groupBy, selectExprsSnapshot[i].GetText())
+					sq.groupBy = append(sq.groupBy, canonicalTextOf(selectExprsSnapshot[i]))
 					sq.groupByExprs = append(sq.groupByExprs, selectExprsSnapshot[i])
 					redirected = true
 					break
@@ -1104,7 +1104,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			} else {
 				// Synthesize a display name from the expression text; the
 				// value used for grouping comes from evaluating the expr.
-				sq.groupBy = append(sq.groupBy, item.Expression().GetText())
+				sq.groupBy = append(sq.groupBy, canonicalTextOf(item.Expression()))
 				sq.groupByExprs = append(sq.groupByExprs, item.Expression())
 			}
 			if aliasName != "" {
@@ -1328,7 +1328,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if origExpr == nil {
 				continue
 			}
-			projText := origExpr.GetText()
+			projText := canonicalTextOf(origExpr)
 			for gi, gn := range sq.groupBy {
 				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
 					sq.aggCols[ai].groupCol = gn
@@ -1355,7 +1355,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if ac.outExpr == nil || ac.aggFunc != "" {
 				continue
 			}
-			outExprText := ac.outExpr.GetText()
+			outExprText := canonicalTextOf(ac.outExpr)
 			for gi, gn := range sq.groupBy {
 				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && outExprText == gn {
 					sq.aggCols[ai].outExpr = nil
@@ -1486,7 +1486,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					}
 					gc := c
 					if i < len(projExprs) && projExprs[i] != nil {
-						projText := projExprs[i].GetText()
+						projText := canonicalTextOf(projExprs[i])
 						for gi, gn := range sq.groupBy {
 							if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
 								gc = gn
