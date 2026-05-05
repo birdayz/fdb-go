@@ -813,10 +813,16 @@ func buildSelectScope(
 // columns. Returns nil for qualified names (contain ".") or when
 // resolver is nil.
 func resolveColumnName(resolver *expr.Resolver, col string) error {
-	if resolver == nil || col == "" || strings.Contains(col, ".") {
+	if resolver == nil || col == "" {
 		return nil
 	}
-	_, err := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))
+	var qualifier semantic.Identifier
+	id := semantic.NewUnquoted(col)
+	if dot := strings.IndexByte(col, '.'); dot >= 0 {
+		qualifier = semantic.NewUnquoted(col[:dot])
+		id = semantic.NewUnquoted(col[dot+1:])
+	}
+	_, err := resolver.ResolveIdentifier(qualifier, id)
 	if err != nil {
 		var ambigErr *semantic.AmbiguousColumnError
 		if errors.As(err, &ambigErr) {
@@ -827,6 +833,11 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		if errors.As(err, &notFoundErr) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q does not exist", col)
+		}
+		var srcNotFound *semantic.SourceNotFoundError
+		if errors.As(err, &srcNotFound) {
+			return api.NewErrorf(api.ErrCodeUndefinedTable,
+				"table %q does not exist", strings.ToUpper(col[:strings.IndexByte(col, '.')]))
 		}
 	}
 	return nil
