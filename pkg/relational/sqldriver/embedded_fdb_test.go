@@ -1389,6 +1389,45 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]row{{3, 300}, {2, 200}, {1, 100}}))
 }
 
+func TestFDB_SelectOrderByMultiColumn(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ob_multi")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_multi")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ob_multi_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, a STRING NOT NULL, b BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_ab ON T (a, b)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_ob_multi/main WITH TEMPLATE ob_multi_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ob_multi?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx,
+		"INSERT INTO T (id, a, b) VALUES (1, 'b', 2), (2, 'a', 3), (3, 'a', 1), (4, 'b', 1)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT a, b FROM T ORDER BY a ASC, b ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type row struct {
+		a string
+		b int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.a, &r.b)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{"a", 1}, {"a", 3}, {"b", 1}, {"b", 2}}))
+}
+
 func TestFDB_SelectDistinctOrderBy(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
