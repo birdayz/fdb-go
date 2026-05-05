@@ -1,12 +1,14 @@
 package embedded
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -856,28 +858,17 @@ func TestBuildLogicalPlanWithCatalog_ThreeWayJoin(t *testing.T) {
 // JOIN with ambiguous bare column — `price` exists in both Order
 // and Customer. Walker correctly fails on AmbiguousColumnError;
 // builder falls back to text.
-func TestBuildLogicalPlanWithCatalog_JoinAmbiguousBareColumn_FallsBackToText(t *testing.T) {
+func TestBuildLogicalPlanWithCatalog_JoinAmbiguousColumn_ErrorsProperly(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE price > 5")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
-	var filter *logical.LogicalFilter
-	for cur := op; cur != nil; {
-		if f, ok := cur.(*logical.LogicalFilter); ok {
-			filter = f
-			break
-		}
-		ch := cur.Children()
-		if len(ch) != 1 {
-			break
-		}
-		cur = ch[0]
+	_, err := buildLogicalPlanForSelectWithCatalog(sq, md)
+	if err == nil {
+		t.Fatal("expected ambiguous column error for unqualified 'price' in JOIN (exists in both Order and Customer)")
 	}
-	if filter == nil {
-		t.Fatalf("expected LogicalFilter, got tree:\n%s", op.Explain(""))
-	}
-	if filter.Predicate != nil {
-		t.Fatalf("expected text fallback for ambiguous bare column; Predicate=%s", filter.Predicate.Explain())
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeAmbiguousColumn {
+		t.Fatalf("expected ErrCodeAmbiguousColumn, got: %v", err)
 	}
 }

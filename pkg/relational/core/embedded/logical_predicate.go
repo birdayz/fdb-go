@@ -704,6 +704,21 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	if sq.whereExpr == nil {
 		return op, nil
 	}
+
+	// Walk WHERE expression through the resolver to catch ambiguous/
+	// undefined column references before the predicate builder. The
+	// predicate builder swallows errors into text fallback — this
+	// check ensures semantic errors surface with correct SQLSTATE.
+	if resolver != nil && sq.whereExpr.Expression() != nil {
+		if _, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression()); walkErr != nil {
+			var ambigErr *semantic.AmbiguousColumnError
+			if errors.As(walkErr, &ambigErr) {
+				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"column reference is ambiguous")
+			}
+		}
+	}
+
 	var pred predicates.QueryPredicate
 	var ok bool
 	if cteScopes != nil && len(sq.joins) == 0 {
