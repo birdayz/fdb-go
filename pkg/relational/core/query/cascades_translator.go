@@ -449,11 +449,6 @@ func FindUnsupportedFunction(op logical.LogicalOperator) string {
 				return fn
 			}
 		}
-		for _, col := range proj.Projections {
-			if fn := extractUnsupportedFuncFromText(col); fn != "" {
-				return fn
-			}
-		}
 	}
 	if f, ok := op.(*logical.LogicalFilter); ok && f.Predicate != nil {
 		if fn := findUnsafeFuncInPredicate(f.Predicate); fn != "" {
@@ -466,30 +461,6 @@ func FindUnsupportedFunction(op logical.LogicalOperator) string {
 		}
 	}
 	return ""
-}
-
-func extractUnsupportedFuncFromText(text string) string {
-	upper := strings.ToUpper(strings.TrimSpace(text))
-	lparen := strings.Index(upper, "(")
-	if lparen <= 0 || lparen > 12 {
-		return ""
-	}
-	funcName := upper[:lparen]
-	for _, c := range funcName {
-		if !((c >= 'A' && c <= 'Z') || c == '_') {
-			return ""
-		}
-	}
-	switch funcName {
-	case "COUNT", "SUM", "MIN", "MAX", "AVG",
-		"CASE", "CAST", "IF":
-		return ""
-	default:
-		if values.IsCascadesSafeScalarFunction(funcName) {
-			return ""
-		}
-		return funcName
-	}
 }
 
 func findUnsafeFuncInValue(v values.Value) string {

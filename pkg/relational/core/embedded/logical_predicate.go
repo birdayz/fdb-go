@@ -41,6 +41,7 @@ import (
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -1210,6 +1211,10 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 		if err != nil {
 			return nil, err
 		}
+		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
+			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+				"Unsupported operator "+fn)
+		}
 		return buildLogicalPlanForSelectWithCatalog(sq, md), nil
 	case *antlrgen.SetQueryContext:
 		return buildLogicalPlanForUnionWithCatalog(b, md), nil
@@ -1241,6 +1246,10 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		sq, err := extractFromSimpleTable(simpleTable)
 		if err != nil {
 			return nil, err
+		}
+		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
+			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+				"Unsupported operator "+fn)
 		}
 		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes), nil
 	case *antlrgen.SetQueryContext:

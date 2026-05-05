@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
@@ -792,4 +794,84 @@ func findLogicalScan(op logical.LogicalOperator) *logical.LogicalScan {
 		}
 	}
 	return nil
+}
+
+// findUnsupportedFunctionInParseTree walks an ANTLR expression tree
+// and returns the name of the first scalar function call that isn't
+// in the Cascades-safe set. Uses typed parse tree nodes — no text
+// matching.
+func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
+	if ctx == nil {
+		return ""
+	}
+	switch n := ctx.(type) {
+	case *antlrgen.FunctionCallExpressionAtomContext:
+		if fc := n.FunctionCall(); fc != nil {
+			if name := extractFunctionNameFromCall(fc); name != "" {
+				if !isAllowedFunction(name) {
+					return name
+				}
+			}
+		}
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if fn := findUnsupportedFunctionInParseTree(ctx.GetChild(i)); fn != "" {
+			return fn
+		}
+	}
+	return ""
+}
+
+func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
+	switch f := fc.(type) {
+	case *antlrgen.ScalarFunctionCallContext:
+		if f.ScalarFunctionName() != nil {
+			return strings.ToUpper(f.ScalarFunctionName().GetText())
+		}
+	case *antlrgen.UserDefinedScalarFunctionCallContext:
+		if f.UserDefinedScalarFunctionName() != nil {
+			return strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
+		}
+	case *antlrgen.SpecificFunctionCallContext:
+		if f.SpecificFunction() != nil {
+			switch sf := f.SpecificFunction().(type) {
+			case *antlrgen.SimpleFunctionCallContext:
+				if sf.CURRENT_DATE() != nil {
+					return "CURRENT_DATE"
+				}
+				if sf.CURRENT_TIME() != nil {
+					return "CURRENT_TIME"
+				}
+				if sf.CURRENT_TIMESTAMP() != nil {
+					return "CURRENT_TIMESTAMP"
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func isAllowedFunction(name string) bool {
+	switch name {
+	case "COUNT", "SUM", "MIN", "MAX", "AVG",
+		"CASE", "CAST", "IF",
+		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME":
+		return true
+	}
+	return values.IsCascadesSafeScalarFunction(name)
+}
+
+// findUnsupportedFunctionInSelectQuery walks the ANTLR expression
+// contexts in a selectQuery's projections and returns the first
+// unsupported function name, or "".
+func findUnsupportedFunctionInSelectQuery(sq *selectQuery) string {
+	if sq == nil {
+		return ""
+	}
+	for _, expr := range sq.projExprs {
+		if fn := findUnsupportedFunctionInParseTree(expr); fn != "" {
+			return fn
+		}
+	}
+	return ""
 }

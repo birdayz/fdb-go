@@ -4,6 +4,10 @@
 
 **NEVER use t.Skip() to defer a failing test.** If a test fails, FIX IT. Immediately. No matter how long it takes, no matter how deep the rabbit hole goes. Skipping is forbidden. The only acceptable t.Skip is the runtime Docker check (`FDB not available (no Docker)`). Every other skip is a bug you're hiding. Hunt it down. Fix it. Principles first.
 
+## NO TEXT MATCHING ON SQL / PARSE TREES
+
+**NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
+
 ---
 
 Port `fdb-record-layer-core` from Java to Go with full wire compatibility — Go and Java apps must read/write each other's records and share the same FDB cluster. SQL/relational layer features (UDFs, views, synthetic record types, fdb-relational-*) are out of scope unless a TODO entry calls for them; protobuf round-trips them via unknown-field preservation.

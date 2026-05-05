@@ -25,6 +25,7 @@ go_test(
     embed = [":query"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/query/logical",
     ],
 )
