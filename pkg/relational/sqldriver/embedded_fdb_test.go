@@ -6388,7 +6388,7 @@ func TestFDB_JoinWithNullKey(t *testing.T) {
 // coverage (other dedicated tests go deeper on each dimension).
 func TestFDB_NullHandlingSanityPack(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: NULL column derivation")
+	t.Skip("TODO #83: GROUP BY returns all keys+aggs — needs projection on top of aggregation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
