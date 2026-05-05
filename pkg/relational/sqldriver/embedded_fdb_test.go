@@ -3870,7 +3870,7 @@ func TestFDB_GreatestLeast(t *testing.T) {
 // elsewhere (TestFDB_ExistsSubquery, etc).
 func TestFDB_SubqueryINRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: IN subquery — query succeeds when should error")
+	t.Skip("TODO #79: IN subquery rejected but EXISTS rewrite also fails via Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
