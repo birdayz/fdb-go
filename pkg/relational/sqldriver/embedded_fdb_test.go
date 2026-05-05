@@ -1714,7 +1714,7 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 
 func TestFDB_SelectDistinct(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: DISTINCT not handled by ImplementDistinctRule")
+	t.Skip("TODO #81: DISTINCT + ORDER BY without index")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
