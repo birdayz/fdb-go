@@ -204,6 +204,45 @@ Ginkgo specs against real FDB via testcontainers. **8000+ total test entry point
 | RecordMetaData proto serialization | 21 |
 | TypedRecord cross-language encoding | 11 |
 
+## Getting started
+
+```sh
+# 1. Start FoundationDB (Docker)
+docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.63
+
+# 2. Get the cluster file
+docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster
+
+# 3. Use from Go
+go get github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver
+```
+
+```go
+package main
+
+import (
+    "database/sql"
+    "fmt"
+    _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+)
+
+func main() {
+    db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/tmp/fdb.cluster&schema=main")
+    db.Exec("CREATE DATABASE /myapp")
+    db.Exec(`CREATE SCHEMA TEMPLATE app CREATE TABLE Users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`)
+    db.Exec("CREATE SCHEMA /myapp/main WITH TEMPLATE app")
+
+    db.Exec("INSERT INTO Users VALUES (1, 'Alice'), (2, 'Bob')")
+
+    rows, _ := db.Query("SELECT id, name FROM Users ORDER BY id")
+    for rows.Next() {
+        var id int64; var name string
+        rows.Scan(&id, &name)
+        fmt.Printf("%d: %s\n", id, name)
+    }
+}
+```
+
 ## Building
 
 Requires Bazel 9+ (via bazelisk) and Docker (for testcontainers).
@@ -218,10 +257,12 @@ just generate   # buf proto codegen
 ### Project layout
 
 ```
-pkg/recordlayer/    Main implementation
-gen/                Generated protobuf Go code
-proto/apple/        Apple's original proto definitions
-conformance/        Go↔Java cross-validation tests + Java conformance server
+pkg/recordlayer/        Record Layer implementation (CRUD, indexes, cursors, schema)
+pkg/relational/         SQL engine (parser, Cascades optimizer, executor, database/sql driver)
+pkg/fdbgo/              Pure Go FDB client (wire protocol, no CGo)
+gen/                    Generated protobuf Go code
+proto/apple/            Apple's original proto definitions
+conformance/            Go↔Java cross-validation tests + Java conformance server
 ```
 
 ### Running specific tests
