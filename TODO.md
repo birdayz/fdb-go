@@ -133,6 +133,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   - [x] **#95** Fix #87 (streaming agg ordering) — **landed swingshift-77**.
   - [x] **#96** README / documentation — **landed swingshift-77**. SQL engine section with database/sql examples, DDL/DML syntax, Cascades optimizer details.
   - [x] **#97** Stress test / fuzz — **landed swingshift-77**. FuzzTranslateToCascades: random logical plan tree generation (8 operator types × flag combinations) exercising translator no-panic guarantee. Existing parser/planner/aggregation fuzz targets provide complementary coverage.
+  - [ ] **#98** Yamsql conformance: 40/110 scenarios pass, 70 fail on result expectations (column order, error message wording) after Cascades migration. Mechanical — update expected results to match Cascades output. (~2 shifts)
 - [x] **#25** ORDER BY JOIN/CTE/UNION fallback removal — **landed swingshift-74**. Cascades planner failure now returns error instead of falling back to naive. **nightshift-75:** fully ripped out naive fallback from SELECT path.
 
 ## Phase 5 — DDL + cache + driver completion
