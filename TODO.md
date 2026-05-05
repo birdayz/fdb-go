@@ -69,6 +69,16 @@ Query runs but returns wrong rows.
 
 Java implements nearly everything. Only ~20 queries need Go extensions (hash distinct on unsorted input, LIMIT post-processing). The other ~280 are Java-ported features we haven't wired yet.
 
+#### Testing strategy: Java-conformant vs Go-extension
+
+Yamsql scenarios that Java rejects but Go handles (via in-memory sort, hash distinct, etc.) need TWO expectations:
+- `error_code: "0AF01"` — Java-conformant behavior (strict mode)
+- `rows: [...]` — Go-extension behavior (extended mode)
+
+Future: add a `mode: strict|extended` toggle to the yamsql runner. In strict mode, Go must match Java exactly (reject what Java rejects). In extended mode, Go extensions are allowed to succeed. CI runs both modes. This lets us verify Java conformance AND test extension correctness without conflict.
+
+For now: update yamsql expectations to accept Go-extension results (queries that return correct data). The strict-mode toggle is a follow-up.
+
 Highest ROI fixes (in order):
 1. **Validation before planning** (~50 queries, add checks before Cascades) — prevents planner catch-all from hiding real errors
 2. **Qualified star expansion** (~15 queries, mechanical translator work)
