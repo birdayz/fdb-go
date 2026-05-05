@@ -87,6 +87,15 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"Cascades planner could not plan query")
 	}
 
+	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"Unsupported operator "+fn)
+	}
+
+	if err := validateTablesAndColumns(logicalOp, md); err != nil {
+		return nil, err
+	}
+
 	ref := query.TranslateToCascades(logicalOp)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
@@ -671,6 +680,99 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			return err
 		}
 		dest[i] = v
+	}
+	return nil
+}
+
+func validateTablesAndColumns(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
+	cteNames := collectCTENames(op)
+	return validateTablesAndColumnsInner(op, md, cteNames)
+}
+
+func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+	if op == nil {
+		return nil
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if !cteNames[strings.ToUpper(scan.Table)] {
+			rt := md.GetRecordType(scan.Table)
+			if rt == nil {
+				return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
+			}
+		}
+	}
+	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) {
+		scan := findLogicalScan(op)
+		if scan != nil && !cteNames[strings.ToUpper(scan.Table)] {
+			rt := md.GetRecordType(scan.Table)
+			if rt != nil && rt.Descriptor != nil {
+				for i, col := range proj.Projections {
+					if isComputedExpression(col) {
+						continue
+					}
+					if i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
+						continue
+					}
+					upper := strings.ToUpper(col)
+					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
+						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
+					}
+				}
+			}
+		}
+	}
+	for _, child := range op.Children() {
+		if err := validateTablesAndColumnsInner(child, md, cteNames); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectCTENames(op logical.LogicalOperator) map[string]bool {
+	names := make(map[string]bool)
+	collectCTENamesInner(op, names)
+	return names
+}
+
+func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
+	if op == nil {
+		return
+	}
+	if cte, ok := op.(*logical.LogicalCTE); ok {
+		names[strings.ToUpper(cte.Name)] = true
+	}
+	for _, ch := range op.Children() {
+		collectCTENamesInner(ch, names)
+	}
+}
+
+func hasJoin(op logical.LogicalOperator) bool {
+	if op == nil {
+		return false
+	}
+	if _, ok := op.(*logical.LogicalJoin); ok {
+		return true
+	}
+	for _, ch := range op.Children() {
+		if hasJoin(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func findLogicalScan(op logical.LogicalOperator) *logical.LogicalScan {
+	if op == nil {
+		return nil
+	}
+	if s, ok := op.(*logical.LogicalScan); ok {
+		return s
+	}
+	for _, ch := range op.Children() {
+		if s := findLogicalScan(ch); s != nil {
+			return s
+		}
 	}
 	return nil
 }

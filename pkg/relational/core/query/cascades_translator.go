@@ -419,3 +419,106 @@ func isComputedExpression(col string) bool {
 	}
 	return false
 }
+
+// FindUnsupportedFunction walks the logical plan tree and returns the
+// name of the first ScalarFunctionValue that isn't in the supported set.
+// Returns "" if all functions are supported.
+func FindUnsupportedFunction(op logical.LogicalOperator) string {
+	if op == nil {
+		return ""
+	}
+	if proj, ok := op.(*logical.LogicalProject); ok {
+		for _, v := range proj.ProjectedValues {
+			if fn := findUnsafeFuncInValue(v); fn != "" {
+				return fn
+			}
+		}
+		for _, col := range proj.Projections {
+			if fn := extractUnsupportedFuncFromText(col); fn != "" {
+				return fn
+			}
+		}
+	}
+	if f, ok := op.(*logical.LogicalFilter); ok && f.Predicate != nil {
+		if fn := findUnsafeFuncInPredicate(f.Predicate); fn != "" {
+			return fn
+		}
+	}
+	for _, child := range op.Children() {
+		if fn := FindUnsupportedFunction(child); fn != "" {
+			return fn
+		}
+	}
+	return ""
+}
+
+func extractUnsupportedFuncFromText(text string) string {
+	upper := strings.ToUpper(text)
+	lparen := strings.Index(upper, "(")
+	if lparen <= 0 {
+		return ""
+	}
+	funcName := strings.TrimSpace(upper[:lparen])
+	if funcName == "" {
+		return ""
+	}
+	for _, c := range funcName {
+		if c < 'A' || c > 'Z' {
+			return ""
+		}
+	}
+	switch funcName {
+	case "COUNT", "SUM", "MIN", "MAX", "AVG",
+		"COALESCE", "IFNULL", "GREATEST", "LEAST",
+		"BITAND", "BITOR", "BITXOR",
+		"CASE", "CAST", "IF":
+		return ""
+	default:
+		return funcName
+	}
+}
+
+func findUnsafeFuncInValue(v values.Value) string {
+	if v == nil {
+		return ""
+	}
+	var found string
+	values.WalkValue(v, func(node values.Value) bool {
+		if sf, ok := node.(*values.ScalarFunctionValue); ok {
+			switch sf.FuncName {
+			case "COALESCE", "IFNULL", "GREATEST", "LEAST", "BITAND", "BITOR", "BITXOR":
+			default:
+				found = sf.FuncName
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func findUnsafeFuncInPredicate(p predicates.QueryPredicate) string {
+	var found string
+	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
+		switch pred := qp.(type) {
+		case *predicates.ComparisonPredicate:
+			if fn := findUnsafeFuncInValue(pred.Operand); fn != "" {
+				found = fn
+				return false
+			}
+			if pred.Comparison.Operand != nil {
+				if fn := findUnsafeFuncInValue(pred.Comparison.Operand); fn != "" {
+					found = fn
+					return false
+				}
+			}
+		case *predicates.ValuePredicate:
+			if fn := findUnsafeFuncInValue(pred.Value); fn != "" {
+				found = fn
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}

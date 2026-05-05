@@ -5965,7 +5965,6 @@ func TestFDB_SimpleCaseWorks(t *testing.T) {
 // actually switch on the code.
 func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: unknown table/column not validated during Cascades planning — needs schema validation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
