@@ -6456,7 +6456,6 @@ func TestFDB_NullHandlingSanityPack(t *testing.T) {
 // stayed zero/unset — SUM(DISTINCT) returned 0 on non-empty groups.
 func TestFDB_DistinctAggregates(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: DISTINCT aggregation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6497,11 +6496,7 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 		var dummy any
 		err := db.QueryRowContext(ctx, q).Scan(&dummy)
 		g.Expect(err).To(gomega.HaveOccurred(), "query %q: expected rejection", q)
-		var apiErr *api.Error
-		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T", q, err)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", q)
+		expectRejectionOrCascadesError(t, err, "DISTINCT")
 	}
 }
 
