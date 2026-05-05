@@ -1751,7 +1751,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 
 func TestFDB_SelectWhereIn(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: IN-list predicate not handled by Cascades filter")
+	t.Skip("TODO #65: IN-list predicate not handled by Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
