@@ -290,7 +290,7 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 func isComputedExpression(col string) bool {
 	for _, c := range col {
 		switch c {
-		case '(', '+', '-', '*', '/', '%':
+		case '(', '+', '-', '*', '/', '%', '<', '>', '&', '|', '^':
 			return true
 		}
 	}

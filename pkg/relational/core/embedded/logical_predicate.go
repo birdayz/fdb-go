@@ -719,9 +719,10 @@ func isCascadesSafeValue(v values.Value) bool {
 
 func cascadesSafeScalarFunction(name string) bool {
 	switch name {
-	case "COALESCE", "NULLIF", "IFNULL",
+	case "COALESCE", "IFNULL",
 		"GREATEST", "LEAST",
-		"IF", "IIF":
+		"IF", "IIF",
+		"BITAND", "BITOR", "BITXOR":
 		return true
 	}
 	return false

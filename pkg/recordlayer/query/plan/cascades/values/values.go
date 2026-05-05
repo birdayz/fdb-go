@@ -1182,6 +1182,36 @@ func evalScalarFunction(name string, args []any) any {
 			return s
 		}
 		return string(runes[len(runes)-int(n):])
+	case "BITAND":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		a, aok := args[0].(int64)
+		b, bok := args[1].(int64)
+		if !aok || !bok {
+			return nil
+		}
+		return a & b
+	case "BITOR":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		a, aok := args[0].(int64)
+		b, bok := args[1].(int64)
+		if !aok || !bok {
+			return nil
+		}
+		return a | b
+	case "BITXOR":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		a, aok := args[0].(int64)
+		b, bok := args[1].(int64)
+		if !aok || !bok {
+			return nil
+		}
+		return a ^ b
 	}
 	return nil
 }

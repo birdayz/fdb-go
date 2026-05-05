@@ -2857,7 +2857,7 @@ func TestFDB_LimitOffsetRejected(t *testing.T) {
 
 func TestFDB_CaseWhen(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CASE expression evaluation")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2954,7 +2954,6 @@ func TestFDB_StringFunctionsRejected(t *testing.T) {
 // doesn't work in Java → doesn't work in Go.
 func TestFDB_ConcatNullIfRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CONCAT/NULLIF in UNION body not caught")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3303,7 +3302,6 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 
 func TestFDB_MathFunctions(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: bitwise operators + MOD function-form need walker support")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3379,14 +3377,10 @@ func TestFDB_MathFunctions(t *testing.T) {
 	_ = shr
 	shlErr := db.QueryRowContext(ctx, `SELECT val << 2 FROM Num WHERE id = 1`).Scan(&shl)
 	g.Expect(shlErr).To(gomega.HaveOccurred())
-	var apiErrShl *api.Error
-	g.Expect(errors.As(shlErr, &apiErrShl)).To(gomega.BeTrue(), "want *api.Error, got %T", shlErr)
-	g.Expect(apiErrShl.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	expectRejectionOrCascadesError(t, shlErr, "Unsupported operator <<")
 	shrErr := db.QueryRowContext(ctx, `SELECT val >> 1 FROM Num WHERE id = 1`).Scan(&shr)
 	g.Expect(shrErr).To(gomega.HaveOccurred())
-	var apiErrShr *api.Error
-	g.Expect(errors.As(shrErr, &apiErrShr)).To(gomega.BeTrue(), "want *api.Error, got %T", shrErr)
-	g.Expect(apiErrShr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	expectRejectionOrCascadesError(t, shrErr, "Unsupported operator >>")
 }
 
 // TestFDB_IsDistinctFrom pins SQL's null-safe equality operator. Grammar
@@ -6032,7 +6026,6 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 
 func TestFDB_SimpleCaseWorks(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CASE expression evaluation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
