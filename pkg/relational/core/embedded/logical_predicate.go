@@ -692,6 +692,21 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// ORDER BY: Java's ExpressionVisitor.visitOrderByExpression walks each
 	// ORDER BY expression through the expression visitor. Do the same —
 	// the resolver detects ambiguous/undefined column references.
+	// Build a set of projection aliases for ORDER BY resolution.
+	projAliasSet := make(map[string]bool)
+	if sq.projAliases != nil {
+		for _, a := range sq.projAliases {
+			if a != "" {
+				projAliasSet[strings.ToUpper(a)] = true
+			}
+		}
+	}
+	for _, ac := range sq.aggCols {
+		if ac.outName != "" {
+			projAliasSet[strings.ToUpper(ac.outName)] = true
+		}
+	}
+
 	if resolver != nil {
 		for _, ob := range sq.orderBy {
 			if ob.rawExpr != nil {
@@ -703,6 +718,10 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
+						// Check if the ORDER BY name is a SELECT alias.
+						if projAliasSet[strings.ToUpper(ob.colName)] {
+							continue
+						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q does not exist", ob.colName)
 					}
