@@ -1426,6 +1426,26 @@ func TestFDB_SelectOrderByMultiColumn(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]row{{"a", 1}, {"a", 3}, {"b", 1}, {"b", 2}}))
+
+	// Multi-column DESC: both keys reversed.
+	rows2, err := db.QueryContext(ctx, "SELECT a, b FROM T ORDER BY a DESC, b DESC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var got2 []row
+	for rows2.Next() {
+		var r row
+		g.Expect(rows2.Scan(&r.a, &r.b)).To(gomega.Succeed())
+		got2 = append(got2, r)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got2).To(gomega.Equal([]row{{"b", 2}, {"b", 1}, {"a", 3}, {"a", 1}}))
+
+	// Mixed ASC/DESC: rejected (single-direction constraint).
+	_, err = db.QueryContext(ctx, "SELECT a, b FROM T ORDER BY a ASC, b DESC")
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_SelectDistinctOrderBy(t *testing.T) {
