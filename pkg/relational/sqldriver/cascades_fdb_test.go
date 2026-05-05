@@ -634,6 +634,28 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 		}
 	}
 	t.Logf("Cascades ORDER BY with index → %v ✓", names)
+
+	rows2, err := db.QueryContext(ctx, "SELECT name FROM Product ORDER BY name DESC")
+	if err != nil {
+		t.Fatalf("ORDER BY DESC with index: %v", err)
+	}
+	defer rows2.Close()
+
+	var descNames []string
+	for rows2.Next() {
+		var name string
+		if err := rows2.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		descNames = append(descNames, name)
+	}
+	expectedDesc := []string{"Cherry", "Banana", "Apple"}
+	for i, name := range descNames {
+		if name != expectedDesc[i] {
+			t.Fatalf("expected %v, got %v", expectedDesc, descNames)
+		}
+	}
+	t.Logf("Cascades ORDER BY DESC with index → %v ✓", descNames)
 }
 
 func TestFDB_CascadesUnionAll(t *testing.T) {
