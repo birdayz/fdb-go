@@ -2452,7 +2452,7 @@ func TestFDB_GroupByCount(t *testing.T) {
 
 func TestFDB_GroupByHaving(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: HAVING clause not translated")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3440,9 +3440,9 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 }
 
 func TestFDB_HavingCompound(t *testing.T) {
-	// HAVING with AND/OR compound conditions.
 	t.Parallel()
-	t.Skip("TODO #79: HAVING clause not translated")
+	t.Skip("TODO #81: ORDER BY + compound HAVING (AND predicate rewrite + sort needed)")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4669,7 +4669,7 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 
 func TestFDB_CTEAggregateHaving(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: HAVING clause not translated")
+	t.Skip("TODO #81: CTE + aggregate + HAVING + ORDER BY — ORDER BY without index")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

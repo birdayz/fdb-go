@@ -234,7 +234,7 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 }
 
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
-	if a.Having != "" {
+	if a.Having != "" && a.HavingPredicate == nil {
 		return nil
 	}
 	innerRef := t.translateRef(a.Input)
@@ -253,10 +253,18 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		}
 		aggSpecs = append(aggSpecs, spec)
 	}
-	return expressions.NewGroupByExpression(
+	groupBy := expressions.NewGroupByExpression(
 		groupKeys,
 		aggSpecs,
 		expressions.ForEachQuantifier(innerRef),
+	)
+	if a.HavingPredicate == nil {
+		return groupBy
+	}
+	groupByRef := expressions.InitialOf(groupBy)
+	return expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{a.HavingPredicate},
+		expressions.ForEachQuantifier(groupByRef),
 	)
 }
 

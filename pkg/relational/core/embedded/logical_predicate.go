@@ -618,6 +618,12 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		upgradeProjectionValues(op, sq, md, cteScopes)
 	}
 
+	// Upgrade HAVING: resolve the HAVING expression into a predicate that
+	// references aggregate output columns by name.
+	if sq.havingExpr != nil {
+		upgradeHavingPredicate(op, sq, md)
+	}
+
 	if sq.whereExpr == nil {
 		return op
 	}
@@ -725,6 +731,86 @@ func cascadesSafeScalarFunction(name string) bool {
 		return true
 	}
 	return false
+}
+
+func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData) {
+	agg := findAggregate(op)
+	if agg == nil || sq.havingExpr == nil {
+		return
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+	synthCols := make([]semantic.Column, 0)
+	for _, key := range agg.GroupKeys {
+		synthCols = append(synthCols, semantic.Column{
+			Id: semantic.NewUnquoted(key), Type: "BIGINT",
+		})
+	}
+	for i, aggText := range agg.Aggregates {
+		name := strings.ToUpper(aggText)
+		if i < len(agg.Aliases) && agg.Aliases[i] != "" {
+			name = strings.ToUpper(agg.Aliases[i])
+		}
+		synthCols = append(synthCols, semantic.Column{
+			Id: semantic.NewUnquoted(name), Type: "BIGINT",
+		})
+	}
+	synthTable := &semantic.StaticTable{
+		TableName:    semantic.FromSegments([]string{"__having__"}, true),
+		TableColumns: synthCols,
+	}
+	_ = scope.AddSource(semantic.ScopeSource{
+		Table:           synthTable,
+		Alias:           semantic.NewUnquoted("__having__"),
+		CorrelationName: "",
+	})
+	resolver := expr.New(analyzer, scope)
+	pred, err := resolver.WalkPredicate(sq.havingExpr)
+	if err != nil {
+		return
+	}
+	agg.HavingPredicate = rewriteAggregateRefsInPredicate(pred)
+}
+
+func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
+	cp, ok := pred.(*predicates.ComparisonPredicate)
+	if !ok {
+		return pred
+	}
+	lhs := rewriteAggregateValue(cp.Operand)
+	rhs := rewriteAggregateValue(cp.Comparison.Operand)
+	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
+		Type:    cp.Comparison.Type,
+		Operand: rhs,
+	})
+}
+
+func rewriteAggregateValue(v values.Value) values.Value {
+	if v == nil {
+		return nil
+	}
+	if _, ok := v.(*values.AggregateValue); ok {
+		return &values.FieldValue{
+			Field: strings.ToUpper(values.ExplainValue(v)),
+			Typ:   values.UnknownType,
+		}
+	}
+	return v
+}
+
+func findAggregate(op logical.LogicalOperator) *logical.LogicalAggregate {
+	for cur := op; cur != nil; {
+		if a, ok := cur.(*logical.LogicalAggregate); ok {
+			return a
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return nil
+		}
+		cur = ch[0]
+	}
+	return nil
 }
 
 func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
