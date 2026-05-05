@@ -6716,7 +6716,7 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 // clobber the outer map entirely.
 func TestFDB_CTEScopeIsolation(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: CTE scope isolation with Cascades")
+	t.Skip("TODO #79: derived table (subquery in FROM) not translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
