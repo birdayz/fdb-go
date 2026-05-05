@@ -3,7 +3,6 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // ImplementSortRule removes a logical LogicalSortExpression when the
@@ -46,7 +45,6 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	eliminated := false
 	partitions := ToPlanPartitions(innerRef)
 	for _, partition := range partitions {
 		ordering := computePartitionOrdering(partition)
@@ -63,19 +61,8 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			continue
 		}
 
-		eliminated = true
 		for _, expr := range partition.GetExpressions() {
 			call.YieldFinalExpression(expr)
-		}
-	}
-
-	if !eliminated {
-		for _, m := range innerRef.FinalMembers() {
-			if ph, ok := m.(physicalPlanExpression); ok {
-				sortPlan := plans.NewRecordQuerySortPlan(s.GetSortKeys(), ph.GetRecordQueryPlan())
-				innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
-				call.YieldFinalExpression(newPhysicalSortWrapper(sortPlan, innerQ))
-			}
 		}
 	}
 }

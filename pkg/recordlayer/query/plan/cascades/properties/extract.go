@@ -107,7 +107,9 @@ func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelec
 	}
 	if !isPhysicalPlan(best) {
 		if finals := ref.FinalMembers(); len(finals) > 0 {
-			if fb := bestFrom(finals, CostLessWith(stats)); fb != nil {
+			if fb := bestPhysicalFrom(finals); fb != nil {
+				best = fb
+			} else if fb := bestFrom(finals, CostLessWith(stats)); fb != nil {
 				best = fb
 			}
 		}
@@ -324,4 +326,13 @@ func isPhysicalPlan(e expressions.RelationalExpression) bool {
 	}
 	_, ok := e.(physicalPlanHolder)
 	return ok
+}
+
+func bestPhysicalFrom(members []expressions.RelationalExpression) expressions.RelationalExpression {
+	for _, m := range members {
+		if isPhysicalPlan(m) {
+			return m
+		}
+	}
+	return nil
 }

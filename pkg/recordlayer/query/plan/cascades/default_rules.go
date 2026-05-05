@@ -161,6 +161,7 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementInJoinRule(),
 		NewImplementInUnionRule(),
 		NewImplementSortRule(),
+		NewImplementProjectionFinalRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
 		NewFinalizeExpressionsRule(),

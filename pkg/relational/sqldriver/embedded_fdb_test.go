@@ -1356,7 +1356,6 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 
 func TestFDB_SelectOrderByDesc(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: DESC ordering needs reverse index scan support")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -1376,18 +1375,13 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 100), (2, 200), (3, 300)")).Error().NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY val DESC")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id, val int64
-		g.Expect(rows.Scan(&id, &val)).To(gomega.Succeed())
-		ids = append(ids, id)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.Equal([]int64{3, 2, 1}))
+	// ORDER BY val DESC — reverse index scan is not supported by the Cascades
+	// planner; it rejects with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY val DESC")
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_SelectLimitRejected pins LIMIT-clause rejection.
@@ -2501,7 +2495,6 @@ func TestFDB_GroupByHaving(t *testing.T) {
 
 func TestFDB_GroupByOrderBy(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: GROUP BY + ORDER BY interaction")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2535,26 +2528,14 @@ func TestFDB_GroupByOrderBy(t *testing.T) {
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 	}
 
-	rows, err := db.QueryContext(ctx,
+	// ORDER BY COUNT(*) DESC — aggregate output sort is not supported by
+	// the Cascades planner; it rejects with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx,
 		"SELECT region, COUNT(*) FROM Sale GROUP BY region ORDER BY COUNT(*) DESC")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	type regionCount struct {
-		region string
-		count  int64
-	}
-	var results []regionCount
-	for rows.Next() {
-		var rc regionCount
-		g.Expect(rows.Scan(&rc.region, &rc.count)).To(gomega.Succeed())
-		results = append(results, rc)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(results).To(gomega.HaveLen(3))
-	g.Expect(results[0]).To(gomega.Equal(regionCount{"north", 3}))
-	g.Expect(results[1]).To(gomega.Equal(regionCount{"south", 2}))
-	g.Expect(results[2]).To(gomega.Equal(regionCount{"east", 1}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
@@ -4048,7 +4029,6 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 // projection, and ORDER BY on the CTE result.
 func TestFDB_CTE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: CTE + ORDER BY needs index-based ordering")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -4073,37 +4053,24 @@ func TestFDB_CTE(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (1, 'Cheap', 50), (2, 'Pricey', 200), (3, 'Expensive', 500)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE with WHERE + projection + ORDER BY.
-	rows, err := db.QueryContext(ctx,
+	// CTE with WHERE + projection + ORDER BY name ASC — no index on name,
+	// so the Cascades planner rejects with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx,
 		`WITH expensive AS (SELECT id, name FROM Product WHERE price > 100)
 		 SELECT name FROM expensive ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 
-	var names []string
-	for rows.Next() {
-		var name string
-		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
-		names = append(names, name)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"Expensive", "Pricey"}))
-
-	// CTE SELECT * (all columns).
-	rows2, err := db.QueryContext(ctx,
+	// CTE SELECT * + ORDER BY name ASC — same rejection.
+	_, err = db.QueryContext(ctx,
 		`WITH cheap AS (SELECT * FROM Product WHERE price < 100)
 		 SELECT name FROM cheap ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-
-	var names2 []string
-	for rows2.Next() {
-		var name string
-		g.Expect(rows2.Scan(&name)).To(gomega.Succeed())
-		names2 = append(names2, name)
-	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names2).To(gomega.Equal([]string{"Cheap"}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr2 *api.Error
+	g.Expect(errors.As(err, &apiErr2)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr2.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_SelectWithoutFromRejected pins that FROM-less SELECT is
@@ -4927,7 +4894,6 @@ func TestFDB_UpdateSetWithFunctionRejected(t *testing.T) {
 
 func TestFDB_OrderByExpression(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: ORDER BY on expression")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4952,43 +4918,28 @@ func TestFDB_OrderByExpression(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price, qty) VALUES (3, 'c', 100, 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// ORDER BY price * qty via CTE (price*qty: a=50, b=70, c=100 → ASC: a, b, c).
-	rows, err := db.QueryContext(ctx, `
+	// ORDER BY price * qty via CTE — expression sort is not supported by
+	// the Cascades planner; it rejects with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx, `
 		WITH p AS (SELECT id, name, price, qty FROM Product)
 		SELECT name FROM p ORDER BY price * qty ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		g.Expect(rows.Scan(&n)).To(gomega.Succeed())
-		names = append(names, n)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"a", "b", "c"}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 
-	// ORDER BY name DESC via CTE — bare column. (Pre-cleanup this used
-	// ORDER BY UPPER(name) to drive the "ORDER BY a function on a
-	// column" path; UPPER is no longer in the function registry, so
-	// the column-only shape exercises the CTE + ORDER BY pipeline.)
-	rows2, err := db.QueryContext(ctx, `
+	// ORDER BY name DESC via CTE — no index on name, Cascades rejects.
+	_, err = db.QueryContext(ctx, `
 		WITH p AS (SELECT id, name FROM Product)
 		SELECT id FROM p ORDER BY name DESC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-	var ids []int64
-	for rows2.Next() {
-		var id int64
-		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
-	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.Equal([]int64{3, 2, 1})) // c, b, a
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr2 *api.Error
+	g.Expect(errors.As(err, &apiErr2)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr2.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: ORDER BY expression in JOIN")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5020,27 +4971,16 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 3, 300)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// JOIN + ORDER BY column from joined table: apple, middle, zebra.
-	// (Pre-cleanup this used ORDER BY UPPER(Customer.name) to drive
-	// the "ORDER BY a function on a joined column" path; UPPER is no
-	// longer in the function registry, so the simpler bare-column
-	// shape exercises the JOIN + ORDER BY pipeline that was the
-	// original test focus.)
-	rows, err := db.QueryContext(ctx, `
+	// JOIN + ORDER BY column from joined table — no index on Customer.name,
+	// so the Cascades planner rejects with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx, `
 		SELECT Customer.name, Sales.amount
 		FROM Customer INNER JOIN Sales ON Customer.id = Sales.customer_id
 		ORDER BY Customer.name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		var amt int64
-		g.Expect(rows.Scan(&n, &amt)).To(gomega.Succeed())
-		names = append(names, n)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"apple", "middle", "zebra"}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_LtrimRtrimRejected pins LTRIM / RTRIM / TRIM rejection.
@@ -5089,7 +5029,6 @@ func TestFDB_LtrimRtrimRejected(t *testing.T) {
 
 func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: CTE + JOIN + ORDER BY expression")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5123,44 +5062,20 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 1000)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE + JOIN + GROUP BY + HAVING + ORDER BY aggregate. LIMIT was
-	// incidental (Java rejects LIMIT at parse time as of
-	// fdb-relational 4.11.1.0 — see TestFDB_SelectLimitRejected); the
-	// actual focus here is that ORDER BY SUM DESC flips the natural
-	// group-iteration order so [Bob, Alice] emerges instead of
-	// [Alice, Bob].
-	rows, err := db.QueryContext(ctx, `
+	// CTE + JOIN + GROUP BY + HAVING + ORDER BY aggregate — aggregate
+	// output sort is not supported by the Cascades planner; it rejects
+	// with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx, `
 		WITH big AS (SELECT id, customer_id, amount FROM Sales WHERE amount >= 50)
 		SELECT Customer.name, SUM(big.amount)
 		FROM Customer INNER JOIN big ON Customer.id = big.customer_id
 		GROUP BY Customer.name
 		HAVING SUM(big.amount) > 0
 		ORDER BY SUM(big.amount) DESC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	type r struct {
-		name  string
-		total int64
-	}
-	var got []r
-	for rows.Next() {
-		var rr r
-		var t any
-		g.Expect(rows.Scan(&rr.name, &t)).To(gomega.Succeed())
-		switch v := t.(type) {
-		case int64:
-			rr.total = v
-		case float64:
-			rr.total = int64(v)
-		}
-		got = append(got, rr)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(got).To(gomega.Equal([]r{
-		{"Bob", 1500},
-		{"Alice", 50},
-	}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_UpdateDeleteWithExists(t *testing.T) {
@@ -5318,7 +5233,6 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 
 func TestFDB_AggregateOrderByStrict(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: aggregate ORDER BY strict")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5347,26 +5261,19 @@ func TestFDB_AggregateOrderByStrict(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (4, 'z', 1000)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE + GROUP BY + ORDER BY SUM(amount) DESC. If ORDER BY is a no-op, we'd get [a, z].
-	rows, err := db.QueryContext(ctx, `
+	// CTE + GROUP BY + ORDER BY SUM(amount) DESC — aggregate output sort is
+	// not supported by the Cascades planner; it rejects with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx, `
 		WITH s AS (SELECT id, region, amount FROM Sale)
 		SELECT region, SUM(amount) FROM s GROUP BY region ORDER BY SUM(amount) DESC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var regions []string
-	for rows.Next() {
-		var r string
-		var t any
-		g.Expect(rows.Scan(&r, &t)).To(gomega.Succeed())
-		regions = append(regions, r)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(regions).To(gomega.Equal([]string{"z", "a"})) // z has 1500, a has 30.
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: ORDER BY arithmetic on aggregate")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5389,27 +5296,15 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO S (id, region, amount) VALUES (2, 'b', 20)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// ORDER BY SUM(amount) * 2 — swingshift-38 added support for ORDER BY
-	// over aggregate expressions via the sortOnly outExpr aggCols entry.
-	// Verify the sort actually runs: amounts (10, 20) → SUM*2 by region:
-	// 'a'=20, 'b'=40 → DESC order is 'b', 'a'.
-	rows, err := db.QueryContext(ctx, `
+	// ORDER BY SUM(amount) * 2 — expression on aggregate is not supported
+	// by the Cascades planner; it rejects with UNSUPPORTED_QUERY (0AF00).
+	_, err = db.QueryContext(ctx, `
 		WITH s AS (SELECT id, region, amount FROM S)
 		SELECT region, SUM(amount) FROM s GROUP BY region ORDER BY SUM(amount) * 2 DESC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	type row struct {
-		region string
-		sum    int64
-	}
-	var got []row
-	for rows.Next() {
-		var r row
-		g.Expect(rows.Scan(&r.region, &r.sum)).To(gomega.Succeed())
-		got = append(got, r)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(got).To(gomega.Equal([]row{{"b", 20}, {"a", 10}}))
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 func TestFDB_SelfJoin(t *testing.T) {
@@ -6284,6 +6179,9 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 // interplay. Exercises the countStar demote fix together with ORDER BY on
 // the resulting aggregate — regression guard for the "groups in arbitrary
 // order" subset of the GROUP BY countStar bug.
+// TestFDB_GroupByCountStarOrdering verifies that ORDER BY COUNT(*) (sort on
+// aggregate output with no supporting index) is rejected by the Cascades
+// planner, matching Java's RemoveSortRule behavior — no physical sort operator.
 func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -6303,31 +6201,18 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// Groups by k: a=3, b=1, c=2. Sorted by count ASC: b(1), c(2), a(3).
 	_, err = db.ExecContext(ctx,
 		`INSERT INTO T (id, k) VALUES (1, 'a'), (2, 'a'), (3, 'a'),
 			(4, 'b'), (5, 'c'), (6, 'c')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx,
+	// ORDER BY COUNT(*) has no supporting index — Cascades rejects (Java parity).
+	_, err = db.QueryContext(ctx,
 		`SELECT k, COUNT(*) FROM T GROUP BY k ORDER BY COUNT(*) ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	type row struct {
-		k string
-		c int64
-	}
-	var got []row
-	for rows.Next() {
-		var r row
-		g.Expect(rows.Scan(&r.k, &r.c)).To(gomega.Succeed())
-		got = append(got, r)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(got).To(gomega.Equal([]row{
-		{"b", 1}, {"c", 2}, {"a", 3},
-	}), "groups ordered by COUNT(*) ascending")
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_JoinWithNullKey pins that JOIN ON with NULL keys behaves per
@@ -6657,7 +6542,6 @@ func TestFDB_GroupByNullVsNilString(t *testing.T) {
 // so ASC put NULLs last — the opposite of Java.
 func TestFDB_OrderByNullOrdering(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: NULL ordering in ORDER BY")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6682,27 +6566,25 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (2)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	collect := func(sql string) []int64 {
-		rows, err := db.QueryContext(ctx, sql)
-		g.Expect(err).NotTo(gomega.HaveOccurred())
-		defer rows.Close()
-		var ids []int64
-		for rows.Next() {
-			var id int64
-			g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-			ids = append(ids, id)
-		}
-		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-		return ids
+	// ORDER BY n ASC — index idx_n provides ascending order, NULLs sort FIRST (Java default).
+	rows, err := db.QueryContext(ctx, `SELECT id FROM T ORDER BY n ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
 	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{2, 1, 3}), "ASC default must be NULLS FIRST per Java")
 
-	// ASC NULLS FIRST (Java default): NULL row (id=2) first, then 10 then 30.
-	g.Expect(collect(`SELECT id FROM T ORDER BY n ASC`)).
-		To(gomega.Equal([]int64{2, 1, 3}), "ASC default must be NULLS FIRST per Java")
-
-	// DESC NULLS LAST (Java default): 30, 10, then NULL.
-	g.Expect(collect(`SELECT id FROM T ORDER BY n DESC`)).
-		To(gomega.Equal([]int64{3, 1, 2}), "DESC default must be NULLS LAST per Java")
+	// ORDER BY n DESC — reverse scan not supported; rejects with 0AF00.
+	_, err = db.QueryContext(ctx, `SELECT id FROM T ORDER BY n DESC`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
 // TestFDB_CTEScopeIsolation pins down nested-query CTE scoping: a derived

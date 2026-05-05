@@ -67,6 +67,7 @@ go_library(
         "rule_implement_limit.go",
         "rule_implement_nested_loop_join.go",
         "rule_implement_projection.go",
+        "rule_implement_projection_final.go",
         "rule_implement_recursive_dfs_join.go",
         "rule_implement_recursive_level_union.go",
         "rule_implement_simple_select.go",
