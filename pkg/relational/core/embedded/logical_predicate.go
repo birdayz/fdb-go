@@ -627,7 +627,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// Upgrade HAVING: resolve the HAVING expression into a predicate that
 	// references aggregate output columns by name.
 	if sq.havingExpr != nil {
-		upgradeHavingPredicate(op, sq, md)
+		upgradeHavingPredicate(op, sq, md, cteScopes)
 	}
 
 	if sq.whereExpr == nil {
@@ -813,39 +813,15 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	agg.AggregateOperands = operands
 }
 
-func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData) {
+func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
 	agg := findAggregate(op)
 	if agg == nil || sq.havingExpr == nil {
 		return
 	}
-	cat := rlcatalog.Wrap(md)
-	analyzer := semantic.NewAnalyzer(cat, false)
-	scope := semantic.NewScope(nil)
-	synthCols := make([]semantic.Column, 0)
-	for _, key := range agg.GroupKeys {
-		synthCols = append(synthCols, semantic.Column{
-			Id: semantic.NewUnquoted(key), Type: "BIGINT",
-		})
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
 	}
-	for i, aggText := range agg.Aggregates {
-		name := strings.ToUpper(aggText)
-		if i < len(agg.Aliases) && agg.Aliases[i] != "" {
-			name = strings.ToUpper(agg.Aliases[i])
-		}
-		synthCols = append(synthCols, semantic.Column{
-			Id: semantic.NewUnquoted(name), Type: "BIGINT",
-		})
-	}
-	synthTable := &semantic.StaticTable{
-		TableName:    semantic.FromSegments([]string{"__having__"}, true),
-		TableColumns: synthCols,
-	}
-	_ = scope.AddSource(semantic.ScopeSource{
-		Table:           synthTable,
-		Alias:           semantic.NewUnquoted("__having__"),
-		CorrelationName: "",
-	})
-	resolver := expr.New(analyzer, scope)
 	pred, err := resolver.WalkPredicate(sq.havingExpr)
 	if err != nil {
 		return

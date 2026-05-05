@@ -3440,7 +3440,6 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 
 func TestFDB_HavingCompound(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: compound HAVING — WalkPredicate fails for aggregate function calls in HAVING scope")
 
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -4668,7 +4667,6 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 
 func TestFDB_CTEAggregateHaving(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: CTE + GROUP BY + HAVING — planner failure (CTE scope + HAVING interaction)")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
