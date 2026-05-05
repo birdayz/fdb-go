@@ -467,3 +467,55 @@ func TestExtractUnsupportedFuncFromText(t *testing.T) {
 		})
 	}
 }
+
+func FuzzTranslateToCascades(f *testing.F) {
+	tables := []string{"Orders", "Items", "Customer", "Sales"}
+	cols := []string{"id", "name", "price", "amount", "status"}
+
+	f.Add(byte(0), byte(0), byte(0), byte(0), byte(0), byte(0))
+	f.Add(byte(1), byte(2), byte(3), byte(1), byte(1), byte(0))
+	f.Add(byte(3), byte(4), byte(1), byte(2), byte(2), byte(1))
+
+	f.Fuzz(func(t *testing.T, opKind, tableIdx, colIdx, childKind, childCol, flags byte) {
+		tbl := tables[int(tableIdx)%len(tables)]
+		col := cols[int(colIdx)%len(cols)]
+		childTbl := tables[int(childKind)%len(tables)]
+		childField := cols[int(childCol)%len(cols)]
+
+		var op logical.LogicalOperator
+		scan := logical.NewScan(tbl, "")
+
+		switch opKind % 8 {
+		case 0:
+			op = scan
+		case 1:
+			op = logical.NewFilter(scan, col+" > 10")
+		case 2:
+			op = logical.NewProject(scan, []string{col, childField}, nil)
+		case 3:
+			right := logical.NewScan(childTbl, "a")
+			op = logical.NewJoin(scan, right, logical.JoinInner, "")
+		case 4:
+			op = logical.NewSort(scan, []logical.SortKey{{Expr: col, Dir: logical.SortAsc}})
+		case 5:
+			op = logical.NewDistinct(scan)
+		case 6:
+			body := logical.NewScan(tbl, "")
+			main := logical.NewFilter(logical.NewScan(tbl, ""), col+" > 0")
+			op = logical.NewCTE("cte1", body, main, false)
+		case 7:
+			left := logical.NewProject(scan, []string{col}, nil)
+			right := logical.NewProject(logical.NewScan(childTbl, ""), []string{childField}, nil)
+			op = logical.NewUnion([]logical.LogicalOperator{left, right}, true)
+		}
+
+		if flags&1 != 0 {
+			op = logical.NewFilter(op, col+" = 'test'")
+		}
+		if flags&2 != 0 {
+			op = logical.NewProject(op, []string{col}, nil)
+		}
+
+		TranslateToCascades(op)
+	})
+}
