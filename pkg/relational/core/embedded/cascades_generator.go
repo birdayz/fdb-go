@@ -683,6 +683,10 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			if errors.As(err, &divZero) {
 				return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
 			}
+			var overflow *values.ArithmeticOverflowError
+			if errors.As(err, &overflow) {
+				return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
+			}
 			var typeMismatch *predicates.TypeMismatchError
 			if errors.As(err, &typeMismatch) {
 				return api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())

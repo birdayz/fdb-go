@@ -363,7 +363,8 @@ func executeFilter(
 		pred: func(qr QueryResult) (keep bool) {
 			defer func() {
 				if r := recover(); r != nil {
-					if _, ok := r.(*predicates.TypeMismatchError); ok {
+					switch r.(type) {
+					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError:
 						panic(r)
 					}
 					keep = false
@@ -474,9 +475,12 @@ func executeProjection(
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						if divErr, ok := r.(*values.ArithmeticDivisionByZeroError); ok {
-							evalErr = divErr
-						} else {
+						switch e := r.(type) {
+						case *values.ArithmeticDivisionByZeroError:
+							evalErr = e
+						case *values.ArithmeticOverflowError:
+							evalErr = e
+						default:
 							evalErr = fmt.Errorf("projection evaluation panic: %v", r)
 						}
 					}
@@ -1504,9 +1508,14 @@ type filterResultCursor struct {
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			if tmErr, ok := r.(*predicates.TypeMismatchError); ok {
-				err = tmErr
-			} else {
+			switch e := r.(type) {
+			case *predicates.TypeMismatchError:
+				err = e
+			case *values.ArithmeticOverflowError:
+				err = e
+			case *values.ArithmeticDivisionByZeroError:
+				err = e
+			default:
 				panic(r)
 			}
 		}

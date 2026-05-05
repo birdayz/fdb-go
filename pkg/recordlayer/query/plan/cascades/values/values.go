@@ -278,10 +278,11 @@ func EvaluateConstant(v Value) (out any, ok bool) {
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			if _, isDivZero := r.(*ArithmeticDivisionByZeroError); isDivZero {
+			switch r.(type) {
+			case *ArithmeticDivisionByZeroError, *ArithmeticOverflowError:
 				out = nil
 				ok = true
-			} else {
+			default:
 				out = nil
 				ok = false
 			}
@@ -1418,35 +1419,29 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	}
 	switch a.Op {
 	case OpAdd:
-		// Overflow-checked: matches Java ArithmeticValue.AddFn /
-		// embedded.functions.AddInt64Checked. Cascades returns nil
-		// (UNKNOWN) on overflow so the runtime executor surfaces
-		// the 22003 NUMERIC_VALUE_OUT_OF_RANGE error rather than the
-		// fold silently producing a wrapped value.
 		out, ok := addInt64Checked(li, ri)
 		if !ok {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return out
 	case OpSub:
 		out, ok := subInt64Checked(li, ri)
 		if !ok {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return out
 	case OpMul:
 		out, ok := mulInt64Checked(li, ri)
 		if !ok {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return out
 	case OpDiv:
 		if ri == 0 {
 			panic(&ArithmeticDivisionByZeroError{})
 		}
-		// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 		if li == math.MinInt64 && ri == -1 {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return li / ri
 	case OpMod:
@@ -1504,6 +1499,15 @@ type ArithmeticDivisionByZeroError struct{}
 
 func (*ArithmeticDivisionByZeroError) Error() string {
 	return "division by zero"
+}
+
+// ArithmeticOverflowError is panicked by ArithmeticValue.Evaluate
+// when integer arithmetic overflows. Callers (the executor) recover
+// this and convert to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+type ArithmeticOverflowError struct{}
+
+func (*ArithmeticOverflowError) Error() string {
+	return "integer overflow"
 }
 
 // addInt64Checked / subInt64Checked / mulInt64Checked mirror
