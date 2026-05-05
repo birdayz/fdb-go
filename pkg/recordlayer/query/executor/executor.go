@@ -785,7 +785,11 @@ func executeAggregation(
 		for i, k := range groupingKeys {
 			v := k.Evaluate(row.Datum)
 			keyParts[i] = v
-			fmt.Fprintf(&keyStr, "%v|", v)
+			if v == nil {
+				keyStr.WriteString("N|")
+			} else {
+				fmt.Fprintf(&keyStr, "%T:%v|", v, v)
+			}
 		}
 		gk := keyStr.String()
 

@@ -6603,7 +6603,7 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 // the same "N|" sentinel).
 func TestFDB_GroupByNullVsNilString(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: NULL vs empty string in GROUP BY key")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
