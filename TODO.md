@@ -126,6 +126,13 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   - [ ] **#90** ImplementSortRule missing `strictlySorted` handling: Java's RemoveSortRule (lines 112-140) marks plans as strictly sorted when DISTINCT covers all ordering keys or a unique index satisfies the key set. Go doesn't implement this — affects DISTINCT + ORDER BY correctness.
   - [ ] **#91** FindUnsupportedFunction error code: Go returns `0A000` (feature not supported) but Java uses `UNDEFINED_FUNCTION` error code from `SqlFunctionCatalog.lookupFunction`. Should align error codes.
   - [ ] **#92** Type mismatch detection layer: Java catches type mismatches at semantic analysis (compile time via `SemanticAnalyzer`), not at eval time. Go's runtime panic+recover works but is architecturally different. Long-term: move type checking to the predicate resolver (compile time).
+
+  **HN launch blockers (in priority order):**
+  - [ ] **#93** Fix #85 + #86 (alias threading) — self-join and CTE+JOIN silently return wrong results. Credibility-destroying if hit.
+  - [ ] **#94** Fix #88 (reverse index scan) — ORDER BY DESC on indexed columns. Users will hit immediately.
+  - [ ] **#95** Fix #87 (streaming agg ordering) — GROUP BY + ORDER BY on group key rejected. Common pattern.
+  - [ ] **#96** README / documentation — usage examples, supported SQL subset, wire compatibility claims, known limitations.
+  - [ ] **#97** Stress test / fuzz the SQL happy path — run cross-engine corpus, fuzz the Cascades translator + executor, verify no panics on valid SQL.
 - [x] **#25** ORDER BY JOIN/CTE/UNION fallback removal — **landed swingshift-74**. Cascades planner failure now returns error instead of falling back to naive. **nightshift-75:** fully ripped out naive fallback from SELECT path.
 
 ## Phase 5 — DDL + cache + driver completion
