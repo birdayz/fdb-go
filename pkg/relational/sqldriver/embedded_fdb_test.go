@@ -2661,7 +2661,6 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 // is a separate, intentional gap.
 func TestFDB_BareBoolProjection(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: boolean expression in projection")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

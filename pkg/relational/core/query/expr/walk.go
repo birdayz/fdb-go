@@ -41,14 +41,32 @@ func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
-	pred, ok := ctx.(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
+	switch c := ctx.(type) {
+	case *antlrgen.PredicatedExpressionContext:
+		if c.Predicate() != nil {
+			// Predicate-shaped expression (IS NULL, IN, LIKE, BETWEEN,
+			// comparison) used as a value → wrap as predicateValue.
+			pred, err := r.walkPredicatedExpression(c)
+			if err != nil {
+				return nil, err
+			}
+			return &predicateValue{pred: pred}, nil
+		}
+		return r.walkAtom(c.ExpressionAtom())
+	case *antlrgen.LogicalExpressionContext:
+		pred, err := r.walkLogicalExpression(c)
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: pred}, nil
+	case *antlrgen.NotExpressionContext:
+		child, err := r.WalkPredicate(c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: r.ResolveNot(child)}, nil
 	}
-	if pred.Predicate() != nil {
-		return nil, &UnsupportedExpressionShapeError{Shape: "PredicatedExpression with grammar Predicate (use WalkPredicate)"}
-	}
-	return r.walkAtom(pred.ExpressionAtom())
+	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }
 
 // walkAtom dispatches concrete ExpressionAtom variants. Returns a

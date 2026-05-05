@@ -90,6 +90,9 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	if f.Predicate == nil && f.PredicateText != "" {
 		return nil
 	}
+	if f.Predicate != nil && isBareFieldPredicate(f.Predicate) {
+		return nil
+	}
 	var preds []predicates.QueryPredicate
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
@@ -98,6 +101,15 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		preds,
 		expressions.ForEachQuantifier(innerRef),
 	)
+}
+
+func isBareFieldPredicate(p predicates.QueryPredicate) bool {
+	vp, ok := p.(*predicates.ValuePredicate)
+	if !ok {
+		return false
+	}
+	_, isField := vp.Value.(*values.FieldValue)
+	return isField
 }
 
 func (t *cascadesTranslator) translateLimit(l *logical.LogicalLimit) expressions.RelationalExpression {
