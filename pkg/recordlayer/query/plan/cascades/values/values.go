@@ -278,8 +278,13 @@ func EvaluateConstant(v Value) (out any, ok bool) {
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			out = nil
-			ok = false
+			if _, isDivZero := r.(*ArithmeticDivisionByZeroError); isDivZero {
+				out = nil
+				ok = true
+			} else {
+				out = nil
+				ok = false
+			}
 		}
 	}()
 	return v.Evaluate(nil), true
@@ -1399,7 +1404,7 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		return out
 	case OpDiv:
 		if ri == 0 {
-			return nil
+			panic(&ArithmeticDivisionByZeroError{})
 		}
 		// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 		if li == math.MinInt64 && ri == -1 {
@@ -1407,20 +1412,21 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		}
 		return li / ri
 	case OpMod:
-		// SQL: `a MOD 0` is undefined / NULL. Match Div's nil-on-zero
-		// guard. Sign of result matches Go's `%` (truncated toward
-		// zero) — matches MySQL / PostgreSQL semantics.
-		//
-		// MinInt64 % -1 is SAFE — unlike division, Go's `%` produces
-		// 0 for this combination (the mathematical result is 0,
-		// representable in int64). No special-case overflow guard
-		// needed. Pinned in TestArithmeticValue_OverflowBoundaries.
 		if ri == 0 {
-			return nil
+			panic(&ArithmeticDivisionByZeroError{})
 		}
 		return li % ri
 	}
 	return nil
+}
+
+// ArithmeticDivisionByZeroError is panicked by ArithmeticValue.Evaluate
+// when division or modulo by zero is attempted. Callers (the executor)
+// recover this and convert to the appropriate SQL error.
+type ArithmeticDivisionByZeroError struct{}
+
+func (*ArithmeticDivisionByZeroError) Error() string {
+	return "division by zero"
 }
 
 // addInt64Checked / subInt64Checked / mulInt64Checked mirror
@@ -1553,12 +1559,19 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			}
 			return int64(0)
 		case float64:
-			// SQL CAST AS INT truncates toward zero. NaN / ±Inf
-			// fall through to nil (UNKNOWN-at-Value-layer).
+			// Java CastValue.DOUBLE_TO_LONG uses Math.round: floor(x+0.5).
+			// Differs from Go's math.Round (ties away from zero).
 			if val != val || val > 1<<62 || val < -(1<<62) {
 				return nil
 			}
-			return int64(val)
+			return int64(math.Floor(val + 0.5))
+		case string:
+			// Java STRING_TO_LONG: trim whitespace before parse.
+			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+			if err != nil {
+				return nil
+			}
+			return n
 		}
 	case TypeCodeBoolean:
 		switch val := v.(type) {
@@ -1568,6 +1581,14 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			return val != 0
 		case float64:
 			return val != 0
+		case string:
+			switch strings.ToLower(strings.TrimSpace(val)) {
+			case "true", "1":
+				return true
+			case "false", "0":
+				return false
+			}
+			return nil
 		}
 	case TypeCodeString:
 		if s, ok := v.(string); ok {

@@ -450,7 +450,11 @@ func executeProjection(
 
 	projections := p.GetProjections()
 	hasParams := len(evalCtx.params) > 0
+	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
+		if evalErr != nil {
+			return qr
+		}
 		projected := make(map[string]any, len(projections))
 		var rowCtx any = qr.Datum
 		if hasParams {
@@ -459,7 +463,21 @@ func executeProjection(
 			}
 		}
 		for _, proj := range projections {
-			projected[projectionColumnName(proj)] = proj.Evaluate(rowCtx)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						if divErr, ok := r.(*values.ArithmeticDivisionByZeroError); ok {
+							evalErr = divErr
+						} else {
+							evalErr = fmt.Errorf("projection evaluation panic: %v", r)
+						}
+					}
+				}()
+				projected[projectionColumnName(proj)] = proj.Evaluate(rowCtx)
+			}()
+			if evalErr != nil {
+				return qr
+			}
 		}
 		return QueryResult{
 			Datum:      projected,
@@ -467,8 +485,31 @@ func executeProjection(
 			PrimaryKey: qr.PrimaryKey,
 		}
 	})
-	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
+	errCursor := &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}
+	return errCursor, nil
 }
+
+type errCheckCursor struct {
+	inner recordlayer.RecordCursor[QueryResult]
+	err   *error
+}
+
+func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if *c.err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
+	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return result, err
+	}
+	if *c.err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
+	}
+	return result, nil
+}
+
+func (c *errCheckCursor) Close() error   { return c.inner.Close() }
+func (c *errCheckCursor) IsClosed() bool { return c.inner.IsClosed() }
 
 func executeSort(
 	ctx context.Context,

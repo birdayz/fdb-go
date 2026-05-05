@@ -1152,15 +1152,25 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 			if got := av.Evaluate(map[string]any{"ID": int64(-23)}); got != int64(-3) {
 				t.Errorf("-23/7: got %v, want -3", got)
 			}
-			// Divide by zero → nil (NULL).
+			// Divide by zero → panics with ArithmeticDivisionByZeroError
+			// (matches Java's ArithmeticException; executor recovers it).
 			divZero := &values.ArithmeticValue{
 				Op:    values.OpDiv,
 				Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
 				Right: &values.ConstantValue{Value: int64(0), Typ: values.TypeInt},
 			}
-			if got := divZero.Evaluate(nil); got != nil {
-				t.Errorf("5/0: got %v, want nil", got)
-			}
+			func() {
+				defer func() {
+					r := recover()
+					if r == nil {
+						t.Errorf("5/0: expected panic, got none")
+					}
+					if _, ok := r.(*values.ArithmeticDivisionByZeroError); !ok {
+						t.Errorf("5/0: expected *ArithmeticDivisionByZeroError, got %T", r)
+					}
+				}()
+				divZero.Evaluate(nil)
+			}()
 		})
 	}
 }

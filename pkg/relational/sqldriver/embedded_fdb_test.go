@@ -3152,7 +3152,7 @@ func TestFDB_InsertSelect(t *testing.T) {
 
 func TestFDB_CastAndSubstring(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CAST/SUBSTRING functions")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3198,7 +3198,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+tc.opName)
 	}
 
 	// IF function-form is rejected by Java (not in the function
@@ -3221,7 +3221,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	var ifDummy string
 	errIf := db.QueryRowContext(ctx, `SELECT IF(price > 50, 'expensive', 'cheap') FROM Item WHERE id = 1`).Scan(&ifDummy)
 	g.Expect(errIf).To(gomega.HaveOccurred(), "IF function-form must be rejected")
-	expectUnsupportedOperator(g, errIf, "IF", "IF function-form")
+	expectRejectionOrCascadesError(t, errIf, "Unsupported operator IF")
 
 	// Java conformance (swingshift-35): CAST(float AS INT) rounds (not
 	// truncates) using `Math.round` semantics (floor(x + 0.5)). Previously
@@ -3296,7 +3296,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, q).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", q)
-		expectUnsupportedOperator(g, errRej, "ROUND", q)
+		expectRejectionOrCascadesError(t, errRej, "Unsupported operator ROUND")
 	}
 }
 
@@ -7082,7 +7082,7 @@ func TestFDB_AggregateNullSemantics(t *testing.T) {
 //   - modulo by zero errors in both paths
 func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: arithmetic expression evaluation")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

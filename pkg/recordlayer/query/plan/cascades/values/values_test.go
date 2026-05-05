@@ -143,17 +143,32 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 		}
 	}
 
-	// Division by zero returns nil (UNKNOWN-at-Value-layer).
+	// Division by zero panics with ArithmeticDivisionByZeroError
+	// (matches Java's ArithmeticException; executor recovers it).
 	divZ := &ArithmeticValue{Op: OpDiv, Left: a, Right: b}
-	if got := divZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); got != nil {
-		t.Fatalf("div by zero: got %v", got)
-	}
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatalf("div by zero: expected panic")
+			} else if _, ok := r.(*ArithmeticDivisionByZeroError); !ok {
+				t.Fatalf("div by zero: expected *ArithmeticDivisionByZeroError, got %T", r)
+			}
+		}()
+		divZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+	}()
 
-	// MOD by zero same nil-on-zero contract as Div.
+	// MOD by zero same panic contract as Div.
 	modZ := &ArithmeticValue{Op: OpMod, Left: a, Right: b}
-	if got := modZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); got != nil {
-		t.Fatalf("mod by zero: got %v", got)
-	}
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatalf("mod by zero: expected panic")
+			} else if _, ok := r.(*ArithmeticDivisionByZeroError); !ok {
+				t.Fatalf("mod by zero: expected *ArithmeticDivisionByZeroError, got %T", r)
+			}
+		}()
+		modZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+	}()
 
 	// NULL propagation.
 	sum := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
@@ -259,14 +274,14 @@ func TestCastValue(t *testing.T) {
 	if got := intToFloat.Evaluate(nil); got != float64(5) {
 		t.Fatalf("int→float: got %v", got)
 	}
-	// float → int (truncates toward zero)
+	// float → int (Java Math.round: floor(x+0.5))
 	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: TypeFloat}, TypeInt)
-	if got := floatToInt.Evaluate(nil); got != int64(3) {
-		t.Fatalf("3.9→int: got %v", got)
+	if got := floatToInt.Evaluate(nil); got != int64(4) {
+		t.Fatalf("3.9→int: got %v, want 4", got)
 	}
 	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: TypeFloat}, TypeInt)
-	if got := floatToIntNeg.Evaluate(nil); got != int64(-3) {
-		t.Fatalf("-3.9→int: got %v", got)
+	if got := floatToIntNeg.Evaluate(nil); got != int64(-4) {
+		t.Fatalf("-3.9→int: got %v, want -4", got)
 	}
 	// float → bool: 0.0 = false, non-zero = true
 	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: TypeFloat}, TypeBool)
@@ -302,10 +317,14 @@ func TestCastValue(t *testing.T) {
 	}
 
 	// Unknown conversion: int → bool via the reverse path is OK,
-	// but string → int isn't wired in the seed (returns nil).
+	// string → int: trims whitespace, parses decimal.
 	strToInt := NewCastValue(&ConstantValue{Value: "3", Typ: TypeString}, TypeInt)
-	if got := strToInt.Evaluate(nil); got != nil {
-		t.Fatalf("string→int not yet wired: expected nil, got %v", got)
+	if got := strToInt.Evaluate(nil); got != int64(3) {
+		t.Fatalf("string→int: got %v, want 3", got)
+	}
+	strToIntWs := NewCastValue(&ConstantValue{Value: "  42  ", Typ: TypeString}, TypeInt)
+	if got := strToIntWs.Evaluate(nil); got != int64(42) {
+		t.Fatalf("string(ws)→int: got %v, want 42", got)
 	}
 
 	// bool → string. Match runtime functions.CastValue: lowercase.
