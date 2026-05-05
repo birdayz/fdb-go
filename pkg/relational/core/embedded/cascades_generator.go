@@ -537,6 +537,15 @@ func (r *cascadesRows) Close() error {
 	return r.rs.Close()
 }
 
+func (r *cascadesRows) ColumnTypeDatabaseTypeName(index int) string {
+	md := r.rs.MetaData()
+	name, err := md.ColumnTypeName(index + 1)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
 func (r *cascadesRows) Next(dest []driver.Value) error {
 	if !r.rs.Next() {
 		if err := r.rs.Err(); err != nil {
