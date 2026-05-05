@@ -1751,7 +1751,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 
 func TestFDB_SelectWhereIn(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: IN-list predicate not handled by Cascades")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2200,7 +2200,7 @@ func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
 func TestFDB_SelectColumnAlias(t *testing.T) {
 	// SELECT col AS alias — result column name should use the alias.
 	t.Parallel()
-	t.Skip("TODO #83: column alias not propagated through Cascades projection")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

@@ -20,6 +20,7 @@ import (
 // projected values out of the inner). We preserve that contract here.
 type LogicalProjectionExpression struct {
 	projectedValues []values.Value
+	aliases         []string
 	inner           Quantifier
 }
 
@@ -34,9 +35,25 @@ func NewLogicalProjectionExpression(projectedValues []values.Value, inner Quanti
 	}
 }
 
+// NewLogicalProjectionExpressionWithAliases includes output column aliases.
+func NewLogicalProjectionExpressionWithAliases(projectedValues []values.Value, aliases []string, inner Quantifier) *LogicalProjectionExpression {
+	copied := make([]values.Value, len(projectedValues))
+	copy(copied, projectedValues)
+	return &LogicalProjectionExpression{
+		projectedValues: copied,
+		aliases:         aliases,
+		inner:           inner,
+	}
+}
+
 // GetProjectedValues returns the projection list. Read-only.
 func (e *LogicalProjectionExpression) GetProjectedValues() []values.Value {
 	return e.projectedValues
+}
+
+// GetAliases returns the output column aliases (parallel to projectedValues).
+func (e *LogicalProjectionExpression) GetAliases() []string {
+	return e.aliases
 }
 
 // GetInner returns the inner Quantifier.

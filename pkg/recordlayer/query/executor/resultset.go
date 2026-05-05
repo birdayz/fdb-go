@@ -32,7 +32,8 @@ type RecordLayerResultSet struct {
 
 // ColumnDef describes one column in the result set.
 type ColumnDef struct {
-	Name     string
+	Name     string // key for datum map lookup
+	Label    string // display name (alias); empty means use Name
 	TypeName string // JDBC type name: BIGINT, STRING, DOUBLE, etc.
 	Nullable int    // api.ColumnNoNulls / ColumnNullable / ColumnNullableUnknown
 }
@@ -344,7 +345,15 @@ func (m *resultSetMetaData) ColumnName(columnIndex int) (string, error) {
 }
 
 func (m *resultSetMetaData) ColumnLabel(columnIndex int) (string, error) {
-	return m.ColumnName(columnIndex)
+	if columnIndex < 1 || columnIndex > len(m.columns) {
+		return "", api.NewError(api.ErrCodeInvalidColumnReference,
+			fmt.Sprintf("column index %d out of range [1, %d]", columnIndex, len(m.columns)))
+	}
+	col := m.columns[columnIndex-1]
+	if col.Label != "" {
+		return col.Label, nil
+	}
+	return col.Name, nil
 }
 
 func (m *resultSetMetaData) ColumnType(columnIndex int) (int, error) {

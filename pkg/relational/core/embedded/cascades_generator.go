@@ -305,6 +305,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			desc = rt.Descriptor
 		}
 	}
+	aliases := proj.GetAliases()
 	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
 	for i, v := range proj.GetProjections() {
 		var name string
@@ -312,6 +313,10 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			name = fv.Field
 		} else {
 			name = values.ExplainValue(v)
+		}
+		var label string
+		if i < len(aliases) && aliases[i] != "" {
+			label = strings.ToUpper(aliases[i])
 		}
 		typeName := aggregateTypeName(name, desc)
 		if typeName == "" && desc != nil {
@@ -322,6 +327,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		cols[i] = executor.ColumnDef{
 			Name:     strings.ToUpper(name),
+			Label:    label,
 			TypeName: typeName,
 		}
 	}
@@ -522,7 +528,7 @@ func (r *cascadesRows) Columns() []string {
 	md := r.rs.MetaData()
 	cols := make([]string, md.ColumnCount())
 	for i := range cols {
-		cols[i], _ = md.ColumnName(i + 1)
+		cols[i], _ = md.ColumnLabel(i + 1)
 	}
 	return cols
 }

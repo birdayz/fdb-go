@@ -212,17 +212,14 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 			projected[i] = p.ProjectedValues[i]
 			continue
 		}
-		name := col
-		if i < len(p.Aliases) && p.Aliases[i] != "" {
-			name = p.Aliases[i]
-		}
 		if isComputedExpression(col) {
 			return nil
 		}
-		projected[i] = &values.FieldValue{Field: name, Typ: values.UnknownType}
+		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
-	return expressions.NewLogicalProjectionExpression(
+	return expressions.NewLogicalProjectionExpressionWithAliases(
 		projected,
+		p.Aliases,
 		expressions.ForEachQuantifier(innerRef),
 	)
 }

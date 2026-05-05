@@ -14,6 +14,7 @@ import (
 // plan node for clarity.
 type RecordQueryProjectionPlan struct {
 	projections []values.Value
+	aliases     []string
 	inner       RecordQueryPlan
 }
 
@@ -24,7 +25,16 @@ func NewRecordQueryProjectionPlan(projections []values.Value, inner RecordQueryP
 	}
 }
 
+func NewRecordQueryProjectionPlanWithAliases(projections []values.Value, aliases []string, inner RecordQueryPlan) *RecordQueryProjectionPlan {
+	return &RecordQueryProjectionPlan{
+		projections: projections,
+		aliases:     aliases,
+		inner:       inner,
+	}
+}
+
 func (p *RecordQueryProjectionPlan) GetProjections() []values.Value { return p.projections }
+func (p *RecordQueryProjectionPlan) GetAliases() []string           { return p.aliases }
 
 func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return p.inner }
 
