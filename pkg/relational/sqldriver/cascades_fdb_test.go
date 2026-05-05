@@ -922,7 +922,6 @@ func TestFDB_CascadesCTEGroupBy(t *testing.T) {
 
 func TestFDB_CascadesCTEJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: CTE+JOIN — CTE alias vs real table name mismatch in qualified keys")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
