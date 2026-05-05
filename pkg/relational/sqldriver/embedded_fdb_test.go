@@ -2645,10 +2645,9 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 	g.Expect(doubled).To(gomega.Equal(int64(20)))
 
 	// SUM over a mixed-type expression (qty + 1.0) promotes to float64.
-	// Blocked: aggregate computed operand doesn't propagate through
-	// Cascades plan (AggregateOperands override isn't reaching executor).
-	// Root cause identified: index mismatch between hidden + visible entries.
-	t.Skip("TODO #78: SUM(computed) — AggregateOperands physical plan propagation")
+	var promoted float64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty + 1.0) FROM T").Scan(&promoted)).To(gomega.Succeed())
+	g.Expect(promoted).To(gomega.Equal(float64(13)))
 }
 
 // TestFDB_BareBoolProjection pins Java-aligned bare-boolean operand

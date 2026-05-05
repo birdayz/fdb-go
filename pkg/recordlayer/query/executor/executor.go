@@ -945,12 +945,17 @@ func isCountStar(agg expressions.AggregateSpec) bool {
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
 	if agg.Operand != nil {
-		if cv, ok := agg.Operand.(*values.ConstantValue); ok && cv.Value == nil {
-			opName = "*"
-		} else if fv, ok := agg.Operand.(*values.FieldValue); ok {
-			opName = fv.Field
-		} else {
-			opName = agg.Operand.Name()
+		switch v := agg.Operand.(type) {
+		case *values.ConstantValue:
+			if v.Value == nil {
+				opName = "*"
+			} else {
+				opName = v.Name()
+			}
+		case *values.FieldValue:
+			opName = v.Field
+		default:
+			opName = values.ExplainValue(agg.Operand)
 		}
 	}
 	switch agg.Function {

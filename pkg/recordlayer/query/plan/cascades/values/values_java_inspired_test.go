@@ -236,9 +236,6 @@ func TestArithmeticValue_TypeMismatch_NotPanics(t *testing.T) {
 		{"int + string", map[string]any{"a": int64(1), "b": "foo"}},
 		{"bool + int", map[string]any{"a": true, "b": int64(1)}},
 		{"int + bool", map[string]any{"a": int64(1), "b": false}},
-		{"float + int", map[string]any{"a": float64(1.0), "b": int64(1)}}, // seed is int-only
-		{"int + float", map[string]any{"a": int64(1), "b": float64(1.0)}},
-		{"both float", map[string]any{"a": float64(1.5), "b": float64(2.5)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

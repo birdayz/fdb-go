@@ -1373,6 +1373,17 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	if l == nil || r == nil {
 		return nil
 	}
+	// Float promotion: if either operand is float64 AND the other is numeric, use float arithmetic.
+	_, lf := l.(float64)
+	_, rf := r.(float64)
+	if lf || rf {
+		_, _, lNum := ToFloat64(l)
+		_, _, rNum := ToFloat64(r)
+		if lNum && rNum {
+			return a.evalFloat(l, r)
+		}
+		return nil
+	}
 	li, lok := toInt64ForArith(l)
 	ri, rok := toInt64ForArith(r)
 	if !lok || !rok {
