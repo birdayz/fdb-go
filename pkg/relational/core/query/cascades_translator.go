@@ -93,6 +93,9 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	if f.Predicate != nil && isBareFieldPredicate(f.Predicate) {
 		return nil
 	}
+	if f.Predicate != nil && predicateContainsUnsafeFunction(f.Predicate) {
+		return nil
+	}
 	var preds []predicates.QueryPredicate
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
@@ -101,6 +104,46 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		preds,
 		expressions.ForEachQuantifier(innerRef),
 	)
+}
+
+func valueContainsUnsafeScalarFunction(v values.Value) bool {
+	unsafe := false
+	values.WalkValue(v, func(node values.Value) bool {
+		if sf, ok := node.(*values.ScalarFunctionValue); ok {
+			switch sf.FuncName {
+			case "COALESCE", "IFNULL", "GREATEST", "LEAST", "BITAND", "BITOR", "BITXOR":
+			default:
+				unsafe = true
+				return false
+			}
+		}
+		return true
+	})
+	return unsafe
+}
+
+func predicateContainsUnsafeFunction(p predicates.QueryPredicate) bool {
+	unsafe := false
+	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
+		switch pred := qp.(type) {
+		case *predicates.ComparisonPredicate:
+			if valueContainsUnsafeScalarFunction(pred.Operand) {
+				unsafe = true
+				return false
+			}
+			if pred.Comparison.Operand != nil && valueContainsUnsafeScalarFunction(pred.Comparison.Operand) {
+				unsafe = true
+				return false
+			}
+		case *predicates.ValuePredicate:
+			if valueContainsUnsafeScalarFunction(pred.Value) {
+				unsafe = true
+				return false
+			}
+		}
+		return true
+	})
+	return unsafe
 }
 
 func isBareFieldPredicate(p predicates.QueryPredicate) bool {

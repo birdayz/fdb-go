@@ -926,6 +926,12 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			if err != nil {
 				return nil, err
 			}
+			if _, isNull := v.(*values.NullValue); isNull {
+				return nil, &InListNullError{}
+			}
+			if cv, isCon := v.(*values.ConstantValue); isCon && cv.Value == nil {
+				return nil, &InListNullError{}
+			}
 			list = append(list, v)
 		}
 		inPred, err := r.ResolveIn(lhsVal, list)
@@ -1216,6 +1222,14 @@ func stripStringLiteral(text string) string {
 		return strings.ReplaceAll(text[1:len(text)-1], "''", "'")
 	}
 	return text
+}
+
+// InListNullError signals that a NULL literal was found in an IN list.
+// Java rejects these with "NULL values are not allowed in the IN list".
+type InListNullError struct{}
+
+func (*InListNullError) Error() string {
+	return "NULL values are not allowed in the IN list"
 }
 
 // UnsupportedExpressionShapeError signals a parse-tree shape the

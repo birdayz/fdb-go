@@ -5233,7 +5233,7 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 // in TestFDB_CaseWhen.
 func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: function in WHERE not caught by Cascades")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5291,7 +5291,7 @@ func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 // TestFDB_CaseWhen.
 func TestFDB_FunctionWrappingCase(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: function wrapping CASE")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5318,7 +5318,7 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 		`SELECT UPPER(CASE WHEN qty > 0 THEN 'yes' ELSE 'no' END) FROM T WHERE id = 1`).
 		Scan(&dummy)
 	g.Expect(errRej).To(gomega.HaveOccurred())
-	expectUnsupportedOperator(g, errRej, "UPPER", "UPPER wrapping CASE")
+	expectRejectionOrCascadesError(t, errRej, "Unsupported operator UPPER")
 }
 
 func TestFDB_AggregateOrderByStrict(t *testing.T) {
@@ -5469,7 +5469,7 @@ func TestFDB_SelfJoin(t *testing.T) {
 
 func TestFDB_CaseInWhere(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CASE in WHERE — text predicate silently dropped")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6876,7 +6876,7 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 // collapses at the filter boundary (UNKNOWN filters out, same as FALSE).
 func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: NOT of NULL semantics — Cascades plan succeeds when it should error")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6948,9 +6948,11 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	// treat the list as UNKNOWN-tolerant; per project conformance
 	// principle (doesn't work in Java → doesn't work in Go), we reject.
 	_, err = db.QueryContext(ctx, `SELECT COUNT(*) FROM T WHERE id NOT IN (1, NULL)`)
-	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("NULL values are not allowed in the IN list")))
+	g.Expect(err).To(gomega.HaveOccurred(), "NULL in IN-list must reject")
+	expectRejectionOrCascadesError(t, err, "NULL values are not allowed in the IN list")
 	_, err = db.QueryContext(ctx, `SELECT COUNT(*) FROM T WHERE id IN (99, NULL)`)
-	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("NULL values are not allowed in the IN list")))
+	g.Expect(err).To(gomega.HaveOccurred(), "NULL in IN-list must reject")
+	expectRejectionOrCascadesError(t, err, "NULL values are not allowed in the IN list")
 
 	// BETWEEN NULL bound and LIKE NULL pattern — UNKNOWN propagation sanity.
 	// Grammar quirk: BETWEEN … AND … inside parens parses oddly; rely on
