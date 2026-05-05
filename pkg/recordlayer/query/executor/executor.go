@@ -567,7 +567,8 @@ func executeUnion(
 	}
 
 	var all []QueryResult
-	for _, inner := range inners {
+	var firstBranchKeys []string
+	for branchIdx, inner := range inners {
 		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
 		if err != nil {
 			return nil, err
@@ -576,9 +577,54 @@ func executeUnion(
 		if err != nil {
 			return nil, err
 		}
+		if branchIdx == 0 && len(items) > 0 {
+			if m, ok := items[0].Datum.(map[string]any); ok {
+				firstBranchKeys = mapKeysOrdered(m)
+			}
+		}
+		if branchIdx > 0 && len(firstBranchKeys) > 0 {
+			for i := range items {
+				items[i] = remapUnionColumns(items[i], firstBranchKeys)
+			}
+		}
 		all = append(all, items...)
 	}
 	return applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func mapKeysOrdered(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func remapUnionColumns(qr QueryResult, targetKeys []string) QueryResult {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return qr
+	}
+	srcKeys := mapKeysOrdered(m)
+	if len(srcKeys) != len(targetKeys) {
+		return qr
+	}
+	needsRemap := false
+	for i := range srcKeys {
+		if srcKeys[i] != targetKeys[i] {
+			needsRemap = true
+			break
+		}
+	}
+	if !needsRemap {
+		return qr
+	}
+	remapped := make(map[string]any, len(m))
+	for i, srcKey := range srcKeys {
+		remapped[targetKeys[i]] = m[srcKey]
+	}
+	return QueryResult{Datum: remapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 }
 
 func executeIntersection(
