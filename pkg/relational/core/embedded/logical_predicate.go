@@ -739,15 +739,6 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	return op, nil
 }
 
-// upgradeFirstFilter walks the single-child chain from op and, at
-// the first LogicalFilter, sets Predicate. Stops at the first
-// non-unary node. Returns true when a Filter was found and
-// upgraded; false when the walk terminated without seeing one.
-// Text builder's invariant is that a WHERE-carrying SELECT always
-// emits exactly one Filter on the unary spine, so a false return
-// signals the invariant broke — tests assert on it so a future
-// builder change that drops the Filter doesn't silently throw
-// away the predicate.
 // buildSelectScope builds a semantic scope + resolver from the FROM
 // clause of a selectQuery. This is the single point of scope
 // construction — all identifier resolution (projection, ORDER BY,
@@ -896,6 +887,9 @@ func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]st
 	}
 }
 
+// upgradeFirstFilter walks the single-child chain from op and, at
+// the first LogicalFilter, sets Predicate. Stops at the first
+// non-unary node. Returns true when a Filter was found and upgraded.
 func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredicate) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
@@ -1413,7 +1407,7 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 		}
 		return buildLogicalPlanForSelectWithCatalog(sq, md)
 	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCatalog(b, md), nil
+		return buildLogicalPlanForUnionWithCatalog(b, md)
 	}
 	return nil, nil
 }
@@ -1452,7 +1446,7 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		}
 		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
 	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes), nil
+		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes)
 	}
 	return nil, nil
 }
@@ -1461,9 +1455,9 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	setQ *antlrgen.SetQueryContext,
 	md *recordlayer.RecordMetaData,
 	cteScopes map[string]semantic.ScopeSource,
-) logical.LogicalOperator {
+) (logical.LogicalOperator, error) {
 	if setQ == nil {
-		return nil
+		return nil, nil
 	}
 	distinct := true
 	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
@@ -1471,20 +1465,20 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	}
 	left, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, cteScopes)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	right, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetRight(), md, cteScopes)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	if left == nil || right == nil {
-		return nil
+		return nil, nil
 	}
 	inputs := []logical.LogicalOperator{left, right}
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
-	return logical.NewUnion(inputs, distinct)
+	return logical.NewUnion(inputs, distinct), nil
 }
 
 // buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
@@ -1492,9 +1486,9 @@ func buildLogicalPlanForUnionWithCTECatalog(
 func buildLogicalPlanForUnionWithCatalog(
 	setQ *antlrgen.SetQueryContext,
 	md *recordlayer.RecordMetaData,
-) logical.LogicalOperator {
+) (logical.LogicalOperator, error) {
 	if setQ == nil {
-		return nil
+		return nil, nil
 	}
 	distinct := true
 	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
@@ -1502,18 +1496,18 @@ func buildLogicalPlanForUnionWithCatalog(
 	}
 	left, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetLeft(), md)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	right, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetRight(), md)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	if left == nil || right == nil {
-		return nil
+		return nil, nil
 	}
 	inputs := []logical.LogicalOperator{left, right}
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
-	return logical.NewUnion(inputs, distinct)
+	return logical.NewUnion(inputs, distinct), nil
 }
