@@ -73,6 +73,46 @@ typed := recordlayer.NewTypedFDBRecordStore[*pb.Order](store)
 order, err := typed.LoadRecord(ctx, primaryKey)
 ```
 
+## SQL engine
+
+Built-in SQL engine via Go's `database/sql` interface. Queries are optimized by a
+Cascades-based query planner ported from Java's `fdb-relational-core`.
+
+```go
+import _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+
+db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+
+// DDL
+db.Exec("CREATE DATABASE /mydb")
+db.Exec(`CREATE SCHEMA TEMPLATE app_tmpl
+    CREATE TABLE Users (id BIGINT NOT NULL, name STRING, email STRING, PRIMARY KEY (id))
+    CREATE INDEX idx_email ON Users (email)`)
+db.Exec("CREATE SCHEMA /mydb/main WITH TEMPLATE app_tmpl")
+
+// DML
+db.Exec("INSERT INTO Users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')")
+db.Exec("UPDATE Users SET name = 'Bob' WHERE id = 1")
+
+// Queries — Cascades optimizer picks index scans, sort elimination, streaming aggregation
+rows, _ := db.Query("SELECT name FROM Users WHERE email = 'alice@example.com'")
+rows, _ = db.Query("SELECT name FROM Users ORDER BY id DESC")  // reverse PK scan
+rows, _ = db.Query("SELECT email, COUNT(*) FROM Users GROUP BY email ORDER BY email ASC")
+```
+
+Supported SQL:
+- SELECT with WHERE, ORDER BY (ASC/DESC), DISTINCT, GROUP BY, HAVING
+- Aggregates: COUNT, SUM, MIN, MAX, AVG
+- JOINs: INNER JOIN, comma-join (including self-joins)
+- CTEs: WITH ... AS (SELECT ...) — including chained CTEs
+- UNION ALL
+- INSERT, UPDATE, DELETE
+- CASE, COALESCE, CAST, arithmetic expressions
+- Computed projections with aliases
+
+ORDER BY requires a supporting index (no physical sort operator, matching Java's Cascades architecture).
+Self-joins and CTE+JOINs correctly resolve alias-qualified column references.
+
 ## What works
 
 Records, indexes, cursors, and all the plumbing needed to share data with Java:
