@@ -345,7 +345,7 @@ func TestFDB_CascadesOrderByNoIndex(t *testing.T) {
 
 func TestFDB_CascadesJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: NLJ mergeRows — unqualified keys collide + predicate uses qualified refs")
+	t.Skip("TODO #83: NLJ qualified keys added but predicate field names don't match yet")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

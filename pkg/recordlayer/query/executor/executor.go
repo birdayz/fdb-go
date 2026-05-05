@@ -664,13 +664,28 @@ func mergeRows(outer, inner QueryResult) QueryResult {
 	}
 
 	merged := make(map[string]any, len(outerMap)+len(innerMap))
+	outerType := recordTypeName(outer)
+	innerType := recordTypeName(inner)
 	for k, v := range outerMap {
 		merged[k] = v
+		if outerType != "" {
+			merged[outerType+"."+strings.ToUpper(k)] = v
+		}
 	}
 	for k, v := range innerMap {
 		merged[k] = v
+		if innerType != "" {
+			merged[innerType+"."+strings.ToUpper(k)] = v
+		}
 	}
 	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+}
+
+func recordTypeName(qr QueryResult) string {
+	if qr.Record != nil && qr.Record.Record != nil {
+		return strings.ToUpper(string(qr.Record.Record.ProtoReflect().Descriptor().Name()))
+	}
+	return ""
 }
 
 func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) bool {
