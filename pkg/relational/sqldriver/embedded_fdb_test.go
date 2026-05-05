@@ -2604,7 +2604,7 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 // arithmetic in `ApplyMathOp` yields the integer-divided result.
 func TestFDB_SumIntegerDivision(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: computed expressions in projection")
+	t.Skip("TODO #78: post-aggregation outExpr — resolver needs aggregate output scope")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

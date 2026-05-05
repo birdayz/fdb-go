@@ -233,7 +233,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		} else {
 			keys = append(keys, sq.groupBy...)
 			for _, ac := range sq.aggCols {
-				if ac.hidden || ac.sortOnly {
+				if ac.sortOnly {
 					continue
 				}
 				if ac.aggFunc != "" {
@@ -258,6 +258,22 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			having = canonicalTextOf(sq.havingExpr)
 		}
 		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
+
+		// Post-aggregation projection for outExpr entries (e.g. SUM(qty)/COUNT(*)).
+		var outExprsProj []string
+		var outExprsAntlr []antlrgen.IExpressionContext
+		for _, ac := range sq.aggCols {
+			if ac.outExpr != nil && ac.aggFunc == "" {
+				outExprsProj = append(outExprsProj, strings.TrimSpace(ac.outExpr.GetText()))
+				outExprsAntlr = append(outExprsAntlr, ac.outExpr)
+			}
+		}
+		if len(outExprsProj) > 0 {
+			op = logical.NewProject(op, outExprsProj, nil)
+			// Store outExpr ANTLR contexts so upgradeProjectionValues can resolve them.
+			sq.projExprs = outExprsAntlr
+			sq.projCols = outExprsProj
+		}
 	}
 
 	if len(sq.orderBy) > 0 {

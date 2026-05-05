@@ -701,6 +701,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		if !isCascadesSafeValue(v) {
 			continue
 		}
+		v = rewriteAggregateValuesInTree(v)
 		vals[i] = v
 	}
 	proj.ProjectedValues = vals
@@ -796,6 +797,23 @@ func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.
 		return predicates.NewOr(rewritten...)
 	}
 	return pred
+}
+
+func rewriteAggregateValuesInTree(v values.Value) values.Value {
+	if v == nil {
+		return nil
+	}
+	if _, ok := v.(*values.AggregateValue); ok {
+		return rewriteAggregateValue(v)
+	}
+	if av, ok := v.(*values.ArithmeticValue); ok {
+		return &values.ArithmeticValue{
+			Op:    av.Op,
+			Left:  rewriteAggregateValuesInTree(av.Left),
+			Right: rewriteAggregateValuesInTree(av.Right),
+		}
+	}
+	return v
 }
 
 func rewriteAggregateValue(v values.Value) values.Value {
