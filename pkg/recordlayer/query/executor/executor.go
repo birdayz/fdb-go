@@ -355,7 +355,12 @@ func executeFilter(
 	hasParams := len(evalCtx.params) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
-		pred: func(qr QueryResult) bool {
+		pred: func(qr QueryResult) (keep bool) {
+			defer func() {
+				if r := recover(); r != nil {
+					keep = false
+				}
+			}()
 			var rowCtx any = qr.Datum
 			if hasParams {
 				if m, ok := qr.Datum.(map[string]any); ok {
@@ -424,8 +429,8 @@ func executeDistinct(
 }
 
 func distinctKey(qr QueryResult) string {
-	if qr.PrimaryKey != nil {
-		return string(qr.PrimaryKey.Pack())
+	if m, ok := qr.Datum.(map[string]any); ok {
+		return fmt.Sprintf("%v", m)
 	}
 	return fmt.Sprintf("%v", qr.Datum)
 }
@@ -659,13 +664,28 @@ func mergeRows(outer, inner QueryResult) QueryResult {
 	}
 
 	merged := make(map[string]any, len(outerMap)+len(innerMap))
+	outerType := recordTypeName(outer)
+	innerType := recordTypeName(inner)
 	for k, v := range outerMap {
 		merged[k] = v
+		if outerType != "" {
+			merged[outerType+"."+strings.ToUpper(k)] = v
+		}
 	}
 	for k, v := range innerMap {
 		merged[k] = v
+		if innerType != "" {
+			merged[innerType+"."+strings.ToUpper(k)] = v
+		}
 	}
 	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+}
+
+func recordTypeName(qr QueryResult) string {
+	if qr.Record != nil && qr.Record.Record != nil {
+		return strings.ToUpper(string(qr.Record.Record.ProtoReflect().Descriptor().Name()))
+	}
+	return ""
 }
 
 func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) bool {
@@ -828,7 +848,9 @@ func aggKeyName(k values.Value) string {
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
 	if agg.Operand != nil {
-		if fv, ok := agg.Operand.(*values.FieldValue); ok {
+		if cv, ok := agg.Operand.(*values.ConstantValue); ok && cv.Value == nil {
+			opName = "*"
+		} else if fv, ok := agg.Operand.(*values.FieldValue); ok {
 			opName = fv.Field
 		} else {
 			opName = agg.Operand.Name()

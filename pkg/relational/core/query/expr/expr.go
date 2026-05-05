@@ -162,12 +162,16 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 // Returns the underlying semantic errors verbatim so callers can
 // match via errors.As.
 func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.Value, error) {
-	col, _, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
+	col, src, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
 	if err != nil {
 		return nil, err
 	}
+	field := col.Id.Name()
+	if src.CorrelationName != "" && len(r.scope.Sources()) > 1 {
+		field = src.CorrelationName + "." + field
+	}
 	return &values.FieldValue{
-		Field: col.Id.Name(),
+		Field: field,
 		Typ:   sqlTypeToCascadesType(col.Type),
 	}, nil
 }

@@ -118,6 +118,7 @@ go_test(
         "yamsql_cross_engine_conformance_test.go",
     ],
     data = [":conformance_server"],
+    tags = ["conformance_java"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",

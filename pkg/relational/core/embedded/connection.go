@@ -207,6 +207,25 @@ func (c *EmbeddedConnection) cachedMetaData() *recordlayer.RecordMetaData {
 	return tmpl.Underlying()
 }
 
+// ensureMetaData loads the schema into the cache if not already present,
+// so that cachedMetaData returns non-nil. Runs a read-only FDB transaction
+// to fetch the catalog entry. Called by the Cascades generator before
+// planning so the planner has access to table/index metadata.
+func (c *EmbeddedConnection) ensureMetaData(ctx context.Context) error {
+	if c.sess == nil || c.sess.Schema == "" {
+		return nil
+	}
+	if c.cachedMetaData() != nil {
+		return nil
+	}
+	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rctx)
+		_, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
+		return nil, loadErr
+	})
+	return err
+}
+
 // New returns a ready-to-use embedded connection.
 func New(
 	dbPath string,

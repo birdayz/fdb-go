@@ -15,7 +15,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -36,7 +35,7 @@ func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
 func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, error) {
 	root, err := parser.Parse(sql)
 	if err != nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, err
 	}
 
 	stmts := root.Statements()
@@ -47,40 +46,47 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	stmt := stmts.AllStatement()[0]
 	sel := stmt.SelectStatement()
 	if sel == nil {
+		// SHOW / other non-SELECT read statements stay on naive.
 		return g.naive.Plan(ctx, sql)
 	}
 
 	q := sel.Query()
 	if q == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "malformed SELECT statement")
+	}
+
+	// INFORMATION_SCHEMA queries go through the system-table path (naive),
+	// not the Cascades planner. Go-only feature (#9 decision: keep).
+	if strings.Contains(strings.ToUpper(sql), "INFORMATION_SCHEMA") {
 		return g.naive.Plan(ctx, sql)
 	}
 
+	if err := g.c.ensureMetaData(ctx); err != nil {
+		return nil, err
+	}
 	md := g.c.cachedMetaData()
-	var logicalOp logical.LogicalOperator
-	if md != nil {
-		logicalOp = buildLogicalPlanForQueryWithCatalog(q, md)
-	} else {
-		logicalOp = buildLogicalPlanForQuery(q)
+	if md == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"no schema metadata available")
 	}
 
+	logicalOp := buildLogicalPlanForQueryWithCatalog(q, md)
 	if logicalOp == nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
 	}
 
 	ref := query.TranslateToCascades(logicalOp)
 	if ref == nil {
-		return g.naive.Plan(ctx, sql)
-	}
-
-	if md == nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
 	}
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(1_000)
+		WithMaxTasks(2_000) // CTE-inlined plans need ~1500 tasks for convergence; 1000 was too low
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
@@ -209,7 +215,7 @@ type metadataIndexDef struct {
 
 func (d *metadataIndexDef) IndexName() string          { return d.idx.Name }
 func (d *metadataIndexDef) IndexColumnNames() []string { return d.idx.RootExpression.FieldNames() }
-func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.Type == "value" && false }
+func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.IsUnique() }
 
 func (d *metadataIndexDef) IndexRecordTypes() []string {
 	rts := d.md.RecordTypesForIndex(d.idx)
@@ -249,6 +255,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	}
 	if u := findUnionPlan(plan); u != nil {
 		return deriveColumnsFromPlan(u[0], md)
+	}
+	if ip, ok := plan.(innerPlan); ok {
+		return deriveColumnsFromPlan(ip.GetInner(), md)
 	}
 	scan := findScanPlan(plan)
 	if scan == nil || len(scan.GetRecordTypes()) == 0 {
@@ -405,7 +414,7 @@ func buildAggColumns(
 }
 
 func aggregateSpecName(a expressions.AggregateSpec) string {
-	operand := values.ExplainValue(a.Operand)
+	operand := aggOperandName(a)
 	switch a.Function {
 	case expressions.AggCount:
 		return "COUNT(" + operand + ")"
@@ -420,6 +429,13 @@ func aggregateSpecName(a expressions.AggregateSpec) string {
 	default:
 		return "AGG(" + operand + ")"
 	}
+}
+
+func aggOperandName(a expressions.AggregateSpec) string {
+	if cv, ok := a.Operand.(*values.ConstantValue); ok && cv.Value == nil {
+		return "*"
+	}
+	return values.ExplainValue(a.Operand)
 }
 
 func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageDescriptor) string {

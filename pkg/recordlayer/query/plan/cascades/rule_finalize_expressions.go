@@ -47,7 +47,7 @@ func (r *FinalizeExpressionsRule) OnMatch(call *ImplementationRuleCall) {
 
 		finals := childRef.FinalMembers()
 		if len(finals) == 0 {
-			finals = childRef.Members()
+			return
 		}
 		newRef := expressions.NewFinalReference(finals)
 		newQuantifiers[i] = expressions.RebuildQuantifier(q, newRef)
