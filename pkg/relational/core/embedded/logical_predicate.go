@@ -873,6 +873,20 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	if cv, ok := v.(*values.CastValue); ok {
 		return values.NewCastValue(rewriteAggregateValuesInTree(cv.Child), cv.Target)
 	}
+	if pv, ok := v.(*values.PickValue); ok {
+		alts := make([]values.Value, len(pv.Alternatives))
+		for i, a := range pv.Alternatives {
+			alts[i] = rewriteAggregateValuesInTree(a)
+		}
+		return values.NewPickValue(rewriteAggregateValuesInTree(pv.Selector), alts, pv.Typ)
+	}
+	if cs, ok := v.(*values.ConditionSelectorValue); ok {
+		impl := make([]values.Value, len(cs.Implications))
+		for i, c := range cs.Implications {
+			impl[i] = rewriteAggregateValuesInTree(c)
+		}
+		return values.NewConditionSelectorValue(impl)
+	}
 	return v
 }
 
