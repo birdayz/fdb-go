@@ -333,14 +333,25 @@ func TestFDB_CascadesOrderByNoIndex(t *testing.T) {
 	_, cascadesDB := setupCascadesTestDB(t)
 	ctx := context.Background()
 
-	_, err := cascadesDB.QueryContext(ctx, "SELECT name FROM Item ORDER BY name ASC")
-	if err == nil {
-		t.Fatal("expected error for ORDER BY without matching index")
+	// ORDER BY on non-indexed column — uses in-memory sort (Go extension).
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT name FROM Item ORDER BY name ASC")
+	if err != nil {
+		t.Fatalf("ORDER BY without index should succeed via in-memory sort: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Cascades planner could not plan query") {
-		t.Fatalf("expected 'Cascades planner could not plan query', got: %v", err)
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
 	}
-	t.Logf("Cascades ORDER BY without index correctly rejected: %v", err)
+	if len(names) != 3 || names[0] != "Doohickey" || names[1] != "Gadget" || names[2] != "Widget" {
+		t.Fatalf("expected [Doohickey Gadget Widget], got %v", names)
+	}
+	t.Logf("In-memory sort ORDER BY without index → %v ✓", names)
 }
 
 func TestFDB_CascadesJoin(t *testing.T) {
@@ -1372,24 +1383,45 @@ func TestFDB_CascadesOrderByPK(t *testing.T) {
 	t.Logf("Cascades ORDER BY PK DESC → %v ✓", descNames)
 }
 
+// Go extension: in-memory sort — CTE + ORDER BY on a non-indexed column
+// now succeeds via ImplementInMemorySortRule.
 func TestFDB_CascadesCTEOrderByNoIndex(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
 	ctx := context.Background()
 
-	// CTE + ORDER BY on a column with no index: should go through Cascades
-	// and fail with the same error as non-CTE ORDER BY without index.
-	_, err := cascadesDB.QueryContext(ctx,
+	// Go extension: in-memory sort — CTE + ORDER BY on a non-indexed column.
+	rows, err := cascadesDB.QueryContext(ctx,
 		"WITH items AS (SELECT item_id, name, price FROM Item) SELECT name FROM items ORDER BY name ASC")
-	if err == nil {
-		t.Fatal("expected error for CTE + ORDER BY without matching index")
+	if err != nil {
+		t.Fatalf("expected success; got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Cascades planner could not plan query") {
-		t.Fatalf("expected 'Cascades planner could not plan query', got: %v", err)
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got = append(got, name)
 	}
-	t.Logf("CTE + ORDER BY without index correctly rejected via Cascades: %v", err)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	// Data: Widget, Gadget, Doohickey — sorted ASC by name.
+	expected := []string{"Doohickey", "Gadget", "Widget"}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d rows, got %d: %v", len(expected), len(got), got)
+	}
+	for i := range expected {
+		if got[i] != expected[i] {
+			t.Fatalf("row %d: expected %q, got %q", i, expected[i], got[i])
+		}
+	}
 }
 
+// Go extension: in-memory sort — JOIN + ORDER BY on a non-indexed column
+// now succeeds via ImplementInMemorySortRule.
 func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -1428,17 +1460,29 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 		t.Fatalf("INSERT: %v", err)
 	}
 
-	// JOIN + ORDER BY on a column with no index: should go through Cascades
-	// and fail with the planner error.
-	_, err = db.QueryContext(ctx,
+	// Go extension: in-memory sort — JOIN + ORDER BY on a non-indexed column.
+	rows, err := db.QueryContext(ctx,
 		"SELECT o.customer, i.name FROM Orders o, Items i WHERE o.order_id = i.order_id ORDER BY o.customer")
-	if err == nil {
-		t.Fatal("expected error for JOIN + ORDER BY without matching index")
+	if err != nil {
+		t.Fatalf("expected success; got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Cascades planner could not plan query") {
-		t.Fatalf("expected 'Cascades planner could not plan query', got: %v", err)
+	defer rows.Close()
+	var customer, name string
+	if !rows.Next() {
+		t.Fatal("expected at least one row")
 	}
-	t.Logf("JOIN + ORDER BY without index correctly rejected via Cascades: %v", err)
+	if err := rows.Scan(&customer, &name); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if customer != "Alice" || name != "Widget" {
+		t.Fatalf("expected (Alice, Widget), got (%s, %s)", customer, name)
+	}
+	if rows.Next() {
+		t.Fatal("expected exactly one row")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
 }
 
 func countRows(t *testing.T, rows *sql.Rows) int {

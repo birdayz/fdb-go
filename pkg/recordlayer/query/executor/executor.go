@@ -101,6 +101,11 @@ func ExecutePlan(
 		return executeMergeSortUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryInUnionPlan:
 		return executeInUnion(ctx, p, store, evalCtx, continuation, props)
+
+	// --- Go extensions (no Java equivalent) ---
+	case *plans.RecordQueryInMemorySortPlan:
+		return executeInMemorySort(ctx, p, store, evalCtx, continuation, props)
+
 	default:
 		return nil, fmt.Errorf("executor: unsupported plan type %T", plan)
 	}
@@ -1638,4 +1643,64 @@ func compareAny(a, b any) int {
 	default:
 		return 0
 	}
+}
+
+// --- Go extensions (no Java equivalent) ---
+
+// executeInMemorySort materializes the inner plan's output and sorts it.
+// Go extension — Java's Cascades has no physical sort operator.
+func executeInMemorySort(
+	ctx context.Context,
+	p *plans.RecordQueryInMemorySortPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+	results, err := CollectAll(ctx, innerCursor)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := p.GetSortKeys()
+	sort.SliceStable(results, func(i, j int) bool {
+		for _, k := range keys {
+			ci := compareByField(results[i], k.Field)
+			cj := compareByField(results[j], k.Field)
+			cmp := compareValues(ci, cj)
+			if cmp == 0 {
+				continue
+			}
+			if k.Desc {
+				return cmp > 0
+			}
+			return cmp < 0
+		}
+		return false
+	})
+
+	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func compareByField(qr QueryResult, field string) any {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if v, found := m[field]; found {
+		return v
+	}
+	if v, found := m[strings.ToUpper(field)]; found {
+		return v
+	}
+	for k, v := range m {
+		if strings.EqualFold(k, field) {
+			return v
+		}
+	}
+	return nil
 }
