@@ -1429,9 +1429,18 @@ type filterResultCursor struct {
 	closed bool
 }
 
-func (c *filterResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if tmErr, ok := r.(*predicates.TypeMismatchError); ok {
+				err = tmErr
+			} else {
+				panic(r)
+			}
+		}
+	}()
 	for {
-		result, err := c.inner.OnNext(ctx)
+		result, err = c.inner.OnNext(ctx)
 		if err != nil {
 			return result, err
 		}

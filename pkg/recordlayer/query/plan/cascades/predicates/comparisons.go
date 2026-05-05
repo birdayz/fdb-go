@@ -8,6 +8,36 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// TypeMismatchError is panicked when a comparison encounters incompatible
+// types (e.g., int64 vs string). The executor recovers it and surfaces
+// SQLSTATE 22000 (CANNOT_CONVERT_TYPE), matching Java's SemanticException.
+type TypeMismatchError struct {
+	Left  any
+	Right any
+}
+
+func (e *TypeMismatchError) Error() string {
+	return fmt.Sprintf("cannot convert types for comparison: %T vs %T", e.Left, e.Right)
+}
+
+func isNumericStringMismatch(a, b any) bool {
+	aNum := isNumericType(a)
+	bNum := isNumericType(b)
+	_, aStr := a.(string)
+	_, bStr := b.(string)
+	return (aNum && bStr) || (bNum && aStr)
+}
+
+func isNumericType(v any) bool {
+	switch v.(type) {
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return true
+	}
+	return false
+}
+
 // Comparisons — seed.
 //
 // Ports Java's
@@ -306,6 +336,9 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 	}
 	cmp, ok := cmpAny(left, right)
 	if !ok {
+		if isNumericStringMismatch(left, right) {
+			panic(&TypeMismatchError{Left: left, Right: right})
+		}
 		return TriUnknown
 	}
 	var matches bool

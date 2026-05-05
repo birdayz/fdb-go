@@ -13,6 +13,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -669,6 +670,10 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			var divZero *values.ArithmeticDivisionByZeroError
 			if errors.As(err, &divZero) {
 				return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
+			}
+			var typeMismatch *predicates.TypeMismatchError
+			if errors.As(err, &typeMismatch) {
+				return api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
 			}
 			return err
 		}

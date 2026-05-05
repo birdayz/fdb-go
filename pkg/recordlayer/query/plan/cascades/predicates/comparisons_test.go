@@ -94,14 +94,19 @@ func TestComparison_Eval_NullIsUnknown(t *testing.T) {
 	}
 }
 
-func TestComparison_Eval_TypeMismatchIsUnknown(t *testing.T) {
+func TestComparison_Eval_TypeMismatchPanics(t *testing.T) {
 	t.Parallel()
 	c := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))}
-	// String vs int: types don't match, cmpAny returns (0, false),
-	// Eval degrades to UNKNOWN per SQL 3VL.
-	if got := c.Eval("5"); got != TriUnknown {
-		t.Fatalf("type mismatch: got %v", got)
-	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on type mismatch")
+		}
+		if _, ok := r.(*TypeMismatchError); !ok {
+			t.Fatalf("expected *TypeMismatchError, got %T", r)
+		}
+	}()
+	c.Eval("5")
 }
 
 // Numeric promotion: mixed integer widths compare by int64-promoted
