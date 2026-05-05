@@ -721,6 +721,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		return
 	}
 	vals := make([]values.Value, len(proj.Projections))
+	copy(vals, proj.ProjectedValues)
 	for i, e := range exprs {
 		if i >= len(vals) {
 			break

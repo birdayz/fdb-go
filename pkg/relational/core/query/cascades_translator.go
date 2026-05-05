@@ -212,8 +212,6 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	}
 	projected := make([]values.Value, len(p.Projections))
 	for i, col := range p.Projections {
-		// Use pre-resolved Value when available (catalog-aware builder
-		// walked the ANTLR expression successfully).
 		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
 			projected[i] = p.ProjectedValues[i]
 			continue

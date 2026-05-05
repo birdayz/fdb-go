@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -226,12 +227,11 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		var aggs, aggAliases []string
-		var keys []string
+		keys := append([]string{}, sq.groupBy...)
 		if sq.countStar {
 			aggs = []string{"COUNT(*)"}
 			aggAliases = []string{sq.countStarAlias}
 		} else {
-			keys = append(keys, sq.groupBy...)
 			for _, ac := range sq.aggCols {
 				if ac.sortOnly {
 					continue
@@ -302,6 +302,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if len(sq.projCols) > 0 {
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
+		var projVals []values.Value
 		for i, col := range sq.projCols {
 			projs[i] = col
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
@@ -311,8 +312,18 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			if sq.projAliases != nil && i < len(sq.projAliases) {
 				aliases[i] = sq.projAliases[i]
 			}
+			if isComputedExpression(projs[i]) && isAggregateOutputName(projs[i], sq) {
+				if projVals == nil {
+					projVals = make([]values.Value, len(sq.projCols))
+				}
+				projVals[i] = &values.FieldValue{Field: strings.ToUpper(projs[i]), Typ: values.UnknownType}
+			}
 		}
-		op = logical.NewProject(op, projs, aliases)
+		proj := logical.NewProject(op, projs, aliases)
+		if projVals != nil {
+			proj.ProjectedValues = projVals
+		}
+		op = proj
 	}
 
 	if sq.distinct {
@@ -448,4 +459,24 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)
+}
+
+func isComputedExpression(col string) bool {
+	for _, c := range col {
+		switch c {
+		case '(', '+', '-', '*', '/', '%', '<', '>', '&', '|', '^':
+			return true
+		}
+	}
+	return false
+}
+
+func isAggregateOutputName(name string, sq *selectQuery) bool {
+	upper := strings.ToUpper(name)
+	for _, ac := range sq.aggCols {
+		if strings.ToUpper(ac.outName) == upper {
+			return true
+		}
+	}
+	return false
 }
