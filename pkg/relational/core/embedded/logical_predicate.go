@@ -817,7 +817,7 @@ func buildLogicalPlanForQueryWithCatalog(
 		name := functions.FullIdToName(nq.GetName())
 		var body logical.LogicalOperator
 		if inner := nq.Query(); inner != nil {
-			body = buildLogicalPlanForQueryBodyWithCatalog(inner.QueryExpressionBody(), md)
+			body = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, cteScopes)
 		}
 		if body == nil {
 			return nil
