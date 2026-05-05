@@ -131,8 +131,9 @@ func (d SortDir) String() string {
 
 // SortKey is one ORDER BY entry.
 type SortKey struct {
-	Expr string // canonical text
-	Dir  SortDir
+	Expr       string // canonical text
+	Dir        SortDir
+	NullsFirst bool
 }
 
 // LogicalSort sorts its child rows by the given keys.

@@ -15,8 +15,9 @@ import (
 
 // SortKey is a column + direction for in-memory sorting.
 type SortKey struct {
-	Field string
-	Desc  bool
+	Field      string
+	Desc       bool
+	NullsFirst bool
 }
 
 // RecordQueryInMemorySortPlan materializes the inner plan's output and

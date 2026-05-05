@@ -10,8 +10,9 @@ import (
 // (typically a FieldValue resolving to a column of the inner) and a
 // boolean Reverse flag — false for ASC, true for DESC.
 type SortKey struct {
-	Value   values.Value
-	Reverse bool
+	Value      values.Value
+	Reverse    bool
+	NullsFirst bool
 }
 
 // LogicalSortExpression represents an unimplemented sort over the inner

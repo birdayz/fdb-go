@@ -1717,6 +1717,17 @@ func executeInMemorySort(
 		for _, k := range keys {
 			ci := compareByField(results[i], k.Field)
 			cj := compareByField(results[j], k.Field)
+			iNil := ci == nil
+			jNil := cj == nil
+			if iNil && jNil {
+				continue
+			}
+			if iNil || jNil {
+				if k.NullsFirst {
+					return iNil
+				}
+				return jNil
+			}
 			cmp := compareValues(ci, cj)
 			if cmp == 0 {
 				continue

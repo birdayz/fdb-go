@@ -65,7 +65,7 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		} else {
 			field = values.ExplainValue(sk.Value)
 		}
-		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse}
+		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse, NullsFirst: sk.NullsFirst}
 	}
 
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, planKeys)
