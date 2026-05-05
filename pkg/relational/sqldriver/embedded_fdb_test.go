@@ -3871,7 +3871,7 @@ func TestFDB_GreatestLeast(t *testing.T) {
 // elsewhere (TestFDB_ExistsSubquery, etc).
 func TestFDB_SubqueryINRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: IN subquery not yet translated")
+	t.Skip("TODO #79: IN subquery — query succeeds when should error")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4136,7 +4136,7 @@ func TestFDB_CTE(t *testing.T) {
 // doesn't work in Java → doesn't work in Go.
 func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #80: FROM-less SELECT not yet translated")
+	t.Skip("TODO #80: FROM-less SELECT — build failure returns nil instead of error")
 	ctx := context.Background()
 
 	// Guard: SELECT without FROM still opens an FDB connection (sql.Open
@@ -6540,7 +6540,6 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 // must filter explicit NULLs in the inner subquery.
 func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: subqueries not yet translated")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
