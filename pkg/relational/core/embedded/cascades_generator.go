@@ -143,12 +143,12 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		logicalOp = buildLogicalPlanForInsertWithCatalog(ins, md)
 	}
 	if logicalOp == nil {
-		return g.naive.Plan(ctx, dml.GetText())
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
 	}
 
 	ref := query.TranslateToCascades(logicalOp)
 	if ref == nil {
-		return g.naive.Plan(ctx, dml.GetText())
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
@@ -159,7 +159,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
-		return g.naive.Plan(ctx, dml.GetText())
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "DML Cascades planning failed: %v", planErr)
 	}
 
 	type planExtractor interface {
@@ -167,11 +167,11 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		return g.naive.Plan(ctx, dml.GetText())
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML plan extraction failed")
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
-		return g.naive.Plan(ctx, dml.GetText())
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML physical plan nil")
 	}
 
 	return &cascadesPlan{
