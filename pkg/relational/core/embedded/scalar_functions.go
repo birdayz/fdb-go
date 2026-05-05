@@ -208,7 +208,7 @@ func evalScalarFunctionCallCore(
 		}
 		return nil, nil // unreachable
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "Unsupported operator %s", name)
+		return nil, api.NewErrorf(api.ErrCodeUndefinedFunction, "Unsupported operator %s", name)
 	}
 }
 
