@@ -69,9 +69,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "malformed SELECT statement")
 	}
 
-	// INFORMATION_SCHEMA queries go through the system-table path (naive),
-	// not the Cascades planner. Go-only feature (#9 decision: keep).
-	if strings.Contains(strings.ToUpper(sql), "INFORMATION_SCHEMA") {
+	if referencesInformationSchema(q) {
 		return g.naive.Plan(ctx, sql)
 	}
 
@@ -794,6 +792,28 @@ func findLogicalScan(op logical.LogicalOperator) *logical.LogicalScan {
 		}
 	}
 	return nil
+}
+
+// referencesInformationSchema walks the ANTLR parse tree and returns
+// true if any table name contains "INFORMATION_SCHEMA". Uses typed
+// parse tree nodes — no string matching on raw SQL text.
+func referencesInformationSchema(ctx antlr.Tree) bool {
+	if ctx == nil {
+		return false
+	}
+	if atom, ok := ctx.(*antlrgen.AtomTableItemContext); ok {
+		if tn := atom.TableName(); tn != nil {
+			if strings.Contains(strings.ToUpper(tn.GetText()), "INFORMATION_SCHEMA") {
+				return true
+			}
+		}
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if referencesInformationSchema(ctx.GetChild(i)) {
+			return true
+		}
+	}
+	return false
 }
 
 // findUnsupportedFunctionInParseTree walks an ANTLR expression tree
