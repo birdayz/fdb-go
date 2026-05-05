@@ -687,6 +687,10 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			if errors.As(err, &overflow) {
 				return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
 			}
+			var scalarMismatch *values.ScalarTypeMismatchError
+			if errors.As(err, &scalarMismatch) {
+				return api.NewError(api.ErrCodeCannotConvertType, scalarMismatch.Error())
+			}
 			var typeMismatch *predicates.TypeMismatchError
 			if errors.As(err, &typeMismatch) {
 				return api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())

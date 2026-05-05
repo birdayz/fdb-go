@@ -157,7 +157,6 @@ func TestEvalScalarFunction_GREATEST_LEAST(t *testing.T) {
 		{"first NULL → NULL", []any{nil, int64(1)}, nil, nil},
 		{"single arg", []any{int64(42)}, int64(42), int64(42)},
 		{"empty args", []any{}, nil, nil},
-		{"cross-type incomparable declines", []any{"a", int64(1)}, nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,11 +195,6 @@ func TestEvalScalarFunction_GREATEST_LEAST_AdditionalTypes(t *testing.T) {
 		// all float64 (skip the int → float promotion arm).
 		{"float-only", []any{float64(1.5), float64(2.5), float64(0.5)}, float64(2.5), float64(0.5)},
 		{"float negatives", []any{float64(-1.5), float64(-2.5)}, float64(-1.5), float64(-2.5)},
-
-		// Cross-type declines: bool vs int, float vs string.
-		{"bool-int decline", []any{true, int64(1)}, nil, nil},
-		{"float-string decline", []any{float64(1.5), "a"}, nil, nil},
-		{"int-bool decline", []any{int64(0), false}, nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,6 +207,31 @@ func TestEvalScalarFunction_GREATEST_LEAST_AdditionalTypes(t *testing.T) {
 			if gotL != tc.wantLeast {
 				t.Errorf("LEAST(%v): got %v, want %v", tc.args, gotL, tc.wantLeast)
 			}
+		})
+	}
+
+	// Cross-type panics: bool vs int, float vs string.
+	crossTypeCases := []struct {
+		name string
+		args []any
+	}{
+		{"bool-int panic", []any{true, int64(1)}},
+		{"float-string panic", []any{float64(1.5), "a"}},
+		{"int-bool panic", []any{int64(0), false}},
+	}
+	for _, tc := range crossTypeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("GREATEST(%v) should panic with ScalarTypeMismatchError", tc.args)
+				}
+				if _, ok := r.(*ScalarTypeMismatchError); !ok {
+					t.Fatalf("expected ScalarTypeMismatchError, got %T: %v", r, r)
+				}
+			}()
+			evalScalarFunction("GREATEST", tc.args)
 		})
 	}
 }

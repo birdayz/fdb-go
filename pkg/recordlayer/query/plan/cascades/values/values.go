@@ -279,7 +279,7 @@ func EvaluateConstant(v Value) (out any, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			switch r.(type) {
-			case *ArithmeticDivisionByZeroError, *ArithmeticOverflowError:
+			case *ArithmeticDivisionByZeroError, *ArithmeticOverflowError, *ScalarTypeMismatchError:
 				out = nil
 				ok = true
 			default:
@@ -1102,7 +1102,9 @@ func evalScalarFunction(name string, args []any) any {
 			}
 			cmp, ok := compareScalar(best, a)
 			if !ok {
-				return nil // cross-type — runtime reports the error
+				panic(&ScalarTypeMismatchError{
+					Message: fmt.Sprintf("incompatible types for %s: %T vs %T", name, best, a),
+				})
 			}
 			if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
 				best = a
@@ -1508,6 +1510,17 @@ type ArithmeticOverflowError struct{}
 
 func (*ArithmeticOverflowError) Error() string {
 	return "integer overflow"
+}
+
+// ScalarTypeMismatchError is panicked by scalar functions (GREATEST,
+// LEAST) when arguments have incompatible types. The executor catches
+// this and converts to SQLSTATE 22000 DATA_EXCEPTION.
+type ScalarTypeMismatchError struct {
+	Message string
+}
+
+func (e *ScalarTypeMismatchError) Error() string {
+	return e.Message
 }
 
 // addInt64Checked / subInt64Checked / mulInt64Checked mirror

@@ -364,7 +364,7 @@ func executeFilter(
 			defer func() {
 				if r := recover(); r != nil {
 					switch r.(type) {
-					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError:
+					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError, *values.ScalarTypeMismatchError:
 						panic(r)
 					}
 					keep = false
@@ -479,6 +479,8 @@ func executeProjection(
 						case *values.ArithmeticDivisionByZeroError:
 							evalErr = e
 						case *values.ArithmeticOverflowError:
+							evalErr = e
+						case *values.ScalarTypeMismatchError:
 							evalErr = e
 						default:
 							evalErr = fmt.Errorf("projection evaluation panic: %v", r)
@@ -1514,6 +1516,8 @@ func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.Rec
 			case *values.ArithmeticOverflowError:
 				err = e
 			case *values.ArithmeticDivisionByZeroError:
+				err = e
+			case *values.ScalarTypeMismatchError:
 				err = e
 			default:
 				panic(r)
