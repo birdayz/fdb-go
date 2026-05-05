@@ -233,6 +233,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			aggAliases = []string{sq.countStarAlias}
 		} else {
 			for _, ac := range sq.aggCols {
+				if ac.sortOnly {
+					continue
+				}
 				if ac.aggFunc != "" {
 					arg := ac.aggArg
 					if arg == "" && ac.aggExpr != nil {
