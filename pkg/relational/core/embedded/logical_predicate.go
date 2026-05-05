@@ -721,8 +721,7 @@ func cascadesSafeScalarFunction(name string) bool {
 	switch name {
 	case "COALESCE", "NULLIF", "IFNULL",
 		"GREATEST", "LEAST",
-		"IF", "IIF",
-		"ABS", "MOD":
+		"IF", "IIF":
 		return true
 	}
 	return false

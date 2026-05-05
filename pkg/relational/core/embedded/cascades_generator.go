@@ -311,7 +311,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if fv, ok := v.(*values.FieldValue); ok {
 			name = fv.Field
 		} else {
-			name = v.Name()
+			name = values.ExplainValue(v)
 		}
 		typeName := aggregateTypeName(name, desc)
 		if typeName == "" && desc != nil {

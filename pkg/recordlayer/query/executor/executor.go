@@ -1414,7 +1414,7 @@ func projectionColumnName(v values.Value) string {
 	if fv, ok := v.(*values.FieldValue); ok {
 		return fv.Field
 	}
-	return strings.ToUpper(v.Name())
+	return strings.ToUpper(values.ExplainValue(v))
 }
 
 func fieldFromDatum(datum any, key string) any {

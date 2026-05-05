@@ -215,8 +215,8 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	}
 
 	row := results[0].Datum.(map[string]any)
-	if row["CONSTANT"] != "projected" {
-		t.Errorf("projection result = %v, want 'projected'", row["CONSTANT"])
+	if row["'PROJECTED'"] != "projected" {
+		t.Errorf("projection result = %v, want 'projected'", row["'PROJECTED'"])
 	}
 }
 
@@ -540,8 +540,8 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 	}
 
 	row := results[0].Datum.(map[string]any)
-	if row["CONSTANT"] != "result" {
-		t.Errorf("composite pipeline result = %v, want 'result'", row["CONSTANT"])
+	if row["'RESULT'"] != "result" {
+		t.Errorf("composite pipeline result = %v, want 'result'", row["'RESULT'"])
 	}
 }
 
@@ -2239,8 +2239,9 @@ func TestProjectionColumnName_FieldValue(t *testing.T) {
 func TestProjectionColumnName_NonFieldValue(t *testing.T) {
 	t.Parallel()
 	cv := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
-	if got := projectionColumnName(cv); got != strings.ToUpper(cv.Name()) {
-		t.Fatalf("expected %s, got %s", strings.ToUpper(cv.Name()), got)
+	want := strings.ToUpper(values.ExplainValue(cv))
+	if got := projectionColumnName(cv); got != want {
+		t.Fatalf("expected %s, got %s", want, got)
 	}
 }
 

@@ -3303,7 +3303,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 
 func TestFDB_MathFunctions(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: math functions in projection")
+	t.Skip("TODO #78: bitwise operators + MOD function-form need walker support")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3336,21 +3336,19 @@ func TestFDB_MathFunctions(t *testing.T) {
 
 	// MOD as a function call is rejected (function-form is not in
 	// fdb-relational's BuiltInFunction registry; only the `%`
-	// operator maps to Mod).
+	// operator maps to Mod). Cascades-only path surfaces as planner failure.
 	var dummyMod int64
 	errMod := db.QueryRowContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`).Scan(&dummyMod)
 	g.Expect(errMod).To(gomega.HaveOccurred(), "MOD function-form must be rejected")
-	expectUnsupportedOperator(g, errMod, "MOD", "MOD(val, 3)")
+	expectRejectionOrCascadesError(t, errMod, "Unsupported operator MOD")
 
 	// POWER / POW are absent from fdb-relational 4.11.1.0's
-	// ArithmeticValue registry; Java's planner emits "Unsupported
-	// operator <NAME>" (0A000) before evaluation. Go mirrors
-	// byte-equal via the default arm in scalar_functions.go.
+	// ArithmeticValue registry. Cascades-only path: planner failure.
 	for _, op := range []string{"POWER", "POW"} {
 		var dummy int64
 		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(2, 3) FROM Num WHERE id = 1`, op)).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
-		expectUnsupportedOperator(g, errRej, op, "op="+op)
+		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+op)
 	}
 
 	// ABS / SQRT — same rejection.
@@ -3358,7 +3356,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(val) FROM Num WHERE id = 1`, op)).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
-		expectUnsupportedOperator(g, errRej, op, "op="+op)
+		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+op)
 	}
 
 	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
@@ -3799,7 +3797,7 @@ func TestFDB_CountDistinct(t *testing.T) {
 
 func TestFDB_GreatestLeast(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: GREATEST/LEAST functions")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4166,7 +4164,7 @@ func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 // the constant slots).
 func TestFDB_ConstantProjectionFolding(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: constant expression evaluation")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5937,7 +5935,7 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 
 func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: NULL propagation in functions")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
