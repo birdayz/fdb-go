@@ -345,7 +345,6 @@ func TestFDB_CascadesOrderByNoIndex(t *testing.T) {
 
 func TestFDB_CascadesJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: NLJ qualified keys added but predicate field names don't match yet")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -923,7 +922,7 @@ func TestFDB_CascadesCTEGroupBy(t *testing.T) {
 
 func TestFDB_CascadesCTEJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: CTE+JOIN — NLJ predicate field name resolution")
+	t.Skip("TODO #83: CTE+JOIN — CTE alias vs real table name mismatch in qualified keys")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -1037,7 +1036,6 @@ func TestFDB_CascadesCTEDistinct(t *testing.T) {
 
 func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: JOIN column derivation returns NULL")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
