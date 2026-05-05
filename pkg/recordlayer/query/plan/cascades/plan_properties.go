@@ -256,8 +256,12 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
 		return EmptyOrdering()
 	}
 	bm := make(map[values.Value][]OrderingBinding, len(o.Keys))
-	for _, k := range o.Keys {
-		bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+	for i, k := range o.Keys {
+		dir := ProvidedSortOrderAscending
+		if i < len(o.Descending) && o.Descending[i] {
+			dir = ProvidedSortOrderDescending
+		}
+		bm[k] = []OrderingBinding{SortedBinding(dir)}
 	}
 	return NewRichOrdering(bm, o.Keys, false)
 }

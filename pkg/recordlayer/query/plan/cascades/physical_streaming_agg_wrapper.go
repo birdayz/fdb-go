@@ -88,16 +88,19 @@ func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost) properti
 	}
 }
 
-// HintOrdering: streaming aggregation does NOT preserve input ordering
-// — the output is one row per group, in group-encounter order (which
-// matches the grouping-key order if the input was sorted).
 func (w *physicalStreamingAggWrapper) HintOrdering() properties.Ordering {
 	if w.plan == nil || len(w.plan.GetGroupingKeys()) == 0 {
 		return properties.Ordering{IsKnown: false}
 	}
 	keys := make([]values.Value, len(w.plan.GetGroupingKeys()))
 	copy(keys, w.plan.GetGroupingKeys())
-	return properties.Ordering{IsKnown: true, Keys: keys}
+	desc := make([]bool, len(keys))
+	if idx, ok := w.plan.GetInner().(*plans.RecordQueryIndexPlan); ok && idx.IsReverse() {
+		for i := range desc {
+			desc[i] = true
+		}
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
 }
 
 func (w *physicalStreamingAggWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

@@ -84,23 +84,25 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		scanPlan := cand.ToScanPlan(emptyPrefix, false)
-		idxPlan, ok := scanPlan.(*plans.RecordQueryIndexPlan)
-		if !ok {
-			continue
-		}
+		for _, reverse := range []bool{false, true} {
+			scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
+			idxPlan, ok := scanPlan.(*plans.RecordQueryIndexPlan)
+			if !ok {
+				continue
+			}
 
-		idxWrapper := &physicalIndexScanWrapper{
-			plan:        idxPlan,
-			columnNames: colNames,
-			unique:      cand.IsUnique(),
-		}
+			idxWrapper := &physicalIndexScanWrapper{
+				plan:        idxPlan,
+				columnNames: colNames,
+				unique:      cand.IsUnique(),
+			}
 
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
-			idxPlan, groupingKeys, gb.GetAggregates(),
-		)
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
-		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
+				idxPlan, groupingKeys, gb.GetAggregates(),
+			)
+			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		}
 	}
 }
 

@@ -6060,6 +6060,62 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
 }
 
+func TestFDB_GroupByOrderByGroupKey(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_gb_orderkey")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_orderkey")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_orderkey_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, k STRING NOT NULL, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON T (k)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_orderkey/main WITH TEMPLATE gb_orderkey_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_gb_orderkey?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO T (id, k) VALUES (1, 'c'), (2, 'a'), (3, 'a'),
+			(4, 'b'), (5, 'c'), (6, 'b')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT k, COUNT(*) FROM T GROUP BY k ORDER BY k ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type row struct {
+		k     string
+		count int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.k, &r.count)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{"a", 2}, {"b", 2}, {"c", 2}}))
+
+	rows2, err := db.QueryContext(ctx,
+		`SELECT k, COUNT(*) FROM T GROUP BY k ORDER BY k DESC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var got2 []row
+	for rows2.Next() {
+		var r row
+		g.Expect(rows2.Scan(&r.k, &r.count)).To(gomega.Succeed())
+		got2 = append(got2, r)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got2).To(gomega.Equal([]row{{"c", 2}, {"b", 2}, {"a", 2}}))
+}
+
 // TestFDB_JoinWithNullKey pins that JOIN ON with NULL keys behaves per
 // SQL spec: NULL = NULL in an ON clause is UNKNOWN, so rows with NULL
 // keys do NOT match. INNER JOIN skips them; LEFT JOIN preserves the
