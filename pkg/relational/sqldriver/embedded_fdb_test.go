@@ -61,16 +61,17 @@ func TestMain(m *testing.M) {
 }
 
 // expectUnsupportedOperator asserts that err unwraps to an *api.Error
-// with code ErrCodeUnsupportedOperation and the byte-equal Java
-// rejection message ("Unsupported operator <opName>"). Used by the
-// rejection-suite tests pinning Java alignment for scalar functions
-// not in fdb-relational's registry.
+// with the byte-equal Java rejection message ("Unsupported operator
+// <opName>"). SELECT path uses ErrCodeUndefinedFunction (42883, Java's
+// SqlFunctionCatalog.lookupFunction); DML paths may use
+// ErrCodeUnsupportedOperation (0A000) when the function is embedded in
+// values/expressions the FindUnsupportedFunction walker doesn't reach.
 func expectUnsupportedOperator(g gomega.Gomega, err error, opName, ctx string) {
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
 		"%s: want *api.Error, got %T (%v)", ctx, err, err)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-		"%s: want ErrCodeUnsupportedOperation, got %s", ctx, apiErr.Code)
+	g.Expect(apiErr.Code).To(gomega.BeElementOf(api.ErrCodeUndefinedFunction, api.ErrCodeUnsupportedOperation),
+		"%s: want ErrCodeUndefinedFunction or ErrCodeUnsupportedOperation, got %s", ctx, apiErr.Code)
 	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+opName),
 		"%s: want byte-equal Java message", ctx)
 }
@@ -5905,26 +5906,12 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// fires before the function-registry layer).
 			name:     "ABS (function rejected before arg check)",
 			sql:      "SELECT ABS(-9223372036854775808) FROM T WHERE id = 1",
-			wantCode: api.ErrCodeUnsupportedOperation,
+			wantCode: api.ErrCodeUndefinedFunction,
 		},
 		{
-			// SUBSTRING is absent from fdb-relational 4.11.1.0's
-			// function registry — Java's planner emits "Unsupported
-			// operator SUBSTRING" (SQLSTATE 0A000) before any
-			// argument validation runs. Pre-cleanup, Go evaluated
-			// SUBSTRING and rejected fractional-length 2.5 with
-			// 22023 INVALID_PARAMETER; with the Go-side dispatch
-			// removed, the rejection now fires at the function-
-			// registry layer with 0A000 and the byte-equal Java
-			// message. Per project conformance principle: doesn't
-			// work in Java → doesn't work in Go.
-			//
-			// Wrapped in `FROM T WHERE id = 1` because FROM-less SELECT
-			// is now rejected at parse time (UNSUPPORTED_QUERY 0AF00,
-			// fires before the function-registry layer).
 			name:     "SUBSTRING (function rejected before arg check)",
 			sql:      "SELECT SUBSTRING('hello', 1, 2.5) FROM T WHERE id = 1",
-			wantCode: api.ErrCodeUnsupportedOperation,
+			wantCode: api.ErrCodeUndefinedFunction,
 		},
 		{
 			// FROM-less SELECT — fdb-relational 4.11.1.0 rejects at

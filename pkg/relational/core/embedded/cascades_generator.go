@@ -89,7 +89,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewError(api.ErrCodeUndefinedFunction,
 			"Unsupported operator "+fn)
 	}
 
@@ -156,6 +156,11 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 	if logicalOp == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
+	}
+
+	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
+		return nil, api.NewError(api.ErrCodeUndefinedFunction,
+			"Unsupported operator "+fn)
 	}
 
 	ref := query.TranslateToCascades(logicalOp)
