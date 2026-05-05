@@ -28,15 +28,8 @@ func TestTranslateFilterOverScan(t *testing.T) {
 	scan := logical.NewScan("orders", "")
 	filter := logical.NewFilter(scan, "price > 10")
 	ref := TranslateToCascades(filter)
-	if ref == nil {
-		t.Fatal("expected non-nil reference")
-	}
-	members := ref.Members()
-	if len(members) != 1 {
-		t.Fatalf("expected 1 member, got %d", len(members))
-	}
-	if _, ok := members[0].(*expressions.LogicalFilterExpression); !ok {
-		t.Fatalf("expected LogicalFilterExpression, got %T", members[0])
+	if ref != nil {
+		t.Fatal("expected nil: text-only predicate must not translate")
 	}
 }
 
@@ -224,8 +217,8 @@ func TestTranslateNestedSortFilterScan(t *testing.T) {
 	sort := logical.NewSort(filter, []logical.SortKey{{Expr: "id", Dir: logical.SortAsc}})
 	limit := logical.NewLimit(sort, 20, 0)
 	ref := TranslateToCascades(limit)
-	if ref == nil {
-		t.Fatal("expected non-nil reference for nested tree")
+	if ref != nil {
+		t.Fatal("expected nil: text-only predicate in nested tree must not translate")
 	}
 }
 
@@ -258,17 +251,8 @@ func TestTranslateCTEWithFilter(t *testing.T) {
 	cte := logical.NewCTE("expensive", body, main, false)
 
 	ref := TranslateToCascades(cte)
-	if ref == nil {
-		t.Fatal("expected non-nil reference")
-	}
-	proj, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression)
-	if !ok {
-		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
-	}
-	innerRef := proj.GetQuantifiers()[0].GetRangesOver()
-	inner := innerRef.Members()[0]
-	if _, ok := inner.(*expressions.LogicalFilterExpression); !ok {
-		t.Fatalf("expected inlined LogicalFilterExpression under projection, got %T", inner)
+	if ref != nil {
+		t.Fatal("expected nil: CTE body with text-only predicate must not translate")
 	}
 }
 

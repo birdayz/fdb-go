@@ -3995,7 +3995,7 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 
 func TestFDB_ExistsSubquery(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: EXISTS subquery not translated")
+	t.Skip("TODO #79: EXISTS subquery — WHERE silently dropped")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
