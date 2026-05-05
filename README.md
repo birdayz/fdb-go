@@ -177,8 +177,9 @@ structure are all verified against Java.
 
 ### Test coverage
 
-315 conformance specs (Go↔Java cross-validation) and 838 unit/integration specs
-against real FDB via testcontainers. **1153 total specs.**
+434 conformance specs (Go↔Java cross-validation), 5320 Go test functions, and 2702
+Ginkgo specs against real FDB via testcontainers. **8000+ total test entry points.**
+1579-entry SQL corpus runs through the Go engine with zero failures.
 
 | Area | Conformance specs |
 |------|------------------:|
