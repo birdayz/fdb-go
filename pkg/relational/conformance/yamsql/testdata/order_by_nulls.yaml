@@ -26,14 +26,20 @@ tests:
       - [5]
       - [~]
       - [~]
-  # Explicit NULLS LAST on ASC: requested NULL placement diverges from
-  # the natural ASC order (FDB tuple ordering puts NULL first), so no
-  # scan strategy emits rows in the requested order — rejected. Java
-  # rejects for the same architectural reason: Cascades has no rule to
-  # rearrange NULL placement post-scan.
+  # Explicit NULLS LAST on ASC — Go extension: in-memory sort handles
+  # NULL placement that index scans can't provide.
   - query: SELECT v FROM t ORDER BY v ASC NULLS LAST
-    error_code: "0AF01"
-  # Explicit NULLS FIRST on DESC: requested NULL placement diverges
-  # from natural DESC order — rejected for the same reason.
+    rows:
+      - [5]
+      - [10]
+      - [20]
+      - [~]
+      - [~]
+  # Explicit NULLS FIRST on DESC — Go extension: in-memory sort.
   - query: SELECT v FROM t ORDER BY v DESC NULLS FIRST
-    error_code: "0AF01"
+    rows:
+      - [~]
+      - [~]
+      - [20]
+      - [10]
+      - [5]

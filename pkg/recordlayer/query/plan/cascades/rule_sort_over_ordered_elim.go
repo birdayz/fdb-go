@@ -75,6 +75,14 @@ func orderingSatisfies(ordering properties.Ordering, sortKeys []expressions.Sort
 		if sk.Reverse != orderDesc {
 			return false
 		}
+		// Index scans produce ASC → NULLS FIRST, DESC → NULLS LAST.
+		// Only reject when NullsFirst is explicitly set to non-default.
+		if sk.NullsFirst != nil {
+			defaultNF := !sk.Reverse
+			if *sk.NullsFirst != defaultNF {
+				return false
+			}
+		}
 	}
 	return true
 }

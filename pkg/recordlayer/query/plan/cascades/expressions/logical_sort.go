@@ -12,7 +12,7 @@ import (
 type SortKey struct {
 	Value      values.Value
 	Reverse    bool
-	NullsFirst bool
+	NullsFirst *bool // nil = use default (ASC→true, DESC→false)
 }
 
 // LogicalSortExpression represents an unimplemented sort over the inner

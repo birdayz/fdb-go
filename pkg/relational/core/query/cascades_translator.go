@@ -192,10 +192,11 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	}
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
+		nf := k.NullsFirst
 		sortKeys[i] = expressions.SortKey{
 			Value:      &values.FieldValue{Field: k.Expr, Typ: values.UnknownType},
 			Reverse:    k.Dir == logical.SortDesc,
-			NullsFirst: k.NullsFirst,
+			NullsFirst: &nf,
 		}
 	}
 	return expressions.NewLogicalSortExpression(

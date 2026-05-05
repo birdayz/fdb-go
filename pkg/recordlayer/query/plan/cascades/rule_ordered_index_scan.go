@@ -89,6 +89,13 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 				matches = false
 				break
 			}
+			if sk.NullsFirst != nil {
+				defaultNF := !reverse
+				if *sk.NullsFirst != defaultNF {
+					matches = false
+					break
+				}
+			}
 		}
 		if !matches {
 			continue
