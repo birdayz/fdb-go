@@ -5486,7 +5486,7 @@ func TestFDB_SelfJoin(t *testing.T) {
 
 func TestFDB_CaseInWhere(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CASE in WHERE not yet handled")
+	t.Skip("TODO #78: CASE in WHERE — text predicate silently dropped")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5690,7 +5690,6 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 // Go aligns through the default arm of evalScalarFunctionCallCore.
 func TestFDB_LeftRightRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #79: LEFT/RIGHT JOIN translation not yet handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5907,7 +5906,6 @@ func TestFDB_PiFunctionRejected(t *testing.T) {
 
 func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CASE in WHERE not yet handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
