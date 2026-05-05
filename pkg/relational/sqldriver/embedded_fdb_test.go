@@ -7256,7 +7256,7 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 
 func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: column type metadata not correct in Cascades")
+	t.Skip("TODO #83: column type metadata empty in Cascades plan")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
