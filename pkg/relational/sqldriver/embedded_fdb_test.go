@@ -5587,7 +5587,7 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 
 func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: empty result + ORDER BY edge case")
+	t.Skip("TODO #65: CTE+aggregate+JOIN edge cases")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
