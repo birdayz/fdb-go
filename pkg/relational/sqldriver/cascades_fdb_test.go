@@ -823,7 +823,6 @@ func TestFDB_CascadesCTESelectStar(t *testing.T) {
 
 func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
 	t.Parallel()
-	t.Skip("CTE column aliases in WHERE not resolved — predicate uses aliased names but scan produces original column names")
 	_, cascadesDB := setupCascadesTestDB(t)
 	ctx := context.Background()
 

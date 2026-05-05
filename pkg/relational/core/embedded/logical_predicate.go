@@ -434,6 +434,7 @@ func buildCTEColumnSource(
 	}
 
 	var columns []semantic.Column
+	var aliasMap map[string]string
 	if innerSQ.projCols == nil {
 		allCols := innerTbl.Columns()
 		columns = make([]semantic.Column, len(allCols))
@@ -453,6 +454,12 @@ func buildCTEColumnSource(
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
 			}
+			if !strings.EqualFold(outName, bareName) {
+				if aliasMap == nil {
+					aliasMap = make(map[string]string)
+				}
+				aliasMap[strings.ToUpper(outName)] = strings.ToUpper(bareName)
+			}
 			columns = append(columns, semantic.Column{
 				Id:       semantic.NewUnquoted(outName),
 				Type:     innerCol.Type,
@@ -470,6 +477,7 @@ func buildCTEColumnSource(
 		Table:           virtualTable,
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
+		ColumnAliasMap:  aliasMap,
 	}, true
 }
 
@@ -606,6 +614,12 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		return op
 	}
 
+	if cteScopes != nil && len(sq.joins) == 0 {
+		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.ColumnAliasMap != nil {
+			rewriteProjectionAliases(op, src.ColumnAliasMap)
+		}
+	}
+
 	// Upgrade JOIN ON predicates: walk the plan tree to find LogicalJoin
 	// nodes and try to build real ON predicates using the join scope.
 	if len(sq.joins) > 0 {
@@ -662,6 +676,22 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 // signals the invariant broke — tests assert on it so a future
 // builder change that drops the Filter doesn't silently throw
 // away the predicate.
+func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]string) {
+	proj := findProjection(op)
+	if proj == nil {
+		return
+	}
+	for i, col := range proj.Projections {
+		upper := strings.ToUpper(col)
+		if real, ok := aliasMap[upper]; ok {
+			proj.Projections[i] = real
+			if i < len(proj.Aliases) && proj.Aliases[i] == "" {
+				proj.Aliases[i] = col
+			}
+		}
+	}
+}
+
 func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredicate) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
