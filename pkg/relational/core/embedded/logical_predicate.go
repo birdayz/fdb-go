@@ -36,6 +36,7 @@ package embedded
 // remains deterministic and IO-free.
 
 import (
+	"errors"
 	"strings"
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -48,7 +49,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic/rlcatalog"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // buildWherePredicateForTable converts a WHERE expression context
@@ -611,14 +611,50 @@ func buildWherePredicateForJoins(
 // Follow-up wiring (not in this shift): plumb md into
 // naive_generator's ExplainFn so Explain output shows simplified
 // predicate trees when metadata is available.
-func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData) logical.LogicalOperator {
+func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.RecordMetaData) (logical.LogicalOperator, error) {
 	return buildLogicalPlanForSelectWithCTECatalog(sq, md, nil)
 }
 
-func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) logical.LogicalOperator {
+func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil || md == nil || sq == nil {
-		return op
+		return op, nil
+	}
+
+	// Build the semantic scope once. All identifier resolution below
+	// goes through this scope — same architecture as Java's
+	// QueryVisitor holding a SemanticAnalyzer.
+	resolver := buildSelectScope(sq, md, cteScopes)
+
+	// Resolve projection columns through the scope. Only plain column
+	// references (projExprs[i] == nil) are resolved — computed
+	// expressions / literals have non-nil projExprs entries and go
+	// through the expression walker instead. Skip aggregate queries
+	// (aggCols / countStar) — their projection names are aggregate
+	// output labels, not column references.
+	if resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
+		for i, col := range sq.projCols {
+			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				continue
+			}
+			if err := resolveColumnName(resolver, col); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// ORDER BY: Java's QueryVisitor resolves ORDER BY via the expression
+	// visitor (not bare column-name scope lookup) and only validates
+	// duplicates. Scope-based ORDER BY resolution is deferred until the
+	// expression walker handles ORDER BY expressions end-to-end.
+
+	// Resolve GROUP BY columns through the scope.
+	if resolver != nil && len(sq.aggCols) == 0 {
+		for _, gb := range sq.groupBy {
+			if err := resolveColumnName(resolver, gb); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if cteScopes != nil && len(sq.joins) == 0 {
@@ -632,32 +668,24 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		}
 	}
 
-	// Upgrade JOIN ON predicates: walk the plan tree to find LogicalJoin
-	// nodes and try to build real ON predicates using the join scope.
 	if len(sq.joins) > 0 {
 		upgradeJoinOnPredicates(op, sq, md, cteScopes)
 	}
 
-	// Upgrade aggregate operands: resolve computed expressions in aggregate
-	// arguments (e.g. SUM(qty + 1.0)) to proper Value trees.
 	if len(sq.aggCols) > 0 {
 		upgradeAggregateOperands(op, sq, md, cteScopes)
 	}
 
-	// Upgrade projections: walk projExprs through the Resolver to produce
-	// Value trees the Cascades translator can consume directly.
 	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
 		upgradeProjectionValues(op, sq, md, cteScopes)
 	}
 
-	// Upgrade HAVING: resolve the HAVING expression into a predicate that
-	// references aggregate output columns by name.
 	if sq.havingExpr != nil {
 		upgradeHavingPredicate(op, sq, md, cteScopes)
 	}
 
 	if sq.whereExpr == nil {
-		return op
+		return op, nil
 	}
 	var pred predicates.QueryPredicate
 	var ok bool
@@ -673,10 +701,10 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		pred, ok = buildWherePredicate(md, sq, sq.whereExpr)
 	}
 	if !ok {
-		return op
+		return op, nil
 	}
 	_ = upgradeFirstFilter(op, pred)
-	return op
+	return op, nil
 }
 
 // upgradeFirstFilter walks the single-child chain from op and, at
@@ -688,38 +716,95 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 // signals the invariant broke — tests assert on it so a future
 // builder change that drops the Filter doesn't silently throw
 // away the predicate.
-func validateOrderByColumns(sq *selectQuery, md *recordlayer.RecordMetaData) error {
-	if sq == nil || md == nil || len(sq.orderBy) == 0 || sq.tableName == "" {
+// buildSelectScope builds a semantic scope + resolver from the FROM
+// clause of a selectQuery. This is the single point of scope
+// construction — all identifier resolution (projection, ORDER BY,
+// GROUP BY, WHERE, ON) goes through the returned resolver.
+//
+// Returns nil resolver when the scope can't be built (missing metadata,
+// CTE-only sources without schema, etc.). Callers fall back to text.
+func buildSelectScope(
+	sq *selectQuery,
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
+) *expr.Resolver {
+	if sq == nil || md == nil || sq.tableName == "" {
 		return nil
 	}
-	if len(sq.joins) > 0 || sq.derivedQuery != nil || len(sq.aggCols) > 0 || sq.countStar {
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+
+	addSource := func(tableName, alias string) bool {
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err != nil && cteScopes != nil {
+			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+				aliasID := semantic.NewUnquoted(alias)
+				if alias == "" {
+					aliasID = semantic.NewUnquoted(tableName)
+				}
+				return scope.AddSource(semantic.ScopeSource{
+					Table:           src.Table,
+					Alias:           aliasID,
+					CorrelationName: aliasID.Name(),
+					ColumnAliasMap:  src.ColumnAliasMap,
+				}) == nil
+			}
+			return false
+		}
+		if err != nil {
+			return false
+		}
+		aliasID := semantic.NewUnquoted(alias)
+		if alias == "" {
+			aliasID = semantic.NewUnquoted(tableName)
+		}
+		return scope.AddSource(semantic.ScopeSource{
+			Table:           tbl,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}) == nil
+	}
+
+	if sq.derivedQuery != nil {
+		if src, ok := buildDerivedTableSource(md, sq.tableName, sq.derivedQuery); ok {
+			if scope.AddSource(src) != nil {
+				return nil
+			}
+		} else {
+			return nil
+		}
+	} else if !addSource(sq.tableName, sq.tableAlias) {
 		return nil
 	}
-	rt := md.GetRecordType(sq.tableName)
-	if rt == nil || rt.Descriptor == nil {
+	for _, j := range sq.joins {
+		if !addSource(j.tableName, j.alias) {
+			return nil
+		}
+	}
+	return expr.New(analyzer, scope)
+}
+
+// resolveColumnName resolves a bare column name through the semantic
+// scope. Returns an error for ambiguous (42702) or undefined (42703)
+// columns. Returns nil for qualified names (contain ".") or when
+// resolver is nil.
+func resolveColumnName(resolver *expr.Resolver, col string) error {
+	if resolver == nil || col == "" || strings.Contains(col, ".") {
 		return nil
 	}
-	projSet := make(map[string]bool)
-	for _, col := range sq.projCols {
-		projSet[strings.ToUpper(col)] = true
-	}
-	for i, alias := range sq.projAliases {
-		if alias != "" && i < len(sq.projCols) {
-			projSet[strings.ToUpper(alias)] = true
+	_, err := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))
+	if err != nil {
+		var ambigErr *semantic.AmbiguousColumnError
+		if errors.As(err, &ambigErr) {
+			return api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"column reference %q is ambiguous", col)
 		}
-	}
-	for _, ob := range sq.orderBy {
-		if ob.expr != nil || ob.colName == "" {
-			continue
+		var notFoundErr *semantic.ColumnNotFoundError
+		if errors.As(err, &notFoundErr) {
+			return api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist", col)
 		}
-		upper := strings.ToUpper(ob.colName)
-		if projSet[upper] {
-			continue
-		}
-		if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) != nil {
-			continue
-		}
-		return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", ob.colName)
 	}
 	return nil
 }
@@ -1201,7 +1286,7 @@ func buildLogicalPlanForInsertWithCatalog(
 	// (same ANTLR node, same extractFromSimpleTable contract), but
 	// pinning the invariant in code instead of in the comment guards
 	// against future divergence between the text and catalog paths.
-	if upgraded := buildLogicalPlanForSelectWithCatalog(sq, md); upgraded != nil {
+	if upgraded, err := buildLogicalPlanForSelectWithCatalog(sq, md); err == nil && upgraded != nil {
 		insertOp.Source = upgraded
 	}
 	return insertOp
@@ -1294,10 +1379,7 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 		if err := validateQualifiedStarSources(sq, md); err != nil {
 			return nil, err
 		}
-		if err := validateOrderByColumns(sq, md); err != nil {
-			return nil, err
-		}
-		return buildLogicalPlanForSelectWithCatalog(sq, md), nil
+		return buildLogicalPlanForSelectWithCatalog(sq, md)
 	case *antlrgen.SetQueryContext:
 		return buildLogicalPlanForUnionWithCatalog(b, md), nil
 	}
@@ -1336,10 +1418,7 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		if err := validateQualifiedStarSources(sq, md); err != nil {
 			return nil, err
 		}
-		if err := validateOrderByColumns(sq, md); err != nil {
-			return nil, err
-		}
-		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes), nil
+		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
 	case *antlrgen.SetQueryContext:
 		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes), nil
 	}
