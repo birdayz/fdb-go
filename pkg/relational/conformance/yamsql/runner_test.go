@@ -58,7 +58,7 @@ func TestMain(m *testing.M) {
 // Java returns" and pinning our behaviour against it.
 func TestYamsqlConformance(t *testing.T) {
 	t.Parallel()
-	t.Skip("40/110 pass, 70 fail — result expectations need updating for Cascades path (column order, error messages)")
+	t.Skip("BUG: 68/111 scenarios fail — yaml expectations must be updated from naive-generator results to Cascades results (error_code: 0AF00 for unplannable shapes)")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
