@@ -38,6 +38,19 @@ import (
 // Everything else returns UnsupportedExpressionShapeError so the
 // caller can fall back to the existing logical-builder path.
 func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	return r.walkExpressionInner(ctx, false)
+}
+
+// WalkExpressionForProjection is like WalkExpression but also handles
+// BinaryComparisonPredicate as ExpressionAtom — comparison expressions
+// like `a = b`, `x IS DISTINCT FROM NULL` that appear in SELECT lists.
+// Separated from WalkExpression so that CASE WHEN branches don't gain
+// comparison handling (Java rejects `WHERE CASE WHEN ... THEN a < b`).
+func (r *Resolver) WalkExpressionForProjection(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	return r.walkExpressionInner(ctx, true)
+}
+
+func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowComparisons bool) (values.Value, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
@@ -49,6 +62,15 @@ func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value
 				return nil, err
 			}
 			return &predicateValue{pred: pred}, nil
+		}
+		if allowComparisons {
+			if bc, ok := c.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext); ok {
+				pred, err := r.walkBinaryComparison(bc)
+				if err != nil {
+					return nil, err
+				}
+				return &predicateValue{pred: pred}, nil
+			}
 		}
 		return r.walkAtom(c.ExpressionAtom())
 	case *antlrgen.LogicalExpressionContext:

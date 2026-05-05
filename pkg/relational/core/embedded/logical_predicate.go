@@ -968,7 +968,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		if e == nil {
 			continue
 		}
-		v, err := resolver.WalkExpression(e)
+		v, err := resolver.WalkExpressionForProjection(e)
 		if err != nil {
 			continue
 		}
