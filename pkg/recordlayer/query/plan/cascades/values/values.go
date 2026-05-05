@@ -279,7 +279,7 @@ func EvaluateConstant(v Value) (out any, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			switch r.(type) {
-			case *ArithmeticDivisionByZeroError, *ArithmeticOverflowError, *ScalarTypeMismatchError:
+			case *ArithmeticDivisionByZeroError, *ArithmeticOverflowError, *ScalarTypeMismatchError, *InvalidCastError:
 				out = nil
 				ok = true
 			default:
@@ -1523,6 +1523,17 @@ func (e *ScalarTypeMismatchError) Error() string {
 	return e.Message
 }
 
+// InvalidCastError is panicked by CastValue.Evaluate when a cast
+// is out of range or structurally invalid (NaN→INT, overflow, etc.).
+// The executor catches this and converts to SQLSTATE 22F3H INVALID_CAST.
+type InvalidCastError struct {
+	Message string
+}
+
+func (e *InvalidCastError) Error() string {
+	return e.Message
+}
+
 // addInt64Checked / subInt64Checked / mulInt64Checked mirror
 // embedded.functions.{Add,Sub,Mul}Int64Checked. Re-implemented in
 // cascades to keep the value-layer arithmetic free of cross-package
@@ -1643,7 +1654,35 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		return nil
 	}
 	switch c.Target.Code() {
-	case TypeCodeInt, TypeCodeLong:
+	case TypeCodeInt:
+		switch val := v.(type) {
+		case int64:
+			if val < math.MinInt32 || val > math.MaxInt32 {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Value out of range for INT: %d", val)})
+			}
+			return val
+		case bool:
+			if val {
+				return int64(1)
+			}
+			return int64(0)
+		case float64:
+			if val != val || math.IsInf(val, 0) {
+				panic(&InvalidCastError{Message: "Cannot cast NaN or Infinite to INT"})
+			}
+			rounded := math.Floor(val + 0.5)
+			if rounded > math.MaxInt32 || rounded < math.MinInt32 {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to INT: out of range", val)})
+			}
+			return int64(int32(rounded))
+		case string:
+			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 32)
+			if err != nil {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: %s", val, err)})
+			}
+			return n
+		}
+	case TypeCodeLong:
 		switch val := v.(type) {
 		case int64:
 			return val
@@ -1653,17 +1692,18 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			}
 			return int64(0)
 		case float64:
-			// Java CastValue.DOUBLE_TO_LONG uses Math.round: floor(x+0.5).
-			// Differs from Go's math.Round (ties away from zero).
-			if val != val || val > 1<<62 || val < -(1<<62) {
-				return nil
+			if val != val || math.IsInf(val, 0) {
+				panic(&InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"})
 			}
-			return int64(math.Floor(val + 0.5))
+			rounded := math.Floor(val + 0.5)
+			if rounded > float64(math.MaxInt64) || rounded < float64(math.MinInt64) {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)})
+			}
+			return int64(rounded)
 		case string:
-			// Java STRING_TO_LONG: trim whitespace before parse.
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
 			if err != nil {
-				return nil
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: %s", val, err)})
 			}
 			return n
 		}
@@ -1682,7 +1722,7 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			case "false", "0":
 				return false
 			}
-			return nil
+			panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to BOOLEAN", val)})
 		}
 	case TypeCodeString:
 		if s, ok := v.(string); ok {

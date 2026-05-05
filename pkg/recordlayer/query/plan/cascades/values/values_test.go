@@ -301,18 +301,28 @@ func TestCastValue(t *testing.T) {
 	if got := floatToFloat.Evaluate(nil); got != float64(2.5) {
 		t.Fatalf("float→float: got %v", got)
 	}
-	// NaN / Inf → nil for int target (out-of-range).
-	nanToInt := NewCastValue(&ConstantValue{Value: float64(math.NaN()), Typ: TypeFloat}, TypeInt)
-	if got := nanToInt.Evaluate(nil); got != nil {
-		t.Fatalf("NaN→int: expected nil, got %v", got)
-	}
-	infToInt := NewCastValue(&ConstantValue{Value: float64(math.Inf(1)), Typ: TypeFloat}, TypeInt)
-	if got := infToInt.Evaluate(nil); got != nil {
-		t.Fatalf("+Inf→int: expected nil, got %v", got)
-	}
-	negInfToInt := NewCastValue(&ConstantValue{Value: float64(math.Inf(-1)), Typ: TypeFloat}, TypeInt)
-	if got := negInfToInt.Evaluate(nil); got != nil {
-		t.Fatalf("-Inf→int: expected nil, got %v", got)
+	// NaN / Inf → panic with InvalidCastError for int target.
+	for _, tc := range []struct {
+		name string
+		val  float64
+	}{
+		{"NaN→int", math.NaN()},
+		{"+Inf→int", math.Inf(1)},
+		{"-Inf→int", math.Inf(-1)},
+	} {
+		func() {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("%s: expected panic, got nil", tc.name)
+				}
+				if _, ok := r.(*InvalidCastError); !ok {
+					t.Fatalf("%s: expected InvalidCastError, got %T", tc.name, r)
+				}
+			}()
+			cv := NewCastValue(&ConstantValue{Value: tc.val, Typ: TypeFloat}, TypeInt)
+			cv.Evaluate(nil)
+		}()
 	}
 
 	// Unknown conversion: int → bool via the reverse path is OK,

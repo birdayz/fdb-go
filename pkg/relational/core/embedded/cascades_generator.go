@@ -695,6 +695,10 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			if errors.As(err, &scalarMismatch) {
 				return api.NewError(api.ErrCodeCannotConvertType, scalarMismatch.Error())
 			}
+			var castErr *values.InvalidCastError
+			if errors.As(err, &castErr) {
+				return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
+			}
 			var typeMismatch *predicates.TypeMismatchError
 			if errors.As(err, &typeMismatch) {
 				return api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
