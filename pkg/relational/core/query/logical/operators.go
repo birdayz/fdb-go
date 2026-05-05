@@ -197,12 +197,13 @@ func (d *LogicalDistinct) Explain(indent string) string {
 // GroupKeys are the grouping-column expressions; Aggregates holds the
 // aggregate-call text with aliases.
 type LogicalAggregate struct {
-	Input           LogicalOperator
-	GroupKeys       []string
-	Aggregates      []string // e.g. "SUM(a)", "COUNT(*)"
-	Aliases         []string // parallel to Aggregates
-	Having          string   // canonical HAVING predicate, "" when absent
-	HavingPredicate predicates.QueryPredicate
+	Input             LogicalOperator
+	GroupKeys         []string
+	Aggregates        []string       // e.g. "SUM(a)", "COUNT(*)"
+	Aliases           []string       // parallel to Aggregates
+	AggregateOperands []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
+	Having            string         // canonical HAVING predicate, "" when absent
+	HavingPredicate   predicates.QueryPredicate
 }
 
 func NewAggregate(input LogicalOperator, groupKeys, aggs, aliases []string, having string) *LogicalAggregate {

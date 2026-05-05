@@ -270,9 +270,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		}
 		if len(outExprsProj) > 0 {
 			op = logical.NewProject(op, outExprsProj, nil)
-			// Store outExpr ANTLR contexts so upgradeProjectionValues can resolve them.
-			sq.projExprs = outExprsAntlr
-			sq.projCols = outExprsProj
+			sq.postAggExprs = outExprsAntlr
 		}
 	}
 

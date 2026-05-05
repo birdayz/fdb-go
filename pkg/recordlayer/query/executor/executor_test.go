@@ -1045,9 +1045,9 @@ func TestExecuteStreamingAggregation_NoGroups_Count(t *testing.T) {
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
-	sumVal, ok := row["SUM(CONSTANT)"].(float64)
+	sumVal, ok := row["SUM(CONSTANT)"].(int64)
 	if !ok || sumVal != 10 {
-		t.Errorf("SUM = %v, want 10.0", row["SUM(CONSTANT)"])
+		t.Errorf("SUM = %v (%T), want int64(10)", row["SUM(CONSTANT)"], row["SUM(CONSTANT)"])
 	}
 }
 

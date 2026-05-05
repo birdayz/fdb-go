@@ -252,10 +252,13 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
-	for _, aggText := range a.Aggregates {
+	for i, aggText := range a.Aggregates {
 		spec, ok := parseAggregateText(aggText)
 		if !ok {
 			return nil
+		}
+		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
+			spec.Operand = a.AggregateOperands[i]
 		}
 		aggSpecs = append(aggSpecs, spec)
 	}

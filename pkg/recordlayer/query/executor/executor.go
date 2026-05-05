@@ -772,6 +772,8 @@ func executeAggregation(
 		count   int64
 		counts  []int64
 		sums    []float64
+		sumsI   []int64
+		allInt  []bool
 		mins    []any
 		maxs    []any
 	}
@@ -795,10 +797,16 @@ func executeAggregation(
 
 		gs, exists := groups[gk]
 		if !exists {
+			allIntInit := make([]bool, len(aggregates))
+			for j := range allIntInit {
+				allIntInit[j] = true
+			}
 			gs = &groupState{
 				keyVals: keyParts,
 				counts:  make([]int64, len(aggregates)),
 				sums:    make([]float64, len(aggregates)),
+				sumsI:   make([]int64, len(aggregates)),
+				allInt:  allIntInit,
 				mins:    make([]any, len(aggregates)),
 				maxs:    make([]any, len(aggregates)),
 			}
@@ -820,6 +828,11 @@ func executeAggregation(
 			}
 			num := toFloat64(val)
 			gs.sums[i] += num
+			if intVal, ok := val.(int64); ok {
+				gs.sumsI[i] += intVal
+			} else {
+				gs.allInt[i] = false
+			}
 
 			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
 				gs.mins[i] = val
@@ -863,6 +876,8 @@ func executeAggregation(
 			case expressions.AggSum:
 				if gs.counts[i] == 0 {
 					result[name] = nil
+				} else if gs.allInt[i] {
+					result[name] = gs.sumsI[i]
 				} else {
 					result[name] = gs.sums[i]
 				}

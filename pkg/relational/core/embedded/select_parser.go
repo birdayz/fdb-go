@@ -55,6 +55,9 @@ type selectQuery struct {
 	// projExprs holds computed projection expressions parallel to projCols.
 	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs []antlrgen.IExpressionContext
+	// postAggExprs holds ANTLR expressions for post-aggregation projections
+	// (outExpr entries like SUM(qty)/COUNT(*)). Used by upgradeProjectionValues.
+	postAggExprs []antlrgen.IExpressionContext
 	// projConstFolded is parallel to projExprs (populated lazily by
 	// foldConstantProjections from execSelectQuery). A slot with
 	// present=true means the expression was determined to be row-

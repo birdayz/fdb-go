@@ -1373,8 +1373,8 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	if l == nil || r == nil {
 		return nil
 	}
-	li, lok := l.(int64)
-	ri, rok := r.(int64)
+	li, lok := toInt64ForArith(l)
+	ri, rok := toInt64ForArith(r)
 	if !lok || !rok {
 		return nil
 	}
@@ -1418,6 +1418,45 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		return li % ri
 	}
 	return nil
+}
+
+func (a *ArithmeticValue) evalFloat(l, r any) any {
+	lf, _, lok := ToFloat64(l)
+	rf, _, rok := ToFloat64(r)
+	if !lok || !rok {
+		return nil
+	}
+	switch a.Op {
+	case OpAdd:
+		return lf + rf
+	case OpSub:
+		return lf - rf
+	case OpMul:
+		return lf * rf
+	case OpDiv:
+		if rf == 0 {
+			panic(&ArithmeticDivisionByZeroError{})
+		}
+		return lf / rf
+	case OpMod:
+		if rf == 0 {
+			panic(&ArithmeticDivisionByZeroError{})
+		}
+		return math.Mod(lf, rf)
+	}
+	return nil
+}
+
+func toInt64ForArith(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	}
+	return 0, false
 }
 
 // ArithmeticDivisionByZeroError is panicked by ArithmeticValue.Evaluate

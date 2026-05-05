@@ -612,9 +612,15 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		upgradeJoinOnPredicates(op, sq, md, cteScopes)
 	}
 
+	// Upgrade aggregate operands: resolve computed expressions in aggregate
+	// arguments (e.g. SUM(qty + 1.0)) to proper Value trees.
+	if len(sq.aggCols) > 0 {
+		upgradeAggregateOperands(op, sq, md, cteScopes)
+	}
+
 	// Upgrade projections: walk projExprs through the Resolver to produce
 	// Value trees the Cascades translator can consume directly.
-	if len(sq.projExprs) > 0 {
+	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
 		upgradeProjectionValues(op, sq, md, cteScopes)
 	}
 
@@ -679,7 +685,35 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredica
 // the text isn't a computed expression, or "cannot translate" otherwise).
 func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
 	proj := findProjection(op)
-	if proj == nil || len(sq.projExprs) == 0 {
+	if proj == nil {
+		return
+	}
+	// Post-aggregation projections: walk through the Resolver using base
+	// table scope, then rewrite AggregateValues to FieldValue references.
+	if len(sq.postAggExprs) > 0 {
+		resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+		if resolver == nil {
+			return
+		}
+		vals := make([]values.Value, len(proj.Projections))
+		for i, e := range sq.postAggExprs {
+			if i >= len(vals) || e == nil {
+				continue
+			}
+			v, err := resolver.WalkExpression(e)
+			if err != nil {
+				continue
+			}
+			v = rewriteAggregateValuesInTree(v)
+			vals[i] = v
+		}
+		proj.ProjectedValues = vals
+		return
+	}
+
+	// Regular projections.
+	exprs := sq.projExprs
+	if len(exprs) == 0 {
 		return
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
@@ -687,7 +721,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		return
 	}
 	vals := make([]values.Value, len(proj.Projections))
-	for i, e := range sq.projExprs {
+	for i, e := range exprs {
 		if i >= len(vals) {
 			break
 		}
@@ -732,6 +766,51 @@ func cascadesSafeScalarFunction(name string) bool {
 		return true
 	}
 	return false
+}
+
+func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	agg := findAggregate(op)
+	if agg == nil {
+		return
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
+	}
+	operands := make([]values.Value, len(agg.Aggregates))
+	for _, ac := range sq.aggCols {
+		if ac.aggFunc == "" || ac.aggExpr == nil {
+			continue
+		}
+		idx := -1
+		for i, aggText := range agg.Aggregates {
+			arg := ac.aggArg
+			if arg == "" && ac.aggExpr != nil {
+				arg = canonicalTextOf(ac.aggExpr)
+			}
+			if arg == "" {
+				arg = "*"
+			}
+			distinctPfx := ""
+			if ac.aggDistinct {
+				distinctPfx = "DISTINCT "
+			}
+			expected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + arg + ")")
+			if strings.ToUpper(aggText) == expected {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			continue
+		}
+		v, err := resolver.WalkExpression(ac.aggExpr)
+		if err != nil {
+			continue
+		}
+		operands[idx] = v
+	}
+	agg.AggregateOperands = operands
 }
 
 func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData) {
@@ -841,6 +920,43 @@ func findAggregate(op logical.LogicalOperator) *logical.LogicalAggregate {
 		cur = ch[0]
 	}
 	return nil
+}
+
+func findProjectionAbove(op logical.LogicalOperator, target logical.LogicalOperator) *logical.LogicalProject {
+	for cur := op; cur != nil; {
+		if p, ok := cur.(*logical.LogicalProject); ok {
+			ch := p.Children()
+			if len(ch) == 1 && ch[0] == target {
+				return p
+			}
+			return p
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return nil
+		}
+		cur = ch[0]
+	}
+	return nil
+}
+
+func buildAggregateOutputResolver(agg *logical.LogicalAggregate, sq *selectQuery, md *recordlayer.RecordMetaData) *expr.Resolver {
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+
+	// Include base table columns (needed for resolving aggregate arguments like `qty` in SUM(qty)).
+	if sq.tableName != "" {
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
+		if err == nil {
+			_ = scope.AddSource(semantic.ScopeSource{
+				Table:           tbl,
+				Alias:           semantic.NewUnquoted(sq.tableName),
+				CorrelationName: strings.ToUpper(sq.tableName),
+			})
+		}
+	}
+	return expr.New(analyzer, scope)
 }
 
 func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
