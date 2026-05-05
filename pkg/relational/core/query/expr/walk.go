@@ -827,9 +827,9 @@ func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) 
 		return nil, err
 	}
 	switch {
-	case lo.AND() != nil:
+	case lo.AND() != nil || len(lo.AllBIT_AND_OP()) == 2:
 		return r.ResolveAnd(flattenAnd(left, right)...), nil
-	case lo.OR() != nil:
+	case lo.OR() != nil || len(lo.AllBIT_OR_OP()) == 2:
 		return r.ResolveOr(flattenOr(left, right)...), nil
 	case lo.XOR() != nil:
 		// Desugar `a XOR b` → `(a OR b) AND NOT (a AND b)`.
