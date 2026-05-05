@@ -44,8 +44,6 @@ func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value
 	switch c := ctx.(type) {
 	case *antlrgen.PredicatedExpressionContext:
 		if c.Predicate() != nil {
-			// Predicate-shaped expression (IS NULL, IN, LIKE, BETWEEN,
-			// comparison) used as a value → wrap as predicateValue.
 			pred, err := r.walkPredicatedExpression(c)
 			if err != nil {
 				return nil, err

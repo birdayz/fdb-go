@@ -100,6 +100,10 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, err
 	}
 
+	if msg := findDistinctAggregate(logicalOp); msg != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
+	}
+
 	ref := query.TranslateToCascades(logicalOp)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
@@ -707,6 +711,26 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 		dest[i] = v
 	}
 	return nil
+}
+
+func findDistinctAggregate(op logical.LogicalOperator) string {
+	if op == nil {
+		return ""
+	}
+	if agg, ok := op.(*logical.LogicalAggregate); ok {
+		for _, a := range agg.Aggregates {
+			upper := strings.ToUpper(a)
+			if strings.Contains(upper, "DISTINCT ") {
+				return "DISTINCT aggregates are not supported"
+			}
+		}
+	}
+	for _, ch := range op.Children() {
+		if msg := findDistinctAggregate(ch); msg != "" {
+			return msg
+		}
+	}
+	return ""
 }
 
 func validateTablesAndColumns(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {

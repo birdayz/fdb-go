@@ -3836,12 +3836,12 @@ func TestFDB_CountDistinct(t *testing.T) {
 	var n int64
 	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`).Scan(&n)
 	g.Expect(err).To(gomega.HaveOccurred(), "COUNT(DISTINCT) must be rejected")
-	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT")
+	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT", "DISTINCT aggregates are not supported")
 
 	// COUNT(DISTINCT) inside GROUP BY is also rejected.
 	err = db.QueryRowContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`).Scan(new(string), &n)
 	g.Expect(err).To(gomega.HaveOccurred(), "COUNT(DISTINCT) in GROUP BY must be rejected")
-	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT")
+	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT", "DISTINCT aggregates are not supported")
 }
 
 func TestFDB_GreatestLeast(t *testing.T) {
@@ -6558,7 +6558,7 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	var c int64
 	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)
 	g.Expect(err).To(gomega.HaveOccurred(), "COUNT(DISTINCT) must be rejected")
-	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT")
+	expectRejectionOrCascadesError(t, err, "COUNT(DISTINCT", "DISTINCT aggregates are not supported")
 }
 
 // TestFDB_GroupByNullVsNilString pins that GROUP BY distinguishes between
