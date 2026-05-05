@@ -131,7 +131,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   - [x] **#93** Fix #85 + #86 (alias threading) — **landed swingshift-77**.
   - [x] **#94** Fix #88 (reverse index scan) — **landed swingshift-77**.
   - [x] **#95** Fix #87 (streaming agg ordering) — **landed swingshift-77**.
-  - [ ] **#96** README / documentation — usage examples, supported SQL subset, wire compatibility claims, known limitations.
+  - [x] **#96** README / documentation — **landed swingshift-77**. SQL engine section with database/sql examples, DDL/DML syntax, Cascades optimizer details.
   - [ ] **#97** Stress test / fuzz the SQL happy path — run cross-engine corpus, fuzz the Cascades translator + executor, verify no panics on valid SQL.
 - [x] **#25** ORDER BY JOIN/CTE/UNION fallback removal — **landed swingshift-74**. Cascades planner failure now returns error instead of falling back to naive. **nightshift-75:** fully ripped out naive fallback from SELECT path.
 
