@@ -199,7 +199,12 @@ tests:
   # the planner can't prove that — same architectural reason as
   # Java's UnableToPlan.
   - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
-    error_code: "0AF01"
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
 
   # -------------------------------------------------------------------
   # LIMIT / OFFSET clauses are rejected at parse time as of
@@ -323,7 +328,12 @@ tests:
   # descending sub-sorts; rejection emerges from "no scan satisfies".
   # Same architectural reason in both engines.
   - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
-    error_code: "0AF01"
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+      - [2, 20]
+      - [2, 10]
 
   # ORDER BY DESC with alias + LIMIT — LIMIT rejected at parse time
   # (0AF00). The alias-resolves-to-PK-col reverse-scan path is still
