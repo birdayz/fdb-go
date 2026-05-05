@@ -3537,7 +3537,7 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 
 func TestFDB_InnerJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: inner JOIN execution in Cascades")
+	t.Skip("TODO #83: INNER JOIN + ORDER BY — planner failure")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3649,7 +3649,7 @@ func TestFDB_LeftJoin(t *testing.T) {
 
 func TestFDB_JoinWhere(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: JOIN + WHERE execution")
+	t.Skip("TODO #83: JOIN + WHERE — planner failure")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4808,7 +4808,7 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 
 func TestFDB_MultiTableFrom(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: multi-table FROM (comma join)")
+	t.Skip("TODO #83: multi-table FROM — planner failure")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4864,7 +4864,6 @@ func TestFDB_MultiTableFrom(t *testing.T) {
 
 func TestFDB_ThreeTableFrom(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: three-table FROM")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5434,7 +5433,7 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 
 func TestFDB_SelfJoin(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: self-JOIN execution")
+	t.Skip("TODO #83: self-JOIN — planner failure")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
