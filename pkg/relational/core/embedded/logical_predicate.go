@@ -488,6 +488,52 @@ func buildCTEColumnSource(
 	}, true
 }
 
+// applyCTEColumnAliases renames the columns of a CTE ScopeSource
+// according to the explicit column alias list: WITH c1(x, y) AS (...).
+// Matches Java's QueryVisitor.visitNamedQuery column-alias handling.
+func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullIdListContext) semantic.ScopeSource {
+	list, ok := colAliases.(*antlrgen.FullIdListContext)
+	if !ok || list == nil {
+		return src
+	}
+	aliases := list.AllFullId()
+	if len(aliases) == 0 {
+		return src
+	}
+	tbl := src.Table
+	if tbl == nil {
+		return src
+	}
+	origCols := tbl.Columns()
+
+	newCols := make([]semantic.Column, len(origCols))
+	aliasMap := make(map[string]string)
+	for i, col := range origCols {
+		if i < len(aliases) {
+			newName := functions.FullIdToName(aliases[i])
+			aliasMap[strings.ToUpper(newName)] = strings.ToUpper(col.Id.Name())
+			newCols[i] = semantic.Column{
+				Id:       semantic.NewUnquoted(newName),
+				Type:     col.Type,
+				Nullable: col.Nullable,
+			}
+		} else {
+			newCols[i] = col
+		}
+	}
+
+	newTable := &semantic.StaticTable{
+		TableName:    tbl.Name(),
+		TableColumns: newCols,
+	}
+	return semantic.ScopeSource{
+		Table:           newTable,
+		Alias:           src.Alias,
+		CorrelationName: src.CorrelationName,
+		ColumnAliasMap:  aliasMap,
+	}
+}
+
 // buildWherePredicateForJoinsWithCTEScopes is like
 // buildWherePredicateForJoins but resolves CTE table references
 // using pre-derived column schemas when metadata lookup fails.
@@ -1398,6 +1444,10 @@ func buildLogicalPlanForQueryWithCatalog(
 					"found '%s' more than once", name)
 			}
 			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
+				// Apply CTE column aliases: WITH c1(x, y) AS (...)
+				if colAliases := nq.GetColumnAliases(); colAliases != nil {
+					src = applyCTEColumnAliases(src, colAliases)
+				}
 				cteScopes[upper] = src
 			}
 		}
