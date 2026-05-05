@@ -1066,8 +1066,8 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
 	switch p := pred.(type) {
 	case *predicates.ComparisonPredicate:
-		lhs := rewriteAggregateValue(p.Operand)
-		rhs := rewriteAggregateValue(p.Comparison.Operand)
+		lhs := rewriteAggregateValuesInTree(p.Operand)
+		rhs := rewriteAggregateValuesInTree(p.Comparison.Operand)
 		return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
 			Type:    p.Comparison.Type,
 			Operand: rhs,
