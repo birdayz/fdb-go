@@ -215,8 +215,8 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	}
 
 	row := results[0].Datum.(map[string]any)
-	if row["constant"] != "projected" {
-		t.Errorf("projection result = %v, want 'projected'", row["constant"])
+	if row["'PROJECTED'"] != "projected" {
+		t.Errorf("projection result = %v, want 'projected'", row["'PROJECTED'"])
 	}
 }
 
@@ -540,8 +540,8 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 	}
 
 	row := results[0].Datum.(map[string]any)
-	if row["constant"] != "result" {
-		t.Errorf("composite pipeline result = %v, want 'result'", row["constant"])
+	if row["'RESULT'"] != "result" {
+		t.Errorf("composite pipeline result = %v, want 'result'", row["'RESULT'"])
 	}
 }
 
@@ -1045,9 +1045,9 @@ func TestExecuteStreamingAggregation_NoGroups_Count(t *testing.T) {
 	if row["COUNT(CONSTANT)"] != int64(1) {
 		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
 	}
-	sumVal, ok := row["SUM(CONSTANT)"].(float64)
+	sumVal, ok := row["SUM(CONSTANT)"].(int64)
 	if !ok || sumVal != 10 {
-		t.Errorf("SUM = %v, want 10.0", row["SUM(CONSTANT)"])
+		t.Errorf("SUM = %v (%T), want int64(10)", row["SUM(CONSTANT)"], row["SUM(CONSTANT)"])
 	}
 }
 
@@ -2239,8 +2239,9 @@ func TestProjectionColumnName_FieldValue(t *testing.T) {
 func TestProjectionColumnName_NonFieldValue(t *testing.T) {
 	t.Parallel()
 	cv := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
-	if got := projectionColumnName(cv); got != cv.Name() {
-		t.Fatalf("expected %s, got %s", cv.Name(), got)
+	want := strings.ToUpper(values.ExplainValue(cv))
+	if got := projectionColumnName(cv); got != want {
+		t.Fatalf("expected %s, got %s", want, got)
 	}
 }
 

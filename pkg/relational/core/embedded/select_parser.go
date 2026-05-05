@@ -55,6 +55,9 @@ type selectQuery struct {
 	// projExprs holds computed projection expressions parallel to projCols.
 	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs []antlrgen.IExpressionContext
+	// postAggExprs holds ANTLR expressions for post-aggregation projections
+	// (outExpr entries like SUM(qty)/COUNT(*)). Used by upgradeProjectionValues.
+	postAggExprs []antlrgen.IExpressionContext
 	// projConstFolded is parallel to projExprs (populated lazily by
 	// foldConstantProjections from execSelectQuery). A slot with
 	// present=true means the expression was determined to be row-
@@ -1366,7 +1369,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// countStar fast path assumes a single synthetic row. With GROUP BY
 	// present we need a per-group COUNT(*), so demote to aggCols. The
 	// alias (if any) propagates so `SELECT COUNT(*) AS n FROM t GROUP BY g`
-	// emits the column as `n`.
+	// emits the column as `n`. Also set projCols so the downstream projection
+	// narrows the aggregate output (keys+aggs) to just the COUNT column.
 	if sq.countStar && len(sq.groupBy) > 0 {
 		sq.countStar = false
 		outName := "COUNT(*)"
@@ -1374,6 +1378,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			outName = sq.countStarAlias
 		}
 		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT"})
+		sq.projCols = []string{outName}
+		sq.projAliases = []string{""}
+		sq.projExprs = []antlrgen.IExpressionContext{nil}
+		sq.projStarQualifiers = []string{""}
 	}
 
 	// Harvest aggregates referenced in HAVING and ORDER BY that aren't

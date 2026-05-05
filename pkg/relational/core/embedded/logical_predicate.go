@@ -40,6 +40,7 @@ import (
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -611,6 +612,24 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		upgradeJoinOnPredicates(op, sq, md, cteScopes)
 	}
 
+	// Upgrade aggregate operands: resolve computed expressions in aggregate
+	// arguments (e.g. SUM(qty + 1.0)) to proper Value trees.
+	if len(sq.aggCols) > 0 {
+		upgradeAggregateOperands(op, sq, md, cteScopes)
+	}
+
+	// Upgrade projections: walk projExprs through the Resolver to produce
+	// Value trees the Cascades translator can consume directly.
+	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
+		upgradeProjectionValues(op, sq, md, cteScopes)
+	}
+
+	// Upgrade HAVING: resolve the HAVING expression into a predicate that
+	// references aggregate output columns by name.
+	if sq.havingExpr != nil {
+		upgradeHavingPredicate(op, sq, md, cteScopes)
+	}
+
 	if sq.whereExpr == nil {
 		return op
 	}
@@ -656,6 +675,304 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredica
 		cur = ch[0]
 	}
 	return false
+}
+
+// upgradeProjectionValues walks the unary spine from op to find the
+// LogicalProject node, then attempts to resolve each projExpr through
+// the expr.Resolver to produce a values.Value tree. Successful slots
+// are stored in LogicalProject.ProjectedValues; failed slots remain nil
+// (the Cascades translator treats nil as "plain column reference" when
+// the text isn't a computed expression, or "cannot translate" otherwise).
+func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	proj := findProjection(op)
+	if proj == nil {
+		return
+	}
+	// Post-aggregation projections: walk through the Resolver using base
+	// table scope, then rewrite AggregateValues to FieldValue references.
+	if len(sq.postAggExprs) > 0 {
+		resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+		if resolver == nil {
+			return
+		}
+		vals := make([]values.Value, len(proj.Projections))
+		for i, e := range sq.postAggExprs {
+			if i >= len(vals) || e == nil {
+				continue
+			}
+			v, err := resolver.WalkExpression(e)
+			if err != nil {
+				continue
+			}
+			v = rewriteAggregateValuesInTree(v)
+			vals[i] = v
+		}
+		proj.ProjectedValues = vals
+		return
+	}
+
+	// Regular projections.
+	exprs := sq.projExprs
+	if len(exprs) == 0 {
+		return
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
+	}
+	vals := make([]values.Value, len(proj.Projections))
+	copy(vals, proj.ProjectedValues)
+	for i, e := range exprs {
+		if i >= len(vals) {
+			break
+		}
+		if e == nil {
+			continue
+		}
+		v, err := resolver.WalkExpression(e)
+		if err != nil {
+			continue
+		}
+		if !isCascadesSafeValue(v) {
+			continue
+		}
+		v = rewriteAggregateValuesInTree(v)
+		vals[i] = v
+	}
+	proj.ProjectedValues = vals
+}
+
+// isCascadesSafeValue checks whether v's tree contains only Value types
+// that Java's Cascades planner supports. Rejects ScalarFunctionValue
+// names not in the planner's function catalog (UPPER, SQRT, etc.).
+func isCascadesSafeValue(v values.Value) bool {
+	safe := true
+	values.WalkValue(v, func(node values.Value) bool {
+		if sf, ok := node.(*values.ScalarFunctionValue); ok {
+			if !cascadesSafeScalarFunction(sf.FuncName) {
+				safe = false
+				return false
+			}
+		}
+		return true
+	})
+	return safe
+}
+
+func cascadesSafeScalarFunction(name string) bool {
+	return values.IsCascadesSafeScalarFunction(name)
+}
+
+func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	agg := findAggregate(op)
+	if agg == nil {
+		return
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
+	}
+	operands := make([]values.Value, len(agg.Aggregates))
+	for _, ac := range sq.aggCols {
+		if ac.aggFunc == "" || ac.aggExpr == nil {
+			continue
+		}
+		idx := -1
+		for i, aggText := range agg.Aggregates {
+			arg := ac.aggArg
+			if arg == "" && ac.aggExpr != nil {
+				arg = canonicalTextOf(ac.aggExpr)
+			}
+			if arg == "" {
+				arg = "*"
+			}
+			distinctPfx := ""
+			if ac.aggDistinct {
+				distinctPfx = "DISTINCT "
+			}
+			expected := strings.ToUpper(ac.aggFunc + "(" + distinctPfx + arg + ")")
+			if strings.ToUpper(aggText) == expected {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			continue
+		}
+		v, err := resolver.WalkExpression(ac.aggExpr)
+		if err != nil {
+			continue
+		}
+		operands[idx] = v
+	}
+	agg.AggregateOperands = operands
+}
+
+func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	agg := findAggregate(op)
+	if agg == nil || sq.havingExpr == nil {
+		return
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
+	}
+	pred, err := resolver.WalkPredicate(sq.havingExpr)
+	if err != nil {
+		return
+	}
+	agg.HavingPredicate = rewriteAggregateRefsInPredicate(pred)
+}
+
+func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
+	switch p := pred.(type) {
+	case *predicates.ComparisonPredicate:
+		lhs := rewriteAggregateValue(p.Operand)
+		rhs := rewriteAggregateValue(p.Comparison.Operand)
+		return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
+			Type:    p.Comparison.Type,
+			Operand: rhs,
+		})
+	case *predicates.AndPredicate:
+		rewritten := make([]predicates.QueryPredicate, len(p.SubPredicates))
+		for i, sub := range p.SubPredicates {
+			rewritten[i] = rewriteAggregateRefsInPredicate(sub)
+		}
+		return predicates.NewAnd(rewritten...)
+	case *predicates.OrPredicate:
+		rewritten := make([]predicates.QueryPredicate, len(p.SubPredicates))
+		for i, sub := range p.SubPredicates {
+			rewritten[i] = rewriteAggregateRefsInPredicate(sub)
+		}
+		return predicates.NewOr(rewritten...)
+	}
+	return pred
+}
+
+func rewriteAggregateValuesInTree(v values.Value) values.Value {
+	if v == nil {
+		return nil
+	}
+	if _, ok := v.(*values.AggregateValue); ok {
+		return rewriteAggregateValue(v)
+	}
+	if av, ok := v.(*values.ArithmeticValue); ok {
+		return &values.ArithmeticValue{
+			Op:    av.Op,
+			Left:  rewriteAggregateValuesInTree(av.Left),
+			Right: rewriteAggregateValuesInTree(av.Right),
+		}
+	}
+	if sf, ok := v.(*values.ScalarFunctionValue); ok {
+		args := make([]values.Value, len(sf.Args))
+		for i, a := range sf.Args {
+			args[i] = rewriteAggregateValuesInTree(a)
+		}
+		return values.NewScalarFunctionValue(sf.FuncName, sf.Typ, args...)
+	}
+	if cv, ok := v.(*values.CastValue); ok {
+		return values.NewCastValue(rewriteAggregateValuesInTree(cv.Child), cv.Target)
+	}
+	if pv, ok := v.(*values.PickValue); ok {
+		alts := make([]values.Value, len(pv.Alternatives))
+		for i, a := range pv.Alternatives {
+			alts[i] = rewriteAggregateValuesInTree(a)
+		}
+		return values.NewPickValue(rewriteAggregateValuesInTree(pv.Selector), alts, pv.Typ)
+	}
+	if cs, ok := v.(*values.ConditionSelectorValue); ok {
+		impl := make([]values.Value, len(cs.Implications))
+		for i, c := range cs.Implications {
+			impl[i] = rewriteAggregateValuesInTree(c)
+		}
+		return values.NewConditionSelectorValue(impl)
+	}
+	return v
+}
+
+func rewriteAggregateValue(v values.Value) values.Value {
+	if v == nil {
+		return nil
+	}
+	if _, ok := v.(*values.AggregateValue); ok {
+		return &values.FieldValue{
+			Field: strings.ToUpper(values.ExplainValue(v)),
+			Typ:   values.UnknownType,
+		}
+	}
+	return v
+}
+
+func findAggregate(op logical.LogicalOperator) *logical.LogicalAggregate {
+	for cur := op; cur != nil; {
+		if a, ok := cur.(*logical.LogicalAggregate); ok {
+			return a
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return nil
+		}
+		cur = ch[0]
+	}
+	return nil
+}
+
+func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
+	for cur := op; cur != nil; {
+		if p, ok := cur.(*logical.LogicalProject); ok {
+			return p
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return nil
+		}
+		cur = ch[0]
+	}
+	return nil
+}
+
+func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
+	if sq.tableName == "" && len(cteScopes) == 0 {
+		return nil
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+	addSource := func(tableName, alias string) bool {
+		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
+			aliasID := semantic.NewUnquoted(alias)
+			if alias == "" {
+				aliasID = semantic.NewUnquoted(tableName)
+			}
+			src.Alias = aliasID
+			src.CorrelationName = aliasID.Name()
+			return scope.AddSource(src) == nil
+		}
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err != nil {
+			return false
+		}
+		aliasID := semantic.NewUnquoted(alias)
+		if alias == "" {
+			aliasID = semantic.NewUnquoted(tableName)
+		}
+		return scope.AddSource(semantic.ScopeSource{
+			Table:           tbl,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}) == nil
+	}
+	if sq.tableName != "" {
+		if !addSource(sq.tableName, sq.tableAlias) {
+			return nil
+		}
+	}
+	for _, j := range sq.joins {
+		if !addSource(j.tableName, j.alias) {
+			return nil
+		}
+	}
+	return expr.New(analyzer, scope)
 }
 
 // buildLogicalPlanForDeleteWithCatalog is the catalog-aware variant

@@ -94,14 +94,19 @@ func TestComparison_Eval_NullIsUnknown(t *testing.T) {
 	}
 }
 
-func TestComparison_Eval_TypeMismatchIsUnknown(t *testing.T) {
+func TestComparison_Eval_TypeMismatchPanics(t *testing.T) {
 	t.Parallel()
 	c := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))}
-	// String vs int: types don't match, cmpAny returns (0, false),
-	// Eval degrades to UNKNOWN per SQL 3VL.
-	if got := c.Eval("5"); got != TriUnknown {
-		t.Fatalf("type mismatch: got %v", got)
-	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on type mismatch")
+		}
+		if _, ok := r.(*TypeMismatchError); !ok {
+			t.Fatalf("expected *TypeMismatchError, got %T", r)
+		}
+	}()
+	c.Eval("5")
 }
 
 // Numeric promotion: mixed integer widths compare by int64-promoted
@@ -307,17 +312,21 @@ func TestComparison_Eval_In_NonSliceRHS(t *testing.T) {
 	}
 }
 
-// TestComparison_Eval_In_CrossTypeLHS pins the corner: a string LHS
-// against a list of int64 — cmpAny declines silently for each element,
-// no match, no NULL element → TriFalse. Documents the gap with SQL
-// 3VL, which would say UNKNOWN here. Java does not implement IN
-// against typed-mismatched lists either, so this matches.
+// TestComparison_Eval_In_CrossTypeLHS verifies that a string LHS
+// against a list of int64 panics with TypeMismatchError — matching
+// Java's CANNOT_CONVERT_TYPE for incompatible IN-list types.
 func TestComparison_Eval_In_CrossTypeLHS(t *testing.T) {
 	t.Parallel()
-	got := Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
-	if got != TriFalse {
-		t.Fatalf("'hello' IN (1,2,3): got %v, want TriFalse (cmpAny declines silently)", got)
-	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected TypeMismatchError panic")
+		}
+		if _, ok := r.(*TypeMismatchError); !ok {
+			t.Fatalf("expected *TypeMismatchError, got %T", r)
+		}
+	}()
+	Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
 }
 
 // LIKE: SQL pattern matching with `%` / `_`. Anchored both ends.

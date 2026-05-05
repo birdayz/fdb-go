@@ -358,6 +358,9 @@ func executeFilter(
 		pred: func(qr QueryResult) (keep bool) {
 			defer func() {
 				if r := recover(); r != nil {
+					if _, ok := r.(*predicates.TypeMismatchError); ok {
+						panic(r)
+					}
 					keep = false
 				}
 			}()
@@ -450,7 +453,11 @@ func executeProjection(
 
 	projections := p.GetProjections()
 	hasParams := len(evalCtx.params) > 0
+	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
+		if evalErr != nil {
+			return qr
+		}
 		projected := make(map[string]any, len(projections))
 		var rowCtx any = qr.Datum
 		if hasParams {
@@ -459,7 +466,21 @@ func executeProjection(
 			}
 		}
 		for _, proj := range projections {
-			projected[projectionColumnName(proj)] = proj.Evaluate(rowCtx)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						if divErr, ok := r.(*values.ArithmeticDivisionByZeroError); ok {
+							evalErr = divErr
+						} else {
+							evalErr = fmt.Errorf("projection evaluation panic: %v", r)
+						}
+					}
+				}()
+				projected[projectionColumnName(proj)] = proj.Evaluate(rowCtx)
+			}()
+			if evalErr != nil {
+				return qr
+			}
 		}
 		return QueryResult{
 			Datum:      projected,
@@ -467,8 +488,31 @@ func executeProjection(
 			PrimaryKey: qr.PrimaryKey,
 		}
 	})
-	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
+	errCursor := &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}
+	return errCursor, nil
 }
+
+type errCheckCursor struct {
+	inner recordlayer.RecordCursor[QueryResult]
+	err   *error
+}
+
+func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if *c.err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
+	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return result, err
+	}
+	if *c.err != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, *c.err
+	}
+	return result, nil
+}
+
+func (c *errCheckCursor) Close() error   { return c.inner.Close() }
+func (c *errCheckCursor) IsClosed() bool { return c.inner.IsClosed() }
 
 func executeSort(
 	ctx context.Context,
@@ -729,7 +773,10 @@ func executeAggregation(
 	type groupState struct {
 		keyVals []any
 		count   int64
+		counts  []int64
 		sums    []float64
+		sumsI   []int64
+		allInt  []bool
 		mins    []any
 		maxs    []any
 	}
@@ -743,15 +790,26 @@ func executeAggregation(
 		for i, k := range groupingKeys {
 			v := k.Evaluate(row.Datum)
 			keyParts[i] = v
-			fmt.Fprintf(&keyStr, "%v|", v)
+			if v == nil {
+				keyStr.WriteString("N|")
+			} else {
+				fmt.Fprintf(&keyStr, "%T:%v|", v, v)
+			}
 		}
 		gk := keyStr.String()
 
 		gs, exists := groups[gk]
 		if !exists {
+			allIntInit := make([]bool, len(aggregates))
+			for j := range allIntInit {
+				allIntInit[j] = true
+			}
 			gs = &groupState{
 				keyVals: keyParts,
+				counts:  make([]int64, len(aggregates)),
 				sums:    make([]float64, len(aggregates)),
+				sumsI:   make([]int64, len(aggregates)),
+				allInt:  allIntInit,
 				mins:    make([]any, len(aggregates)),
 				maxs:    make([]any, len(aggregates)),
 			}
@@ -765,8 +823,19 @@ func executeAggregation(
 			if val == nil {
 				continue
 			}
+			gs.counts[i]++
+			if agg.Function == expressions.AggSum || agg.Function == expressions.AggAvg {
+				if !isNumeric(val) {
+					return nil, fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
+				}
+			}
 			num := toFloat64(val)
 			gs.sums[i] += num
+			if intVal, ok := val.(int64); ok {
+				gs.sumsI[i] += intVal
+			} else {
+				gs.allInt[i] = false
+			}
 
 			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
 				gs.mins[i] = val
@@ -802,16 +871,26 @@ func executeAggregation(
 			name := aggResultName(agg)
 			switch agg.Function {
 			case expressions.AggCount:
-				result[name] = gs.count
+				if isCountStar(agg) {
+					result[name] = gs.count
+				} else {
+					result[name] = gs.counts[i]
+				}
 			case expressions.AggSum:
-				result[name] = gs.sums[i]
+				if gs.counts[i] == 0 {
+					result[name] = nil
+				} else if gs.allInt[i] {
+					result[name] = gs.sumsI[i]
+				} else {
+					result[name] = gs.sums[i]
+				}
 			case expressions.AggMin:
 				result[name] = gs.mins[i]
 			case expressions.AggMax:
 				result[name] = gs.maxs[i]
 			case expressions.AggAvg:
-				if gs.count > 0 {
-					result[name] = gs.sums[i] / float64(gs.count)
+				if gs.counts[i] > 0 {
+					result[name] = gs.sums[i] / float64(gs.counts[i])
 				} else {
 					result[name] = nil
 				}
@@ -845,15 +924,41 @@ func aggKeyName(k values.Value) string {
 	return strings.ToUpper(k.Name())
 }
 
+func isNumeric(v any) bool {
+	switch v.(type) {
+	case int64, int32, int, float64, float32:
+		return true
+	}
+	return false
+}
+
+func isCountStar(agg expressions.AggregateSpec) bool {
+	if agg.Function != expressions.AggCount {
+		return false
+	}
+	if agg.Operand == nil {
+		return true
+	}
+	if cv, ok := agg.Operand.(*values.ConstantValue); ok && cv.Value == nil {
+		return true
+	}
+	return false
+}
+
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
 	if agg.Operand != nil {
-		if cv, ok := agg.Operand.(*values.ConstantValue); ok && cv.Value == nil {
-			opName = "*"
-		} else if fv, ok := agg.Operand.(*values.FieldValue); ok {
-			opName = fv.Field
-		} else {
-			opName = agg.Operand.Name()
+		switch v := agg.Operand.(type) {
+		case *values.ConstantValue:
+			if v.Value == nil {
+				opName = "*"
+			} else {
+				opName = v.Name()
+			}
+		case *values.FieldValue:
+			opName = v.Field
+		default:
+			opName = values.ExplainValue(agg.Operand)
 		}
 	}
 	switch agg.Function {
@@ -1327,9 +1432,18 @@ type filterResultCursor struct {
 	closed bool
 }
 
-func (c *filterResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if tmErr, ok := r.(*predicates.TypeMismatchError); ok {
+				err = tmErr
+			} else {
+				panic(r)
+			}
+		}
+	}()
 	for {
-		result, err := c.inner.OnNext(ctx)
+		result, err = c.inner.OnNext(ctx)
 		if err != nil {
 			return result, err
 		}
@@ -1414,7 +1528,7 @@ func projectionColumnName(v values.Value) string {
 	if fv, ok := v.(*values.FieldValue); ok {
 		return fv.Field
 	}
-	return v.Name()
+	return strings.ToUpper(values.ExplainValue(v))
 }
 
 func fieldFromDatum(datum any, key string) any {

@@ -61,6 +61,12 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 		return t.translateDistinct(o)
 	case *logical.LogicalCTE:
 		return t.translateCTE(o)
+	case *logical.LogicalInsert:
+		return t.translateInsert(o)
+	case *logical.LogicalUpdate:
+		return t.translateUpdate(o)
+	case *logical.LogicalDelete:
+		return t.translateDelete(o)
 	default:
 		return nil
 	}
@@ -90,6 +96,12 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	if f.Predicate == nil && f.PredicateText != "" {
 		return nil
 	}
+	if f.Predicate != nil && isBareFieldPredicate(f.Predicate) {
+		return nil
+	}
+	if f.Predicate != nil && predicateContainsUnsafeFunction(f.Predicate) {
+		return nil
+	}
 	var preds []predicates.QueryPredicate
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
@@ -98,6 +110,53 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		preds,
 		expressions.ForEachQuantifier(innerRef),
 	)
+}
+
+func valueContainsUnsafeScalarFunction(v values.Value) bool {
+	unsafe := false
+	values.WalkValue(v, func(node values.Value) bool {
+		if sf, ok := node.(*values.ScalarFunctionValue); ok {
+			if !values.IsCascadesSafeScalarFunction(sf.FuncName) {
+				unsafe = true
+				return false
+			}
+		}
+		return true
+	})
+	return unsafe
+}
+
+func predicateContainsUnsafeFunction(p predicates.QueryPredicate) bool {
+	unsafe := false
+	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
+		switch pred := qp.(type) {
+		case *predicates.ComparisonPredicate:
+			if valueContainsUnsafeScalarFunction(pred.Operand) {
+				unsafe = true
+				return false
+			}
+			if pred.Comparison.Operand != nil && valueContainsUnsafeScalarFunction(pred.Comparison.Operand) {
+				unsafe = true
+				return false
+			}
+		case *predicates.ValuePredicate:
+			if valueContainsUnsafeScalarFunction(pred.Value) {
+				unsafe = true
+				return false
+			}
+		}
+		return true
+	})
+	return unsafe
+}
+
+func isBareFieldPredicate(p predicates.QueryPredicate) bool {
+	vp, ok := p.(*predicates.ValuePredicate)
+	if !ok {
+		return false
+	}
+	_, isField := vp.Value.(*values.FieldValue)
+	return isField
 }
 
 func (t *cascadesTranslator) translateLimit(l *logical.LogicalLimit) expressions.RelationalExpression {
@@ -151,17 +210,18 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	}
 	projected := make([]values.Value, len(p.Projections))
 	for i, col := range p.Projections {
-		name := col
-		if i < len(p.Aliases) && p.Aliases[i] != "" {
-			name = p.Aliases[i]
+		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
+			projected[i] = p.ProjectedValues[i]
+			continue
 		}
 		if isComputedExpression(col) {
 			return nil
 		}
-		projected[i] = &values.FieldValue{Field: name, Typ: values.UnknownType}
+		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
 	}
-	return expressions.NewLogicalProjectionExpression(
+	return expressions.NewLogicalProjectionExpressionWithAliases(
 		projected,
+		p.Aliases,
 		expressions.ForEachQuantifier(innerRef),
 	)
 }
@@ -176,7 +236,7 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 }
 
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
-	if a.Having != "" {
+	if a.Having != "" && a.HavingPredicate == nil {
 		return nil
 	}
 	innerRef := t.translateRef(a.Input)
@@ -188,17 +248,28 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
-	for _, aggText := range a.Aggregates {
+	for i, aggText := range a.Aggregates {
 		spec, ok := parseAggregateText(aggText)
 		if !ok {
 			return nil
 		}
+		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
+			spec.Operand = a.AggregateOperands[i]
+		}
 		aggSpecs = append(aggSpecs, spec)
 	}
-	return expressions.NewGroupByExpression(
+	groupBy := expressions.NewGroupByExpression(
 		groupKeys,
 		aggSpecs,
 		expressions.ForEachQuantifier(innerRef),
+	)
+	if a.HavingPredicate == nil {
+		return groupBy
+	}
+	groupByRef := expressions.InitialOf(groupBy)
+	return expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{a.HavingPredicate},
+		expressions.ForEachQuantifier(groupByRef),
 	)
 }
 
@@ -228,6 +299,10 @@ func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
 	case "AVG":
 		fn = expressions.AggAvg
 	default:
+		return expressions.AggregateSpec{}, false
+	}
+
+	if strings.HasPrefix(operandText, "DISTINCT ") {
 		return expressions.AggregateSpec{}, false
 	}
 
@@ -281,12 +356,163 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	return result
 }
 
+func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {
+	var innerRef *expressions.Reference
+	if ins.Source != nil {
+		innerRef = t.translateRef(ins.Source)
+		if innerRef == nil {
+			return nil
+		}
+	}
+	var q expressions.Quantifier
+	if innerRef != nil {
+		q = expressions.ForEachQuantifier(innerRef)
+	}
+	return expressions.NewInsertExpression(q, ins.Table, values.UnknownType)
+}
+
+func (t *cascadesTranslator) translateUpdate(upd *logical.LogicalUpdate) expressions.RelationalExpression {
+	var innerRef *expressions.Reference
+	if upd.Input != nil {
+		innerRef = t.translateRef(upd.Input)
+		if innerRef == nil {
+			return nil
+		}
+	}
+	transforms := make([]expressions.UpdateTransform, len(upd.Sets))
+	for i, a := range upd.Sets {
+		transforms[i] = expressions.UpdateTransform{
+			FieldPath: strings.ToUpper(a.Column),
+			NewValue:  &values.ConstantValue{Value: a.Expr, Typ: values.UnknownType},
+		}
+	}
+	var q expressions.Quantifier
+	if innerRef != nil {
+		q = expressions.ForEachQuantifier(innerRef)
+	}
+	return expressions.NewUpdateExpression(q, upd.Target, transforms)
+}
+
+func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) expressions.RelationalExpression {
+	var innerRef *expressions.Reference
+	if del.Input != nil {
+		innerRef = t.translateRef(del.Input)
+		if innerRef == nil {
+			return nil
+		}
+	}
+	var q expressions.Quantifier
+	if innerRef != nil {
+		q = expressions.ForEachQuantifier(innerRef)
+	}
+	return expressions.NewDeleteExpression(q, del.Target)
+}
+
 func isComputedExpression(col string) bool {
 	for _, c := range col {
 		switch c {
-		case '(', '+', '-', '*', '/', '%':
+		case '(', '+', '-', '*', '/', '%', '<', '>', '&', '|', '^':
 			return true
 		}
 	}
 	return false
+}
+
+// FindUnsupportedFunction walks the logical plan tree and returns the
+// name of the first ScalarFunctionValue that isn't in the supported set.
+// Returns "" if all functions are supported.
+func FindUnsupportedFunction(op logical.LogicalOperator) string {
+	if op == nil {
+		return ""
+	}
+	if proj, ok := op.(*logical.LogicalProject); ok {
+		for _, v := range proj.ProjectedValues {
+			if fn := findUnsafeFuncInValue(v); fn != "" {
+				return fn
+			}
+		}
+		for _, col := range proj.Projections {
+			if fn := extractUnsupportedFuncFromText(col); fn != "" {
+				return fn
+			}
+		}
+	}
+	if f, ok := op.(*logical.LogicalFilter); ok && f.Predicate != nil {
+		if fn := findUnsafeFuncInPredicate(f.Predicate); fn != "" {
+			return fn
+		}
+	}
+	for _, child := range op.Children() {
+		if fn := FindUnsupportedFunction(child); fn != "" {
+			return fn
+		}
+	}
+	return ""
+}
+
+func extractUnsupportedFuncFromText(text string) string {
+	upper := strings.ToUpper(strings.TrimSpace(text))
+	lparen := strings.Index(upper, "(")
+	if lparen <= 0 || lparen > 12 {
+		return ""
+	}
+	funcName := upper[:lparen]
+	for _, c := range funcName {
+		if !((c >= 'A' && c <= 'Z') || c == '_') {
+			return ""
+		}
+	}
+	switch funcName {
+	case "COUNT", "SUM", "MIN", "MAX", "AVG",
+		"CASE", "CAST", "IF":
+		return ""
+	default:
+		if values.IsCascadesSafeScalarFunction(funcName) {
+			return ""
+		}
+		return funcName
+	}
+}
+
+func findUnsafeFuncInValue(v values.Value) string {
+	if v == nil {
+		return ""
+	}
+	var found string
+	values.WalkValue(v, func(node values.Value) bool {
+		if sf, ok := node.(*values.ScalarFunctionValue); ok {
+			if !values.IsCascadesSafeScalarFunction(sf.FuncName) {
+				found = sf.FuncName
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func findUnsafeFuncInPredicate(p predicates.QueryPredicate) string {
+	var found string
+	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
+		switch pred := qp.(type) {
+		case *predicates.ComparisonPredicate:
+			if fn := findUnsafeFuncInValue(pred.Operand); fn != "" {
+				found = fn
+				return false
+			}
+			if pred.Comparison.Operand != nil {
+				if fn := findUnsafeFuncInValue(pred.Comparison.Operand); fn != "" {
+					found = fn
+					return false
+				}
+			}
+		case *predicates.ValuePredicate:
+			if fn := findUnsafeFuncInValue(pred.Value); fn != "" {
+				found = fn
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }

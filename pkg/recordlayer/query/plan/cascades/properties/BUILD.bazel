@@ -14,6 +14,7 @@ go_library(
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
     ],
 )
 

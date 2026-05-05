@@ -390,3 +390,80 @@ func TestTranslateRecursiveCTEReturnsNil(t *testing.T) {
 		t.Fatal("expected nil for recursive CTE (not yet supported)")
 	}
 }
+
+func TestFindUnsupportedFunction(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   logical.LogicalOperator
+		want string
+	}{
+		{"nil op", nil, ""},
+		{"plain scan", logical.NewScan("T", ""), ""},
+		{"projection with ABS", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"ABS(x)"}, nil)
+			return p
+		}(), "ABS"},
+		{"projection with SQRT", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"SQRT(x)"}, nil)
+			return p
+		}(), "SQRT"},
+		{"projection with COUNT (allowed)", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"COUNT(*)"}, nil)
+			return p
+		}(), ""},
+		{"projection with COALESCE (allowed)", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"COALESCE(a,b)"}, nil)
+			return p
+		}(), ""},
+		{"long expression (not detected)", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"CASEWHENEXISTS(SELECT1)"}, nil)
+			return p
+		}(), ""},
+		{"plain column", func() logical.LogicalOperator {
+			p := logical.NewProject(logical.NewScan("T", ""), []string{"name"}, nil)
+			return p
+		}(), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := FindUnsupportedFunction(tc.op)
+			if got != tc.want {
+				t.Fatalf("FindUnsupportedFunction: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractUnsupportedFuncFromText(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"ABS(x)", "ABS"},
+		{"SQRT(x)", "SQRT"},
+		{"SUBSTRING(a,1,2)", "SUBSTRING"},
+		{"COUNT(*)", ""},
+		{"SUM(amount)", ""},
+		{"COALESCE(a,b)", ""},
+		{"CAST(x AS INT)", ""},
+		{"name", ""},
+		{"a + b", ""},
+		{"", ""},
+		{"(x)", ""},
+		{"TOOLONGFUNCNAME(x)", ""},
+		{"123(x)", ""},
+		{"CASEWHENEXISTS(x)", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			got := extractUnsupportedFuncFromText(tc.input)
+			if got != tc.want {
+				t.Fatalf("extractUnsupportedFuncFromText(%q): got %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

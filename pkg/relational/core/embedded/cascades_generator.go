@@ -3,18 +3,24 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"io"
+	"math"
+	"reflect"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -44,9 +50,15 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}
 
 	stmt := stmts.AllStatement()[0]
+
+	// DML: route INSERT/UPDATE/DELETE through Cascades.
+	if dml := stmt.DmlStatement(); dml != nil {
+		return g.planDML(ctx, dml)
+	}
+
 	sel := stmt.SelectStatement()
 	if sel == nil {
-		// SHOW / other non-SELECT read statements stay on naive.
+		// SHOW / DDL / other non-SELECT/DML statements stay on naive.
 		return g.naive.Plan(ctx, sql)
 	}
 
@@ -74,6 +86,15 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if logicalOp == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
+	}
+
+	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"Unsupported operator "+fn)
+	}
+
+	if err := validateTablesAndColumns(logicalOp, md); err != nil {
+		return nil, err
 	}
 
 	ref := query.TranslateToCascades(logicalOp)
@@ -116,6 +137,64 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}, nil
 }
 
+func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (query.Plan, error) {
+	if err := g.c.ensureMetaData(ctx); err != nil {
+		return nil, err
+	}
+	md := g.c.cachedMetaData()
+	if md == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no schema metadata available")
+	}
+
+	var logicalOp logical.LogicalOperator
+	if del := dml.DeleteStatement(); del != nil {
+		logicalOp = buildLogicalPlanForDeleteWithCatalog(del, md)
+	} else if upd := dml.UpdateStatement(); upd != nil {
+		logicalOp = buildLogicalPlanForUpdateWithCatalog(upd, md)
+	} else if ins := dml.InsertStatement(); ins != nil {
+		logicalOp = buildLogicalPlanForInsertWithCatalog(ins, md)
+	}
+	if logicalOp == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
+	}
+
+	ref := query.TranslateToCascades(logicalOp)
+	if ref == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
+	}
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	planCtx := buildCascadesPlanContext(md)
+	planner := cascades.NewPlanner(rules, planCtx).
+		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithMaxTasks(2_000)
+
+	bestExpr, _, planErr := planner.Plan(ref)
+	if planErr != nil || bestExpr == nil {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "DML Cascades planning failed: %v", planErr)
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML plan extraction failed")
+	}
+	physPlan := ph.GetRecordQueryPlan()
+	if physPlan == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML physical plan nil")
+	}
+
+	return &cascadesPlan{
+		conn:         g.c,
+		md:           md,
+		physicalPlan: physPlan,
+		explain:      logicalOp.Explain(""),
+		isUpdate:     true,
+	}, nil
+}
+
 // cascadesPlan wraps a Cascades-planned SELECT query with a pre-computed
 // physical plan. Planning happens at Plan-time; Execute only runs the plan.
 type cascadesPlan struct {
@@ -123,9 +202,10 @@ type cascadesPlan struct {
 	md           *recordlayer.RecordMetaData
 	physicalPlan plans.RecordQueryPlan
 	explain      string
+	isUpdate     bool
 }
 
-func (p *cascadesPlan) IsUpdate() bool { return false }
+func (p *cascadesPlan) IsUpdate() bool { return p.isUpdate }
 
 func (p *cascadesPlan) Explain() string {
 	if p.physicalPlan != nil {
@@ -156,6 +236,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		cursor, execErr := executor.ExecutePlan(ctx, p.physicalPlan, store, evalCtx, nil,
 			recordlayer.DefaultExecuteProperties())
 		if execErr != nil {
+			var typeMismatch *predicates.TypeMismatchError
+			if errors.As(execErr, &typeMismatch) {
+				return nil, api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
+			}
 			return nil, execErr
 		}
 
@@ -305,13 +389,18 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			desc = rt.Descriptor
 		}
 	}
+	aliases := proj.GetAliases()
 	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
 	for i, v := range proj.GetProjections() {
 		var name string
 		if fv, ok := v.(*values.FieldValue); ok {
 			name = fv.Field
 		} else {
-			name = v.Name()
+			name = values.ExplainValue(v)
+		}
+		var label string
+		if i < len(aliases) && aliases[i] != "" {
+			label = strings.ToUpper(aliases[i])
 		}
 		typeName := aggregateTypeName(name, desc)
 		if typeName == "" && desc != nil {
@@ -322,6 +411,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		cols[i] = executor.ColumnDef{
 			Name:     strings.ToUpper(name),
+			Label:    label,
 			TypeName: typeName,
 		}
 	}
@@ -481,7 +571,7 @@ func aggregateTypeName(name string, desc protoreflect.MessageDescriptor) string 
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
 	fields := desc.Fields()
-	fd := fields.ByName(protoreflect.Name(strings.ToLower(name)))
+	fd := fields.ByName(protoreflect.Name(name))
 	if fd != nil {
 		return protoKindToTypeName(fd.Kind())
 	}
@@ -522,7 +612,7 @@ func (r *cascadesRows) Columns() []string {
 	md := r.rs.MetaData()
 	cols := make([]string, md.ColumnCount())
 	for i := range cols {
-		cols[i], _ = md.ColumnName(i + 1)
+		cols[i], _ = md.ColumnLabel(i + 1)
 	}
 	return cols
 }
@@ -531,9 +621,64 @@ func (r *cascadesRows) Close() error {
 	return r.rs.Close()
 }
 
+func (r *cascadesRows) ColumnTypeDatabaseTypeName(index int) string {
+	md := r.rs.MetaData()
+	name, err := md.ColumnTypeName(index + 1)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+func (r *cascadesRows) ColumnTypeScanType(index int) reflect.Type {
+	typeName := r.ColumnTypeDatabaseTypeName(index)
+	switch typeName {
+	case "BIGINT":
+		return reflect.TypeOf((*int64)(nil)).Elem()
+	case "INTEGER":
+		return reflect.TypeOf((*int32)(nil)).Elem()
+	case "DOUBLE":
+		return reflect.TypeOf((*float64)(nil)).Elem()
+	case "FLOAT":
+		return reflect.TypeOf((*float32)(nil)).Elem()
+	case "STRING":
+		return reflect.TypeOf((*string)(nil)).Elem()
+	case "BOOLEAN":
+		return reflect.TypeOf((*bool)(nil)).Elem()
+	case "BYTES":
+		return reflect.TypeOf((*[]byte)(nil)).Elem()
+	default:
+		return reflect.TypeOf((*any)(nil)).Elem()
+	}
+}
+
+func (r *cascadesRows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	return true, true
+}
+
+func (r *cascadesRows) ColumnTypeLength(index int) (length int64, ok bool) {
+	typeName := r.ColumnTypeDatabaseTypeName(index)
+	if typeName == "STRING" || typeName == "BYTES" {
+		return math.MaxInt64, true
+	}
+	return 0, false
+}
+
+func (r *cascadesRows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
+	return 0, 0, false
+}
+
 func (r *cascadesRows) Next(dest []driver.Value) error {
 	if !r.rs.Next() {
 		if err := r.rs.Err(); err != nil {
+			var divZero *values.ArithmeticDivisionByZeroError
+			if errors.As(err, &divZero) {
+				return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
+			}
+			var typeMismatch *predicates.TypeMismatchError
+			if errors.As(err, &typeMismatch) {
+				return api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
+			}
 			return err
 		}
 		return io.EOF
@@ -544,6 +689,99 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			return err
 		}
 		dest[i] = v
+	}
+	return nil
+}
+
+func validateTablesAndColumns(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
+	cteNames := collectCTENames(op)
+	return validateTablesAndColumnsInner(op, md, cteNames)
+}
+
+func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+	if op == nil {
+		return nil
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if !cteNames[strings.ToUpper(scan.Table)] {
+			rt := md.GetRecordType(scan.Table)
+			if rt == nil {
+				return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
+			}
+		}
+	}
+	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) {
+		scan := findLogicalScan(op)
+		if scan != nil && !cteNames[strings.ToUpper(scan.Table)] {
+			rt := md.GetRecordType(scan.Table)
+			if rt != nil && rt.Descriptor != nil {
+				for i, col := range proj.Projections {
+					if isComputedExpression(col) {
+						continue
+					}
+					if i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
+						continue
+					}
+					upper := strings.ToUpper(col)
+					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
+						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
+					}
+				}
+			}
+		}
+	}
+	for _, child := range op.Children() {
+		if err := validateTablesAndColumnsInner(child, md, cteNames); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectCTENames(op logical.LogicalOperator) map[string]bool {
+	names := make(map[string]bool)
+	collectCTENamesInner(op, names)
+	return names
+}
+
+func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
+	if op == nil {
+		return
+	}
+	if cte, ok := op.(*logical.LogicalCTE); ok {
+		names[strings.ToUpper(cte.Name)] = true
+	}
+	for _, ch := range op.Children() {
+		collectCTENamesInner(ch, names)
+	}
+}
+
+func hasJoin(op logical.LogicalOperator) bool {
+	if op == nil {
+		return false
+	}
+	if _, ok := op.(*logical.LogicalJoin); ok {
+		return true
+	}
+	for _, ch := range op.Children() {
+		if hasJoin(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func findLogicalScan(op logical.LogicalOperator) *logical.LogicalScan {
+	if op == nil {
+		return nil
+	}
+	if s, ok := op.(*logical.LogicalScan); ok {
+		return s
+	}
+	for _, ch := range op.Children() {
+		if s := findLogicalScan(ch); s != nil {
+			return s
+		}
 	}
 	return nil
 }

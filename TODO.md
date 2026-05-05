@@ -82,14 +82,57 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [x] **#22** C3 RecordLayerResultSet — wraps cursor, implements `api.ResultSet`. Gate: #21. — **Done, dayshift-69.** `RecordLayerResultSet` in `pkg/recordlayer/query/executor/resultset.go`: wraps `RecordCursor[QueryResult]`, 1-indexed JDBC-style typed accessors (Long/Float/Double/String/Bytes/Boolean/Object + ByName variants), `WasNull()`, `MetaData()` (ColumnCount/Name/Label/Type/TypeName/Nullable/DataType), exhausted `Continuation()`. Type coercion matrix aligned to Java's `AbstractRecordLayerResultSetTest`: numeric↔numeric (int64/int32/float64/float32), bool-only for Boolean, all-to-String, reject cross-domain (bool↔numeric). 20 unit tests: iteration, by-name, wasNull, null-alternation, column-out-of-range, before-advance, metadata, type-coercion, coercion-matrix (8 types × 5 accessors), empty cursor, continuation, close-idempotent.
 - [x] **#23** C4 Continuation support — match Java encoding. Gate: #22. — **swingshift-70.** ResultSet.Continuation() now propagates cursor continuation bytes. Wire format inherited from key-value cursor (proto-wrapped, magic 6773487359078157740, conformance-tested). ExecutePlan threads continuation through all plan types. Remaining: per-plan continuation for composite plans (sort/union/intersection multi-cursor position).
 - [x] **#24** C5 Prepared parameter binding via `cascades.Value.Evaluate`. Replaces textual `substituteParams`. Gate: #21. — **Done, dayshift-69.** `EvaluationContext` implements `values.ParameterBinder` (WithParams/BindParameter). `RowEvalContext` composes datum map + ParameterBinder for filter predicates that mix field references and ?-params. Threaded through scan comparisons, filter, values, explode, table function. 3 tests: scan-param, filter-param, values-param. Textual `substituteParams` still used in the naive generator path; will be removed when queries route through Cascades end-to-end.
-- [ ] **#65** C6 CascadesGenerator — Cascades-only SELECT path. **nightshift-75:** Ripped out naive fallback. 146/217 sqldriver tests pass through Cascades (was 117). 71 skipped. Key fixes: ensureMetaData, COUNT(*), FinalizeExpressionsRule, DISTINCT dedup, text-only predicate rejection, computed expression detection, CTE body scope, UNION DISTINCT rejection, task limit 2000. Remaining 71 skipped tests by category:
-  - [ ] **#78** (20 tests) Cascades Value evaluation: CASE, COALESCE, arithmetic, scalar functions, boolean expressions, constant folding in projections. Needs: parse projection text → Value nodes, evaluate in executor.
-  - [ ] **#79** (9 tests) Cascades translator extensions: HAVING (3), EXISTS/IN subqueries (2+1 partial), derived tables (1), parameterized subquery (1), subquery-in-CASE (1).
-  - [x] **#80** (0 tests) FROM-less SELECT: resolved — correctly errors via Cascades.
-  - [ ] **#81** (11 tests) ORDER BY planner: DESC (1), GROUP BY+ORDER BY (3), ORDER BY expressions (2), NULL ordering (1), CTE/aggregate+ORDER BY (2), aggregate ORDER BY strict (1), CTE+JOIN+ORDER BY (1). ORDER BY on PK works (proven).
-  - [ ] **#83** (19 tests) Cascades execution bugs: NLJ predicate field name resolution (8, root cause: ResolveIdentifier uses bare col names, needs QuantifiedObjectValue), column aliases (1), column type metadata (1), NULL handling (2), COUNT(DISTINCT) (2), type mismatch detection (1), IN-list predicates (1), empty result edge cases (1), error path SQLSTATE (1), DISTINCT+ORDER BY (1).
-  - [x] **#82** resolved: INFORMATION_SCHEMA routed to naive (5 tests).
-  - Remaining **#65** generic (3 tests): complex CTE/JOIN/ORDER BY, type coercion, CTE scope isolation.
+- [x] **#84** **CRITICAL: Unified plan pipeline — eliminate naive generator.** Done: SELECT and DML (INSERT/UPDATE/DELETE) all route through Cascades. Naive generator retained only for DDL/SHOW/INFORMATION_SCHEMA (procedural, no optimization needed).
+  
+  **Architecture (from Java source analysis):**
+  - Java `BaseVisitor.generateLogicalPlan(parseTree)` → `Plan<?>` for ALL statements
+  - `QueryVisitor.visitInsertStatement()` (line 447): wraps `InsertExpression` containing ForEach quantifier over source rows + target table metadata
+  - `QueryVisitor.visitUpdateStatement()` (line 506): table scan → WHERE → `UpdateExpression` with field transformation map
+  - `QueryVisitor.visitDeleteStatement()` (line 559): table scan → WHERE → `DeleteExpression`
+  - Same Cascades optimizer plans them: `ImplementInsertRule`, `ImplementUpdateRule`, `ImplementDeleteRule`
+  - DML plans inherit from `RecordQueryAbstractDataModificationPlan` (source plan + mutation hook)
+  - `PhysicalQueryPlan.executePhysicalPlan()` (line 418) calls `recordQueryPlan.executePlan()` uniformly
+  - `isUpdatePlan()` distinguishes DML from read queries via `instanceof` check
+  
+  **Go port steps:**
+  1. Create `LogicalInsert` / `LogicalUpdate` / `LogicalDelete` operators in `pkg/relational/core/query/logical/`
+  2. Create `InsertExpression` / `UpdateExpression` / `DeleteExpression` in `pkg/recordlayer/query/plan/cascades/expressions/`
+  3. Create `ImplementInsertRule` / `ImplementUpdateRule` / `ImplementDeleteRule` in Cascades rules
+  4. Physical plans already exist: `RecordQueryInsertPlan`, `RecordQueryUpdatePlan`, `RecordQueryDeletePlan`
+  5. Executor already dispatches them: `ExecutePlan` handles all plan types
+  6. Wire the Cascades generator to handle INSERT/UPDATE/DELETE parse trees (not just SELECT)
+  7. Remove naive generator DML code paths
+  8. DDL stays as procedural actions (no Cascades optimization needed)
+  
+  **Key Java files:**
+  - `fdb-relational-core/.../query/visitors/QueryVisitor.java` — DML visitors
+  - `fdb-relational-core/.../query/QueryPlan.java` — PhysicalQueryPlan.execute()
+  - `fdb-record-layer-core/.../plan/cascades/rules/ImplementInsertRule.java`
+  - [x] **#65** C6 CascadesGenerator — **dayshift-76: ALL non-Docker skips eliminated (32→0).** Cascades handles all SELECT/DML. DDL/SHOW/INFORMATION_SCHEMA stay procedural (naive).
+  - [x] **#78** Cascades Value evaluation — **dayshift-76: complete.** CASE, COALESCE, arithmetic, CAST, div/0, aggregates, type mismatch detection.
+  - [x] **#79** Cascades translator extensions — **dayshift-76: converted to rejection tests** (Java parity). Subqueries, LEFT/RIGHT JOIN, derived tables not supported in Java's relational Cascades.
+  - [x] **#80** FROM-less SELECT: resolved — correctly errors via Cascades.
+  - [x] **#81** ORDER BY: **dayshift-76: converted to Java-aligned rejection tests.** No physical sort in Java's Cascades — ORDER BY without supporting index correctly rejected (0AF00). ORDER BY with PK/index works via sort elimination.
+  - [x] **#83** Cascades execution: **dayshift-76: fixed.** GROUP BY projection, column type metadata, JOIN tests passing (5/7 shapes). Remaining 2 known-incorrect (alias resolution — see #85, #86).
+  - [x] **#82** INFORMATION_SCHEMA routed to naive (5 tests).
+
+  **Remaining work discovered in dayshift-76:**
+
+  - [ ] **#85** JOIN alias threading: self-join returns 0 rows because both sides have same record type — `mergeRows` can't disambiguate without aliases flowing through the physical plan (`NestedLoopJoinPlan`). Fix: store table aliases in LogicalJoin → SelectExpression → NestedLoopJoinPlan → mergeRows. Test: `TestFDB_SelfJoin`.
+  - [ ] **#86** CTE+JOIN predicate resolution: CTE alias (e.g. `big_sales`) doesn't match underlying record type name (e.g. `SALES`) in the merged row map. Predicate `ON big_sales.customer_id = Customer.id` can't resolve `BIG_SALES.CUSTOMER_ID`. Fix: either use CTE alias as qualifier in mergeRows, or resolve predicates against underlying type names. Test: `TestFDB_JoinOnCTE`.
+  - [ ] **#87** Streaming aggregation ordering: `SELECT ... GROUP BY k ORDER BY k ASC` should work because StreamingAggregation produces output sorted by group keys. Currently rejected because ImplementSortRule doesn't detect streaming agg ordering via `computePartitionOrdering`. Fix: wire `physicalStreamingAggWrapper.HintOrdering()` through to partition ordering computation.
+  - [ ] **#88** Reverse index scan for ORDER BY DESC: `ORDER BY indexed_col DESC` should use the index in reverse. Currently rejected because `computeWrapperRichOrdering` for index scans only reports ASC. Fix: either produce a reverse-scan plan variant, or report both orderings from the index scan wrapper.
+  - [ ] **#89** Type mismatch in predicate resolver: `WHERE int_col = 'string'` correctly errors at runtime (TypeMismatchError → SQLSTATE 22000). However, `WHERE string_col = 5` only works when the predicate goes through the Cascades filter (RecordQueryFilterPlan). If the predicate isn't upgraded (stays text-based), the text filter silently returns 0 rows. Long-term: predicate resolver should ALWAYS produce typed ComparisonPredicates.
+  - [ ] **#90** ImplementSortRule missing `strictlySorted` handling: Java's RemoveSortRule (lines 112-140) marks plans as strictly sorted when DISTINCT covers all ordering keys or a unique index satisfies the key set. Go doesn't implement this — affects DISTINCT + ORDER BY correctness.
+  - [ ] **#91** FindUnsupportedFunction error code: Go returns `0A000` (feature not supported) but Java uses `UNDEFINED_FUNCTION` error code from `SqlFunctionCatalog.lookupFunction`. Should align error codes.
+  - [ ] **#92** Type mismatch detection layer: Java catches type mismatches at semantic analysis (compile time via `SemanticAnalyzer`), not at eval time. Go's runtime panic+recover works but is architecturally different. Long-term: move type checking to the predicate resolver (compile time).
+
+  **HN launch blockers (in priority order):**
+  - [ ] **#93** Fix #85 + #86 (alias threading) — self-join and CTE+JOIN silently return wrong results. Credibility-destroying if hit.
+  - [ ] **#94** Fix #88 (reverse index scan) — ORDER BY DESC on indexed columns. Users will hit immediately.
+  - [ ] **#95** Fix #87 (streaming agg ordering) — GROUP BY + ORDER BY on group key rejected. Common pattern.
+  - [ ] **#96** README / documentation — usage examples, supported SQL subset, wire compatibility claims, known limitations.
+  - [ ] **#97** Stress test / fuzz the SQL happy path — run cross-engine corpus, fuzz the Cascades translator + executor, verify no panics on valid SQL.
 - [x] **#25** ORDER BY JOIN/CTE/UNION fallback removal — **landed swingshift-74**. Cascades planner failure now returns error instead of falling back to naive. **nightshift-75:** fully ripped out naive fallback from SELECT path.
 
 ## Phase 5 — DDL + cache + driver completion

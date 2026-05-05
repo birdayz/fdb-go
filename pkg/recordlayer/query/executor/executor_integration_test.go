@@ -1803,7 +1803,7 @@ func TestIntegration_HashAggregation_CountAndSum(t *testing.T) {
 			datum := r.Datum.(map[string]any)
 			price := datum["PRICE"].(int64)
 			count := datum["COUNT(ORDER_ID)"].(int64)
-			sumQty := datum["SUM(QUANTITY)"].(float64)
+			sumQty := datum["SUM(QUANTITY)"].(int64)
 
 			switch price {
 			case 100:
@@ -2281,7 +2281,7 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 		if g100["COUNT(ORDER_ID)"] != int64(2) {
 			t.Errorf("COUNT(ORDER_ID) for price=100: %v, want 2", g100["COUNT(ORDER_ID)"])
 		}
-		if g100["SUM(QUANTITY)"] != float64(3) {
+		if g100["SUM(QUANTITY)"] != int64(3) {
 			t.Errorf("SUM(QUANTITY) for price=100: %v, want 3", g100["SUM(QUANTITY)"])
 		}
 		if g100["MIN(QUANTITY)"] != int64(1) {
@@ -2298,7 +2298,7 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 		if g200["COUNT(ORDER_ID)"] != int64(2) {
 			t.Errorf("COUNT(ORDER_ID) for price=200: %v, want 2", g200["COUNT(ORDER_ID)"])
 		}
-		if g200["SUM(QUANTITY)"] != float64(10) {
+		if g200["SUM(QUANTITY)"] != int64(10) {
 			t.Errorf("SUM(QUANTITY) for price=200: %v, want 10", g200["SUM(QUANTITY)"])
 		}
 		if g200["MIN(QUANTITY)"] != int64(3) {
@@ -3171,7 +3171,7 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 		}
 
 		qtyCounts := map[int64]int64{}
-		qtySums := map[int64]float64{}
+		qtySums := map[int64]int64{}
 		for _, r := range results {
 			d := r.Datum.(map[string]any)
 			qty, ok := d["QUANTITY"].(int64)
@@ -3179,7 +3179,7 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 				t.Fatalf("QUANTITY type = %T (value = %v), datum keys = %v", d["QUANTITY"], d["QUANTITY"], d)
 			}
 			cnt := d["COUNT(CONSTANT)"].(int64)
-			sum := d["SUM(PRICE)"].(float64)
+			sum := d["SUM(PRICE)"].(int64)
 			qtyCounts[qty] = cnt
 			qtySums[qty] = sum
 		}

@@ -278,8 +278,13 @@ func EvaluateConstant(v Value) (out any, ok bool) {
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			out = nil
-			ok = false
+			if _, isDivZero := r.(*ArithmeticDivisionByZeroError); isDivZero {
+				out = nil
+				ok = true
+			} else {
+				out = nil
+				ok = false
+			}
 		}
 	}()
 	return v.Evaluate(nil), true
@@ -380,6 +385,19 @@ func ExplainValue(v Value) string {
 			// counter isn't wired yet, so render the surface form.
 			return "?"
 		}
+	case *PickValue:
+		parts := make([]string, len(cv.Alternatives))
+		for i, a := range cv.Alternatives {
+			parts[i] = ExplainValue(a)
+		}
+		sel := ExplainValue(cv.Selector)
+		return "CASE(" + sel + ", [" + strings.Join(parts, ", ") + "])"
+	case *ConditionSelectorValue:
+		conds := make([]string, len(cv.Implications))
+		for i, c := range cv.Implications {
+			conds[i] = ExplainValue(c)
+		}
+		return "WHEN(" + strings.Join(conds, ", ") + ")"
 	}
 	return v.Name()
 }
@@ -627,6 +645,20 @@ type ScalarFunctionValue struct {
 	FuncName string
 	Args     []Value
 	Typ      Type
+}
+
+// IsCascadesSafeScalarFunction reports whether the named scalar function
+// is supported by the Cascades planner. Single authoritative list — all
+// callers (translator, predicate upgrade, unsupported-function detection)
+// must use this.
+func IsCascadesSafeScalarFunction(name string) bool {
+	switch name {
+	case "COALESCE", "IFNULL",
+		"GREATEST", "LEAST",
+		"BITAND", "BITOR", "BITXOR":
+		return true
+	}
+	return false
 }
 
 // NewScalarFunctionValue builds a ScalarFunctionValue. The function
@@ -1182,6 +1214,36 @@ func evalScalarFunction(name string, args []any) any {
 			return s
 		}
 		return string(runes[len(runes)-int(n):])
+	case "BITAND":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		a, aok := args[0].(int64)
+		b, bok := args[1].(int64)
+		if !aok || !bok {
+			return nil
+		}
+		return a & b
+	case "BITOR":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		a, aok := args[0].(int64)
+		b, bok := args[1].(int64)
+		if !aok || !bok {
+			return nil
+		}
+		return a | b
+	case "BITXOR":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		a, aok := args[0].(int64)
+		b, bok := args[1].(int64)
+		if !aok || !bok {
+			return nil
+		}
+		return a ^ b
 	}
 	return nil
 }
@@ -1338,8 +1400,19 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	if l == nil || r == nil {
 		return nil
 	}
-	li, lok := l.(int64)
-	ri, rok := r.(int64)
+	// Float promotion: if either operand is float64 AND the other is numeric, use float arithmetic.
+	_, lf := l.(float64)
+	_, rf := r.(float64)
+	if lf || rf {
+		_, _, lNum := ToFloat64(l)
+		_, _, rNum := ToFloat64(r)
+		if lNum && rNum {
+			return a.evalFloat(l, r)
+		}
+		return nil
+	}
+	li, lok := toInt64ForArith(l)
+	ri, rok := toInt64ForArith(r)
 	if !lok || !rok {
 		return nil
 	}
@@ -1369,7 +1442,7 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		return out
 	case OpDiv:
 		if ri == 0 {
-			return nil
+			panic(&ArithmeticDivisionByZeroError{})
 		}
 		// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 		if li == math.MinInt64 && ri == -1 {
@@ -1377,20 +1450,60 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		}
 		return li / ri
 	case OpMod:
-		// SQL: `a MOD 0` is undefined / NULL. Match Div's nil-on-zero
-		// guard. Sign of result matches Go's `%` (truncated toward
-		// zero) — matches MySQL / PostgreSQL semantics.
-		//
-		// MinInt64 % -1 is SAFE — unlike division, Go's `%` produces
-		// 0 for this combination (the mathematical result is 0,
-		// representable in int64). No special-case overflow guard
-		// needed. Pinned in TestArithmeticValue_OverflowBoundaries.
 		if ri == 0 {
-			return nil
+			panic(&ArithmeticDivisionByZeroError{})
 		}
 		return li % ri
 	}
 	return nil
+}
+
+func (a *ArithmeticValue) evalFloat(l, r any) any {
+	lf, _, lok := ToFloat64(l)
+	rf, _, rok := ToFloat64(r)
+	if !lok || !rok {
+		return nil
+	}
+	switch a.Op {
+	case OpAdd:
+		return lf + rf
+	case OpSub:
+		return lf - rf
+	case OpMul:
+		return lf * rf
+	case OpDiv:
+		if rf == 0 {
+			panic(&ArithmeticDivisionByZeroError{})
+		}
+		return lf / rf
+	case OpMod:
+		if rf == 0 {
+			panic(&ArithmeticDivisionByZeroError{})
+		}
+		return math.Mod(lf, rf)
+	}
+	return nil
+}
+
+func toInt64ForArith(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	}
+	return 0, false
+}
+
+// ArithmeticDivisionByZeroError is panicked by ArithmeticValue.Evaluate
+// when division or modulo by zero is attempted. Callers (the executor)
+// recover this and convert to the appropriate SQL error.
+type ArithmeticDivisionByZeroError struct{}
+
+func (*ArithmeticDivisionByZeroError) Error() string {
+	return "division by zero"
 }
 
 // addInt64Checked / subInt64Checked / mulInt64Checked mirror
@@ -1523,12 +1636,19 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			}
 			return int64(0)
 		case float64:
-			// SQL CAST AS INT truncates toward zero. NaN / ±Inf
-			// fall through to nil (UNKNOWN-at-Value-layer).
+			// Java CastValue.DOUBLE_TO_LONG uses Math.round: floor(x+0.5).
+			// Differs from Go's math.Round (ties away from zero).
 			if val != val || val > 1<<62 || val < -(1<<62) {
 				return nil
 			}
-			return int64(val)
+			return int64(math.Floor(val + 0.5))
+		case string:
+			// Java STRING_TO_LONG: trim whitespace before parse.
+			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+			if err != nil {
+				return nil
+			}
+			return n
 		}
 	case TypeCodeBoolean:
 		switch val := v.(type) {
@@ -1538,6 +1658,14 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			return val != 0
 		case float64:
 			return val != 0
+		case string:
+			switch strings.ToLower(strings.TrimSpace(val)) {
+			case "true", "1":
+				return true
+			case "false", "0":
+				return false
+			}
+			return nil
 		}
 	case TypeCodeString:
 		if s, ok := v.(string); ok {

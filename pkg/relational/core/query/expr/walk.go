@@ -41,14 +41,32 @@ func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
-	pred, ok := ctx.(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
+	switch c := ctx.(type) {
+	case *antlrgen.PredicatedExpressionContext:
+		if c.Predicate() != nil {
+			// Predicate-shaped expression (IS NULL, IN, LIKE, BETWEEN,
+			// comparison) used as a value → wrap as predicateValue.
+			pred, err := r.walkPredicatedExpression(c)
+			if err != nil {
+				return nil, err
+			}
+			return &predicateValue{pred: pred}, nil
+		}
+		return r.walkAtom(c.ExpressionAtom())
+	case *antlrgen.LogicalExpressionContext:
+		pred, err := r.walkLogicalExpression(c)
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: pred}, nil
+	case *antlrgen.NotExpressionContext:
+		child, err := r.WalkPredicate(c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: r.ResolveNot(child)}, nil
 	}
-	if pred.Predicate() != nil {
-		return nil, &UnsupportedExpressionShapeError{Shape: "PredicatedExpression with grammar Predicate (use WalkPredicate)"}
-	}
-	return r.walkAtom(pred.ExpressionAtom())
+	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }
 
 // walkAtom dispatches concrete ExpressionAtom variants. Returns a
@@ -95,6 +113,8 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value,
 		// IsConstantValue declines, ExplainValue renders `?N` /
 		// `?name` for plan-cache keying.
 		return r.walkPreparedParameter(a.PreparedStatementParameter())
+	case *antlrgen.BitExpressionAtomContext:
+		return r.walkBitExpression(a)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
 }
@@ -206,13 +226,16 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 }
 
 // walkSpecificFunction dispatches the SpecificFunction subtypes.
-// Seed wires CAST / CONVERT data-type conversions; everything else
-// (CASE, current_user, EXTRACT, …) returns an
-// UnsupportedExpressionShapeError so the logical-builder text
-// fallback catches it.
+// Handles CAST/CONVERT (DataTypeFunctionCall) and CASE (CaseFunctionCall).
 func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (values.Value, error) {
 	if sf == nil {
 		return nil, fmt.Errorf("expr.walkSpecificFunction: nil")
+	}
+	if caseCtx, ok := sf.(*antlrgen.CaseFunctionCallContext); ok {
+		return r.walkCaseFunctionCall(caseCtx)
+	}
+	if simpleCaseCtx, ok := sf.(*antlrgen.CaseExpressionFunctionCallContext); ok {
+		return r.walkSimpleCaseFunctionCall(simpleCaseCtx)
 	}
 	cast, ok := sf.(*antlrgen.DataTypeFunctionCallContext)
 	if !ok {
@@ -250,6 +273,193 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 		}
 	}
 	return r.ResolveCast(inner, target)
+}
+
+// walkCaseFunctionCall handles searched CASE expressions:
+//
+//	CASE WHEN cond1 THEN val1 WHEN cond2 THEN val2 ELSE def END
+//
+// Produces PickValue(ConditionSelectorValue([cond1, cond2, TRUE]), [val1, val2, def]).
+// Matches Java's ExpressionVisitor.visitCaseFunctionCall.
+func (r *Resolver) walkCaseFunctionCall(ctx *antlrgen.CaseFunctionCallContext) (values.Value, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("expr.walkCaseFunctionCall: nil")
+	}
+	alts := ctx.AllCaseFuncAlternative()
+	implications := make([]values.Value, 0, len(alts)+1)
+	alternatives := make([]values.Value, 0, len(alts)+1)
+
+	for _, alt := range alts {
+		altCtx, ok := alt.(*antlrgen.CaseFuncAlternativeContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("CaseFuncAlternative ctx %T", alt)}
+		}
+		condArg := altCtx.GetCondition()
+		if condArg == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "CASE WHEN without condition"}
+		}
+		condArgCtx, ok := condArg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("CASE condition arg ctx %T", condArg)}
+		}
+		condVal, err := r.walkCaseCondition(condArgCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		implications = append(implications, condVal)
+
+		consArg := altCtx.GetConsequent()
+		if consArg == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "CASE THEN without consequent"}
+		}
+		consArgCtx, ok := consArg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("CASE consequent arg ctx %T", consArg)}
+		}
+		consVal, err := r.WalkExpression(consArgCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		alternatives = append(alternatives, consVal)
+	}
+
+	if ctx.ELSE() != nil {
+		implications = append(implications, values.NewBooleanValue(true))
+		elseArg := ctx.GetElseArg()
+		if elseArg == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "CASE ELSE without arg"}
+		}
+		elseArgCtx, ok := elseArg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("CASE ELSE arg ctx %T", elseArg)}
+		}
+		elseVal, err := r.WalkExpression(elseArgCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		alternatives = append(alternatives, elseVal)
+	}
+
+	selector := values.NewConditionSelectorValue(implications)
+	return values.NewPickValue(selector, alternatives, values.UnknownType), nil
+}
+
+// walkSimpleCaseFunctionCall handles simple CASE expressions:
+//
+//	CASE expr WHEN val1 THEN res1 WHEN val2 THEN res2 ELSE def END
+//
+// Desugars to: PickValue(ConditionSelectorValue([expr=val1, expr=val2, TRUE]), [res1, res2, def])
+// where each implication is a comparison predicate (expr = valN).
+func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFunctionCallContext) (values.Value, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("expr.walkSimpleCaseFunctionCall: nil")
+	}
+	discriminator, err := r.WalkExpression(ctx.Expression())
+	if err != nil {
+		return nil, err
+	}
+
+	alts := ctx.AllCaseFuncAlternative()
+	implications := make([]values.Value, 0, len(alts)+1)
+	alternatives := make([]values.Value, 0, len(alts)+1)
+
+	for _, alt := range alts {
+		altCtx, ok := alt.(*antlrgen.CaseFuncAlternativeContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("CaseFuncAlternative ctx %T", alt)}
+		}
+		condArg := altCtx.GetCondition()
+		if condArg == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "simple CASE WHEN without condition"}
+		}
+		condArgCtx, ok := condArg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE condition arg ctx %T", condArg)}
+		}
+		whenVal, err := r.WalkExpression(condArgCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		eqPred, err := r.ResolveComparison(predicates.ComparisonEquals, discriminator, whenVal)
+		if err != nil {
+			return nil, err
+		}
+		implications = append(implications, &predicateValue{pred: eqPred})
+
+		consArg := altCtx.GetConsequent()
+		if consArg == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "simple CASE THEN without consequent"}
+		}
+		consArgCtx, ok := consArg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE consequent arg ctx %T", consArg)}
+		}
+		consVal, err := r.WalkExpression(consArgCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		alternatives = append(alternatives, consVal)
+	}
+
+	if ctx.ELSE() != nil {
+		implications = append(implications, values.NewBooleanValue(true))
+		elseArg := ctx.GetElseArg()
+		if elseArg == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "simple CASE ELSE without arg"}
+		}
+		elseArgCtx, ok := elseArg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE ELSE arg ctx %T", elseArg)}
+		}
+		elseVal, err := r.WalkExpression(elseArgCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		alternatives = append(alternatives, elseVal)
+	}
+
+	selector := values.NewConditionSelectorValue(implications)
+	return values.NewPickValue(selector, alternatives, values.UnknownType), nil
+}
+
+// walkCaseCondition resolves a CASE WHEN condition expression. The
+// condition can be either a plain value (boolean column) or a
+// predicate (comparison like `score = 0`). Returns a Value that
+// evaluates to boolean for use in ConditionSelectorValue.
+func (r *Resolver) walkCaseCondition(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	v, err := r.WalkExpression(ctx)
+	if err == nil {
+		return v, nil
+	}
+	pred, predErr := r.WalkPredicate(ctx)
+	if predErr != nil {
+		return nil, err
+	}
+	return &predicateValue{pred: pred}, nil
+}
+
+// predicateValue wraps a QueryPredicate as a Value for use in CASE
+// conditions. Evaluates to true/false/nil (SQL 3VL).
+type predicateValue struct {
+	pred predicates.QueryPredicate
+}
+
+func (pv *predicateValue) Children() []values.Value { return []values.Value{} }
+func (pv *predicateValue) Name() string             { return "predicate" }
+func (pv *predicateValue) Type() values.Type        { return values.TypeBool }
+
+func (pv *predicateValue) Evaluate(evalCtx any) any {
+	if pv.pred == nil {
+		return nil
+	}
+	switch pv.pred.Eval(evalCtx) {
+	case predicates.TriTrue:
+		return true
+	case predicates.TriFalse:
+		return false
+	default:
+		return nil
+	}
 }
 
 // walkScalarFunction handles every scalar function name registered
@@ -422,6 +632,41 @@ func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (values.ArithmeticOp,
 		return values.OpMod, nil
 	}
 	return values.OpAdd, &UnsupportedExpressionShapeError{Shape: "MathOperator: " + mo.GetText()}
+}
+
+// walkBitExpression handles bitwise operators (`&`, `|`, `^`, `<<`, `>>`).
+// Produces a ScalarFunctionValue with the canonical operator name so
+// evalScalarFunction can dispatch it.
+func (r *Resolver) walkBitExpression(b *antlrgen.BitExpressionAtomContext) (values.Value, error) {
+	left, err := r.walkAtom(b.GetLeft())
+	if err != nil {
+		return nil, err
+	}
+	right, err := r.walkAtom(b.GetRight())
+	if err != nil {
+		return nil, err
+	}
+	bo := b.BitOperator()
+	if bo == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "BitExpressionAtom with nil operator"}
+	}
+	opText := bo.GetText()
+	name := "BITAND"
+	switch opText {
+	case "&":
+		name = "BITAND"
+	case "|":
+		name = "BITOR"
+	case "^":
+		name = "BITXOR"
+	case "<<":
+		name = "BITSHL"
+	case ">>":
+		name = "BITSHR"
+	default:
+		return nil, &UnsupportedExpressionShapeError{Shape: "BitOperator: " + opText}
+	}
+	return values.NewScalarFunctionValue(name, values.TypeInt, left, right), nil
 }
 
 // walkRecordConstructor unwraps a single-element, unnamed-field,
@@ -680,6 +925,12 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			v, err := r.WalkExpression(e)
 			if err != nil {
 				return nil, err
+			}
+			if _, isNull := v.(*values.NullValue); isNull {
+				return nil, &InListNullError{}
+			}
+			if cv, isCon := v.(*values.ConstantValue); isCon && cv.Value == nil {
+				return nil, &InListNullError{}
 			}
 			list = append(list, v)
 		}
@@ -971,6 +1222,14 @@ func stripStringLiteral(text string) string {
 		return strings.ReplaceAll(text[1:len(text)-1], "''", "'")
 	}
 	return text
+}
+
+// InListNullError signals that a NULL literal was found in an IN list.
+// Java rejects these with "NULL values are not allowed in the IN list".
+type InListNullError struct{}
+
+func (*InListNullError) Error() string {
+	return "NULL values are not allowed in the IN list"
 }
 
 // UnsupportedExpressionShapeError signals a parse-tree shape the

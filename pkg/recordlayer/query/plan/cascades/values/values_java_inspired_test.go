@@ -189,11 +189,9 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	}
 }
 
-// TestArithmeticValue_DivByZero_AllOps pins the SQL-standard
-// nil-on-zero-divisor contract for both / and %. Java's test surfaces
-// these as ArithmeticException; we surface them as nil at the Value
-// layer so the surrounding ComparisonPredicate / projection layer
-// can map them to UNKNOWN per SQL §8.2.
+// TestArithmeticValue_DivByZero_AllOps pins that / and % by zero panic
+// with ArithmeticDivisionByZeroError (matches Java's ArithmeticException).
+// The executor recovers this panic and surfaces it as a SQL error.
 func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 	t.Parallel()
 	a := &FieldValue{Field: "a", Typ: TypeInt}
@@ -203,10 +201,18 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 		t.Run(op.Symbol(), func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: op, Left: a, Right: b}
-			got := av.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
-			if got != nil {
-				t.Fatalf("%v by zero: got %v, want nil", op, got)
-			}
+			func() {
+				defer func() {
+					r := recover()
+					if r == nil {
+						t.Fatalf("%v by zero: expected panic", op)
+					}
+					if _, ok := r.(*ArithmeticDivisionByZeroError); !ok {
+						t.Fatalf("%v by zero: expected *ArithmeticDivisionByZeroError, got %T", op, r)
+					}
+				}()
+				av.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+			}()
 		})
 	}
 }
@@ -230,9 +236,6 @@ func TestArithmeticValue_TypeMismatch_NotPanics(t *testing.T) {
 		{"int + string", map[string]any{"a": int64(1), "b": "foo"}},
 		{"bool + int", map[string]any{"a": true, "b": int64(1)}},
 		{"int + bool", map[string]any{"a": int64(1), "b": false}},
-		{"float + int", map[string]any{"a": float64(1.0), "b": int64(1)}}, // seed is int-only
-		{"int + float", map[string]any{"a": int64(1), "b": float64(1.0)}},
-		{"both float", map[string]any{"a": float64(1.5), "b": float64(2.5)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

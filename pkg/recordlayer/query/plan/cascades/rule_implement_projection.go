@@ -36,7 +36,7 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	projPlan := plans.NewRecordQueryProjectionPlan(proj.GetProjectedValues(), innerPlan)
+	projPlan := plans.NewRecordQueryProjectionPlanWithAliases(proj.GetProjectedValues(), proj.GetAliases(), innerPlan)
 
 	innerExpr := findPhysicalExpr(innerRef)
 	if innerExpr == nil {
