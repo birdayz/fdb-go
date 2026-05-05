@@ -1714,7 +1714,7 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 
 func TestFDB_SelectDistinct(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: DISTINCT dedup not working in Cascades")
+	t.Skip("TODO #83: DISTINCT not handled by ImplementDistinctRule")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
