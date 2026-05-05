@@ -2914,7 +2914,6 @@ func TestFDB_CaseWhen(t *testing.T) {
 // Java → doesn't work in Go.
 func TestFDB_StringFunctionsRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: scalar functions not yet handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2960,7 +2959,7 @@ func TestFDB_StringFunctionsRejected(t *testing.T) {
 // doesn't work in Java → doesn't work in Go.
 func TestFDB_ConcatNullIfRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: scalar functions not yet handled")
+	t.Skip("TODO #78: CONCAT/NULLIF in UNION body not caught")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5074,7 +5073,6 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 // in Go.
 func TestFDB_LtrimRtrimRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: scalar functions not yet handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5252,7 +5250,7 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 // in TestFDB_CaseWhen.
 func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: scalar functions not yet handled")
+	t.Skip("TODO #78: function in WHERE not caught by Cascades")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5734,7 +5732,6 @@ func TestFDB_LeftRightRejected(t *testing.T) {
 // (SQLSTATE 0A000). Go aligns through the default arm.
 func TestFDB_ReversePositionRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: scalar functions not yet handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5783,7 +5780,6 @@ func TestFDB_ReversePositionRejected(t *testing.T) {
 // evaluators have been removed (commits 39bcb4d6, b59e1394).
 func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: scalar functions not yet handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -5881,7 +5877,6 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 // dispatch step runs. Per project conformance principle, Go aligns.
 func TestFDB_PiFunctionRejected(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: scalar functions not yet handled")
 	ctx := context.Background()
 
 	setup := openTestDB(t, "/testdb_pi")

@@ -162,6 +162,9 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		if i < len(p.Aliases) && p.Aliases[i] != "" {
 			name = p.Aliases[i]
 		}
+		if strings.Contains(col, "(") {
+			return nil
+		}
 		projected[i] = &values.FieldValue{Field: name, Typ: values.UnknownType}
 	}
 	return expressions.NewLogicalProjectionExpression(
