@@ -760,13 +760,7 @@ func isCascadesSafeValue(v values.Value) bool {
 }
 
 func cascadesSafeScalarFunction(name string) bool {
-	switch name {
-	case "COALESCE", "IFNULL",
-		"GREATEST", "LEAST",
-		"BITAND", "BITOR", "BITXOR":
-		return true
-	}
-	return false
+	return values.IsCascadesSafeScalarFunction(name)
 }
 
 func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
@@ -869,6 +863,16 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 			Right: rewriteAggregateValuesInTree(av.Right),
 		}
 	}
+	if sf, ok := v.(*values.ScalarFunctionValue); ok {
+		args := make([]values.Value, len(sf.Args))
+		for i, a := range sf.Args {
+			args[i] = rewriteAggregateValuesInTree(a)
+		}
+		return values.NewScalarFunctionValue(sf.FuncName, sf.Typ, args...)
+	}
+	if cv, ok := v.(*values.CastValue); ok {
+		return values.NewCastValue(rewriteAggregateValuesInTree(cv.Child), cv.Target)
+	}
 	return v
 }
 
@@ -897,43 +901,6 @@ func findAggregate(op logical.LogicalOperator) *logical.LogicalAggregate {
 		cur = ch[0]
 	}
 	return nil
-}
-
-func findProjectionAbove(op logical.LogicalOperator, target logical.LogicalOperator) *logical.LogicalProject {
-	for cur := op; cur != nil; {
-		if p, ok := cur.(*logical.LogicalProject); ok {
-			ch := p.Children()
-			if len(ch) == 1 && ch[0] == target {
-				return p
-			}
-			return p
-		}
-		ch := cur.Children()
-		if len(ch) != 1 {
-			return nil
-		}
-		cur = ch[0]
-	}
-	return nil
-}
-
-func buildAggregateOutputResolver(agg *logical.LogicalAggregate, sq *selectQuery, md *recordlayer.RecordMetaData) *expr.Resolver {
-	cat := rlcatalog.Wrap(md)
-	analyzer := semantic.NewAnalyzer(cat, false)
-	scope := semantic.NewScope(nil)
-
-	// Include base table columns (needed for resolving aggregate arguments like `qty` in SUM(qty)).
-	if sq.tableName != "" {
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
-		if err == nil {
-			_ = scope.AddSource(semantic.ScopeSource{
-				Table:           tbl,
-				Alias:           semantic.NewUnquoted(sq.tableName),
-				CorrelationName: strings.ToUpper(sq.tableName),
-			})
-		}
-	}
-	return expr.New(analyzer, scope)
 }
 
 func findProjection(op logical.LogicalOperator) *logical.LogicalProject {

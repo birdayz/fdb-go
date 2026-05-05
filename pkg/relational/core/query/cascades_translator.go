@@ -116,9 +116,7 @@ func valueContainsUnsafeScalarFunction(v values.Value) bool {
 	unsafe := false
 	values.WalkValue(v, func(node values.Value) bool {
 		if sf, ok := node.(*values.ScalarFunctionValue); ok {
-			switch sf.FuncName {
-			case "COALESCE", "IFNULL", "GREATEST", "LEAST", "BITAND", "BITOR", "BITXOR":
-			default:
+			if !values.IsCascadesSafeScalarFunction(sf.FuncName) {
 				unsafe = true
 				return false
 			}
@@ -466,11 +464,12 @@ func extractUnsupportedFuncFromText(text string) string {
 	}
 	switch funcName {
 	case "COUNT", "SUM", "MIN", "MAX", "AVG",
-		"COALESCE", "IFNULL", "GREATEST", "LEAST",
-		"BITAND", "BITOR", "BITXOR",
 		"CASE", "CAST", "IF":
 		return ""
 	default:
+		if values.IsCascadesSafeScalarFunction(funcName) {
+			return ""
+		}
 		return funcName
 	}
 }
@@ -482,9 +481,7 @@ func findUnsafeFuncInValue(v values.Value) string {
 	var found string
 	values.WalkValue(v, func(node values.Value) bool {
 		if sf, ok := node.(*values.ScalarFunctionValue); ok {
-			switch sf.FuncName {
-			case "COALESCE", "IFNULL", "GREATEST", "LEAST", "BITAND", "BITOR", "BITXOR":
-			default:
+			if !values.IsCascadesSafeScalarFunction(sf.FuncName) {
 				found = sf.FuncName
 				return false
 			}

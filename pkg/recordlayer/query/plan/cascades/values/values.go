@@ -385,6 +385,19 @@ func ExplainValue(v Value) string {
 			// counter isn't wired yet, so render the surface form.
 			return "?"
 		}
+	case *PickValue:
+		parts := make([]string, len(cv.Alternatives))
+		for i, a := range cv.Alternatives {
+			parts[i] = ExplainValue(a)
+		}
+		sel := ExplainValue(cv.Selector)
+		return "CASE(" + sel + ", [" + strings.Join(parts, ", ") + "])"
+	case *ConditionSelectorValue:
+		conds := make([]string, len(cv.Implications))
+		for i, c := range cv.Implications {
+			conds[i] = ExplainValue(c)
+		}
+		return "WHEN(" + strings.Join(conds, ", ") + ")"
 	}
 	return v.Name()
 }
@@ -632,6 +645,20 @@ type ScalarFunctionValue struct {
 	FuncName string
 	Args     []Value
 	Typ      Type
+}
+
+// IsCascadesSafeScalarFunction reports whether the named scalar function
+// is supported by the Cascades planner. Single authoritative list — all
+// callers (translator, predicate upgrade, unsupported-function detection)
+// must use this.
+func IsCascadesSafeScalarFunction(name string) bool {
+	switch name {
+	case "COALESCE", "IFNULL",
+		"GREATEST", "LEAST",
+		"BITAND", "BITOR", "BITXOR":
+		return true
+	}
+	return false
 }
 
 // NewScalarFunctionValue builds a ScalarFunctionValue. The function
