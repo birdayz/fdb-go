@@ -3441,7 +3441,7 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 
 func TestFDB_HavingCompound(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: ORDER BY + compound HAVING (AND predicate rewrite + sort needed)")
+	t.Skip("TODO #81: ORDER BY on non-indexed column + compound HAVING AND rewrite")
 
 	g := gomega.NewWithT(t)
 	ctx := context.Background()

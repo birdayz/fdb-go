@@ -774,16 +774,28 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 }
 
 func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
-	cp, ok := pred.(*predicates.ComparisonPredicate)
-	if !ok {
-		return pred
+	switch p := pred.(type) {
+	case *predicates.ComparisonPredicate:
+		lhs := rewriteAggregateValue(p.Operand)
+		rhs := rewriteAggregateValue(p.Comparison.Operand)
+		return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
+			Type:    p.Comparison.Type,
+			Operand: rhs,
+		})
+	case *predicates.AndPredicate:
+		rewritten := make([]predicates.QueryPredicate, len(p.SubPredicates))
+		for i, sub := range p.SubPredicates {
+			rewritten[i] = rewriteAggregateRefsInPredicate(sub)
+		}
+		return predicates.NewAnd(rewritten...)
+	case *predicates.OrPredicate:
+		rewritten := make([]predicates.QueryPredicate, len(p.SubPredicates))
+		for i, sub := range p.SubPredicates {
+			rewritten[i] = rewriteAggregateRefsInPredicate(sub)
+		}
+		return predicates.NewOr(rewritten...)
 	}
-	lhs := rewriteAggregateValue(cp.Operand)
-	rhs := rewriteAggregateValue(cp.Comparison.Operand)
-	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
-		Type:    cp.Comparison.Type,
-		Operand: rhs,
-	})
+	return pred
 }
 
 func rewriteAggregateValue(v values.Value) values.Value {
