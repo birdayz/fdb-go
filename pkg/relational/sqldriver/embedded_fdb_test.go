@@ -1189,7 +1189,7 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 // of bug. Now errors at execution.
 func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: type mismatch detection missing in Cascades")
+	t.Skip("TODO #65: type mismatch detection missing in Cascades predicate")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
