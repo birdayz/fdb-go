@@ -6,6 +6,78 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ---
 
+## *** DO NEXT BEFORE EVERYTHING ELSE ***
+
+### Yamsql conformance: 63/111 scenarios fail (~300 individual query failures)
+
+Status after swingshift-77: in-memory sort (RFC-001) eliminated 134 query failures. 178 remain. Grouped by root cause below.
+
+#### Category 1: Cascades planner can't plan the shape (116 queries)
+
+Query succeeds in Java, Go returns `0AF00`. These need Go implementation.
+
+| Gap | Queries | Java has it? | Action |
+|---|---:|---|---|
+| Scalar subqueries `(SELECT MAX(v) FROM t)` | ~25 | Yes — `SelectExpression` with correlated quantifier | Port `DecorrelateValuesRule` + subquery translation. NEW — not in existing TODOs. |
+| `SELECT a.*, b.*` qualified star | ~15 | Yes — `RecordConstructorValue` expansion | Port qualified-star in translator. NEW. |
+| `CROSS JOIN` explicit syntax | ~8 | Yes — parser routes to `SelectExpression` | Fix parser routing (comma-join works, explicit syntax doesn't). NEW. |
+| Recursive CTE body shapes | ~8 | Yes — `RecursiveUnionExpression` | Wider CTE body translation. Extends #15. |
+| Complex derived table + ORDER BY | ~12 | Yes — ordering propagation through subquery | Wire `pullUp` ordering through derived tables. Extends #72. |
+| `GROUP BY expr` (not plain column) | ~10 | Yes — `GroupByExpression` with computed keys | Upgrade `GROUP BY a+b` to Value trees. NEW. |
+| `ORDER BY` with `LIMIT`/`OFFSET` | ~8 | Yes (via `setMaxRows`) | Wire LIMIT into in-memory sort post-processing. Related to #4, #33. |
+| `HAVING` complex shapes | ~8 | Yes — `PredicateFilter` over aggregation | Wider HAVING predicate upgrade. Extends #79. |
+| Correlated subqueries | ~10 | Yes — correlation binding | Port correlation infrastructure. Related to #5 (IN subquery rejected). |
+| `DISTINCT` + complex shapes | ~12 | Partial — Java has some bugs here too | Hash distinct extension. Related to #90. |
+
+#### Category 2: Wrong error code (62 queries)
+
+Query should error, but Go errors with the wrong SQLSTATE.
+
+| Pattern | Queries | Fix |
+|---|---:|---|
+| Expected `0A000`, got `0AF00` | 21 | Cascades fails before reaching the feature-unsupported check. Need earlier rejection. |
+| Expected `42803` (grouping error), got `0AF00` | 9 | GROUP BY validation happens after planning; planner fails first. |
+| Expected `22000` (data exception), got `0AF00` | 7 | Type check happens at eval; planner fails first. |
+| Expected specific codes, got `0AF00` | 25 | Same pattern — planner catch-all hides the real error. |
+
+#### Category 3: Missing validation (50 queries)
+
+Query should error but succeeds silently.
+
+| Missing check | Queries | Java has it? | Action |
+|---|---:|---|---|
+| `42F01` unknown table/qualifier | 10 | Yes | Add validation before planning |
+| `42703` unknown column | 7 | Yes | Add column resolution validation |
+| `42702` ambiguous column | 5 | Yes | Add ambiguity check |
+| `22F3H` / `22003` overflow | 10 | Yes | Add numeric validation |
+| `42803` non-aggregated column | 3 | Yes | Add GROUP BY validation |
+| `0AF01` unsupported feature | 18 | Yes | Add feature gate checks |
+
+#### Category 4: Wrong results (15 queries)
+
+Query runs but returns wrong rows.
+
+| Bug | Queries | Fix |
+|---|---:|---|
+| UNION ALL second branch NULLs | ~5 | Column projection mismatch in UNION executor |
+| Derived table alias not resolved | ~5 | `ColumnAliasMap` not applied in all paths |
+| Self-join column resolution | ~3 | Alias threading edge cases |
+| Aggregate panic in CASE WHEN | 1 | `AggregateValue.Evaluate` called per-row |
+| Parser eats expression as column name | ~1 | `IS DISTINCT FROM` parsed wrong |
+
+#### Summary
+
+Java implements nearly everything. Only ~20 queries need Go extensions (hash distinct on unsorted input, LIMIT post-processing). The other ~280 are Java-ported features we haven't wired yet.
+
+Highest ROI fixes (in order):
+1. **Validation before planning** (~50 queries, add checks before Cascades) — prevents planner catch-all from hiding real errors
+2. **Qualified star expansion** (~15 queries, mechanical translator work)
+3. **CROSS JOIN syntax routing** (~8 queries, parser fix)
+4. **UNION ALL column projection** (~5 queries, executor bug fix)
+5. **Wrong error codes** (~62 queries, earlier rejection before planner)
+
+---
+
 ## Phase 1 — Parallel quick wins (no gates, start immediately)
 
 - [x] **#1** Go-only cleanup: `SELECT DISTINCT` plain projection. **Closed obsolete (swingshift-64)**: empirical probe showed fdb-relational 4.11.1.0 accepts plain `SELECT DISTINCT col FROM T` (Cascades has a DISTINCT-projection rule). Java's `UnableToPlanException` only fires for DISTINCT + ORDER BY together — a shape-specific Cascades composition gap, not blanket DISTINCT non-support. Aligning Go would mean shape-detection (bolt-on `if X` per CLAUDE.md principle #10), not a clean removal. Leave Go's DISTINCT pipeline in place; revisit narrow shape alignment if cross-engine divergence surfaces in real corpora.
