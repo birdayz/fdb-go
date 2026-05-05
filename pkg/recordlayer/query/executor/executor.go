@@ -358,6 +358,9 @@ func executeFilter(
 		pred: func(qr QueryResult) (keep bool) {
 			defer func() {
 				if r := recover(); r != nil {
+					if _, ok := r.(*predicates.TypeMismatchError); ok {
+						panic(r)
+					}
 					keep = false
 				}
 			}()

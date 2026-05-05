@@ -236,6 +236,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		cursor, execErr := executor.ExecutePlan(ctx, p.physicalPlan, store, evalCtx, nil,
 			recordlayer.DefaultExecuteProperties())
 		if execErr != nil {
+			var typeMismatch *predicates.TypeMismatchError
+			if errors.As(execErr, &typeMismatch) {
+				return nil, api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
+			}
 			return nil, execErr
 		}
 

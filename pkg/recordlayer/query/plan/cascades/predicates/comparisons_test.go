@@ -312,17 +312,21 @@ func TestComparison_Eval_In_NonSliceRHS(t *testing.T) {
 	}
 }
 
-// TestComparison_Eval_In_CrossTypeLHS pins the corner: a string LHS
-// against a list of int64 — cmpAny declines silently for each element,
-// no match, no NULL element → TriFalse. Documents the gap with SQL
-// 3VL, which would say UNKNOWN here. Java does not implement IN
-// against typed-mismatched lists either, so this matches.
+// TestComparison_Eval_In_CrossTypeLHS verifies that a string LHS
+// against a list of int64 panics with TypeMismatchError — matching
+// Java's CANNOT_CONVERT_TYPE for incompatible IN-list types.
 func TestComparison_Eval_In_CrossTypeLHS(t *testing.T) {
 	t.Parallel()
-	got := Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
-	if got != TriFalse {
-		t.Fatalf("'hello' IN (1,2,3): got %v, want TriFalse (cmpAny declines silently)", got)
-	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected TypeMismatchError panic")
+		}
+		if _, ok := r.(*TypeMismatchError); !ok {
+			t.Fatalf("expected *TypeMismatchError, got %T", r)
+		}
+	}()
+	Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
 }
 
 // LIKE: SQL pattern matching with `%` / `_`. Anchored both ends.

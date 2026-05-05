@@ -1190,7 +1190,6 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 // of bug. Now errors at execution.
 func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: type mismatch detection — predicate resolver doesn't produce typed ComparisonPredicate for string-vs-int")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -6848,7 +6847,6 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 // works, and IN-lists with all-compatible types still match.
 func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: type coercion — predicate resolver doesn't produce typed ComparisonPredicate for mixed-type literals")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

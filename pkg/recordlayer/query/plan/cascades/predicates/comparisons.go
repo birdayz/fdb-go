@@ -294,7 +294,14 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 				sawNull = true
 				continue
 			}
-			if cmp, ok := cmpAny(left, elem); ok && cmp == 0 {
+			cmp, ok := cmpAny(left, elem)
+			if !ok {
+				if isNumericStringMismatch(left, elem) {
+					panic(&TypeMismatchError{Left: left, Right: elem})
+				}
+				continue
+			}
+			if cmp == 0 {
 				return TriTrue
 			}
 		}
