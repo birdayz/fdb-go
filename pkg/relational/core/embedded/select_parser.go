@@ -527,7 +527,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						if alias != "" {
 							colName = alias
 						} else {
-							colName = e.Expression().GetText()
+							colName = canonicalTextOf(e.Expression())
 						}
 						expr = e.Expression()
 					}
