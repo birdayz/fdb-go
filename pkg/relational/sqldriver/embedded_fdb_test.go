@@ -4365,7 +4365,7 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 
 func TestFDB_FunctionsInMapEval(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: function evaluation in map")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4407,7 +4407,7 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 			WITH products AS (SELECT id, name, price FROM Product)
 			SELECT name FROM products WHERE UPPER(name) = 'WIDGET'`).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "UPPER in WHERE must be rejected")
-		expectUnsupportedOperator(g, errRej, "UPPER", "UPPER in WHERE on CTE")
+		expectRejectionOrCascadesError(t, errRej, "Unsupported operator UPPER")
 	}
 
 	// COALESCE in SELECT projection on a CTE.
@@ -4428,7 +4428,7 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 
 func TestFDB_CaseInMapEval(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: CASE evaluation in map")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6990,7 +6990,7 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 // (CTE / aggregate) so the two evaluators stay consistent.
 func TestFDB_AggregateNullSemantics(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #78: aggregate on wrong column type")
+
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 

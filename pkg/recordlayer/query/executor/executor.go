@@ -770,6 +770,7 @@ func executeAggregation(
 	type groupState struct {
 		keyVals []any
 		count   int64
+		counts  []int64
 		sums    []float64
 		mins    []any
 		maxs    []any
@@ -792,6 +793,7 @@ func executeAggregation(
 		if !exists {
 			gs = &groupState{
 				keyVals: keyParts,
+				counts:  make([]int64, len(aggregates)),
 				sums:    make([]float64, len(aggregates)),
 				mins:    make([]any, len(aggregates)),
 				maxs:    make([]any, len(aggregates)),
@@ -805,6 +807,12 @@ func executeAggregation(
 			val := agg.Operand.Evaluate(row.Datum)
 			if val == nil {
 				continue
+			}
+			gs.counts[i]++
+			if agg.Function == expressions.AggSum || agg.Function == expressions.AggAvg {
+				if !isNumeric(val) {
+					return nil, fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
+				}
 			}
 			num := toFloat64(val)
 			gs.sums[i] += num
@@ -843,16 +851,24 @@ func executeAggregation(
 			name := aggResultName(agg)
 			switch agg.Function {
 			case expressions.AggCount:
-				result[name] = gs.count
+				if isCountStar(agg) {
+					result[name] = gs.count
+				} else {
+					result[name] = gs.counts[i]
+				}
 			case expressions.AggSum:
-				result[name] = gs.sums[i]
+				if gs.counts[i] == 0 {
+					result[name] = nil
+				} else {
+					result[name] = gs.sums[i]
+				}
 			case expressions.AggMin:
 				result[name] = gs.mins[i]
 			case expressions.AggMax:
 				result[name] = gs.maxs[i]
 			case expressions.AggAvg:
-				if gs.count > 0 {
-					result[name] = gs.sums[i] / float64(gs.count)
+				if gs.counts[i] > 0 {
+					result[name] = gs.sums[i] / float64(gs.counts[i])
 				} else {
 					result[name] = nil
 				}
@@ -884,6 +900,27 @@ func aggKeyName(k values.Value) string {
 		return strings.ToUpper(fv.Field)
 	}
 	return strings.ToUpper(k.Name())
+}
+
+func isNumeric(v any) bool {
+	switch v.(type) {
+	case int64, int32, int, float64, float32:
+		return true
+	}
+	return false
+}
+
+func isCountStar(agg expressions.AggregateSpec) bool {
+	if agg.Function != expressions.AggCount {
+		return false
+	}
+	if agg.Operand == nil {
+		return true
+	}
+	if cv, ok := agg.Operand.(*values.ConstantValue); ok && cv.Value == nil {
+		return true
+	}
+	return false
 }
 
 func aggResultName(agg expressions.AggregateSpec) string {
