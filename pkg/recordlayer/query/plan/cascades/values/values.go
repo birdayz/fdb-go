@@ -1765,7 +1765,7 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		case string:
 			f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
 			if err != nil {
-				return nil
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DOUBLE: %s", val, err)})
 			}
 			return f
 		case bool:

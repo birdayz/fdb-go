@@ -564,8 +564,10 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 		return values.TypeUnknown, false
 	}
 	switch {
-	case ptc.INTEGER() != nil, ptc.BIGINT() != nil:
-		return values.TypeInt, true
+	case ptc.INTEGER() != nil:
+		return values.NullableInt, true
+	case ptc.BIGINT() != nil:
+		return values.NullableLong, true
 	case ptc.STRING() != nil:
 		return values.TypeString, true
 	case ptc.BOOLEAN() != nil:
