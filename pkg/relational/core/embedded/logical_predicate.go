@@ -643,10 +643,27 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		}
 	}
 
-	// ORDER BY: Java's QueryVisitor resolves ORDER BY via the expression
-	// visitor (not bare column-name scope lookup) and only validates
-	// duplicates. Scope-based ORDER BY resolution is deferred until the
-	// expression walker handles ORDER BY expressions end-to-end.
+	// ORDER BY: Java's ExpressionVisitor.visitOrderByExpression walks each
+	// ORDER BY expression through the expression visitor. Do the same —
+	// the resolver detects ambiguous/undefined column references.
+	if resolver != nil {
+		for _, ob := range sq.orderBy {
+			if ob.rawExpr != nil {
+				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
+					var ambigErr *semantic.AmbiguousColumnError
+					if errors.As(walkErr, &ambigErr) {
+						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+							"column reference %q is ambiguous", ob.colName)
+					}
+					var notFoundErr *semantic.ColumnNotFoundError
+					if errors.As(walkErr, &notFoundErr) {
+						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+							"column %q does not exist", ob.colName)
+					}
+				}
+			}
+		}
+	}
 
 	// Resolve GROUP BY columns through the scope.
 	if resolver != nil && len(sq.aggCols) == 0 {
