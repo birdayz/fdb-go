@@ -687,6 +687,45 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 // signals the invariant broke — tests assert on it so a future
 // builder change that drops the Filter doesn't silently throw
 // away the predicate.
+func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaData) error {
+	if sq == nil || md == nil {
+		return nil
+	}
+	validSources := make(map[string]bool)
+	if sq.tableName != "" {
+		validSources[strings.ToUpper(sq.tableName)] = true
+		if sq.tableAlias != "" {
+			validSources[strings.ToUpper(sq.tableAlias)] = true
+		}
+	}
+	for _, j := range sq.joins {
+		if j.tableName != "" {
+			validSources[strings.ToUpper(j.tableName)] = true
+		}
+		if j.alias != "" {
+			validSources[strings.ToUpper(j.alias)] = true
+		}
+	}
+	check := func(qual string) error {
+		if qual == "" {
+			return nil
+		}
+		if !validSources[strings.ToUpper(qual)] {
+			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", strings.ToUpper(qual))
+		}
+		return nil
+	}
+	if err := check(sq.projQualifier); err != nil {
+		return err
+	}
+	for _, q := range sq.projStarQualifiers {
+		if err := check(q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]string) {
 	proj := findProjection(op)
 	if proj == nil {
@@ -1215,6 +1254,9 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 			return nil, api.NewError(api.ErrCodeUndefinedFunction,
 				"Unsupported operator "+fn)
 		}
+		if err := validateQualifiedStarSources(sq, md); err != nil {
+			return nil, err
+		}
 		return buildLogicalPlanForSelectWithCatalog(sq, md), nil
 	case *antlrgen.SetQueryContext:
 		return buildLogicalPlanForUnionWithCatalog(b, md), nil
@@ -1250,6 +1292,9 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
 			return nil, api.NewError(api.ErrCodeUndefinedFunction,
 				"Unsupported operator "+fn)
+		}
+		if err := validateQualifiedStarSources(sq, md); err != nil {
+			return nil, err
 		}
 		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes), nil
 	case *antlrgen.SetQueryContext:
