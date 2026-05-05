@@ -120,7 +120,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
   - [x] **#85** JOIN alias threading — **landed swingshift-77**. Threaded SQL aliases through SelectExpression → NLJ plan → mergeRows. Self-join now returns correct rows.
   - [x] **#86** CTE+JOIN predicate resolution — **landed swingshift-77**. CTE aliases flow through translator's sourceAlias extraction from LogicalScan children.
-  - [ ] **#87** Streaming aggregation ordering: `SELECT ... GROUP BY k ORDER BY k ASC` should work because StreamingAggregation produces output sorted by group keys. Currently rejected because ImplementSortRule doesn't detect streaming agg ordering via `computePartitionOrdering`. Fix: wire `physicalStreamingAggWrapper.HintOrdering()` through to partition ordering computation.
+  - [x] **#87** Streaming aggregation ordering — **landed swingshift-77**. StreamingAggFromIndexRule yields both forward/reverse scans; streaming agg wrapper inherits direction from inner index scan.
   - [x] **#88** Reverse index scan for ORDER BY DESC — **landed swingshift-77**. OrderedIndexScanRule produces reverse scans for DESC sort keys; SortOverOrderedElimRule checks direction per-key.
   - [ ] **#89** Type mismatch in predicate resolver: `WHERE int_col = 'string'` correctly errors at runtime (TypeMismatchError → SQLSTATE 22000). However, `WHERE string_col = 5` only works when the predicate goes through the Cascades filter (RecordQueryFilterPlan). If the predicate isn't upgraded (stays text-based), the text filter silently returns 0 rows. Long-term: predicate resolver should ALWAYS produce typed ComparisonPredicates.
   - [ ] **#90** ImplementSortRule missing `strictlySorted` handling: Java's RemoveSortRule (lines 112-140) marks plans as strictly sorted when DISTINCT covers all ordering keys or a unique index satisfies the key set. Go doesn't implement this — affects DISTINCT + ORDER BY correctness.
@@ -130,7 +130,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   **HN launch blockers (in priority order):**
   - [x] **#93** Fix #85 + #86 (alias threading) — **landed swingshift-77**.
   - [x] **#94** Fix #88 (reverse index scan) — **landed swingshift-77**.
-  - [ ] **#95** Fix #87 (streaming agg ordering) — GROUP BY + ORDER BY on group key rejected. Common pattern.
+  - [x] **#95** Fix #87 (streaming agg ordering) — **landed swingshift-77**.
   - [ ] **#96** README / documentation — usage examples, supported SQL subset, wire compatibility claims, known limitations.
   - [ ] **#97** Stress test / fuzz the SQL happy path — run cross-engine corpus, fuzz the Cascades translator + executor, verify no panics on valid SQL.
 - [x] **#25** ORDER BY JOIN/CTE/UNION fallback removal — **landed swingshift-74**. Cascades planner failure now returns error instead of falling back to naive. **nightshift-75:** fully ripped out naive fallback from SELECT path.
