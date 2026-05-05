@@ -82,7 +82,32 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [x] **#22** C3 RecordLayerResultSet — wraps cursor, implements `api.ResultSet`. Gate: #21. — **Done, dayshift-69.** `RecordLayerResultSet` in `pkg/recordlayer/query/executor/resultset.go`: wraps `RecordCursor[QueryResult]`, 1-indexed JDBC-style typed accessors (Long/Float/Double/String/Bytes/Boolean/Object + ByName variants), `WasNull()`, `MetaData()` (ColumnCount/Name/Label/Type/TypeName/Nullable/DataType), exhausted `Continuation()`. Type coercion matrix aligned to Java's `AbstractRecordLayerResultSetTest`: numeric↔numeric (int64/int32/float64/float32), bool-only for Boolean, all-to-String, reject cross-domain (bool↔numeric). 20 unit tests: iteration, by-name, wasNull, null-alternation, column-out-of-range, before-advance, metadata, type-coercion, coercion-matrix (8 types × 5 accessors), empty cursor, continuation, close-idempotent.
 - [x] **#23** C4 Continuation support — match Java encoding. Gate: #22. — **swingshift-70.** ResultSet.Continuation() now propagates cursor continuation bytes. Wire format inherited from key-value cursor (proto-wrapped, magic 6773487359078157740, conformance-tested). ExecutePlan threads continuation through all plan types. Remaining: per-plan continuation for composite plans (sort/union/intersection multi-cursor position).
 - [x] **#24** C5 Prepared parameter binding via `cascades.Value.Evaluate`. Replaces textual `substituteParams`. Gate: #21. — **Done, dayshift-69.** `EvaluationContext` implements `values.ParameterBinder` (WithParams/BindParameter). `RowEvalContext` composes datum map + ParameterBinder for filter predicates that mix field references and ?-params. Threaded through scan comparisons, filter, values, explode, table function. 3 tests: scan-param, filter-param, values-param. Textual `substituteParams` still used in the naive generator path; will be removed when queries route through Cascades end-to-end.
-- [ ] **#84** **CRITICAL: Unified plan pipeline — eliminate naive generator.** Java has ONE path: `BaseVisitor.generateLogicalPlan(parseTree)` produces a `Plan<?>` for ALL statement types (SELECT/INSERT/UPDATE/DELETE/DDL). DML goes through the same Cascades visitor + optimizer as queries. Go's split into naive-generator (DML/DDL) vs cascades-generator (SELECT) is architectural debt — different code paths, different expression evaluation, different error surfaces. Port Java's unified visitor: `BaseVisitor` walks any statement → `LogicalOperator` tree → Cascades optimizer → physical plan → executor. DDL produces `ProceduralPlan` (direct action). No fallback paths. Port Java's DML visitors: `visitInsertStatement`, `visitUpdateStatement`, `visitDeleteStatement` in `QueryVisitor.java`. Port Java's DML tests. (~3-4 shifts, gates everything remaining in Phase 4)
+- [ ] **#84** **CRITICAL: Unified plan pipeline — eliminate naive generator.**
+  
+  **Architecture (from Java source analysis):**
+  - Java `BaseVisitor.generateLogicalPlan(parseTree)` → `Plan<?>` for ALL statements
+  - `QueryVisitor.visitInsertStatement()` (line 447): wraps `InsertExpression` containing ForEach quantifier over source rows + target table metadata
+  - `QueryVisitor.visitUpdateStatement()` (line 506): table scan → WHERE → `UpdateExpression` with field transformation map
+  - `QueryVisitor.visitDeleteStatement()` (line 559): table scan → WHERE → `DeleteExpression`
+  - Same Cascades optimizer plans them: `ImplementInsertRule`, `ImplementUpdateRule`, `ImplementDeleteRule`
+  - DML plans inherit from `RecordQueryAbstractDataModificationPlan` (source plan + mutation hook)
+  - `PhysicalQueryPlan.executePhysicalPlan()` (line 418) calls `recordQueryPlan.executePlan()` uniformly
+  - `isUpdatePlan()` distinguishes DML from read queries via `instanceof` check
+  
+  **Go port steps:**
+  1. Create `LogicalInsert` / `LogicalUpdate` / `LogicalDelete` operators in `pkg/relational/core/query/logical/`
+  2. Create `InsertExpression` / `UpdateExpression` / `DeleteExpression` in `pkg/recordlayer/query/plan/cascades/expressions/`
+  3. Create `ImplementInsertRule` / `ImplementUpdateRule` / `ImplementDeleteRule` in Cascades rules
+  4. Physical plans already exist: `RecordQueryInsertPlan`, `RecordQueryUpdatePlan`, `RecordQueryDeletePlan`
+  5. Executor already dispatches them: `ExecutePlan` handles all plan types
+  6. Wire the Cascades generator to handle INSERT/UPDATE/DELETE parse trees (not just SELECT)
+  7. Remove naive generator DML code paths
+  8. DDL stays as procedural actions (no Cascades optimization needed)
+  
+  **Key Java files:**
+  - `fdb-relational-core/.../query/visitors/QueryVisitor.java` — DML visitors
+  - `fdb-relational-core/.../query/QueryPlan.java` — PhysicalQueryPlan.execute()
+  - `fdb-record-layer-core/.../plan/cascades/rules/ImplementInsertRule.java`
   - [ ] **#65** C6 CascadesGenerator — Cascades-only SELECT path. **nightshift-75:** Ripped out naive fallback. 146/217 sqldriver tests pass through Cascades (was 117). 71 skipped. Key fixes: ensureMetaData, COUNT(*), FinalizeExpressionsRule, DISTINCT dedup, text-only predicate rejection, computed expression detection, CTE body scope, UNION DISTINCT rejection, task limit 2000. Remaining 71 skipped tests by category:
   - [x] **#78** (1 remaining) Cascades Value evaluation — **dayshift-76: 19/20 fixed.** CASE, COALESCE, arithmetic, boolean AND/OR/NOT, bitwise, GREATEST/LEAST, CAST, div/0 errors, aggregate NULL semantics. Remaining 1: post-aggregation arithmetic (SUM/COUNT), gates on #84.
   - [ ] **#79** (7 tests) Cascades translator extensions: HAVING compound (2, blocked by ORDER BY), EXISTS/IN subqueries (2+1), derived tables (1), parameterized subquery (1). **dayshift-76: simple HAVING works.**

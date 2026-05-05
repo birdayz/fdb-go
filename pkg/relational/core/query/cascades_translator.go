@@ -61,6 +61,12 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 		return t.translateDistinct(o)
 	case *logical.LogicalCTE:
 		return t.translateCTE(o)
+	case *logical.LogicalInsert:
+		return t.translateInsert(o)
+	case *logical.LogicalUpdate:
+		return t.translateUpdate(o)
+	case *logical.LogicalDelete:
+		return t.translateDelete(o)
 	default:
 		return nil
 	}
@@ -349,6 +355,58 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	result := t.translateOp(c.Main)
 	delete(t.cteScope, strings.ToUpper(c.Name))
 	return result
+}
+
+func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {
+	var innerRef *expressions.Reference
+	if ins.Source != nil {
+		innerRef = t.translateRef(ins.Source)
+		if innerRef == nil {
+			return nil
+		}
+	}
+	var q expressions.Quantifier
+	if innerRef != nil {
+		q = expressions.ForEachQuantifier(innerRef)
+	}
+	return expressions.NewInsertExpression(q, ins.Table, values.UnknownType)
+}
+
+func (t *cascadesTranslator) translateUpdate(upd *logical.LogicalUpdate) expressions.RelationalExpression {
+	var innerRef *expressions.Reference
+	if upd.Input != nil {
+		innerRef = t.translateRef(upd.Input)
+		if innerRef == nil {
+			return nil
+		}
+	}
+	transforms := make([]expressions.UpdateTransform, len(upd.Sets))
+	for i, a := range upd.Sets {
+		transforms[i] = expressions.UpdateTransform{
+			FieldPath: strings.ToUpper(a.Column),
+			NewValue:  &values.ConstantValue{Value: a.Expr, Typ: values.UnknownType},
+		}
+	}
+	var q expressions.Quantifier
+	if innerRef != nil {
+		q = expressions.ForEachQuantifier(innerRef)
+	}
+	return expressions.NewUpdateExpression(q, upd.Target, transforms)
+}
+
+func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) expressions.RelationalExpression {
+	var innerRef *expressions.Reference
+	if del.Input != nil {
+		innerRef = t.translateRef(del.Input)
+		if innerRef == nil {
+			return nil
+		}
+	}
+	var q expressions.Quantifier
+	if innerRef != nil {
+		q = expressions.ForEachQuantifier(innerRef)
+	}
+	return expressions.NewDeleteExpression(q, del.Target)
 }
 
 func isComputedExpression(col string) bool {

@@ -15,7 +15,9 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -45,9 +47,15 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}
 
 	stmt := stmts.AllStatement()[0]
+
+	// DML: route INSERT/UPDATE/DELETE through Cascades.
+	if dml := stmt.DmlStatement(); dml != nil {
+		return g.planDML(ctx, dml)
+	}
+
 	sel := stmt.SelectStatement()
 	if sel == nil {
-		// SHOW / other non-SELECT read statements stay on naive.
+		// SHOW / DDL / other non-SELECT/DML statements stay on naive.
 		return g.naive.Plan(ctx, sql)
 	}
 
@@ -117,6 +125,64 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}, nil
 }
 
+func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (query.Plan, error) {
+	if err := g.c.ensureMetaData(ctx); err != nil {
+		return nil, err
+	}
+	md := g.c.cachedMetaData()
+	if md == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no schema metadata available")
+	}
+
+	var logicalOp logical.LogicalOperator
+	if del := dml.DeleteStatement(); del != nil {
+		logicalOp = buildLogicalPlanForDeleteWithCatalog(del, md)
+	} else if upd := dml.UpdateStatement(); upd != nil {
+		logicalOp = buildLogicalPlanForUpdateWithCatalog(upd, md)
+	} else if ins := dml.InsertStatement(); ins != nil {
+		logicalOp = buildLogicalPlanForInsertWithCatalog(ins, md)
+	}
+	if logicalOp == nil {
+		return g.naive.Plan(ctx, dml.GetText())
+	}
+
+	ref := query.TranslateToCascades(logicalOp)
+	if ref == nil {
+		return g.naive.Plan(ctx, dml.GetText())
+	}
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	planCtx := buildCascadesPlanContext(md)
+	planner := cascades.NewPlanner(rules, planCtx).
+		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithMaxTasks(2_000)
+
+	bestExpr, _, planErr := planner.Plan(ref)
+	if planErr != nil || bestExpr == nil {
+		return g.naive.Plan(ctx, dml.GetText())
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		return g.naive.Plan(ctx, dml.GetText())
+	}
+	physPlan := ph.GetRecordQueryPlan()
+	if physPlan == nil {
+		return g.naive.Plan(ctx, dml.GetText())
+	}
+
+	return &cascadesPlan{
+		conn:         g.c,
+		md:           md,
+		physicalPlan: physPlan,
+		explain:      logicalOp.Explain(""),
+		isUpdate:     true,
+	}, nil
+}
+
 // cascadesPlan wraps a Cascades-planned SELECT query with a pre-computed
 // physical plan. Planning happens at Plan-time; Execute only runs the plan.
 type cascadesPlan struct {
@@ -124,9 +190,10 @@ type cascadesPlan struct {
 	md           *recordlayer.RecordMetaData
 	physicalPlan plans.RecordQueryPlan
 	explain      string
+	isUpdate     bool
 }
 
-func (p *cascadesPlan) IsUpdate() bool { return false }
+func (p *cascadesPlan) IsUpdate() bool { return p.isUpdate }
 
 func (p *cascadesPlan) Explain() string {
 	if p.physicalPlan != nil {
