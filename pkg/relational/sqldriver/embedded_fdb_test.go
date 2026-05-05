@@ -6885,10 +6885,10 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	// principle (doesn't work in Java → doesn't work in Go), we reject.
 	_, err = db.QueryContext(ctx, `SELECT COUNT(*) FROM T WHERE id NOT IN (1, NULL)`)
 	g.Expect(err).To(gomega.HaveOccurred(), "NULL in IN-list must reject")
-	expectRejectionOrCascadesError(t, err, "NULL values are not allowed in the IN list")
+	expectRejectionOrCascadesError(t, err, "NULL values are not allowed in the IN list", "IN-list contains NULL literal")
 	_, err = db.QueryContext(ctx, `SELECT COUNT(*) FROM T WHERE id IN (99, NULL)`)
 	g.Expect(err).To(gomega.HaveOccurred(), "NULL in IN-list must reject")
-	expectRejectionOrCascadesError(t, err, "NULL values are not allowed in the IN list")
+	expectRejectionOrCascadesError(t, err, "NULL values are not allowed in the IN list", "IN-list contains NULL literal")
 
 	// BETWEEN NULL bound and LIKE NULL pattern — UNKNOWN propagation sanity.
 	// Grammar quirk: BETWEEN … AND … inside parens parses oddly; rely on

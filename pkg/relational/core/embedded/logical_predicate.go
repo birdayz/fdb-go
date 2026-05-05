@@ -716,6 +716,11 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 					"column reference is ambiguous")
 			}
+			var inListNull *expr.InListNullError
+			if errors.As(walkErr, &inListNull) {
+				return nil, api.NewError(api.ErrCodeCannotConvertType,
+					"IN-list contains NULL literal")
+			}
 		}
 	}
 
