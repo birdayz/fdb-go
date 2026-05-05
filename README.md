@@ -110,8 +110,16 @@ Supported SQL:
 - CASE, COALESCE, CAST, arithmetic expressions
 - Computed projections with aliases
 
-ORDER BY requires a supporting index (no physical sort operator, matching Java's Cascades architecture).
+ORDER BY requires a supporting index or PK (no physical sort operator, matching Java's Cascades architecture).
 Self-joins and CTE+JOINs correctly resolve alias-qualified column references.
+
+Not yet supported in the SQL engine:
+- LEFT/RIGHT OUTER JOIN (INNER only)
+- Subqueries in WHERE (EXISTS, IN (SELECT ...))
+- LIMIT/OFFSET (pagination is a future API-level feature)
+- Scalar functions (UPPER, LOWER, SUBSTRING, etc.) — Java's registry doesn't have them either
+- Mixed ASC/DESC in multi-column ORDER BY
+- CTE referenced inside UNION branches
 
 ## What works
 
