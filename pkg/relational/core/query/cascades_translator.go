@@ -162,7 +162,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		if i < len(p.Aliases) && p.Aliases[i] != "" {
 			name = p.Aliases[i]
 		}
-		if strings.Contains(col, "(") {
+		if isComputedExpression(col) {
 			return nil
 		}
 		projected[i] = &values.FieldValue{Field: name, Typ: values.UnknownType}
@@ -286,4 +286,14 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	result := t.translateOp(c.Main)
 	delete(t.cteScope, strings.ToUpper(c.Name))
 	return result
+}
+
+func isComputedExpression(col string) bool {
+	for _, c := range col {
+		switch c {
+		case '(', '+', '-', '*', '/', '%':
+			return true
+		}
+	}
+	return false
 }
