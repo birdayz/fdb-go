@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // ExtractBestPlan walks the Reference DAG rooted at `ref` and returns
@@ -103,9 +104,15 @@ func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelec
 	var best expressions.RelationalExpression
 	if sel != nil && sel.HasBestMember(ref) {
 		best = sel.BestMember(ref)
-	} else if finals := ref.FinalMembers(); len(finals) > 0 {
-		best = bestFrom(finals, CostLessWith(stats))
-	} else {
+	}
+	if !isPhysicalPlan(best) {
+		if finals := ref.FinalMembers(); len(finals) > 0 {
+			if fb := bestFrom(finals, CostLessWith(stats)); fb != nil {
+				best = fb
+			}
+		}
+	}
+	if best == nil {
 		best = ref.GetBest(CostLessWith(stats))
 	}
 	if best == nil {
@@ -305,4 +312,16 @@ type WithChildren interface {
 	// Returns an error if the quantifier count or shape doesn't match
 	// what the type expects.
 	WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error)
+}
+
+type physicalPlanHolder interface {
+	GetRecordQueryPlan() plans.RecordQueryPlan
+}
+
+func isPhysicalPlan(e expressions.RelationalExpression) bool {
+	if e == nil {
+		return false
+	}
+	_, ok := e.(physicalPlanHolder)
+	return ok
 }

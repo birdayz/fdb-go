@@ -5,6 +5,8 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"math"
+	"reflect"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -555,7 +557,7 @@ func aggregateTypeName(name string, desc protoreflect.MessageDescriptor) string 
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
 	fields := desc.Fields()
-	fd := fields.ByName(protoreflect.Name(strings.ToLower(name)))
+	fd := fields.ByName(protoreflect.Name(name))
 	if fd != nil {
 		return protoKindToTypeName(fd.Kind())
 	}
@@ -612,6 +614,44 @@ func (r *cascadesRows) ColumnTypeDatabaseTypeName(index int) string {
 		return ""
 	}
 	return name
+}
+
+func (r *cascadesRows) ColumnTypeScanType(index int) reflect.Type {
+	typeName := r.ColumnTypeDatabaseTypeName(index)
+	switch typeName {
+	case "BIGINT":
+		return reflect.TypeOf((*int64)(nil)).Elem()
+	case "INTEGER":
+		return reflect.TypeOf((*int32)(nil)).Elem()
+	case "DOUBLE":
+		return reflect.TypeOf((*float64)(nil)).Elem()
+	case "FLOAT":
+		return reflect.TypeOf((*float32)(nil)).Elem()
+	case "STRING":
+		return reflect.TypeOf((*string)(nil)).Elem()
+	case "BOOLEAN":
+		return reflect.TypeOf((*bool)(nil)).Elem()
+	case "BYTES":
+		return reflect.TypeOf((*[]byte)(nil)).Elem()
+	default:
+		return reflect.TypeOf((*any)(nil)).Elem()
+	}
+}
+
+func (r *cascadesRows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	return true, true
+}
+
+func (r *cascadesRows) ColumnTypeLength(index int) (length int64, ok bool) {
+	typeName := r.ColumnTypeDatabaseTypeName(index)
+	if typeName == "STRING" || typeName == "BYTES" {
+		return math.MaxInt64, true
+	}
+	return 0, false
+}
+
+func (r *cascadesRows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
+	return 0, 0, false
 }
 
 func (r *cascadesRows) Next(dest []driver.Value) error {

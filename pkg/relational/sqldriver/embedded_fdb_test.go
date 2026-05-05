@@ -6286,7 +6286,6 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 // order" subset of the GROUP BY countStar bug.
 func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: GROUP BY + ORDER BY COUNT(*)")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -7227,7 +7226,6 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 
 func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #83: column type metadata — findScanPlan returns nil under projection (desc=nil)")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
