@@ -1389,6 +1389,40 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]row{{3, 300}, {2, 200}, {1, 100}}))
 }
 
+func TestFDB_SelectDistinctOrderBy(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dist_orderby")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dist_orderby")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE dist_ob_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_val ON T (val)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_dist_orderby/main WITH TEMPLATE dist_ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dist_orderby?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO T (id, val) VALUES (1, 10), (2, 20), (3, 10), (4, 30), (5, 20)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT DISTINCT val FROM T ORDER BY val ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var v int64
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]int64{10, 20, 30}))
+}
+
 // TestFDB_SelectLimitRejected pins LIMIT-clause rejection.
 // fdb-relational 4.11.1.0's AstNormalizer.visitLimitClause throws
 // `RelationalException: LIMIT clause is not supported.`
