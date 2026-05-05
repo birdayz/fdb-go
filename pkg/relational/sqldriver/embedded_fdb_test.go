@@ -3440,7 +3440,7 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 
 func TestFDB_HavingCompound(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #81: ORDER BY on non-indexed column + compound HAVING AND rewrite")
+	t.Skip("TODO #79: compound HAVING — WalkPredicate fails for aggregate function calls in HAVING scope")
 
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -3462,7 +3462,7 @@ func TestFDB_HavingCompound(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// GROUP BY region HAVING SUM > 100 AND COUNT > 1
-	rows, err := db.QueryContext(ctx, `SELECT region, SUM(amount), COUNT(*) FROM Sale GROUP BY region HAVING SUM(amount) > 100 AND COUNT(*) > 1 ORDER BY region`)
+	rows, err := db.QueryContext(ctx, `SELECT region, SUM(amount), COUNT(*) FROM Sale GROUP BY region HAVING SUM(amount) > 100 AND COUNT(*) > 1`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
