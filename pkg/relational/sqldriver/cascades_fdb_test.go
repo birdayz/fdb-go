@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -1163,21 +1162,27 @@ func TestFDB_CascadesCTEInUnion(t *testing.T) {
 	_, cascadesDB := setupCascadesTestDB(t)
 	ctx := context.Background()
 
-	// CTE referenced in each branch of a UNION ALL — the Cascades
-	// translator doesn't support CTE references inside UNION branches.
-	// Assert the expected rejection rather than skipping.
-	_, err := cascadesDB.QueryContext(ctx,
+	rows, err := cascadesDB.QueryContext(ctx,
 		"WITH base AS (SELECT item_id, name FROM Item) "+
 			"SELECT name FROM base WHERE item_id = 1 "+
 			"UNION ALL "+
 			"SELECT name FROM base WHERE item_id = 3")
-	if err == nil {
-		t.Fatal("expected CTE-in-UNION to be rejected")
+	if err != nil {
+		t.Fatalf("CTE-in-UNION query failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Cascades planner could not plan query") {
-		t.Fatalf("expected Cascades planner rejection, got: %v", err)
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
 	}
-	t.Logf("CTE-in-UNION correctly rejected: %v", err)
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %v", len(names), names)
+	}
+	t.Logf("CTE-in-UNION → %v ✓", names)
 }
 
 func TestFDB_CascadesCTEComplexStack(t *testing.T) {

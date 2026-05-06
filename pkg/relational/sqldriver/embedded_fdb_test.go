@@ -4280,15 +4280,19 @@ func TestFDB_CTEChaining(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Pricey', 300)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE chaining where over100 references price from over50 projection scope — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		WITH over50 AS (SELECT id, name, price FROM Product WHERE price > 50),
 		     over100 AS (SELECT id, name FROM over50 WHERE price > 100)
 		SELECT name FROM over100`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(names).To(gomega.ConsistOf("Mid", "Pricey"))
 }
 
 func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
