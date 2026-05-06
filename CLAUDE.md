@@ -12,6 +12,8 @@
 
 **Never paper over a problem.** If a test fails, the fix is in the code, not in the test expectations. If an error code is wrong, trace it to the root cause — don't add a string check at the surface. If a column doesn't resolve, fix the resolution infrastructure — don't strip qualifiers with string hacks.
 
+**"For now" is a red flag.** If you're about to write "for now" or "pragmatic approach" or "we'll fix this later" — STOP. That means you're about to create technical debt. Either do it properly or document it as the FIRST priority in TODO.md so it gets done next. No deferred hacks.
+
 ## NO TEXT MATCHING ON SQL / PARSE TREES
 
 **NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
