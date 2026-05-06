@@ -709,12 +709,32 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// (aggCols / countStar) — their projection names are aggregate
 	// output labels, not column references.
 	if resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
+		proj := findProjection(op)
 		for i, col := range sq.projCols {
 			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				continue
 			}
 			if err := resolveColumnName(resolver, col); err != nil {
 				return nil, err
+			}
+			// For qualified column refs (d.id), resolve the Value so the
+			// Cascades translator gets a FieldValue with the bare column
+			// name, not the qualified "D.ID" text.
+			if strings.Contains(col, ".") && proj != nil {
+				var qualifier semantic.Identifier
+				id := semantic.NewUnquoted(col)
+				if dot := strings.IndexByte(col, '.'); dot >= 0 {
+					qualifier = semantic.NewUnquoted(col[:dot])
+					id = semantic.NewUnquoted(col[dot+1:])
+				}
+				if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+					if proj.ProjectedValues == nil {
+						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+					}
+					if i < len(proj.ProjectedValues) {
+						proj.ProjectedValues[i] = v
+					}
+				}
 			}
 		}
 	}
