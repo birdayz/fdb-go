@@ -136,3 +136,25 @@ Go is more capable than Java 4.11.1.0 in aggregation, ordering, and DISTINCT (Go
 98 scenario test suite. Current: **72/98 pass (73%)**, up from 63/98 (64%) at start of dayshift-79.
 
 Remaining 26 failures dominated by: subqueries/EXISTS (~10), OUTER JOIN (~3), recursive CTE (~1), derived table scope (~5), and miscellaneous edge cases (~7).
+
+## Streaming Executor Gap (Critical for Production)
+
+Java's executor is fully streaming — every `RecordQueryPlan.executePlan()` returns a lazy `RecordCursor` that pulls one row at a time. Composite operators (filter, projection, NLJ, union) compose lazily. `TimeScanLimiter` enforces the FDB 5-second transaction budget.
+
+Go's executor materializes via `CollectAll` in most composite operators, breaking the streaming chain. This works for small tables but is unsafe for production workloads.
+
+| Operator | Java | Go | Fix |
+|---|---|---|---|
+| Filter | Streaming | **Materializes** | Wrap inner cursor with FilterCursor |
+| Projection | Streaming | **Materializes** | Wrap inner cursor with MapCursor |
+| Limit | Streaming | Streaming | Already correct |
+| NLJ outer | Streaming | **Materializes** | Stream outer, re-execute inner per row |
+| NLJ inner | Re-executes | **Materializes** | Re-execute (can't avoid for NLJ) |
+| UNION ALL | Streaming (concat) | **Materializes** | Chain cursors lazily |
+| Streaming Agg | Streaming | Streaming | Already correct (index-backed) |
+| Hash Agg | N/A (Java rejects) | **Materializes** | Go extension — add row limit |
+| In-Memory Sort | N/A (Java rejects) | **Materializes** | Go extension — add row limit |
+| Hash Distinct | N/A (Java rejects) | **Materializes** | Go extension — add row limit |
+| Recursive CTE | Level-by-level | **Materializes** | Add depth + row limits |
+
+Priority: Convert filter/projection/NLJ-outer/UNION to streaming first (biggest impact, no correctness change). Add row limits to materializing Go extensions second.
