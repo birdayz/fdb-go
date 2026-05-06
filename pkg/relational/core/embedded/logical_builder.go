@@ -344,41 +344,6 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst})
 		}
 		op = logical.NewSort(op, keys)
-
-		// When ORDER BY references aggregates not in the SELECT list
-		// (sortOnly entries), the aggregate output includes extra columns.
-		// Add a post-sort projection to strip them. Only fires when there
-		// are actual sortOnly aggregate entries — HAVING-harvested hidden
-		// aggregates don't count (they're stripped by the aggregate itself).
-		hasSortOnlyAgg := false
-		for _, ac := range sq.aggCols {
-			if ac.sortOnly && ac.aggFunc != "" {
-				hasSortOnlyAgg = true
-				break
-			}
-		}
-		if hasSortOnlyAgg && len(sq.aggCols) > 0 && sq.projCols == nil {
-			var visibleCols []string
-			for _, ac := range sq.aggCols {
-				if ac.sortOnly || ac.hidden {
-					continue
-				}
-				if ac.groupCol != "" {
-					visibleCols = append(visibleCols, ac.groupCol)
-				} else if ac.aggFunc != "" {
-					arg := ac.aggArg
-					if arg == "" {
-						arg = "*"
-					}
-					visibleCols = append(visibleCols, ac.aggFunc+"("+arg+")")
-				} else if ac.outName != "" {
-					visibleCols = append(visibleCols, ac.outName)
-				}
-			}
-			if len(visibleCols) > 0 && len(visibleCols) < len(sq.aggCols) {
-				op = logical.NewProject(op, visibleCols, nil)
-			}
-		}
 	}
 
 	// LIMIT: sq.limit < 0 means "no limit". Offset alone (LIMIT -1
