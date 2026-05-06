@@ -1920,6 +1920,11 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if s, ok := right.(*logical.LogicalSort); ok {
 		liftedSort = s
 		right = s.Input
+	} else if p, ok := right.(*logical.LogicalProject); ok {
+		if s, ok := p.Input.(*logical.LogicalSort); ok {
+			liftedSort = s
+			p.Input = s.Input
+		}
 	}
 
 	inputs := []logical.LogicalOperator{left, right}
@@ -2467,6 +2472,11 @@ func buildLogicalPlanForUnionWithCatalog(
 	if s, ok := right.(*logical.LogicalSort); ok {
 		liftedSort = s
 		right = s.Input
+	} else if p, ok := right.(*logical.LogicalProject); ok {
+		if s, ok := p.Input.(*logical.LogicalSort); ok {
+			liftedSort = s
+			p.Input = s.Input
+		}
 	}
 
 	inputs := []logical.LogicalOperator{left, right}
