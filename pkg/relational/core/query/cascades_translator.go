@@ -460,6 +460,46 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
+	// Normalize the recursive leg's output columns to match the seed's
+	// schema. In standard SQL, the CTE's output column names are defined
+	// by the seed. The recursive branch often uses qualified column
+	// references (e.g. SELECT b.id, b.parent) which produce datum keys
+	// like "B.ID" instead of the seed's unqualified "ID". Without this
+	// normalization, the outer query (and DFS recursion) can't find the
+	// expected columns, yielding NULL for every row.
+	seedCols := extractOuterProjectionColumns(seedBranches[0])
+	recCols := extractOuterProjectionColumns(recursiveBranches[0])
+	if len(seedCols) > 0 && len(recCols) > 0 && len(seedCols) == len(recCols) {
+		needsRemap := false
+		for i := range seedCols {
+			if !strings.EqualFold(seedCols[i], recCols[i]) {
+				needsRemap = true
+				break
+			}
+		}
+		if needsRemap {
+			// Wrap the recursive expression with a projection that reads
+			// from the recursive column names and stores under the seed
+			// column names.
+			remapVals := make([]values.Value, len(recCols))
+			for i, rc := range recCols {
+				remapVals[i] = &values.FieldValue{
+					Field: strings.ToUpper(rc),
+					Typ:   values.UnknownType,
+				}
+			}
+			remapAliases := make([]string, len(seedCols))
+			for i, sc := range seedCols {
+				remapAliases[i] = strings.ToUpper(sc)
+			}
+			recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
+				remapVals,
+				remapAliases,
+				expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
+			)
+		}
+	}
+
 	// Wrap recursive leg in TempTableInsert.
 	recursiveRef := expressions.InitialOf(recursiveExpr)
 	recursiveInsert := expressions.NewTempTableInsertExpression(
@@ -481,6 +521,17 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	result := t.translateOp(c.Main)
 	delete(t.cteExprScope, cteName)
 	return result
+}
+
+// extractOuterProjectionColumns returns the column names from the
+// outermost LogicalProject in a logical operator tree. Returns nil if
+// no LogicalProject is found. Used by translateRecursiveCTE to detect
+// schema mismatches between seed and recursive branches.
+func extractOuterProjectionColumns(op logical.LogicalOperator) []string {
+	if p, ok := op.(*logical.LogicalProject); ok {
+		return p.Projections
+	}
+	return nil
 }
 
 // logicalOpReferencesCTE walks a LogicalOperator tree and reports
