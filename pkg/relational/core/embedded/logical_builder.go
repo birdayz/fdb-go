@@ -340,15 +340,31 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
-					visibleProj = append(visibleProj, ac.aggFunc+"("+arg+")")
-					visibleAliases = append(visibleAliases, ac.outName)
+					canonical := ac.aggFunc + "(" + arg + ")"
+					visibleProj = append(visibleProj, canonical)
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
 				} else if ac.groupCol != "" {
 					visibleProj = append(visibleProj, ac.groupCol)
-					visibleAliases = append(visibleAliases, "")
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
 				}
 			}
 			totalOutput := len(keys) + len(aggs)
-			if !hasSortOnly && len(visibleProj) < totalOutput {
+			hasAlias := false
+			for _, a := range visibleAliases {
+				if a != "" {
+					hasAlias = true
+					break
+				}
+			}
+			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAlias) {
 				op = logical.NewProject(op, visibleProj, visibleAliases)
 			}
 		}
