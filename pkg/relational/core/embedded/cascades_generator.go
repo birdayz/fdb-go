@@ -977,6 +977,12 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 				if sf.CURRENT_TIMESTAMP() != nil {
 					return "CURRENT_TIMESTAMP"
 				}
+				if sf.LOCALTIME() != nil {
+					return "LOCALTIME"
+				}
+				if sf.CURRENT_USER() != nil {
+					return "CURRENT_USER"
+				}
 			}
 		}
 	}
@@ -987,7 +993,8 @@ func isAllowedFunction(name string) bool {
 	switch name {
 	case "COUNT", "SUM", "MIN", "MAX", "AVG",
 		"CASE", "CAST", "IF",
-		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME":
+		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME",
+		"CURRENT_USER":
 		return true
 	}
 	return values.IsCascadesSafeScalarFunction(name)

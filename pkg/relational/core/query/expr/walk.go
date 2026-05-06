@@ -248,7 +248,8 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 }
 
 // walkSpecificFunction dispatches the SpecificFunction subtypes.
-// Handles CAST/CONVERT (DataTypeFunctionCall) and CASE (CaseFunctionCall).
+// Handles CAST/CONVERT (DataTypeFunctionCall), CASE (CaseFunctionCall),
+// and SQL-standard datetime/user functions (SimpleFunctionCall).
 func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (values.Value, error) {
 	if sf == nil {
 		return nil, fmt.Errorf("expr.walkSpecificFunction: nil")
@@ -258,6 +259,9 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 	}
 	if simpleCaseCtx, ok := sf.(*antlrgen.CaseExpressionFunctionCallContext); ok {
 		return r.walkSimpleCaseFunctionCall(simpleCaseCtx)
+	}
+	if simple, ok := sf.(*antlrgen.SimpleFunctionCallContext); ok {
+		return r.walkSimpleFunctionCall(simple)
 	}
 	cast, ok := sf.(*antlrgen.DataTypeFunctionCallContext)
 	if !ok {
@@ -295,6 +299,30 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 		}
 	}
 	return r.ResolveCast(inner, target)
+}
+
+// walkSimpleFunctionCall handles the SQL-standard no-argument datetime
+// and user functions: CURRENT_TIMESTAMP, CURRENT_DATE, CURRENT_TIME,
+// LOCALTIME, CURRENT_USER. These parse as SimpleFunctionCallContext
+// (grammar: specificFunction → simpleFunctionCall). Each maps to a
+// zero-arg ScalarFunctionValue whose Evaluate dispatches in
+// evalScalarFunction.
+func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContext) (values.Value, error) {
+	switch {
+	case ctx.CURRENT_TIMESTAMP() != nil:
+		return values.NewScalarFunctionValue("CURRENT_TIMESTAMP", values.NullableString), nil
+	case ctx.CURRENT_DATE() != nil:
+		return values.NewScalarFunctionValue("CURRENT_DATE", values.NullableString), nil
+	case ctx.CURRENT_TIME() != nil:
+		return values.NewScalarFunctionValue("CURRENT_TIME", values.NullableString), nil
+	case ctx.LOCALTIME() != nil:
+		return values.NewScalarFunctionValue("LOCALTIME", values.NullableString), nil
+	case ctx.CURRENT_USER() != nil:
+		// Java's fdb-relational returns "SYSTEM" for CURRENT_USER.
+		return &values.ConstantValue{Value: "SYSTEM", Typ: values.NullableString}, nil
+	default:
+		return nil, &UnsupportedExpressionShapeError{Shape: "unsupported SimpleFunctionCall"}
+	}
 }
 
 // walkCaseFunctionCall handles searched CASE expressions:
