@@ -941,12 +941,18 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if cteScopes != nil {
+		var allMaps []map[string]string
 		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.ColumnAliasMap != nil {
-			rewriteProjectionAliases(op, src.ColumnAliasMap)
+			allMaps = append(allMaps, src.ColumnAliasMap)
 		}
 		for _, j := range sq.joins {
 			if src, found := cteScopes[strings.ToUpper(j.tableName)]; found && src.ColumnAliasMap != nil {
-				rewriteProjectionAliases(op, src.ColumnAliasMap)
+				allMaps = append(allMaps, src.ColumnAliasMap)
+			}
+		}
+		if !cteAliasMapsCollide(allMaps) {
+			for _, m := range allMaps {
+				rewriteProjectionAliases(op, m)
 			}
 		}
 	}
@@ -1182,6 +1188,23 @@ func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaDat
 		}
 	}
 	return nil
+}
+
+func cteAliasMapsCollide(maps []map[string]string) bool {
+	if len(maps) <= 1 {
+		return false
+	}
+	seen := make(map[string]struct{})
+	for _, m := range maps {
+		for _, target := range m {
+			upper := strings.ToUpper(target)
+			if _, exists := seen[upper]; exists {
+				return true
+			}
+			seen[upper] = struct{}{}
+		}
+	}
+	return false
 }
 
 func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]string) {
