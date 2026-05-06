@@ -2301,6 +2301,50 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 			having = canonicalTextOf(sq.havingExpr)
 		}
 		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
+
+		if len(keys) > 0 {
+			var visibleProj, visibleAliases []string
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly || ac.hidden {
+					continue
+				}
+				if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					arg = stripDT(arg)
+					canonical := ac.aggFunc + "(" + arg + ")"
+					visibleProj = append(visibleProj, canonical)
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
+				} else if ac.groupCol != "" {
+					visibleProj = append(visibleProj, stripDT(ac.groupCol))
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
+				}
+			}
+			totalOutput := len(keys) + len(aggs)
+			hasAggAlias := false
+			for i, a := range visibleAliases {
+				if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
+					hasAggAlias = true
+					break
+				}
+			}
+			if len(visibleProj) < totalOutput || hasAggAlias {
+				op = logical.NewProject(op, visibleProj, visibleAliases)
+			}
+		}
 	}
 
 	if len(sq.orderBy) > 0 {
