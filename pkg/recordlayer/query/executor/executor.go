@@ -891,7 +891,7 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 		return true
 	}
 	var rowCtx any = combined.Datum
-	if len(evalCtx.params) > 0 {
+	if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 {
 		if m, ok := combined.Datum.(map[string]any); ok {
 			rowCtx = evalCtx.RowContext(m)
 		}
@@ -1242,7 +1242,7 @@ func executeUpdate(
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}
 			var rowCtx any = qr.Datum
-			if len(evalCtx.params) > 0 {
+			if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 {
 				if m, ok := qr.Datum.(map[string]any); ok {
 					rowCtx = evalCtx.RowContext(m)
 				}
