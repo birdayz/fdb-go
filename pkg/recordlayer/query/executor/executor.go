@@ -1084,11 +1084,16 @@ func executeAggregation(
 		result := make(map[string]any)
 		for _, agg := range aggregates {
 			name := aggResultName(agg)
+			var val any
 			switch agg.Function {
 			case expressions.AggCount:
-				result[name] = int64(0)
+				val = int64(0)
 			default:
-				result[name] = nil
+				val = nil
+			}
+			result[name] = val
+			if agg.Alias != "" && agg.Alias != name {
+				result[agg.Alias] = val
 			}
 		}
 		return recordlayer.FromList([]QueryResult{{Datum: result}}), nil
@@ -1103,31 +1108,36 @@ func executeAggregation(
 		}
 		for i, agg := range aggregates {
 			name := aggResultName(agg)
+			var val any
 			switch agg.Function {
 			case expressions.AggCount:
 				if isCountStar(agg) {
-					result[name] = gs.count
+					val = gs.count
 				} else {
-					result[name] = gs.counts[i]
+					val = gs.counts[i]
 				}
 			case expressions.AggSum:
 				if gs.counts[i] == 0 {
-					result[name] = nil
+					val = nil
 				} else if gs.allInt[i] {
-					result[name] = gs.sumsI[i]
+					val = gs.sumsI[i]
 				} else {
-					result[name] = gs.sums[i]
+					val = gs.sums[i]
 				}
 			case expressions.AggMin:
-				result[name] = gs.mins[i]
+				val = gs.mins[i]
 			case expressions.AggMax:
-				result[name] = gs.maxs[i]
+				val = gs.maxs[i]
 			case expressions.AggAvg:
 				if gs.counts[i] > 0 {
-					result[name] = gs.sums[i] / float64(gs.counts[i])
+					val = gs.sums[i] / float64(gs.counts[i])
 				} else {
-					result[name] = nil
+					val = nil
 				}
+			}
+			result[name] = val
+			if agg.Alias != "" && agg.Alias != name {
+				result[agg.Alias] = val
 			}
 		}
 		results = append(results, QueryResult{Datum: result})

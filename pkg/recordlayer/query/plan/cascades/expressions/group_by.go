@@ -22,6 +22,7 @@ const (
 type AggregateSpec struct {
 	Function AggregateFunction
 	Operand  values.Value
+	Alias    string
 }
 
 // GroupByExpression groups input rows by groupingKeys and computes

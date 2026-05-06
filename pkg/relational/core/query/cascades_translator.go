@@ -352,6 +352,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
 			spec.Operand = a.AggregateOperands[i]
 		}
+		if i < len(a.Aliases) && a.Aliases[i] != "" {
+			spec.Alias = strings.ToUpper(a.Aliases[i])
+		}
 		aggSpecs = append(aggSpecs, spec)
 	}
 	groupBy := expressions.NewGroupByExpression(
