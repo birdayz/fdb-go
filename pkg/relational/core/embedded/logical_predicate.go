@@ -1643,6 +1643,30 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	if sort == nil || len(sort.Keys) == 0 {
 		return
 	}
+
+	// Build alias→column mapping from projections.
+	aliasToCol := make(map[string]string)
+	if sq.projAliases != nil && sq.projCols != nil {
+		for i, a := range sq.projAliases {
+			if a != "" && i < len(sq.projCols) {
+				aliasToCol[strings.ToUpper(a)] = sq.projCols[i]
+			}
+		}
+	}
+	for _, ac := range sq.aggCols {
+		if ac.outName != "" && ac.groupCol != "" {
+			aliasToCol[strings.ToUpper(ac.outName)] = ac.groupCol
+		}
+	}
+
+	// Resolve ORDER BY alias → underlying column name.
+	for i := range sort.Keys {
+		upper := strings.ToUpper(sort.Keys[i].Expr)
+		if real, ok := aliasToCol[upper]; ok {
+			sort.Keys[i].Expr = real
+		}
+	}
+
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 	if resolver == nil {
 		return
