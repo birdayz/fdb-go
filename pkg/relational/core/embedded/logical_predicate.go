@@ -701,6 +701,23 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		}
 	}
 
+	// Pre-build derived table inner plans for JOIN sources through
+	// the catalog-aware path (same as the primary source above).
+	for i := range sq.joins {
+		j := &sq.joins[i]
+		if j.derivedQuery == nil {
+			continue
+		}
+		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
+			j.derivedQuery.QueryExpressionBody(), md, cteScopes)
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		if innerOp != nil {
+			j.catalogAwareInnerPlan = innerOp
+		}
+	}
+
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil || md == nil || sq == nil {
 		return op, nil

@@ -9,6 +9,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
 // Parse-tree → selectQuery extraction.
@@ -132,6 +133,11 @@ type joinClause struct {
 	// CTE keyed by `alias` before the join executor runs, mirroring
 	// the first-source derived-table handling.
 	derivedQuery antlrgen.IQueryContext
+	// catalogAwareInnerPlan is set by the catalog-aware builder when
+	// it pre-builds the derived table's inner plan with upgraded
+	// predicates. When non-nil, buildLogicalPlanForSelect uses this
+	// instead of calling buildLogicalPlanForSelect recursively.
+	catalogAwareInnerPlan logical.LogicalOperator
 }
 
 type orderByClause struct {

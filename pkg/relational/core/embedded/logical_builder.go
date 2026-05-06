@@ -197,7 +197,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// the logical operator tree expects.
 	for _, j := range sq.joins {
 		var right logical.LogicalOperator
-		if j.derivedQuery != nil {
+		if j.catalogAwareInnerPlan != nil {
+			right = j.catalogAwareInnerPlan
+		} else if j.derivedQuery != nil {
 			body := j.derivedQuery.QueryExpressionBody()
 			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
 				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
