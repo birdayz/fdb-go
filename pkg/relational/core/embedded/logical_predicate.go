@@ -1590,7 +1590,53 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
+	if err := validateUnionColumnCounts(inputs); err != nil {
+		return nil, err
+	}
 	return logical.NewUnion(inputs, distinct), nil
+}
+
+// validateUnionColumnCounts checks that all UNION branches project the
+// same number of columns. Matches Java's SemanticAnalyzer.validateUnionTypes
+// column-count check (ErrorCode.UNION_INCORRECT_COLUMN_COUNT / 42F64).
+func validateUnionColumnCounts(inputs []logical.LogicalOperator) error {
+	if len(inputs) < 2 {
+		return nil
+	}
+	firstCount := countProjectionColumns(inputs[0])
+	if firstCount < 0 {
+		return nil
+	}
+	for i := 1; i < len(inputs); i++ {
+		c := countProjectionColumns(inputs[i])
+		if c < 0 {
+			continue
+		}
+		if c != firstCount {
+			return api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+				"UNION legs do not have the same number of columns")
+		}
+	}
+	return nil
+}
+
+func countProjectionColumns(op logical.LogicalOperator) int {
+	if op == nil {
+		return -1
+	}
+	if proj, ok := op.(*logical.LogicalProject); ok {
+		return len(proj.Projections)
+	}
+	for _, ch := range op.Children() {
+		if n := countProjectionColumns(ch); n >= 0 {
+			return n
+		}
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		_ = scan
+		return -1
+	}
+	return -1
 }
 
 // buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
@@ -1620,6 +1666,9 @@ func buildLogicalPlanForUnionWithCatalog(
 	inputs := []logical.LogicalOperator{left, right}
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
+	}
+	if err := validateUnionColumnCounts(inputs); err != nil {
+		return nil, err
 	}
 	return logical.NewUnion(inputs, distinct), nil
 }
