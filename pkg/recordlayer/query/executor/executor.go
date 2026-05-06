@@ -1409,8 +1409,9 @@ func executeRecursiveLevelUnion(
 	}
 	allResults = append(allResults, items...)
 
-	for {
-		if len(insertTable.GetList()) == 0 {
+	const maxRecursionDepth = 1000
+	for level := 0; ; level++ {
+		if len(insertTable.GetList()) == 0 || level >= maxRecursionDepth {
 			break
 		}
 
