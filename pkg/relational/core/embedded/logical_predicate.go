@@ -988,8 +988,8 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		}
 		var srcNotFound *semantic.SourceNotFoundError
 		if errors.As(err, &srcNotFound) {
-			return api.NewErrorf(api.ErrCodeUndefinedTable,
-				"table %q does not exist", strings.ToUpper(col[:strings.IndexByte(col, '.')]))
+			return api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist", col)
 		}
 	}
 	return nil

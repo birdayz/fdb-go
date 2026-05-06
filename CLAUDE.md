@@ -4,6 +4,14 @@
 
 **NEVER use t.Skip() to defer a failing test.** If a test fails, FIX IT. Immediately. No matter how long it takes, no matter how deep the rabbit hole goes. Skipping is forbidden. The only acceptable t.Skip is the runtime Docker check (`FDB not available (no Docker)`). Every other skip is a bug you're hiding. Hunt it down. Fix it. Principles first.
 
+## DFS, NOT BFS — GO ALL IN ON EVERY PROBLEM
+
+**When you discover a problem, go ALL IN.** Dig into the rabbit hole. Fix it completely. No matter how long it takes, no matter how deep it goes. Don't "skip this and look for quick wins" — that's BFS thinking and it produces shallow, fragile work. DFS: pick the problem, understand it fully by reading Java first, then fix it properly in Go. One problem at a time, fixed to completion.
+
+**Java is the reference. Always.** Before writing ANY fix, read the corresponding Java code. Understand how Java handles the exact same case. Then port that approach to Go. No invented shortcuts, no "pragmatic alternatives," no "we'll do this differently." If Java uses SemanticAnalyzer.resolveIdentifier, Go uses the semantic scope. If Java walks the ANTLR tree with typed visitors, Go walks the ANTLR tree with typed visitors. 1:1.
+
+**Never paper over a problem.** If a test fails, the fix is in the code, not in the test expectations. If an error code is wrong, trace it to the root cause — don't add a string check at the surface. If a column doesn't resolve, fix the resolution infrastructure — don't strip qualifiers with string hacks.
+
 ## NO TEXT MATCHING ON SQL / PARSE TREES
 
 **NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
