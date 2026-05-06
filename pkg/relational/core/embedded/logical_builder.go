@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -299,7 +298,16 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 				}
 			}
 			if len(allProj) > 0 {
-				op = logical.NewProject(op, allProj, nil)
+				proj := logical.NewProject(op, allProj, nil)
+				// All post-agg slots are aggregate outputs or expressions —
+				// mark all as "computed" so validateTablesAndColumns doesn't
+				// try to resolve them against the base table schema.
+				computed := make([]bool, len(allProj))
+				for i := range computed {
+					computed[i] = true
+				}
+				proj.IsComputed = computed
+				op = proj
 				sq.postAggExprs = allAntlr
 			}
 		}
@@ -337,27 +345,19 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if len(sq.projCols) > 0 {
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
-		var projVals []values.Value
+		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
 			projs[i] = col
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				// Computed projection — render the expression text.
 				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
+				computed[i] = true
 			}
 			if sq.projAliases != nil && i < len(sq.projAliases) {
 				aliases[i] = sq.projAliases[i]
 			}
-			if isComputedExpression(projs[i]) && isAggregateOutputName(projs[i], sq) {
-				if projVals == nil {
-					projVals = make([]values.Value, len(sq.projCols))
-				}
-				projVals[i] = &values.FieldValue{Field: strings.ToUpper(projs[i]), Typ: values.UnknownType}
-			}
 		}
 		proj := logical.NewProject(op, projs, aliases)
-		if projVals != nil {
-			proj.ProjectedValues = projVals
-		}
+		proj.IsComputed = computed
 		op = proj
 	}
 
@@ -494,24 +494,4 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)
-}
-
-func isComputedExpression(col string) bool {
-	for _, c := range col {
-		switch c {
-		case '(', '+', '-', '*', '/', '%', '<', '>', '&', '|', '^':
-			return true
-		}
-	}
-	return false
-}
-
-func isAggregateOutputName(name string, sq *selectQuery) bool {
-	upper := strings.ToUpper(name)
-	for _, ac := range sq.aggCols {
-		if strings.ToUpper(ac.outName) == upper {
-			return true
-		}
-	}
-	return false
 }

@@ -95,6 +95,7 @@ type LogicalProject struct {
 	Projections     []string
 	Aliases         []string       // parallel to Projections; "" means no alias
 	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
+	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
 }
 
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {

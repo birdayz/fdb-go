@@ -757,13 +757,13 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 			}
 		}
 	}
-	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) {
+	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) && !hasAggregate(op) {
 		scan := findLogicalScan(op)
 		if scan != nil && !cteNames[strings.ToUpper(scan.Table)] {
 			rt := md.GetRecordType(scan.Table)
 			if rt != nil && rt.Descriptor != nil {
 				for i, col := range proj.Projections {
-					if isComputedExpression(col) {
+					if i < len(proj.IsComputed) && proj.IsComputed[i] {
 						continue
 					}
 					if i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
@@ -801,6 +801,21 @@ func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
 	for _, ch := range op.Children() {
 		collectCTENamesInner(ch, names)
 	}
+}
+
+func hasAggregate(op logical.LogicalOperator) bool {
+	if op == nil {
+		return false
+	}
+	if _, ok := op.(*logical.LogicalAggregate); ok {
+		return true
+	}
+	for _, ch := range op.Children() {
+		if hasAggregate(ch) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasJoin(op logical.LogicalOperator) bool {
