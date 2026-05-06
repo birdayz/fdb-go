@@ -60,16 +60,18 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	planKeys := make([]plans.SortKey, len(sortKeys))
 	for i, sk := range sortKeys {
 		field := ""
+		var valExpr values.Value
 		if fv, ok := sk.Value.(*values.FieldValue); ok {
 			field = strings.ToUpper(fv.Field)
 		} else {
 			field = values.ExplainValue(sk.Value)
+			valExpr = sk.Value
 		}
 		nf := !sk.Reverse // default: ASC→true, DESC→false
 		if sk.NullsFirst != nil {
 			nf = *sk.NullsFirst
 		}
-		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse, NullsFirst: nf}
+		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse, NullsFirst: nf, ValueExpr: valExpr}
 	}
 
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, planKeys)

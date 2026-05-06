@@ -1732,8 +1732,14 @@ func executeInMemorySort(
 	keys := p.GetSortKeys()
 	sort.SliceStable(results, func(i, j int) bool {
 		for _, k := range keys {
-			ci := compareByField(results[i], k.Field)
-			cj := compareByField(results[j], k.Field)
+			var ci, cj any
+			if k.ValueExpr != nil {
+				ci = k.ValueExpr.Evaluate(results[i].Datum)
+				cj = k.ValueExpr.Evaluate(results[j].Datum)
+			} else {
+				ci = compareByField(results[i], k.Field)
+				cj = compareByField(results[j], k.Field)
+			}
 			iNil := ci == nil
 			jNil := cj == nil
 			if iNil && jNil {
