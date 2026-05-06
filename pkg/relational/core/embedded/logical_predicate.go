@@ -818,6 +818,8 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		upgradeHavingPredicate(op, sq, md, cteScopes)
 	}
 
+	upgradeSortKeyValues(op, sq, md, cteScopes)
+
 	if sq.whereExpr == nil {
 		return op, nil
 	}
@@ -1629,6 +1631,66 @@ func buildLogicalPlanForUnionWithCTECatalog(
 		return nil, err
 	}
 	return logical.NewUnion(inputs, distinct), nil
+}
+
+// upgradeSortKeyValues walks the logical plan's LogicalSort and resolves
+// sort key expressions through the expression walker. When an ORDER BY
+// key is an aggregate expression (SUM(v)*2, COALESCE(SUM(v),0)), the
+// walker produces a Value tree with AggregateValues rewritten to
+// FieldValues referencing the aggregate output.
+func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	sort := findSort(op)
+	if sort == nil || len(sort.Keys) == 0 {
+		return
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
+	}
+	for i := range sort.Keys {
+		ob := findOrderByForKey(sq, sort.Keys[i].Expr)
+		if ob == nil || ob.rawExpr == nil || ob.colName != "" {
+			continue
+		}
+		v, err := resolver.WalkExpression(ob.rawExpr)
+		if err != nil {
+			continue
+		}
+		v = rewriteAggregateValuesInTree(v)
+		sort.Keys[i].Value = v
+	}
+}
+
+func findSort(op logical.LogicalOperator) *logical.LogicalSort {
+	if op == nil {
+		return nil
+	}
+	if s, ok := op.(*logical.LogicalSort); ok {
+		return s
+	}
+	for _, ch := range op.Children() {
+		if s := findSort(ch); s != nil {
+			return s
+		}
+	}
+	return nil
+}
+
+func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
+	if sq == nil {
+		return nil
+	}
+	for i := range sq.orderBy {
+		ob := &sq.orderBy[i]
+		name := ob.colName
+		if name == "" && ob.rawExpr != nil {
+			name = ob.rawExpr.GetText()
+		}
+		if strings.EqualFold(name, keyExpr) {
+			return ob
+		}
+	}
+	return nil
 }
 
 func hasAnyQualifiedStar(sq *selectQuery) bool {

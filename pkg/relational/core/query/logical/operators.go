@@ -135,6 +135,7 @@ type SortKey struct {
 	Expr       string // canonical text
 	Dir        SortDir
 	NullsFirst bool
+	Value      values.Value // resolved Value expression (nil = use text as FieldValue)
 }
 
 // LogicalSort sorts its child rows by the given keys.
