@@ -589,7 +589,10 @@ func scalarFunctionResultType(name string) (values.Type, bool) {
 		"REVERSE", "LEFT", "RIGHT":
 		return values.TypeString, true
 	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
-		"POSITION":
+		"POSITION",
+		"YEAR", "MONTH", "DAY", "DAYOFMONTH",
+		"HOUR", "MINUTE", "SECOND",
+		"DAYOFWEEK", "DAYOFYEAR":
 		return values.TypeInt, true
 	case "SQRT", "POWER", "POW", "EXP", "LN", "LOG", "PI":
 		return values.TypeFloat, true
