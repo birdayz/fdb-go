@@ -323,6 +323,36 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 				op = proj
 				sq.postAggExprs = allAntlr
 			}
+		} else if len(keys) > 0 {
+			hasSortOnly := false
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly {
+					hasSortOnly = true
+					break
+				}
+			}
+			var visibleProj []string
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly || ac.hidden {
+					continue
+				}
+				if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					visibleProj = append(visibleProj, ac.aggFunc+"("+arg+")")
+				} else if ac.groupCol != "" {
+					visibleProj = append(visibleProj, ac.groupCol)
+				}
+			}
+			totalOutput := len(keys) + len(aggs)
+			if !hasSortOnly && len(visibleProj) < totalOutput {
+				op = logical.NewProject(op, visibleProj, nil)
+			}
 		}
 	}
 
