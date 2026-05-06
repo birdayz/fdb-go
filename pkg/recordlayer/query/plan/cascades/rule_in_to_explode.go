@@ -7,9 +7,14 @@ import (
 )
 
 // InComparisonToExplodeRule rewrites a LogicalFilterExpression whose
-// predicate list contains a ComparisonPredicate with ComparisonIn into
-// a LogicalUnionExpression of filters, one per IN-list element, each
-// using an equality comparison on that element.
+// predicate list contains a ComparisonPredicate with ComparisonIn.
+//
+// Single-element IN → simple equality (no union):
+//
+//	Filter([col IN (v1), ...other...], inner)
+//	  →  Filter([col = v1, ...other...], inner)
+//
+// Multi-element IN → union of equality filters:
 //
 //	Filter([col IN (v1, v2, v3), ...other...], inner)
 //	  →  Union(
@@ -18,14 +23,13 @@ import (
 //	       Filter([col = v3, ...other...], inner),
 //	     )
 //
-// This enables the index-pushdown pipeline: each equality leg can now
-// independently match an index prefix, yielding N index equality scans
-// that the ImplementUnionRule merges into a physical UnionPlan.
-//
-// Java equivalent: `InComparisonToExplodeRule` in the Cascades EXPLORE
-// phase. Only fires when the IN-list is a compile-time constant (the
-// Operand evaluates to a []any). Dynamic IN-lists (parameter markers,
-// correlated subqueries) are left intact for the runtime IN evaluator.
+// NOTE: Java's InComparisonToExplodeRule creates a SelectExpression
+// with a ForEach quantifier over ExplodeExpression, then
+// AbstractDataAccessRule resolves predicates against index candidates.
+// Go doesn't yet have AbstractDataAccessRule for SelectExpression
+// predicates, so multi-element IN uses the Union approach which allows
+// each filter leg to independently match indexes. The Java
+// architecture should be ported as a follow-up.
 //
 // Guards:
 //   - At least one ComparisonIn predicate.
@@ -83,6 +87,19 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
+	// Single-element IN → simple equality.
+	if len(list) == 1 {
+		eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, list[0])
+		eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
+		newPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
+		newPreds = append(newPreds, eqPred)
+		newPreds = append(newPreds, otherPreds...)
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
+		call.Yield(expressions.NewLogicalFilterExpression(newPreds, innerQ))
+		return
+	}
+
+	// Multi-element IN → union of equality filters.
 	legs := make([]expressions.Quantifier, 0, len(list))
 	for _, elem := range list {
 		eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, elem)

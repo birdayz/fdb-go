@@ -193,8 +193,12 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	sortKeys := make([]expressions.SortKey, len(s.Keys))
 	for i, k := range s.Keys {
 		nf := k.NullsFirst
+		v := k.Value
+		if v == nil {
+			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
+		}
 		sortKeys[i] = expressions.SortKey{
-			Value:      &values.FieldValue{Field: k.Expr, Typ: values.UnknownType},
+			Value:      v,
 			Reverse:    k.Dir == logical.SortDesc,
 			NullsFirst: &nf,
 		}
@@ -216,7 +220,9 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 			projected[i] = p.ProjectedValues[i]
 			continue
 		}
-		if isComputedExpression(col) {
+		// Computed expression without a resolved Value — the walker
+		// couldn't handle this shape. Bail so the query falls back.
+		if i < len(p.IsComputed) && p.IsComputed[i] {
 			return nil
 		}
 		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
@@ -426,16 +432,6 @@ func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) express
 		q = expressions.ForEachQuantifier(innerRef)
 	}
 	return expressions.NewDeleteExpression(q, del.Target)
-}
-
-func isComputedExpression(col string) bool {
-	for _, c := range col {
-		switch c {
-		case '(', '+', '-', '*', '/', '%', '<', '>', '&', '|', '^':
-			return true
-		}
-	}
-	return false
 }
 
 // FindUnsupportedFunction walks the logical plan tree and returns the

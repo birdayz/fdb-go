@@ -1222,8 +1222,8 @@ func TestWalkExpression_CastInteger(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *CastValue, got %T", v)
 	}
-	if cv.Target != values.TypeInt {
-		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
+	if cv.Target != values.NullableInt {
+		t.Fatalf("Target: got %v, want NullableInt", cv.Target)
 	}
 	fv, ok := cv.Child.(*values.FieldValue)
 	if !ok || fv.Field != "NAME" {
@@ -1322,8 +1322,8 @@ func TestWalkExpression_ConvertSyntax(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *CastValue, got %T", v)
 	}
-	if cv.Target != values.TypeInt {
-		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
+	if cv.Target != values.NullableInt {
+		t.Fatalf("Target: got %v, want NullableInt", cv.Target)
 	}
 }
 

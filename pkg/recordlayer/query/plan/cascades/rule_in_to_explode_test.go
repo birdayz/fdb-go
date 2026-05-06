@@ -42,6 +42,47 @@ func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
 	}
 }
 
+func TestInComparisonToExplodeRule_SingleElement(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+
+	inList := &values.ConstantValue{Value: []any{int64(6)}, Typ: values.TypeUnknown}
+	inPred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "B", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{inPred},
+		q,
+	)
+	ref := expressions.InitialOf(filter)
+
+	rule := NewInComparisonToExplodeRule()
+	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(results))
+	}
+	f, ok := results[0].(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalFilterExpression for single-element IN, got %T", results[0])
+	}
+	preds := f.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("expected 1 predicate (equality), got %d", len(preds))
+	}
+	cp, ok := preds[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", preds[0])
+	}
+	if cp.Comparison.Type != predicates.ComparisonEquals {
+		t.Fatalf("expected ComparisonEquals, got %v", cp.Comparison.Type)
+	}
+}
+
 func TestInComparisonToExplodeRule_PreservesOtherPredicates(t *testing.T) {
 	t.Parallel()
 
@@ -78,7 +119,6 @@ func TestInComparisonToExplodeRule_PreservesOtherPredicates(t *testing.T) {
 	if len(qs) != 2 {
 		t.Fatalf("expected 2 union legs, got %d", len(qs))
 	}
-	// Each leg should have 2 predicates (equality + the other pred).
 	for i, lq := range qs {
 		legRef := lq.GetRangesOver()
 		for _, m := range legRef.Members() {
@@ -180,8 +220,7 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		t.Fatal("planner did not converge")
 	}
 
-	// After explosion + index scan: look for index scans anywhere.
-	foundIndexScan := false
+	indexScanCount := 0
 	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
 	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
 		if r == nil || visited[r] {
@@ -190,19 +229,15 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		visited[r] = true
 		for _, m := range r.Members() {
 			if IsPhysicalIndexScan(m) {
-				foundIndexScan = true
-				return
+				indexScanCount++
 			}
 			for _, q := range m.GetQuantifiers() {
 				walk(q.GetRangesOver(), visited)
-				if foundIndexScan {
-					return
-				}
 			}
 		}
 	}
 	walk(ref, map[*expressions.Reference]bool{})
-	if !foundIndexScan {
+	if indexScanCount == 0 {
 		t.Fatal("IN-explode + index scan rule did not produce any index scans")
 	}
 }

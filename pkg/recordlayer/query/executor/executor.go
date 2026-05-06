@@ -363,7 +363,8 @@ func executeFilter(
 		pred: func(qr QueryResult) (keep bool) {
 			defer func() {
 				if r := recover(); r != nil {
-					if _, ok := r.(*predicates.TypeMismatchError); ok {
+					switch r.(type) {
+					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError, *values.ScalarTypeMismatchError, *values.InvalidCastError:
 						panic(r)
 					}
 					keep = false
@@ -474,9 +475,16 @@ func executeProjection(
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						if divErr, ok := r.(*values.ArithmeticDivisionByZeroError); ok {
-							evalErr = divErr
-						} else {
+						switch e := r.(type) {
+						case *values.ArithmeticDivisionByZeroError:
+							evalErr = e
+						case *values.ArithmeticOverflowError:
+							evalErr = e
+						case *values.ScalarTypeMismatchError:
+							evalErr = e
+						case *values.InvalidCastError:
+							evalErr = e
+						default:
 							evalErr = fmt.Errorf("projection evaluation panic: %v", r)
 						}
 					}
@@ -1504,9 +1512,18 @@ type filterResultCursor struct {
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			if tmErr, ok := r.(*predicates.TypeMismatchError); ok {
-				err = tmErr
-			} else {
+			switch e := r.(type) {
+			case *predicates.TypeMismatchError:
+				err = e
+			case *values.ArithmeticOverflowError:
+				err = e
+			case *values.ArithmeticDivisionByZeroError:
+				err = e
+			case *values.ScalarTypeMismatchError:
+				err = e
+			case *values.InvalidCastError:
+				err = e
+			default:
 				panic(r)
 			}
 		}
@@ -1715,8 +1732,14 @@ func executeInMemorySort(
 	keys := p.GetSortKeys()
 	sort.SliceStable(results, func(i, j int) bool {
 		for _, k := range keys {
-			ci := compareByField(results[i], k.Field)
-			cj := compareByField(results[j], k.Field)
+			var ci, cj any
+			if k.ValueExpr != nil {
+				ci = k.ValueExpr.Evaluate(results[i].Datum)
+				cj = k.ValueExpr.Evaluate(results[j].Datum)
+			} else {
+				ci = compareByField(results[i], k.Field)
+				cj = compareByField(results[j], k.Field)
+			}
 			iNil := ci == nil
 			jNil := cj == nil
 			if iNil && jNil {

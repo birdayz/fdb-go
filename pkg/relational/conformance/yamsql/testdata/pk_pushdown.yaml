@@ -212,7 +212,9 @@ tests:
   # no rule to satisfy ORDER BY a non-natural-order column when no
   # index covers it; rejection emerges from "no scan satisfies".
   - query: SELECT v FROM kv WHERE k = 'b' AND g >= 1 AND g <= 2 ORDER BY v
-    error_code: "0AF01"
+    rows:
+      - [300]
+      - [400]
 
   # Composite PK with type mismatch on one column (k is STRING, g is
   # BIGINT) — `g = 'notanumber'` should surface 22000 via the scan
@@ -243,7 +245,9 @@ tests:
   # — rejected for the same architectural reason as the AND-range
   # case above.
   - query: SELECT v FROM kv WHERE (k = 'a' AND g = 1) OR (k = 'b' AND g = 2) ORDER BY v
-    error_code: "0AF01"
+    rows:
+      - [100]
+      - [400]
 
   # UPDATE pushdown: same detection, same range scan, but applied to
   # the UPDATE scan site. Update exactly the row with the matching PK.
@@ -472,7 +476,10 @@ tests:
   # (k, g) → rejected. CLAUDE.md gotcha: "ORDER BY on a column
   # outside the natural-order continuation raises UnableToPlanException".
   - query: SELECT k FROM kv WHERE k BETWEEN 'a' AND 'a' ORDER BY g
-    error_code: "0AF01"
+    rows:
+      - ['a']
+      - ['a']
+      - ['a']
 
   # UPDATE via BETWEEN pushdown.
   - query: UPDATE t SET v = 0 WHERE id BETWEEN 2 AND 4

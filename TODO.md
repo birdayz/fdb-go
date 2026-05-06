@@ -8,6 +8,35 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ## *** DO NEXT BEFORE EVERYTHING ELSE ***
 
+### Eliminate sortOnly — port Java's RequestedOrdering for ORDER BY
+
+Go's `sortOnly` flag on `aggSelectCol` is a hack. Java doesn't have it. Java carries ORDER BY as a `RequestedOrdering` constraint on the `SelectExpression` — the planner uses it to satisfy ordering through index scans or reject the query. Go's in-memory sort extension needs the aggregate computed for sorting but not projected, which created the `sortOnly` workaround.
+
+**The sortOnly approach causes cascading bugs:**
+- sortOnly aggregates leak to output (extra columns)
+- Post-sort projection to strip them regresses other queries (HAVING-harvested hidden aggregates get incorrectly stripped)
+- Sort key Value resolution doesn't fire for sortOnly expressions
+- `ORDER BY SUM(v) * 2` fails because the sort key text `SUM(V)*2` isn't in the row
+
+**Java's architecture (port this):**
+1. `visitOrderByClauseForSelect` resolves ORDER BY against SELECT expressions (line 270 QueryVisitor.java)
+2. `OrderByExpression.pullUp` rewrites ORDER BY through GROUP BY (line 271-273)
+3. `generateSelect` builds ONE SelectExpression with both projections AND `RequestedOrdering` (line 290)
+4. The planner satisfies ordering through index ordering or fails — no sortOnly, no extra columns
+
+**Go port steps:**
+1. Remove `sortOnly` flag from `aggSelectCol`
+2. Carry ORDER BY as `RequestedOrdering` on the logical plan (already partially ported in `cascades/ordering.go`)
+3. In-memory sort reads the `RequestedOrdering`, evaluates sort key Values per-row
+4. No post-sort projection needed — ORDER BY isn't in the aggregate output
+
+**Key Java files:**
+- `fdb-relational-core/.../query/visitors/QueryVisitor.java` lines 259-290 — ORDER BY + GROUP BY integration
+- `fdb-relational-core/.../query/visitors/ExpressionVisitor.java` lines 188-205 — ORDER BY expression visiting
+- `fdb-record-layer-core/.../plan/cascades/RequestedOrdering.java` — ordering constraint propagation
+
+**Blocks:** `having` scenario (3/23 failing), any query with `ORDER BY aggregate_expression` where the expression isn't in SELECT
+
 ### Yamsql conformance: 63/111 scenarios fail (~300 individual query failures)
 
 Status after swingshift-77: in-memory sort (RFC-001) eliminated 134 query failures. 178 remain. Grouped by root cause below.

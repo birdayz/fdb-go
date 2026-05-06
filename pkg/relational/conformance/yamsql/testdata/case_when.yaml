@@ -61,7 +61,11 @@ tests:
   - query: |-
       SELECT id, CASE WHEN v IS NULL THEN 1 ELSE 0 END AS is_null
       FROM t ORDER BY is_null DESC, id
-    error_code: "0AF01"
+    rows:
+      - [3, 1]
+      - [1, 0]
+      - [2, 0]
+      - [4, 0]
   # Java-aligned: mixed-type result branches. CASE WHEN cond THEN <int>
   # ELSE <float> END — Java promotes both to DOUBLE so the result type
   # is consistent. Verify Go matches: the integer branch should surface

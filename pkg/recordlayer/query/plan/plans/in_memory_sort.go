@@ -18,6 +18,7 @@ type SortKey struct {
 	Field      string
 	Desc       bool
 	NullsFirst bool
+	ValueExpr  values.Value // when non-nil, evaluate per-row instead of field lookup
 }
 
 // RecordQueryInMemorySortPlan materializes the inner plan's output and

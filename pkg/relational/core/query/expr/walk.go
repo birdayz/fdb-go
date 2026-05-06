@@ -38,19 +38,39 @@ import (
 // Everything else returns UnsupportedExpressionShapeError so the
 // caller can fall back to the existing logical-builder path.
 func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	return r.walkExpressionInner(ctx, false)
+}
+
+// WalkExpressionForProjection is like WalkExpression but also handles
+// BinaryComparisonPredicate as ExpressionAtom — comparison expressions
+// like `a = b`, `x IS DISTINCT FROM NULL` that appear in SELECT lists.
+// Separated from WalkExpression so that CASE WHEN branches don't gain
+// comparison handling (Java rejects `WHERE CASE WHEN ... THEN a < b`).
+func (r *Resolver) WalkExpressionForProjection(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	return r.walkExpressionInner(ctx, true)
+}
+
+func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowComparisons bool) (values.Value, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
 	switch c := ctx.(type) {
 	case *antlrgen.PredicatedExpressionContext:
 		if c.Predicate() != nil {
-			// Predicate-shaped expression (IS NULL, IN, LIKE, BETWEEN,
-			// comparison) used as a value → wrap as predicateValue.
 			pred, err := r.walkPredicatedExpression(c)
 			if err != nil {
 				return nil, err
 			}
 			return &predicateValue{pred: pred}, nil
+		}
+		if allowComparisons {
+			if bc, ok := c.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext); ok {
+				pred, err := r.walkBinaryComparison(bc)
+				if err != nil {
+					return nil, err
+				}
+				return &predicateValue{pred: pred}, nil
+			}
 		}
 		return r.walkAtom(c.ExpressionAtom())
 	case *antlrgen.LogicalExpressionContext:
@@ -438,15 +458,27 @@ func (r *Resolver) walkCaseCondition(ctx antlrgen.IExpressionContext) (values.Va
 	return &predicateValue{pred: pred}, nil
 }
 
+// PredicateValueHolder is implemented by values that wrap a
+// QueryPredicate (used by CASE conditions). Exported so the
+// aggregate-rewriter in logical_predicate.go can access the
+// predicate for AggregateValue→FieldValue rewriting.
+type PredicateValueHolder interface {
+	values.Value
+	GetPredicate() predicates.QueryPredicate
+	SetPredicate(predicates.QueryPredicate)
+}
+
 // predicateValue wraps a QueryPredicate as a Value for use in CASE
 // conditions. Evaluates to true/false/nil (SQL 3VL).
 type predicateValue struct {
 	pred predicates.QueryPredicate
 }
 
-func (pv *predicateValue) Children() []values.Value { return []values.Value{} }
-func (pv *predicateValue) Name() string             { return "predicate" }
-func (pv *predicateValue) Type() values.Type        { return values.TypeBool }
+func (pv *predicateValue) Children() []values.Value                 { return []values.Value{} }
+func (pv *predicateValue) Name() string                             { return "predicate" }
+func (pv *predicateValue) Type() values.Type                        { return values.TypeBool }
+func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
+func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = p }
 
 func (pv *predicateValue) Evaluate(evalCtx any) any {
 	if pv.pred == nil {
@@ -544,8 +576,10 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 		return values.TypeUnknown, false
 	}
 	switch {
-	case ptc.INTEGER() != nil, ptc.BIGINT() != nil:
-		return values.TypeInt, true
+	case ptc.INTEGER() != nil:
+		return values.NullableInt, true
+	case ptc.BIGINT() != nil:
+		return values.NullableLong, true
 	case ptc.STRING() != nil:
 		return values.TypeString, true
 	case ptc.BOOLEAN() != nil:
@@ -827,9 +861,9 @@ func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) 
 		return nil, err
 	}
 	switch {
-	case lo.AND() != nil:
+	case lo.AND() != nil || len(lo.AllBIT_AND_OP()) == 2:
 		return r.ResolveAnd(flattenAnd(left, right)...), nil
-	case lo.OR() != nil:
+	case lo.OR() != nil || len(lo.AllBIT_OR_OP()) == 2:
 		return r.ResolveOr(flattenOr(left, right)...), nil
 	case lo.XOR() != nil:
 		// Desugar `a XOR b` → `(a OR b) AND NOT (a AND b)`.
@@ -1171,7 +1205,7 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 				text := k.GetText()
 				f, err := strconv.ParseFloat(text, 64)
 				if err != nil {
-					return nil, fmt.Errorf("expr.walkConstant: float parse %q: %w", text, err)
+					return nil, &NumericOverflowLiteralError{Text: text}
 				}
 				return r.ResolveConstant(f)
 			}
@@ -1190,7 +1224,7 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 			if dl.REAL_LITERAL() != nil {
 				f, err := strconv.ParseFloat(text, 64)
 				if err != nil {
-					return nil, fmt.Errorf("expr.walkConstant: negative float parse %q: %w", text, err)
+					return nil, &NumericOverflowLiteralError{Text: text}
 				}
 				return r.ResolveConstant(f)
 			}
@@ -1242,4 +1276,15 @@ type UnsupportedExpressionShapeError struct {
 
 func (e *UnsupportedExpressionShapeError) Error() string {
 	return fmt.Sprintf("expr.WalkExpression: unsupported shape: %s", e.Shape)
+}
+
+// NumericOverflowLiteralError signals that a numeric literal overflows
+// its target type (e.g. 1e400 overflows float64). Should be mapped
+// to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+type NumericOverflowLiteralError struct {
+	Text string
+}
+
+func (e *NumericOverflowLiteralError) Error() string {
+	return fmt.Sprintf("numeric literal out of range: %s", e.Text)
 }

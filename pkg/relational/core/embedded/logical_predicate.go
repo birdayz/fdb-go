@@ -195,10 +195,40 @@ func buildDerivedTableSource(
 	if err != nil || innerSQ == nil {
 		return semantic.ScopeSource{}, false
 	}
-	// Decline shapes the seed can't safely synthesise a column schema for.
-	if innerSQ.derivedQuery != nil ||
-		len(innerSQ.joins) > 0 ||
-		innerSQ.projCols == nil || // SELECT *
+	// Derived-of-derived: recursively build the inner scope.
+	if innerSQ.derivedQuery != nil {
+		innerSrc, ok := buildDerivedTableSource(md, innerSQ.tableName, innerSQ.derivedQuery)
+		if !ok {
+			return semantic.ScopeSource{}, false
+		}
+		aliasID := semantic.NewUnquoted(alias)
+		// Apply inner projection aliases if present.
+		cols := innerSrc.Table.Columns()
+		if innerSQ.projCols != nil {
+			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
+			for i, col := range innerSQ.projCols {
+				name := col
+				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
+					name = innerSQ.projAliases[i]
+				}
+				cols = append(cols, semantic.Column{
+					Id:       semantic.NewUnquoted(name),
+					Type:     "UNKNOWN",
+					Nullable: true,
+				})
+			}
+		}
+		virtualTable := &semantic.StaticTable{
+			TableName:    semantic.FromSegments([]string{alias}, false),
+			TableColumns: cols,
+		}
+		return semantic.ScopeSource{
+			Table:           virtualTable,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}, true
+	}
+	if len(innerSQ.joins) > 0 ||
 		len(innerSQ.aggCols) > 0 ||
 		innerSQ.countStar ||
 		innerSQ.tableName == "" {
@@ -418,9 +448,11 @@ func buildCTEColumnSource(
 		innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
 	}
+	hasComputedExpr := false
 	for _, e := range innerSQ.projExprs {
 		if e != nil {
-			return semantic.ScopeSource{}, false
+			hasComputedExpr = true
+			break
 		}
 	}
 
@@ -449,17 +481,34 @@ func buildCTEColumnSource(
 	} else {
 		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
 		for i, col := range innerSQ.projCols {
+			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
 			bareName := col
 			if dot := strings.LastIndex(col, "."); dot >= 0 {
 				bareName = col[dot+1:]
 			}
-			innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
-			if !found {
-				return semantic.ScopeSource{}, false
-			}
 			outName := bareName
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
+			}
+			if isComputed {
+				columns = append(columns, semantic.Column{
+					Id:       semantic.NewUnquoted(outName),
+					Type:     "UNKNOWN",
+					Nullable: true,
+				})
+				continue
+			}
+			innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+			if !found {
+				if hasComputedExpr {
+					columns = append(columns, semantic.Column{
+						Id:       semantic.NewUnquoted(outName),
+						Type:     "UNKNOWN",
+						Nullable: true,
+					})
+					continue
+				}
+				return semantic.ScopeSource{}, false
 			}
 			if !strings.EqualFold(outName, bareName) {
 				if aliasMap == nil {
@@ -486,6 +535,52 @@ func buildCTEColumnSource(
 		CorrelationName: aliasID.Name(),
 		ColumnAliasMap:  aliasMap,
 	}, true
+}
+
+// applyCTEColumnAliases renames the columns of a CTE ScopeSource
+// according to the explicit column alias list: WITH c1(x, y) AS (...).
+// Matches Java's QueryVisitor.visitNamedQuery column-alias handling.
+func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullIdListContext) semantic.ScopeSource {
+	list, ok := colAliases.(*antlrgen.FullIdListContext)
+	if !ok || list == nil {
+		return src
+	}
+	aliases := list.AllFullId()
+	if len(aliases) == 0 {
+		return src
+	}
+	tbl := src.Table
+	if tbl == nil {
+		return src
+	}
+	origCols := tbl.Columns()
+
+	newCols := make([]semantic.Column, len(origCols))
+	aliasMap := make(map[string]string)
+	for i, col := range origCols {
+		if i < len(aliases) {
+			newName := functions.FullIdToName(aliases[i])
+			aliasMap[strings.ToUpper(newName)] = strings.ToUpper(col.Id.Name())
+			newCols[i] = semantic.Column{
+				Id:       semantic.NewUnquoted(newName),
+				Type:     col.Type,
+				Nullable: col.Nullable,
+			}
+		} else {
+			newCols[i] = col
+		}
+	}
+
+	newTable := &semantic.StaticTable{
+		TableName:    tbl.Name(),
+		TableColumns: newCols,
+	}
+	return semantic.ScopeSource{
+		Table:           newTable,
+		Alias:           src.Alias,
+		CorrelationName: src.CorrelationName,
+		ColumnAliasMap:  aliasMap,
+	}
 }
 
 // buildWherePredicateForJoinsWithCTEScopes is like
@@ -616,15 +711,66 @@ func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.Recor
 }
 
 func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
+	// For derived tables, build the inner plan through the catalog-aware
+	// path so WHERE predicates get upgraded. Java's visitSubqueryTableItem
+	// recursively visits through the same typed visitor.
+	if sq.derivedQuery != nil && md != nil {
+		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
+			sq.derivedQuery.QueryExpressionBody(), md, cteScopes)
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		if innerOp != nil {
+			// Build the outer plan (Sort, Limit, Project) on top of
+			// the catalog-aware inner plan.
+			op := buildOuterPlanOnDerived(sq, innerOp)
+			if op == nil {
+				return nil, nil
+			}
+			return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, cteScopes)
+		}
+	}
+
+	// Pre-build derived table inner plans for JOIN sources through
+	// the catalog-aware path (same as the primary source above).
+	for i := range sq.joins {
+		j := &sq.joins[i]
+		if j.derivedQuery == nil {
+			continue
+		}
+		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
+			j.derivedQuery.QueryExpressionBody(), md, cteScopes)
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		if innerOp != nil {
+			j.catalogAwareInnerPlan = innerOp
+		}
+	}
+
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil || md == nil || sq == nil {
 		return op, nil
 	}
+	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, cteScopes)
+}
 
+func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's
 	// QueryVisitor holding a SemanticAnalyzer.
 	resolver := buildSelectScope(sq, md, cteScopes)
+
+	// Expand qualified stars (a.*) in the projection list. Replaces each
+	// qualified-star slot with explicit column names from the source.
+	// Matches Java's SemanticAnalyzer.expandStar.
+	if hasAnyQualifiedStar(sq) {
+		expandQualifiedStars(sq, md)
+		op = buildLogicalPlanForSelect(sq)
+		if op == nil {
+			return op, nil
+		}
+	}
 
 	// Resolve projection columns through the scope. Only plain column
 	// references (projExprs[i] == nil) are resolved — computed
@@ -633,6 +779,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// (aggCols / countStar) — their projection names are aggregate
 	// output labels, not column references.
 	if resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
+		proj := findProjection(op)
 		for i, col := range sq.projCols {
 			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				continue
@@ -640,12 +787,46 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 			if err := resolveColumnName(resolver, col); err != nil {
 				return nil, err
 			}
+			// For qualified column refs (d.id), resolve the Value so the
+			// Cascades translator gets a FieldValue with the bare column
+			// name, not the qualified "D.ID" text.
+			if strings.Contains(col, ".") && proj != nil {
+				var qualifier semantic.Identifier
+				id := semantic.NewUnquoted(col)
+				if dot := strings.IndexByte(col, '.'); dot >= 0 {
+					qualifier = semantic.NewUnquoted(col[:dot])
+					id = semantic.NewUnquoted(col[dot+1:])
+				}
+				if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+					if proj.ProjectedValues == nil {
+						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+					}
+					if i < len(proj.ProjectedValues) {
+						proj.ProjectedValues[i] = v
+					}
+				}
+			}
 		}
 	}
 
 	// ORDER BY: Java's ExpressionVisitor.visitOrderByExpression walks each
 	// ORDER BY expression through the expression visitor. Do the same —
 	// the resolver detects ambiguous/undefined column references.
+	// Build a set of projection aliases for ORDER BY resolution.
+	projAliasSet := make(map[string]bool)
+	if sq.projAliases != nil {
+		for _, a := range sq.projAliases {
+			if a != "" {
+				projAliasSet[strings.ToUpper(a)] = true
+			}
+		}
+	}
+	for _, ac := range sq.aggCols {
+		if ac.outName != "" {
+			projAliasSet[strings.ToUpper(ac.outName)] = true
+		}
+	}
+
 	if resolver != nil {
 		for _, ob := range sq.orderBy {
 			if ob.rawExpr != nil {
@@ -657,6 +838,10 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
+						// Check if the ORDER BY name is a SELECT alias.
+						if projAliasSet[strings.ToUpper(ob.colName)] {
+							continue
+						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q does not exist", ob.colName)
 					}
@@ -670,6 +855,28 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		for _, gb := range sq.groupBy {
 			if err := resolveColumnName(resolver, gb); err != nil {
 				return nil, err
+			}
+		}
+	}
+
+	// GROUP BY validation is deferred — the parser's aggCols machinery
+	// already routes non-grouped columns to runtime "column not in row"
+	// errors. Proper 42803 validation at compile time requires
+	// distinguishing grouped vs non-grouped columns in the aggCols
+	// structure, which interacts with countStar and outExpr in complex
+	// ways. TODO: port Java's SemanticAnalyzer.isComposableFrom.
+
+	// Detect overflow numeric literals in projection expressions.
+	if resolver != nil && len(sq.projExprs) > 0 {
+		for _, e := range sq.projExprs {
+			if e == nil {
+				continue
+			}
+			if _, walkErr := resolver.WalkExpressionForProjection(e); walkErr != nil {
+				var overflow *expr.NumericOverflowLiteralError
+				if errors.As(walkErr, &overflow) {
+					return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
+				}
 			}
 		}
 	}
@@ -701,6 +908,8 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		upgradeHavingPredicate(op, sq, md, cteScopes)
 	}
 
+	upgradeSortKeyValues(op, sq, md, cteScopes)
+
 	if sq.whereExpr == nil {
 		return op, nil
 	}
@@ -715,6 +924,11 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 			if errors.As(walkErr, &ambigErr) {
 				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 					"column reference is ambiguous")
+			}
+			var inListNull *expr.InListNullError
+			if errors.As(walkErr, &inListNull) {
+				return nil, api.NewError(api.ErrCodeCannotConvertType,
+					"IN-list contains NULL literal")
 			}
 		}
 	}
@@ -801,6 +1015,14 @@ func buildSelectScope(
 		return nil
 	}
 	for _, j := range sq.joins {
+		if j.derivedQuery != nil {
+			if src, ok := buildDerivedTableSource(md, j.alias, j.derivedQuery); ok {
+				if scope.AddSource(src) != nil {
+					return nil
+				}
+				continue
+			}
+		}
 		if !addSource(j.tableName, j.alias) {
 			return nil
 		}
@@ -813,10 +1035,16 @@ func buildSelectScope(
 // columns. Returns nil for qualified names (contain ".") or when
 // resolver is nil.
 func resolveColumnName(resolver *expr.Resolver, col string) error {
-	if resolver == nil || col == "" || strings.Contains(col, ".") {
+	if resolver == nil || col == "" {
 		return nil
 	}
-	_, err := resolver.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))
+	var qualifier semantic.Identifier
+	id := semantic.NewUnquoted(col)
+	if dot := strings.IndexByte(col, '.'); dot >= 0 {
+		qualifier = semantic.NewUnquoted(col[:dot])
+		id = semantic.NewUnquoted(col[dot+1:])
+	}
+	_, err := resolver.ResolveIdentifier(qualifier, id)
 	if err != nil {
 		var ambigErr *semantic.AmbiguousColumnError
 		if errors.As(err, &ambigErr) {
@@ -825,6 +1053,11 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		}
 		var notFoundErr *semantic.ColumnNotFoundError
 		if errors.As(err, &notFoundErr) {
+			return api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist", col)
+		}
+		var srcNotFound *semantic.SourceNotFoundError
+		if errors.As(err, &srcNotFound) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q does not exist", col)
 		}
@@ -957,7 +1190,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		if e == nil {
 			continue
 		}
-		v, err := resolver.WalkExpression(e)
+		v, err := resolver.WalkExpressionForProjection(e)
 		if err != nil {
 			continue
 		}
@@ -1055,8 +1288,8 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
 	switch p := pred.(type) {
 	case *predicates.ComparisonPredicate:
-		lhs := rewriteAggregateValue(p.Operand)
-		rhs := rewriteAggregateValue(p.Comparison.Operand)
+		lhs := rewriteAggregateValuesInTree(p.Operand)
+		rhs := rewriteAggregateValuesInTree(p.Comparison.Operand)
 		return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
 			Type:    p.Comparison.Type,
 			Operand: rhs,
@@ -1114,6 +1347,11 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 			impl[i] = rewriteAggregateValuesInTree(c)
 		}
 		return values.NewConditionSelectorValue(impl)
+	}
+	if ph, ok := v.(expr.PredicateValueHolder); ok {
+		rewritten := rewriteAggregateRefsInPredicate(ph.GetPredicate())
+		ph.SetPredicate(rewritten)
+		return ph
 	}
 	return v
 }
@@ -1342,8 +1580,17 @@ func buildLogicalPlanForQueryWithCatalog(
 		cteScopes = make(map[string]semantic.ScopeSource)
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
+			upper := strings.ToUpper(name)
+			if _, exists := cteScopes[upper]; exists {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
 			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
-				cteScopes[strings.ToUpper(name)] = src
+				// Apply CTE column aliases: WITH c1(x, y) AS (...)
+				if colAliases := nq.GetColumnAliases(); colAliases != nil {
+					src = applyCTEColumnAliases(src, colAliases)
+				}
+				cteScopes[upper] = src
 			}
 		}
 	}
@@ -1478,7 +1725,315 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
+	if err := validateUnionColumnCounts(inputs); err != nil {
+		return nil, err
+	}
 	return logical.NewUnion(inputs, distinct), nil
+}
+
+// upgradeSortKeyValues walks the logical plan's LogicalSort and resolves
+// sort key expressions through the expression walker. When an ORDER BY
+// key is an aggregate expression (SUM(v)*2, COALESCE(SUM(v),0)), the
+// walker produces a Value tree with AggregateValues rewritten to
+// FieldValues referencing the aggregate output.
+func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+	sort := findSort(op)
+	if sort == nil || len(sort.Keys) == 0 {
+		return
+	}
+
+	// Build alias→column mapping from projections.
+	aliasToCol := make(map[string]string)
+	aliasToIdx := make(map[string]int)
+	if sq.projAliases != nil && sq.projCols != nil {
+		for i, a := range sq.projAliases {
+			if a != "" && i < len(sq.projCols) {
+				aliasToCol[strings.ToUpper(a)] = sq.projCols[i]
+				aliasToIdx[strings.ToUpper(a)] = i
+			}
+		}
+	}
+	for _, ac := range sq.aggCols {
+		if ac.outName != "" && ac.groupCol != "" {
+			aliasToCol[strings.ToUpper(ac.outName)] = ac.groupCol
+		}
+	}
+
+	// Resolve ORDER BY alias → underlying column or Value.
+	// SQL standard (and Java): ORDER BY resolves to SELECT-list output
+	// column names first, then table columns. Aliases take precedence.
+	proj := findProjection(op)
+	for i := range sort.Keys {
+		upper := strings.ToUpper(sort.Keys[i].Expr)
+		if real, ok := aliasToCol[upper]; ok {
+			sort.Keys[i].Expr = real
+		}
+		if idx, ok := aliasToIdx[upper]; ok && proj != nil {
+			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
+				sort.Keys[i].Value = proj.ProjectedValues[idx]
+			}
+		}
+	}
+
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		return
+	}
+	for i := range sort.Keys {
+		ob := findOrderByForKey(sq, sort.Keys[i].Expr)
+		if ob == nil || ob.rawExpr == nil || ob.colName != "" {
+			continue
+		}
+		v, err := resolver.WalkExpression(ob.rawExpr)
+		if err != nil {
+			continue
+		}
+		v = rewriteAggregateValuesInTree(v)
+		sort.Keys[i].Value = v
+	}
+}
+
+func findSort(op logical.LogicalOperator) *logical.LogicalSort {
+	if op == nil {
+		return nil
+	}
+	if s, ok := op.(*logical.LogicalSort); ok {
+		return s
+	}
+	for _, ch := range op.Children() {
+		if s := findSort(ch); s != nil {
+			return s
+		}
+	}
+	return nil
+}
+
+func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
+	if sq == nil {
+		return nil
+	}
+	for i := range sq.orderBy {
+		ob := &sq.orderBy[i]
+		name := ob.colName
+		if name == "" && ob.rawExpr != nil {
+			name = ob.rawExpr.GetText()
+		}
+		if strings.EqualFold(name, keyExpr) {
+			return ob
+		}
+	}
+	return nil
+}
+
+// buildOuterPlanOnDerived builds the Sort/Limit/Project/Distinct shell
+// from a selectQuery on top of an already-built inner plan (derived table).
+// Mirrors buildLogicalPlanForSelect's post-FROM logic but skips the
+// FROM-source and aggregate sections (those are in the inner plan).
+func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) logical.LogicalOperator {
+	op := innerOp
+
+	if sq.whereExpr != nil {
+		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
+	}
+
+	if len(sq.orderBy) > 0 {
+		keys := make([]logical.SortKey, 0, len(sq.orderBy))
+		for _, ob := range sq.orderBy {
+			dir := logical.SortAsc
+			if !ob.ascending {
+				dir = logical.SortDesc
+			}
+			e := ob.colName
+			if e == "" && ob.rawExpr != nil {
+				e = ob.rawExpr.GetText()
+			}
+			nullsFirst := ob.ascending
+			if ob.nullsFirst != nil {
+				nullsFirst = *ob.nullsFirst
+			}
+			keys = append(keys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
+		}
+		op = logical.NewSort(op, keys)
+	}
+
+	if sq.limit >= 0 || sq.offset > 0 {
+		op = logical.NewLimit(op, sq.limit, sq.offset)
+	}
+
+	if len(sq.projCols) > 0 {
+		projs := make([]string, len(sq.projCols))
+		aliases := make([]string, len(sq.projCols))
+		computed := make([]bool, len(sq.projCols))
+		for i, col := range sq.projCols {
+			projs[i] = col
+			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
+				computed[i] = true
+			}
+			if sq.projAliases != nil && i < len(sq.projAliases) {
+				aliases[i] = sq.projAliases[i]
+			}
+		}
+		proj := logical.NewProject(op, projs, aliases)
+		proj.IsComputed = computed
+		op = proj
+	}
+
+	if sq.distinct {
+		op = logical.NewDistinct(op)
+	}
+
+	return op
+}
+
+func hasAnyQualifiedStar(sq *selectQuery) bool {
+	if sq == nil || sq.projStarQualifiers == nil {
+		return false
+	}
+	for _, q := range sq.projStarQualifiers {
+		if q != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// expandQualifiedStars replaces qualified-star projection slots (a.*)
+// with explicit column names from the matching source table. Modifies
+// sq.projCols, sq.projAliases, sq.projExprs, sq.projStarQualifiers in place.
+func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData) {
+	if sq == nil || sq.projCols == nil || sq.projStarQualifiers == nil {
+		return
+	}
+	hasQualifiedStar := false
+	for _, q := range sq.projStarQualifiers {
+		if q != "" {
+			hasQualifiedStar = true
+			break
+		}
+	}
+	if !hasQualifiedStar {
+		return
+	}
+
+	// Build a map of source alias → table columns.
+	sourceColumns := make(map[string][]string)
+	addSource := func(tableName, alias string) {
+		rt := md.GetRecordType(tableName)
+		if rt == nil || rt.Descriptor == nil {
+			return
+		}
+		key := strings.ToUpper(alias)
+		if key == "" {
+			key = strings.ToUpper(tableName)
+		}
+		fields := rt.Descriptor.Fields()
+		cols := make([]string, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			cols[i] = strings.ToUpper(string(fields.Get(i).Name()))
+		}
+		sourceColumns[key] = cols
+	}
+	if sq.tableName != "" {
+		alias := sq.tableAlias
+		if alias == "" {
+			alias = sq.tableName
+		}
+		addSource(sq.tableName, alias)
+	}
+	for _, j := range sq.joins {
+		alias := j.alias
+		if alias == "" {
+			alias = j.tableName
+		}
+		addSource(j.tableName, alias)
+	}
+
+	var newCols, newAliases, newQuals []string
+	var newExprs []antlrgen.IExpressionContext
+	for i, col := range sq.projCols {
+		qual := ""
+		if i < len(sq.projStarQualifiers) {
+			qual = sq.projStarQualifiers[i]
+		}
+		if qual == "" {
+			newCols = append(newCols, col)
+			alias := ""
+			if i < len(sq.projAliases) {
+				alias = sq.projAliases[i]
+			}
+			newAliases = append(newAliases, alias)
+			var expr antlrgen.IExpressionContext
+			if i < len(sq.projExprs) {
+				expr = sq.projExprs[i]
+			}
+			newExprs = append(newExprs, expr)
+			newQuals = append(newQuals, "")
+			continue
+		}
+		// Qualified star — expand to individual columns.
+		cols, ok := sourceColumns[strings.ToUpper(qual)]
+		if !ok {
+			newCols = append(newCols, col)
+			newAliases = append(newAliases, "")
+			newExprs = append(newExprs, nil)
+			newQuals = append(newQuals, qual)
+			continue
+		}
+		for _, c := range cols {
+			newCols = append(newCols, qual+"."+c)
+			newAliases = append(newAliases, "")
+			newExprs = append(newExprs, nil)
+			newQuals = append(newQuals, "")
+		}
+	}
+	sq.projCols = newCols
+	sq.projAliases = newAliases
+	sq.projExprs = newExprs
+	sq.projStarQualifiers = newQuals
+}
+
+// validateUnionColumnCounts checks that all UNION branches project the
+// same number of columns. Matches Java's SemanticAnalyzer.validateUnionTypes
+// column-count check (ErrorCode.UNION_INCORRECT_COLUMN_COUNT / 42F64).
+func validateUnionColumnCounts(inputs []logical.LogicalOperator) error {
+	if len(inputs) < 2 {
+		return nil
+	}
+	firstCount := countProjectionColumns(inputs[0])
+	if firstCount < 0 {
+		return nil
+	}
+	for i := 1; i < len(inputs); i++ {
+		c := countProjectionColumns(inputs[i])
+		if c < 0 {
+			continue
+		}
+		if c != firstCount {
+			return api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+				"UNION legs do not have the same number of columns")
+		}
+	}
+	return nil
+}
+
+func countProjectionColumns(op logical.LogicalOperator) int {
+	if op == nil {
+		return -1
+	}
+	if proj, ok := op.(*logical.LogicalProject); ok {
+		return len(proj.Projections)
+	}
+	for _, ch := range op.Children() {
+		if n := countProjectionColumns(ch); n >= 0 {
+			return n
+		}
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		_ = scan
+		return -1
+	}
+	return -1
 }
 
 // buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
@@ -1508,6 +2063,9 @@ func buildLogicalPlanForUnionWithCatalog(
 	inputs := []logical.LogicalOperator{left, right}
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
+	}
+	if err := validateUnionColumnCounts(inputs); err != nil {
+		return nil, err
 	}
 	return logical.NewUnion(inputs, distinct), nil
 }

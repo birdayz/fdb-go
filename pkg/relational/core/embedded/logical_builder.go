@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -197,7 +196,24 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// Produces `InnerJoin(on ...) → LeftScan → RightScan` nested as
 	// the logical operator tree expects.
 	for _, j := range sq.joins {
-		right := logical.NewScan(j.tableName, j.alias)
+		var right logical.LogicalOperator
+		if j.catalogAwareInnerPlan != nil {
+			right = j.catalogAwareInnerPlan
+		} else if j.derivedQuery != nil {
+			body := j.derivedQuery.QueryExpressionBody()
+			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
+				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
+					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
+						right = buildLogicalPlanForSelect(inner)
+					}
+				}
+			}
+			if right == nil {
+				return nil
+			}
+		} else {
+			right = logical.NewScan(j.tableName, j.alias)
+		}
 		var kind logical.JoinKind
 		switch j.joinType {
 		case "LEFT":
@@ -233,9 +249,6 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			aggAliases = []string{sq.countStarAlias}
 		} else {
 			for _, ac := range sq.aggCols {
-				if ac.sortOnly {
-					continue
-				}
 				if ac.aggFunc != "" {
 					arg := ac.aggArg
 					if arg == "" && ac.aggExpr != nil {
@@ -259,18 +272,57 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		}
 		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
 
-		// Post-aggregation projection for outExpr entries (e.g. SUM(qty)/COUNT(*)).
-		var outExprsProj []string
-		var outExprsAntlr []antlrgen.IExpressionContext
+		// Post-aggregation projection for mixed SELECT lists that contain
+		// both aggregates and computed expressions / constants. When outExpr
+		// entries exist, the projection must list ALL visible columns in
+		// SELECT-list order — aggregate outputs as column references,
+		// computed expressions as expressions to evaluate. Without this,
+		// the outExpr-only projection would drop the aggregate columns.
+		hasOutExpr := false
 		for _, ac := range sq.aggCols {
-			if ac.outExpr != nil && ac.aggFunc == "" {
-				outExprsProj = append(outExprsProj, strings.TrimSpace(ac.outExpr.GetText()))
-				outExprsAntlr = append(outExprsAntlr, ac.outExpr)
+			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly && !ac.hidden {
+				hasOutExpr = true
+				break
 			}
 		}
-		if len(outExprsProj) > 0 {
-			op = logical.NewProject(op, outExprsProj, nil)
-			sq.postAggExprs = outExprsAntlr
+		if hasOutExpr {
+			var allProj []string
+			var allAntlr []antlrgen.IExpressionContext
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly || ac.hidden {
+					continue
+				}
+				if ac.outExpr != nil && ac.aggFunc == "" {
+					allProj = append(allProj, strings.TrimSpace(ac.outExpr.GetText()))
+					allAntlr = append(allAntlr, ac.outExpr)
+				} else if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					allProj = append(allProj, ac.aggFunc+"("+arg+")")
+					allAntlr = append(allAntlr, nil)
+				} else if ac.groupCol != "" {
+					allProj = append(allProj, ac.groupCol)
+					allAntlr = append(allAntlr, nil)
+				}
+			}
+			if len(allProj) > 0 {
+				proj := logical.NewProject(op, allProj, nil)
+				// Mark outExpr slots as computed (need Value resolution).
+				// Aggregate output and groupCol slots are column references
+				// to the aggregate's output — NOT computed.
+				computed := make([]bool, len(allProj))
+				for i, e := range allAntlr {
+					computed[i] = e != nil
+				}
+				proj.IsComputed = computed
+				op = proj
+				sq.postAggExprs = allAntlr
+			}
 		}
 	}
 
@@ -306,27 +358,19 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if len(sq.projCols) > 0 {
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
-		var projVals []values.Value
+		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
 			projs[i] = col
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				// Computed projection — render the expression text.
 				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
+				computed[i] = true
 			}
 			if sq.projAliases != nil && i < len(sq.projAliases) {
 				aliases[i] = sq.projAliases[i]
 			}
-			if isComputedExpression(projs[i]) && isAggregateOutputName(projs[i], sq) {
-				if projVals == nil {
-					projVals = make([]values.Value, len(sq.projCols))
-				}
-				projVals[i] = &values.FieldValue{Field: strings.ToUpper(projs[i]), Typ: values.UnknownType}
-			}
 		}
 		proj := logical.NewProject(op, projs, aliases)
-		if projVals != nil {
-			proj.ProjectedValues = projVals
-		}
+		proj.IsComputed = computed
 		op = proj
 	}
 
@@ -463,24 +507,4 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)
-}
-
-func isComputedExpression(col string) bool {
-	for _, c := range col {
-		switch c {
-		case '(', '+', '-', '*', '/', '%', '<', '>', '&', '|', '^':
-			return true
-		}
-	}
-	return false
-}
-
-func isAggregateOutputName(name string, sq *selectQuery) bool {
-	upper := strings.ToUpper(name)
-	for _, ac := range sq.aggCols {
-		if strings.ToUpper(ac.outName) == upper {
-			return true
-		}
-	}
-	return false
 }

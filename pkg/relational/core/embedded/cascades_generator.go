@@ -100,6 +100,10 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, err
 	}
 
+	if msg := findDistinctAggregate(logicalOp); msg != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
+	}
+
 	ref := query.TranslateToCascades(logicalOp)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
@@ -257,6 +261,9 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return nil, nil
 	})
 	if txErr != nil {
+		if strings.Contains(txErr.Error(), "cannot aggregate non-numeric") {
+			return query.Result{}, api.NewError(api.ErrCodeInvalidParameter, txErr.Error())
+		}
 		return query.Result{}, txErr
 	}
 
@@ -683,6 +690,18 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			if errors.As(err, &divZero) {
 				return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
 			}
+			var overflow *values.ArithmeticOverflowError
+			if errors.As(err, &overflow) {
+				return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
+			}
+			var scalarMismatch *values.ScalarTypeMismatchError
+			if errors.As(err, &scalarMismatch) {
+				return api.NewError(api.ErrCodeCannotConvertType, scalarMismatch.Error())
+			}
+			var castErr *values.InvalidCastError
+			if errors.As(err, &castErr) {
+				return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
+			}
 			var typeMismatch *predicates.TypeMismatchError
 			if errors.As(err, &typeMismatch) {
 				return api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
@@ -699,6 +718,26 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 		dest[i] = v
 	}
 	return nil
+}
+
+func findDistinctAggregate(op logical.LogicalOperator) string {
+	if op == nil {
+		return ""
+	}
+	if agg, ok := op.(*logical.LogicalAggregate); ok {
+		for _, a := range agg.Aggregates {
+			upper := strings.ToUpper(a)
+			if strings.Contains(upper, "DISTINCT ") {
+				return "DISTINCT aggregates are not supported"
+			}
+		}
+	}
+	for _, ch := range op.Children() {
+		if msg := findDistinctAggregate(ch); msg != "" {
+			return msg
+		}
+	}
+	return ""
 }
 
 func validateTablesAndColumns(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
@@ -718,19 +757,22 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 			}
 		}
 	}
-	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) {
+	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) && !hasAggregate(op) {
 		scan := findLogicalScan(op)
 		if scan != nil && !cteNames[strings.ToUpper(scan.Table)] {
 			rt := md.GetRecordType(scan.Table)
 			if rt != nil && rt.Descriptor != nil {
 				for i, col := range proj.Projections {
-					if isComputedExpression(col) {
+					if i < len(proj.IsComputed) && proj.IsComputed[i] {
 						continue
 					}
 					if i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
 						continue
 					}
 					upper := strings.ToUpper(col)
+					if dot := strings.IndexByte(upper, '.'); dot >= 0 {
+						upper = upper[dot+1:]
+					}
 					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
 						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
 					}
@@ -762,6 +804,21 @@ func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
 	for _, ch := range op.Children() {
 		collectCTENamesInner(ch, names)
 	}
+}
+
+func hasAggregate(op logical.LogicalOperator) bool {
+	if op == nil {
+		return false
+	}
+	if _, ok := op.(*logical.LogicalAggregate); ok {
+		return true
+	}
+	for _, ch := range op.Children() {
+		if hasAggregate(ch) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasJoin(op logical.LogicalOperator) bool {
@@ -833,6 +890,13 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 				}
 			}
 		}
+	case *antlrgen.BitExpressionAtomContext:
+		if bo := n.BitOperator(); bo != nil {
+			opText := bo.GetText()
+			if opText == "<<" || opText == ">>" {
+				return opText
+			}
+		}
 	}
 	for i := 0; i < ctx.GetChildCount(); i++ {
 		if fn := findUnsupportedFunctionInParseTree(ctx.GetChild(i)); fn != "" {
@@ -851,6 +915,23 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 	case *antlrgen.UserDefinedScalarFunctionCallContext:
 		if f.UserDefinedScalarFunctionName() != nil {
 			return strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
+		}
+	case *antlrgen.NonAggregateFunctionCallContext:
+		if wf := f.NonAggregateWindowedFunction(); wf != nil {
+			if wfc, ok := wf.(*antlrgen.NonAggregateWindowedFunctionContext); ok {
+				switch {
+				case wfc.ROW_NUMBER() != nil:
+					return "ROW_NUMBER"
+				case wfc.RANK() != nil:
+					return "RANK"
+				case wfc.DENSE_RANK() != nil:
+					return "DENSE_RANK"
+				case wfc.PERCENT_RANK() != nil:
+					return "PERCENT_RANK"
+				default:
+					return "WINDOW_FUNCTION"
+				}
+			}
 		}
 	case *antlrgen.SpecificFunctionCallContext:
 		if f.SpecificFunction() != nil {

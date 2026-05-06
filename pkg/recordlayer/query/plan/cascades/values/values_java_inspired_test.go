@@ -72,18 +72,10 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	}
 }
 
-// TestArithmeticValue_OverflowReturnsNil pins the overflow-decline
-// contract added alongside the embedded.functions.ApplyMathOp parity:
-// MAX+1, MIN-1, MIN/-1, MIN*-1, MAX*MAX all decline with nil so the
-// runtime executor surfaces the 22003 NUMERIC_VALUE_OUT_OF_RANGE
-// rather than the fold silently producing a wrapped value.
-//
-// JAVA-PARITY: Java's ArithmeticValue uses Math.addExact / subtractExact
-// / multiplyExact which throw ArithmeticException on overflow.
-// Cascades' fold-time evaluator returns nil (UNKNOWN) instead so the
-// rule-driven simplifier doesn't mid-pipeline produce a Constant
-// with a value the executor would reject.
-func TestArithmeticValue_OverflowReturnsNil(t *testing.T) {
+// TestArithmeticValue_OverflowPanics pins that integer overflow panics
+// with ArithmeticOverflowError (matching Java's Math.addExact throwing
+// ArithmeticException). The executor catches this and reports 22003.
+func TestArithmeticValue_OverflowPanics(t *testing.T) {
 	t.Parallel()
 	a := &FieldValue{Field: "a", Typ: TypeInt}
 	b := &FieldValue{Field: "b", Typ: TypeInt}
@@ -106,10 +98,16 @@ func TestArithmeticValue_OverflowReturnsNil(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
-			if got != nil {
-				t.Fatalf("op %v %d %d should overflow → nil, got %v", tc.op, tc.l, tc.r, got)
-			}
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("op %v %d %d should panic with ArithmeticOverflowError", tc.op, tc.l, tc.r)
+				}
+				if _, ok := r.(*ArithmeticOverflowError); !ok {
+					t.Fatalf("expected ArithmeticOverflowError, got %T: %v", r, r)
+				}
+			}()
+			av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
 		})
 	}
 }

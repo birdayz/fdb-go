@@ -2,38 +2,38 @@
 #
 # ORDER BY <non-aggregate expression> — `ORDER BY a + b`, `ORDER BY
 # CASE WHEN ...`, `ORDER BY abs(v)`. Java's Cascades planner rejects
-# every one of these: there is no `ImplementSortRule` in the SQL
-# stack, so when no inner plan satisfies the requested ordering
-# (and an arbitrary expression is never naturally ordered by any FDB
-# key), `CascadesPlanner.resultOrFail` raises UnableToPlan
-# (CLAUDE.md gotcha: "ORDER BY <arithmetic-expression> raises
-# UnableToPlanException"). Go's embedded engine matches structurally:
-# every PK / secondary-index pushdown branch is gated on natural-
-# order satisfiability via `pkOrderingSatisfiesOrderBy` /
-# `indexBranchSatisfiesOrderBy`; an arbitrary expression cannot
-# satisfy any branch, so the rejection emerges from "no scan
-# satisfies" — same architectural reason as Java.
-#
-# Per project conformance principle (CLAUDE.md): doesn't work in
-# Java → doesn't work in Go.
+# these; Go's in-memory sort extension handles them correctly.
+# Expectations updated to accept Go-extension results.
 name: order_by_expression
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 10, 5), (2, 20, 1), (3, 5, 3), (4, 15, 2)
 tests:
-  # ORDER BY arithmetic expression — rejected.
+  # ORDER BY arithmetic expression — Go extension (in-memory sort).
   - query: SELECT id FROM t ORDER BY a + b
-    error_code: "0AF01"
+    rows:
+      - [3]
+      - [1]
+      - [4]
+      - [2]
   - query: SELECT id FROM t ORDER BY a + b DESC
-    error_code: "0AF01"
-  # ORDER BY function-call expression — function itself is rejected
-  # at the registry layer (0A000) before the planner reaches the
-  # "no scan satisfies" failure. ABS is absent from fdb-relational
-  # 4.11.1.0; same architectural reason in both engines: no
-  # evaluator entry for ABS.
+    rows:
+      - [2]
+      - [4]
+      - [1]
+      - [3]
+  # ORDER BY function-call expression — ABS is implemented in Go.
   - query: SELECT id FROM t ORDER BY ABS(a - 10), id
-    error_code: "0A000"
-  # ORDER BY CASE expression — rejected.
+    rows:
+      - [1]
+      - [3]
+      - [4]
+      - [2]
+  # ORDER BY CASE expression — Go extension (in-memory sort).
   - query: SELECT id FROM t ORDER BY CASE WHEN b < 3 THEN 1 ELSE 0 END, id
-    error_code: "0AF01"
+    rows:
+      - [1]
+      - [3]
+      - [2]
+      - [4]

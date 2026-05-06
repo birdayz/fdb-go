@@ -95,6 +95,7 @@ type LogicalProject struct {
 	Projections     []string
 	Aliases         []string       // parallel to Projections; "" means no alias
 	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
+	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
 }
 
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {
@@ -134,6 +135,7 @@ type SortKey struct {
 	Expr       string // canonical text
 	Dir        SortDir
 	NullsFirst bool
+	Value      values.Value // resolved Value expression (nil = use text as FieldValue)
 }
 
 // LogicalSort sorts its child rows by the given keys.

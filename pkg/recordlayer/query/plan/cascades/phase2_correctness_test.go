@@ -8,9 +8,8 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TestInExplode_SingleElement verifies that IN('x') produces a 1-leg
-// union (one equality filter), which downstream can be matched by the
-// index scan rule.
+// TestInExplode_SingleElement verifies that IN('x') produces a simple
+// equality filter (not a union).
 func TestInExplode_SingleElement(t *testing.T) {
 	t.Parallel()
 
@@ -35,12 +34,17 @@ func TestInExplode_SingleElement(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	union, ok := results[0].(*expressions.LogicalUnionExpression)
+	f, ok := results[0].(*expressions.LogicalFilterExpression)
 	if !ok {
-		t.Fatalf("expected *LogicalUnionExpression, got %T", results[0])
+		t.Fatalf("expected *LogicalFilterExpression, got %T", results[0])
 	}
-	if len(union.GetQuantifiers()) != 1 {
-		t.Fatalf("expected 1 union leg for single-element IN, got %d", len(union.GetQuantifiers()))
+	preds := f.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(preds))
+	}
+	cp := preds[0].(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonEquals {
+		t.Fatalf("expected ComparisonEquals, got %v", cp.Comparison.Type)
 	}
 }
 

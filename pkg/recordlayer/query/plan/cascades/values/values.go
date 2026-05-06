@@ -278,10 +278,11 @@ func EvaluateConstant(v Value) (out any, ok bool) {
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			if _, isDivZero := r.(*ArithmeticDivisionByZeroError); isDivZero {
+			switch r.(type) {
+			case *ArithmeticDivisionByZeroError, *ArithmeticOverflowError, *ScalarTypeMismatchError, *InvalidCastError:
 				out = nil
 				ok = true
-			} else {
+			default:
 				out = nil
 				ok = false
 			}
@@ -1101,7 +1102,9 @@ func evalScalarFunction(name string, args []any) any {
 			}
 			cmp, ok := compareScalar(best, a)
 			if !ok {
-				return nil // cross-type — runtime reports the error
+				panic(&ScalarTypeMismatchError{
+					Message: fmt.Sprintf("incompatible types for %s: %T vs %T", name, best, a),
+				})
 			}
 			if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
 				best = a
@@ -1418,35 +1421,29 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	}
 	switch a.Op {
 	case OpAdd:
-		// Overflow-checked: matches Java ArithmeticValue.AddFn /
-		// embedded.functions.AddInt64Checked. Cascades returns nil
-		// (UNKNOWN) on overflow so the runtime executor surfaces
-		// the 22003 NUMERIC_VALUE_OUT_OF_RANGE error rather than the
-		// fold silently producing a wrapped value.
 		out, ok := addInt64Checked(li, ri)
 		if !ok {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return out
 	case OpSub:
 		out, ok := subInt64Checked(li, ri)
 		if !ok {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return out
 	case OpMul:
 		out, ok := mulInt64Checked(li, ri)
 		if !ok {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return out
 	case OpDiv:
 		if ri == 0 {
 			panic(&ArithmeticDivisionByZeroError{})
 		}
-		// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 		if li == math.MinInt64 && ri == -1 {
-			return nil
+			panic(&ArithmeticOverflowError{})
 		}
 		return li / ri
 	case OpMod:
@@ -1504,6 +1501,37 @@ type ArithmeticDivisionByZeroError struct{}
 
 func (*ArithmeticDivisionByZeroError) Error() string {
 	return "division by zero"
+}
+
+// ArithmeticOverflowError is panicked by ArithmeticValue.Evaluate
+// when integer arithmetic overflows. Callers (the executor) recover
+// this and convert to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+type ArithmeticOverflowError struct{}
+
+func (*ArithmeticOverflowError) Error() string {
+	return "integer overflow"
+}
+
+// ScalarTypeMismatchError is panicked by scalar functions (GREATEST,
+// LEAST) when arguments have incompatible types. The executor catches
+// this and converts to SQLSTATE 22000 DATA_EXCEPTION.
+type ScalarTypeMismatchError struct {
+	Message string
+}
+
+func (e *ScalarTypeMismatchError) Error() string {
+	return e.Message
+}
+
+// InvalidCastError is panicked by CastValue.Evaluate when a cast
+// is out of range or structurally invalid (NaN→INT, overflow, etc.).
+// The executor catches this and converts to SQLSTATE 22F3H INVALID_CAST.
+type InvalidCastError struct {
+	Message string
+}
+
+func (e *InvalidCastError) Error() string {
+	return e.Message
 }
 
 // addInt64Checked / subInt64Checked / mulInt64Checked mirror
@@ -1626,7 +1654,35 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		return nil
 	}
 	switch c.Target.Code() {
-	case TypeCodeInt, TypeCodeLong:
+	case TypeCodeInt:
+		switch val := v.(type) {
+		case int64:
+			if val < math.MinInt32 || val > math.MaxInt32 {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Value out of range for INT: %d", val)})
+			}
+			return val
+		case bool:
+			if val {
+				return int64(1)
+			}
+			return int64(0)
+		case float64:
+			if val != val || math.IsInf(val, 0) {
+				panic(&InvalidCastError{Message: "Cannot cast NaN or Infinite to INT"})
+			}
+			rounded := math.Floor(val + 0.5)
+			if rounded > math.MaxInt32 || rounded < math.MinInt32 {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to INT: out of range", val)})
+			}
+			return int64(int32(rounded))
+		case string:
+			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 32)
+			if err != nil {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: %s", val, err)})
+			}
+			return n
+		}
+	case TypeCodeLong:
 		switch val := v.(type) {
 		case int64:
 			return val
@@ -1636,17 +1692,18 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			}
 			return int64(0)
 		case float64:
-			// Java CastValue.DOUBLE_TO_LONG uses Math.round: floor(x+0.5).
-			// Differs from Go's math.Round (ties away from zero).
-			if val != val || val > 1<<62 || val < -(1<<62) {
-				return nil
+			if val != val || math.IsInf(val, 0) {
+				panic(&InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"})
 			}
-			return int64(math.Floor(val + 0.5))
+			rounded := math.Floor(val + 0.5)
+			if rounded > float64(math.MaxInt64) || rounded < float64(math.MinInt64) {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)})
+			}
+			return int64(rounded)
 		case string:
-			// Java STRING_TO_LONG: trim whitespace before parse.
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
 			if err != nil {
-				return nil
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: %s", val, err)})
 			}
 			return n
 		}
@@ -1665,7 +1722,7 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			case "false", "0":
 				return false
 			}
-			return nil
+			panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to BOOLEAN", val)})
 		}
 	case TypeCodeString:
 		if s, ok := v.(string); ok {
@@ -1705,11 +1762,13 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			return float64(val)
 		case int64:
 			return float64(val)
+		case string:
+			f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+			if err != nil {
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DOUBLE: %s", val, err)})
+			}
+			return f
 		case bool:
-			// Java doesn't define CAST(BOOLEAN AS FLOAT) directly —
-			// but the runtime path goes via CAST(b AS INT) AS FLOAT,
-			// folding to 1.0/0.0. Mirror that one-step here so a
-			// fold-time literal `CAST(TRUE AS FLOAT)` resolves cleanly.
 			if val {
 				return float64(1)
 			}
