@@ -196,7 +196,22 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// Produces `InnerJoin(on ...) → LeftScan → RightScan` nested as
 	// the logical operator tree expects.
 	for _, j := range sq.joins {
-		right := logical.NewScan(j.tableName, j.alias)
+		var right logical.LogicalOperator
+		if j.derivedQuery != nil {
+			body := j.derivedQuery.QueryExpressionBody()
+			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
+				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
+					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
+						right = buildLogicalPlanForSelect(inner)
+					}
+				}
+			}
+			if right == nil {
+				return nil
+			}
+		} else {
+			right = logical.NewScan(j.tableName, j.alias)
+		}
 		var kind logical.JoinKind
 		switch j.joinType {
 		case "LEFT":
