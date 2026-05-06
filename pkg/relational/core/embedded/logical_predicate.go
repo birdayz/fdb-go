@@ -1646,10 +1646,12 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 
 	// Build alias→column mapping from projections.
 	aliasToCol := make(map[string]string)
+	aliasToIdx := make(map[string]int)
 	if sq.projAliases != nil && sq.projCols != nil {
 		for i, a := range sq.projAliases {
 			if a != "" && i < len(sq.projCols) {
 				aliasToCol[strings.ToUpper(a)] = sq.projCols[i]
+				aliasToIdx[strings.ToUpper(a)] = i
 			}
 		}
 	}
@@ -1659,11 +1661,17 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		}
 	}
 
-	// Resolve ORDER BY alias → underlying column name.
+	// Resolve ORDER BY alias → underlying column or Value.
+	proj := findProjection(op)
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
 		if real, ok := aliasToCol[upper]; ok {
 			sort.Keys[i].Expr = real
+		}
+		if idx, ok := aliasToIdx[upper]; ok && proj != nil {
+			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
+				sort.Keys[i].Value = proj.ProjectedValues[idx]
+			}
 		}
 	}
 
