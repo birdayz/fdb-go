@@ -770,6 +770,9 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						continue
 					}
 					upper := strings.ToUpper(col)
+					if dot := strings.IndexByte(upper, '.'); dot >= 0 {
+						upper = upper[dot+1:]
+					}
 					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
 						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
 					}
