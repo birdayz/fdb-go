@@ -998,7 +998,7 @@ func aggKeyName(k values.Value) string {
 	if fv, ok := k.(*values.FieldValue); ok {
 		return strings.ToUpper(fv.Field)
 	}
-	return strings.ToUpper(k.Name())
+	return strings.ToUpper(values.ExplainValue(k))
 }
 
 func isNumeric(v any) bool {

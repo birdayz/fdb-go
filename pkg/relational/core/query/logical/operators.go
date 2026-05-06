@@ -202,6 +202,7 @@ func (d *LogicalDistinct) Explain(indent string) string {
 type LogicalAggregate struct {
 	Input             LogicalOperator
 	GroupKeys         []string
+	GroupKeyValues    []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
 	Aggregates        []string       // e.g. "SUM(a)", "COUNT(*)"
 	Aliases           []string       // parallel to Aggregates
 	AggregateOperands []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text

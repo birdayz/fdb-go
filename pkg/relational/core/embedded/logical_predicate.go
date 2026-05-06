@@ -1189,9 +1189,32 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			return
 		}
 		vals := make([]values.Value, len(proj.Projections))
+		agg := findAggregate(op)
+		var groupKeyExplains map[string]values.Value
+		if agg != nil && len(agg.GroupKeyValues) > 0 {
+			groupKeyExplains = make(map[string]values.Value, len(agg.GroupKeyValues))
+			for i, gkv := range agg.GroupKeyValues {
+				if gkv == nil {
+					continue
+				}
+				explain := strings.ToUpper(values.ExplainValue(gkv))
+				ref := &values.FieldValue{Field: explain, Typ: values.UnknownType}
+				groupKeyExplains[explain] = ref
+				if i < len(agg.GroupKeys) {
+					groupKeyExplains[strings.ToUpper(agg.GroupKeys[i])] = ref
+				}
+			}
+		}
 		for i, e := range sq.postAggExprs {
 			if i >= len(vals) || e == nil {
 				continue
+			}
+			if groupKeyExplains != nil {
+				projText := strings.ToUpper(strings.TrimSpace(e.GetText()))
+				if ref, ok := groupKeyExplains[projText]; ok {
+					vals[i] = ref
+					continue
+				}
 			}
 			v, err := resolver.WalkExpression(e)
 			if err != nil {
@@ -1299,6 +1322,21 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		operands[idx] = v
 	}
 	agg.AggregateOperands = operands
+
+	if len(sq.groupByExprs) > 0 {
+		keyValues := make([]values.Value, len(agg.GroupKeys))
+		for i, gbe := range sq.groupByExprs {
+			if gbe == nil || i >= len(keyValues) {
+				continue
+			}
+			v, err := resolver.WalkExpressionForProjection(gbe)
+			if err != nil {
+				continue
+			}
+			keyValues[i] = v
+		}
+		agg.GroupKeyValues = keyValues
+	}
 }
 
 func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
