@@ -1248,6 +1248,11 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 		}
 		return values.NewConditionSelectorValue(impl)
 	}
+	if ph, ok := v.(expr.PredicateValueHolder); ok {
+		rewritten := rewriteAggregateRefsInPredicate(ph.GetPredicate())
+		ph.SetPredicate(rewritten)
+		return ph
+	}
 	return v
 }
 

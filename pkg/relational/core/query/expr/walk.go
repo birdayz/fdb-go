@@ -458,15 +458,27 @@ func (r *Resolver) walkCaseCondition(ctx antlrgen.IExpressionContext) (values.Va
 	return &predicateValue{pred: pred}, nil
 }
 
+// PredicateValueHolder is implemented by values that wrap a
+// QueryPredicate (used by CASE conditions). Exported so the
+// aggregate-rewriter in logical_predicate.go can access the
+// predicate for AggregateValue→FieldValue rewriting.
+type PredicateValueHolder interface {
+	values.Value
+	GetPredicate() predicates.QueryPredicate
+	SetPredicate(predicates.QueryPredicate)
+}
+
 // predicateValue wraps a QueryPredicate as a Value for use in CASE
 // conditions. Evaluates to true/false/nil (SQL 3VL).
 type predicateValue struct {
 	pred predicates.QueryPredicate
 }
 
-func (pv *predicateValue) Children() []values.Value { return []values.Value{} }
-func (pv *predicateValue) Name() string             { return "predicate" }
-func (pv *predicateValue) Type() values.Type        { return values.TypeBool }
+func (pv *predicateValue) Children() []values.Value                 { return []values.Value{} }
+func (pv *predicateValue) Name() string                             { return "predicate" }
+func (pv *predicateValue) Type() values.Type                        { return values.TypeBool }
+func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
+func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = p }
 
 func (pv *predicateValue) Evaluate(evalCtx any) any {
 	if pv.pred == nil {
