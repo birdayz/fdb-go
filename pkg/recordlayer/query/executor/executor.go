@@ -458,6 +458,7 @@ func executeProjection(
 	}
 
 	projections := p.GetProjections()
+	aliases := p.GetAliases()
 	hasParams := len(evalCtx.params) > 0
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
@@ -471,7 +472,7 @@ func executeProjection(
 				rowCtx = evalCtx.RowContext(m)
 			}
 		}
-		for _, proj := range projections {
+		for i, proj := range projections {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -489,7 +490,17 @@ func executeProjection(
 						}
 					}
 				}()
-				projected[projectionColumnName(proj)] = proj.Evaluate(rowCtx)
+				key := projectionColumnName(proj)
+				val := proj.Evaluate(rowCtx)
+				projected[key] = val
+				// Also store under the alias so that outer projections
+				// (e.g. CTE consumers) can resolve the aliased name.
+				if i < len(aliases) && aliases[i] != "" {
+					aliasKey := strings.ToUpper(aliases[i])
+					if aliasKey != key {
+						projected[aliasKey] = val
+					}
+				}
 			}()
 			if evalErr != nil {
 				return qr

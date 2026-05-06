@@ -876,11 +876,20 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
-	// Resolve GROUP BY columns through the scope.
-	if resolver != nil && len(sq.aggCols) == 0 {
+	if resolver != nil {
 		for _, gb := range sq.groupBy {
 			if err := resolveColumnName(resolver, gb); err != nil {
 				return nil, err
+			}
+		}
+	}
+
+	if resolver != nil {
+		for _, ac := range sq.aggCols {
+			if ac.aggArg != "" && ac.aggExpr == nil {
+				if err := resolveColumnName(resolver, ac.aggArg); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -1703,7 +1712,20 @@ func buildLogicalPlanForQueryWithCatalog(
 			}
 			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
 				// Apply CTE column aliases: WITH c1(x, y) AS (...)
+				// Java's SemanticAnalyzer.validateCteColumnAliases checks
+				// that the alias count matches the CTE body column count.
 				if colAliases := nq.GetColumnAliases(); colAliases != nil {
+					if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
+						aliases := aliasList.AllFullId()
+						if nAliases := len(aliases); nAliases > 0 && src.Table != nil {
+							nCols := len(src.Table.Columns())
+							if nAliases != nCols {
+								return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+									"cte query has %d column(s), however %d aliases defined",
+									nCols, nAliases)
+							}
+						}
+					}
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				cteScopes[upper] = src

@@ -424,8 +424,16 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if typeName == "" {
 			typeName = "UNKNOWN"
 		}
+		// Use the alias as the datum lookup key (Name) when available.
+		// executeProjection stores values under both the original name
+		// and the alias, so the alias is a valid lookup key and gives
+		// CTE consumers the column name they reference.
+		colName := strings.ToUpper(name)
+		if label != "" {
+			colName = label
+		}
 		cols[i] = executor.ColumnDef{
-			Name:     strings.ToUpper(name),
+			Name:     colName,
 			Label:    label,
 			TypeName: typeName,
 		}
