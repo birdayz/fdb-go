@@ -1548,6 +1548,9 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 	if resolver == nil {
+		resolver = buildSelectScope(sq, md, cteScopes)
+	}
+	if resolver == nil {
 		return
 	}
 	// Install the SubqueryPlanner so EXISTS subqueries in HAVING can be planned.
