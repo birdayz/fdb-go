@@ -764,8 +764,25 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// Expand qualified stars (a.*) in the projection list. Replaces each
 	// qualified-star slot with explicit column names from the source.
 	// Matches Java's SemanticAnalyzer.expandStar.
+	//
+	// Two shapes:
+	//  1. projQualifier != "" && projCols == nil — `SELECT a.*` alone.
+	//     The parser sets projQualifier but leaves projCols nil (which
+	//     buildLogicalPlanForSelect treats as SELECT *, emitting no
+	//     LogicalProject). For JOINs this is wrong — it must project
+	//     only the qualifier's columns. Expand into explicit projCols.
+	//  2. projStarQualifiers slots — `SELECT a.*, b.label` mixed.
+	//     Handled by expandQualifiedStars (rewrites star slots in-place).
+	needRebuild := false
+	if sq.projQualifier != "" && sq.projCols == nil {
+		expandProjQualifier(sq, md)
+		needRebuild = true
+	}
 	if hasAnyQualifiedStar(sq) {
 		expandQualifiedStars(sq, md)
+		needRebuild = true
+	}
+	if needRebuild {
 		op = buildLogicalPlanForSelect(sq)
 		if op == nil {
 			return op, nil
@@ -2039,6 +2056,66 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData) {
 	sq.projAliases = newAliases
 	sq.projExprs = newExprs
 	sq.projStarQualifiers = newQuals
+}
+
+// expandProjQualifier handles `SELECT <qualifier>.*` when it is the
+// only SELECT element (projQualifier set, projCols nil). Expands the
+// qualifier into explicit projCols with qualified column names
+// (`qualifier.COL`) so buildLogicalPlanForSelect emits a LogicalProject
+// that restricts the output to that source's columns. Without this,
+// JOIN queries with a lone qualified star would project all columns
+// from all sources (the nil-projCols path in buildLogicalPlanForSelect
+// skips the projection node entirely).
+//
+// For single-table queries `a.*` is equivalent to `*`, so the expansion
+// is technically unnecessary but harmless — the resulting projection
+// lists the same columns the scan produces.
+func expandProjQualifier(sq *selectQuery, md *recordlayer.RecordMetaData) {
+	if sq == nil || md == nil || sq.projQualifier == "" {
+		return
+	}
+	qual := sq.projQualifier
+
+	// Resolve which table the qualifier refers to.
+	tableName := ""
+	if strings.EqualFold(sq.tableAlias, qual) || (sq.tableAlias == "" && strings.EqualFold(sq.tableName, qual)) {
+		tableName = sq.tableName
+	}
+	if tableName == "" {
+		for _, j := range sq.joins {
+			a := j.alias
+			if a == "" {
+				a = j.tableName
+			}
+			if strings.EqualFold(a, qual) {
+				tableName = j.tableName
+				break
+			}
+		}
+	}
+	if tableName == "" {
+		return // unknown qualifier — validated elsewhere
+	}
+
+	rt := md.GetRecordType(tableName)
+	if rt == nil || rt.Descriptor == nil {
+		return
+	}
+	fields := rt.Descriptor.Fields()
+	cols := make([]string, fields.Len())
+	aliases := make([]string, fields.Len())
+	exprs := make([]antlrgen.IExpressionContext, fields.Len())
+	quals := make([]string, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		cols[i] = qual + "." + strings.ToUpper(string(fields.Get(i).Name()))
+	}
+	sq.projCols = cols
+	sq.projAliases = aliases
+	sq.projExprs = exprs
+	sq.projStarQualifiers = quals
+	// Clear projQualifier so downstream code doesn't treat this as the
+	// legacy nil-projCols path.
+	sq.projQualifier = ""
 }
 
 // validateUnionColumnCounts checks that all UNION branches project the
