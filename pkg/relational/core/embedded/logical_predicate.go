@@ -925,6 +925,14 @@ func buildSelectScope(
 		return nil
 	}
 	for _, j := range sq.joins {
+		if j.derivedQuery != nil {
+			if src, ok := buildDerivedTableSource(md, j.alias, j.derivedQuery); ok {
+				if scope.AddSource(src) != nil {
+					return nil
+				}
+				continue
+			}
+		}
 		if !addSource(j.tableName, j.alias) {
 			return nil
 		}
