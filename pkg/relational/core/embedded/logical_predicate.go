@@ -2775,8 +2775,53 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	if walkErr != nil {
 		return nil, fmt.Errorf("correlated EXISTS: walk predicate: %w", walkErr)
 	}
+
+	// The predicate will be evaluated in a merged NLJ context where both
+	// inner and outer columns coexist keyed by UPPER-CASE qualified names
+	// (e.g. SUB.V, A.V). The resolver produced bare field names for inner
+	// columns (e.g. "V") because the inner scope has only one source.
+	// Qualify them with the inner correlation name so that merged-row
+	// lookup finds the inner column, not the outer's value leaking
+	// through when the inner row has a NULL (absent-from-map) field.
+	innerCorr := strings.ToUpper(aliasID.Name())
+	qualifyBareFields(pred, innerCorr)
+
 	p.lastJoinPredicate = predicates.SimplifyPredicateValues(pred)
 	return op, nil
+}
+
+// qualifyBareFields walks a predicate tree and prepends qualifier+"."
+// to every FieldValue whose Field has no dot (i.e. was unqualified by
+// the resolver because the inner scope had only one source). This is
+// necessary for correlated EXISTS predicates that will be evaluated in
+// a merged NLJ row where both outer and inner columns coexist.
+func qualifyBareFields(p predicates.QueryPredicate, qualifier string) {
+	if p == nil || qualifier == "" {
+		return
+	}
+	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
+		switch pred := qp.(type) {
+		case *predicates.ComparisonPredicate:
+			qualifyBareFieldValue(pred.Operand, qualifier)
+			if pred.Comparison.Operand != nil {
+				qualifyBareFieldValue(pred.Comparison.Operand, qualifier)
+			}
+		case *predicates.ValuePredicate:
+			qualifyBareFieldValue(pred.Value, qualifier)
+		}
+		return true
+	})
+}
+
+func qualifyBareFieldValue(v values.Value, qualifier string) {
+	values.WalkValue(v, func(node values.Value) bool {
+		if fv, ok := node.(*values.FieldValue); ok {
+			if !strings.Contains(fv.Field, ".") {
+				fv.Field = qualifier + "." + fv.Field
+			}
+		}
+		return true
+	})
 }
 
 func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {

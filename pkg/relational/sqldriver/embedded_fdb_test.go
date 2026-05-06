@@ -4112,6 +4112,47 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
 }
 
+// TestFDB_CorrelatedExistsSelfJoin exercises correlated EXISTS on a
+// self-join — outer `t AS o` and inner `t` reference the same table.
+// The inner scope must register `t` and the outer scope `o` so the
+// correlated predicate `t.id = o.id` resolves correctly.
+func TestFDB_CorrelatedExistsSelfJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_corr_exists_selfjoin")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_corr_exists_selfjoin")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cesj_tmpl
+		CREATE TABLE t (id BIGINT NOT NULL, status STRING, lbl STRING, v BIGINT, notes STRING, PRIMARY KEY (id))
+		CREATE INDEX idx_status ON t (status)
+		CREATE INDEX idx_v ON t (v)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_corr_exists_selfjoin/main WITH TEMPLATE cesj_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_corr_exists_selfjoin?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO t VALUES (1, 'active', 'x', 10, 'n1'), (2, 'archived', 'y', 20, 'n2'), (3, 'active', 'z', 30, 'n3'), (4, 'deleted', 'q', 40, 'n4')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).NotTo(gomega.HaveOccurred())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 3}))
+}
+
 // TestFDB_CTE verifies WITH (CTE) support: materialization, WHERE filter,
 // projection, and ORDER BY on the CTE result.
 func TestFDB_CTE(t *testing.T) {
