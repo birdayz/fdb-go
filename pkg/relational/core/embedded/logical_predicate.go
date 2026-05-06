@@ -1977,6 +1977,15 @@ func buildLogicalPlanForQueryWithCatalog(
 		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
+	traversalOrder := 0
+	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		txt := strings.ToLower(toc.GetText())
+		if strings.Contains(txt, "pre") {
+			traversalOrder = 1
+		} else if strings.Contains(txt, "post") {
+			traversalOrder = 2
+		}
+	}
 	ctes := ctesCtx.AllNamedQuery()
 	for i := len(ctes) - 1; i >= 0; i-- {
 		nq := ctes[i]
@@ -1992,6 +2001,7 @@ func buildLogicalPlanForQueryWithCatalog(
 			return nil, nil
 		}
 		cte := logical.NewCTE(name, body, main, recursive)
+		cte.TraversalOrder = traversalOrder
 		if colAliases := nq.GetColumnAliases(); colAliases != nil {
 			if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
 				aliases := aliasList.AllFullId()

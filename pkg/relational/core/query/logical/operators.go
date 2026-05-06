@@ -492,6 +492,8 @@ type LogicalCTE struct {
 	Main          LogicalOperator
 	Recursive     bool
 	ColumnAliases []string // WITH c(a, b) AS (...) → renames body's output columns
+	// TraversalOrder: 0=any/level, 1=preorder, 2=postorder.
+	TraversalOrder int
 }
 
 // NewCTE constructs a LogicalCTE.

@@ -668,11 +668,18 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Build RecursiveUnionExpression.
 	seedInsertRef := expressions.InitialOf(seedInsert)
 	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
+	strategy := expressions.TraversalAny
+	switch c.TraversalOrder {
+	case 1:
+		strategy = expressions.TraversalPreorder
+	case 2:
+		strategy = expressions.TraversalPostorder
+	}
 	recUnion := expressions.NewRecursiveUnionExpression(
 		expressions.ForEachQuantifier(seedInsertRef),
 		expressions.ForEachQuantifier(recursiveInsertRef),
 		scanAlias, insertAlias,
-		expressions.TraversalAny,
+		strategy,
 	)
 
 	// Register the RecursiveUnionExpression so that the Main query's
