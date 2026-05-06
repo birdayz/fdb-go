@@ -467,7 +467,10 @@ func (c *singleResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursor
 			recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
 	c.done = true
-	return recordlayer.NewResultWithValue(c.value, &recordlayer.EndContinuation{}), nil
+	// Use nil continuation — a single-result cursor doesn't support
+	// resumption. EndContinuation is rejected by NewResultWithValue
+	// (a value result must have a resumable continuation).
+	return recordlayer.NewResultWithValue(c.value, nil), nil
 }
 
 func (c *singleResultCursor) Close() error   { c.closed = true; return nil }

@@ -4097,12 +4097,19 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Flag (id, active) VALUES (1, 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// EXISTS subquery — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 1) ORDER BY name ASC`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	// EXISTS subquery — Flag has a row with active=1, so all
+	// Customer rows pass the EXISTS filter.
+	rows, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 1) ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).NotTo(gomega.HaveOccurred())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
 }
 
 // TestFDB_CTE verifies WITH (CTE) support: materialization, WHERE filter,

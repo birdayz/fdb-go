@@ -102,9 +102,10 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 
 // implementExistentialSelect handles a SelectExpression with a
 // ForEach outer and an Existential inner (EXISTS subquery).
-// Wraps the inner in FirstOrDefault and applies predicates as a
-// filter on the outer. The ExistsPredicate evaluates against the
-// FirstOrDefault binding.
+// Wraps the inner in FirstOrDefault and uses a semi-join (EXISTS
+// or NOT EXISTS) plan shape. Non-EXISTS predicates (e.g. `x > 5`
+// in `WHERE x > 5 AND EXISTS (...)`) are applied as a separate
+// PredicatesFilterPlan on the outer before the semi-join.
 func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	call *ExpressionRuleCall,
 	sel *expressions.SelectExpression,
@@ -129,28 +130,52 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 
 	// Wrap the existential inner in FirstOrDefault — returns one row
-	// or null. The ExistsPredicate.Eval checks whether this binding
-	// is non-null.
+	// or null.
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(innerPlan, values.NewNullValue(values.UnknownType))
 	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
 		expressions.NamedPhysicalQuantifier(quants[1].GetAlias(), call.MemoizeExpression(innerExpr)))
 	fodRef := call.MemoizeExpression(fodWrapper)
 
-	// Now we have: outer plan + FOD plan. Apply the predicates
-	// (including ExistsPredicate) as a filter on the outer.
-	outerMemoRef := call.MemoizeExpression(outerExpr)
-	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), outerMemoRef)
+	// Separate predicates into EXISTS-related and non-EXISTS.
+	// Non-EXISTS predicates are applied as a filter on the outer;
+	// the EXISTS/NOT-EXISTS predicate drives the join type.
+	allPreds := sel.GetPredicates()
+	var regularPreds []predicates.QueryPredicate
+	negated := false
+	for _, p := range flattenAndPredicates(allPreds) {
+		if _, ok := p.(*predicates.ExistsPredicate); ok {
+			continue
+		}
+		if not, ok := p.(*predicates.NotPredicate); ok {
+			ch := not.Children()
+			if len(ch) == 1 {
+				if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
+					negated = true
+					continue
+				}
+			}
+		}
+		regularPreds = append(regularPreds, p)
+	}
 
-	// Detect NOT EXISTS: a single NOT(ExistsPredicate) wrapping.
+	// Apply non-EXISTS predicates as a filter on the outer.
+	currentOuterPlan := outerPlan
+	if len(regularPreds) > 0 {
+		currentOuterPlan = plans.NewRecordQueryPredicatesFilterPlan(outerPlan, regularPreds)
+	}
+
 	joinType := plans.JoinExists
-	if isNotExistsPredicate(sel.GetPredicates()) {
+	if negated {
 		joinType = plans.JoinNotExists
 	}
 
-	// Build a NLJ-style plan: outer × FOD, with predicates.
+	outerMemoRef := call.MemoizeExpression(outerExpr)
+	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), outerMemoRef)
+
+	// Build a NLJ-style plan: outer (possibly filtered) × FOD.
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		outerPlan, fodPlan,
-		sel.GetPredicates(),
+		currentOuterPlan, fodPlan,
+		nil, // predicates already applied via filter + join type
 		joinType,
 		"", "",
 	)
@@ -159,22 +184,16 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, outerQuant, fodQuant))
 }
 
-// isNotExistsPredicate checks whether the predicate list is a single
-// NOT(ExistsPredicate) — i.e. a NOT EXISTS shape.
-func isNotExistsPredicate(preds []predicates.QueryPredicate) bool {
-	if len(preds) != 1 {
-		return false
+// flattenAndPredicates extracts individual predicates from an AND
+// chain. If the list is a single AND predicate, returns its sub-
+// predicates. Otherwise returns the list as-is.
+func flattenAndPredicates(preds []predicates.QueryPredicate) []predicates.QueryPredicate {
+	if len(preds) == 1 {
+		if and, ok := preds[0].(*predicates.AndPredicate); ok {
+			return and.SubPredicates
+		}
 	}
-	not, ok := preds[0].(*predicates.NotPredicate)
-	if !ok {
-		return false
-	}
-	children := not.Children()
-	if len(children) != 1 {
-		return false
-	}
-	_, isExists := children[0].(*predicates.ExistsPredicate)
-	return isExists
+	return preds
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)
