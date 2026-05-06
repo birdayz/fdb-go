@@ -223,14 +223,15 @@ func (d *LogicalDistinct) Explain(indent string) string {
 // GroupKeys are the grouping-column expressions; Aggregates holds the
 // aggregate-call text with aliases.
 type LogicalAggregate struct {
-	Input             LogicalOperator
-	GroupKeys         []string
-	GroupKeyValues    []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
-	Aggregates        []string       // e.g. "SUM(a)", "COUNT(*)"
-	Aliases           []string       // parallel to Aggregates
-	AggregateOperands []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
-	Having            string         // canonical HAVING predicate, "" when absent
-	HavingPredicate   predicates.QueryPredicate
+	Input                  LogicalOperator
+	GroupKeys              []string
+	GroupKeyValues         []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
+	Aggregates             []string       // e.g. "SUM(a)", "COUNT(*)"
+	Aliases                []string       // parallel to Aggregates
+	AggregateOperands      []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
+	Having                 string         // canonical HAVING predicate, "" when absent
+	HavingPredicate        predicates.QueryPredicate
+	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
 }
 
 func NewAggregate(input LogicalOperator, groupKeys, aggs, aliases []string, having string) *LogicalAggregate {

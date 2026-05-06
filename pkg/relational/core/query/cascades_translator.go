@@ -363,6 +363,33 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		return groupBy
 	}
 	groupByRef := expressions.InitialOf(groupBy)
+
+	// When HAVING carries EXISTS subqueries, build a SelectExpression
+	// with existential quantifiers — same pattern as translateFilter.
+	if len(a.HavingExistsSubqueries) > 0 {
+		outerQ := expressions.ForEachQuantifier(groupByRef)
+		quantifiers := []expressions.Quantifier{outerQ}
+		allPreds := []predicates.QueryPredicate{a.HavingPredicate}
+		for _, esq := range a.HavingExistsSubqueries {
+			subRef := t.translateRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+			if esq.JoinPredicate != nil {
+				allPreds = append(allPreds, esq.JoinPredicate)
+			}
+		}
+		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
+		return expressions.NewSelectExpressionWithAliases(
+			resultValue,
+			quantifiers,
+			allPreds,
+			nil,
+		)
+	}
+
 	return expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{a.HavingPredicate},
 		expressions.ForEachQuantifier(groupByRef),

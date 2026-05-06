@@ -997,7 +997,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if sq.havingExpr != nil {
-		upgradeHavingPredicate(op, sq, md, cteScopes)
+		upgradeHavingPredicate(op, sq, md, cteScopes, existsPlanner)
 	}
 
 	upgradeSortKeyValues(op, sq, md, cteScopes)
@@ -1504,7 +1504,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	}
 }
 
-func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) {
 	agg := findAggregate(op)
 	if agg == nil || sq.havingExpr == nil {
 		return
@@ -1513,11 +1513,22 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	if resolver == nil {
 		return
 	}
+	// Install the SubqueryPlanner so EXISTS subqueries in HAVING can be planned.
+	if subqPlanner != nil {
+		// Reset subqueries so the HAVING walk starts fresh.
+		subqPlanner.subqueries = nil
+		subqPlanner.scalarSubqueries = nil
+		resolver.SetSubqueryPlanner(subqPlanner)
+	}
 	pred, err := resolver.WalkPredicate(sq.havingExpr)
 	if err != nil {
 		return
 	}
 	agg.HavingPredicate = rewriteAggregateRefsInPredicate(pred)
+	if subqPlanner != nil && len(subqPlanner.subqueries) > 0 {
+		agg.HavingExistsSubqueries = subqPlanner.subqueries
+		subqPlanner.subqueries = nil
+	}
 }
 
 func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {
