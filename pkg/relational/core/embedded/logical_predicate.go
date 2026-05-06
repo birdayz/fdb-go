@@ -928,9 +928,14 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
-	if cteScopes != nil && len(sq.joins) == 0 {
+	if cteScopes != nil {
 		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.ColumnAliasMap != nil {
 			rewriteProjectionAliases(op, src.ColumnAliasMap)
+		}
+		for _, j := range sq.joins {
+			if src, found := cteScopes[strings.ToUpper(j.tableName)]; found && src.ColumnAliasMap != nil {
+				rewriteProjectionAliases(op, src.ColumnAliasMap)
+			}
 		}
 	}
 	if sq.derivedQuery != nil {
@@ -1536,6 +1541,13 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		return nil
 	}
 
+	groupByExprSet := make(map[string]bool)
+	for i, gb := range sq.groupBy {
+		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+			groupByExprSet[strings.ToUpper(gb)] = true
+		}
+	}
+
 	if len(sq.aggCols) > 0 {
 		for _, ac := range sq.aggCols {
 			if ac.aggFunc != "" || ac.hidden || ac.sortOnly || ac.outExpr != nil {
@@ -1544,6 +1556,9 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 			col := ac.groupCol
 			if col == "" {
 				col = ac.outName
+			}
+			if groupByExprSet[strings.ToUpper(col)] {
+				continue
 			}
 			if err := checkColumn(col); err != nil {
 				return err
