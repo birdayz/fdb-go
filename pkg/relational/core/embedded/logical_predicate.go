@@ -672,6 +672,17 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// QueryVisitor holding a SemanticAnalyzer.
 	resolver := buildSelectScope(sq, md, cteScopes)
 
+	// Expand qualified stars (a.*) in the projection list. Replaces each
+	// qualified-star slot with explicit column names from the source.
+	// Matches Java's SemanticAnalyzer.expandStar.
+	if sq.projStarQualifiers != nil {
+		expandQualifiedStars(sq, md)
+		op = buildLogicalPlanForSelect(sq)
+		if op == nil {
+			return op, nil
+		}
+	}
+
 	// Resolve projection columns through the scope. Only plain column
 	// references (projExprs[i] == nil) are resolved — computed
 	// expressions / literals have non-nil projExprs entries and go
@@ -1594,6 +1605,101 @@ func buildLogicalPlanForUnionWithCTECatalog(
 		return nil, err
 	}
 	return logical.NewUnion(inputs, distinct), nil
+}
+
+// expandQualifiedStars replaces qualified-star projection slots (a.*)
+// with explicit column names from the matching source table. Modifies
+// sq.projCols, sq.projAliases, sq.projExprs, sq.projStarQualifiers in place.
+func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData) {
+	if sq == nil || sq.projCols == nil || sq.projStarQualifiers == nil {
+		return
+	}
+	hasQualifiedStar := false
+	for _, q := range sq.projStarQualifiers {
+		if q != "" {
+			hasQualifiedStar = true
+			break
+		}
+	}
+	if !hasQualifiedStar {
+		return
+	}
+
+	// Build a map of source alias → table columns.
+	sourceColumns := make(map[string][]string)
+	addSource := func(tableName, alias string) {
+		rt := md.GetRecordType(tableName)
+		if rt == nil || rt.Descriptor == nil {
+			return
+		}
+		key := strings.ToUpper(alias)
+		if key == "" {
+			key = strings.ToUpper(tableName)
+		}
+		fields := rt.Descriptor.Fields()
+		cols := make([]string, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			cols[i] = strings.ToUpper(string(fields.Get(i).Name()))
+		}
+		sourceColumns[key] = cols
+	}
+	if sq.tableName != "" {
+		alias := sq.tableAlias
+		if alias == "" {
+			alias = sq.tableName
+		}
+		addSource(sq.tableName, alias)
+	}
+	for _, j := range sq.joins {
+		alias := j.alias
+		if alias == "" {
+			alias = j.tableName
+		}
+		addSource(j.tableName, alias)
+	}
+
+	var newCols, newAliases, newQuals []string
+	var newExprs []antlrgen.IExpressionContext
+	for i, col := range sq.projCols {
+		qual := ""
+		if i < len(sq.projStarQualifiers) {
+			qual = sq.projStarQualifiers[i]
+		}
+		if qual == "" {
+			newCols = append(newCols, col)
+			alias := ""
+			if i < len(sq.projAliases) {
+				alias = sq.projAliases[i]
+			}
+			newAliases = append(newAliases, alias)
+			var expr antlrgen.IExpressionContext
+			if i < len(sq.projExprs) {
+				expr = sq.projExprs[i]
+			}
+			newExprs = append(newExprs, expr)
+			newQuals = append(newQuals, "")
+			continue
+		}
+		// Qualified star — expand to individual columns.
+		cols, ok := sourceColumns[strings.ToUpper(qual)]
+		if !ok {
+			newCols = append(newCols, col)
+			newAliases = append(newAliases, "")
+			newExprs = append(newExprs, nil)
+			newQuals = append(newQuals, qual)
+			continue
+		}
+		for _, c := range cols {
+			newCols = append(newCols, qual+"."+c)
+			newAliases = append(newAliases, "")
+			newExprs = append(newExprs, nil)
+			newQuals = append(newQuals, "")
+		}
+	}
+	sq.projCols = newCols
+	sq.projAliases = newAliases
+	sq.projExprs = newExprs
+	sq.projStarQualifiers = newQuals
 }
 
 // validateUnionColumnCounts checks that all UNION branches project the
