@@ -260,18 +260,48 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		}
 		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
 
-		// Post-aggregation projection for outExpr entries (e.g. SUM(qty)/COUNT(*)).
-		var outExprsProj []string
-		var outExprsAntlr []antlrgen.IExpressionContext
+		// Post-aggregation projection for mixed SELECT lists that contain
+		// both aggregates and computed expressions / constants. When outExpr
+		// entries exist, the projection must list ALL visible columns in
+		// SELECT-list order — aggregate outputs as column references,
+		// computed expressions as expressions to evaluate. Without this,
+		// the outExpr-only projection would drop the aggregate columns.
+		hasOutExpr := false
 		for _, ac := range sq.aggCols {
-			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly {
-				outExprsProj = append(outExprsProj, strings.TrimSpace(ac.outExpr.GetText()))
-				outExprsAntlr = append(outExprsAntlr, ac.outExpr)
+			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly && !ac.hidden {
+				hasOutExpr = true
+				break
 			}
 		}
-		if len(outExprsProj) > 0 {
-			op = logical.NewProject(op, outExprsProj, nil)
-			sq.postAggExprs = outExprsAntlr
+		if hasOutExpr {
+			var allProj []string
+			var allAntlr []antlrgen.IExpressionContext
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly || ac.hidden {
+					continue
+				}
+				if ac.outExpr != nil && ac.aggFunc == "" {
+					allProj = append(allProj, strings.TrimSpace(ac.outExpr.GetText()))
+					allAntlr = append(allAntlr, ac.outExpr)
+				} else if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					allProj = append(allProj, ac.aggFunc+"("+arg+")")
+					allAntlr = append(allAntlr, nil)
+				} else if ac.groupCol != "" {
+					allProj = append(allProj, ac.groupCol)
+					allAntlr = append(allAntlr, nil)
+				}
+			}
+			if len(allProj) > 0 {
+				op = logical.NewProject(op, allProj, nil)
+				sq.postAggExprs = allAntlr
+			}
 		}
 	}
 
