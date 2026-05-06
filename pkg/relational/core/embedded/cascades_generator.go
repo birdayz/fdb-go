@@ -568,6 +568,9 @@ func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 
 func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	outerCols := deriveColumnsFromPlan(nlj.GetOuter(), md)
+	if nlj.GetJoinType() == plans.JoinExists || nlj.GetJoinType() == plans.JoinNotExists {
+		return outerCols
+	}
 	innerCols := deriveColumnsFromPlan(nlj.GetInner(), md)
 	if outerCols == nil && innerCols == nil {
 		return nil

@@ -1609,8 +1609,10 @@ func executeRecursiveDfsJoin(
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
 
+	const maxRecursionDepth = 256
+
 	for _, root := range rootRows {
-		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results); err != nil {
+		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth); err != nil {
 			return nil, err
 		}
 	}
@@ -1627,7 +1629,12 @@ func dfsVisit(
 	preorder bool,
 	props recordlayer.ExecuteProperties,
 	results *[]QueryResult,
+	depth, maxDepth int,
 ) error {
+	if depth >= maxDepth {
+		return nil
+	}
+
 	if preorder {
 		*results = append(*results, node)
 	}
@@ -1646,7 +1653,7 @@ func dfsVisit(
 	}
 
 	for _, child := range children {
-		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results); err != nil {
+		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth); err != nil {
 			return err
 		}
 	}
