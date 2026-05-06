@@ -442,8 +442,20 @@ func buildCTEColumnSource(
 	if md == nil || cteName == "" || cteQuery == nil {
 		return semantic.ScopeSource{}, false
 	}
-	body, ok := cteQuery.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
-	if !ok {
+	// The CTE body is either a simple QueryTermDefault (non-recursive) or a
+	// SetQuery / UNION ALL (recursive). For recursive CTEs, derive the column
+	// schema from the seed (left) branch of the UNION.
+	var body *antlrgen.QueryTermDefaultContext
+	switch b := cteQuery.QueryExpressionBody().(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		body = b
+	case *antlrgen.SetQueryContext:
+		seed, ok := b.GetLeft().(*antlrgen.QueryTermDefaultContext)
+		if !ok {
+			return semantic.ScopeSource{}, false
+		}
+		body = seed
+	default:
 		return semantic.ScopeSource{}, false
 	}
 	innerSQ, err := extractFromQueryTerm(body)

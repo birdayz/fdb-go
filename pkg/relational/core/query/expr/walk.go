@@ -318,8 +318,7 @@ func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContex
 	case ctx.LOCALTIME() != nil:
 		return values.NewScalarFunctionValue("LOCALTIME", values.NullableString), nil
 	case ctx.CURRENT_USER() != nil:
-		// Java's fdb-relational returns "SYSTEM" for CURRENT_USER.
-		return &values.ConstantValue{Value: "SYSTEM", Typ: values.NullableString}, nil
+		return &values.ConstantValue{Value: "", Typ: values.NullableString}, nil
 	default:
 		return nil, &UnsupportedExpressionShapeError{Shape: "unsupported SimpleFunctionCall"}
 	}
