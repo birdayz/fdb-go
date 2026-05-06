@@ -2015,6 +2015,17 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// SQL standard (and Java): ORDER BY resolves to SELECT-list output
 	// column names first, then table columns. Aliases take precedence.
 	proj := findProjection(op)
+	agg := findAggregate(op)
+	var groupKeyExplainMap map[string]string
+	if agg != nil && len(agg.GroupKeyValues) > 0 {
+		groupKeyExplainMap = make(map[string]string)
+		for i, gkv := range agg.GroupKeyValues {
+			if gkv == nil || i >= len(agg.GroupKeys) {
+				continue
+			}
+			groupKeyExplainMap[strings.ToUpper(agg.GroupKeys[i])] = strings.ToUpper(values.ExplainValue(gkv))
+		}
+	}
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
 		if real, ok := aliasToCol[upper]; ok {
@@ -2023,6 +2034,11 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		if idx, ok := aliasToIdx[upper]; ok && proj != nil {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[idx]
+			}
+		}
+		if groupKeyExplainMap != nil {
+			if explain, ok := groupKeyExplainMap[strings.ToUpper(sort.Keys[i].Expr)]; ok {
+				sort.Keys[i].Value = &values.FieldValue{Field: explain, Typ: values.UnknownType}
 			}
 		}
 	}
