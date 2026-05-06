@@ -524,7 +524,11 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	if c.Recursive {
 		return t.translateRecursiveCTE(c)
 	}
-	t.cteScope[strings.ToUpper(c.Name)] = c.Body
+	body := c.Body
+	if len(c.ColumnAliases) > 0 {
+		body = logical.NewProject(body, c.ColumnAliases, nil)
+	}
+	t.cteScope[strings.ToUpper(c.Name)] = body
 	result := t.translateOp(c.Main)
 	delete(t.cteScope, strings.ToUpper(c.Name))
 	return result

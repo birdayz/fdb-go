@@ -1952,7 +1952,18 @@ func buildLogicalPlanForQueryWithCatalog(
 		if body == nil {
 			return nil, nil
 		}
-		main = logical.NewCTE(name, body, main, recursive)
+		cte := logical.NewCTE(name, body, main, recursive)
+		if colAliases := nq.GetColumnAliases(); colAliases != nil {
+			if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
+				aliases := aliasList.AllFullId()
+				names := make([]string, len(aliases))
+				for j, fid := range aliases {
+					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+				}
+				cte.ColumnAliases = names
+			}
+		}
+		main = cte
 	}
 	return main, nil
 }

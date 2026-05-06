@@ -487,10 +487,11 @@ func (v *LogicalValues) Explain(indent string) string {
 // self-reference (the recursive evaluator lives at the executor
 // layer for now).
 type LogicalCTE struct {
-	Name      string
-	Body      LogicalOperator
-	Main      LogicalOperator
-	Recursive bool
+	Name          string
+	Body          LogicalOperator
+	Main          LogicalOperator
+	Recursive     bool
+	ColumnAliases []string // WITH c(a, b) AS (...) → renames body's output columns
 }
 
 // NewCTE constructs a LogicalCTE.
