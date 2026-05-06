@@ -211,7 +211,7 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			field = real
 		}
 	}
-	if src.CorrelationName != "" && len(r.scope.Sources()) > 1 {
+	if src.CorrelationName != "" && (len(r.scope.Sources()) > 1 || !qualifier.IsZero()) {
 		field = src.CorrelationName + "." + field
 	}
 	return &values.FieldValue{
