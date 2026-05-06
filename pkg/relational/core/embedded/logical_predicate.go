@@ -418,9 +418,11 @@ func buildCTEColumnSource(
 		innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
 	}
+	hasComputedExpr := false
 	for _, e := range innerSQ.projExprs {
 		if e != nil {
-			return semantic.ScopeSource{}, false
+			hasComputedExpr = true
+			break
 		}
 	}
 
@@ -449,17 +451,34 @@ func buildCTEColumnSource(
 	} else {
 		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
 		for i, col := range innerSQ.projCols {
+			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
 			bareName := col
 			if dot := strings.LastIndex(col, "."); dot >= 0 {
 				bareName = col[dot+1:]
 			}
-			innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
-			if !found {
-				return semantic.ScopeSource{}, false
-			}
 			outName := bareName
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
+			}
+			if isComputed {
+				columns = append(columns, semantic.Column{
+					Id:       semantic.NewUnquoted(outName),
+					Type:     "UNKNOWN",
+					Nullable: true,
+				})
+				continue
+			}
+			innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+			if !found {
+				if hasComputedExpr {
+					columns = append(columns, semantic.Column{
+						Id:       semantic.NewUnquoted(outName),
+						Type:     "UNKNOWN",
+						Nullable: true,
+					})
+					continue
+				}
+				return semantic.ScopeSource{}, false
 			}
 			if !strings.EqualFold(outName, bareName) {
 				if aliasMap == nil {
