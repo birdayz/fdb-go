@@ -49,6 +49,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic/rlcatalog"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // buildWherePredicateForTable converts a WHERE expression context
@@ -1783,6 +1784,13 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if left == nil || right == nil {
 		return nil, nil
 	}
+
+	var liftedSort *logical.LogicalSort
+	if s, ok := right.(*logical.LogicalSort); ok {
+		liftedSort = s
+		right = s.Input
+	}
+
 	inputs := []logical.LogicalOperator{left, right}
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
@@ -1790,7 +1798,19 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if err := validateUnionColumnCounts(inputs); err != nil {
 		return nil, err
 	}
-	return logical.NewUnion(inputs, distinct), nil
+	if err := validateUnionColumnTypes(inputs, md); err != nil {
+		return nil, err
+	}
+	if liftedSort != nil {
+		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
+			return nil, err
+		}
+	}
+	var result logical.LogicalOperator = logical.NewUnion(inputs, distinct)
+	if liftedSort != nil {
+		result = logical.NewSort(result, liftedSort.Keys)
+	}
+	return result, nil
 }
 
 // upgradeSortKeyValues walks the logical plan's LogicalSort and resolves
@@ -2161,6 +2181,132 @@ func countProjectionColumns(op logical.LogicalOperator) int {
 	return -1
 }
 
+func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.LogicalOperator) error {
+	leftProj := findProjection(leftBranch)
+	if leftProj == nil {
+		return nil
+	}
+	leftNames := make(map[string]bool, len(leftProj.Projections))
+	for i, col := range leftProj.Projections {
+		leftNames[strings.ToUpper(col)] = true
+		if i < len(leftProj.Aliases) && leftProj.Aliases[i] != "" {
+			leftNames[strings.ToUpper(leftProj.Aliases[i])] = true
+		}
+	}
+	for _, k := range sort.Keys {
+		if k.Expr != "" && !leftNames[strings.ToUpper(k.Expr)] {
+			return api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q not found in UNION result columns", k.Expr)
+		}
+	}
+	return nil
+}
+
+func validateUnionColumnTypes(inputs []logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
+	if md == nil || len(inputs) < 2 {
+		return nil
+	}
+	firstTypes := resolveProjectionTypes(inputs[0], md)
+	if firstTypes == nil {
+		return nil
+	}
+	for i := 1; i < len(inputs); i++ {
+		otherTypes := resolveProjectionTypes(inputs[i], md)
+		if otherTypes == nil {
+			continue
+		}
+		n := len(firstTypes)
+		if len(otherTypes) < n {
+			n = len(otherTypes)
+		}
+		for j := 0; j < n; j++ {
+			if firstTypes[j] == 0 || otherTypes[j] == 0 {
+				continue
+			}
+			lCat := unionTypeCategory(firstTypes[j])
+			rCat := unionTypeCategory(otherTypes[j])
+			if lCat == 0 || rCat == 0 {
+				continue
+			}
+			if lCat != rCat {
+				return api.NewErrorf(api.ErrCodeUnionIncompatibleColumns,
+					"Incompatible column types in UNION legs")
+			}
+		}
+	}
+	return nil
+}
+
+func unionTypeCategory(k protoreflect.Kind) int {
+	switch k {
+	case protoreflect.BoolKind:
+		return 1
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind,
+		protoreflect.FloatKind, protoreflect.DoubleKind:
+		return 2
+	case protoreflect.StringKind:
+		return 3
+	case protoreflect.BytesKind:
+		return 4
+	case protoreflect.EnumKind:
+		return 5
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		return 6
+	}
+	return 0
+}
+
+func findScanTable(op logical.LogicalOperator) string {
+	for cur := op; cur != nil; {
+		if scan, ok := cur.(*logical.LogicalScan); ok {
+			return scan.Table
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return ""
+		}
+		cur = ch[0]
+	}
+	return ""
+}
+
+func resolveProjectionTypes(op logical.LogicalOperator, md *recordlayer.RecordMetaData) []protoreflect.Kind {
+	proj := findProjection(op)
+	if proj == nil {
+		return nil
+	}
+	tableName := findScanTable(op)
+	if tableName == "" {
+		return nil
+	}
+	rt := md.GetRecordType(tableName)
+	if rt == nil || rt.Descriptor == nil {
+		return nil
+	}
+	desc := rt.Descriptor
+	kinds := make([]protoreflect.Kind, len(proj.Projections))
+	for i, col := range proj.Projections {
+		if i < len(proj.IsComputed) && proj.IsComputed[i] {
+			continue
+		}
+		bare := col
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			bare = col[dot+1:]
+		}
+		fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(bare)))
+		if fd == nil {
+			fd = desc.Fields().ByName(protoreflect.Name(bare))
+		}
+		if fd != nil {
+			kinds[i] = fd.Kind()
+		}
+	}
+	return kinds
+}
+
 // buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
 // — same flattening logic, threads md to each branch.
 func buildLogicalPlanForUnionWithCatalog(
@@ -2198,6 +2344,14 @@ func buildLogicalPlanForUnionWithCatalog(
 	}
 	if err := validateUnionColumnCounts(inputs); err != nil {
 		return nil, err
+	}
+	if err := validateUnionColumnTypes(inputs, md); err != nil {
+		return nil, err
+	}
+	if liftedSort != nil {
+		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
+			return nil, err
+		}
 	}
 	var result logical.LogicalOperator = logical.NewUnion(inputs, distinct)
 	if liftedSort != nil {
