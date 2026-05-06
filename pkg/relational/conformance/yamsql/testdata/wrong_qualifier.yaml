@@ -3,8 +3,8 @@
 # `SELECT a.id, c.label FROM a, b` where no source is named `c`. Pre-
 # dayshift-40 this silently fell back to the bare-column lookup for
 # `c.label` and returned b's label (since the qualified key wasn't in
-# the map but "label" was). Java errors 42F01 (UNDEFINED_TABLE) when a
-# column reference names an unknown qualifier. Matches the existing
+# the map but "label" was). Java's resolveIdentifier returns 42703
+# (UNDEFINED_COLUMN) for any unresolved qualified reference. Matches the existing
 # `SELECT wrong.* FROM a` pin in qualified_star.yaml.
 #
 # Scope: all three places a column reference can appear on the map
@@ -25,10 +25,11 @@ tests:
     rows:
       - ['alpha', 'one']
       - ['beta',  'two']
-  # `c.label` — qualifier `c` not in the FROM clause. Pre-fix: silently
-  # returned b's `label`. Post-fix: 42F01.
+  # `c.label` — qualifier `c` not in the FROM clause. Java's
+  # resolveIdentifier returns UNDEFINED_COLUMN (42703) for any
+  # unresolved identifier, regardless of qualifier mismatch.
   - query: SELECT a.id, c.label FROM a, b WHERE a.id = b.id
-    error_code: "42F01"
+    error_code: "42703"
   # `c.*`-style wrong qualifier already erred via resolveQualifierColumns;
   # regression guard that the two code paths don't drift.
   - query: SELECT c.* FROM a, b
@@ -37,11 +38,11 @@ tests:
   # behavior — both routes feed execSelectJoin's projection path.
   - query: |
       SELECT a.id, c.label FROM a INNER JOIN b ON a.id = b.id
-    error_code: "42F01"
+    error_code: "42703"
   # Wrong qualifier on a table that was aliased: once aliased, the
   # original name is no longer a valid qualifier.
   - query: SELECT x.id, a.name FROM a AS x, b WHERE x.id = b.id
-    error_code: "42F01"
+    error_code: "42703"
   # Aliased qualifier itself remains valid.
   - query: SELECT x.id, x.name FROM a AS x, b WHERE x.id = b.id ORDER BY x.id
     rows:
@@ -51,11 +52,11 @@ tests:
   # rejects wrong qualifiers via the per-JOIN validQualifiers scope
   # (installed by execSelectJoin before evaluating expressions).
   - query: SELECT a.id FROM a, b WHERE c.label = 'one'
-    error_code: "42F01"
+    error_code: "42703"
   # And in an INNER JOIN ON clause.
   - query: |
       SELECT a.id FROM a INNER JOIN b ON c.id = b.id
-    error_code: "42F01"
+    error_code: "42703"
   # Valid qualifiers in WHERE still resolve.
   - query: SELECT a.id FROM a, b WHERE a.id = b.id AND b.label = 'one'
     rows:
@@ -84,11 +85,11 @@ tests:
   # both sides of a binary comparison go through evalExprAtomOnMap.
   - query: |
       SELECT a.id FROM a INNER JOIN b ON a.id = c.id
-    error_code: "42F01"
+    error_code: "42703"
 
   # Wrong qualifier in ON-clause RHS on a multi-arg expression —
   # qualifier is checked anywhere in the predicate tree, not just at
   # top level.
   - query: |
       SELECT a.id FROM a INNER JOIN b ON a.id = b.id AND c.id > 0
-    error_code: "42F01"
+    error_code: "42703"
