@@ -974,7 +974,10 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		exprs := ilc.Expressions()
 		if exprs == nil {
-			return nil, &UnsupportedExpressionShapeError{Shape: "IN with subquery/parameter/column (walker handles explicit list only)"}
+			if ilc.QueryExpressionBody() != nil {
+				return nil, &UnsupportedExpressionShapeError{Shape: "IN with subquery"}
+			}
+			return nil, &InColumnRefError{}
 		}
 		ec, ok := exprs.(*antlrgen.ExpressionsContext)
 		if !ok {
@@ -1296,6 +1299,14 @@ type InListNullError struct{}
 
 func (*InListNullError) Error() string {
 	return "NULL values are not allowed in the IN list"
+}
+
+// InColumnRefError signals `x IN y` where y is a column reference,
+// not an explicit value list. Java rejects this as unsupported syntax.
+type InColumnRefError struct{}
+
+func (*InColumnRefError) Error() string {
+	return "IN with a column reference is not supported"
 }
 
 // UnsupportedExpressionShapeError signals a parse-tree shape the

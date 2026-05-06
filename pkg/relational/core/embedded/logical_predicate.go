@@ -984,6 +984,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"no FROM source aliased as %s", srcNotFound.Alias.Name())
 			}
+			var inColRef *expr.InColumnRefError
+			if errors.As(walkErr, &inColRef) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					inColRef.Error())
+			}
 			var binErr *expr.InvalidBinaryLiteralError
 			if errors.As(walkErr, &binErr) {
 				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
