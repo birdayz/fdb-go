@@ -172,12 +172,22 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	outerMemoRef := call.MemoizeExpression(outerExpr)
 	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), outerMemoRef)
 
+	// Extract source aliases for datum qualification.
+	aliases := sel.GetSourceAliases()
+	var outerAlias, innerAlias string
+	if len(aliases) >= 1 {
+		outerAlias = aliases[0]
+	}
+	if len(aliases) >= 2 {
+		innerAlias = aliases[1]
+	}
+
 	// Build a NLJ-style plan: outer (possibly filtered) × FOD.
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
 		currentOuterPlan, fodPlan,
-		nil, // predicates already applied via filter + join type
+		regularPreds,
 		joinType,
-		"", "",
+		outerAlias, innerAlias,
 	)
 
 	fodQuant := expressions.NewPhysicalQuantifier(fodRef)
