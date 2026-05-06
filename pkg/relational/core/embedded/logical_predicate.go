@@ -2676,10 +2676,10 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData) map
 }
 
 type existsSubqueryPlanner struct {
-	md               *recordlayer.RecordMetaData
-	outerScopes      map[string]semantic.ScopeSource
-	subqueries       []logical.ExistsSubquery
-	scalarSubqueries []logical.ScalarSubquery
+	md                *recordlayer.RecordMetaData
+	outerScopes       map[string]semantic.ScopeSource
+	subqueries        []logical.ExistsSubquery
+	scalarSubqueries  []logical.ScalarSubquery
 	lastJoinPredicate predicates.QueryPredicate
 }
 

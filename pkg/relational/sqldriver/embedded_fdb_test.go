@@ -4560,14 +4560,17 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Subquery in CASE expression — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	// Correlated EXISTS in CASE expression — now works.
+	rows, err := db.QueryContext(ctx, `
 		SELECT name, CASE WHEN EXISTS (SELECT 1 FROM Discount WHERE Discount.product_id = Product.id) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	for rows.Next() {
+		var name, status string
+		g.Expect(rows.Scan(&name, &status)).To(gomega.Succeed())
+		t.Logf("%s: %s", name, status)
+	}
 }
 
 func TestFDB_AggregateOnCTE(t *testing.T) {
@@ -5620,10 +5623,14 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 		g.Expect(rows2.Next()).To(gomega.BeFalse())
 	}
 
-	// EXISTS subquery — rejected (not supported in Cascades).
-	_, err = db.QueryContext(ctx,
+	// Correlated EXISTS subquery — now works via correlated EXISTS pipeline.
+	rows3, err := db.QueryContext(ctx,
 		`SELECT COUNT(*) FROM T WHERE EXISTS (SELECT id FROM T t2 WHERE t2.id = T.id)`)
-	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows3.Close()
+	g.Expect(rows3.Next()).To(gomega.BeTrue())
+	var existsCount int64
+	g.Expect(rows3.Scan(&existsCount)).To(gomega.Succeed())
 }
 
 func TestFDB_InsertSelectFromCTE(t *testing.T) {
@@ -5837,14 +5844,15 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 2, 200)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Parameterized subquery — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx,
+	// Correlated EXISTS with parameter — now works.
+	rows, err := db.QueryContext(ctx,
 		`SELECT COUNT(*) FROM Sales AS s WHERE EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
 		"gold")
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var cnt int64
+	g.Expect(rows.Scan(&cnt)).To(gomega.Succeed())
 }
 
 // TestFDB_PiFunctionRejected pins that bare `SELECT PI()` is rejected

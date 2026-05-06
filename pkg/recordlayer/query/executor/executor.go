@@ -596,14 +596,25 @@ func executeUnion(
 		if err != nil {
 			return nil, err
 		}
-		if branchIdx == 0 && len(items) > 0 {
-			if m, ok := items[0].Datum.(map[string]any); ok {
-				firstBranchKeys = mapKeysOrdered(m)
+		if branchIdx == 0 {
+			firstBranchKeys = planColumnNames(inner)
+			if firstBranchKeys == nil && len(items) > 0 {
+				if m, ok := items[0].Datum.(map[string]any); ok {
+					firstBranchKeys = mapKeysOrdered(m)
+				}
 			}
 		}
 		if branchIdx > 0 && len(firstBranchKeys) > 0 {
-			for i := range items {
-				items[i] = remapUnionColumns(items[i], firstBranchKeys)
+			srcKeys := planColumnNames(inner)
+			if srcKeys == nil && len(items) > 0 {
+				if m, ok := items[0].Datum.(map[string]any); ok {
+					srcKeys = mapKeysOrdered(m)
+				}
+			}
+			if srcKeys != nil {
+				for i := range items {
+					items[i] = remapUnionColumnsByPosition(items[i], srcKeys, firstBranchKeys)
+				}
 			}
 		}
 		all = append(all, items...)
@@ -618,6 +629,54 @@ func mapKeysOrdered(m map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func planColumnNames(p plans.RecordQueryPlan) []string {
+	for {
+		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
+			projs := proj.GetProjections()
+			names := make([]string, len(projs))
+			aliases := proj.GetAliases()
+			for i, v := range projs {
+				if i < len(aliases) && aliases[i] != "" {
+					names[i] = strings.ToUpper(aliases[i])
+				} else {
+					names[i] = projectionColumnName(v)
+				}
+			}
+			return names
+		}
+		type hasInner interface{ GetInner() plans.RecordQueryPlan }
+		if ip, ok := p.(hasInner); ok {
+			p = ip.GetInner()
+		} else {
+			return nil
+		}
+	}
+}
+
+func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok || len(srcKeys) != len(targetKeys) {
+		return qr
+	}
+	needsRemap := false
+	for i := range srcKeys {
+		if srcKeys[i] != targetKeys[i] {
+			needsRemap = true
+			break
+		}
+	}
+	if !needsRemap {
+		return qr
+	}
+	remapped := make(map[string]any, len(m))
+	for i, srcKey := range srcKeys {
+		if v, ok := m[srcKey]; ok {
+			remapped[targetKeys[i]] = v
+		}
+	}
+	return QueryResult{Datum: remapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 }
 
 func remapUnionColumns(qr QueryResult, targetKeys []string) QueryResult {
