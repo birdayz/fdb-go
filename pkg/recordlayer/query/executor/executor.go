@@ -792,6 +792,12 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 
 	for k, v := range outerMap {
 		merged[k] = v
+		// If the key already contains a dot, it was qualified by a previous NLJ
+		// level (e.g. "EMP.NAME" from an inner join). Preserve it as-is to avoid
+		// double-qualification like "EMP.EMP.NAME". Only qualify bare keys.
+		if strings.Contains(k, ".") {
+			continue
+		}
 		if outerQual != "" {
 			merged[outerQual+"."+strings.ToUpper(k)] = v
 		}
@@ -802,6 +808,9 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 	for k, v := range innerMap {
 		if innerQual == "" || innerQual != outerQual {
 			merged[k] = v
+		}
+		if strings.Contains(k, ".") {
+			continue
 		}
 		if innerQual != "" {
 			merged[innerQual+"."+strings.ToUpper(k)] = v

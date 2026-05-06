@@ -1900,9 +1900,8 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if setQ == nil {
 		return nil, nil
 	}
-	distinct := true
-	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
-		distinct = false
+	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "only UNION ALL is supported")
 	}
 	left, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, cteScopes)
 	if err != nil {
@@ -1928,7 +1927,7 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	}
 
 	inputs := []logical.LogicalOperator{left, right}
-	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
+	if innerUnion, ok := left.(*logical.LogicalUnion); ok && !innerUnion.Distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
 	if err := validateUnionColumnCounts(inputs); err != nil {
@@ -1942,7 +1941,7 @@ func buildLogicalPlanForUnionWithCTECatalog(
 			return nil, err
 		}
 	}
-	var result logical.LogicalOperator = logical.NewUnion(inputs, distinct)
+	var result logical.LogicalOperator = logical.NewUnion(inputs, false)
 	if liftedSort != nil {
 		result = logical.NewSort(result, liftedSort.Keys)
 	}
@@ -2452,9 +2451,8 @@ func buildLogicalPlanForUnionWithCatalog(
 	if setQ == nil {
 		return nil, nil
 	}
-	distinct := true
-	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
-		distinct = false
+	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "only UNION ALL is supported")
 	}
 	left, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetLeft(), md)
 	if err != nil {
@@ -2480,7 +2478,7 @@ func buildLogicalPlanForUnionWithCatalog(
 	}
 
 	inputs := []logical.LogicalOperator{left, right}
-	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
+	if innerUnion, ok := left.(*logical.LogicalUnion); ok && !innerUnion.Distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
 	if err := validateUnionColumnCounts(inputs); err != nil {
@@ -2494,7 +2492,7 @@ func buildLogicalPlanForUnionWithCatalog(
 			return nil, err
 		}
 	}
-	var result logical.LogicalOperator = logical.NewUnion(inputs, distinct)
+	var result logical.LogicalOperator = logical.NewUnion(inputs, false)
 	if liftedSort != nil {
 		result = logical.NewSort(result, liftedSort.Keys)
 	}

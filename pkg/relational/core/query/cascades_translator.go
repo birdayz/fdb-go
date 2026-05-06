@@ -19,13 +19,15 @@ import (
 // translated (unsupported operators fall through to nil).
 func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
 	t := &cascadesTranslator{
-		cteScope: make(map[string]logical.LogicalOperator),
+		cteScope:     make(map[string]logical.LogicalOperator),
+		cteExprScope: make(map[string]expressions.RelationalExpression),
 	}
 	return t.translateRef(op)
 }
 
 type cascadesTranslator struct {
-	cteScope map[string]logical.LogicalOperator
+	cteScope     map[string]logical.LogicalOperator
+	cteExprScope map[string]expressions.RelationalExpression
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
@@ -74,6 +76,10 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 
 func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.RelationalExpression {
 	key := strings.ToUpper(s.Table)
+	// Pre-translated expression scope (recursive CTE references).
+	if expr, ok := t.cteExprScope[key]; ok {
+		return expr
+	}
 	if body, ok := t.cteScope[key]; ok {
 		// Remove this CTE from scope while translating its body so that
 		// scans inside the body resolve to real tables, not back to the
@@ -378,12 +384,124 @@ func sourceAlias(op logical.LogicalOperator) string {
 
 func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	if c.Recursive {
-		return nil
+		return t.translateRecursiveCTE(c)
 	}
 	t.cteScope[strings.ToUpper(c.Name)] = c.Body
 	result := t.translateOp(c.Main)
 	delete(t.cteScope, strings.ToUpper(c.Name))
 	return result
+}
+
+// translateRecursiveCTE translates a WITH RECURSIVE CTE into a
+// RecursiveUnionExpression. Mirrors Java's
+// QueryVisitor.handleRecursiveNamedQuery:
+//  1. Partition the UNION ALL body into seed (non-recursive) and
+//     recursive (self-referencing) branches.
+//  2. Translate the seed branch normally.
+//  3. Translate the recursive branch with the CTE self-reference
+//     resolving to a TempTableScanExpression.
+//  4. Wrap both legs in TempTableInsertExpression.
+//  5. Create RecursiveUnionExpression with scan/insert aliases.
+//  6. Translate the Main query with the CTE name resolving to the
+//     RecursiveUnionExpression.
+func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
+	cteName := strings.ToUpper(c.Name)
+
+	// The body must be a UNION ALL.
+	union, ok := c.Body.(*logical.LogicalUnion)
+	if !ok || union.Distinct || len(union.Inputs) < 2 {
+		return nil
+	}
+
+	// Partition branches into seed (no self-reference) and recursive
+	// (references the CTE name).
+	var seedBranches, recursiveBranches []logical.LogicalOperator
+	for _, branch := range union.Inputs {
+		if logicalOpReferencesCTE(branch, cteName) {
+			recursiveBranches = append(recursiveBranches, branch)
+		} else {
+			seedBranches = append(seedBranches, branch)
+		}
+	}
+	if len(seedBranches) == 0 || len(recursiveBranches) == 0 {
+		return nil
+	}
+
+	scanAlias := values.NamedCorrelationIdentifier(cteName + "forScan")
+	insertAlias := values.NamedCorrelationIdentifier(cteName + "forInsert")
+
+	// Translate the seed leg. Multiple seed branches become a union.
+	var seedExpr expressions.RelationalExpression
+	if len(seedBranches) == 1 {
+		seedExpr = t.translateOp(seedBranches[0])
+	} else {
+		seedExpr = t.translateUnion(&logical.LogicalUnion{Inputs: seedBranches, Distinct: false})
+	}
+	if seedExpr == nil {
+		return nil
+	}
+
+	// Wrap seed in TempTableInsert.
+	seedRef := expressions.InitialOf(seedExpr)
+	seedInsert := expressions.NewTempTableInsertExpression(
+		expressions.ForEachQuantifier(seedRef), insertAlias, false)
+
+	// Translate the recursive leg with the CTE self-reference resolving
+	// to a TempTableScanExpression(scanAlias).
+	t.cteExprScope[cteName] = expressions.NewTempTableScanExpression(scanAlias)
+	var recursiveExpr expressions.RelationalExpression
+	if len(recursiveBranches) == 1 {
+		recursiveExpr = t.translateOp(recursiveBranches[0])
+	} else {
+		recursiveExpr = t.translateUnion(&logical.LogicalUnion{Inputs: recursiveBranches, Distinct: false})
+	}
+	delete(t.cteExprScope, cteName)
+	if recursiveExpr == nil {
+		return nil
+	}
+
+	// Wrap recursive leg in TempTableInsert.
+	recursiveRef := expressions.InitialOf(recursiveExpr)
+	recursiveInsert := expressions.NewTempTableInsertExpression(
+		expressions.ForEachQuantifier(recursiveRef), insertAlias, false)
+
+	// Build RecursiveUnionExpression.
+	seedInsertRef := expressions.InitialOf(seedInsert)
+	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
+	recUnion := expressions.NewRecursiveUnionExpression(
+		expressions.ForEachQuantifier(seedInsertRef),
+		expressions.ForEachQuantifier(recursiveInsertRef),
+		scanAlias, insertAlias,
+		expressions.TraversalAny,
+	)
+
+	// Register the RecursiveUnionExpression so that the Main query's
+	// scan of the CTE name resolves to it.
+	t.cteExprScope[cteName] = recUnion
+	result := t.translateOp(c.Main)
+	delete(t.cteExprScope, cteName)
+	return result
+}
+
+// logicalOpReferencesCTE walks a LogicalOperator tree and reports
+// whether any LogicalScan references the given CTE name (case-
+// insensitive). Used to partition UNION ALL branches into seed vs
+// recursive legs.
+func logicalOpReferencesCTE(op logical.LogicalOperator, cteName string) bool {
+	if op == nil {
+		return false
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if strings.EqualFold(scan.Table, cteName) {
+			return true
+		}
+	}
+	for _, child := range op.Children() {
+		if logicalOpReferencesCTE(child, cteName) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {
