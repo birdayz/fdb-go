@@ -859,12 +859,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
-	// GROUP BY validation is deferred — the parser's aggCols machinery
-	// already routes non-grouped columns to runtime "column not in row"
-	// errors. Proper 42803 validation at compile time requires
-	// distinguishing grouped vs non-grouped columns in the aggCols
-	// structure, which interacts with countStar and outExpr in complex
-	// ways. TODO: port Java's SemanticAnalyzer.isComposableFrom.
+	if len(sq.groupBy) > 0 && !sq.countStar {
+		if err := validateGroupByProjection(sq, md); err != nil {
+			return nil, err
+		}
+	}
 
 	// Detect overflow numeric literals in projection expressions.
 	if resolver != nil && len(sq.projExprs) > 0 {
@@ -1393,6 +1392,52 @@ func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
 			return nil
 		}
 		cur = ch[0]
+	}
+	return nil
+}
+
+func validateGroupByProjection(sq *selectQuery, _ *recordlayer.RecordMetaData) error {
+	groupBySet := make(map[string]bool, len(sq.groupBy))
+	for _, gb := range sq.groupBy {
+		groupBySet[strings.ToUpper(gb)] = true
+		if dot := strings.LastIndex(gb, "."); dot >= 0 {
+			groupBySet[strings.ToUpper(gb[dot+1:])] = true
+		}
+	}
+
+	if len(sq.aggCols) > 0 {
+		for _, ac := range sq.aggCols {
+			if ac.aggFunc != "" || ac.hidden || ac.sortOnly || ac.outExpr != nil {
+				continue
+			}
+			col := ac.groupCol
+			if col == "" {
+				col = ac.outName
+			}
+			upper := strings.ToUpper(col)
+			if dot := strings.LastIndex(upper, "."); dot >= 0 {
+				upper = upper[dot+1:]
+			}
+			if !groupBySet[upper] && !groupBySet[strings.ToUpper(col)] {
+				return api.NewErrorf(api.ErrCodeGroupingError,
+					"column %q must appear in the GROUP BY clause or be used in an aggregate function", col)
+			}
+		}
+		return nil
+	}
+
+	for i, col := range sq.projCols {
+		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+			continue
+		}
+		upper := strings.ToUpper(col)
+		if dot := strings.LastIndex(upper, "."); dot >= 0 {
+			upper = upper[dot+1:]
+		}
+		if !groupBySet[upper] && !groupBySet[strings.ToUpper(col)] {
+			return api.NewErrorf(api.ErrCodeGroupingError,
+				"column %q must appear in the GROUP BY clause or be used in an aggregate function", col)
+		}
 	}
 	return nil
 }
