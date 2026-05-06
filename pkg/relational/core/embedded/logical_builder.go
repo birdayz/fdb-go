@@ -327,6 +327,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 				}
 			}
 			var visibleProj []string
+			var visibleAliases []string
 			for _, ac := range sq.aggCols {
 				if ac.sortOnly || ac.hidden {
 					continue
@@ -340,13 +341,15 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 						arg = "*"
 					}
 					visibleProj = append(visibleProj, ac.aggFunc+"("+arg+")")
+					visibleAliases = append(visibleAliases, ac.outName)
 				} else if ac.groupCol != "" {
 					visibleProj = append(visibleProj, ac.groupCol)
+					visibleAliases = append(visibleAliases, "")
 				}
 			}
 			totalOutput := len(keys) + len(aggs)
 			if !hasSortOnly && len(visibleProj) < totalOutput {
-				op = logical.NewProject(op, visibleProj, nil)
+				op = logical.NewProject(op, visibleProj, visibleAliases)
 			}
 		}
 	}

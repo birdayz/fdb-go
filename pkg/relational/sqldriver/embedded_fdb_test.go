@@ -4353,6 +4353,48 @@ func TestFDB_DerivedTable(t *testing.T) {
 	g.Expect(names).To(gomega.Equal([]string{"Expensive", "Pricey"}))
 }
 
+func TestFDB_DerivedTableAggAlias(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dt_agg_alias")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_agg_alias")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dta_tmpl
+		CREATE TABLE t1 (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_agg_alias/main WITH TEMPLATE dta_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dt_agg_alias?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO t1 VALUES (1, 10), (2, 20), (3, null), (4, 40)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Simple COUNT(*) AS alias through derived table (no GROUP BY).
+	row := db.QueryRowContext(ctx, `SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub`)
+	var cnt int64
+	g.Expect(row.Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(3)))
+
+	// COUNT(*) AS alias with GROUP BY through derived table.
+	rows, err := db.QueryContext(ctx, `SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL GROUP BY n) AS sub ORDER BY cnt`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var counts []int64
+	for rows.Next() {
+		var c int64
+		g.Expect(rows.Scan(&c)).To(gomega.Succeed())
+		counts = append(counts, c)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(counts).To(gomega.Equal([]int64{1, 1, 1}))
+}
+
 func TestFDB_CTEChaining(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
