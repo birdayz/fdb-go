@@ -429,6 +429,12 @@ func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) express
 }
 
 func isComputedExpression(col string) bool {
+	upper := strings.ToUpper(col)
+	for _, prefix := range []string{"COUNT(", "SUM(", "MIN(", "MAX(", "AVG("} {
+		if strings.HasPrefix(upper, prefix) && strings.HasSuffix(upper, ")") {
+			return false
+		}
+	}
 	for _, c := range col {
 		switch c {
 		case '(', '+', '-', '*', '/', '%', '<', '>', '&', '|', '^':
