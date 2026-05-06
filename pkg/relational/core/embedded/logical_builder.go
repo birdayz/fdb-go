@@ -357,14 +357,17 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 				}
 			}
 			totalOutput := len(keys) + len(aggs)
-			hasAlias := false
-			for _, a := range visibleAliases {
-				if a != "" {
-					hasAlias = true
-					break
+			hasAggAlias := false
+			for i, a := range visibleAliases {
+				if a != "" && i < len(visibleProj) {
+					upper := strings.ToUpper(visibleProj[i])
+					if strings.Contains(upper, "(") {
+						hasAggAlias = true
+						break
+					}
 				}
 			}
-			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAlias) {
+			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAggAlias) {
 				op = logical.NewProject(op, visibleProj, visibleAliases)
 			}
 		}
