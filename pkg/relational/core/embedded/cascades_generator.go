@@ -104,7 +104,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
 	}
 
-	ref := query.TranslateToCascades(logicalOp)
+	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
@@ -136,11 +136,44 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"Cascades planner could not plan query")
 	}
 
+	// Plan scalar subqueries independently through the Cascades pipeline.
+	var scalarSubs []scalarSubqueryBinding
+	for _, ssq := range scalarSubqueryPlans {
+		subRef := query.TranslateToCascades(ssq.Plan)
+		if subRef == nil {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"Cascades planner could not plan scalar subquery")
+		}
+		subPlanner := cascades.NewPlanner(rules, planCtx).
+			WithImplementationRules(cascades.DefaultImplementationRules()).
+			WithMaxTasks(10_000)
+		subBest, _, subErr := subPlanner.Plan(subRef)
+		if subErr != nil || subBest == nil {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"Cascades planner could not plan scalar subquery")
+		}
+		subPh, ok := subBest.(planExtractor)
+		if !ok {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"scalar subquery plan extraction failed")
+		}
+		subPlan := subPh.GetRecordQueryPlan()
+		if subPlan == nil {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"scalar subquery physical plan nil")
+		}
+		scalarSubs = append(scalarSubs, scalarSubqueryBinding{
+			alias: ssq.Alias,
+			plan:  subPlan,
+		})
+	}
+
 	return &cascadesPlan{
-		conn:         g.c,
-		md:           md,
-		physicalPlan: physPlan,
-		explain:      logicalOp.Explain(""),
+		conn:             g.c,
+		md:               md,
+		physicalPlan:     physPlan,
+		explain:          logicalOp.Explain(""),
+		scalarSubqueries: scalarSubs,
 	}, nil
 }
 
@@ -207,14 +240,24 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}, nil
 }
 
+// scalarSubqueryBinding pairs a correlation alias with a planned
+// inner RecordQueryPlan for a scalar subquery. The executor pre-runs
+// each and binds the scalar result under the alias before running
+// the outer plan.
+type scalarSubqueryBinding struct {
+	alias values.CorrelationIdentifier
+	plan  plans.RecordQueryPlan
+}
+
 // cascadesPlan wraps a Cascades-planned SELECT query with a pre-computed
 // physical plan. Planning happens at Plan-time; Execute only runs the plan.
 type cascadesPlan struct {
-	conn         *EmbeddedConnection
-	md           *recordlayer.RecordMetaData
-	physicalPlan plans.RecordQueryPlan
-	explain      string
-	isUpdate     bool
+	conn             *EmbeddedConnection
+	md               *recordlayer.RecordMetaData
+	physicalPlan     plans.RecordQueryPlan
+	explain          string
+	isUpdate         bool
+	scalarSubqueries []scalarSubqueryBinding
 }
 
 func (p *cascadesPlan) IsUpdate() bool { return p.isUpdate }
@@ -245,6 +288,20 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		}
 
 		evalCtx := executor.EmptyEvaluationContext()
+
+		// Pre-evaluate scalar subqueries and bind their results.
+		if len(p.scalarSubqueries) > 0 {
+			scalarResults := make(map[values.CorrelationIdentifier]any, len(p.scalarSubqueries))
+			for _, ssq := range p.scalarSubqueries {
+				result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.plan, store, evalCtx)
+				if ssqErr != nil {
+					return nil, ssqErr
+				}
+				scalarResults[ssq.alias] = result
+			}
+			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
+		}
+
 		cursor, execErr := executor.ExecutePlan(ctx, p.physicalPlan, store, evalCtx, nil,
 			recordlayer.DefaultExecuteProperties())
 		if execErr != nil {

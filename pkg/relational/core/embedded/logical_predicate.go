@@ -973,8 +973,24 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		upgradeAggregateOperands(op, sq, md, cteScopes)
 	}
 
+	// Create a unified SubqueryPlanner early so both projection and
+	// WHERE walks can build inner plans for EXISTS and scalar subqueries.
+	var existsPlanner *existsSubqueryPlanner
+	if md != nil {
+		existsPlanner = &existsSubqueryPlanner{md: md}
+	}
+
 	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
-		upgradeProjectionValues(op, sq, md, cteScopes)
+		upgradeProjectionValues(op, sq, md, cteScopes, existsPlanner)
+	}
+
+	// Attach scalar subqueries from projections to the LogicalProject.
+	if existsPlanner != nil && len(existsPlanner.scalarSubqueries) > 0 {
+		if proj := findProjection(op); proj != nil {
+			proj.ScalarSubqueries = existsPlanner.scalarSubqueries
+		}
+		// Reset scalar subqueries so WHERE walk starts fresh.
+		existsPlanner.scalarSubqueries = nil
 	}
 
 	if sq.havingExpr != nil {
@@ -987,13 +1003,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		return op, nil
 	}
 
-	// Install a SubqueryPlanner on the resolver so EXISTS subqueries
-	// in WHERE clauses can be planned. The planner collects (alias,
-	// plan) pairs that get attached to the LogicalFilter after the
-	// walk succeeds.
-	var existsPlanner *existsSubqueryPlanner
-	if resolver != nil && md != nil {
-		existsPlanner = &existsSubqueryPlanner{md: md}
+	// Install the SubqueryPlanner on the resolver so EXISTS and scalar
+	// subqueries in WHERE clauses can be planned.
+	if resolver != nil && existsPlanner != nil {
 		resolver.SetSubqueryPlanner(existsPlanner)
 	}
 
@@ -1039,14 +1051,20 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
-	// When the pre-walk produced an EXISTS-bearing predicate, use it
-	// directly. The buildWherePredicate functions build their own
-	// resolvers without a SubqueryPlanner — they'd decline the EXISTS
-	// shape and fall back to text, losing the subquery plans.
-	if existsPlanner != nil && len(existsPlanner.subqueries) > 0 && preWalkPred != nil {
+	// When the pre-walk produced a subquery-bearing predicate (EXISTS
+	// or scalar), use it directly. The buildWherePredicate functions
+	// build their own resolvers without a SubqueryPlanner — they'd
+	// decline these shapes and fall back to text, losing the plans.
+	hasSubqueries := existsPlanner != nil && (len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0)
+	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
 		_ = upgradeFirstFilter(op, pred)
-		upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+		if len(existsPlanner.subqueries) > 0 {
+			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+		}
+		if len(existsPlanner.scalarSubqueries) > 0 {
+			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+		}
 		return op, nil
 	}
 
@@ -1272,6 +1290,24 @@ func upgradeFirstFilterExistsSubqueries(op logical.LogicalOperator, subqueries [
 	return false
 }
 
+// upgradeFirstFilterScalarSubqueries walks the single-child chain
+// from op and, at the first LogicalFilter, attaches the scalar
+// subquery plans. Returns true when a Filter was found.
+func upgradeFirstFilterScalarSubqueries(op logical.LogicalOperator, subqueries []logical.ScalarSubquery) bool {
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			f.ScalarSubqueries = subqueries
+			return true
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return false
+		}
+		cur = ch[0]
+	}
+	return false
+}
+
 // upgradeFirstFilter walks the single-child chain from op and, at
 // the first LogicalFilter, sets Predicate. Stops at the first
 // non-unary node. Returns true when a Filter was found and upgraded.
@@ -1296,7 +1332,7 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredica
 // are stored in LogicalProject.ProjectedValues; failed slots remain nil
 // (the Cascades translator treats nil as "plain column reference" when
 // the text isn't a computed expression, or "cannot translate" otherwise).
-func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) {
 	proj := findProjection(op)
 	if proj == nil {
 		return
@@ -1307,6 +1343,9 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 		if resolver == nil {
 			return
+		}
+		if subqPlanner != nil {
+			resolver.SetSubqueryPlanner(subqPlanner)
 		}
 		vals := make([]values.Value, len(proj.Projections))
 		agg := findAggregate(op)
@@ -1355,6 +1394,9 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 	if resolver == nil {
 		return
+	}
+	if subqPlanner != nil {
+		resolver.SetSubqueryPlanner(subqPlanner)
 	}
 	vals := make([]values.Value, len(proj.Projections))
 	copy(vals, proj.ProjectedValues)
@@ -2600,12 +2642,13 @@ func buildLogicalPlanForUnionWithCatalog(
 }
 
 // existsSubqueryPlanner implements expr.SubqueryPlanner. It builds
-// logical plans for EXISTS subqueries and collects the (alias, plan)
-// pairs that the LogicalFilter needs to carry to the Cascades
-// translator.
+// logical plans for EXISTS and scalar subqueries and collects the
+// (alias, plan) pairs that the LogicalFilter/LogicalProject need to
+// carry to the Cascades translator.
 type existsSubqueryPlanner struct {
-	md         *recordlayer.RecordMetaData
-	subqueries []logical.ExistsSubquery
+	md               *recordlayer.RecordMetaData
+	subqueries       []logical.ExistsSubquery
+	scalarSubqueries []logical.ScalarSubquery
 }
 
 func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
@@ -2621,6 +2664,25 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	}
 	alias := values.UniqueCorrelationIdentifier()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
+		Alias: alias,
+		Plan:  innerOp,
+	})
+	return alias, nil
+}
+
+func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
+	if q == nil {
+		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: nil query context")
+	}
+	innerOp, err := buildLogicalPlanForQueryWithCatalog(q, p.md)
+	if err != nil {
+		return values.CorrelationIdentifier{}, err
+	}
+	if innerOp == nil {
+		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: inner query could not be planned")
+	}
+	alias := values.UniqueCorrelationIdentifier()
+	p.scalarSubqueries = append(p.scalarSubqueries, logical.ScalarSubquery{
 		Alias: alias,
 		Plan:  innerOp,
 	})

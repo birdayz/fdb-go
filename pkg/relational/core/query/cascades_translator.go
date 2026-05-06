@@ -9,6 +9,14 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
+// ScalarSubqueryPlan pairs a correlation alias with a logical operator
+// tree for a scalar subquery. Collected during translation and passed
+// to the executor for pre-evaluation.
+type ScalarSubqueryPlan struct {
+	Alias values.CorrelationIdentifier
+	Plan  logical.LogicalOperator
+}
+
 // TranslateToCascades converts a logical.LogicalOperator tree into a
 // cascades RelationalExpression tree rooted in a Reference. This is
 // the bridge between the SQL parser's logical plan and the Cascades
@@ -18,16 +26,27 @@ import (
 // Returns nil if the operator tree contains shapes that can't be
 // translated (unsupported operators fall through to nil).
 func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
+	ref, _ := TranslateToCascadesWithSubqueries(op)
+	return ref
+}
+
+// TranslateToCascadesWithSubqueries is like TranslateToCascades but
+// also returns any scalar subquery plans collected during translation.
+// These must be planned independently and pre-evaluated by the
+// executor before running the main plan.
+func TranslateToCascadesWithSubqueries(op logical.LogicalOperator) (*expressions.Reference, []ScalarSubqueryPlan) {
 	t := &cascadesTranslator{
 		cteScope:     make(map[string]logical.LogicalOperator),
 		cteExprScope: make(map[string]expressions.RelationalExpression),
 	}
-	return t.translateRef(op)
+	ref := t.translateRef(op)
+	return ref, t.scalarSubqueries
 }
 
 type cascadesTranslator struct {
-	cteScope     map[string]logical.LogicalOperator
-	cteExprScope map[string]expressions.RelationalExpression
+	cteScope         map[string]logical.LogicalOperator
+	cteExprScope     map[string]expressions.RelationalExpression
+	scalarSubqueries []ScalarSubqueryPlan
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
@@ -107,6 +126,15 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	}
 	if f.Predicate != nil && predicateContainsUnsafeFunction(f.Predicate) {
 		return nil
+	}
+
+	// Collect scalar subquery plans — they'll be planned independently
+	// and pre-evaluated by the executor.
+	for _, ssq := range f.ScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
 	}
 
 	// EXISTS subqueries: when the filter carries existential subquery
@@ -243,6 +271,14 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 }
 
 func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
+	// Collect scalar subquery plans from projections.
+	for _, ssq := range p.ScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
+
 	innerRef := t.translateRef(p.Input)
 	if innerRef == nil {
 		return nil

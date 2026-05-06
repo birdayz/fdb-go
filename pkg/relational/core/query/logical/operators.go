@@ -16,6 +16,17 @@ type ExistsSubquery struct {
 	Plan  LogicalOperator
 }
 
+// ScalarSubquery pairs a correlation alias with the logical plan for
+// a scalar subquery `(SELECT MAX(v) FROM t2)`. Carried on
+// LogicalFilter and LogicalProject so the Cascades translator can
+// build inner plans. The executor pre-evaluates these and binds the
+// scalar result under Alias before evaluating the outer plan's
+// predicates/projections.
+type ScalarSubquery struct {
+	Alias values.CorrelationIdentifier
+	Plan  LogicalOperator
+}
+
 // --- Leaf operators (no children) ----------------------------------
 
 // LogicalScan reads a single table. Empty Alias means "use the table
@@ -58,6 +69,7 @@ type LogicalFilter struct {
 	Predicate        predicates.QueryPredicate // preferred when non-nil
 	PredicateText    string                    // source-text fallback
 	ExistsSubqueries []ExistsSubquery          // subquery plans for EXISTS predicates
+	ScalarSubqueries []ScalarSubquery          // subquery plans for scalar subqueries
 }
 
 // NewFilter constructs a text-only LogicalFilter — used by the
@@ -100,11 +112,12 @@ func (f *LogicalFilter) Explain(indent string) string {
 // returns nil for the whole query. Non-nil slots are used directly
 // as projection Values in the Cascades plan.
 type LogicalProject struct {
-	Input           LogicalOperator
-	Projections     []string
-	Aliases         []string       // parallel to Projections; "" means no alias
-	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
-	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	Input            LogicalOperator
+	Projections      []string
+	Aliases          []string         // parallel to Projections; "" means no alias
+	ProjectedValues  []values.Value   // parallel to Projections; nil slot = walker declined
+	IsComputed       []bool           // parallel to Projections; true = expression, not plain column ref
+	ScalarSubqueries []ScalarSubquery // subquery plans for scalar subqueries in projections
 }
 
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {

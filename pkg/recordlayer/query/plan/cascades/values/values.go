@@ -400,6 +400,8 @@ func ExplainValue(v Value) string {
 			conds[i] = ExplainValue(c)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
+	case *ScalarSubqueryValue:
+		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
 	}
 	return v.Name()
 }
@@ -594,8 +596,9 @@ type ParameterBinder interface {
 // (ParameterBinder). Pass this when evaluating expressions that mix
 // field references and prepared-statement parameters.
 type RowEvalContext struct {
-	Datum  map[string]any
-	Binder ParameterBinder
+	Datum            map[string]any
+	Binder           ParameterBinder
+	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
 }
 
 func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {

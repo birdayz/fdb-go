@@ -143,6 +143,8 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value,
 		return r.walkPreparedParameter(a.PreparedStatementParameter())
 	case *antlrgen.BitExpressionAtomContext:
 		return r.walkBitExpression(a)
+	case *antlrgen.SubqueryExpressionAtomContext:
+		return r.walkScalarSubquery(a)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
 }
@@ -1391,6 +1393,26 @@ type InvalidBinaryLiteralError struct {
 
 func (e *InvalidBinaryLiteralError) Error() string {
 	return fmt.Sprintf("invalid binary literal %q: %s", e.Text, e.Reason)
+}
+
+// walkScalarSubquery handles `(SELECT ...)` scalar subquery atoms.
+// Delegates to the Resolver's SubqueryPlanner.BuildScalar to build
+// the inner query's logical plan and allocate a fresh alias. Returns
+// a ScalarSubqueryValue referencing the alias. Declines with
+// UnsupportedExpressionShapeError when no SubqueryPlanner is installed.
+func (r *Resolver) walkScalarSubquery(ctx *antlrgen.SubqueryExpressionAtomContext) (values.Value, error) {
+	if r.subqueryPlanner == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "scalar subquery (no SubqueryPlanner)"}
+	}
+	q := ctx.Query()
+	if q == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "scalar subquery without inner Query"}
+	}
+	alias, err := r.subqueryPlanner.BuildScalar(q)
+	if err != nil {
+		return nil, err
+	}
+	return values.NewScalarSubqueryValue(alias), nil
 }
 
 // walkExistsPredicate handles `EXISTS (SELECT ...)`. Delegates to the

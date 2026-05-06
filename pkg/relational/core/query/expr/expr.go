@@ -74,21 +74,28 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
 
-// SubqueryPlanner is the callback interface for building EXISTS subquery
+// SubqueryPlanner is the callback interface for building subquery
 // plans from the expr walker. The embedded package provides the
 // implementation that calls buildLogicalPlanForQuery and stores the
 // result. The Resolver itself is agnostic to how the plan is built —
-// it only needs a fresh existential alias and the plan reference.
+// it only needs a fresh alias and the plan reference.
 //
 // BuildExists receives the inner Query context from an
 // ExistsExpressionAtomContext and returns:
 //   - alias: a unique CorrelationIdentifier for the existential quantifier
 //   - err: non-nil when the inner query cannot be planned
 //
+// BuildScalar receives the inner Query context from a
+// SubqueryExpressionAtomContext (scalar subquery) and returns:
+//   - alias: a unique CorrelationIdentifier for the scalar subquery
+//   - err: non-nil when the inner query cannot be planned
+//
 // The planner stores the (alias → plan) mapping externally; the
-// Resolver creates an ExistsPredicate referencing the alias.
+// Resolver creates an ExistsPredicate or ScalarSubqueryValue
+// referencing the alias.
 type SubqueryPlanner interface {
 	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
+	BuildScalar(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
 }
 
 // Resolver converts parsed SQL expressions into cascades Values. It

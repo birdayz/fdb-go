@@ -8,11 +8,12 @@ import (
 
 // EvaluationContext holds runtime bindings for plan execution:
 // parameter values, correlation bindings (for correlated subqueries),
-// and any mutable state that plan nodes share. Mirrors Java's
-// EvaluationContext.
+// scalar subquery results, and any mutable state that plan nodes
+// share. Mirrors Java's EvaluationContext.
 type EvaluationContext struct {
-	bindings map[values.CorrelationIdentifier]any
-	params   []any
+	bindings         map[values.CorrelationIdentifier]any
+	params           []any
+	scalarSubqueries map[values.CorrelationIdentifier]any
 }
 
 // EmptyEvaluationContext returns a context with no bindings.
@@ -42,10 +43,29 @@ func (ec *EvaluationContext) BindParameter(ordinal int, name string) (any, bool)
 }
 
 // RowContext returns a RowEvalContext combining a datum map with this
-// context's parameter bindings. Used when evaluating expressions that
-// mix field references and prepared-statement parameters.
+// context's parameter bindings and scalar subquery results. Used when
+// evaluating expressions that mix field references, prepared-statement
+// parameters, and scalar subquery references.
 func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalContext {
-	return &values.RowEvalContext{Datum: datum, Binder: ec}
+	return &values.RowEvalContext{
+		Datum:            datum,
+		Binder:           ec,
+		ScalarSubqueries: ec.scalarSubqueries,
+	}
+}
+
+// WithScalarSubqueries returns a copy with pre-evaluated scalar
+// subquery results bound by correlation alias.
+func (ec *EvaluationContext) WithScalarSubqueries(results map[values.CorrelationIdentifier]any) *EvaluationContext {
+	newBindings := make(map[values.CorrelationIdentifier]any, len(ec.bindings))
+	for k, v := range ec.bindings {
+		newBindings[k] = v
+	}
+	return &EvaluationContext{
+		bindings:         newBindings,
+		params:           ec.params,
+		scalarSubqueries: results,
+	}
 }
 
 // WithBinding returns a shallow copy with an additional binding.

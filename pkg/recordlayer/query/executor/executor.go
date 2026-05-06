@@ -357,7 +357,7 @@ func executeFilter(
 	}
 
 	preds := p.GetPredicates()
-	hasParams := len(evalCtx.params) > 0
+	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (keep bool) {
@@ -371,7 +371,7 @@ func executeFilter(
 				}
 			}()
 			var rowCtx any = qr.Datum
-			if hasParams {
+			if needsRowCtx {
 				if m, ok := qr.Datum.(map[string]any); ok {
 					rowCtx = evalCtx.RowContext(m)
 				}
@@ -459,7 +459,7 @@ func executeProjection(
 
 	projections := p.GetProjections()
 	aliases := p.GetAliases()
-	hasParams := len(evalCtx.params) > 0
+	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -467,7 +467,7 @@ func executeProjection(
 		}
 		projected := make(map[string]any, len(projections))
 		var rowCtx any = qr.Datum
-		if hasParams {
+		if needsRowCtx {
 			if m, ok := qr.Datum.(map[string]any); ok {
 				rowCtx = evalCtx.RowContext(m)
 			}
