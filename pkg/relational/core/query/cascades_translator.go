@@ -526,12 +526,30 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	}
 	body := c.Body
 	if len(c.ColumnAliases) > 0 {
-		body = logical.NewProject(body, c.ColumnAliases, nil)
+		if origCols := extractOutputColumns(body); len(origCols) == len(c.ColumnAliases) {
+			body = logical.NewProject(body, origCols, c.ColumnAliases)
+		}
 	}
 	t.cteScope[strings.ToUpper(c.Name)] = body
 	result := t.translateOp(c.Main)
 	delete(t.cteScope, strings.ToUpper(c.Name))
 	return result
+}
+
+func extractOutputColumns(op logical.LogicalOperator) []string {
+	switch o := op.(type) {
+	case *logical.LogicalProject:
+		return o.Projections
+	case *logical.LogicalDistinct:
+		return extractOutputColumns(o.Input)
+	case *logical.LogicalSort:
+		return extractOutputColumns(o.Input)
+	case *logical.LogicalLimit:
+		return extractOutputColumns(o.Input)
+	case *logical.LogicalFilter:
+		return extractOutputColumns(o.Input)
+	}
+	return nil
 }
 
 // translateRecursiveCTE translates a WITH RECURSIVE CTE into a
