@@ -675,7 +675,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// Expand qualified stars (a.*) in the projection list. Replaces each
 	// qualified-star slot with explicit column names from the source.
 	// Matches Java's SemanticAnalyzer.expandStar.
-	if sq.projStarQualifiers != nil {
+	if hasAnyQualifiedStar(sq) {
 		expandQualifiedStars(sq, md)
 		op = buildLogicalPlanForSelect(sq)
 		if op == nil {
@@ -1605,6 +1605,18 @@ func buildLogicalPlanForUnionWithCTECatalog(
 		return nil, err
 	}
 	return logical.NewUnion(inputs, distinct), nil
+}
+
+func hasAnyQualifiedStar(sq *selectQuery) bool {
+	if sq == nil || sq.projStarQualifiers == nil {
+		return false
+	}
+	for _, q := range sq.projStarQualifiers {
+		if q != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // expandQualifiedStars replaces qualified-star projection slots (a.*)
