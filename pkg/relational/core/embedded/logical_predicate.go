@@ -736,15 +736,13 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// For derived tables, build the inner plan through the catalog-aware
 	// path so WHERE predicates get upgraded. Java's visitSubqueryTableItem
 	// recursively visits through the same typed visitor.
-	if sq.derivedQuery != nil && md != nil {
+	if sq.derivedQuery != nil && md != nil && len(sq.joins) == 0 {
 		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
 			sq.derivedQuery.QueryExpressionBody(), md, cteScopes)
 		if innerErr != nil {
 			return nil, innerErr
 		}
 		if innerOp != nil {
-			// Build the outer plan (Sort, Limit, Project) on top of
-			// the catalog-aware inner plan.
 			op := buildOuterPlanOnDerived(sq, innerOp)
 			if op == nil {
 				return nil, nil
