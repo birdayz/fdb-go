@@ -264,7 +264,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		var outExprsProj []string
 		var outExprsAntlr []antlrgen.IExpressionContext
 		for _, ac := range sq.aggCols {
-			if ac.outExpr != nil && ac.aggFunc == "" {
+			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly {
 				outExprsProj = append(outExprsProj, strings.TrimSpace(ac.outExpr.GetText()))
 				outExprsAntlr = append(outExprsAntlr, ac.outExpr)
 			}
