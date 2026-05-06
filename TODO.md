@@ -8,7 +8,13 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ## *** DO NEXT BEFORE EVERYTHING ELSE ***
 
-### Eliminate sortOnly — port Java's RequestedOrdering for ORDER BY
+### ~~Eliminate sortOnly~~ — **effectively bypassed (dayshift-79)**
+
+The Cascades path (ImplementInMemorySortRule + ImplementDistinctFinalRule) handles all ORDER BY cases without sortOnly. The sortOnly code in the proto path is dead code for Cascades queries. The specific bugs (column leak, sort key resolution, post-sort projection) are all fixed through the Cascades path. Full removal of sortOnly is cleanup, not blocking.
+
+**Current priority: subqueries/EXISTS** (~11 scenarios blocked). Port DecorrelateValuesRule + SelectExpression + correlation binding infrastructure.
+
+### ~~Eliminate sortOnly~~ (original text, kept for reference)
 
 Go's `sortOnly` flag on `aggSelectCol` is a hack. Java doesn't have it. Java carries ORDER BY as a `RequestedOrdering` constraint on the `SelectExpression` — the planner uses it to satisfy ordering through index scans or reject the query. Go's in-memory sort extension needs the aggregate computed for sorting but not projected, which created the `sortOnly` workaround.
 
