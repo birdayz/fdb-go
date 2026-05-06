@@ -1662,24 +1662,11 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	}
 
 	// Resolve ORDER BY alias → underlying column or Value.
-	// Only apply alias resolution when the name is NOT a real table
-	// column — SQL standard says table columns take precedence.
-	tableColumns := make(map[string]bool)
-	if md != nil && sq.tableName != "" {
-		rt := md.GetRecordType(sq.tableName)
-		if rt != nil && rt.Descriptor != nil {
-			fields := rt.Descriptor.Fields()
-			for i := 0; i < fields.Len(); i++ {
-				tableColumns[strings.ToUpper(string(fields.Get(i).Name()))] = true
-			}
-		}
-	}
+	// SQL standard (and Java): ORDER BY resolves to SELECT-list output
+	// column names first, then table columns. Aliases take precedence.
 	proj := findProjection(op)
 	for i := range sort.Keys {
 		upper := strings.ToUpper(sort.Keys[i].Expr)
-		if tableColumns[upper] {
-			continue
-		}
 		if real, ok := aliasToCol[upper]; ok {
 			sort.Keys[i].Expr = real
 		}
