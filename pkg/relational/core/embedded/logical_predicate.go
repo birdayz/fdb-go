@@ -813,22 +813,28 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if err := resolveColumnName(resolver, col); err != nil {
 				return nil, err
 			}
-			// For qualified column refs (d.id), resolve the Value so the
-			// Cascades translator gets a FieldValue with the bare column
-			// name, not the qualified "D.ID" text.
 			if strings.Contains(col, ".") && proj != nil {
-				var qualifier semantic.Identifier
-				id := semantic.NewUnquoted(col)
-				if dot := strings.IndexByte(col, '.'); dot >= 0 {
-					qualifier = semantic.NewUnquoted(col[:dot])
-					id = semantic.NewUnquoted(col[dot+1:])
+				if proj.ProjectedValues == nil {
+					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
-				if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
-					if proj.ProjectedValues == nil {
-						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
-					}
+				if len(sq.joins) > 0 {
 					if i < len(proj.ProjectedValues) {
-						proj.ProjectedValues[i] = v
+						proj.ProjectedValues[i] = &values.FieldValue{
+							Field: strings.ToUpper(col),
+							Typ:   values.UnknownType,
+						}
+					}
+				} else {
+					var qualifier semantic.Identifier
+					id := semantic.NewUnquoted(col)
+					if dot := strings.IndexByte(col, '.'); dot >= 0 {
+						qualifier = semantic.NewUnquoted(col[:dot])
+						id = semantic.NewUnquoted(col[dot+1:])
+					}
+					if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+						if i < len(proj.ProjectedValues) {
+							proj.ProjectedValues[i] = v
+						}
 					}
 				}
 			}
@@ -911,6 +917,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				if errors.As(walkErr, &overflow) {
 					return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
 				}
+				var binErr *expr.InvalidBinaryLiteralError
+				if errors.As(walkErr, &binErr) {
+					return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+				}
 			}
 		}
 	}
@@ -970,6 +980,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if errors.As(walkErr, &srcNotFound) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"no FROM source aliased as %s", srcNotFound.Alias.Name())
+			}
+			var binErr *expr.InvalidBinaryLiteralError
+			if errors.As(walkErr, &binErr) {
+				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
 			}
 		}
 	}

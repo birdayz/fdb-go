@@ -358,11 +358,19 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if ip, ok := plan.(innerPlan); ok {
 		return deriveColumnsFromPlan(ip.GetInner(), md)
 	}
-	scan := findScanPlan(plan)
-	if scan == nil || len(scan.GetRecordTypes()) == 0 {
+	// Leaf plan: either a primary-key scan or an index scan. Both
+	// carry GetRecordTypes(); the index scan's executor fetches the
+	// full record via indexFetchCursor, so all columns are available.
+	var recordTypes []string
+	if scan := findScanPlan(plan); scan != nil {
+		recordTypes = scan.GetRecordTypes()
+	} else if idxPlan := findIndexPlan(plan); idxPlan != nil {
+		recordTypes = idxPlan.GetRecordTypes()
+	}
+	if len(recordTypes) == 0 {
 		return nil
 	}
-	rt := md.GetRecordType(scan.GetRecordTypes()[0])
+	rt := md.GetRecordType(recordTypes[0])
 	if rt == nil || rt.Descriptor == nil {
 		return nil
 	}
@@ -395,15 +403,44 @@ func findScanPlan(p plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
 	}
 }
 
-func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	scan := findScanPlan(proj.GetInner())
-	var desc protoreflect.MessageDescriptor
-	if scan != nil && len(scan.GetRecordTypes()) > 0 {
-		rt := md.GetRecordType(scan.GetRecordTypes()[0])
-		if rt != nil && rt.Descriptor != nil {
-			desc = rt.Descriptor
+// findIndexPlan walks through innerPlan wrappers (filters, type
+// filters, etc.) to find a leaf RecordQueryIndexPlan.
+func findIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
+	for {
+		if idx, ok := p.(*plans.RecordQueryIndexPlan); ok {
+			return idx
+		}
+		if ip, ok := p.(innerPlan); ok {
+			p = ip.GetInner()
+		} else {
+			return nil
 		}
 	}
+}
+
+// findLeafDescriptor locates the protoreflect.MessageDescriptor for
+// the record type at the leaf of the plan tree. Works for both
+// primary-key scans (RecordQueryScanPlan) and secondary-index scans
+// (RecordQueryIndexPlan).
+func findLeafDescriptor(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) protoreflect.MessageDescriptor {
+	var recordTypes []string
+	if scan := findScanPlan(p); scan != nil {
+		recordTypes = scan.GetRecordTypes()
+	} else if idx := findIndexPlan(p); idx != nil {
+		recordTypes = idx.GetRecordTypes()
+	}
+	if len(recordTypes) == 0 {
+		return nil
+	}
+	rt := md.GetRecordType(recordTypes[0])
+	if rt == nil {
+		return nil
+	}
+	return rt.Descriptor
+}
+
+func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	desc := findLeafDescriptor(proj.GetInner(), md)
 	aliases := proj.GetAliases()
 	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
 	for i, v := range proj.GetProjections() {
@@ -442,26 +479,12 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 }
 
 func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	scan := findScanPlan(agg.GetInner())
-	var desc protoreflect.MessageDescriptor
-	if scan != nil && len(scan.GetRecordTypes()) > 0 {
-		rt := md.GetRecordType(scan.GetRecordTypes()[0])
-		if rt != nil {
-			desc = rt.Descriptor
-		}
-	}
+	desc := findLeafDescriptor(agg.GetInner(), md)
 	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
 }
 
 func deriveColumnsFromHashAggregation(agg *plans.RecordQueryHashAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	scan := findScanPlan(agg.GetInner())
-	var desc protoreflect.MessageDescriptor
-	if scan != nil && len(scan.GetRecordTypes()) > 0 {
-		rt := md.GetRecordType(scan.GetRecordTypes()[0])
-		if rt != nil {
-			desc = rt.Descriptor
-		}
-	}
+	desc := findLeafDescriptor(agg.GetInner(), md)
 	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
 }
 

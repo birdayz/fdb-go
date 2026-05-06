@@ -483,6 +483,8 @@ func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 		return &values.ConstantValue{Value: float64(v), Typ: values.TypeFloat}, nil
 	case float64:
 		return &values.ConstantValue{Value: v, Typ: values.TypeFloat}, nil
+	case []byte:
+		return &values.ConstantValue{Value: v, Typ: values.NullableBytes}, nil
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
 }

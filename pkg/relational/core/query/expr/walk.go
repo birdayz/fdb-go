@@ -1,6 +1,8 @@
 package expr
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -1242,6 +1244,8 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 			text = strings.ReplaceAll(text[1:len(text)-1], "''", "'")
 		}
 		return r.ResolveConstant(text)
+	case *antlrgen.BytesConstantContext:
+		return r.walkBytesConstant(k)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", c)}
 }
@@ -1276,6 +1280,68 @@ type UnsupportedExpressionShapeError struct {
 
 func (e *UnsupportedExpressionShapeError) Error() string {
 	return fmt.Sprintf("expr.WalkExpression: unsupported shape: %s", e.Shape)
+}
+
+// walkBytesConstant handles hex (`x'CAFE'`) and base64 (`b64'yv4='`)
+// byte literals. Matches Java's ExpressionVisitor.visitBytesLiteral
+// + ParseHelpers.parseBytes: strips the prefix/suffix, decodes the
+// body, and wraps the result in a ConstantValue with BYTES type.
+//
+// Invalid hex (odd length, non-hex chars) or invalid base64 surfaces
+// as InvalidBinaryLiteralError so callers can map to SQLSTATE 22F03.
+func (r *Resolver) walkBytesConstant(bc *antlrgen.BytesConstantContext) (values.Value, error) {
+	bl := bc.BytesLiteral()
+	if bl == nil {
+		return nil, &InvalidBinaryLiteralError{Text: bc.GetText(), Reason: "empty bytes literal"}
+	}
+	blc, ok := bl.(*antlrgen.BytesLiteralContext)
+	if !ok {
+		return nil, &InvalidBinaryLiteralError{Text: bc.GetText(), Reason: fmt.Sprintf("unexpected BytesLiteral ctx %T", bl)}
+	}
+	if hexLit := blc.HEXADECIMAL_LITERAL(); hexLit != nil {
+		text := hexLit.GetText()
+		body := stripBytesPrefix(text, "x")
+		out, err := hex.DecodeString(body)
+		if err != nil {
+			return nil, &InvalidBinaryLiteralError{Text: text, Reason: err.Error()}
+		}
+		return r.ResolveConstant(out)
+	}
+	if b64Lit := blc.BASE64_LITERAL(); b64Lit != nil {
+		text := b64Lit.GetText()
+		body := stripBytesPrefix(text, "b64")
+		out, err := base64.StdEncoding.Strict().DecodeString(body)
+		if err != nil {
+			return nil, &InvalidBinaryLiteralError{Text: text, Reason: err.Error()}
+		}
+		return r.ResolveConstant(out)
+	}
+	return nil, &InvalidBinaryLiteralError{Text: bc.GetText(), Reason: "bytes literal must be hex or base64"}
+}
+
+// stripBytesPrefix removes the `<prefix>'...'` wrapping from a bytes
+// literal text token (e.g. `x'CAFE'` → `CAFE`, `b64'yv4='` → `yv4=`).
+// Case-insensitive on the prefix.
+func stripBytesPrefix(text, prefix string) string {
+	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, prefix) {
+		text = text[len(prefix):]
+	}
+	text = strings.TrimPrefix(text, "'")
+	text = strings.TrimSuffix(text, "'")
+	return text
+}
+
+// InvalidBinaryLiteralError signals a malformed hex or base64 byte
+// literal. Should be mapped to SQLSTATE 22F03
+// INVALID_BINARY_REPRESENTATION by the caller.
+type InvalidBinaryLiteralError struct {
+	Text   string
+	Reason string
+}
+
+func (e *InvalidBinaryLiteralError) Error() string {
+	return fmt.Sprintf("invalid binary literal %q: %s", e.Text, e.Reason)
 }
 
 // NumericOverflowLiteralError signals that a numeric literal overflows
