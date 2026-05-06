@@ -3,6 +3,8 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "gen",
     srcs = [
+        "catalog_data.pb.go",
+        "catalog_data_vtproto.pb.go",
         "index_build.pb.go",
         "index_build_vtproto.pb.go",
         "keyspace.pb.go",

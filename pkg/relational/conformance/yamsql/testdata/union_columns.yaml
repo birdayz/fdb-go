@@ -1,0 +1,102 @@
+# union_columns.yaml
+#
+# UNION column-binding: SQL standard is positional, not name-based.
+# The left SELECT's column names become the result column names, and
+# right-side columns are matched purely by position. Different names
+# on matching positions are fine; mismatched counts must error.
+# Type coercion between sides is a separate concern (not tested here).
+name: union_columns
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT NOT NULL, id_str STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20)
+  - INSERT INTO b VALUES (1, 100), (2, 200)
+  - INSERT INTO c VALUES (1, 'x'), (2, 'y')
+tests:
+  # UNION ALL with differently-named columns across sides.
+  # Position-based: left's `v` / right's `w` combine into a single
+  # output column (left name wins in the result schema).
+  - query: SELECT v FROM a UNION ALL SELECT w FROM b
+    unordered: true
+    rows:
+      - [10]
+      - [20]
+      - [100]
+      - [200]
+
+  # Two columns per side, different names per side — positional
+  # matching lines them up. id(a)↔id(b), v↔w. ORDER BY on the UNION
+  # result references the LEFT branch's column names (SQL standard:
+  # result schema = leftmost SELECT). The grammar parses trailing
+  # ORDER BY as attached to the right simpleTable, but execUnion lifts
+  # it back up to the combined result.
+  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY id, v
+    rows:
+      - [1, 10]
+      - [1, 100]
+      - [2, 20]
+      - [2, 200]
+
+  # ORDER BY DESC on union — pins that ORDER BY DESC applies to the
+  # combined result. (LIMIT was incidental; rejected at parse time as
+  # of fdb-relational 4.11.1.0.)
+  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC
+    rows:
+      - [2, 200]
+      - [1, 100]
+      - [2, 20]
+      - [1, 10]
+
+  # ORDER BY on a column name that exists on the right but not the left
+  # fails with 42703 (undefined_column): the result schema is the LEFT's
+  # column names only.
+  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w
+    error_code: "42703"
+
+  # LIMIT / OFFSET on a UNION are rejected at parse time
+  # (fdb-relational 4.11.1.0 / Go aligned). Java checks offset first,
+  # so the combined shape errors on OFFSET.
+  - query: SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1
+    error_code: "0AF00"
+
+  # UNION (without ALL) — Java rejects "only UNION ALL is supported"
+  # (0A000); aligned .
+  - query: SELECT v FROM a UNION SELECT v FROM a ORDER BY v
+    error_code: "0AF00"
+
+  # Column-count mismatch on UNION ALL — Java errors 42F64
+  # (UNION_INCORRECT_COLUMN_COUNT, class-42 Java-specific code aligned
+  # at nightshift-39).
+  - query: SELECT id, v FROM a UNION ALL SELECT id FROM b
+    error_code: "42F64"
+  # Plain UNION (without ALL) is rejected ahead of any arity check.
+  - query: SELECT id, v FROM a UNION SELECT id FROM b
+    error_code: "0AF00"
+
+  # UNION with constant literals on one side.
+  - query: SELECT v FROM a UNION ALL SELECT 99 FROM b
+    unordered: true
+    rows:
+      - [10]
+      - [20]
+      - [99]
+      - [99]
+  # UNION with incompatible types across sides. Java's union.yamsql
+  # errors 42F65 (UNION_INCOMPATIBLE_COLUMNS) when the corresponding
+  # columns have non-unifiable types (e.g. BIGINT vs STRING).
+  # dayshift-40 adds a runtime type probe — sample the first non-NULL
+  # value from each side per column and require `valuesComparable`.
+  # Narrower than Java's plan-time check (all-NULL columns skip) but
+  # catches the common case without a semantic analyzer pass.
+  - query: SELECT v FROM a UNION ALL SELECT id_str FROM c
+    error_code: "42F65"
+  # Same types pair cleanly — sanity regression guard.
+  - query: SELECT v FROM a UNION ALL SELECT w FROM b
+    unordered: true
+    rows:
+      - [10]
+      - [20]
+      - [100]
+      - [200]

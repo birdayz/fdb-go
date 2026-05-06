@@ -261,6 +261,7 @@ func (o DatabaseOptions) SetTransactionTimeout(ms int64) error {
 func (o DatabaseOptions) SetTransactionRetryLimit(retries int64) error {
 	if o.db != nil {
 		o.db.txDefaults.retryLimit = retries
+		o.db.txDefaults.hasRetryLimit = true
 	}
 	return nil
 }

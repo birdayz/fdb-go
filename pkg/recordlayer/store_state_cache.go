@@ -183,8 +183,11 @@ func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 	}
 }
 
-func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck, ks *storeSubspaceKeys) (*RecordStoreState, error) {
+func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*RecordStoreState, error) {
 	tx := store.context.Transaction()
+
+	// Cache derived subspace keys globally — same for every Open() on the same subspace.
+	ks := getCachedSubspaceKeys(store.subspace)
 
 	// Fire both range reads in parallel. Index states use snapshot isolation
 	// (matching Java's loadIndexStatesAsync which reads at SNAPSHOT).

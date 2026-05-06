@@ -97,6 +97,7 @@ type FDBRecordStore struct {
 	storeStateCache      FDBRecordStoreStateCache // Cache for store state across transactions
 	stateMu              sync.RWMutex             // protects storeHeader + indexStates
 	stateLoadOnce        sync.Once                // ensures lazy store state load happens exactly once (Build() path)
+	stateLoadErr         error                    // error from lazy load (nil if loaded successfully or not yet attempted)
 	versionChanged       bool                     // true if checkPossiblyRebuild detected a version change
 	maintainerCache      sync.Map                 // string → IndexMaintainer, cached per-transaction
 	batchKeyBuf          *[]byte                  // shared buffer for batch key packing (InsertBatch only)
@@ -109,34 +110,37 @@ type FDBRecordStore struct {
 //
 // Matches Java's build() + lazy preloadRecordStoreStateAsync() pattern:
 // Java's Builder.build() returns immediately (zero reads), then the first
-// operation that needs index state (saveRecordAsync, deleteRecordAsync) calls
-// preloadRecordStoreStateAsync() which loads header + index states.
+// operation that needs index state calls preloadRecordStoreStateAsync().
 //
-// MUST be called before acquiring stateMu to avoid deadlock (loadRecordStoreState
-// acquires no locks but the caller typically takes stateMu afterward).
+// MUST be called before acquiring stateMu to avoid deadlock.
 //
 // For Open/CreateOrOpen paths, storeHeader and indexStates are already populated
-// during the open call — stateLoadOnce.Do is a no-op (sync.Once checks the done
-// flag atomically and returns immediately).
+// during the open call — stateLoadOnce.Do returns immediately.
 func (store *FDBRecordStore) ensureStoreStateLoaded() {
 	store.stateLoadOnce.Do(func() {
 		if store.indexStates != nil {
 			return // already loaded (Open/CreateOrOpen path)
 		}
-		ks := getCachedSubspaceKeys(store.subspace)
-		state, err := loadRecordStoreState(store, ExistenceCheckNone, ks)
+		state, err := loadRecordStoreState(store, ExistenceCheckNone)
 		if err != nil {
-			// On error, default to all readable — safe when CreateOrOpen ran at
+			// Capture the error for callers that can propagate it.
+			// Default to all readable — safe when CreateOrOpen ran at
 			// startup and all indexes are known to be built.
+			store.stateLoadErr = err
 			store.indexStates = make(map[string]IndexState)
 			return
 		}
-		// No mutex needed: sync.Once provides happens-before guarantee.
-		// All callers call ensureStoreStateLoaded() BEFORE acquiring stateMu,
-		// so the writes here are visible to subsequent reads under stateMu.RLock().
 		store.storeHeader = state.StoreHeader
 		store.indexStates = state.IndexStates
 	})
+}
+
+// ensureStoreStateLoadedErr calls ensureStoreStateLoaded and returns any
+// error that occurred during the lazy load. For callers that can propagate
+// errors (batch operations, validate, updateSecondaryIndexes).
+func (store *FDBRecordStore) ensureStoreStateLoadedErr() error {
+	store.ensureStoreStateLoaded()
+	return store.stateLoadErr
 }
 
 // IsVersionChanged returns true if the metadata version changed during
@@ -180,7 +184,9 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.validateRecordUpdateAllowed().
 func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.validateRecordUpdateAllowedLocked()
@@ -467,13 +473,13 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
 
-	// Extract primary key using the flat evaluator (avoids [][]any wrapper allocation).
-	// Reinterpret []any as tuple.Tuple ([]TupleElement where TupleElement=any).
-	// Identical memory layout — no copy needed.
+	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
 	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract primary key: %w", err)
 	}
+	// Reinterpret []any as tuple.Tuple ([]TupleElement where TupleElement=any).
+	// Identical memory layout — no copy needed.
 	primaryKey := *(*tuple.Tuple)(unsafe.Pointer(&keyValues))
 
 	recordsSubspace := store.recordsSubspace
@@ -880,7 +886,9 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // are partitioned into three sets: old-only (delete entries), new-only (insert
 // entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	store.ensureStoreStateLoaded() // lazy-load before acquiring lock (matches Java build() path)
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
@@ -1044,7 +1052,6 @@ func (store *FDBRecordStore) indexSecondarySubspace(index *Index) subspace.Subsp
 // avoiding repeated allocation of maintainer + mutation objects.
 // Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
 func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, error) {
-	// Check cache (sync.Map is safe for concurrent access)
 	if cached, ok := store.maintainerCache.Load(index.Name); ok {
 		return cached.(IndexMaintainer), nil
 	}
@@ -1174,15 +1181,24 @@ func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuati
 	if recordType != nil && recordType.PrimaryKey != nil && primaryKeyHasRecordTypePrefix(recordType.PrimaryKey) {
 		// Fast path: prefix scan on the record type key range.
 		// RecordTypeKey is the first component, so all records of this type
-		// have PK starting with (recordTypeIndex, ...).
-		rtk := int64(recordType.RecordTypeIndex)
+		// have PK starting with (recordTypeKey, ...).
+		// Use GetRecordTypeKey() to respect explicit keys from SetRecordTypeKey().
+		// Matches Java's RecordType.getRecordTypeKey().
+		rtk := recordType.GetRecordTypeKey()
 		lowEP := EndpointTypeRangeInclusive
+		highEP := EndpointTypeRangeInclusive
 		if len(continuation) > 0 {
-			lowEP = EndpointTypeContinuation
+			// Match ScanRecords: reverse scans narrow the high endpoint,
+			// forward scans narrow the low endpoint.
+			if scanProperties.IsReverse() {
+				highEP = EndpointTypeContinuation
+			} else {
+				lowEP = EndpointTypeContinuation
+			}
 		}
 		return store.ScanRecordsInRange(
 			tuple.Tuple{rtk}, tuple.Tuple{rtk},
-			lowEP, EndpointTypeRangeInclusive,
+			lowEP, highEP,
 			continuation, scanProperties,
 		)
 	}
@@ -1206,6 +1222,14 @@ func primaryKeyHasRecordTypePrefix(expr KeyExpression) bool {
 		return ok
 	}
 	return false
+}
+
+// KeyExpressionHasRecordTypePrefix is the exported form of the per-expression
+// prefix check. Used by the SQL layer's covering-index pushdown to decide
+// how to slice a primary-key tuple (first element is the record-type key
+// when true).
+func KeyExpressionHasRecordTypePrefix(expr KeyExpression) bool {
+	return primaryKeyHasRecordTypePrefix(expr)
 }
 
 // ScanRecordsInRange scans records in a key range
@@ -1306,6 +1330,7 @@ func (store *FDBRecordStore) getFormatVersionLocked() int32 {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getUserVersion().
 func (store *FDBRecordStore) GetUserVersion() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.UserVersion != nil {
@@ -1332,6 +1357,7 @@ func (store *FDBRecordStore) SetUserVersion(version int32) error {
 // GetMetaDataVersion returns the metadata version stored in the header.
 // Goroutine-safe via stateMu (read lock).
 func (store *FDBRecordStore) GetMetaDataVersion() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.MetaDataversion != nil {
@@ -1345,6 +1371,7 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getIncarnation().
 func (store *FDBRecordStore) GetIncarnation() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil {
@@ -1380,6 +1407,7 @@ func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getHeaderUserField().
 func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
@@ -1448,6 +1476,7 @@ type RecordStoreState struct {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getRecordStoreState().
 func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	states := make(map[string]IndexState, len(store.indexStates))

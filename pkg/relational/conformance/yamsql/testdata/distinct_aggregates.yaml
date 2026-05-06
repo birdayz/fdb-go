@@ -1,0 +1,37 @@
+# distinct_aggregates.yaml
+#
+# All DISTINCT-aggregate forms (COUNT/SUM/MIN/MAX/AVG with DISTINCT)
+# are rejected by both engines. fdb-relational 4.11.1.0's parser
+# visitor NPEs on every aggregate with DISTINCT
+# (`AggregateWindowedFunctionContext.ALL().getText()` is called
+# unconditionally; ALL is null when DISTINCT is present, per CLAUDE.md
+# gotcha "COUNT(DISTINCT col) NPEs in fdb-relational"). Go's embedded
+# engine rejects at execution time with `ErrCodeUnsupportedOperation`.
+# Same architectural reason in both engines: visitor doesn't handle the
+# DISTINCT case.
+name: distinct_aggregates
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 20), (4, null), (5, 30), (6, 10)
+tests:
+  - query: SELECT COUNT(DISTINCT v) FROM t
+    error_code: "0A000"
+  - query: SELECT SUM(DISTINCT v) FROM t
+    error_code: "0A000"
+  - query: SELECT MIN(DISTINCT v) FROM t
+    error_code: "0A000"
+  - query: SELECT MAX(DISTINCT v) FROM t
+    error_code: "0A000"
+  - query: SELECT AVG(DISTINCT v) FROM t
+    error_code: "0A000"
+  - query: SELECT COUNT(DISTINCT v), SUM(DISTINCT v), AVG(DISTINCT v) FROM t
+    error_code: "0A000"
+  - query: SELECT COUNT(DISTINCT v) AS c FROM t HAVING COUNT(DISTINCT v) >= 3
+    error_code: "0A000"
+  - query: SELECT COUNT(DISTINCT v) FROM t HAVING COUNT(DISTINCT v) = 99
+    error_code: "0A000"
+  # Non-distinct comparison: SUM = 90, COUNT = 5 — works.
+  - query: SELECT SUM(v), COUNT(v) FROM t
+    rows:
+      - [90, 5]

@@ -1,0 +1,89 @@
+# arithmetic.yaml
+#
+# swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp
+# unified. Div/0 errors (SQL standard 22012, division_by_zero), '%'
+# supported everywhere.
+#
+# BIGINT / BIGINT does integer division (truncation toward zero) to
+# match Java's ArithmeticValue.PhysicalOperator.DIV_LL which is literal
+# `long / long`. `10 / 3 = 3`, not 3.333. MOD_LL similarly. Fixed
+# nightshift-36 (harness caught the divergence).
+name: arithmetic
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 20, 4), (2, 7, 0), (3, 10, 3)
+tests:
+  # Evenly-divisible integer division — 20 / 4 = 5.
+  - query: SELECT a / b FROM t WHERE id = 1
+    rows:
+      - [5]
+  # Non-evenly-divisible integer division — 10 / 3 = 3 (truncation,
+  # matches Java DIV_LL). Pre-fix Go returned 3.3333... (float64).
+  - query: SELECT a / b FROM t WHERE id = 3
+    rows:
+      - [3]
+  # Integer remainder — 10 % 3 = 1 (matches Java MOD_LL).
+  - query: SELECT a % b FROM t WHERE id = 3
+    rows:
+      - [1]
+  # Modulo on evenly-divisible — 20 % 4 = 0.
+  - query: SELECT a % b FROM t WHERE id = 1
+    rows:
+      - [0]
+  # Div/0 raises SQLSTATE 22012 (division_by_zero) per SQL standard.
+  # Swingshift-38 tightened from the generic 22023 (INVALID_PARAMETER)
+  # to the precise class-22 code so callers can distinguish division-
+  # by-zero from other data-exception shapes without string-matching.
+  - query: SELECT a / b FROM t WHERE id = 2
+    error_code: "22012"
+  - query: SELECT a % b FROM t WHERE id = 2
+    error_code: "22012"
+  # Addition.
+  - query: SELECT a + b FROM t WHERE id = 1
+    rows:
+      - [24]
+  # Subtraction.
+  - query: SELECT a - b FROM t WHERE id = 1
+    rows:
+      - [16]
+  # Multiplication.
+  - query: SELECT a * b FROM t WHERE id = 1
+    rows:
+      - [80]
+  # Negative dividend: sign follows dividend for `/` and `%` (Java and
+  # Go both do truncation toward zero). `-10 / 3 = -3`, `-10 % 3 = -1`.
+  # Rewritten with a FROM clause — fdb-relational 4.11.1.0 rejects
+  # FROM-less SELECT (UNSUPPORTED_QUERY / 0AF00); use t WHERE id = 1
+  # to anchor the constant projection on a single row.
+  - query: SELECT -10 / 3 FROM t WHERE id = 1
+    rows:
+      - [-3]
+  - query: SELECT -10 % 3 FROM t WHERE id = 1
+    rows:
+      - [-1]
+  # NULL arithmetic — any op with NULL operand returns NULL.
+  - query: SELECT a + NULL FROM t WHERE id = 1
+    rows:
+      - [~]
+  - query: SELECT NULL - b FROM t WHERE id = 1
+    rows:
+      - [~]
+  - query: SELECT NULL * NULL FROM t WHERE id = 1
+    rows:
+      - [~]
+  # NULL / n → NULL (not div-by-zero).
+  - query: SELECT NULL / 5 FROM t WHERE id = 1
+    rows:
+      - [~]
+  # n / NULL → NULL (NULL absorbs div-by-zero).
+  - query: SELECT 5 / NULL FROM t WHERE id = 1
+    rows:
+      - [~]
+  # Actual div-by-zero (non-NULL divisor) errors 22012.
+  - query: SELECT a / 0 FROM t WHERE id = 1
+    error_code: "22012"
+  # NULL / 0 is still NULL (NULL dominates div-by-zero per SQL spec).
+  - query: SELECT NULL / 0 FROM t WHERE id = 1
+    rows:
+      - [~]

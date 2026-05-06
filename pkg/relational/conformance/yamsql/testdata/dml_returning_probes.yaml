@@ -1,0 +1,31 @@
+# dml_returning_probes.yaml
+#
+# Probes for DML RETURNING clause (Postgres / Java fdb-relational
+# syntax). Grammar accepts `INSERT ... RETURNING selectElements`,
+# `UPDATE ... RETURNING ...`, `DELETE ... RETURNING ...`. Probably
+# not implemented — pin current behavior so future implementation flips
+# them.
+name: dml_returning_probes
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # DELETE ... RETURNING — Java can do this. Current Go behavior:
+  # parser accepts it, evaluator silently ignores RETURNING and just
+  # does the DELETE. Pin: the DML succeeds and the row is gone, but
+  # there is no result set. Diverges from Java which returns the
+  # deleted row(s).
+  - query: DELETE FROM t WHERE id = 1 RETURNING id, n
+  - query: SELECT id FROM t WHERE id = 1
+    rows: []
+  # UPDATE ... RETURNING — same: silently does the UPDATE, no result.
+  - query: UPDATE t SET n = 99 WHERE id = 2 RETURNING id, n
+  - query: SELECT n FROM t WHERE id = 2
+    rows:
+      - [99]
+  # INSERT ... RETURNING — parser rejects 42601. Grammar accepts
+  # RETURNING for delete/update only? Or VALUES form differs from
+  # SELECT-source form. Either way pin current parse error.
+  - query: INSERT INTO t VALUES (4, 40) RETURNING id, n
+    error_code: "42601"

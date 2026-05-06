@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plandiff",
+    srcs = [
+        "corpus.go",
+        "divergence.go",
+        "go_runner.go",
+        "httpclient.go",
+        "plandiff.go",
+        "runsql.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/query",
+        "//pkg/relational/sqldriver",
+        "@com_github_google_uuid//:uuid",
+    ],
+)
+
+go_test(
+    name = "plandiff_test",
+    srcs = [
+        "catalog_aware_test.go",
+        "go_runner_test.go",
+        "plandiff_test.go",
+        "runsql_test.go",
+    ],
+    embed = [":plandiff"],
+    deps = ["//pkg/testcontainers/foundationdb"],
+)

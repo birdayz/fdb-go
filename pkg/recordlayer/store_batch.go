@@ -104,7 +104,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	var insertCount int64
 
 	// Lazy-load store state before acquiring lock (Build() path, matches Java).
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return nil, fmt.Errorf("load store state: %w", err)
+	}
 	// Hold stateMu.RLock for the entire batch to avoid per-record lock/unlock.
 	// Also validate update lock once (same for all records).
 	store.stateMu.RLock()
@@ -164,11 +166,28 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			}
 		}
 
+		// Save version if versioning is enabled. One SET_VERSIONSTAMPED_VALUE
+		// mutation per record — no round trip, just added to the write set.
+		var savedVersion *FDBRecordVersion
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(p.primaryKey, version, &newsizeInfo); err != nil {
+				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			savedVersion = version
+		}
+
 		// Record count
 		stored := &FDBStoredRecord[proto.Message]{
 			PrimaryKey: p.primaryKey,
 			RecordType: p.recordType,
 			Record:     p.record,
+			Version:    savedVersion,
+			Store:      store,
 			KeyCount:   newsizeInfo.KeyCount,
 			KeySize:    newsizeInfo.KeySize,
 			ValueSize:  newsizeInfo.ValueSize,
@@ -195,6 +214,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 					PrimaryKey: p.primaryKey,
 					RecordType: p.recordType,
 					Record:     oldMsg,
+					Store:      store,
+				}
+				// Load old version for VERSION index cleanup on update.
+				// One FDB read per updated record — only when version indexes exist.
+				if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
+					if ver, verErr := store.LoadRecordVersion(p.primaryKey, false); verErr == nil {
+						oldRecord.Version = ver
+					}
 				}
 			}
 		}
@@ -223,9 +250,6 @@ func (store *FDBRecordStore) SaveRecordBatch(
 // silently overwritten. Record count will be incorrectly incremented. Index
 // entries from the old record will NOT be cleaned up. Only use this when you
 // can guarantee unique primary keys (e.g. UUID/random IDs, monotonic sequences).
-//
-// For the metrognome usage event ingest path, every event has a unique event_id
-// PK, so this is safe and provides maximum throughput.
 func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -261,7 +285,9 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 
 	results := make([]*FDBStoredRecord[proto.Message], len(records))
 
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return nil, fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
@@ -273,7 +299,7 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	// eliminating the EvaluateFlat []any allocation per record.
 	var compiledPK *compiledKeyEvaluator
 	var pkAppender tupleAppender
-	if len(records) > 0 {
+	if len(records) > 0 && records[0] != nil {
 		typeName := string(records[0].ProtoReflect().Descriptor().Name())
 		rt := store.metaData.GetRecordType(typeName)
 		if rt != nil && rt.PrimaryKey != nil {
@@ -338,10 +364,26 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 			}
 		}
 
+		// Save version if versioning is enabled.
+		var savedVersion *FDBRecordVersion
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(primaryKey, version, nil); err != nil {
+				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			savedVersion = version
+		}
+
 		stored := &FDBStoredRecord[proto.Message]{
 			PrimaryKey: primaryKey,
 			RecordType: recordType,
 			Record:     record,
+			Version:    savedVersion,
+			Store:      store,
 		}
 
 		if err := store.updateSecondaryIndexesLocked(nil, stored); err != nil {
@@ -365,11 +407,18 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 // but returns no results — the caller only gets an error. This eliminates per-record
 // allocations for result structs, primary key tuples, and sizeInfo tracking.
 //
-// Same guarantees and warnings as SaveRecordBatchInsertOnly: all records must have
-// unique primary keys, existing records will be silently overwritten.
+// PRECONDITIONS:
+//   - All records MUST be the same proto message type. Mixed types are rejected with an error.
+//   - All records must have unique primary keys. Existing records silently overwritten.
+//   - If the schema has UNIQUE indexes, all records must have unique values for those
+//     indexes. Uniqueness is not enforced — duplicates silently corrupt the index.
+//   - This is a Go-only API, not present in Java Record Layer.
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
 		return nil
+	}
+	if records[0] == nil {
+		return fmt.Errorf("record %d is nil", 0)
 	}
 
 	tx := store.context.Transaction()
@@ -394,7 +443,9 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 		}
 	}
 
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
@@ -474,6 +525,13 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 			return fmt.Errorf("record %d is nil", i)
 		}
 
+		// Validate all records are the same type (InsertBatch precondition).
+		// Mixed types cause silent corruption: wrong union field number in
+		// serialization and wrong index maintainers applied.
+		if rtn := string(record.ProtoReflect().Descriptor().Name()); rtn != typeName {
+			return fmt.Errorf("record %d: type %q does not match batch type %q (InsertBatch requires all same type)", i, rtn, typeName)
+		}
+
 		// Evaluate PK — reuse pkAppender across records (no alloc per record).
 		var primaryKey tuple.Tuple
 		if compiledPK != nil {
@@ -513,10 +571,24 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 			}
 		}
 
+		// Save version if versioning is enabled.
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(primaryKey, version, nil); err != nil {
+				return fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			stored.Version = version
+		}
+
 		// Index updates via cached maintainers — no per-record map lookups.
 		stored.PrimaryKey = primaryKey
 		stored.RecordType = recordType
 		stored.Record = record
+		stored.Store = store
 		for _, cm := range maintainers {
 			if err := cm.maintainer.Update(nil, &stored); err != nil {
 				return fmt.Errorf("record %d: index %q: %w", i, cm.index.Name, err)
@@ -547,10 +619,13 @@ func loadSplitOnly(
 
 	rangeEnd := recordSubspace.Pack(appendToTuple(primaryKey, 256))
 
-	kvs := tx.GetRange(
+	kvs, err := tx.GetRange(
 		fdb.KeyRange{Begin: fdb.Key(firstSplitKey), End: fdb.Key(rangeEnd)},
 		fdb.RangeOptions{},
-	).GetSliceOrPanic()
+	).GetSliceWithError()
+	if err != nil {
+		return nil, fmt.Errorf("split record range read: %w", err)
+	}
 
 	if len(kvs) == 0 {
 		return nil, nil

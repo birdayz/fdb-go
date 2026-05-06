@@ -1,0 +1,127 @@
+# nested_derived_table.yaml
+#
+# Nested derived tables (Java's null-operator-tests.yamsql):
+# `SELECT * FROM (SELECT * FROM (SELECT * FROM T1) AS x) AS y`.
+# Multiple layers of derived-table wrapping verify that alias scoping
+# and column propagation work across nesting levels.
+name: nested_derived_table
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10), (2, 20), (3, null), (4, 40)
+tests:
+  # Java pattern: 3-level nesting, outer filter on outermost alias.
+  - query: |-
+      SELECT * FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NOT NULL) AS y
+      ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, ~]
+      - [4, 40]
+  # Aggregate over nested derived tables.
+  - query: |-
+      SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE n IS NOT NULL) AS y
+    rows:
+      - [3]
+  # Nested with column renaming at each level.
+  - query: |-
+      SELECT y.a FROM (SELECT x.b AS a FROM (SELECT id AS b FROM t1) AS x WHERE b > 2) AS y
+      ORDER BY y.a
+    rows:
+      - [3]
+      - [4]
+  # Java-aligned: derived table with DISTINCT inside.
+  # Values: 10, 20, null, 40. DISTINCT n where n >= 20 → [20, 40].
+  - query: SELECT sub.n FROM (SELECT DISTINCT n FROM t1 WHERE n >= 20) AS sub ORDER BY sub.n
+    rows:
+      - [20]
+      - [40]
+  # Derived table with aggregate + alias inside: `SELECT COUNT(*) AS a`
+  # propagates the alias through the materializer so the outer `SELECT a`
+  # resolves to the aggregate value. Pre-dayshift-40 the COUNT(*) fast
+  # path hardcoded "COUNT(*)" as the column name, dropping the alias.
+  - query: SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub
+    rows:
+      - [3]
+  # Still works without the alias — canonical name carries through.
+  - query: SELECT "COUNT(*)" FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
+    rows:
+      - [3]
+  # COUNT(*) AS alias with GROUP BY + derived table: the alias rides
+  # through the fast-path-demote (countStar → aggCols) into the grouped
+  # aggregation path. Groups: n=10, n=20, n=40 after filter — each has
+  # one row, so every cnt is 1.
+  - query: |-
+      SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL GROUP BY n) AS sub
+      ORDER BY cnt
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  # COUNT(*) AS alias composed through HAVING + derived table. HAVING
+  # references the canonical "COUNT(*)" (aggregate function, not alias)
+  # per SQL §7.12; outer projection reads the alias.
+  - query: |-
+      SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL HAVING COUNT(*) > 0) AS sub
+    rows:
+      - [3]
+  # COUNT(*) AS alias + GROUP BY + HAVING: reviewer-flagged edge case.
+  # When countStar demotes to aggCols with outName=alias, the group
+  # row map is keyed by the alias and HAVING lookups under canonical
+  # name "COUNT(*)" must still resolve. Each of n=10/20/40 has 1 row
+  # → HAVING COUNT(*) > 0 keeps them all. Pre-fix this would either
+  # panic or silently no-op depending on the HAVING path.
+  - query: |-
+      SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL GROUP BY n HAVING COUNT(*) > 0) AS sub
+      ORDER BY cnt
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  # SUM AS alias (exercising the aggCols path which was already correct;
+  # regression guard so the countStarAlias work doesn't accidentally
+  # shadow it). 10 + 20 + 40 = 70 (null n is excluded from SUM).
+  - query: SELECT s FROM (SELECT SUM(n) AS s FROM t1) AS sub
+    rows:
+      - [70]
+  # MIN AS alias through derived table. n in {10,20,null,40} → min = 10.
+  - query: SELECT m FROM (SELECT MIN(n) AS m FROM t1) AS sub
+    rows:
+      - [10]
+  # MAX AS alias through derived table. max = 40.
+  - query: SELECT m FROM (SELECT MAX(n) AS m FROM t1) AS sub
+    rows:
+      - [40]
+  # AVG AS alias through derived table. (10+20+40)/3 = 23.333... —
+  # Java's AVG(long) returns double.
+  - query: SELECT a FROM (SELECT AVG(n) AS a FROM t1) AS sub
+    rows:
+      - [23.333333333333332]
+  # Aliased aggregates with GROUP BY + derived-table wrap. Exercises
+  # the grouped aggCols path. Groups: n=10 (id=1), n=20 (id=2),
+  # n=40 (id=4). sum_id equals id in each single-row group.
+  - query: |-
+      SELECT grp, total FROM (
+        SELECT n AS grp, SUM(id) AS total FROM t1 WHERE n IS NOT NULL GROUP BY n
+      ) AS sub
+      ORDER BY grp
+    rows:
+      - [10, 1]
+      - [20, 2]
+      - [40, 4]
+  # MIN + alias + GROUP BY through derived table. Each n-group has one
+  # row, so MIN(id) equals that row's id.
+  - query: |-
+      SELECT lo FROM (SELECT MIN(id) AS lo FROM t1 WHERE n IS NOT NULL GROUP BY n) AS sub
+      ORDER BY lo
+    rows:
+      - [1]
+      - [2]
+      - [4]
+  # Aliased AVG + HAVING + derived table. HAVING references canonical
+  # AVG(n) (not alias); outer resolves alias. Single group without
+  # GROUP BY: AVG(n) = 23.333... > 10 → passes HAVING.
+  - query: SELECT a FROM (SELECT AVG(n) AS a FROM t1 HAVING AVG(n) > 10) AS sub
+    rows:
+      - [23.333333333333332]

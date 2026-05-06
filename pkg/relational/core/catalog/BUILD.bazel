@@ -1,0 +1,62 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "catalog",
+    srcs = [
+        "database_metadata.go",
+        "doc.go",
+        "fdb_store_catalog.go",
+        "fdb_template_catalog.go",
+        "fdb_transaction.go",
+        "keyspace.go",
+        "metadata.go",
+        "resultset.go",
+        "store_catalog.go",
+        "system_tables.go",
+        "template_catalog.go",
+        "transaction.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/metadata",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "catalog_test",
+    srcs = [
+        "benchmark_test.go",
+        "database_metadata_test.go",
+        "fdb_catalog_test.go",
+        "fuzz_test.go",
+        "integration_test.go",
+        "keyspace_test.go",
+        "metadata_test.go",
+        "store_catalog_test.go",
+        "system_tables_test.go",
+        "template_catalog_test.go",
+        "transaction_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":catalog"],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/metadata",
+        "//pkg/relational/core/parser",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//proto",
+        "@org_uber_go_mock//gomock",
+    ],
+)

@@ -1,0 +1,46 @@
+# string_functions.yaml
+#
+# STRING-family scalar functions (UPPER / LOWER / LENGTH / CHAR_LENGTH
+# / CHARACTER_LENGTH / OCTET_LENGTH / SUBSTRING / SUBSTR / TRIM /
+# LTRIM / RTRIM / LEFT / RIGHT / POSITION / REVERSE / CONCAT /
+# REPLACE) — fdb-relational 4.11.1.0 has no entries for these in its
+# function registry, so its planner returns
+# `RelationalException: Unsupported operator <NAME>` (function name
+# uppercased to match SQL casing). Go aligns by NOT having a case in
+# scalar_functions.go's switch — falling through to the default arm
+# emits the byte-equal "Unsupported operator <name>" message via
+# api.ErrCodeUnsupportedOperation (SQLSTATE 0A000). Per project
+# conformance principle: doesn't work in Java → doesn't work in Go.
+name: string_functions
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'hello world'), (2, ''), (3, null)
+tests:
+  - query: SELECT LEFT(s, 5) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT RIGHT(s, 5) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT SUBSTRING(s, 7) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT SUBSTRING(s, 1, 5) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT UPPER(s) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT LOWER('ABCxyz') FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT LENGTH('héllo') FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT CHAR_LENGTH('héllo') FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT CHARACTER_LENGTH('héllo') FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT OCTET_LENGTH('héllo') FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT POSITION('world', s) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT REVERSE(s) FROM t WHERE id = 1
+    error_code: "42883"
+  # Nested string function calls — outer rejection fires.
+  - query: SELECT UPPER(REVERSE(s)) FROM t WHERE id = 1
+    error_code: "42883"

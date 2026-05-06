@@ -413,6 +413,21 @@ func (rc *FDBRecordContext) Commit() error {
 	return rc.tx.Commit().Get()
 }
 
+// CommitWithHooks runs pre-commit checks, flushes pending version mutations,
+// commits the FDB transaction, and runs post-commit callbacks.
+// Use this instead of Commit() when the context was created manually (not via Run()).
+func (rc *FDBRecordContext) CommitWithHooks() error {
+	if err := rc.runCommitChecks(); err != nil {
+		return err
+	}
+	rc.flushVersionMutations()
+	if err := rc.tx.Commit().Get(); err != nil {
+		return err
+	}
+	rc.runPostCommits()
+	return nil
+}
+
 // Cancel cancels the transaction
 func (rc *FDBRecordContext) Cancel() {
 	rc.tx.Cancel()

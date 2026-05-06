@@ -126,7 +126,8 @@ func loadWithSplit(
 	sizeInfo *sizeInfo,
 ) ([]byte, error) {
 	// Try unsplit first (most common case).
-	// Use PackConcatWithPrefix to avoid allocating an intermediate concatenated tuple.
+	// Use PackConcatWithPrefix to avoid the intermediate tuple allocation
+	// from appendToTuple(primaryKey, unsplitRecord).
 	unsplitKey := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
 
 	value, err := tx.Get(fdb.Key(unsplitKey)).Get()

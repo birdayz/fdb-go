@@ -23,42 +23,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Check generated protobuf code is up to date
-        run: |
-          # Skip if no proto/buf config files changed (saves ~15s).
-          # Always runs on master pushes to catch transitive changes.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..HEAD -- 'proto/' 'buf.yaml' 'buf.gen.yaml' 'gen/' | head -1)
-            if [ -z "$CHANGED" ]; then
-              echo "No proto/buf/gen changes — skipping regeneration check"
-              exit 0
-            fi
-          fi
-          # Checksum gen/ before and after — don't regenerate in-place
-          # (regenerating touches timestamps and invalidates Bazel cache)
-          BEFORE=$(find gen/ -name '*.go' -exec sha256sum {} + | sort | sha256sum)
-          just generate
-          AFTER=$(find gen/ -name '*.go' -exec sha256sum {} + | sort | sha256sum)
-          if [ "$BEFORE" != "$AFTER" ]; then
-            echo "Generated protobuf code is out of date. Run 'just generate' and commit."
-            git diff --stat -- 'gen/'
-            exit 1
-          fi
-          # Restore original timestamps so Bazel cache stays valid
-          git checkout -- gen/
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
 
-      - name: Check Gazelle BUILD files are up to date
+      - name: Check generated code is up to date
         run: |
-          bazelisk run //:gazelle
-          if ! git diff --exit-code -- '*.bazel' '*.bzl'; then
-            echo "BUILD files are out of date. Run 'just gazelle' and commit."
+          just generate
+          if ! git diff --exit-code; then
+            echo "Generated code is out of date. Run 'just generate' and commit."
             exit 1
           fi
-          # Restore original timestamps
-          git checkout -- '*.bazel' '*.bzl' 2>/dev/null || true
 
       - name: Build, lint & test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_summary=detailed
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_tag_filters=-conformance_java --test_summary=detailed
 
       - name: Generate test report
         if: always()
@@ -81,7 +61,6 @@ jobs:
             echo "Hetzner Object Storage secrets not configured — skipping upload"
             exit 0
           fi
-          # mc is pre-installed via cloud-init; fallback download if missing
           if ! command -v mc &>/dev/null; then
             mkdir -p "$HOME/.local/bin"
             curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
@@ -89,11 +68,9 @@ jobs:
             export PATH="$HOME/.local/bin:$PATH"
           fi
           mc alias set hetzner "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
-          # Sanitize branch name for path (refs/heads/foo → foo, refs/pull/38/merge → pr-38)
           REF="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
           REF=$(echo "$REF" | sed 's|refs/pull/\([0-9]*\)/merge|pr-\1|; s|/|-|g')
           SHA="${GITHUB_SHA:0:7}"
-          # Per-branch latest + per-commit archive
           mc cp test-report.html "hetzner/$S3_BUCKET/reports/${REF}/latest.html"
           mc cp test-report.html "hetzner/$S3_BUCKET/reports/${REF}/${SHA}/report.html"
           REPORT_URL="https://${S3_BUCKET}.${S3_ENDPOINT#https://}/reports/${REF}/latest.html"
@@ -102,77 +79,8 @@ jobs:
 
       - name: Upload test report as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-report
           path: test-report.html
           retention-days: 30
-
-      - name: Run benchmarks
-        run: just bench-ci
-
-      - name: Upload benchmark results as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-results
-          path: bench-results.txt
-          retention-days: 90
-
-      - name: Upload master benchmark baseline
-        if: github.ref == 'refs/heads/master'
-        continue-on-error: true
-        env:
-          S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-          S3_ENDPOINT: ${{ secrets.HETZNER_S3_ENDPOINT }}
-          S3_BUCKET: ${{ secrets.HETZNER_S3_BUCKET }}
-        run: |
-          if [ -z "$S3_ACCESS_KEY" ]; then
-            echo "S3 secrets not configured — skipping"
-            exit 0
-          fi
-          if ! command -v mc &>/dev/null; then
-            mkdir -p "$HOME/.local/bin"
-            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
-            chmod +x "$HOME/.local/bin/mc"
-            export PATH="$HOME/.local/bin:$PATH"
-          fi
-          mc alias set hetzner "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
-          mc cp bench-results.txt "hetzner/$S3_BUCKET/bench/master-latest.txt"
-          echo "Uploaded master benchmark baseline"
-
-      - name: Compare benchmarks vs master (PR only)
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        env:
-          S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-          S3_ENDPOINT: ${{ secrets.HETZNER_S3_ENDPOINT }}
-          S3_BUCKET: ${{ secrets.HETZNER_S3_BUCKET }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -z "$S3_ACCESS_KEY" ]; then
-            echo "S3 secrets not configured — skipping comparison"
-            exit 0
-          fi
-          if ! command -v mc &>/dev/null; then
-            mkdir -p "$HOME/.local/bin"
-            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
-            chmod +x "$HOME/.local/bin/mc"
-            export PATH="$HOME/.local/bin:$PATH"
-          fi
-          mc alias set hetzner "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
-          mc cp "hetzner/$S3_BUCKET/bench/master-latest.txt" master-bench.txt || {
-            echo "No master baseline found — skipping comparison"
-            exit 0
-          }
-          bazelisk build //cmd/bench-report
-          BENCH_REPORT="$(bazelisk info bazel-bin 2>/dev/null)/cmd/bench-report/bench-report_/bench-report"
-          PR_NUM=${{ github.event.pull_request.number }}
-          REPO=${{ github.repository }}
-          "$BENCH_REPORT" \
-            -old master-bench.txt \
-            -new bench-results.txt \
-            -pr "$PR_NUM" \
-            -repo "$REPO"

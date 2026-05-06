@@ -1,0 +1,71 @@
+# bug_hunt_probes.yaml
+#
+# Throwaway probes targeting features likely to surface bugs:
+# implicit type conversion, NULL semantics edge cases, self-referencing
+# updates, nested CTEs, multi-table FROM with shared column names.
+# Each entry is either a clean pin (passes) or a 22023/0A000 error
+# pin documenting the current limitation.
+name: bug_hunt_probes
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, null), (4, null, 'd')
+tests:
+  # Self-referencing UPDATE: SET col = (subquery on same table).
+  # Postgres semantics: subquery sees the pre-UPDATE state. Confirms
+  # we don't read mid-update.
+  - query: UPDATE t SET n = (SELECT MAX(n) FROM t) WHERE id = 1
+  - query: SELECT n FROM t WHERE id = 1
+    rows:
+      - [30]
+  # Reset.
+  - query: UPDATE t SET n = id * 10 WHERE id IN (1, 2, 3)
+  # Implicit type conversion: STRING column compared to integer literal.
+  # nightshift-39: Java-aligned, errors 22000 (CANNOT_CONVERT_TYPE)
+  # matching Java's PromoteValue.isPromotionNeeded → SemanticException
+  # (INCOMPATIBLE_TYPE).
+  - query: SELECT id FROM t WHERE s = 1
+    error_code: "22000"
+  # NULL in IN list — Java rejects with verbatim "NULL values are not
+  # allowed in the IN list" (22000).
+  - query: SELECT id FROM t WHERE n IN (1, NULL, 30) ORDER BY id
+    error_code: "22000"
+  - query: SELECT id FROM t WHERE n NOT IN (1, NULL, 30)
+    error_code: "22000"
+  # COUNT(NULL) — SQL spec: COUNT(*) counts all; COUNT(col) skips
+  # NULLs. id=4 has n=NULL so COUNT(n) over all rows is 3, COUNT(*) is 4.
+  - query: SELECT COUNT(*), COUNT(n), COUNT(s) FROM t
+    rows:
+      - [4, 3, 3]
+  # AVG() over a column with NULLs: skips NULL rows.
+  # n values: 10, 20, 30 (NULL skipped) → mean = 20.
+  - query: SELECT AVG(n) FROM t
+    rows:
+      - [20.0]
+  # SUM of all-NULL: returns NULL, not 0. Common gotcha — SQL spec.
+  - query: SELECT SUM(n) FROM t WHERE n IS NULL
+    rows:
+      - [~]
+  # COUNT of empty result is 0 (always exists, never NULL).
+  - query: SELECT COUNT(*) FROM t WHERE id > 1000
+    rows:
+      - [0]
+  # Boolean NULL: TRUE AND NULL → NULL, FALSE AND NULL → FALSE.
+  - query: SELECT id FROM t WHERE (n > 5) AND (s IS NULL) ORDER BY id
+    rows:
+      - [3]
+  # Nested CTE: outer CTE references inner CTE.
+  - query: |-
+      WITH a AS (SELECT id, n FROM t WHERE n IS NOT NULL),
+           b AS (SELECT id, n * 2 AS doubled FROM a)
+      SELECT id, doubled FROM b ORDER BY id
+    rows:
+      - [1, 20]
+      - [2, 40]
+      - [3, 60]
+  # Aggregate over CTE.
+  - query: |-
+      WITH high AS (SELECT n FROM t WHERE n > 15)
+      SELECT SUM(n), COUNT(*) FROM high
+    rows:
+      - [50, 2]

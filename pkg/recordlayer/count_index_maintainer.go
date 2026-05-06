@@ -225,3 +225,5 @@ func (c *countKVCursor) Close() error {
 	c.closed = true
 	return nil
 }
+
+func (c *countKVCursor) IsClosed() bool { return c.closed }

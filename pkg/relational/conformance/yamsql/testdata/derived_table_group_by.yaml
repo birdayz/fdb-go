@@ -1,0 +1,104 @@
+# derived_table_group_by.yaml
+#
+# Java's groupby-tests.yamsql exercises several derived-table + GROUP BY
+# edge cases. Probe Go's behavior and pin the divergences surfaced by
+# dayshift-40 review; for cases where Go already matches Java, pin as
+# regression guards.
+#
+# Reference: fdb-record-layer/yaml-tests/src/test/resources/groupby-tests.yamsql
+# lines 136–185.
+name: derived_table_group_by
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+setup:
+  # Mirror Java's 13-row setup: col1=10 for ids 1..5, col1=20 for 6..13.
+  # col2 ranges 1..13 in insert order.
+  - INSERT INTO t1 VALUES
+      (1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5),
+      (6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10),
+      (11, 20, 11), (12, 20, 12), (13, 20, 13)
+tests:
+  # Java line 119-ish: MAX(x.col1) through derived + GROUP BY works.
+  - query: |-
+      SELECT MAX(x.col1) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1
+      ORDER BY 1
+    rows:
+      - [10]
+      - [20]
+
+  # Java line ~(same region): col2 not in derived output → 42703.
+  # Pre-fix Go would silently materialize everything and NULL-fill, or
+  # pick up col2 from the underlying table.
+  - query: SELECT MAX(x.col2) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1
+    error_code: "42703"
+
+  # Java works: MAX on grouped col2 where derived exposes both cols.
+  - query: |-
+      SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1
+      ORDER BY 1
+    rows:
+      - [5]
+      - [13]
+
+  # Java line 169: x.col1 + 10 in projection through derived + GROUP BY.
+  - query: |-
+      SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1
+      ORDER BY 1
+    rows:
+      - [20]
+      - [30]
+
+  # Java line 172: col2 ungrouped in projection expression → 42803.
+  - query: SELECT x.col1 + x.col2 FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1
+    error_code: "42803"
+
+  # Java line 175: col1 + col1 (both grouped) works. Exercises the
+  # "expression references only grouped columns" accept path.
+  - query: |-
+      SELECT x.col1 + x.col1 FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1
+      ORDER BY 1
+    rows:
+      - [20]
+      - [40]
+
+  # Java line 178: nested aggregate in derived + outer filter. The inner
+  # derived is `(SELECT MIN(x.col2) AS G FROM (SELECT col1,col2 FROM t1) AS x GROUP BY x.col1)`.
+  # Outer applies `WHERE G > 5` and `SELECT G + 4`. MIN(col2) per col1:
+  # col1=10 → min 1; col1=20 → min 6. WHERE G > 5 keeps only col1=20
+  # (G=6). Result: 6+4=10.
+  - query: |-
+      SELECT G + 4 FROM (
+        SELECT MIN(x.col2) AS G FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1
+      ) AS Y WHERE G > 5
+    rows:
+      - [10]
+
+  # ORDER BY applied on the outer wrapper of a derived table. Pre-
+  # swingshift-41 the derived-table branch discarded ORDER BY along
+  # with GROUP BY. Verify sort now applies. (LIMIT was incidental;
+  # rejected at parse time as of fdb-relational 4.11.1.0.) 13 rows:
+  # 8× col1=20 then 5× col1=10.
+  - query: |-
+      SELECT col1 FROM (SELECT col1 FROM t1) AS x ORDER BY col1 DESC
+    rows:
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [10]
+      - [10]
+      - [10]
+      - [10]
+      - [10]
+
+  # HAVING on derived-table outer now fires. Groups by col1, keeps
+  # only groups with COUNT(*) >= 8 → col1=20 (8 rows).
+  - query: |-
+      SELECT col1, COUNT(*) FROM (SELECT col1 FROM t1) AS x
+      GROUP BY col1 HAVING COUNT(*) >= 8
+    rows:
+      - [20, 8]

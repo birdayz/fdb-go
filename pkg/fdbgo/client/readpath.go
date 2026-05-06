@@ -107,6 +107,13 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		secondIdx = -1
 	}
 
+	// Capture tx fields before closures (see sendGetValue comment).
+	tx.readVersionMu.Lock()
+	readVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
+	lockAware := tx.lockAware || tx.readLockAware
+	tenantId := tx.tenantId
+
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
 			conn, err := tx.db.getOrDial(ctx, server.Address)
@@ -121,12 +128,12 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 					OrEqual: orEqual,
 					Offset:  offset,
 				},
-				Version:                tx.readVersion,
+				Version:                readVersion,
 				Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-				TenantInfo:             types.TenantInfo{TenantId: tx.tenantId},
+				TenantInfo:             types.TenantInfo{TenantId: tenantId},
 				SsLatestCommitVersions: emptyVersionVector,
 			}
-			if tx.lockAware || tx.readLockAware {
+			if lockAware {
 				req.HasOptions = true
 				req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
 			}
@@ -148,11 +155,11 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			}
 			getKeyBufPool.Put(bufp)
 			return inFlightRPC{
-				replyCh: replyCh,
-				cancel:  replyHandle,
-				addr:    server.Address,
-				delta:   delta,
-				start:   start,
+				replyCh:     replyCh,
+				replyHandle: replyHandle,
+				addr:        server.Address,
+				delta:       delta,
+				start:       start,
 			}
 		}
 	}
@@ -250,6 +257,15 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		secondIdx = -1 // disable hedge
 	}
 
+	// Capture tx fields before building closures. The makeSender closures may
+	// execute in goroutines (via hedge), and postCommitReset can clear these
+	// fields concurrently if a Watch goroutine races with Commit.
+	tx.readVersionMu.Lock()
+	readVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
+	lockAware := tx.lockAware || tx.readLockAware
+	tenantId := tx.tenantId
+
 	// Build a sender closure for a given server.
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -259,7 +275,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
-			body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -274,11 +290,11 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			}
 			getValueBufPool.Put(poolBuf)
 			return inFlightRPC{
-				replyCh: replyCh,
-				cancel:  replyHandle,
-				addr:    server.Address,
-				delta:   delta,
-				start:   start,
+				replyCh:     replyCh,
+				replyHandle: replyHandle,
+				addr:        server.Address,
+				delta:       delta,
+				start:       start,
 			}
 		}
 	}
@@ -307,7 +323,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			if i == bestIdx || i == secondIdx {
 				continue // already tried
 			}
-			val, err := tx.sendGetValueToServer(ctx, key, server)
+			val, err := tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId)
 			if err == nil {
 				return val, nil
 			}
@@ -325,7 +341,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 // sendGetValueToServer sends a getValue RPC to a single specific server.
 // Used as fallback after hedge fails.
-func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo) ([]byte, error) {
+func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64) ([]byte, error) {
 	conn, err := tx.db.getOrDial(ctx, server.Address)
 	if err != nil {
 		tx.db.handleConnError(server.Address)
@@ -333,7 +349,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
@@ -420,13 +436,13 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 						if relocateRetries > maxRelocateRetries {
 							return nil, false, fmt.Errorf("getRange: exceeded %d relocate retries: %w", maxRelocateRetries, err)
 						}
-						// C++ invalidates the entire remaining range, not just one key.
-						// This handles shard splits that affect multiple adjacent entries.
+						// C++ invalidates just the stale shard's range:
+						// cx->invalidateCache(locations[shard].range).
+						// Narrower than our previous whole-remaining-range invalidation.
+						tx.db.locCache.invalidateRange(shardBegin, shardEnd, tx.tenantId)
 						if reverse {
-							tx.db.locCache.invalidateRange(curBegin, shardEnd, tx.tenantId)
 							curEnd = shardEnd
 						} else {
-							tx.db.locCache.invalidateRange(shardBegin, curEnd, tx.tenantId)
 							curBegin = shardBegin
 						}
 						if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
@@ -522,6 +538,13 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		secondIdx = -1
 	}
 
+	// Capture tx fields before closures (see sendGetValue comment).
+	tx.readVersionMu.Lock()
+	readVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
+	lockAware := tx.lockAware || tx.readLockAware
+	tenantId := tx.tenantId
+
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
 			conn, err := tx.db.getOrDial(ctx, server.Address)
@@ -530,7 +553,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
-			body, poolBuf := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+			body, poolBuf := buildGetKeyValuesRequest(begin, end, readVersion, wireLimit, lockAware, tenantId, replyToken, server.Token)
 			gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
@@ -546,11 +569,11 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			}
 			getKeyValuesBufPool.Put(poolBuf)
 			return inFlightRPC{
-				replyCh: replyCh,
-				cancel:  replyHandle,
-				addr:    server.Address,
-				delta:   delta,
-				start:   start,
+				replyCh:     replyCh,
+				replyHandle: replyHandle,
+				addr:        server.Address,
+				delta:       delta,
+				start:       start,
 			}
 		}
 	}
@@ -758,6 +781,12 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
 	order := loadBalanceOrder(servers, chosenIdx)
 
+	// Capture tx fields (see sendGetValue comment).
+	tx.readVersionMu.Lock()
+	readVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
+	tenantId := tx.tenantId
+
 	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
@@ -767,9 +796,9 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		req := types.WatchValueRequest{
 			Key:        key,
-			Version:    tx.readVersion,
+			Version:    readVersion,
 			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
+			TenantInfo: types.TenantInfo{TenantId: tenantId},
 		}
 		if value != nil {
 			req.HasValue = true

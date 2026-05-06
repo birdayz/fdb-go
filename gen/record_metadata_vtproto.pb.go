@@ -1613,6 +1613,116 @@ func (m *ValuePredicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
+func (m *RowNumberWindowPredicate) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *RowNumberWindowPredicate) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *RowNumberWindowPredicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.PartitionFields) > 0 {
+		for iNdEx := len(m.PartitionFields) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.PartitionFields[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x22
+		}
+	}
+	if m.Direction == nil {
+		return 0, fmt.Errorf("proto: required field direction not set")
+	} else {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.Direction))
+		i--
+		dAtA[i] = 0x18
+	}
+	if m.Size == nil {
+		return 0, fmt.Errorf("proto: required field size not set")
+	} else {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.Size))
+		i--
+		dAtA[i] = 0x10
+	}
+	if len(m.OrderingField) > 0 {
+		for iNdEx := len(m.OrderingField) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.OrderingField[iNdEx])
+			copy(dAtA[i:], m.OrderingField[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.OrderingField[iNdEx])))
+			i--
+			dAtA[i] = 0xa
+		}
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *FieldPath) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *FieldPath) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *FieldPath) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.Field) > 0 {
+		for iNdEx := len(m.Field) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.Field[iNdEx])
+			copy(dAtA[i:], m.Field[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Field[iNdEx])))
+			i--
+			dAtA[i] = 0xa
+		}
+	}
+	return len(dAtA) - i, nil
+}
+
 func (m *Predicate) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -1642,6 +1752,16 @@ func (m *Predicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.RowNumberWindowPredicate != nil {
+		size, err := m.RowNumberWindowPredicate.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x32
 	}
 	if m.ValuePredicate != nil {
 		size, err := m.ValuePredicate.MarshalToSizedBufferVT(dAtA[:i])
@@ -2311,6 +2431,59 @@ func ValuePredicateFromVTPool() *ValuePredicate {
 	return vtprotoPool_ValuePredicate.Get().(*ValuePredicate)
 }
 
+var vtprotoPool_RowNumberWindowPredicate = sync.Pool{
+	New: func() interface{} {
+		return &RowNumberWindowPredicate{}
+	},
+}
+
+func (m *RowNumberWindowPredicate) ResetVT() {
+	if m != nil {
+		clear(m.OrderingField)
+		f0 := m.OrderingField[:0]
+		for _, mm := range m.PartitionFields {
+			mm.ResetVT()
+		}
+		f1 := m.PartitionFields[:0]
+		m.Reset()
+		m.OrderingField = f0
+		m.PartitionFields = f1
+	}
+}
+func (m *RowNumberWindowPredicate) ReturnToVTPool() {
+	if m != nil {
+		m.ResetVT()
+		vtprotoPool_RowNumberWindowPredicate.Put(m)
+	}
+}
+func RowNumberWindowPredicateFromVTPool() *RowNumberWindowPredicate {
+	return vtprotoPool_RowNumberWindowPredicate.Get().(*RowNumberWindowPredicate)
+}
+
+var vtprotoPool_FieldPath = sync.Pool{
+	New: func() interface{} {
+		return &FieldPath{}
+	},
+}
+
+func (m *FieldPath) ResetVT() {
+	if m != nil {
+		clear(m.Field)
+		f0 := m.Field[:0]
+		m.Reset()
+		m.Field = f0
+	}
+}
+func (m *FieldPath) ReturnToVTPool() {
+	if m != nil {
+		m.ResetVT()
+		vtprotoPool_FieldPath.Put(m)
+	}
+}
+func FieldPathFromVTPool() *FieldPath {
+	return vtprotoPool_FieldPath.Get().(*FieldPath)
+}
+
 var vtprotoPool_Predicate = sync.Pool{
 	New: func() interface{} {
 		return &Predicate{}
@@ -2324,6 +2497,7 @@ func (m *Predicate) ResetVT() {
 		m.ConstantPredicate.ReturnToVTPool()
 		m.NotPredicate.ReturnToVTPool()
 		m.ValuePredicate.ReturnToVTPool()
+		m.RowNumberWindowPredicate.ReturnToVTPool()
 		m.Reset()
 	}
 }
@@ -2968,6 +3142,50 @@ func (m *ValuePredicate) SizeVT() (n int) {
 	return n
 }
 
+func (m *RowNumberWindowPredicate) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if len(m.OrderingField) > 0 {
+		for _, s := range m.OrderingField {
+			l = len(s)
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	if m.Size != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.Size))
+	}
+	if m.Direction != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.Direction))
+	}
+	if len(m.PartitionFields) > 0 {
+		for _, e := range m.PartitionFields {
+			l = e.SizeVT()
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *FieldPath) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if len(m.Field) > 0 {
+		for _, s := range m.Field {
+			l = len(s)
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
 func (m *Predicate) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -2992,6 +3210,10 @@ func (m *Predicate) SizeVT() (n int) {
 	}
 	if m.ValuePredicate != nil {
 		l = m.ValuePredicate.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.RowNumberWindowPredicate != nil {
+		l = m.RowNumberWindowPredicate.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
@@ -7031,6 +7253,262 @@ func (m *ValuePredicate) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
+func (m *RowNumberWindowPredicate) UnmarshalVT(dAtA []byte) error {
+	var hasFields [1]uint64
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: RowNumberWindowPredicate: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: RowNumberWindowPredicate: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field OrderingField", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.OrderingField = append(m.OrderingField, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Size", wireType)
+			}
+			var v int32
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Size = &v
+			hasFields[0] |= uint64(0x00000001)
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Direction", wireType)
+			}
+			var v RowNumberWindowPredicate_Direction
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= RowNumberWindowPredicate_Direction(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Direction = &v
+			hasFields[0] |= uint64(0x00000002)
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PartitionFields", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if len(m.PartitionFields) == cap(m.PartitionFields) {
+				m.PartitionFields = append(m.PartitionFields, &FieldPath{})
+			} else {
+				m.PartitionFields = m.PartitionFields[:len(m.PartitionFields)+1]
+				if m.PartitionFields[len(m.PartitionFields)-1] == nil {
+					m.PartitionFields[len(m.PartitionFields)-1] = &FieldPath{}
+				}
+			}
+			if err := m.PartitionFields[len(m.PartitionFields)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+	if hasFields[0]&uint64(0x00000001) == 0 {
+		return fmt.Errorf("proto: required field size not set")
+	}
+	if hasFields[0]&uint64(0x00000002) == 0 {
+		return fmt.Errorf("proto: required field direction not set")
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *FieldPath) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: FieldPath: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: FieldPath: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Field", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Field = append(m.Field, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
 func (m *Predicate) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -7237,6 +7715,42 @@ func (m *Predicate) UnmarshalVT(dAtA []byte) error {
 				m.ValuePredicate = ValuePredicateFromVTPool()
 			}
 			if err := m.ValuePredicate.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field RowNumberWindowPredicate", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.RowNumberWindowPredicate == nil {
+				m.RowNumberWindowPredicate = RowNumberWindowPredicateFromVTPool()
+			}
+			if err := m.RowNumberWindowPredicate.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex

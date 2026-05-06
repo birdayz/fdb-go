@@ -1,0 +1,30 @@
+# update_dml_cte.yaml
+#
+# UPDATE with WITH clause and UPDATE/DELETE using CTE in WHERE.
+# Java has UPDATE with scalar subquery; CTE-in-WHERE is common too.
+# Mixed with DML RETURNING gaps (TODO follow-up).
+name: update_dml_cte
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40)
+tests:
+  # UPDATE WHERE col IN (CTE-derived values).
+  - query: |-
+      WITH high_ids AS (SELECT id FROM t WHERE v >= 30)
+      UPDATE t SET v = 0 WHERE id IN (SELECT id FROM high_ids)
+    error_code: "42601"
+  # Probe whether WITH works before UPDATE at all.
+  # Our grammar may not accept this form; pin current behavior.
+  # (Java supports via CTE + UPDATE.)
+  - query: UPDATE t SET v = 99 WHERE id IN (WITH x AS (SELECT id FROM t WHERE g=1) SELECT id FROM x)
+    error_code: "42601"
+  # Working form: UPDATE WHERE EXISTS correlated subquery (the
+  # supported rewrite for the rejected `id IN (SELECT ...)` shape).
+  - query: UPDATE t SET v = 99 WHERE EXISTS (SELECT 1 FROM t AS sub WHERE sub.id = t.id AND sub.g = 1)
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 99]
+      - [2, 99]
+      - [3, 30]
+      - [4, 40]

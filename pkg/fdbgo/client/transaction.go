@@ -386,18 +386,20 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 	}
+	userSet := tx.userSetReadVersion
+	rv := tx.readVersion
 	tx.readVersionMu.Unlock()
 	// C++ DatabaseContext::validateVersion(): reject user-set read versions
 	// outside the acceptable range. If the client hasn't seen a version yet
 	// (minAcceptableReadVersion==0), a GRV is needed first to establish the
 	// baseline. C++ does this in startTransaction() before validateVersion().
-	if tx.db != nil && tx.userSetReadVersion {
+	if tx.db != nil && userSet {
 		if tx.db.minAcceptableReadVersion.Load() == 0 {
 			// Bootstrap: fetch a version to establish the minimum.
 			flags := tx.grvFlags()
 			_, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
 		}
-		if err := tx.db.validateVersion(tx.readVersion); err != nil {
+		if err := tx.db.validateVersion(rv); err != nil {
 			return err
 		}
 	}
@@ -562,8 +564,8 @@ func (tx *Transaction) maxWriteKey() []byte {
 // C++ RYW: `key != metadataVersionKey` in getValue check.
 var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
 
-// conflictBufPool reuses backing buffers for write conflict range keys.
-// Each transaction needs ~200 conflict keys for a 50-record batch,
+// conflictBufPool reuses backing buffers for conflict range keys (both read
+// and write). Each transaction needs ~200 conflict keys for a 50-record batch,
 // totaling ~20KB. Without pooling, the buffer grows 4K→8K→16K→32K
 // per transaction, creating intermediate garbage at each step.
 // Stores *conflictBuf to avoid interface boxing allocation (SA6002).
@@ -796,6 +798,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 
 	// Auto-reset for reuse — clear mutations and conflicts but preserve
 	// committedVersion/txnBatchId for GetCommittedVersion/GetVersionstamp.
+	//
+	// Divergence from C++ (audit item #6): the C++ NativeAPI client leaves
+	// the transaction in a fully-committed state and requires the caller to
+	// either Reset() or destroy it before the next use. We auto-reset here
+	// to match the C-binding contract observed by the binding tester (which
+	// reuses the same fdb_transaction_t handle across `_RESET` instructions
+	// without explicit reset between commits) and the Go-idiomatic
+	// `db.Run(func(tx)…)` callers that expect a single tx object to be
+	// reusable. The accepted cost is one extra `slice = slice[:0]` and a
+	// pool-return per commit, which is amortised by the savings on the
+	// retry path. See TODO.md "Document accepted divergences inline" for
+	// the open question of whether to also expose a no-reset variant.
 	tx.postCommitReset()
 	return nil
 }
@@ -866,9 +880,28 @@ func (tx *Transaction) GetVersionstamp() ([]byte, error) {
 	return vs, nil
 }
 
+// backoffSleep waits for `d` or until ctx fires, whichever comes first.
+// Returns ctx.Err() on cancellation so callers can propagate it; nil on
+// natural elapse. Used by OnError and commitDummyTransaction so a cancelled
+// context doesn't keep clients pinned through a 1–30s backoff window.
+func backoffSleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // OnError handles a transaction error. Returns nil if the error is retryable
-// (the transaction has been reset for retry). Returns the error if non-retryable.
-func (tx *Transaction) OnError(err error) error {
+// (the transaction has been reset for retry). Returns the error if non-retryable
+// or ctx.Err() if ctx fires during the backoff sleep.
+func (tx *Transaction) OnError(ctx context.Context, err error) error {
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
 		tx.state.Store(int32(txStateErrored))
@@ -897,7 +930,10 @@ func (tx *Transaction) OnError(err error) error {
 			delay = tx.maxRetryDelay
 		}
 		tx.retryCount++
-		time.Sleep(delay)
+		if cerr := backoffSleep(ctx, delay); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		return nil
 
@@ -907,7 +943,10 @@ func (tx *Transaction) OnError(err error) error {
 		// RETRYABLE_NOT_COMMITTED: exponential backoff.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff(fdbErr.Code))
+		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		return nil
 
@@ -918,32 +957,35 @@ func (tx *Transaction) OnError(err error) error {
 		// hot_shard and range_locked use the same 30s cap to avoid
 		// hammering the hot shard with aggressive retries.
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff(fdbErr.Code))
+		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		return nil
 
 	case ErrCommitUnknownResult, ErrClusterVersionChanged:
-		// MAYBE_COMMITTED: self-conflicting — copy write conflicts to read
+		// MAYBE_COMMITTED: self-conflicting — deep-copy write conflicts to read
 		// conflicts so the retry detects if our prior commit actually landed.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_MAYBE_COMMITTED, code).
 		//
-		// Deep-copy key bytes: Begin/End may be sub-slices of conflictBuf
-		// which reset() reuses (conflictBuf[:0]). Shallow copy would alias
-		// stale data after retry writes new conflicts into the same buffer.
+		// Deep copy: KeyRange.Begin/End are sub-slices of conflictBuf, which
+		// reset() reuses. Without a deep copy, retry writes overwrite the same
+		// buffer positions, corrupting the selfConflicts data.
 		tx.conflictMu.Lock()
 		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
 		for i, kr := range tx.writeConflicts {
-			b := make([]byte, len(kr.Begin)+len(kr.End))
-			copy(b, kr.Begin)
-			copy(b[len(kr.Begin):], kr.End)
-			selfConflicts[i] = KeyRange{
-				Begin: b[:len(kr.Begin)],
-				End:   b[len(kr.Begin):],
-			}
+			buf := make([]byte, len(kr.Begin)+len(kr.End))
+			copy(buf, kr.Begin)
+			copy(buf[len(kr.Begin):], kr.End)
+			selfConflicts[i] = KeyRange{Begin: buf[:len(kr.Begin)], End: buf[len(kr.Begin):]}
 		}
 		tx.conflictMu.Unlock()
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff(fdbErr.Code))
+		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		tx.conflictMu.Lock()
 		tx.readConflicts = append(tx.readConflicts, selfConflicts...)
@@ -1089,104 +1131,39 @@ func keyAfterBytes(key []byte) []byte {
 	return r
 }
 
-// addReadConflictForKey adds a read conflict range [key, key\x00) with a
-// single allocation for both begin and end slices. Saves 2 allocs vs
-// keyAfterBytes + addReadConflict which allocate 3 buffers.
+// addReadConflictForKey adds a read conflict range [key, key\x00) using the
+// shared conflictBuf. Zero allocs on the hot path (buffer pooled across txns).
 func (tx *Transaction) addReadConflictForKey(key []byte) {
-	// Same batch-alloc pattern as addWriteConflictForKey.
 	n := len(key)
-	needed := n + n + 1
 	tx.conflictMu.Lock()
-	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
-		reused := false
-		if len(tx.conflictBuf) == 0 {
-			cb := conflictBufPool.Get().(*conflictBuf)
-			if cap(cb.b) >= needed {
-				tx.conflictBuf = cb.b[:0]
-				tx.conflictBufOwner = cb
-				reused = true
-			} else {
-				conflictBufPool.Put(cb)
-			}
-		}
-		if !reused {
-			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
-			if newCap < 4096 {
-				newCap = 4096
-			}
-			newBuf := make([]byte, len(tx.conflictBuf), newCap)
-			copy(newBuf, tx.conflictBuf)
-			tx.conflictBuf = newBuf
-		}
-	}
-	start := len(tx.conflictBuf)
-	tx.conflictBuf = tx.conflictBuf[:start+needed]
-	buf := tx.conflictBuf[start : start+needed]
+	buf := tx.conflictBufAlloc(n + n + 1)
 	copy(buf, key)
 	copy(buf[n:], key)
-	// buf[2*n] is already 0 from slice extension
+	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
 	tx.conflictMu.Unlock()
 }
 
-// addReadConflict adds a read conflict range using the shared conflict buffer
-// to batch-allocate key storage (same optimization as addWriteConflictForKey).
+// addReadConflict adds a read conflict range using the shared conflictBuf.
 func (tx *Transaction) addReadConflict(begin, end []byte) {
-	nb := len(begin)
-	ne := len(end)
-	needed := nb + ne
 	tx.conflictMu.Lock()
-	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
-		reused := false
-		if len(tx.conflictBuf) == 0 {
-			cb := conflictBufPool.Get().(*conflictBuf)
-			if cap(cb.b) >= needed {
-				tx.conflictBuf = cb.b[:0]
-				tx.conflictBufOwner = cb
-				reused = true
-			} else {
-				conflictBufPool.Put(cb)
-			}
-		}
-		if !reused {
-			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
-			if newCap < 4096 {
-				newCap = 4096
-			}
-			newBuf := make([]byte, len(tx.conflictBuf), newCap)
-			copy(newBuf, tx.conflictBuf)
-			tx.conflictBuf = newBuf
-		}
-	}
-	start := len(tx.conflictBuf)
-	tx.conflictBuf = tx.conflictBuf[:start+needed]
-	buf := tx.conflictBuf[start : start+needed]
+	buf := tx.conflictBufAlloc(len(begin) + len(end))
+	nb := len(begin)
 	copy(buf, begin)
 	copy(buf[nb:], end)
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb : nb+ne]})
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
 	tx.conflictMu.Unlock()
 }
 
-// addWriteConflictForKey adds a write conflict range [key, key\x00) with a
-// single allocation. Same optimization as addReadConflictForKey.
-func (tx *Transaction) addWriteConflictForKey(key []byte) {
-	if tx.writeConflictsDisabled {
-		return
-	}
-	if tx.nextWriteNoConflict {
-		tx.nextWriteNoConflict = false
-		return
-	}
-	n := len(key)
-	// Batch-allocate conflict range key storage to reduce per-write allocs.
-	tx.conflictMu.Lock()
-	needed := n + n + 1
-	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
+// conflictBufAlloc reserves n bytes from the shared conflict buffer.
+// Must be called with conflictMu held.
+func (tx *Transaction) conflictBufAlloc(n int) []byte {
+	if cap(tx.conflictBuf)-len(tx.conflictBuf) < n {
 		reused := false
 		// Try reusing a pooled buffer when starting fresh (avoids 4K→8K→16K→32K growth).
 		if len(tx.conflictBuf) == 0 {
 			cb := conflictBufPool.Get().(*conflictBuf)
-			if cap(cb.b) >= needed {
+			if cap(cb.b) >= n {
 				tx.conflictBuf = cb.b[:0]
 				tx.conflictBufOwner = cb
 				reused = true
@@ -1195,7 +1172,7 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 			}
 		}
 		if !reused {
-			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+n)
 			if newCap < 4096 {
 				newCap = 4096 // ~30 typical keys
 			}
@@ -1205,10 +1182,26 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 		}
 	}
 	start := len(tx.conflictBuf)
-	tx.conflictBuf = tx.conflictBuf[:start+needed]
-	buf := tx.conflictBuf[start : start+needed]
+	tx.conflictBuf = tx.conflictBuf[:start+n]
+	return tx.conflictBuf[start : start+n]
+}
+
+// addWriteConflictForKey adds a write conflict range [key, key\x00) using the
+// shared conflictBuf.
+func (tx *Transaction) addWriteConflictForKey(key []byte) {
+	if tx.writeConflictsDisabled {
+		return
+	}
+	if tx.nextWriteNoConflict {
+		tx.nextWriteNoConflict = false
+		return
+	}
+	n := len(key)
+	tx.conflictMu.Lock()
+	buf := tx.conflictBufAlloc(n + n + 1)
 	copy(buf, key)
 	copy(buf[n:], key)
+	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
 	tx.conflictMu.Unlock()
 }
@@ -1222,32 +1215,7 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 		return
 	}
 	tx.conflictMu.Lock()
-	needed := len(begin) + len(end)
-	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
-		reused := false
-		if len(tx.conflictBuf) == 0 {
-			cb := conflictBufPool.Get().(*conflictBuf)
-			if cap(cb.b) >= needed {
-				tx.conflictBuf = cb.b[:0]
-				tx.conflictBufOwner = cb
-				reused = true
-			} else {
-				conflictBufPool.Put(cb)
-			}
-		}
-		if !reused {
-			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
-			if newCap < 4096 {
-				newCap = 4096
-			}
-			newBuf := make([]byte, len(tx.conflictBuf), newCap)
-			copy(newBuf, tx.conflictBuf)
-			tx.conflictBuf = newBuf
-		}
-	}
-	start := len(tx.conflictBuf)
-	tx.conflictBuf = tx.conflictBuf[:start+needed]
-	buf := tx.conflictBuf[start : start+needed]
+	buf := tx.conflictBufAlloc(len(begin) + len(end))
 	nb := len(begin)
 	copy(buf, begin)
 	copy(buf[nb:], end)
@@ -1457,11 +1425,13 @@ func (tx *Transaction) reset() {
 	tx.state.Store(int32(txStateActive))
 	tx.readVersionMu.Lock()
 	tx.hasReadVersion = false
+	tx.userSetReadVersion = false // C++ creates fresh state on reset
 	tx.readVersion = 0
 	tx.readVersionMu.Unlock()
 	tx.committedVersion = 0
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
+	tx.nextWriteNoConflict = false // C++ creates fresh state on reset
 	tx.mutations = tx.mutations[:0]
 	// Hold conflictMu: Watch() goroutines may still be running after
 	// cancelWatches() (cancel is async — goroutines drain on ctx.Done).

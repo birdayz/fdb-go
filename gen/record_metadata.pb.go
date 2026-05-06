@@ -369,6 +369,62 @@ func (ConstantPredicate_ConstantValue) EnumDescriptor() ([]byte, []int) {
 	return file_record_metadata_proto_rawDescGZIP(), []int{15, 0}
 }
 
+type RowNumberWindowPredicate_Direction int32
+
+const (
+	RowNumberWindowPredicate_ASC  RowNumberWindowPredicate_Direction = 1
+	RowNumberWindowPredicate_DESC RowNumberWindowPredicate_Direction = 2
+)
+
+// Enum value maps for RowNumberWindowPredicate_Direction.
+var (
+	RowNumberWindowPredicate_Direction_name = map[int32]string{
+		1: "ASC",
+		2: "DESC",
+	}
+	RowNumberWindowPredicate_Direction_value = map[string]int32{
+		"ASC":  1,
+		"DESC": 2,
+	}
+)
+
+func (x RowNumberWindowPredicate_Direction) Enum() *RowNumberWindowPredicate_Direction {
+	p := new(RowNumberWindowPredicate_Direction)
+	*p = x
+	return p
+}
+
+func (x RowNumberWindowPredicate_Direction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RowNumberWindowPredicate_Direction) Descriptor() protoreflect.EnumDescriptor {
+	return file_record_metadata_proto_enumTypes[5].Descriptor()
+}
+
+func (RowNumberWindowPredicate_Direction) Type() protoreflect.EnumType {
+	return &file_record_metadata_proto_enumTypes[5]
+}
+
+func (x RowNumberWindowPredicate_Direction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Do not use.
+func (x *RowNumberWindowPredicate_Direction) UnmarshalJSON(b []byte) error {
+	num, err := protoimpl.X.UnmarshalJSONEnum(x.Descriptor(), b)
+	if err != nil {
+		return err
+	}
+	*x = RowNumberWindowPredicate_Direction(num)
+	return nil
+}
+
+// Deprecated: Use RowNumberWindowPredicate_Direction.Descriptor instead.
+func (RowNumberWindowPredicate_Direction) EnumDescriptor() ([]byte, []int) {
+	return file_record_metadata_proto_rawDescGZIP(), []int{18, 0}
+}
+
 // This is the protobuf message used for the store header, an internal structure used in every store to track the
 // current state of the store (e.g. version of metadat) and ensure that data is read/written correctly.
 // This data is read any time a store is opened.
@@ -1682,21 +1738,134 @@ func (x *ValuePredicate) GetComparison() *Comparison {
 	return nil
 }
 
+type RowNumberWindowPredicate struct {
+	state           protoimpl.MessageState              `protogen:"open.v1"`
+	OrderingField   []string                            `protobuf:"bytes,1,rep,name=ordering_field,json=orderingField" json:"ordering_field,omitempty"`
+	Size            *int32                              `protobuf:"varint,2,req,name=size" json:"size,omitempty"`
+	Direction       *RowNumberWindowPredicate_Direction `protobuf:"varint,3,req,name=direction,enum=com.apple.foundationdb.record.RowNumberWindowPredicate_Direction" json:"direction,omitempty"`
+	PartitionFields []*FieldPath                        `protobuf:"bytes,4,rep,name=partition_fields,json=partitionFields" json:"partition_fields,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RowNumberWindowPredicate) Reset() {
+	*x = RowNumberWindowPredicate{}
+	mi := &file_record_metadata_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RowNumberWindowPredicate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RowNumberWindowPredicate) ProtoMessage() {}
+
+func (x *RowNumberWindowPredicate) ProtoReflect() protoreflect.Message {
+	mi := &file_record_metadata_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RowNumberWindowPredicate.ProtoReflect.Descriptor instead.
+func (*RowNumberWindowPredicate) Descriptor() ([]byte, []int) {
+	return file_record_metadata_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *RowNumberWindowPredicate) GetOrderingField() []string {
+	if x != nil {
+		return x.OrderingField
+	}
+	return nil
+}
+
+func (x *RowNumberWindowPredicate) GetSize() int32 {
+	if x != nil && x.Size != nil {
+		return *x.Size
+	}
+	return 0
+}
+
+func (x *RowNumberWindowPredicate) GetDirection() RowNumberWindowPredicate_Direction {
+	if x != nil && x.Direction != nil {
+		return *x.Direction
+	}
+	return RowNumberWindowPredicate_ASC
+}
+
+func (x *RowNumberWindowPredicate) GetPartitionFields() []*FieldPath {
+	if x != nil {
+		return x.PartitionFields
+	}
+	return nil
+}
+
+type FieldPath struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Field         []string               `protobuf:"bytes,1,rep,name=field" json:"field,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FieldPath) Reset() {
+	*x = FieldPath{}
+	mi := &file_record_metadata_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FieldPath) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FieldPath) ProtoMessage() {}
+
+func (x *FieldPath) ProtoReflect() protoreflect.Message {
+	mi := &file_record_metadata_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FieldPath.ProtoReflect.Descriptor instead.
+func (*FieldPath) Descriptor() ([]byte, []int) {
+	return file_record_metadata_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *FieldPath) GetField() []string {
+	if x != nil {
+		return x.Field
+	}
+	return nil
+}
+
 type Predicate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// exactly one of the following
-	AndPredicate      *AndPredicate      `protobuf:"bytes,1,opt,name=and_predicate,json=andPredicate" json:"and_predicate,omitempty"`
-	OrPredicate       *OrPredicate       `protobuf:"bytes,2,opt,name=or_predicate,json=orPredicate" json:"or_predicate,omitempty"`
-	ConstantPredicate *ConstantPredicate `protobuf:"bytes,3,opt,name=constant_predicate,json=constantPredicate" json:"constant_predicate,omitempty"`
-	NotPredicate      *NotPredicate      `protobuf:"bytes,4,opt,name=not_predicate,json=notPredicate" json:"not_predicate,omitempty"`
-	ValuePredicate    *ValuePredicate    `protobuf:"bytes,5,opt,name=value_predicate,json=valuePredicate" json:"value_predicate,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	AndPredicate             *AndPredicate             `protobuf:"bytes,1,opt,name=and_predicate,json=andPredicate" json:"and_predicate,omitempty"`
+	OrPredicate              *OrPredicate              `protobuf:"bytes,2,opt,name=or_predicate,json=orPredicate" json:"or_predicate,omitempty"`
+	ConstantPredicate        *ConstantPredicate        `protobuf:"bytes,3,opt,name=constant_predicate,json=constantPredicate" json:"constant_predicate,omitempty"`
+	NotPredicate             *NotPredicate             `protobuf:"bytes,4,opt,name=not_predicate,json=notPredicate" json:"not_predicate,omitempty"`
+	ValuePredicate           *ValuePredicate           `protobuf:"bytes,5,opt,name=value_predicate,json=valuePredicate" json:"value_predicate,omitempty"`
+	RowNumberWindowPredicate *RowNumberWindowPredicate `protobuf:"bytes,6,opt,name=row_number_window_predicate,json=rowNumberWindowPredicate" json:"row_number_window_predicate,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *Predicate) Reset() {
 	*x = Predicate{}
-	mi := &file_record_metadata_proto_msgTypes[18]
+	mi := &file_record_metadata_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1708,7 +1877,7 @@ func (x *Predicate) String() string {
 func (*Predicate) ProtoMessage() {}
 
 func (x *Predicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_metadata_proto_msgTypes[18]
+	mi := &file_record_metadata_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1721,7 +1890,7 @@ func (x *Predicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Predicate.ProtoReflect.Descriptor instead.
 func (*Predicate) Descriptor() ([]byte, []int) {
-	return file_record_metadata_proto_rawDescGZIP(), []int{18}
+	return file_record_metadata_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Predicate) GetAndPredicate() *AndPredicate {
@@ -1759,6 +1928,13 @@ func (x *Predicate) GetValuePredicate() *ValuePredicate {
 	return nil
 }
 
+func (x *Predicate) GetRowNumberWindowPredicate() *RowNumberWindowPredicate {
+	if x != nil {
+		return x.RowNumberWindowPredicate
+	}
+	return nil
+}
+
 // Compatible with map<string, bytes> on the wire; see user_field.
 type DataStoreInfo_UserFieldEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1770,7 +1946,7 @@ type DataStoreInfo_UserFieldEntry struct {
 
 func (x *DataStoreInfo_UserFieldEntry) Reset() {
 	*x = DataStoreInfo_UserFieldEntry{}
-	mi := &file_record_metadata_proto_msgTypes[19]
+	mi := &file_record_metadata_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1782,7 +1958,7 @@ func (x *DataStoreInfo_UserFieldEntry) String() string {
 func (*DataStoreInfo_UserFieldEntry) ProtoMessage() {}
 
 func (x *DataStoreInfo_UserFieldEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_record_metadata_proto_msgTypes[19]
+	mi := &file_record_metadata_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1824,7 +2000,7 @@ type DataStoreInfo_StoreLockState struct {
 
 func (x *DataStoreInfo_StoreLockState) Reset() {
 	*x = DataStoreInfo_StoreLockState{}
-	mi := &file_record_metadata_proto_msgTypes[20]
+	mi := &file_record_metadata_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1836,7 +2012,7 @@ func (x *DataStoreInfo_StoreLockState) String() string {
 func (*DataStoreInfo_StoreLockState) ProtoMessage() {}
 
 func (x *DataStoreInfo_StoreLockState) ProtoReflect() protoreflect.Message {
-	mi := &file_record_metadata_proto_msgTypes[20]
+	mi := &file_record_metadata_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1883,7 +2059,7 @@ type Index_Option struct {
 
 func (x *Index_Option) Reset() {
 	*x = Index_Option{}
-	mi := &file_record_metadata_proto_msgTypes[21]
+	mi := &file_record_metadata_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1895,7 +2071,7 @@ func (x *Index_Option) String() string {
 func (*Index_Option) ProtoMessage() {}
 
 func (x *Index_Option) ProtoReflect() protoreflect.Message {
-	mi := &file_record_metadata_proto_msgTypes[21]
+	mi := &file_record_metadata_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1936,7 +2112,7 @@ type JoinedRecordType_JoinConstituent struct {
 
 func (x *JoinedRecordType_JoinConstituent) Reset() {
 	*x = JoinedRecordType_JoinConstituent{}
-	mi := &file_record_metadata_proto_msgTypes[22]
+	mi := &file_record_metadata_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1948,7 +2124,7 @@ func (x *JoinedRecordType_JoinConstituent) String() string {
 func (*JoinedRecordType_JoinConstituent) ProtoMessage() {}
 
 func (x *JoinedRecordType_JoinConstituent) ProtoReflect() protoreflect.Message {
-	mi := &file_record_metadata_proto_msgTypes[22]
+	mi := &file_record_metadata_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1997,7 +2173,7 @@ type JoinedRecordType_Join struct {
 
 func (x *JoinedRecordType_Join) Reset() {
 	*x = JoinedRecordType_Join{}
-	mi := &file_record_metadata_proto_msgTypes[23]
+	mi := &file_record_metadata_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2009,7 +2185,7 @@ func (x *JoinedRecordType_Join) String() string {
 func (*JoinedRecordType_Join) ProtoMessage() {}
 
 func (x *JoinedRecordType_Join) ProtoReflect() protoreflect.Message {
-	mi := &file_record_metadata_proto_msgTypes[23]
+	mi := &file_record_metadata_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2065,7 +2241,7 @@ type UnnestedRecordType_NestedConstituent struct {
 
 func (x *UnnestedRecordType_NestedConstituent) Reset() {
 	*x = UnnestedRecordType_NestedConstituent{}
-	mi := &file_record_metadata_proto_msgTypes[24]
+	mi := &file_record_metadata_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2077,7 +2253,7 @@ func (x *UnnestedRecordType_NestedConstituent) String() string {
 func (*UnnestedRecordType_NestedConstituent) ProtoMessage() {}
 
 func (x *UnnestedRecordType_NestedConstituent) ProtoReflect() protoreflect.Message {
-	mi := &file_record_metadata_proto_msgTypes[24]
+	mi := &file_record_metadata_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2277,13 +2453,24 @@ const file_record_metadata_proto_rawDesc = "" +
 	"\x05value\x18\x01 \x03(\tR\x05value\x12I\n" +
 	"\n" +
 	"comparison\x18\x02 \x01(\v2).com.apple.foundationdb.record.ComparisonR\n" +
-	"comparison\"\xb7\x03\n" +
+	"comparison\"\xab\x02\n" +
+	"\x18RowNumberWindowPredicate\x12%\n" +
+	"\x0eordering_field\x18\x01 \x03(\tR\rorderingField\x12\x12\n" +
+	"\x04size\x18\x02 \x02(\x05R\x04size\x12_\n" +
+	"\tdirection\x18\x03 \x02(\x0e2A.com.apple.foundationdb.record.RowNumberWindowPredicate.DirectionR\tdirection\x12S\n" +
+	"\x10partition_fields\x18\x04 \x03(\v2(.com.apple.foundationdb.record.FieldPathR\x0fpartitionFields\"\x1e\n" +
+	"\tDirection\x12\a\n" +
+	"\x03ASC\x10\x01\x12\b\n" +
+	"\x04DESC\x10\x02\"!\n" +
+	"\tFieldPath\x12\x14\n" +
+	"\x05field\x18\x01 \x03(\tR\x05field\"\xaf\x04\n" +
 	"\tPredicate\x12P\n" +
 	"\rand_predicate\x18\x01 \x01(\v2+.com.apple.foundationdb.record.AndPredicateR\fandPredicate\x12M\n" +
 	"\for_predicate\x18\x02 \x01(\v2*.com.apple.foundationdb.record.OrPredicateR\vorPredicate\x12_\n" +
 	"\x12constant_predicate\x18\x03 \x01(\v20.com.apple.foundationdb.record.ConstantPredicateR\x11constantPredicate\x12P\n" +
 	"\rnot_predicate\x18\x04 \x01(\v2+.com.apple.foundationdb.record.NotPredicateR\fnotPredicate\x12V\n" +
-	"\x0fvalue_predicate\x18\x05 \x01(\v2-.com.apple.foundationdb.record.ValuePredicateR\x0evaluePredicate*\xae\x01\n" +
+	"\x0fvalue_predicate\x18\x05 \x01(\v2-.com.apple.foundationdb.record.ValuePredicateR\x0evaluePredicate\x12v\n" +
+	"\x1brow_number_window_predicate\x18\x06 \x01(\v27.com.apple.foundationdb.record.RowNumberWindowPredicateR\x18rowNumberWindowPredicate*\xae\x01\n" +
 	"\x0eComparisonType\x12\n" +
 	"\n" +
 	"\x06EQUALS\x10\x01\x12\x0e\n" +
@@ -2310,96 +2497,102 @@ func file_record_metadata_proto_rawDescGZIP() []byte {
 	return file_record_metadata_proto_rawDescData
 }
 
-var file_record_metadata_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_record_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_record_metadata_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_record_metadata_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_record_metadata_proto_goTypes = []any{
 	(ComparisonType)(0),                          // 0: com.apple.foundationdb.record.ComparisonType
 	(DataStoreInfo_RecordCountState)(0),          // 1: com.apple.foundationdb.record.DataStoreInfo.RecordCountState
 	(DataStoreInfo_StoreLockState_State)(0),      // 2: com.apple.foundationdb.record.DataStoreInfo.StoreLockState.State
 	(Index_Type)(0),                              // 3: com.apple.foundationdb.record.Index.Type
 	(ConstantPredicate_ConstantValue)(0),         // 4: com.apple.foundationdb.record.ConstantPredicate.ConstantValue
-	(*DataStoreInfo)(nil),                        // 5: com.apple.foundationdb.record.DataStoreInfo
-	(*Index)(nil),                                // 6: com.apple.foundationdb.record.Index
-	(*RecordType)(nil),                           // 7: com.apple.foundationdb.record.RecordType
-	(*FormerIndex)(nil),                          // 8: com.apple.foundationdb.record.FormerIndex
-	(*PRawSqlFunction)(nil),                      // 9: com.apple.foundationdb.record.PRawSqlFunction
-	(*MetaData)(nil),                             // 10: com.apple.foundationdb.record.MetaData
-	(*PUserDefinedFunction)(nil),                 // 11: com.apple.foundationdb.record.PUserDefinedFunction
-	(*PView)(nil),                                // 12: com.apple.foundationdb.record.PView
-	(*JoinedRecordType)(nil),                     // 13: com.apple.foundationdb.record.JoinedRecordType
-	(*UnnestedRecordType)(nil),                   // 14: com.apple.foundationdb.record.UnnestedRecordType
-	(*SimpleComparison)(nil),                     // 15: com.apple.foundationdb.record.SimpleComparison
-	(*NullComparison)(nil),                       // 16: com.apple.foundationdb.record.NullComparison
-	(*Comparison)(nil),                           // 17: com.apple.foundationdb.record.Comparison
-	(*AndPredicate)(nil),                         // 18: com.apple.foundationdb.record.AndPredicate
-	(*OrPredicate)(nil),                          // 19: com.apple.foundationdb.record.OrPredicate
-	(*ConstantPredicate)(nil),                    // 20: com.apple.foundationdb.record.ConstantPredicate
-	(*NotPredicate)(nil),                         // 21: com.apple.foundationdb.record.NotPredicate
-	(*ValuePredicate)(nil),                       // 22: com.apple.foundationdb.record.ValuePredicate
-	(*Predicate)(nil),                            // 23: com.apple.foundationdb.record.Predicate
-	(*DataStoreInfo_UserFieldEntry)(nil),         // 24: com.apple.foundationdb.record.DataStoreInfo.UserFieldEntry
-	(*DataStoreInfo_StoreLockState)(nil),         // 25: com.apple.foundationdb.record.DataStoreInfo.StoreLockState
-	(*Index_Option)(nil),                         // 26: com.apple.foundationdb.record.Index.Option
-	(*JoinedRecordType_JoinConstituent)(nil),     // 27: com.apple.foundationdb.record.JoinedRecordType.JoinConstituent
-	(*JoinedRecordType_Join)(nil),                // 28: com.apple.foundationdb.record.JoinedRecordType.Join
-	(*UnnestedRecordType_NestedConstituent)(nil), // 29: com.apple.foundationdb.record.UnnestedRecordType.NestedConstituent
-	(*KeyExpression)(nil),                        // 30: com.apple.foundationdb.record.expressions.KeyExpression
-	(*Value)(nil),                                // 31: com.apple.foundationdb.record.expressions.Value
-	(*descriptorpb.FileDescriptorProto)(nil),     // 32: google.protobuf.FileDescriptorProto
-	(*PUserDefinedMacroFunction)(nil),            // 33: com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction
+	(RowNumberWindowPredicate_Direction)(0),      // 5: com.apple.foundationdb.record.RowNumberWindowPredicate.Direction
+	(*DataStoreInfo)(nil),                        // 6: com.apple.foundationdb.record.DataStoreInfo
+	(*Index)(nil),                                // 7: com.apple.foundationdb.record.Index
+	(*RecordType)(nil),                           // 8: com.apple.foundationdb.record.RecordType
+	(*FormerIndex)(nil),                          // 9: com.apple.foundationdb.record.FormerIndex
+	(*PRawSqlFunction)(nil),                      // 10: com.apple.foundationdb.record.PRawSqlFunction
+	(*MetaData)(nil),                             // 11: com.apple.foundationdb.record.MetaData
+	(*PUserDefinedFunction)(nil),                 // 12: com.apple.foundationdb.record.PUserDefinedFunction
+	(*PView)(nil),                                // 13: com.apple.foundationdb.record.PView
+	(*JoinedRecordType)(nil),                     // 14: com.apple.foundationdb.record.JoinedRecordType
+	(*UnnestedRecordType)(nil),                   // 15: com.apple.foundationdb.record.UnnestedRecordType
+	(*SimpleComparison)(nil),                     // 16: com.apple.foundationdb.record.SimpleComparison
+	(*NullComparison)(nil),                       // 17: com.apple.foundationdb.record.NullComparison
+	(*Comparison)(nil),                           // 18: com.apple.foundationdb.record.Comparison
+	(*AndPredicate)(nil),                         // 19: com.apple.foundationdb.record.AndPredicate
+	(*OrPredicate)(nil),                          // 20: com.apple.foundationdb.record.OrPredicate
+	(*ConstantPredicate)(nil),                    // 21: com.apple.foundationdb.record.ConstantPredicate
+	(*NotPredicate)(nil),                         // 22: com.apple.foundationdb.record.NotPredicate
+	(*ValuePredicate)(nil),                       // 23: com.apple.foundationdb.record.ValuePredicate
+	(*RowNumberWindowPredicate)(nil),             // 24: com.apple.foundationdb.record.RowNumberWindowPredicate
+	(*FieldPath)(nil),                            // 25: com.apple.foundationdb.record.FieldPath
+	(*Predicate)(nil),                            // 26: com.apple.foundationdb.record.Predicate
+	(*DataStoreInfo_UserFieldEntry)(nil),         // 27: com.apple.foundationdb.record.DataStoreInfo.UserFieldEntry
+	(*DataStoreInfo_StoreLockState)(nil),         // 28: com.apple.foundationdb.record.DataStoreInfo.StoreLockState
+	(*Index_Option)(nil),                         // 29: com.apple.foundationdb.record.Index.Option
+	(*JoinedRecordType_JoinConstituent)(nil),     // 30: com.apple.foundationdb.record.JoinedRecordType.JoinConstituent
+	(*JoinedRecordType_Join)(nil),                // 31: com.apple.foundationdb.record.JoinedRecordType.Join
+	(*UnnestedRecordType_NestedConstituent)(nil), // 32: com.apple.foundationdb.record.UnnestedRecordType.NestedConstituent
+	(*KeyExpression)(nil),                        // 33: com.apple.foundationdb.record.expressions.KeyExpression
+	(*Value)(nil),                                // 34: com.apple.foundationdb.record.expressions.Value
+	(*descriptorpb.FileDescriptorProto)(nil),     // 35: google.protobuf.FileDescriptorProto
+	(*PUserDefinedMacroFunction)(nil),            // 36: com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction
 }
 var file_record_metadata_proto_depIdxs = []int32{
-	30, // 0: com.apple.foundationdb.record.DataStoreInfo.record_count_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	24, // 1: com.apple.foundationdb.record.DataStoreInfo.user_field:type_name -> com.apple.foundationdb.record.DataStoreInfo.UserFieldEntry
+	33, // 0: com.apple.foundationdb.record.DataStoreInfo.record_count_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	27, // 1: com.apple.foundationdb.record.DataStoreInfo.user_field:type_name -> com.apple.foundationdb.record.DataStoreInfo.UserFieldEntry
 	1,  // 2: com.apple.foundationdb.record.DataStoreInfo.record_count_state:type_name -> com.apple.foundationdb.record.DataStoreInfo.RecordCountState
-	25, // 3: com.apple.foundationdb.record.DataStoreInfo.store_lock_state:type_name -> com.apple.foundationdb.record.DataStoreInfo.StoreLockState
+	28, // 3: com.apple.foundationdb.record.DataStoreInfo.store_lock_state:type_name -> com.apple.foundationdb.record.DataStoreInfo.StoreLockState
 	3,  // 4: com.apple.foundationdb.record.Index.index_type:type_name -> com.apple.foundationdb.record.Index.Type
-	30, // 5: com.apple.foundationdb.record.Index.root_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	30, // 6: com.apple.foundationdb.record.Index.value_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	26, // 7: com.apple.foundationdb.record.Index.options:type_name -> com.apple.foundationdb.record.Index.Option
-	23, // 8: com.apple.foundationdb.record.Index.predicate:type_name -> com.apple.foundationdb.record.Predicate
-	30, // 9: com.apple.foundationdb.record.RecordType.primary_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	31, // 10: com.apple.foundationdb.record.RecordType.explicit_key:type_name -> com.apple.foundationdb.record.expressions.Value
-	32, // 11: com.apple.foundationdb.record.MetaData.records:type_name -> google.protobuf.FileDescriptorProto
-	6,  // 12: com.apple.foundationdb.record.MetaData.indexes:type_name -> com.apple.foundationdb.record.Index
-	7,  // 13: com.apple.foundationdb.record.MetaData.record_types:type_name -> com.apple.foundationdb.record.RecordType
-	8,  // 14: com.apple.foundationdb.record.MetaData.former_indexes:type_name -> com.apple.foundationdb.record.FormerIndex
-	30, // 15: com.apple.foundationdb.record.MetaData.record_count_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	32, // 16: com.apple.foundationdb.record.MetaData.dependencies:type_name -> google.protobuf.FileDescriptorProto
-	13, // 17: com.apple.foundationdb.record.MetaData.joined_record_types:type_name -> com.apple.foundationdb.record.JoinedRecordType
-	14, // 18: com.apple.foundationdb.record.MetaData.unnested_record_types:type_name -> com.apple.foundationdb.record.UnnestedRecordType
-	11, // 19: com.apple.foundationdb.record.MetaData.user_defined_functions:type_name -> com.apple.foundationdb.record.PUserDefinedFunction
-	12, // 20: com.apple.foundationdb.record.MetaData.views:type_name -> com.apple.foundationdb.record.PView
-	33, // 21: com.apple.foundationdb.record.PUserDefinedFunction.user_defined_macro_function:type_name -> com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction
-	9,  // 22: com.apple.foundationdb.record.PUserDefinedFunction.sql_function:type_name -> com.apple.foundationdb.record.PRawSqlFunction
-	31, // 23: com.apple.foundationdb.record.JoinedRecordType.record_type_key:type_name -> com.apple.foundationdb.record.expressions.Value
-	27, // 24: com.apple.foundationdb.record.JoinedRecordType.join_constituents:type_name -> com.apple.foundationdb.record.JoinedRecordType.JoinConstituent
-	28, // 25: com.apple.foundationdb.record.JoinedRecordType.joins:type_name -> com.apple.foundationdb.record.JoinedRecordType.Join
-	31, // 26: com.apple.foundationdb.record.UnnestedRecordType.record_type_key:type_name -> com.apple.foundationdb.record.expressions.Value
-	29, // 27: com.apple.foundationdb.record.UnnestedRecordType.nested_constituents:type_name -> com.apple.foundationdb.record.UnnestedRecordType.NestedConstituent
+	33, // 5: com.apple.foundationdb.record.Index.root_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	33, // 6: com.apple.foundationdb.record.Index.value_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	29, // 7: com.apple.foundationdb.record.Index.options:type_name -> com.apple.foundationdb.record.Index.Option
+	26, // 8: com.apple.foundationdb.record.Index.predicate:type_name -> com.apple.foundationdb.record.Predicate
+	33, // 9: com.apple.foundationdb.record.RecordType.primary_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	34, // 10: com.apple.foundationdb.record.RecordType.explicit_key:type_name -> com.apple.foundationdb.record.expressions.Value
+	35, // 11: com.apple.foundationdb.record.MetaData.records:type_name -> google.protobuf.FileDescriptorProto
+	7,  // 12: com.apple.foundationdb.record.MetaData.indexes:type_name -> com.apple.foundationdb.record.Index
+	8,  // 13: com.apple.foundationdb.record.MetaData.record_types:type_name -> com.apple.foundationdb.record.RecordType
+	9,  // 14: com.apple.foundationdb.record.MetaData.former_indexes:type_name -> com.apple.foundationdb.record.FormerIndex
+	33, // 15: com.apple.foundationdb.record.MetaData.record_count_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	35, // 16: com.apple.foundationdb.record.MetaData.dependencies:type_name -> google.protobuf.FileDescriptorProto
+	14, // 17: com.apple.foundationdb.record.MetaData.joined_record_types:type_name -> com.apple.foundationdb.record.JoinedRecordType
+	15, // 18: com.apple.foundationdb.record.MetaData.unnested_record_types:type_name -> com.apple.foundationdb.record.UnnestedRecordType
+	12, // 19: com.apple.foundationdb.record.MetaData.user_defined_functions:type_name -> com.apple.foundationdb.record.PUserDefinedFunction
+	13, // 20: com.apple.foundationdb.record.MetaData.views:type_name -> com.apple.foundationdb.record.PView
+	36, // 21: com.apple.foundationdb.record.PUserDefinedFunction.user_defined_macro_function:type_name -> com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction
+	10, // 22: com.apple.foundationdb.record.PUserDefinedFunction.sql_function:type_name -> com.apple.foundationdb.record.PRawSqlFunction
+	34, // 23: com.apple.foundationdb.record.JoinedRecordType.record_type_key:type_name -> com.apple.foundationdb.record.expressions.Value
+	30, // 24: com.apple.foundationdb.record.JoinedRecordType.join_constituents:type_name -> com.apple.foundationdb.record.JoinedRecordType.JoinConstituent
+	31, // 25: com.apple.foundationdb.record.JoinedRecordType.joins:type_name -> com.apple.foundationdb.record.JoinedRecordType.Join
+	34, // 26: com.apple.foundationdb.record.UnnestedRecordType.record_type_key:type_name -> com.apple.foundationdb.record.expressions.Value
+	32, // 27: com.apple.foundationdb.record.UnnestedRecordType.nested_constituents:type_name -> com.apple.foundationdb.record.UnnestedRecordType.NestedConstituent
 	0,  // 28: com.apple.foundationdb.record.SimpleComparison.type:type_name -> com.apple.foundationdb.record.ComparisonType
-	31, // 29: com.apple.foundationdb.record.SimpleComparison.operand:type_name -> com.apple.foundationdb.record.expressions.Value
-	15, // 30: com.apple.foundationdb.record.Comparison.simple_comparison:type_name -> com.apple.foundationdb.record.SimpleComparison
-	16, // 31: com.apple.foundationdb.record.Comparison.null_comparison:type_name -> com.apple.foundationdb.record.NullComparison
-	23, // 32: com.apple.foundationdb.record.AndPredicate.children:type_name -> com.apple.foundationdb.record.Predicate
-	23, // 33: com.apple.foundationdb.record.OrPredicate.children:type_name -> com.apple.foundationdb.record.Predicate
+	34, // 29: com.apple.foundationdb.record.SimpleComparison.operand:type_name -> com.apple.foundationdb.record.expressions.Value
+	16, // 30: com.apple.foundationdb.record.Comparison.simple_comparison:type_name -> com.apple.foundationdb.record.SimpleComparison
+	17, // 31: com.apple.foundationdb.record.Comparison.null_comparison:type_name -> com.apple.foundationdb.record.NullComparison
+	26, // 32: com.apple.foundationdb.record.AndPredicate.children:type_name -> com.apple.foundationdb.record.Predicate
+	26, // 33: com.apple.foundationdb.record.OrPredicate.children:type_name -> com.apple.foundationdb.record.Predicate
 	4,  // 34: com.apple.foundationdb.record.ConstantPredicate.value:type_name -> com.apple.foundationdb.record.ConstantPredicate.ConstantValue
-	23, // 35: com.apple.foundationdb.record.NotPredicate.child:type_name -> com.apple.foundationdb.record.Predicate
-	17, // 36: com.apple.foundationdb.record.ValuePredicate.comparison:type_name -> com.apple.foundationdb.record.Comparison
-	18, // 37: com.apple.foundationdb.record.Predicate.and_predicate:type_name -> com.apple.foundationdb.record.AndPredicate
-	19, // 38: com.apple.foundationdb.record.Predicate.or_predicate:type_name -> com.apple.foundationdb.record.OrPredicate
-	20, // 39: com.apple.foundationdb.record.Predicate.constant_predicate:type_name -> com.apple.foundationdb.record.ConstantPredicate
-	21, // 40: com.apple.foundationdb.record.Predicate.not_predicate:type_name -> com.apple.foundationdb.record.NotPredicate
-	22, // 41: com.apple.foundationdb.record.Predicate.value_predicate:type_name -> com.apple.foundationdb.record.ValuePredicate
-	2,  // 42: com.apple.foundationdb.record.DataStoreInfo.StoreLockState.lock_state:type_name -> com.apple.foundationdb.record.DataStoreInfo.StoreLockState.State
-	30, // 43: com.apple.foundationdb.record.JoinedRecordType.Join.left_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	30, // 44: com.apple.foundationdb.record.JoinedRecordType.Join.right_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	30, // 45: com.apple.foundationdb.record.UnnestedRecordType.NestedConstituent.nesting_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	46, // [46:46] is the sub-list for method output_type
-	46, // [46:46] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	26, // 35: com.apple.foundationdb.record.NotPredicate.child:type_name -> com.apple.foundationdb.record.Predicate
+	18, // 36: com.apple.foundationdb.record.ValuePredicate.comparison:type_name -> com.apple.foundationdb.record.Comparison
+	5,  // 37: com.apple.foundationdb.record.RowNumberWindowPredicate.direction:type_name -> com.apple.foundationdb.record.RowNumberWindowPredicate.Direction
+	25, // 38: com.apple.foundationdb.record.RowNumberWindowPredicate.partition_fields:type_name -> com.apple.foundationdb.record.FieldPath
+	19, // 39: com.apple.foundationdb.record.Predicate.and_predicate:type_name -> com.apple.foundationdb.record.AndPredicate
+	20, // 40: com.apple.foundationdb.record.Predicate.or_predicate:type_name -> com.apple.foundationdb.record.OrPredicate
+	21, // 41: com.apple.foundationdb.record.Predicate.constant_predicate:type_name -> com.apple.foundationdb.record.ConstantPredicate
+	22, // 42: com.apple.foundationdb.record.Predicate.not_predicate:type_name -> com.apple.foundationdb.record.NotPredicate
+	23, // 43: com.apple.foundationdb.record.Predicate.value_predicate:type_name -> com.apple.foundationdb.record.ValuePredicate
+	24, // 44: com.apple.foundationdb.record.Predicate.row_number_window_predicate:type_name -> com.apple.foundationdb.record.RowNumberWindowPredicate
+	2,  // 45: com.apple.foundationdb.record.DataStoreInfo.StoreLockState.lock_state:type_name -> com.apple.foundationdb.record.DataStoreInfo.StoreLockState.State
+	33, // 46: com.apple.foundationdb.record.JoinedRecordType.Join.left_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	33, // 47: com.apple.foundationdb.record.JoinedRecordType.Join.right_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	33, // 48: com.apple.foundationdb.record.UnnestedRecordType.NestedConstituent.nesting_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	49, // [49:49] is the sub-list for method output_type
+	49, // [49:49] is the sub-list for method input_type
+	49, // [49:49] is the sub-list for extension type_name
+	49, // [49:49] is the sub-list for extension extendee
+	0,  // [0:49] is the sub-list for field type_name
 }
 
 func init() { file_record_metadata_proto_init() }
@@ -2418,8 +2611,8 @@ func file_record_metadata_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_record_metadata_proto_rawDesc), len(file_record_metadata_proto_rawDesc)),
-			NumEnums:      5,
-			NumMessages:   25,
+			NumEnums:      6,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

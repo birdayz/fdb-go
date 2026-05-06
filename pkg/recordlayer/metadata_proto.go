@@ -112,8 +112,14 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		return nil, fmt.Errorf("rebuild file descriptor: %w", err)
 	}
 
-	// 2. Create builder and set records
-	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	// 2. Create builder and set records. Detect the union descriptor by name
+	// ("UnionDescriptor") OR by the usage=UNION proto annotation so that
+	// files like catalog_data.proto (which uses "CatalogUnion") round-trip
+	// correctly. Mirrors Java's RecordMetaData.build() which calls
+	// RecordMetaDataBuilder.setRecordsWithUnionDescriptor using whichever
+	// message is annotated with usage=UNION.
+	unionName := findUnionDescriptorName(fd)
+	builder := NewRecordMetaDataBuilder().setRecordsWithUnionName(fd, unionName)
 
 	// 3. Load indexes first (need them before record type association)
 	indexMap := make(map[string]*Index)
@@ -416,6 +422,35 @@ var defaultExcludedDependencies = map[string]bool{
 	"tuple_fields.proto":            true,
 }
 
+// findUnionDescriptorName returns the union message name. Tries
+// "UnionDescriptor" (record-layer-core), "RecordTypeUnion" (fdb-relational),
+// then scans for a usage=UNION annotation (e.g. "CatalogUnion").
+func findUnionDescriptorName(fd protoreflect.FileDescriptor) string {
+	const defaultName = "UnionDescriptor"
+	const fdbRelationalName = "RecordTypeUnion"
+	if fd.Messages().ByName(protoreflect.Name(defaultName)) != nil {
+		return defaultName
+	}
+	if fd.Messages().ByName(protoreflect.Name(fdbRelationalName)) != nil {
+		return fdbRelationalName
+	}
+	msgs := fd.Messages()
+	for i := 0; i < msgs.Len(); i++ {
+		msg := msgs.Get(i)
+		opts, ok := msg.Options().(*descriptorpb.MessageOptions)
+		if !ok || opts == nil {
+			continue
+		}
+		ext := proto.GetExtension(opts, gen.E_Record)
+		if rto, ok := ext.(*gen.RecordTypeOptions); ok && rto != nil {
+			if rto.GetUsage() == gen.RecordTypeOptions_UNION {
+				return string(msg.Name())
+			}
+		}
+	}
+	return defaultName // Fall back; setRecordsWithUnionName handles missing gracefully.
+}
+
 // collectDependencies returns all transitive file descriptor dependencies,
 // excluding Apple Record Layer protos (matching Java's defaultExcludedDependencies).
 // Excluded protos and their transitive deps are skipped, matching Java's getDependencies().
@@ -445,12 +480,49 @@ func collectDependencies(fd protoreflect.FileDescriptor) []protoreflect.FileDesc
 	return deps
 }
 
+// absolutizeFieldTypeNames rewrites relative FieldDescriptorProto.type_name to absolute. protodesc.NewFile resolves relative type_names against the enclosing message scope; Java's buildFrom searches outward.
+func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
+	pkg := fd.GetPackage()
+	prefix := "."
+	if pkg != "" {
+		prefix = "." + pkg + "."
+	}
+	var visitMessage func(msg *descriptorpb.DescriptorProto)
+	visitMessage = func(msg *descriptorpb.DescriptorProto) {
+		for _, f := range msg.GetField() {
+			tn := f.GetTypeName()
+			if tn != "" && tn[0] != '.' {
+				absolute := prefix + tn
+				f.TypeName = &absolute
+			}
+		}
+		for _, nested := range msg.GetNestedType() {
+			visitMessage(nested)
+		}
+	}
+	for _, m := range fd.GetMessageType() {
+		visitMessage(m)
+	}
+	// Same for extensions at the file level.
+	for _, ext := range fd.GetExtension() {
+		tn := ext.GetTypeName()
+		if tn != "" && tn[0] != '.' {
+			absolute := prefix + tn
+			ext.TypeName = &absolute
+		}
+	}
+}
+
 // rebuildFileDescriptor reconstructs a FileDescriptor from a FileDescriptorProto
 // and its dependencies. Uses topological ordering to handle transitive deps.
 func rebuildFileDescriptor(
 	recordsProto *descriptorpb.FileDescriptorProto,
 	depsProto []*descriptorpb.FileDescriptorProto,
 ) (protoreflect.FileDescriptor, error) {
+	absolutizeFieldTypeNames(recordsProto)
+	for _, dp := range depsProto {
+		absolutizeFieldTypeNames(dp)
+	}
 	// Build dependency resolver
 	resolver := &descriptorResolver{files: make(map[string]protoreflect.FileDescriptor)}
 
@@ -463,12 +535,20 @@ func rebuildFileDescriptor(
 		depMap[dp.GetName()] = dp
 	}
 
-	// Topologically resolve dependencies: each dep may itself have deps
+	// Topologically resolve dependencies: each dep may itself have deps.
+	// `resolved` flags completed entries; `inProgress` detects cycles
+	// (e.g. a crafted proto with A→B→A would otherwise recurse until
+	// the stack overflows — Go fuzz hit this on a 4-byte adversarial
+	// input to RecordMetaDataFromProto).
 	resolved := make(map[string]bool)
+	inProgress := make(map[string]bool)
 	var resolve func(name string) error
 	resolve = func(name string) error {
 		if resolved[name] {
 			return nil
+		}
+		if inProgress[name] {
+			return fmt.Errorf("cyclic proto dependency involving %q", name)
 		}
 		if _, ok := resolver.files[name]; ok {
 			resolved[name] = true
@@ -484,6 +564,8 @@ func rebuildFileDescriptor(
 		if !ok {
 			return fmt.Errorf("dependency not found: %s", name)
 		}
+		inProgress[name] = true
+		defer delete(inProgress, name)
 		// Resolve transitive deps first
 		for _, depName := range dp.Dependency {
 			if err := resolve(depName); err != nil {

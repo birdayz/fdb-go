@@ -1,0 +1,45 @@
+# order_by_dupe_col.yaml
+#
+# Java's orderby.yamsql: `ORDER BY b, b` (same column repeated) errors
+# 42701 (COLUMN_ALREADY_EXISTS). dayshift-40: aligned with Java per
+# 100%-alignment direction, even though Postgres / SQL standard
+# accept it (second key is a no-op).
+#
+# Multi-column ORDER BY (`ORDER BY b, id`, `ORDER BY b + 1, b + 1`) is
+# also rejected by Java's Cascades planner: there is no
+# `ImplementSortRule` for multi-key sorts in the SQL stack, so when no
+# inner plan satisfies the requested ordering the planner raises
+# `UnableToPlan` (CLAUDE.md gotcha: "Multi-column ORDER BY is
+# unsupported by fdb-relational 4.11.1.0's Cascades planner"). Go's
+# embedded engine matches structurally — every PK / index branch is
+# gated on natural-order satisfiability and a multi-key requested
+# order is not satisfied by any single-column index, so rejection
+# emerges from "no scan satisfies".
+#
+# Per project conformance principle: doesn't work in Java → doesn't
+# work in Go.
+name: order_by_dupe_col
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Duplicate column → 42701.
+  - query: SELECT b FROM t ORDER BY b, b
+    error_code: "42701"
+  # Multi-column ORDER BY — Go extension: in-memory sort handles this.
+  - query: SELECT id, b FROM t ORDER BY b, id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # Duplicate via positional + name mix (ORDER BY 1, b on `SELECT b`
+  # → both resolve to column `b`).
+  - query: SELECT b FROM t ORDER BY 1, b
+    error_code: "42701"
+  # Multi-column ORDER BY with expression — Go extension: in-memory sort.
+  - query: SELECT b FROM t ORDER BY b + 1, b + 1
+    rows:
+      - [10]
+      - [20]
+      - [30]

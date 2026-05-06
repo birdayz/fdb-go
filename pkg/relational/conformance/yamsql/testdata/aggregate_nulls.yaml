@@ -1,0 +1,41 @@
+# aggregate_nulls.yaml
+#
+# SQL-spec aggregate NULL semantics hardened in swingshift-35 (c370213e):
+#   - COUNT(col) skips NULLs; COUNT(*) counts all rows
+#   - SUM/AVG/MIN/MAX over empty-or-all-NULL input → NULL (not 0)
+#   - Ungrouped aggregate over empty input → one row with NULL aggregates
+#   - GROUP BY NULL groups into its own bucket (not colliding with "<nil>")
+name: aggregate_nulls
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'a', null), (4, 'b', null), (5, null, 7), (6, null, null)
+tests:
+  # COUNT(*) counts every row including NULLs.
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [6]
+  # COUNT(col) skips NULLs.
+  - query: SELECT COUNT(v) FROM t
+    rows:
+      - [3]
+  # SUM skips NULLs.
+  - query: SELECT SUM(v) FROM t
+    rows:
+      - [37]
+  # SUM over all-NULL returns NULL.
+  - query: SELECT SUM(v) FROM t WHERE grp = 'b'
+    rows:
+      - [~]
+  # SUM over empty input returns NULL (ungrouped → one row with NULL).
+  - query: SELECT SUM(v) FROM t WHERE grp = 'no_such_group'
+    rows:
+      - [~]
+  # MIN/MAX over all-NULL returns NULL.
+  - query: SELECT MIN(v), MAX(v) FROM t WHERE grp = 'b'
+    rows:
+      - [~, ~]
+  # COUNT(*) over empty input returns 0, one row.
+  - query: SELECT COUNT(*) FROM t WHERE grp = 'no_such_group'
+    rows:
+      - [0]

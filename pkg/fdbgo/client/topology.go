@@ -56,9 +56,17 @@ func (db *database) refreshTopology() {
 	if err != nil {
 		return
 	}
+	db.applyDBInfo(newInfo)
+}
+
+// applyDBInfo replaces dbInfo and broadcasts the proxy-changed channel
+// when newInfo differs from the current value. Returns true on apply.
+// Split out from refreshTopology so the apply/broadcast contract can be
+// pinned without faking tryAllCoordinators.
+func (db *database) applyDBInfo(newInfo *DBInfo) bool {
 	old := db.dbInfo.Load()
 	if old != nil && dbInfoEqual(old, newInfo) {
-		return // no change
+		return false
 	}
 	db.dbInfo.Store(newInfo)
 
@@ -68,6 +76,7 @@ func (db *database) refreshTopology() {
 	close(db.proxiesChanged)
 	db.proxiesChanged = make(chan struct{})
 	db.proxiesChangedMu.Unlock()
+	return true
 }
 
 // waitProxiesChanged returns a channel that is closed when the proxy list

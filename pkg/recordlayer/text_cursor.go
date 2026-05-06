@@ -169,5 +169,7 @@ func (c *textCursor) Close() error {
 	return nil
 }
 
+func (c *textCursor) IsClosed() bool { return c.closed }
+
 // Ensure textCursor implements RecordCursor[*IndexEntry].
 var _ RecordCursor[*IndexEntry] = (*textCursor)(nil)

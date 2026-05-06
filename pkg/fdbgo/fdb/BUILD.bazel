@@ -31,9 +31,12 @@ go_test(
     timeout = "long",
     srcs = [
         "directory_test.go",
+        "error_benchmark_test.go",
+        "error_test.go",
         "fdb_test.go",
         "key_test.go",
         "range_iterator_test.go",
+        "range_test.go",
         "ryw_test.go",
         "tenant_test.go",
         "testmain_test.go",

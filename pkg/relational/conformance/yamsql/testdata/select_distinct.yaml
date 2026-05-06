@@ -1,0 +1,92 @@
+# select_distinct.yaml
+#
+# SELECT DISTINCT pins the dedup semantics. Multi-column DISTINCT
+# treats the whole row as the dedup key; NULL equals NULL for DISTINCT
+# (unlike `=`, which is UNKNOWN on NULL) — SQL spec §8.2 General Rule 3.
+name: select_distinct
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 1), (2, 'a', 1), (3, 'b', 2), (4, null, 3), (5, null, 3), (6, 'a', null), (7, 'a', null)
+tests:
+  # DISTINCT on single column.
+  - query: SELECT DISTINCT g FROM t
+    unordered: true
+    rows:
+      - ['a']
+      - ['b']
+      - [~]
+  # DISTINCT over multiple columns — NULLs compared equal within DISTINCT.
+  - query: SELECT DISTINCT g, v FROM t
+    unordered: true
+    rows:
+      - ['a', 1]
+      - ['b', 2]
+      - [~, 3]
+      - ['a', ~]
+  # DISTINCT + ORDER BY on a column NOT in the projection. The ORDER
+  # BY column flows through the proto path's extraSortFields machinery.
+  # Pre-fix the DISTINCT dedup keyed off the full row (projected + extra
+  # sort columns), so two `v=1` rows with different `id` values were
+  # treated as distinct → duplicate row leaked through the dedup. Now
+  # DISTINCT keys off the projected columns only. The first occurrence
+  # of v=1 (id=1) wins; v=2 (id=3); first v=3 (id=4); v=NULL (id=6).
+  # Sorted by id: 1, 3, 4, 6 → v: 1, 2, 3, NULL.
+  - query: SELECT DISTINCT v FROM t ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [~]
+  # DISTINCT + ORDER BY on the distinct column itself — works without
+  # the extraSortField path, kept as a regression guard. ASC default
+  # is NULLS FIRST.
+  - query: SELECT DISTINCT v FROM t ORDER BY v
+    rows:
+      - [~]
+      - [1]
+      - [2]
+      - [3]
+  # SELECT DISTINCT against a CTE. Pre-fix the CTE path didn't
+  # dedupe at all (no DISTINCT branch in execSelectFromCTE) — every
+  # input row passed through. Now matches the proto / JOIN paths'
+  # rowKey-on-projected-cols semantic.
+  - query: |-
+      WITH s AS (SELECT v FROM t)
+      SELECT DISTINCT v FROM s ORDER BY v
+    rows:
+      - [~]
+      - [1]
+      - [2]
+      - [3]
+  # Java alignment: SELECT DISTINCT on an expression with alias
+  # (Java's alias-tests.yamsql 'SELECT DISTINCT v.c / 100 AS category').
+  # 'half' is a reserved keyword (HALF in our lexer), so needs quoting;
+  # use non-keyword alias 'bucket' to exercise the same path cleanly.
+  # v values: 1, 1, 2, 3, 3, NULL, NULL → v/2: 0, 0, 1, 1, 1, NULL, NULL
+  # distinct → 0, 1, NULL.
+  - query: SELECT DISTINCT v / 2 AS bucket FROM t ORDER BY bucket
+    rows:
+      - [~]
+      - [0]
+      - [1]
+  # DISTINCT on expression with positional ORDER BY referring to that
+  # expression — rejected. Note: DISTINCT is intentionally exempt from
+  # the natural-order satisfiability gate (per nightshift-60 — DISTINCT
+  # is a Go-only feature with its own pipeline), so 0AF01
+  # (ErrCodeUnsupportedSort) does NOT fire here. Instead the rejection
+  # comes from the ORDER BY column-resolution path
+  # (`select_query_full.go#1052`): positional `1` resolves to the
+  # first SELECT-list expression `v / 2` whose synthetic internal name
+  # has no matching proto field descriptor, so the lookup returns
+  # nil and raises `ErrCodeInvalidParameter` (22023) "ORDER BY column
+  # ... not found in table ...". Same code path that rejects ORDER BY
+  # of any expression-named-projection.
+  #
+  # Note: SELECT DISTINCT is itself rejected by fdb-relational entirely
+  # (CLAUDE.md gotcha) — Go's embedded engine implements DISTINCT as
+  # a Go-only feature. Aligning Go to reject DISTINCT outright is a
+  # separate larger conformance task tracked in TODO.md; this file
+  # tests Go-only DISTINCT semantics until that lands.
+  - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
+    error_code: "22023"

@@ -1,0 +1,62 @@
+// Configuration schema for the `frl` CLI.
+//
+// Loaded via `github.com/birdayz/protobuf-ecosystem/protoconfig.Load` —
+// YAML on disk, env-var overlay on top. A single `Config` message drives
+// kubectl-style context switching; each `Context` bundles cluster
+// connection + metadata source.
+syntax = "proto3";
+
+package frl.config.v1;
+
+// Top-level config, typically at ~/.frl/config.yaml.
+message Config {
+  // Name of the context to use when no `--context` flag is supplied.
+  string current_context = 1;
+
+  // All known contexts. A context is a named bundle of
+  // connection + metadata-source settings.
+  repeated Context contexts = 2;
+}
+
+// One named environment (e.g. "prod", "staging", "local"). A context
+// fully describes how to reach a single record store: FDB cluster file,
+// keyspace path of the store, and where to load its `RecordMetaData`
+// from.
+message Context {
+  // Identifier used by `--context` and `Config.current_context`.
+  string name = 1;
+
+  // Path to an FDB cluster file. Empty → use FDB's default lookup
+  // (FDB_CLUSTER_FILE env var, then /etc/foundationdb/fdb.cluster).
+  string cluster_file = 2;
+
+  // KeySpace path of the record store to operate on (e.g. "/myapp/prod/orders").
+  // Parsed by the record layer's keyspace path resolver at command time.
+  string keyspace_path = 3;
+
+  // How to load this store's RecordMetaData. Required for any command
+  // that needs to decode records or know about indexes (record/index
+  // commands). Store-level commands that only touch the DataStoreInfo
+  // header (e.g. `store info`) can skip metadata loading.
+  MetadataSource metadata = 4;
+}
+
+// MetadataSource is a tagged union over the two supported ways of
+// loading a `RecordMetaData`. See cmd/frl/docs/operator-guide.md for
+// the app-side wiring (Go + Java) for each path.
+message MetadataSource {
+  oneof source {
+    // Path to a file containing a serialized
+    // `com.apple.foundationdb.record.RecordMetaDataProto.MetaData`
+    // message. The typical workflow: the app exports meta.pb at deploy
+    // time via a small helper (see docs/operator-guide.md). Recommended
+    // for apps with programmatic metadata (Apple's documented norm).
+    string meta_file = 1;
+
+    // KeySpace path of an FDBMetaDataStore. frl reads metadata from FDB
+    // exactly the way the app does — `FDBMetaDataStore.LoadRecordMetaData()`.
+    // Use when the app has already adopted FDBMetaDataStore for its own
+    // cross-instance schema coordination.
+    string meta_store_keyspace = 2;
+  }
+}

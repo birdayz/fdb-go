@@ -277,12 +277,10 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 	}
 
 	// Multi-field grouping (gc > 1): try DirectPacker on the grouping fields.
-	// Avoids scalarToInterface boxing for each group key component.
 	comp, ok := gke.wholeKey.(*CompositeKeyExpression)
 	if !ok || len(comp.expressions) < gc {
 		return false, nil
 	}
-	// Pack grouping fields (first gc children) directly into FDB key.
 	// Use shared batch packer if available to avoid pool churn.
 	var pk *tuple.Packer
 	var ownedPk bool
@@ -322,7 +320,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		tuple.PutPacker(pk)
 	}
 
-	// Extract SUM value directly via Int64Evaluator if available (avoids scalarToInterface).
+	// Extract SUM value directly if this is a SUM mutation.
 	var sumSource any
 	if _, isSumMut := m.mutation.(*sumMutation); isSumMut && len(comp.expressions) > gc {
 		sumExpr := comp.expressions[gc]
@@ -331,7 +329,6 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 			if err != nil || !valid {
 				return false, nil
 			}
-			// Inline SUM application — avoids toInt64 + any boxing.
 			if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
 				return true, err
 			}
@@ -340,7 +337,6 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 			m.tx.AddBytes(fdbKey, param[:])
 			return true, nil
 		}
-		// Fallback: use ScalarEvaluator (boxes into any).
 		if se, ok2 := sumExpr.(ScalarEvaluator); ok2 {
 			val, err := se.EvaluateScalar(newRecord, newRecord.Record)
 			if err != nil {

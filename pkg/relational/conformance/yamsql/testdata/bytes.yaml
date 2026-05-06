@@ -1,0 +1,76 @@
+# bytes.yaml
+#
+# BYTES column type — hex literals (x'DEADBEEF'), comparisons, IN,
+# IS NULL. Ported (subset) from fdb-record-layer/yaml-tests/src/test/
+# resources/bytes.yamsql.
+name: bytes
+schema_template: |
+  CREATE TABLE lb (a BIGINT NOT NULL, b BYTES, PRIMARY KEY (a))
+  CREATE INDEX idx_lb_b ON lb (b)
+setup:
+  - INSERT INTO lb VALUES (1, x'deadbeef'), (2, x'cafe'), (3, null)
+tests:
+  # Equality on BYTES.
+  - query: SELECT a FROM lb WHERE b = x'cafe'
+    rows:
+      - [2]
+  # IN with multiple BYTES literals.
+  - query: SELECT a FROM lb WHERE b IN (x'cafe', x'deadbeef')
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  # Inequality — row with NULL b is filtered (NULL = NULL is UNKNOWN,
+  # so <> also UNKNOWN, so filter).
+  - query: SELECT a FROM lb WHERE b <> x'cafe'
+    rows:
+      - [1]
+  # IS NULL.
+  - query: SELECT a FROM lb WHERE b IS NULL
+    rows:
+      - [3]
+  # IS NOT NULL.
+  - query: SELECT a FROM lb WHERE b IS NOT NULL
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  # Base64 literal — b64'yv4=' decodes to the same bytes as x'cafe'
+  # (0xca 0xfe).
+  - query: SELECT a FROM lb WHERE b = b64'yv4='
+    rows:
+      - [2]
+  # Invalid hex (odd length) raises 22F03 INVALID_BINARY_REPRESENTATION.
+  - query: SELECT a FROM lb WHERE b = x'0'
+    error_code: "22F03"
+  # Invalid hex (non-hex chars 'M' 'N') — Java pins 22F03 too.
+  - query: SELECT a FROM lb WHERE b = x'ABCDMN'
+    error_code: "22F03"
+  # Invalid base64 chars raise 22F03.
+  - query: SELECT a FROM lb WHERE b = b64'***'
+    error_code: "22F03"
+  # ORDER BY on BYTES column — lexicographic. cafe = 0xca..., deadbeef
+  # = 0xde..., NULL first (ASC default).
+  - query: SELECT a FROM lb ORDER BY b
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  # Java alignment: bytes IS DISTINCT FROM null and IS NOT DISTINCT FROM null.
+  - query: SELECT a FROM lb WHERE b IS NOT DISTINCT FROM null
+    rows:
+      - [3]
+  - query: SELECT a FROM lb WHERE b IS DISTINCT FROM null ORDER BY a
+    rows:
+      - [1]
+      - [2]
+  # Java: 'b = NULL' returns no rows (NULL comparison is UNKNOWN).
+  - query: SELECT a FROM lb WHERE b = null
+    rows: []
+  # Bytes projection: hex/base64 literal in SELECT list — works but
+  # YAML's !!binary tag round-trip through the diff harness is brittle
+  # for inline bytes (Go vs YAML byte representation). Validation here
+  # uses a comparison instead.
+  - query: SELECT x'cafe' = b FROM lb WHERE a = 2
+    rows:
+      - [true]

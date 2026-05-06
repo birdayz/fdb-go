@@ -1,0 +1,173 @@
+# boolean.yaml
+#
+# Subset of fdb-record-layer/yaml-tests/src/test/resources/boolean.yamsql
+# adapted for our direct-YAML format: [v1, v2] for rows (no yamsql
+# {v1, v2} flow-map shorthand), ~ for NULL.
+#
+# Pins the three-valued NULL semantics hardening from swingshift-35
+# (commits 6853cee5, 35bea829, ad249d55, 97e0c731, 8ee5e98d, 4570981c).
+name: boolean
+schema_template: |
+  CREATE TABLE lb (a BIGINT NOT NULL, b BOOLEAN, PRIMARY KEY (a))
+setup:
+  - INSERT INTO lb VALUES (1, true), (2, false), (3, null)
+tests:
+  - query: SELECT lb.* FROM lb WHERE b = true
+    rows:
+      - [1, true]
+  - query: SELECT lb.* FROM lb WHERE b = false
+    rows:
+      - [2, false]
+  - query: SELECT lb.* FROM lb WHERE b <> TRUE
+    rows:
+      - [2, false]
+  - query: SELECT lb.* FROM lb WHERE b <> FALSE
+    rows:
+      - [1, true]
+  - query: SELECT lb.* FROM lb WHERE b IS TRUE
+    rows:
+      - [1, true]
+  - query: SELECT lb.* FROM lb WHERE b IS FALSE
+    rows:
+      - [2, false]
+  - query: SELECT lb.* FROM lb WHERE b IS NULL
+    rows:
+      - [3, ~]
+  - query: SELECT lb.* FROM lb WHERE b IS NOT TRUE
+    unordered: true
+    rows:
+      - [2, false]
+      - [3, ~]
+  - query: SELECT lb.* FROM lb WHERE b IS NOT FALSE
+    unordered: true
+    rows:
+      - [1, true]
+      - [3, ~]
+  - query: SELECT lb.* FROM lb WHERE b IS NOT NULL
+    unordered: true
+    rows:
+      - [1, true]
+      - [2, false]
+  # NOT of UNKNOWN stays UNKNOWN — row filtered out. Pre-swingshift-35
+  # bug returned TRUE for every row. The parenthesised form (previously
+  # a grammar quirk that parsed as RecordConstructorExpressionAtom) now
+  # works too, as of nightshift-36.
+  - query: SELECT lb.* FROM lb WHERE NOT (b = null)
+    rows: []
+  # Same via SQL precedence (NOT binds tighter than =) — both paths now
+  # produce the same result.
+  - query: SELECT lb.* FROM lb WHERE NOT b = null
+    rows: []
+  # Java alignment: top-level WHERE `(boolean_expr)` parses as a
+  # RecordConstructor (single-element tuple); Java's
+  # Expression.toUnderlyingPredicate cast-asserts BooleanValue and
+  # rejects with `expected BooleanValue but got
+  # RecordConstructorValue`. Go matches at the WHERE entry sites.
+  # Drop the bare parens to express the same predicate.
+  - query: SELECT lb.* FROM lb WHERE b = true
+    rows:
+      - [1, true]
+  - query: SELECT lb.* FROM lb WHERE NOT (b = false)
+    unordered: true
+    rows:
+      - [1, true]
+  # Java-aligned: boolean comparison in SELECT list (returns the result).
+  # b=true → true | b=false → false | b=NULL → NULL.
+  - query: SELECT b = true FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: SELECT b = false FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  - query: SELECT b <> TRUE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  # Java-aligned: IS TRUE in SELECT — never returns NULL (always concrete).
+  - query: SELECT b IS TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [false]
+  - query: SELECT b IS NOT TRUE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [true]
+  - query: SELECT b IS NULL FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [false]
+      - [true]
+  # Java alignment: boolean-op in SELECT projection. Kleene 3VL.
+  # b=true: t AND t=t, t AND f=f, t AND NULL=NULL
+  # b=false: f AND t=f, f AND f=f, f AND NULL=f
+  # b=NULL: NULL AND t=NULL, NULL AND f=f, NULL AND NULL=NULL
+  - query: SELECT b AND TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: SELECT b AND FALSE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [false]
+      - [false]
+  # b OR TRUE always TRUE.
+  - query: SELECT b OR TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [true]
+      - [true]
+  # b OR FALSE: t/f/NULL.
+  - query: SELECT b OR FALSE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  # NOT b: NOT t=f, NOT f=t, NOT NULL=NULL.
+  - query: SELECT NOT b FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  # Java-aligned: AND NULL. Kleene 3VL. b=true AND NULL=NULL,
+  # b=false AND NULL=false (shortcuts to f), b=NULL AND NULL=NULL.
+  - query: SELECT b AND NULL FROM lb ORDER BY a
+    rows:
+      - [~]
+      - [false]
+      - [~]
+  # Java-aligned: OR NULL. b=true OR NULL=true (shortcuts to t),
+  # b=false OR NULL=NULL, b=NULL OR NULL=NULL.
+  - query: SELECT b OR NULL FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [~]
+      - [~]
+  # Same tri-state projection through a CTE — exercises evalExprOnMap
+  # (map-path), not the proto-path evalExprPredicateTri. Pre-fix the
+  # Logical/Not cases in evalExprOnMap used the 2-valued bool wrapper,
+  # dropping UNKNOWN → false so NULL-row projected false instead of
+  # NULL. Now routes through evalPredicateOnMapExprTri and maps
+  # triTrue → true, triFalse → false, triNull → NULL.
+  - query: WITH x AS (SELECT * FROM lb) SELECT b AND TRUE FROM x ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: WITH x AS (SELECT * FROM lb) SELECT b OR FALSE FROM x ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: WITH x AS (SELECT * FROM lb) SELECT NOT b FROM x ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]

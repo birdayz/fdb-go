@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqldriver",
+    srcs = [
+        "driver.go",
+        "dsn.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/ddl",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
+    ],
+)
+
+go_test(
+    name = "sqldriver_test",
+    srcs = [
+        "cascades_fdb_test.go",
+        "driver_test.go",
+        "embedded_fdb_errors_test.go",
+        "embedded_fdb_test.go",
+        "sql_integration_test.go",
+    ],
+    embed = [":sqldriver"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
+    ],
+)

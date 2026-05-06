@@ -46,7 +46,7 @@ write_files:
           "https://api.github.com/repos/$REPO/actions/runs?status=queued&per_page=1" 2>/dev/null \
           | jq '.total_count // 0')
         if [ "$QUEUED" -gt 0 ]; then
-          echo "runner silent for ${AGE}s with $QUEUED queued runs, restarting"
+          echo "runner silent for $${AGE}s with $QUEUED queued runs, restarting"
           systemctl restart "$UNIT"
         fi
       fi
@@ -68,6 +68,68 @@ write_files:
       [Timer]
       OnBootSec=5min
       OnUnitActiveSec=10min
+
+      [Install]
+      WantedBy=timers.target
+
+  # Orphan-FDB-container sweep. testcontainers-go starts a Ryuk reaper
+  # that's supposed to clean up FDB containers when the parent test
+  # process dies. Under memory pressure the OS OOM-killer can take
+  # Ryuk out before reaping (Ryuk is small, ~14 MB image, so a likely
+  # victim). When that happens, FDB containers become orphans:
+  # `docker ps` shows them running with no Ryuk watcher and no parent
+  # test. Each leaks ~700 MB of RSS via the inner fdbserver process.
+  # See `automemory/project_hetzner_runner_fdbserver_leak.md`.
+  #
+  # The sweep kills any foundationdb/foundationdb container running
+  # for more than 30 minutes (no real test should run that long —
+  # max test_timeout is 60 min for the eternal slot, but containers
+  # are scoped per-test which finishes well under that). It also
+  # bumps Ryuk's oom_score_adj to -500 so the kernel prefers to OOM
+  # almost any other process before it.
+  - path: /usr/local/bin/orphan-fdb-sweep.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      # Bump Ryuk priority — make it the LAST thing the OOM-killer picks.
+      docker ps --filter ancestor=testcontainers/ryuk --format '{{.ID}}' | while read -r id; do
+        pid=$(docker inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true)
+        if [ -n "$pid" ] && [ -w "/proc/$pid/oom_score_adj" ]; then
+          echo -500 > "/proc/$pid/oom_score_adj" 2>/dev/null || true
+        fi
+      done
+
+      # Kill FDB containers running > 30 minutes (orphan).
+      docker ps --filter ancestor=foundationdb/foundationdb --format '{{.ID}}' | while read -r id; do
+        started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null)
+        if [ -z "$started" ]; then continue; fi
+        age=$(( $(date -u +%s) - $(date -u -d "$started" +%s 2>/dev/null || echo 0) ))
+        if [ "$age" -gt 1800 ]; then
+          echo "killing orphan FDB container $id (running $${age}s)"
+          docker kill "$id" 2>/dev/null || true
+          docker rm -f "$id" 2>/dev/null || true
+        fi
+      done
+
+  - path: /etc/systemd/system/orphan-fdb-sweep.service
+    content: |
+      [Unit]
+      Description=Sweep orphan FDB testcontainers + bump Ryuk OOM priority
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/orphan-fdb-sweep.sh
+
+  - path: /etc/systemd/system/orphan-fdb-sweep.timer
+    content: |
+      [Unit]
+      Description=Run orphan-FDB-container sweep every 5 minutes
+
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=5min
 
       [Install]
       WantedBy=timers.target
@@ -113,6 +175,7 @@ runcmd:
     ./svc.sh install runner
     ./svc.sh start
 
-  # Enable runner watchdog timer
+  # Enable runner watchdog + orphan FDB sweep timers
   - systemctl daemon-reload
   - systemctl enable --now runner-watchdog.timer
+  - systemctl enable --now orphan-fdb-sweep.timer

@@ -2,6 +2,8 @@ package recordlayer
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -107,13 +109,20 @@ func (v *MetaDataEvolutionValidator) Validate(oldMetaData, newMetaData *RecordMe
 		return err
 	}
 
+	// Build type rename map before record type and index validation.
+	// Matches Java's MetaDataEvolutionValidator.getTypeRenames().
+	typeRenames, err := v.getTypeRenames(oldMetaData, newMetaData)
+	if err != nil {
+		return err
+	}
+
 	// 3. Record type validation
-	if err := v.validateRecordTypes(oldMetaData, newMetaData); err != nil {
+	if err := v.validateRecordTypes(oldMetaData, newMetaData, typeRenames); err != nil {
 		return err
 	}
 
 	// 4. Index validation
-	if err := v.validateIndexes(oldMetaData, newMetaData); err != nil {
+	if err := v.validateIndexes(oldMetaData, newMetaData, typeRenames); err != nil {
 		return err
 	}
 
@@ -128,6 +137,43 @@ func (v *MetaDataEvolutionValidator) Validate(oldMetaData, newMetaData *RecordMe
 	}
 
 	return nil
+}
+
+// getTypeRenames builds a map from old record type names to new record type names
+// by matching on GetRecordTypeKey(). If the old type name still exists in the new
+// metadata, it maps to itself. Otherwise, it finds the new type with the same type key.
+// Matches Java's MetaDataEvolutionValidator.getTypeRenames() lines 319-344.
+func (v *MetaDataEvolutionValidator) getTypeRenames(old, new *RecordMetaData) (map[string]string, error) {
+	renames := make(map[string]string, len(old.RecordTypes()))
+	for oldName, oldRT := range old.RecordTypes() {
+		if new.GetRecordType(oldName) != nil {
+			// Same name exists in new — identity mapping.
+			renames[oldName] = oldName
+			continue
+		}
+		// Find new type with same type key.
+		oldKey := normalizeSubspaceKey(oldRT.GetRecordTypeKey())
+		found := false
+		for newName, newRT := range new.RecordTypes() {
+			if normalizeSubspaceKey(newRT.GetRecordTypeKey()) == oldKey {
+				// A type with a different name but the same key exists — this is a rename.
+				if v.disallowTypeRenames {
+					return nil, &MetaDataEvolutionError{
+						Message: fmt.Sprintf("record type %q renamed in new meta-data", oldName),
+					}
+				}
+				renames[oldName] = newName
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Type key not found in new metadata — this is a removal, not a rename.
+			// validateRecordTypes will report the appropriate error.
+			renames[oldName] = oldName
+		}
+	}
+	return renames, nil
 }
 
 func (v *MetaDataEvolutionValidator) validateVersion(old, new *RecordMetaData) error {
@@ -231,29 +277,13 @@ func getUnionDescriptor(m *RecordMetaData) protoreflect.MessageDescriptor {
 	return m.fileDescriptor.Messages().ByName("UnionDescriptor")
 }
 
-func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaData) error {
+func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaData, typeRenames map[string]string) error {
 	for name, oldRT := range old.RecordTypes() {
-		newRT := new.GetRecordType(name)
+		newName := typeRenames[name]
+		newRT := new.GetRecordType(newName)
 		if newRT == nil {
-			// Check if it was renamed
-			if v.disallowTypeRenames {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("record type %q removed from meta-data", name),
-				}
-			}
-			// Try to find by type key
-			found := false
-			for _, nrt := range new.RecordTypes() {
-				if normalizeSubspaceKey(nrt.GetRecordTypeKey()) == normalizeSubspaceKey(oldRT.GetRecordTypeKey()) {
-					found = true
-					newRT = nrt
-					break
-				}
-			}
-			if !found {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("record type %q removed from meta-data", name),
-				}
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type %q removed from meta-data", name),
 			}
 		}
 
@@ -280,18 +310,10 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 		}
 	}
 
-	// Build set of old record type names, accounting for renames via type key.
+	// Build set of new names that correspond to old types (via rename map).
 	olderNames := make(map[string]bool, len(old.RecordTypes()))
-	for name, oldRT := range old.RecordTypes() {
-		// If this type was renamed, map old name to the new name
-		renamed := name
-		for newName, newRT := range new.RecordTypes() {
-			if normalizeSubspaceKey(newRT.GetRecordTypeKey()) == normalizeSubspaceKey(oldRT.GetRecordTypeKey()) {
-				renamed = newName
-				break
-			}
-		}
-		olderNames[renamed] = true
+	for _, newName := range typeRenames {
+		olderNames[newName] = true
 	}
 
 	// Validate new record types have SinceVersion set.
@@ -341,7 +363,7 @@ func (v *MetaDataEvolutionValidator) comparePrimaryKeys(name string, oldRT, newR
 	return nil
 }
 
-func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) error {
+func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData, typeRenames map[string]string) error {
 	newFormerIndexMap := buildFormerIndexMap(new.GetFormerIndexes())
 
 	for name, oldIdx := range old.GetAllIndexes() {
@@ -404,6 +426,13 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 			}
 		}
 
+		// Validate index record type scope.
+		// Old types (renamed) must still be covered; new types must have SinceVersion > old version.
+		// Matches Java's MetaDataEvolutionValidator lines 623-648.
+		if err := v.validateIndexRecordTypes(old, new, oldIdx, newIdx, typeRenames); err != nil {
+			return err
+		}
+
 		// primaryKeyComponentPositions must not change.
 		// Matches Java's MetaDataEvolutionValidator lines 649-667.
 		oldHasPositions := oldIdx.HasPrimaryKeyComponentPositions()
@@ -434,6 +463,13 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 				}
 			}
 		}
+
+		// Validate index options changes.
+		// Dispatches to per-index-type validators matching Java's
+		// IndexValidatorRegistry.getIndexValidator(newIndex).validateChangedOptions(oldIndex).
+		if err := validateIndexOptions(oldIdx, newIdx); err != nil {
+			return err
+		}
 	}
 
 	// New indexes must have version > old metadata version
@@ -448,6 +484,300 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 		}
 	}
 
+	return nil
+}
+
+// validateIndexRecordTypes checks that the record type scope of an index has not
+// lost any old types and that new types have appropriate SinceVersion.
+// Matches Java's MetaDataEvolutionValidator lines 623-648.
+func (v *MetaDataEvolutionValidator) validateIndexRecordTypes(
+	old, new *RecordMetaData,
+	oldIdx, newIdx *Index,
+	typeRenames map[string]string,
+) error {
+	// Get old record types for this index, mapped through renames.
+	oldTypes := old.RecordTypesForIndex(oldIdx)
+	oldRenamedNames := make(map[string]bool, len(oldTypes))
+	for _, rt := range oldTypes {
+		newName := typeRenames[rt.Name]
+		oldRenamedNames[newName] = true
+	}
+
+	// Get new record types for this index.
+	newTypes := new.RecordTypesForIndex(newIdx)
+	newTypeNames := make(map[string]bool, len(newTypes))
+	for _, rt := range newTypes {
+		newTypeNames[rt.Name] = true
+	}
+
+	// Every old type (renamed) must still be present in new index.
+	for renamedName := range oldRenamedNames {
+		if !newTypeNames[renamedName] {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("index %q no longer covers record type %q", newIdx.Name, renamedName),
+			}
+		}
+	}
+
+	// New types not in old must have SinceVersion > old metadata version.
+	// Matches allowNoSinceVersion check in validateRecordTypes.
+	for _, rt := range newTypes {
+		if oldRenamedNames[rt.Name] {
+			continue
+		}
+		if rt.SinceVersion == 0 && v.allowNoSinceVersion {
+			continue // allowNoSinceVersion permits types without version tracking
+		}
+		if rt.SinceVersion <= old.Version() {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("index %q covers new record type %q without newer since version (since=%d, old=%d)",
+					newIdx.Name, rt.Name, rt.SinceVersion, old.Version()),
+			}
+		}
+	}
+
+	return nil
+}
+
+// computeChangedOptions returns the set of option names whose values differ
+// between old and new. An option is "changed" if added, removed, or modified.
+func computeChangedOptions(old, new map[string]string) map[string]bool {
+	changed := make(map[string]bool)
+	for k, v := range old {
+		if nv, ok := new[k]; !ok || v != nv {
+			changed[k] = true
+		}
+	}
+	for k := range new {
+		if _, ok := old[k]; !ok {
+			changed[k] = true
+		}
+	}
+	return changed
+}
+
+// optionValueOrDefault returns the option value if present, otherwise the default.
+func optionValueOrDefault(opts map[string]string, key, defaultValue string) string {
+	if v, ok := opts[key]; ok {
+		return v
+	}
+	return defaultValue
+}
+
+// validateIndexOptions validates that index option changes are allowed for the
+// given index type. Dispatches to per-type validators matching Java's
+// IndexValidatorRegistry pattern, then runs the base validator on remaining options.
+func validateIndexOptions(oldIdx, newIdx *Index) error {
+	changed := computeChangedOptions(oldIdx.Options, newIdx.Options)
+	if len(changed) == 0 {
+		return nil
+	}
+
+	// Type-specific validation: each handler removes options it handles from changed.
+	var err error
+	switch newIdx.Type {
+	case IndexTypeText:
+		err = validateTextIndexOptions(oldIdx, newIdx, changed)
+	case IndexTypeRank:
+		err = validateRankIndexOptions(oldIdx, newIdx, changed)
+	case IndexTypePermutedMin, IndexTypePermutedMax:
+		err = validatePermutedIndexOptions(oldIdx, newIdx, changed)
+	case IndexTypeVector:
+		err = validateVectorIndexOptions(oldIdx, newIdx, changed)
+	case IndexTypeMultidimensional:
+		err = validateMultidimensionalIndexOptions(oldIdx, newIdx, changed)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Base validation on remaining (unhandled) options.
+	return validateBaseIndexOptions(oldIdx, newIdx, changed)
+}
+
+// validateTextIndexOptions validates TEXT index option changes.
+// Matches Java's TextIndexValidator.validateChangedOptions().
+func validateTextIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	for opt := range changed {
+		switch opt {
+		case IndexOptionTextAddAggressiveConflictRanges, IndexOptionTextOmitPositions:
+			// Always safe to change.
+		case IndexOptionTextTokenizerName:
+			// computeChangedOptions guarantees the raw values differ when the key
+			// is in `changed`, and textTokenizerName has no non-empty default.
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("text tokenizer changed for index %q", newIdx.Name),
+			}
+		case IndexOptionTextTokenizerVersion:
+			oldVer, _ := strconv.Atoi(optionValueOrDefault(oldIdx.Options, opt, "0"))
+			newVer, _ := strconv.Atoi(optionValueOrDefault(newIdx.Options, opt, "0"))
+			if oldVer > newVer {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("text tokenizer version downgraded for index %q (old=%d, new=%d)",
+						newIdx.Name, oldVer, newVer),
+				}
+			}
+		}
+	}
+	// Remove all text options from changed — handled above.
+	delete(changed, IndexOptionTextTokenizerName)
+	delete(changed, IndexOptionTextTokenizerVersion)
+	delete(changed, IndexOptionTextAddAggressiveConflictRanges)
+	delete(changed, IndexOptionTextOmitPositions)
+	return nil
+}
+
+// validateRankIndexOptions validates RANK index option changes.
+// Structural options (nLevels, hashFunction, countDuplicates) cannot change
+// effective value without a rebuild.
+// Matches Java's RankIndexValidator.validateChangedOptions().
+func validateRankIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	type rankOpt struct {
+		key        string
+		defaultVal string
+		label      string
+	}
+	opts := []rankOpt{
+		{IndexOptionRankNLevels, "6", "rank levels"},
+		{IndexOptionRankHashFunction, "", "rank hash function"},
+		{IndexOptionRankCountDuplicates, "", "rank count duplicates"},
+	}
+	for _, o := range opts {
+		if !changed[o.key] {
+			continue
+		}
+		oldVal := optionValueOrDefault(oldIdx.Options, o.key, o.defaultVal)
+		newVal := optionValueOrDefault(newIdx.Options, o.key, o.defaultVal)
+		if oldVal != newVal {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("%s changed for index %q", o.label, newIdx.Name),
+			}
+		}
+		delete(changed, o.key)
+	}
+	return nil
+}
+
+// validatePermutedIndexOptions validates PERMUTED_MIN/PERMUTED_MAX option changes.
+// The permuted size is structural and cannot change.
+// Matches Java's PermutedMinMaxIndexValidator.validateChangedOptions().
+func validatePermutedIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	if changed[IndexOptionPermutedSize] {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("permuted size changed for index %q", newIdx.Name),
+		}
+	}
+	return nil
+}
+
+// validateVectorIndexOptions validates VECTOR (HNSW) index option changes.
+// Structural options (metric, dimensions, graph parameters) cannot change.
+// Runtime-only options (concurrency limits, stats) are safe to change.
+// Matches Java's VectorIndexValidator.validateChangedOptions().
+func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	// Structural options: disallow effective value changes.
+	structural := []string{
+		IndexOptionVectorMetric,
+		IndexOptionVectorNumDimensions,
+		IndexOptionHNSWUseInlining,
+		IndexOptionHNSWM,
+		IndexOptionHNSWMMax,
+		IndexOptionHNSWMMax0,
+		IndexOptionHNSWEfConstruction,
+		IndexOptionHNSWEfRepair,
+		IndexOptionVectorExtendCandidates,
+		IndexOptionVectorKeepPrunedConnections,
+		IndexOptionHNSWUseRaBitQ,
+		IndexOptionHNSWRaBitQNumExBits,
+	}
+	for _, key := range structural {
+		if !changed[key] {
+			continue
+		}
+		oldVal := optionValueOrDefault(oldIdx.Options, key, "")
+		newVal := optionValueOrDefault(newIdx.Options, key, "")
+		if oldVal != newVal {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("HNSW option %q changed for index %q", key, newIdx.Name),
+			}
+		}
+		delete(changed, key)
+	}
+
+	// Runtime-only options: always safe to change, just remove from changed.
+	runtime := []string{
+		IndexOptionHNSWSampleVectorStatsProbability,
+		IndexOptionHNSWMaintainStatsProbability,
+		IndexOptionHNSWStatsThreshold,
+		IndexOptionHNSWMaxNumConcurrentNodeFetches,
+		IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches,
+		IndexOptionHNSWMaxNumConcurrentDeleteFromLayer,
+	}
+	for _, key := range runtime {
+		delete(changed, key)
+	}
+
+	return nil
+}
+
+// validateMultidimensionalIndexOptions validates MULTIDIMENSIONAL (R-tree) option changes.
+// Structural options cannot change effective value without a rebuild.
+// Matches Java's MultidimensionalIndexValidator.validateChangedOptions().
+func validateMultidimensionalIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	structural := []string{
+		IndexOptionRTreeMinM,
+		IndexOptionRTreeMaxM,
+		IndexOptionRTreeSplitS,
+		IndexOptionRTreeStorage,
+		IndexOptionRTreeStoreHilbertValues,
+		IndexOptionRTreeUseNodeSlotIndex,
+	}
+	for _, key := range structural {
+		if !changed[key] {
+			continue
+		}
+		oldVal := optionValueOrDefault(oldIdx.Options, key, "")
+		newVal := optionValueOrDefault(newIdx.Options, key, "")
+		if oldVal != newVal {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("R-tree option %q changed for index %q", key, newIdx.Name),
+			}
+		}
+		delete(changed, key)
+	}
+	return nil
+}
+
+// validateBaseIndexOptions validates remaining option changes after type-specific
+// validation. Handles options common to all index types.
+// Matches Java's IndexValidator.validateChangedOptions().
+func validateBaseIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	for opt := range changed {
+		// "replacedBy*" options are always safe to change.
+		if strings.HasPrefix(opt, IndexOptionReplacedByPrefix) {
+			continue
+		}
+		// "allowedForQuery" is runtime-only, safe to change.
+		if opt == IndexOptionAllowedForQuery {
+			continue
+		}
+		// "unique": dropping uniqueness is allowed, adding is not.
+		if opt == IndexOptionUnique {
+			oldUnique := oldIdx.Options[opt] == "true"
+			newUnique := newIdx.Options[opt] == "true"
+			if !oldUnique && newUnique {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("index %q made unique", newIdx.Name),
+				}
+			}
+			// Dropping unique (was true, now false or absent) is allowed.
+			continue
+		}
+		// Any other option: reject.
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("index %q option %q changed", newIdx.Name, opt),
+		}
+	}
 	return nil
 }
 
@@ -502,7 +832,17 @@ func (v *MetaDataEvolutionValidator) validateFormerIndexes(old, new *RecordMetaD
 
 		// Check against the old index if it existed
 		oldIdx := old.GetIndex(newFormer.FormerName)
-		if oldIdx != nil {
+		if oldIdx == nil {
+			// No corresponding old index — the index was added and dropped
+			// between metadata versions. Validate addedVersion is reasonable.
+			// Matches Java line 480.
+			if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion <= old.Version() {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("former index (subspace key=%s) without existing index has added version prior to old meta-data version (added=%d, old=%d)",
+						key, newFormer.AddedVersion, old.Version()),
+				}
+			}
+		} else {
 			if !v.allowMissingFormerIndexNames && newFormer.FormerName != oldIdx.Name {
 				return &MetaDataEvolutionError{
 					Message: fmt.Sprintf("former index has different name than old index (former=%q, old=%q)",

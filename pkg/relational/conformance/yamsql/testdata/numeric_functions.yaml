@@ -1,0 +1,115 @@
+# numeric_functions.yaml
+#
+# Scalar numeric functions. Two groups:
+#
+#   * Still supported via the `%` operator: modulo. fdb-relational
+#     4.11.1.0 registers Mod in the ArithmeticValue registry AND maps
+#     `%` -> "mod" in the synonym table, so `a % b` works in both
+#     engines. The function-call form `MOD(a, b)` is rejected by
+#     Java's planner ("Unsupported operator MOD", 0A000), so it is
+#     not exercised here.
+#
+#   * Rejected (Java-aligned): ABS / SQRT /
+#     POWER / POW / FLOOR / CEIL / CEILING / ROUND / SIGN / PI /
+#     EXP / LN / LOG / MOD. fdb-relational 4.11.1.0's
+#     @AutoService(BuiltInFunction.class) ArithmeticValue registry
+#     has only Add / Sub / Mul / Div / Mod / bitwise / Bitmap*; no
+#     entries for FLOOR / CEIL / SIGN / ROUND / PI / EXP / LN / LOG,
+#     and MOD-as-function is not exposed (only `%`).
+#     Java's planner emits "Unsupported operator <NAME>" (0A000)
+#     before evaluation. Go mirrors byte-equal via the default arm
+#     in scalar_functions.go.
+name: numeric_functions
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES
+      (1, 2.5, 10),
+      (2, -3.7, -5),
+      (3, 0.0, 0),
+      (4, null, null)
+tests:
+  # ---------------------------------------------------------------
+  # Java-aligned rejections.
+  # ABS / SQRT / POWER / POW.
+  # ---------------------------------------------------------------
+  - query: SELECT ABS(n) FROM t WHERE id = 2
+    error_code: "42883"
+  - query: SELECT ABS(v) FROM t WHERE id = 2
+    error_code: "42883"
+  - query: SELECT SQRT(v * 4) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT POW(v, 2) FROM t WHERE id = 1
+    error_code: "42883"
+  # NULL propagation does not apply once the function is rejected
+  # at the registry layer — the rejection fires before evaluation.
+  - query: SELECT ABS(v) FROM t WHERE id = 4
+    error_code: "42883"
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 4
+    error_code: "42883"
+
+  # ---------------------------------------------------------------
+  # FLOOR / CEIL / CEILING / ROUND / SIGN / PI / EXP / LN / LOG —
+  # also absent from Java's BuiltInFunction registry, also rejected.
+  # ---------------------------------------------------------------
+  - query: SELECT FLOOR(v) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT FLOOR(v) FROM t WHERE id = 2
+    error_code: "42883"
+  - query: SELECT CEIL(v) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT CEILING(v) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT ROUND(v) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT ROUND(3.14159, 2) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT ROUND(3.7, 0) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT ROUND(1234.5, -2) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT SIGN(v) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT SIGN(v) FROM t WHERE id = 2
+    error_code: "42883"
+  - query: SELECT SIGN(v) FROM t WHERE id = 3
+    error_code: "42883"
+  - query: SELECT EXP(0) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT LN(1.0) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT LOG(2, 8) FROM t WHERE id = 1
+    error_code: "42883"
+  # PI must still be referenced from a FROM-bound query — bare
+  # `SELECT PI()` is rejected as a FROM-less SimpleTable (TestFDB_PiFunctionRejected),
+  # but here the rejection fires at function-registry lookup.
+  - query: SELECT PI() FROM t WHERE id = 1
+    error_code: "42883"
+  # Rejection fires before evaluation, so NULL inputs don't even
+  # reach the evaluator — same 0A000 surfaces.
+  - query: SELECT FLOOR(v) FROM t WHERE id = 4
+    error_code: "42883"
+  - query: SELECT SIGN(v) FROM t WHERE id = 4
+    error_code: "42883"
+
+  # ---------------------------------------------------------------
+  # MOD function form is rejected (Java has no MOD function, only
+  # the `%` operator that the synonym map binds to "mod").
+  # ---------------------------------------------------------------
+  - query: SELECT MOD(n, 3) FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT MOD(n, 3) FROM t WHERE id = 2
+    error_code: "42883"
+
+  # ---------------------------------------------------------------
+  # Modulo via `%` operator (Java synonym map: `%` -> "mod"). The
+  # `%` operator preserves the sign of the dividend on integers.
+  # ---------------------------------------------------------------
+  - query: SELECT n % 3 FROM t WHERE id = 1
+    rows:
+      - [1]
+  - query: SELECT n % 3 FROM t WHERE id = 2
+    rows:
+      - [-2]

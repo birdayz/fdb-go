@@ -1,0 +1,205 @@
+# having.yaml
+#
+# HAVING filters grouped results (post-aggregate). Covers the
+# tri-state boundary case from swingshift-35 (evalHavingTri) — a
+# HAVING predicate that evaluates to UNKNOWN drops the group, matching
+# WHERE behaviour.
+name: having
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 5), (5, 'c', null)
+tests:
+  # HAVING on SUM > value.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) > 20
+    unordered: true
+    rows:
+      - ['a', 30]
+      - ['b', 35]
+  # HAVING COUNT(*) — counts all rows per group including NULL-valued.
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY grp HAVING COUNT(*) = 2
+    unordered: true
+    rows:
+      - ['a', 2]
+      - ['b', 2]
+  # HAVING on SUM(v) for the 'c' group — v is NULL so SUM = NULL → any
+  # comparison is UNKNOWN → filtered out. Would incorrectly keep the
+  # row under the old (pre-tri-state) Go.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) > 0
+    unordered: true
+    rows:
+      - ['a', 30]
+      - ['b', 35]
+  # HAVING with parenthesised boolean — pins the nightshift-36
+  # RecordConstructorExpressionAtom unwrap that fires through
+  # evalHavingTri's own recursion (bf039225). HAVING has its own
+  # custom evaluator so it needed a separate unwrap case (third eval
+  # site alongside WHERE + map-path).
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING (SUM(v) > 20)
+    unordered: true
+    rows:
+      - ['a', 30]
+      - ['b', 35]
+  # ORDER BY the aggregate result — we need the aggregate projection
+  # available in the sort key. Previously covered implicitly; explicit
+  # pin ensures the column-index lookup works when the sort key is
+  # the aggregate output column name.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY SUM(v)
+    rows:
+      - ['c', ~]
+      - ['a', 30]
+      - ['b', 35]
+  # HAVING on arithmetic over an aggregate. SUM(v) * 2 > 50 means
+  # SUM(v) > 25. Group 'a' has SUM=30 (30*2=60>50), 'b' has SUM=35
+  # (35*2=70>50). Pre-swingshift-38 this errored 0A000 because the
+  # HAVING resolver rejected MathExpressionAtom as an unsupported
+  # atom shape; now recurses into the math op's operands.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) * 2 > 50 ORDER BY grp
+    rows:
+      - ['a', 30]
+      - ['b', 35]
+  # HAVING on arithmetic between two aggregates. COUNT(*) + SUM(v)
+  # for group 'a' = 2+30=32, 'b' = 2+35=37, 'c' = 1+NULL=NULL (any
+  # arithmetic with NULL → NULL → UNKNOWN → filtered). Aggregates
+  # must also appear in the SELECT list today — HAVING-only aggregates
+  # (not projected) are a separate follow-up.
+  - query: |
+      SELECT grp, COUNT(*), SUM(v) FROM t GROUP BY grp
+      HAVING COUNT(*) + SUM(v) > 34
+      ORDER BY grp
+    rows:
+      - ['b', 2, 35]
+  # HAVING on a constant comparison uses the same atom resolver path —
+  # verify the shared resolveAtom keeps working for the pre-existing
+  # bare-aggregate case after the MathExpressionAtom / BitExpressionAtom
+  # extension.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) = 30
+    rows:
+      - ['a', 30]
+  # HAVING-only aggregate — the HAVING predicate references SUM(v) but
+  # the SELECT list has only the grouping column. Pre-swingshift-38 the
+  # parser only harvested aggregates from the SELECT list, so aggCols
+  # stayed empty, the aggregate pipeline never ran, and GROUP BY was
+  # silently ignored (every row fell through). Now extractFromSimpleTable
+  # walks the HAVING expression via harvestAggregates, synthesizes
+  # aggSelectCol entries with .hidden=true for each referenced aggregate,
+  # and reclassifies the projCols as group-by references. Hidden entries
+  # participate in accumulation and HAVING evaluation but are stripped
+  # from the projected output so the query still returns one column.
+  - query: SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0 ORDER BY grp
+    rows:
+      - ['a']
+      - ['b']
+  # HAVING-only with arithmetic on multiple aggregates (none projected).
+  # Group 'a': COUNT(*)=2 + SUM(v)=30 = 32; 'b': 2+35=37; 'c': 1+NULL=NULL.
+  # Only 'b' passes > 34.
+  - query: |
+      SELECT grp FROM t GROUP BY grp
+      HAVING COUNT(*) + SUM(v) > 34
+      ORDER BY grp
+    rows:
+      - ['b']
+  # ORDER BY references an aggregate not in the SELECT list. Pre-fix the
+  # extraSortField FD lookup tried `allFields.ByName("SUM(v)")` and errored
+  # 22023 "ORDER BY column 'SUM(v)' not found in table". Now the harvest
+  # adds SUM(v) to aggCols as sortOnly: emitted into the row for the sort
+  # to find via colIdx, then stripped after sort. Output is one column
+  # (grp) sorted DESC by the underlying SUM(v) of each group. 'c' has
+  # all-NULL v → SUM=NULL → NULLs LAST per the DESC default.
+  - query: SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) DESC
+    rows:
+      - ['b']
+      - ['a']
+      - ['c']
+  # Sort on a SELECT-projected aggregate (no harvest needed — the
+  # aggregate is already visible). Pin as a regression guard for
+  # the sortOnly path: hidden-vs-sortOnly classification doesn't
+  # leak into the projected output.
+  - query: |
+      SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY SUM(v) DESC
+    rows:
+      - ['b', 35]
+      - ['a', 30]
+      - ['c', ~]
+  # ORDER BY on an arithmetic expression wrapping an aggregate. The
+  # harvest registers the inner SUM(v) as sortOnly AND adds a
+  # sortOnly outExpr aggCols entry for `SUM(v) * 2`; the proto sort
+  # path looks up the sentinel name via colIdx and finds the
+  # post-aggregation value. Both columns are stripped after the
+  # sort. v values: a=10+20=30, b=30+5=35, c=NULL → SUM*2: 60, 70, NULL.
+  # ASC NULLS FIRST default → c (NULL), a, b.
+  - query: SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) * 2
+    rows:
+      - ['c']
+      - ['a']
+      - ['b']
+  # COALESCE wrapping aggregate in ORDER BY — same path, with NULL
+  # absorbed by the COALESCE so the sort is total. ASC: a (30), b
+  # (35), c (0 from COALESCE).
+  - query: SELECT grp FROM t GROUP BY grp ORDER BY COALESCE(SUM(v), 0)
+    rows:
+      - ['c']
+      - ['a']
+      - ['b']
+  # SUM(v) referenced by both HAVING (filter) AND ORDER BY (sort), but
+  # NOT in the SELECT list. Pre-fix: HAVING harvest added SUM(v) as
+  # hidden, ORDER BY harvest dedupped against that hidden entry but
+  # didn't upgrade — sort fell through stable. Now the dedup branch
+  # upgrades hidden → sortOnly when ORDER BY references the same
+  # aggregate. HAVING SUM(v)>10 keeps a (30), b (35); ORDER BY SUM(v)
+  # DESC → b first.
+  - query: |
+      SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 10 ORDER BY SUM(v) DESC
+    rows:
+      - ['b']
+      - ['a']
+  # Aggregate-path ORDER BY on a typo'd column errors 42703 instead of
+  # silently no-op'ing. Mirror of the CTE / JOIN-path validation
+  # (82bd4382, 9500c512).
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY no_such_col
+    error_code: "42703"
+  # HAVING on a bare COUNT(*) query with no GROUP BY. The COUNT(*)
+  # fast path in both aggregation paths used to skip HAVING entirely
+  # — `SELECT COUNT(*) FROM t HAVING COUNT(*) > 100` returned the
+  # count unconditionally instead of filtering the single aggregate
+  # row. Both map-path (aggregateMapRows) and proto-path (inside the
+  # runInTx closure) now call evalHaving against `{"COUNT(*)": count}`
+  # and drop the row when the predicate fails. Table has 5 rows:
+  #   HAVING COUNT(*) > 1   → passes, returns 5
+  #   HAVING COUNT(*) > 100 → fails, empty result
+  - query: SELECT COUNT(*) FROM t HAVING COUNT(*) > 1
+    rows:
+      - [5]
+  - query: SELECT COUNT(*) FROM t HAVING COUNT(*) > 100
+    rows: []
+  # COUNT(*) fast path with WHERE + HAVING: filter rows, then gate
+  # the final aggregate row through HAVING.
+  - query: SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 2
+    rows:
+      - [2]
+  - query: SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 99
+    rows: []
+  # Java alignment: HAVING with group-by column reference (Java's
+  # groupby-tests.yamsql 'HAVING min(id) > 0 AND col1 = 20'). HAVING
+  # can reference both aggregates AND group-by columns.
+  # Groups: 'a'(SUM=30), 'b'(SUM=35), 'c'(SUM=NULL).
+  # HAVING grp = 'b' AND SUM(v) > 30 → only 'b'.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING grp = 'b' AND SUM(v) > 30
+    rows:
+      - ['b', 35]
+  # HAVING with group-by column alone (no aggregate predicate).
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY grp HAVING grp = 'a'
+    rows:
+      - ['a', 2]
+  # HAVING + ORDER BY-on-expression-over-same-aggregate. HAVING SUM(v)>10
+  # harvests SUM(v) as hidden; ORDER BY `SUM(v)*2 DESC` adds an outExpr
+  # sortOnly entry for the wrapping expression; dedup upgrades the inner
+  # SUM(v) hidden → sortOnly. HAVING keeps a (SUM=30), b (SUM=35); sort
+  # DESC on SUM*2 → b (70) then a (60). Neither aggregate column appears
+  # in the output. Round-15 reviewer follow-up on the interaction between
+  # 3670cfac (hidden→sortOnly upgrade) and b290bfa6 (wrapping-expr sort).
+  - query: |
+      SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 10 ORDER BY SUM(v) * 2 DESC
+    rows:
+      - ['b']
+      - ['a']

@@ -10,6 +10,15 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+// fieldDescCache is an atomically-swapped cache entry for FieldKeyExpression.
+// FieldKeyExpressions are shared across goroutines (via RecordMetaData), so
+// the cache must be safe for concurrent reads/writes. Using atomic.Pointer
+// ensures no torn reads (unlike bare struct fields which would race).
+type fieldDescCache struct {
+	msgName string
+	fd      protoreflect.FieldDescriptor
+}
+
 // FanType controls how repeated (list) proto fields are handled in key expressions.
 // Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyExpression.FanType.
 type FanType int
@@ -70,36 +79,30 @@ const (
 type FieldKeyExpression struct {
 	fieldName string
 	fanType   FanType
-	// cachedFD caches the protoreflect.FieldDescriptor for this field name.
-	// Uses atomic.Pointer for lock-free concurrent access — FieldKeyExpression
-	// is shared across goroutines (part of RecordMetaData).
-	cachedFD atomic.Pointer[fieldDescriptorCache]
-}
-
-// fieldDescriptorCache holds a cached field descriptor for a specific message type.
-type fieldDescriptorCache struct {
-	msgName string
-	fd      protoreflect.FieldDescriptor
-}
-
-// resolveFieldDescriptor returns the cached field descriptor for the given message,
-// or looks it up and caches it. Lock-free via atomic.Pointer.
-func (f *FieldKeyExpression) resolveFieldDescriptor(m protoreflect.Message) (protoreflect.FieldDescriptor, error) {
-	msgName := string(m.Descriptor().FullName())
-	if c := f.cachedFD.Load(); c != nil && c.msgName == msgName {
-		return c.fd, nil
-	}
-	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
-	if fd == nil {
-		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
-	}
-	f.cachedFD.Store(&fieldDescriptorCache{msgName: msgName, fd: fd})
-	return fd, nil
+	// fdCache caches the protoreflect.FieldDescriptor for this field name,
+	// keyed by the message full name. Avoids ByName() map lookup per Evaluate.
+	// Uses atomic.Pointer for goroutine safety (metadata is shared across txns).
+	fdCache atomic.Pointer[fieldDescCache]
 }
 
 // Field creates a key expression that extracts a single (non-repeated) field.
 func Field(name string) KeyExpression {
 	return &FieldKeyExpression{fieldName: name, fanType: FanTypeNone}
+}
+
+// resolveFieldDescriptor returns the cached field descriptor for the given message,
+// or resolves and caches it atomically. Thread-safe.
+func (f *FieldKeyExpression) resolveFieldDescriptor(m protoreflect.Message) (protoreflect.FieldDescriptor, error) {
+	msgName := string(m.Descriptor().FullName())
+	if cached := f.fdCache.Load(); cached != nil && cached.msgName == msgName {
+		return cached.fd, nil
+	}
+	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+	if fd == nil {
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
+	}
+	f.fdCache.Store(&fieldDescCache{msgName: msgName, fd: fd})
+	return fd, nil
 }
 
 // FanOut creates a key expression for a repeated field that produces one index entry
@@ -117,6 +120,7 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 		return f.getNullResult(), nil
 	}
 	m := msg.ProtoReflect()
+
 	fd, err := f.resolveFieldDescriptor(m)
 	if err != nil {
 		return nil, err
@@ -152,11 +156,8 @@ func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message]
 		return nil, err
 	}
 	if fd.IsList() {
-		tuples, err := f.evaluateRepeated(m, fd)
-		if err != nil || len(tuples) != 1 {
-			return nil, fmt.Errorf("EvaluateFlat on repeated field")
-		}
-		return tuples[0], nil
+		// Repeated fields can't be flattened — signal caller to fall through.
+		return nil, fmt.Errorf("EvaluateFlat: repeated field %s", f.fieldName)
 	}
 	if fd.HasPresence() && !m.Has(fd) {
 		return []any{nil}, nil
@@ -218,7 +219,6 @@ func (f *FieldKeyExpression) EvaluateInt64(record *FDBStoredRecord[proto.Message
 
 // PackDirect encodes the field value directly into a Packer without boxing into any.
 // Returns false if the field is nil/unset or not a directly-packable type.
-// This eliminates the scalarToInterface allocation for integer and string fields.
 func (f *FieldKeyExpression) PackDirect(pk *tuple.Packer, _ *FDBStoredRecord[proto.Message], msg proto.Message) bool {
 	if msg == nil {
 		return false
@@ -326,7 +326,12 @@ func scalarToInterface(fd protoreflect.FieldDescriptor, value protoreflect.Value
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return int64(value.Uint()), nil
-	case protoreflect.FloatKind, protoreflect.DoubleKind:
+	case protoreflect.FloatKind:
+		// Must return float32 so FDB tuple encodes as 0x20 (4 bytes).
+		// Java protobuf returns java.lang.Float → Tuple.add(Float) → 0x20.
+		// value.Float() returns float64; narrowing to float32 matches Java.
+		return float32(value.Float()), nil
+	case protoreflect.DoubleKind:
 		return value.Float(), nil
 	case protoreflect.BoolKind:
 		return value.Bool(), nil
@@ -446,22 +451,6 @@ func (r *RecordTypeKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.M
 	return typeName, nil
 }
 
-// PackDirect encodes the record type key directly into a Packer.
-func (r *RecordTypeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool {
-	if msg == nil {
-		return false
-	}
-	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	if r.typeKeys != nil {
-		if k, ok := r.typeKeys[typeName]; ok {
-			pk.EncodeElement(k)
-			return true
-		}
-	}
-	pk.EncodeElement(typeName)
-	return true
-}
-
 // EvaluateFlat returns the type key as a single-element []any.
 func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
 	if msg == nil {
@@ -479,6 +468,22 @@ func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mes
 		typeKey = typeName
 	}
 	return []any{typeKey}, nil
+}
+
+// PackDirect encodes the record type key directly into a Packer.
+func (r *RecordTypeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool {
+	if msg == nil {
+		return false
+	}
+	typeName := string(msg.ProtoReflect().Descriptor().Name())
+	if r.typeKeys != nil {
+		if k, ok := r.typeKeys[typeName]; ok {
+			pk.EncodeElement(k)
+			return true
+		}
+	}
+	pk.EncodeElement(typeName)
+	return true
 }
 
 // FieldNames returns the field names accessed by nested expression
@@ -589,7 +594,7 @@ func (c *CompositeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredR
 			}
 			continue
 		}
-		return false // child doesn't support direct packing
+		return false
 	}
 	return true
 }

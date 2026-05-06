@@ -2,6 +2,8 @@ version: v2
 modules:
   - path: proto/apple
     name: buf.build/birdayz/record-layer-apple
+  - path: proto/relational
+    name: buf.build/birdayz/record-layer-relational
   - path: conformance
     name: buf.build/birdayz/record-layer-conformance
 lint:
@@ -9,6 +11,10 @@ lint:
     - STANDARD
   ignore:
     - proto/apple
+    # proto/relational uses UPPERCASE field names (e.g. DATABASE_ID,
+    # SCHEMA_NAME) for Java wire compatibility. buf FIELD_NAMES_LOWER_SNAKE_CASE
+    # would reject these, so the whole module is lint-ignored.
+    - proto/relational
     - conformance
 breaking:
   use:

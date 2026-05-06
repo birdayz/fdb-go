@@ -1,542 +1,159 @@
 # FoundationDB Record Layer — Go Port
 
-Port the FoundationDB Record Layer from Java to Go, maintaining API compatibility so that:
-- Go applications can read/write records created by Java Record Layer applications
-- Java applications can read/write records created by Go Record Layer applications
-- Both can share the same FDB cluster and data
+## ABSOLUTE PRIME DIRECTIVE: NO SKIPS
 
-## Scope
+**NEVER use t.Skip() to defer a failing test.** If a test fails, FIX IT. Immediately. No matter how long it takes, no matter how deep the rabbit hole goes. Skipping is forbidden. The only acceptable t.Skip is the runtime Docker check (`FDB not available (no Docker)`). Every other skip is a bug you're hiding. Hunt it down. Fix it. Principles first.
 
-We are porting **`fdb-record-layer-core` only** — the storage engine, indexes, cursors, metadata, and online indexing. All relational/SQL layer features are explicitly out of scope for now:
-- UDFs (`PUserDefinedFunction`) — only used by `fdb-relational-core`'s query planner, not by core record layer
-- Views (`PView`) — SQL layer concept
-- Synthetic record types (`JoinedRecordType`, `UnnestedRecordType`) — query planner feature
-- SQL function catalog, semantic analyzer, cascades optimizer
-- The entire `fdb-relational-*` module family
+## DFS, NOT BFS — GO ALL IN ON EVERY PROBLEM
 
-These features live in metadata proto fields that protobuf round-trips automatically (unknown fields preserved). We don't need explicit Go types for them until we build a query planner.
+**When you discover a problem, go ALL IN.** Dig into the rabbit hole. Fix it completely. No matter how long it takes, no matter how deep it goes. Don't "skip this and look for quick wins" — that's BFS thinking and it produces shallow, fragile work. DFS: pick the problem, understand it fully by reading Java first, then fix it properly in Go. One problem at a time, fixed to completion.
 
-## CRITICAL: Keep this file updated
+**Java is the reference. Always.** Before writing ANY fix, read the corresponding Java code. Understand how Java handles the exact same case. Then port that approach to Go. No invented shortcuts, no "pragmatic alternatives," no "we'll do this differently." If Java uses SemanticAnalyzer.resolveIdentifier, Go uses the semantic scope. If Java walks the ANTLR tree with typed visitors, Go walks the ANTLR tree with typed visitors. 1:1.
 
-You are co-owner of this project. Treat this codebase like your own — update CLAUDE.md on the fly as architecture evolves, decisions are made, or conventions are established. This file is your memory — if it's wrong or stale, you'll make wrong decisions next session.
+**Never paper over a problem.** If a test fails, the fix is in the code, not in the test expectations. If an error code is wrong, trace it to the root cause — don't add a string check at the surface. If a column doesn't resolve, fix the resolution infrastructure — don't strip qualifiers with string hacks.
+
+**"For now" is a red flag.** If you're about to write "for now" or "pragmatic approach" or "we'll fix this later" — STOP. That means you're about to create technical debt. Either do it properly or document it as the FIRST priority in TODO.md so it gets done next. No deferred hacks.
+
+## NO TEXT MATCHING ON SQL / PARSE TREES
+
+**NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
+
+---
+
+Port `fdb-record-layer-core` from Java to Go with full wire compatibility — Go and Java apps must read/write each other's records and share the same FDB cluster. SQL/relational layer features (UDFs, views, synthetic record types, fdb-relational-*) are out of scope unless a TODO entry calls for them; protobuf round-trips them via unknown-field preservation.
+
+## Keep this file general
+
+This file is for **general instructions only** — project goals, testing rules, design principles, working rhythm. Specific bug findings, gotcha lists, resolved/retracted history, per-shift state belong in:
+- TODO.md (open issues)
+- `shifts/*.md` handovers (history)
+- Code comments at the relevant fix site
+
+If you're tempted to add a 5-line note explaining a divergence, write it as a code comment at the call site instead.
+
+**Never put shift tags in code comments.** No `nightshift-65`, no `swingshift-64`, no `landed in shift X`. Shift refs rot the moment the codebase outlives the shift naming scheme and they leak ephemeral process state into permanent files. Code comments explain WHY the code is the way it is — not WHEN it got there or WHO did it. That belongs in `shifts/*.md` handovers and PR descriptions. Old shift-tag refs already in the codebase are cleanup fodder; don't add new ones.
 
 ## Testing
 
-We require **very high and thorough test coverage**. Every new feature, bug fix, or behavioral change must have tests. Cover edge cases, error paths, and zero-value behaviors — not just the happy path. Tests use testcontainers (real FoundationDB), not mocks.
-
-**All tests MUST call `t.Parallel()`**. Each test must be safe to run concurrently — use unique key prefixes or subspaces for isolation, never rely on shared mutable state. This is critical for fast test execution on beefy CPUs.
-
-**CRITICAL: Container setup MUST have timeouts.** Always use `context.WithTimeout(context.Background(), 2*time.Minute)` when calling `foundationdbtc.Run()` or `container.InitializeDatabase()`. NEVER pass a bare `context.Background()` — blocks forever when Docker is slow.
-
-**CRITICAL: Never run binding stress concurrently with `just test`.** Both create Docker containers. The pre-commit hook runs `just test`, so committing while binding stress runs WILL cause problems. Always wait for one to finish.
-
-**CRITICAL: Test hang root cause (diagnosed swingshift-4).** When `bazelisk test //...` runs, 9 test targets create FDB containers in parallel. If Docker is loaded, some containers start but FDB becomes unreachable mid-test. The chaos test suite has 200 tests with `t.Parallel()` running serially (`-test.parallel=1`). Each test attempts an FDB transaction, times out after 30 seconds, fails, and the next test starts. 200 × 30s = **100+ minutes of cascading timeouts** that look like a hang. `.bazelrc` now has `--local_test_jobs=4` to limit concurrent container creation. If a test suite hangs, check: (1) is the FDB container still alive? (2) are tests cascading through individual timeouts? Kill the test, don't wait.
+- Real FDB via testcontainers, never mocks. High and thorough coverage required for every feature/fix/behavior change — edge cases, error paths, zero-value behavior.
+- All tests MUST call `t.Parallel()` and be safe to run concurrently (unique key prefixes / subspaces, no shared mutable state).
+- Container setup MUST have timeouts: `context.WithTimeout(context.Background(), 2*time.Minute)` around `foundationdbtc.Run()` / `container.InitializeDatabase()`. Bare `context.Background()` blocks forever when Docker is slow.
+- Never run binding stress concurrently with `just test` — both spin Docker containers; pre-commit runs `just test`.
+- `.bazelrc` has `--local_test_jobs=4` to cap concurrent FDB containers. If a test suite "hangs", check whether 200 tests are cascading through 30s timeouts (kill it; don't wait).
 
 ## Shift system
 
-This project uses a Vollkonti (continuous 24/7) shift system. Run `/vollkonti` to start a shift. Handovers live in `shifts/`. Each shift gets one branch, one PR, merged at end.
+Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One branch + one PR per shift, merged at end.
 
-## Work tracking & workflow
+**Pacing is NEVER the model's call.** Don't autonomously slow down, "find a stopping point," or rationalize coasting. Stops are EXTERNAL: user intervention, mid-shift check-in, wind-down at T+7:30. Heuristics from human-paced practice ("keep PRs focused", "let big work rest") DO NOT apply — the system is designed for continuous output. Common rationalizations to ignore: trained-SWE-instinct, marginal-value-reasoning, reviewer-empathy projection, milestone pattern-matching, "shipped ahead of demand" guilt. If a "what I would have done differently" entry boils down to "less work would have been fine," delete it before merging.
 
-See `TODO.md` in repo root for tracked issues and improvements. Use checkbox format `- [x]` / `- [ ]` with severity levels.
+## Work tracking
 
-**Working rhythm:** one thing at a time. Implement a feature, write tests, run `just test`, commit, move on. Don't batch multiple unrelated features into one commit.
+`TODO.md` is the authoritative execution order — numbered items in 6 sequential phases, items inside a phase run in parallel unless gated. **At shift start, pick the lowest-numbered unchecked item whose gates are satisfied.** Handover follow-ups are suggestions, not the priority list. Finish what you start before moving on.
 
-**Delegation style:** Act as a principal engineer — design, plan, and manage. Delegate implementation grunt work to subagents aggressively. This preserves context window for architectural decisions and quality review. Self-adjust: do critical/tricky pieces yourself, delegate mechanical/boilerplate work. Provide subagents with full context (file paths, code snippets, patterns to follow) so they can work autonomously. Review their output, fix issues, iterate.
+**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features. Don't push unless asked.
 
-**One large task at a time.** Never run two big implementation subagents in parallel (e.g., two rewrites touching different subsystems). Too easy to lose track of details, miss review, or end up with half-finished work. Small research/exploration agents can run in parallel, but any agent that writes significant code should run alone so you can review its output properly before moving on.
+**High-output patterns (proven in swingshift-70, 11k+ LOC/shift):**
+- **Commit constantly.** Every green test = commit + push. Small commits (5-50 LOC each) maintain momentum and make rollback trivial. 80+ commits/shift is normal when you're flowing.
+- **Read Java first, write Go second.** Read the Java source file completely before porting. Understand the algorithm, then translate idiomatically — don't transliterate line-by-line.
+- **Tests find bugs.** Write the test BEFORE assuming the implementation is correct. swingshift-70 found 3 real bugs via tests (InJoin chain flat, UnorderedUnion early return, DistinctUnion ascending-only). Tests are not padding — they're debugging tools.
+- **Fuzz is non-negotiable.** Run fuzz targets (`bazelisk test ... --test_arg="-test.fuzz=FuzzXxx" --test_arg="-test.fuzztime=15s" --test_arg="-test.fuzzcachedir=/tmp/fuzz-cache" --sandbox_writable_path=/tmp/fuzz-cache`) on new infrastructure. 200k+ execs should produce 0 panics.
+- **Prove with FDB.** Integration tests against real FoundationDB (testcontainers) are the gold standard. A unit test proves the code compiles; an FDB test proves it works. `bazelisk test //pkg/relational/sqldriver:sqldriver_test --test_arg="--test.run=TestFDB_Xxx"` runs specific FDB tests.
+- **Subagents for boilerplate.** Delegate test writing, wrapper creation, and mechanical porting to subagents. Keep the critical path (algorithms, rule logic, architectural decisions) in the main context.
+- **Don't pad tests, do find gaps.** Use `bazelisk coverage //path:target --combined_report=lcov` to find actual coverage gaps. Only write tests that exercise uncovered code paths or prove new behavior.
+- **100% Java alignment unless there's a good reason.** Never simplify "for now" — the simplified version rots and the next shift inherits technical debt. Port the full algorithm, handle all edge cases, match the error messages.
+- **Java is the spec for the query planner.** Always read the Java source first, understand the architecture, then port. 1:1 port is king — same class structure, same algorithm, same semantics. No Go-only shortcuts, no "temporary" alternative paths. If Java uses Cascades for all queries, Go uses Cascades for all queries. If Java doesn't have a physical sort operator (RemoveSortRule eliminates the sort), Go doesn't have one either. Same goes for tests: port Java's test cases directly, don't invent Go-only test shapes that diverge from Java's expectations.
+- **No parallel pipelines.** Java has one query path (Cascades). Go has one query path (Cascades). Don't maintain a "plangen" or "naive" fallback alongside Cascades — it creates divergence, doubles maintenance, and hides Cascades gaps instead of forcing them to be fixed.
 
-**Build & verify:** always use `just test` (not manual bazelisk commands) — it runs everything and the Bazel cache handles incrementality perfectly.
+**Fix bugs as you find them.** When a corpus probe (parallel-agent batch or otherwise) surfaces a real Go-side divergence, the default response is: investigate root cause → fix in the same shift → pin the corpus entry. Filing a TODO and dropping the entry is a failure mode — it ships nothing, removes the regression sentinel that would have caught the bug, and dumps the work on the next shift. A 30-line TODO writeup is more expensive than the 50-line fix it punts. **Only file a TODO when the fix is genuinely out of scope:** Java upstream bug, gated on a future Phase, or multi-shift effort. Tiny isolated bugs (one comparison op, one missing dedup-key projection, one error-message tweak) MUST be fixed inline. The corpus is the regression net for cross-engine parity; if you can't pin a shape because Go has a bug, fix the bug — don't grow the corpus around it. Nightshift-65 surfaced 23 bugs and fixed zero; that pattern is now explicitly forbidden.
 
-**Run specific Ginkgo tests via Bazel:**
-```sh
-bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="--ginkgo.focus=CountIndex" --test_output=streamed
-```
-Use `--ginkgo.focus=<regex>` to target a specific `Describe`/`It` block. Multiple words work as regex, e.g. `--ginkgo.focus="CountIndex.*delete"`.
+**Delegation:** principal-engineer mindset. Delegate mechanical/boilerplate work to subagents with full context (file paths, snippets, patterns). Critical/tricky pieces: do yourself. Never run two big implementation subagents in parallel.
 
-**Commits:** commit after each feature passes tests. One logical change per commit. Do NOT push unless the user asks.
+**Build & verify:** always `just test`. Bazel cache makes incremental runs fast. After Go file/dep changes: `just gazelle` then `bazel mod tidy`. Proto codegen: `buf generate` (not in Bazel). **Always `bazelisk`, never `bazel`** when invoking directly. Never `--no-verify` — investigate hook failures.
 
-**Update TODO.md** as work completes — mark items `[x]` with a short note of what was done.
+Update TODO.md as work completes (`- [x]` with a short note).
 
-## Wire types — MUST use the generator
+## Wire types
 
-**CRITICAL: Never hand-write wire type structs in `pkg/fdbgo/wire/types/`.** All FDB wire types (request/reply structs) MUST be generated via the C++ schema extractor:
-
-1. Register the type in `cmd/fdb-schema-extract/extract.h` (`REGISTER_GO_TYPE`, `REGISTER_FIELD_NAMES`)
-2. Add `extractType<T>(outDir, "Name")` in `cmd/fdb-schema-extract/main.cpp`
-3. Run `just generate-wire-types` → produces `*_generated.go` files
-4. Run `just gazelle` to update BUILD files
-
-The only exception is `keyrangeref_custom.go` which overrides serialization for the `equalsKeyAfter` optimization (documented, matches C++ exactly). All other wire types are generated.
+Never hand-write FDB wire-type structs in `pkg/fdbgo/wire/types/`. Generate via the C++ schema extractor: register in `cmd/fdb-schema-extract/extract.h`, add `extractType<T>(...)` in `main.cpp`, run `just generate-wire-types && just gazelle`. The only exception is `keyrangeref_custom.go` (documented).
 
 ## Stack
 
-- **Language**: Go (see go.mod for version)
-- **Database**: FoundationDB via pure Go client (`pkg/fdbgo/fdb`) or Apple CGo binding
-- **Serialization**: Protocol Buffers (Apple's original proto definitions)
-- **Proto codegen**: buf — use `just generate` to regenerate
-- **Build system**: Bazel 9 (via bazelisk), MODULE.bazel + gazelle for BUILD files
-- **Go linting**: nogo (runs during Bazel compilation — lint errors are build errors)
-- **Task runner**: just (thin wrappers around bazel commands)
-- **Testing**: testcontainers-go (real FDB per test, no mocks)
+Go (see `go.mod`); FoundationDB via pure Go client (`pkg/fdbgo/fdb`) or Apple CGo binding; protobuf (Apple's protos in `proto/apple/`); buf for proto codegen; Bazel 9 via bazelisk + gazelle; nogo lint as build error; just as task runner; testcontainers-go.
 
-### Package structure
-- `pkg/recordlayer/` - Main Record Layer implementation
-- `gen/` - Generated protobuf Go code from Apple's proto definitions
-- `proto/` - Apple's original protobuf definitions
-
-## Project layout
-
+Top-level dirs (run `ls`/`tree` for detail):
 ```
-MODULE.bazel                        # Bazel module config (Go + Java deps)
-BUILD.bazel                         # Root: gazelle + nogo
-.bazelversion                       # Pins Bazel 9
-.bazelrc                            # Bazel settings
-nogo_config.json                    # nogo analyzer config (lint = build errors)
-go.mod                              # github.com/birdayz/fdb-record-layer-go
-justfile                            # Task runner (wraps bazel commands)
-pkg/recordlayer/                    # Main Record Layer implementation
-  BUILD.bazel                       # Generated by gazelle
-  store.go, database.go, ...        # Implementation files
-  chaos/                            # Model-based chaos testing framework
-    fault.go                        # ChaosTransactor, fault types, injection
-    model.go                        # StoreModel (in-memory shadow)
-    scenario.go                     # Scenario (ties chaosDB + model + verification)
-    verify.go                       # Verify() — model vs store comparison
-    chaos_test.go                   # Chaos tests (16 tests, targeted + random)
-gen/                                # Generated Go code from Apple's proto defs
-  BUILD.bazel                       # Generated by gazelle
-proto/apple/                        # Apple's original protobuf definitions
-  BUILD.bazel                       # proto_library + java_proto_library
-conformance/                        # Java compatibility conformance tests
-  BUILD.bazel                       # Generated by gazelle (Go test targets)
-  java/BUILD.bazel                  # Java conformance server (Bazel-built)
-buf.yaml                            # buf module config
-buf.gen.yaml                        # buf codegen config
-TODO.md                             # Tracked issues and improvements
+pkg/recordlayer/        Record Layer impl + chaos + cascades + plans
+pkg/relational/         SQL engine + cross-engine harnesses
+pkg/fdbgo/              Pure Go FDB client
+gen/                    Generated proto Go code
+proto/apple/            Apple's proto defs
+conformance/            Java conformance server + Go conformance tests
+shifts/                 Per-shift handovers (YYYY-MM-DD-{shift}.md)
+TODO.md                 Authoritative priority list
 ```
 
 ## Running
 
 ```sh
-just build                    # bazel build //... (includes nogo lint)
-just test                     # bazel test //... (fully cached, incremental)
-just bench                    # Run all benchmarks (15 record layer benchmarks)
-just bench-one NAME           # Run specific benchmark by regex
-just gazelle                  # Regenerate BUILD files after adding/removing Go files
-just generate                 # buf generate (proto codegen — not in Bazel)
-just tidy                     # go mod tidy
-just clean                    # bazel clean
-just binding-stress           # Binding tester: 100 seeds × 1000 ops
-just binding-stress 50 500    # Binding tester: 50 seeds × 500 ops
-just binding-stress-duration 2h  # Binding tester: run for 2 hours
-just binding-stress-directory    # Directory binding tester: 50 seeds × 500 ops
+just build / test / bench / gazelle / generate / tidy / verify
+just bench-one NAME
+just binding-stress [N M]   # default 100 seeds × 1000 ops
 ```
 
-### Binding tester stress (`fdb-binding-stress`)
+Run a specific Ginkgo test: `bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="--ginkgo.focus=NAME" --test_output=streamed`. Continuous fuzz: `bazelisk run //pkg/...:test -- -test.fuzz='^FuzzName$' -test.fuzztime=60s`. Reproduce a binding-stress seed: `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start NNN`. FDB crash debugging: see `pkg/fdbgo/client/CRASH_BUG.md`.
 
-Seeded PRNG fuzz testing of the pure Go FDB client against the official FDB binding tester harness. Each seed generates a deterministic sequence of FDB operations (GET, SET, CLEAR, GET_RANGE, ATOMIC_OP, conflict ranges, etc.) with random keys/values. The harness compares our output against a Python reference client — any divergence is a bug.
+## Java compatibility — non-negotiable
 
-**How it works:** For each seed, a fresh FDB Docker container is started, the binding tester inserts instructions, our Go stacktester executes them, then results are compared. All artifacts are collected per-seed.
+Wire-level compatibility is the whole point. These match Java exactly: subspace constants, key construction (FDB tuple encoding), protobuf format, record store header, builder pattern, continuation tokens (proto-wrapped, magic `6773487359078157740`), index entry format, split record format (100KB chunks at suffixes 1+; unsplit at 0), record version storage (inline at `pk + -1` suffix, format version ≥ 6).
 
-**Output:** `binding-stress-out/<timestamp>/` containing:
-- `report.json` — machine-readable results (updated after every seed, safe to read mid-run)
-- `seed-N/tester.log` — binding tester stdout/stderr
-- `seed-N/docker.log` — FDB container logs
-- `seed-N/fdb-logs/` — FDB XML trace logs (for `addr2line` crash analysis)
+FDB constraints: 5s tx limit, 100KB value limit, 10MB tx limit, ~10KB key limit. Cursors need `TimeScanLimiter` + continuations; values use split records.
 
-**Reproduce a specific seed:**
-```sh
-bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -ops 1000 -seed-start 146
-```
-
-**Debugging FDB crashes:** See `pkg/fdbgo/client/CRASH_BUG.md` for the full playbook — download debug symbols, extract `addr2line` command from FDB trace logs, resolve to source lines.
-
-- **After writing Go code, always run `just build`** to compile + nogo lint. Lint errors are build errors.
-- **Run `just test` regularly** — Bazel cache is perfect, so it only reruns what changed. Catches regressions early. Run at minimum after each feature/fix before committing.
-- After adding/removing Go files or changing `go.mod`, run `just gazelle` then `bazel mod tidy`.
-- Proto codegen stays with `buf generate` — not in Bazel.
-- **IMPORTANT**: Always use `bazelisk` (not `bazel`) when running bazel commands directly. The `just` recipes handle this, but if invoking bazel manually, use `bazelisk`.
-
-### Fuzz testing
-
-`fuzz_test.go` contains 12 Go native fuzz targets covering all hand-rolled binary parsers and protobuf deserialization. Seed corpus runs as regression tests under `bazel test`. Continuous fuzzing:
-
-```sh
-# Run a specific fuzz target for 60 seconds:
-bazelisk run //pkg/recordlayer:recordlayer_test -- \
-  -test.run='^$' \
-  -test.fuzz='^FuzzFastUnpack$' \
-  -test.fuzzcachedir=/tmp/fuzz_cache \
-  -test.fuzztime=60s
-```
-
-**Available fuzz targets:**
-
-| Target | What it fuzzes | Bugs found |
-|---|---|---|
-| `FuzzFastUnpack` | Hand-rolled FDB tuple decoder vs `tuple.Unpack` | 2 panics (truncated bytes/int), upstream `tuple.Unpack` panics |
-| `FuzzFastUnpackRoundtrip` | Pack→unpack roundtrip consistency | Clean |
-| `FuzzDeserializeBunch` | TEXT index custom binary format (varints + tuples) | OOM via crafted varint sizes |
-| `FuzzUnwrapContinuation` | Continuation token parser (proto + raw) | Clean |
-| `FuzzUninvertBytes` | DESC ordering 7-bit encoder roundtrip | Clean |
-| `FuzzDeserializeVector` | HNSW vector binary format | Clean |
-| `FuzzCompleteVersionFromBytes` | 12-byte record version parser | Clean |
-| `FuzzConcatContinuation` | ConcatCursor proto continuation deserializer | Clean |
-| `FuzzFlatMapContinuation` | FlatMapPipelined proto continuation deserializer | Clean |
-| `FuzzDedupContinuation` | Dedup cursor proto continuation deserializer | Clean |
-| `FuzzDeserializeAndDiscover` | Union wire format record type discovery (protowire) | Clean |
-| `FuzzDeserializeRecord` | Union wire format targeted record extraction (protowire) | Clean |
-| `FuzzRYWCache` | RYW cache Set/Clear/ClearRange/AtomicAdd vs map model (forward + reverse range) | Model bug found during development (ClearRange boundary) |
-
-**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
-
-**Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
-
-### Benchmarks
-
-`benchmark_test.go` contains 15 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
-
-```sh
-just bench                          # All benchmarks
-just bench-one BenchmarkSaveRecord  # Single benchmark by regex
-```
-
-**Available benchmarks:**
-
-| Benchmark | What it measures |
-|---|---|
-| `BenchmarkSaveRecord` | Single Order save + tx commit |
-| `BenchmarkLoadRecord` | Load by primary key |
-| `BenchmarkScanRecords` | Forward scan over 100 records |
-| `BenchmarkSaveRecordWithIndex` | Save with VALUE index |
-| `BenchmarkScanIndex` | Scan 100 VALUE index entries |
-| `BenchmarkSaveRecordWithMultipleIndexes` | Save with VALUE + COUNT + SUM |
-| `BenchmarkGetRecordCount` | Atomic record count read |
-| `BenchmarkSaveLargeRecord` | 50KB record (below split threshold) |
-| `BenchmarkSaveSplitRecord` | 250KB record (3 split chunks) |
-| `BenchmarkStoreOpen` | Open existing store (uncached) |
-| `BenchmarkStoreOpenCached` | Open with state cache enabled |
-| `BenchmarkDeleteRecord` | Delete by primary key |
-| `BenchmarkSaveRecordWithCountAndIndex` | Save with COUNT + VALUE index |
-| `BenchmarkSaveRecordBatch` | 10 records/tx with VALUE index |
-| `BenchmarkScanWithContinuation` | Paged scan (100 records, 10 pages, continuations) |
-
-**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer, 2026-03-28):
-
-| Benchmark | ns/op | B/op | allocs/op |
-|---|---|---|---|
-| SaveRecord | 2,176,230 | 3,136 | 101 |
-| LoadRecord | 410,904 | 2,906 | 91 |
-| ScanRecords (100) | 624,915 | 55,435 | 1,414 |
-| SaveRecordWithIndex | 2,187,184 | 3,920 | 117 |
-| ScanIndex (100) | 576,417 | 47,240 | 1,485 |
-| SaveRecordWithMultipleIndexes | 2,198,939 | 4,916 | 139 |
-| GetRecordCount | 406,424 | 3,149 | 89 |
-| SaveLargeRecord (50KB) | 2,262,228 | 121,511 | 101 |
-| SaveSplitRecord (250KB) | 2,510,222 | 549,871 | 122 |
-| StoreOpen | 339,357 | 2,119 | 69 |
-| StoreOpenCached | 359,933 | 2,215 | 72 |
-| DeleteRecord | 2,159,154 | 2,767 | 90 |
-| SaveRecordWithCountAndIndex | 2,189,853 | 4,939 | 131 |
-
-**Go vs Java Record Layer comparison** (same FDB container, 100 iterations + 20 warmup, 2026-04-11):
-
-| Operation | Go (us/op) | Java (us/op) | Ratio | Notes |
-|---|---|---|---|---|
-| SaveRecord | 2,594 | 2,434 | 1.07x | Goroutine coordination overhead |
-| LoadRecord | 338 | 551 | **0.61x** | Go wins — pure Go client reads faster |
-| ScanRecords (100) | 1,031 | 1,405 | **0.73x** | Go wins |
-| SaveRecordWithIndex | 2,301 | 2,466 | **0.93x** | Go wins |
-| ScanIndex (100) | 946 | 661 | 1.43x | JVM JIT tight-loop optimization |
-| DeleteRecord | 2,572 | 2,445 | 1.05x | Near parity |
-| StoreOpen | 231 | 270 | **0.85x** | Go wins |
-| SaveBatch (10/tx) | 3,720 | 3,635 | 1.02x | Near parity |
-
-Go wins 5/8 benchmarks. Uses pure Go FDB client (no CGo). Java uses FDB C binding (CGo). Ratio < 1.0 means Go is faster.
-
-### Debugging Bazel cache invalidation
-
-When builds unexpectedly recompile instead of using the cache:
-
-1. **Find which option changed** (analysis cache): Look for `WARNING: Build option --foo has changed, discarding analysis cache` in output.
-
-2. **Find why actions re-execute** (action cache): Use `--explain` + `--verbose_explanations`:
-   ```sh
-   bazelisk build //... --explain=/tmp/bazel_explain.log --verbose_explanations
-   ```
-   Then read `/tmp/bazel_explain.log` — it says exactly why each action ran (e.g. `Effective client environment has changed. Now using PATH=...`).
-
-3. **Common culprits when switching between interactive/CI/Claude Code shells**:
-   - `PATH` leaking into actions (fix: `--incompatible_strict_action_env` in `.bazelrc`)
-   - `--test_env=VAR` inheriting different values (fix: pin values or remove)
-   - `--isatty` / `--terminal_columns` auto-detected by Bazel client (cosmetic, usually not the real issue)
-
-4. **`.bazelrc` uses `--incompatible_strict_action_env`** to prevent shell environment from leaking into build actions. This ensures cache sharing across different shell environments.
-
-## Architecture
-
-### Core types
-
-| Go type | Java equivalent | Purpose |
-|---|---|---|
-| `FDBDatabase` | `FDBDatabase` | Wraps `fdb.Database`/`fdb.Tenant`, provides `Run()`/`RunWithVersionstamp()` |
-| `FDBRecordContext` | `FDBRecordContext` | Wraps `fdb.Transaction`, version mutations, local version cache |
-| `FDBRecordStore` | `FDBRecordStore` | Main record CRUD (Save, Load, Delete, Scan), index maintenance |
-| `RecordMetaData` | `RecordMetaData` | Proto schema + record type metadata + indexes |
-| `TypedFDBRecordStore[T]` | N/A (Go generics) | Type-safe wrapper with auto-type filtering on scan |
-| `FDBRecordVersion` | `FDBRecordVersion` | 12-byte version (10 global versionstamp + 2 local) |
-| `Index` | `Index` | Index definition (name, type, root expression, subspace key) |
-| `StandardIndexMaintainer` | `StandardIndexMaintainer` | VALUE index maintenance (insert/update/delete/scan entries) |
-| `VersionIndexMaintainer` | `VersionIndexMaintainer` | VERSION index maintenance (SET_VERSIONSTAMPED_KEY for incomplete) |
-| `IndexEntry` | `IndexEntry` | Single entry from index scan (key, value, primary key extraction) |
-| `TupleRange` | `TupleRange` | Range specification for index scans (ALL, AllOf, Between) |
-| `SizeInfo` | `SplitHelper.SizeInfo` | Track key count/size, value size, split/version flags |
-| `FDBDatabaseRunner` | `FDBDatabaseRunnerImpl` | Configurable retry with exponential backoff |
-| `RecordContextConfig` | `FDBRecordContextConfig` | Transaction settings (timeout, priority, ID) |
-| `FormerIndex` | `FormerIndex` | Tracks deleted indexes for schema evolution safety |
-
-### Java compatibility — non-negotiable
-
-Wire-level compatibility is the whole point. These MUST match Java exactly:
-- Subspace constants (`RecordKey = 1`, `IndexKey = 2`, etc.) — all 10 verified
-- Key construction (FDB tuple encoding)
-- Protobuf serialization format
-- Record store header format
-- Builder pattern (`Create`, `Open`, `CreateOrOpen`, `Build`)
-- Continuation tokens (protobuf-wrapped with magic number `6773487359078157740`)
-- Index entry format (`[indexValues..., primaryKey...]` at `IndexKey` subspace, scannable via `ScanIndex`)
-- Split record format (100KB chunks at suffixes 1, 2, 3...; unsplit at suffix 0)
-- Record version storage (inline at `pk + -1` suffix, format version >= 6)
-
-### Key patterns
-
-```go
-// Transaction pattern (matches Java's db.run())
-db.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
-    store := NewFDBRecordStoreBuilder().
-        SetMetaData(metadata).
-        SetContext(rtx).
-        SetKeySpacePath(path).
-        CreateOrOpen()
-    return store.SaveRecord(record)
-})
-
-// Typed store (Go generics)
-typedStore := NewTypedFDBRecordStore[*MyRecord](store)
-record, err := typedStore.LoadRecord(ctx, primaryKey)
-```
-
-### Pure Go FDB client performance (vs CGo)
-
-Reads: **Go 3.5x faster than CGo** (58us vs 205us single Get). Writes: **parity** (1005us vs 1007us Set+Commit). The read advantage comes from the pure Go network path (no CGo overhead, efficient channel-based multiplexing). Write parity achieved through QueueModel rewrite (C++ Smoother + server penalty) and commit path optimizations. 18 allocs/op on reads is the structural floor — top allocators all pooled or minimal.
-
-TCP connections use `SetLinger(0)` (RST on close, prevents TIME_WAIT port reuse) and `SetKeepAlive(10s)` (faster dead connection detection). This eliminates the FDB server ASSERT crash from stale Peer entries under Docker/CI load.
-
-### FDB constraints to respect
-
-- 5-second transaction time limit → cursors need `TimeScanLimiter` and continuations
-- 100KB value size limit → handled by split records (`SetSplitLongRecords(true)`)
-- 10MB transaction size limit
-- Key size limit (~10KB)
-
-### Java source reference
-
-Java source at `fdb-record-layer/` in repo root (gitignored), checked out at tag **4.10.6.0**. Maven artifact also 4.10.6.0 (MODULE.bazel). All 15 proto files synced from Java source. Key files:
-- `FDBRecordStore.java` — core CRUD, counting, save logic (5800+ lines)
-- `FDBRecordStoreKeyspace.java` — subspace constants (0-9)
-- `SplitHelper.java` — split/unsplit record logic
-- `KeyValueCursorBase.java` — continuation token format
-- `FDBRecordVersion.java` — version structure
-- `StandardIndexMaintainer.java` — VALUE index maintenance
-- `VersionIndexMaintainer.java` — VERSION index maintenance
-- `RecordMetaData.java` / `RecordMetaDataBuilder.java` — metadata
+Java source at `fdb-record-layer/` (gitignored, tag **4.11.1.0**, matches MODULE.bazel pins).
 
 ## Design principles
 
-1. **Compatibility first** — match Java wire format exactly, even when Go idioms differ
-2. **C++ is the spec for the FDB client** — if our Go client behaves differently from C++, that's a bug in our code. NEVER skip a test that shows divergence from C++. Fix the Go code to match C++ behavior instead. The entire point is behavioral compatibility.
-3. **No mocks** — test against real FDB, catch real bugs
-4. **Explicit errors** — never panic in library code, always return errors
-5. **Simple code** — no unnecessary abstraction. Three similar lines > premature abstraction
-6. **Proto fidelity** — respect protobuf semantics (open enums, field presence, wire compat)
-7. **Test hard** — t.Parallel() where possible, cover edge cases, test Java interop
-8. **Error types, not sentinels** — see Error handling section below
+1. **Compatibility first** — match Java wire format exactly.
+2. **C++ is the spec for the FDB client** — Go divergence from C++ is a bug in Go. Never skip a divergence test; fix Go.
+3. **No mocks.**
+4. **Explicit errors** — never panic in library code.
+5. **Simple code** — three similar lines beats a premature abstraction.
+6. **Proto fidelity** — open enums, field presence, wire compat.
+7. **Test hard** — `t.Parallel()`, edge cases, Java interop.
+8. **Error types, not sentinels** — see below.
+9. **Never paper over bugs** — early-return tolerance gates compound across shifts and hide real failures. Pin the actual expected behaviour.
+10. **Emergent behaviour over special-case checks** — match the architectural property that produces the behaviour, not a downstream observable. Bolted-on `if X { throw }` checks diverge the moment Java's structure changes.
+
+## Cross-engine SQL conformance
+
+Conformance principle: **doesn't work in Java → doesn't work in Go**, in the same architectural way (visitor-doesn't-implement → fall-through-to-default), with identical error wording where the message can be cleanly shared.
+
+Don't enumerate Java's quirks in this file — find them via the cross-engine harness, document each at the relevant code site, capture open ones in TODO.md.
 
 ## Error handling
 
-**Architecture: Java exception class = Go error struct. Always.**
+Java exception class = Go error struct, always. Use `errors.As()` to match (the Go equivalent of `catch (SpecificException e)`). Never use bare `var ErrFoo = errors.New("...")` sentinels — they can't carry the structured context Java's `addLogInfo()` provides.
 
-Every Java exception class that we handle maps to a Go `struct` implementing `error`. Use `errors.As()` for matching (Go equivalent of `catch (SpecificException e)`). Never use bare `var ErrFoo = errors.New("...")` sentinel errors.
-
-**Why:** Java exceptions carry structured context at throw sites (primary key, index name, subspace, etc. via `addLogInfo()`). Sentinel errors can't carry context. `errors.As()` is the idiomatic Go mechanism for type-matching + data extraction.
-
-**Pattern:**
 ```go
-// Define: one type per Java exception class
-type RecordAlreadyExistsError struct {
-    PrimaryKey tuple.Tuple  // matches Java's LogMessageKeys.PRIMARY_KEY
-}
+type RecordAlreadyExistsError struct { PrimaryKey tuple.Tuple }
+func (e *RecordAlreadyExistsError) Error() string { ... }
 
-func (e *RecordAlreadyExistsError) Error() string {
-    return fmt.Sprintf("record already exists: %v", e.PrimaryKey)
-}
-
-// Return: always with context
 return &RecordAlreadyExistsError{PrimaryKey: pk}
 
-// Match: errors.As() — equivalent of catch (RecordAlreadyExistsException e)
 var e *RecordAlreadyExistsError
-if errors.As(err, &e) {
-    log.Printf("duplicate at PK %v", e.PrimaryKey)
-}
+if errors.As(err, &e) { ... }
 ```
 
-**Rules:**
-- Every error type struct carries the same context fields as the Java exception's `addLogInfo()` keys
-- Error message in `Error()` should be descriptive (include context values), but callers must NOT string-match — use `errors.As()` only
-- No sentinel `var ErrFoo` variables — they lose context and encourage `errors.Is()` string matching
-- For errors that are genuinely message-only (like `MetaDataException` in Java), use a `MetaDataError{Message string}` type — still a struct, still matchable via `errors.As()`
-- Wrap with `fmt.Errorf("context: %w", err)` to add call-site context while preserving `errors.As()` unwrapping
-
-**Java → Go exception mapping reference:**
-
-| Java Exception | Go Error Type | Context Fields |
-|---|---|---|
-| `RecordAlreadyExistsException` | `RecordAlreadyExistsError` | `Message`, `PrimaryKey` |
-| `RecordDoesNotExistException` | `RecordDoesNotExistError` | `Message`, `PrimaryKey` |
-| `RecordTypeChangedException` | `RecordTypeChangedError` | `Message`, `PrimaryKey`, `ActualType`, `ExpectedType` |
-| `RecordStoreAlreadyExistsException` | `RecordStoreAlreadyExistsError` | (none) |
-| `RecordStoreDoesNotExistException` | `RecordStoreDoesNotExistError` | (none) |
-| `RecordStoreNoInfoAndNotEmptyException` | `RecordStoreNoInfoButNotEmptyError` | `FirstKey` |
-| `UninitializedRecordStoreException` | `RecordStoreStateNotLoadedError` | (none) |
-| `ScanNonReadableIndexException` | `IndexNotReadableError` | `IndexName`, `CurrentState` |
-| `StoreIsLockedForRecordUpdates` | `StoreIsLockedForRecordUpdatesError` | `Reason`, `Timestamp` |
-| `StoreIsFullyLockedException` | `StoreIsFullyLockedError` | `Reason`, `Timestamp` |
-| `UnknownStoreLockStateException` | `UnknownStoreLockStateError` | `LockStateValue` |
-| `StaleMetaDataVersionException` | `StaleMetaDataVersionError` | `LocalVersion`, `StoredVersion` |
-| `MetaDataException` | `MetaDataError` | `Message` |
-| `MetaDataEvolutionValidatorException` | `MetaDataEvolutionError` | `Message` |
-| `UnsupportedFormatVersionException` | `UnsupportedFormatVersionError` | `Version`, `MaxVersion` |
-| `RecordSerializationException` | `RecordSerializationError` | `Cause` (with `Unwrap()`) |
-| `RecordDeserializationException` | `RecordDeserializationError` | `PrimaryKey`, `Cause` (with `Unwrap()`) |
-| `RecordIndexUniquenessViolation` | `RecordIndexUniquenessViolationError` | `IndexName`, `IndexKey`, `PrimaryKey`, `ExistingKey` |
-| `IndexKeySizeException` | `IndexKeySizeError` | `IndexName`, `PrimaryKey`, `KeySize`, `Limit` |
-| `IndexValueSizeException` | `IndexValueSizeError` | `IndexName`, `PrimaryKey`, `ValueSize`, `Limit` |
-| (no Java equivalent) | `IndexNotFoundError` | `IndexName` |
-| (no Java equivalent) | `IndexNotBuiltError` | `IndexName` |
-| `KeyExpression.InvalidExpressionException` | `KeyExpressionError` | `Message` |
+Carry the same context fields as the Java exception's `addLogInfo()` keys. Wrap with `fmt.Errorf("...: %w", err)` to add call-site context while preserving `errors.As()` unwrapping. For genuinely message-only Java exceptions, use `XxxError{Message string}`.
 
 ## Proto definitions
 
-**Use Java's proto files directly.** The canonical definitions live at `fdb-record-layer/fdb-record-layer-core/src/main/proto/`. Our `proto/apple/` should mirror those — do NOT hand-maintain a subset and add messages one by one. Copy the full proto when adding new message types.
-
-## Cursor/continuation design
-
-Implemented: `KeyValueCursorContinuation`, `ConcatContinuation` (protobuf-wrapped). Supports forward/reverse scan, byte/row/time limits, split record reassembly, isolation levels. `ConcatCursor` and `MapCursor` combinators available.
-
-Each continuation serializes cursor state to bytes for reconstruction across transaction boundaries. Our continuations must be wire-compatible with Java's.
+Use Java's protos directly. Canonical at `fdb-record-layer/fdb-record-layer-core/src/main/proto/`; `proto/apple/` mirrors them. Copy the full proto when adding new types — don't hand-maintain a subset.
 
 ## Chaos testing
 
-Model-based chaos testing framework at `pkg/recordlayer/chaos/`. Maintains an in-memory model that shadows the real FDB store. After each operation, verifies they agree. Disagreement = bug.
+Model-based, at `pkg/recordlayer/chaos/`. An in-memory `StoreModel` shadows the real store; `Verify()` compares them after each operation. `ChaosTransactor` injects faults at tx boundaries via the production-side `NewFDBDatabaseWithTransactor` hook. Targeted (`s.InjectOnce(FaultCommitUnknown)`) or random (`WithSeed(N), WithFaults(FaultsRetryHeavy)`); seed for reproducibility. Extend by adding a `FaultType` + `ChaosTransactor.Transact` arm, or a new `Verify()` invariant, or a new `StoreModel` state field.
 
-### Architecture
+## Status
 
-```
-ChaosTransactor          wraps fdb.Transactor, injects faults at transaction boundary
-StoreModel               in-memory shadow (map of records + COUNT_UPDATES tracker)
-Scenario                 ties together chaosDB, cleanDB, model, fault config, PRNG
-Verify()                 compares model against real store (records, indexes, counts)
-```
-
-**Key insight:** `ChaosTransactor` implements `fdb.Transactor`. One constructor (`NewFDBDatabaseWithTransactor`) in production code enables the entire framework — zero other changes to production code.
-
-### What Verify checks
-
-1. **Record count** — `store.GetRecordCount()` vs `model.Count()`
-2. **Record existence** — every model record exists in store
-3. **No orphan records** — every store record exists in model
-4. **Scan count cross-check** — full scan count matches model
-5. **VALUE index entries** — compute expected entries from model (evaluate expression + trim PK), scan actual, bidirectional diff
-6. **COUNT/SUM index values** — compute expected per grouping key from model state, scan actual, compare
-7. **COUNT_UPDATES index values** — tracked cumulatively in model (increments on every save)
-
-### Fault types
-
-Currently implemented: `FaultCommitUnknown` — simulates FDB error 1021 (`commit_unknown_result`). The transaction commits successfully, then the function is re-executed in a new transaction. Tests whether operations are idempotent under retry.
-
-### How to use
-
-**Targeted fault injection** — inject a specific fault on the next operation:
-```go
-s := NewScenario(t, testRealDB, md)
-s.InjectOnce(FaultCommitUnknown)
-s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-s.Verify() // checks all invariants
-```
-
-**Random fault injection** — continuous random faults at configured rate:
-```go
-s := NewScenario(t, testRealDB, md, WithSeed(12345), WithFaults(FaultsRetryHeavy))
-// FaultsRetryHeavy = 5% commit-unknown rate
-for i := 0; i < 200; i++ {
-    s.SaveRecord(...)
-    if (i+1)%20 == 0 { s.Verify() }
-}
-```
-
-**Reproducibility** — same seed = same operations = same faults:
-```go
-WithSeed(12345)  // deterministic PRNG for both operations and fault injection
-```
-
-### Running chaos tests
-
-```sh
-# All chaos tests
-bazelisk test //pkg/recordlayer/chaos:chaos_test --test_output=streamed
-
-# Specific test
-bazelisk test //pkg/recordlayer/chaos:chaos_test --test_arg="-test.run=TestCountIndexCommitUnknown" --test_output=streamed
-```
-
-### How to hunt for bugs with a new index type
-
-1. Create metadata with the index: `buildXxxMetadata()` function in `chaos_test.go`
-2. Write a targeted test: `InjectOnce(FaultCommitUnknown)` + `SaveRecord` + `Verify()`
-3. Write a random stress test: `WithFaults(FaultsRetryHeavy)` + loop of random saves/deletes
-4. If `Verify()` needs to check something new, extend `verify.go`
-5. Run and read the violation messages — they tell you exactly what diverged
-
-### How to confirm Java-consistent behavior
-
-Use chaos tests to verify our behavior matches Java's. Example: COUNT_UPDATES is non-idempotent under commit-unknown in both Go and Java (`AtomicMutationIndexMaintainer.skipUpdateForUnchangedKeys()` returns `false`). The chaos test documents this as a known limitation rather than a bug.
-
-### Known findings
-
-| Index Type | Commit-Unknown Safe? | Why |
-|---|---|---|
-| VALUE | Yes | `removeCommonEntries` skips identical entries on retry |
-| COUNT | Yes | `removeCommonGroupingKeys` skips unchanged keys |
-| SUM | Yes | `removeCommonSumEntries` skips identical (key, value) pairs |
-| COUNT_UPDATES | **No** | `skipUpdateForUnchangedKeys=false` — always ADD +1 (matches Java) |
-| Record count | Yes | `loadExistingRecord` detects update vs insert |
-
-### Extending the framework
-
-- **New fault type**: Add to `FaultType` enum in `fault.go`, implement in `ChaosTransactor.Transact()`
-- **New verification**: Add to `Verify()` in `verify.go` (or add a new `verifyXxx` function)
-- **New model tracking**: Extend `StoreModel` in `model.go` (e.g., `CountUpdates` map for event counting)
-- **New operations**: Add methods to `Scenario` in `scenario.go` (follows SaveRecord/DeleteRecord pattern)
-
-## Conformance status (updated 2026-04-13)
-
-See `TODO.md` for full gap analysis. Summary:
-- **Record Layer**: CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types** (VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR), KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction, FDB directory layer, FDBMetaDataStore
-- **FDB Client vs C**: 100% data-path API coverage (all `fdb_transaction_*` read/write/atomic/watch/conflict/versionstamp functions). 93 C binding unit tests ported. Correctness audit (nightshift-9 + dayshift-10 + swingshift-15): 8 divergences fixed (getKey shard resolution, backoff cap, future_version delay, GRV cache per-priority, watch cancellation, commitDummyTransaction, SnapshotCache, getRange more flag across shards). 1 data race fixed (Watch vs postCommitReset). 5-subsystem C++ completeness audit (readpath, commitpath, transaction, RYW, GRV+database) — all pass. 3 remaining divergences are design choices (auto-reset, QueueModel key, FLAG_FIRST_IN_BATCH). Missing API: 6 observability/admin functions only.
-- **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner/SQL layer (deferred — hardening first)
-- **Test counts**: 2722 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
-- **Line coverage**: 80.0% overall, 82.8% (client), 81.3% (record layer). `just coverage` generates HTML report.
-- **Fuzz targets**: 23 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr)
-- **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.
+For up-to-date counts and shift-by-shift state, read the most recent file in `shifts/` and run the relevant tooling: `just test` for spec count, `grep -rE "^func Fuzz" pkg/` for fuzz targets, `just coverage` for HTML coverage, `just bench` for benchmarks.

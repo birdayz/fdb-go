@@ -66,7 +66,7 @@ func TestTransactRetry(t *testing.T) {
 	t.Logf("tx1 conflict: %v", err)
 
 	// Verify the error is retryable.
-	retryErr := tx1.OnError(err)
+	retryErr := tx1.OnError(context.Background(), err)
 	if retryErr != nil {
 		t.Fatalf("OnError should return nil for 1020, got: %v", retryErr)
 	}

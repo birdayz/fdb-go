@@ -10,6 +10,7 @@ import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -48,6 +49,7 @@ class ConformanceServer {
         new CountUpdatesIndexSteps(),
         new RankIndexSteps(),
         new CoveringIndexSteps(),
+        new NestingIndexSteps(),
         new DeleteRecordsWhereSteps(),
         new VersionIndexSteps(),
         new OnlineIndexerSteps(),
@@ -68,6 +70,7 @@ class ConformanceServer {
         new VectorIndexSteps(),
         new BenchmarkSteps(),
         new MetaDataStoreSteps(),
+        new SqlPlanSteps(),
     };
 
     private static class StepEntry {
@@ -206,6 +209,35 @@ class ConformanceServer {
             errorResponse.put("error", errorMsg);
             errorResponse.put("exceptionClass", root.getClass().getSimpleName());
             errorResponse.put("exceptionFullClass", root.getClass().getName());
+            // Extract SQLSTATE for cross-engine error_code matching. Two
+            // sources: SQLException's getSQLState() (the JDBC standard) and
+            // fdb-relational's RelationalException.getErrorCode().getErrorCode()
+            // (the planner / executor surface, which throws RelationalException
+            // for parser / planner / runtime errors). Reflection avoids
+            // coupling to the exception class names so we can detect either
+            // form without import-time dependencies.
+            String sqlState = null;
+            if (root instanceof SQLException) {
+                sqlState = ((SQLException) root).getSQLState();
+            } else {
+                try {
+                    Method getErrorCode = root.getClass().getMethod("getErrorCode");
+                    Object errorCode = getErrorCode.invoke(root);
+                    if (errorCode != null) {
+                        Method getCode = errorCode.getClass().getMethod("getErrorCode");
+                        Object code = getCode.invoke(errorCode);
+                        if (code instanceof String) {
+                            sqlState = (String) code;
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // No getErrorCode() method, or it returned an unexpected
+                    // shape — leave sqlState null.
+                }
+            }
+            if (sqlState != null) {
+                errorResponse.put("sqlState", sqlState);
+            }
 
             String responseBody = gson.toJson(errorResponse);
             byte[] responseBytes = responseBody.getBytes(StandardCharsets.UTF_8);

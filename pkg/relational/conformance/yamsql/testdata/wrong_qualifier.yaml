@@ -1,0 +1,95 @@
+# wrong_qualifier.yaml
+#
+# `SELECT a.id, c.label FROM a, b` where no source is named `c`. Pre-
+# dayshift-40 this silently fell back to the bare-column lookup for
+# `c.label` and returned b's label (since the qualified key wasn't in
+# the map but "label" was). Java's resolveIdentifier returns 42703
+# (UNDEFINED_COLUMN) for any unresolved qualified reference. Matches the existing
+# `SELECT wrong.* FROM a` pin in qualified_star.yaml.
+#
+# Scope: all three places a column reference can appear on the map
+# path — JOIN SELECT projection (execSelectJoin), WHERE-clause, and
+# INNER JOIN ON-clause — share the same validQualifiers check via
+# evalExprAtomOnMap. Single-source SELECT projection on the proto
+# path (execSelectQueryFull) joined the party in nightshift-42.
+name: wrong_qualifier
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')
+  - INSERT INTO b VALUES (1, 'one'),   (2, 'two')
+tests:
+  # Baseline: valid qualifiers resolve without any error.
+  - query: SELECT a.name, b.label FROM a, b WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - ['alpha', 'one']
+      - ['beta',  'two']
+  # `c.label` — qualifier `c` not in the FROM clause. Java's
+  # resolveIdentifier returns UNDEFINED_COLUMN (42703) for any
+  # unresolved identifier, regardless of qualifier mismatch.
+  - query: SELECT a.id, c.label FROM a, b WHERE a.id = b.id
+    error_code: "42703"
+  # `c.*`-style wrong qualifier already erred via resolveQualifierColumns;
+  # regression guard that the two code paths don't drift.
+  - query: SELECT c.* FROM a, b
+    error_code: "42F01"
+  # Wrong qualifier on an INNER JOIN (explicit) matches the comma-join
+  # behavior — both routes feed execSelectJoin's projection path.
+  - query: |
+      SELECT a.id, c.label FROM a INNER JOIN b ON a.id = b.id
+    error_code: "42703"
+  # Wrong qualifier on a table that was aliased: once aliased, the
+  # original name is no longer a valid qualifier.
+  - query: SELECT x.id, a.name FROM a AS x, b WHERE x.id = b.id
+    error_code: "42703"
+  # Aliased qualifier itself remains valid.
+  - query: SELECT x.id, x.name FROM a AS x, b WHERE x.id = b.id ORDER BY x.id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+  # dayshift-40 follow-up: the map-path WHERE evaluator now also
+  # rejects wrong qualifiers via the per-JOIN validQualifiers scope
+  # (installed by execSelectJoin before evaluating expressions).
+  - query: SELECT a.id FROM a, b WHERE c.label = 'one'
+    error_code: "42703"
+  # And in an INNER JOIN ON clause.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON c.id = b.id
+    error_code: "42703"
+  # Valid qualifiers in WHERE still resolve.
+  - query: SELECT a.id FROM a, b WHERE a.id = b.id AND b.label = 'one'
+    rows:
+      - [1]
+
+  # nightshift-42: single-source SELECT with alias-qualified
+  # projection resolves via the table alias (was 42703 before).
+  - query: SELECT d.id, d.name FROM a AS d WHERE d.id = 1
+    rows:
+      - [1, 'alpha']
+
+  # Same pattern without explicit alias — qualifier is the table
+  # name itself.
+  - query: SELECT a.id, a.name FROM a WHERE a.id = 2
+    rows:
+      - [2, 'beta']
+
+  # Unknown qualifier on single-source projection — still the error
+  # case. `c.id` has no matching source; 42703 fires (bare `id` isn't
+  # a proto field on table `a` either).
+  - query: SELECT c.id FROM a WHERE id = 1
+    error_code: "42703"
+
+  # Wrong qualifier on RIGHT side of an ON expression (the existing
+  # pin covers the left side). Symmetric check via validQualifiers —
+  # both sides of a binary comparison go through evalExprAtomOnMap.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON a.id = c.id
+    error_code: "42703"
+
+  # Wrong qualifier in ON-clause RHS on a multi-arg expression —
+  # qualifier is checked anywhere in the predicate tree, not just at
+  # top level.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON a.id = b.id AND c.id > 0
+    error_code: "42703"

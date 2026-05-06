@@ -1,0 +1,38 @@
+# unique_violation.yaml
+#
+# UNIQUE constraint violations raise SQLSTATE 23505 per the SQL
+# standard — covers both PRIMARY KEY conflict and explicit UNIQUE
+# index conflict. Prior to nightshift-36, PK conflicts silently
+# replaced the existing row via record-layer SaveRecord pass-through.
+# Fixed by routing INSERT through SaveRecordWithOptions with
+# RecordExistenceCheckErrorIfExists, whose resulting
+# RecordAlreadyExistsError is wrapped as SQLSTATE 23505.
+name: unique_violation
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING NOT NULL, email STRING, PRIMARY KEY (id))
+  CREATE UNIQUE INDEX t_email ON t (email)
+setup:
+  - INSERT INTO t VALUES (1, 'alice', 'a@x.com'), (2, 'bob', 'b@x.com')
+tests:
+  # Duplicate PRIMARY KEY — now raises 23505 (nightshift-36 fix).
+  - query: INSERT INTO t VALUES (1, 'carol', 'c@x.com')
+    error_code: "23505"
+  # Duplicate unique-indexed column on fresh PK — raises 23505.
+  - query: INSERT INTO t VALUES (3, 'carol', 'a@x.com')
+    error_code: "23505"
+  # Non-conflicting insert succeeds; table now has 3 rows.
+  - query: INSERT INTO t VALUES (3, 'carol', 'c@x.com')
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+  # Original rows are untouched — prove the prior failed INSERT did not
+  # overwrite PK=1.
+  - query: SELECT name, email FROM t WHERE id = 1
+    rows:
+      - ['alice', 'a@x.com']
+  # UPDATE setting a unique-indexed column to a value another row
+  # already holds raises 23505. Pre-nightshift-36 wrap-fix this leaked
+  # as *recordlayer.RecordIndexUniquenessViolationError — errors.As to
+  # *api.Error would miss.
+  - query: UPDATE t SET email = 'a@x.com' WHERE id = 2
+    error_code: "23505"

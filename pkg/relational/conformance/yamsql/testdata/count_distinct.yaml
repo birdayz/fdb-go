@@ -1,0 +1,26 @@
+# count_distinct.yaml
+#
+# COUNT(DISTINCT) is rejected by both engines. fdb-relational
+# 4.11.1.0's parser visitor NPEs on every aggregate with DISTINCT
+# (`AggregateWindowedFunctionContext.ALL().getText()` is called
+# unconditionally; ALL is null when DISTINCT is present, per
+# CLAUDE.md gotcha "COUNT(DISTINCT col) NPEs in fdb-relational"). Go's
+# embedded engine rejects at execution time with
+# `ErrCodeUnsupportedOperation`. Same architectural reason in both
+# engines: visitor doesn't handle the DISTINCT case. Workaround:
+# pre-aggregate via a derived table.
+name: count_distinct
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+setup:
+  # Mixed types that happen to share a string representation.
+  - INSERT INTO t VALUES (1, 5, '5'), (2, 10, '10'), (3, 5, '5'), (4, null, null)
+tests:
+  - query: SELECT COUNT(DISTINCT n) FROM t
+    error_code: "0A000"
+  - query: SELECT COUNT(DISTINCT s) FROM t
+    error_code: "0A000"
+  # COUNT(*) counts every row including NULLs — works.
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [4]

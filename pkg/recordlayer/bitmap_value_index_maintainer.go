@@ -612,6 +612,8 @@ func (c *bitmapKVCursor) Close() error {
 	return nil
 }
 
+func (c *bitmapKVCursor) IsClosed() bool { return c.closed }
+
 // evaluateBitmapValueAggregate accumulates bitmap entries across aligned positions
 // into a single combined bitmap. Returns the combined bitmap as tuple.Tuple{[]byte{...}}.
 //

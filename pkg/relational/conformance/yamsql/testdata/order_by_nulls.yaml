@@ -1,0 +1,45 @@
+# order_by_nulls.yaml
+#
+# Java-conformant NULL ordering (swingshift-35, 3b87574d):
+#   - ASC default: NULLS FIRST (NULL sorts before non-NULL)
+#   - DESC default: NULLS LAST (NULL sorts after non-NULL)
+# This matches Postgres/Oracle behaviour and the Java reference. The old
+# Go code had NULL > non-NULL, flipping both.
+name: order_by_nulls
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX idx_v ON t (v)
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, null), (3, 5), (4, null), (5, 20)
+tests:
+  - query: SELECT v FROM t ORDER BY v ASC
+    rows:
+      - [~]
+      - [~]
+      - [5]
+      - [10]
+      - [20]
+  - query: SELECT v FROM t ORDER BY v DESC
+    rows:
+      - [20]
+      - [10]
+      - [5]
+      - [~]
+      - [~]
+  # Explicit NULLS LAST on ASC — Go extension: in-memory sort handles
+  # NULL placement that index scans can't provide.
+  - query: SELECT v FROM t ORDER BY v ASC NULLS LAST
+    rows:
+      - [5]
+      - [10]
+      - [20]
+      - [~]
+      - [~]
+  # Explicit NULLS FIRST on DESC — Go extension: in-memory sort.
+  - query: SELECT v FROM t ORDER BY v DESC NULLS FIRST
+    rows:
+      - [~]
+      - [~]
+      - [20]
+      - [10]
+      - [5]

@@ -5,10 +5,12 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // RecordMetaData describes the schema for records stored in a record store.
@@ -167,12 +169,27 @@ func NewRecordMetaDataBuilder() *RecordMetaDataBuilder {
 	}
 }
 
-// SetRecords sets the protobuf file descriptor containing record definitions
+// SetRecordsWithUnionName is SetRecords with an explicit union message
+// name. Use this when the proto file's union message is not called
+// "UnionDescriptor" — e.g. schemas that must coexist with another
+// RecordMetaData in the same Go package (gen.*), where duplicate
+// UnionDescriptor symbols would clash. Behaviour is identical to
+// SetRecords in every other respect.
+func (b *RecordMetaDataBuilder) SetRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
+	return b.setRecordsWithUnionName(fd, unionName)
+}
+
+// SetRecords sets the protobuf file descriptor containing record definitions.
+// Uses the default union message name "UnionDescriptor".
 func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *RecordMetaDataBuilder {
+	return b.setRecordsWithUnionName(fd, "UnionDescriptor")
+}
+
+func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
 	b.fileDescriptor = fd
 
-	// Find the UnionDescriptor to map fields to record types
-	unionDesc := fd.Messages().ByName("UnionDescriptor")
+	// Find the named union message to map fields to record types.
+	unionDesc := fd.Messages().ByName(protoreflect.Name(unionName))
 	if unionDesc == nil {
 		// If no UnionDescriptor, treat each message as a separate record type
 		b.setRecordsWithoutUnion(fd)
@@ -180,36 +197,43 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 	}
 	b.unionDescriptor = unionDesc
 
-	// Auto-discover record types from UnionDescriptor fields
 	unionFields := unionDesc.Fields()
 
 	for i := 0; i < unionFields.Len(); i++ {
 		field := unionFields.Get(i)
 		fieldName := string(field.Name())
 
-		// Skip non-record fields (field names like "_Order" map to "Order" record type)
-		if len(fieldName) > 1 && fieldName[0] == '_' {
-			recordTypeName := fieldName[1:] // "_Order" -> "Order"
-
-			// Find the actual message descriptor for this record type
-			recordMsgDesc := fd.Messages().ByName(protoreflect.Name(recordTypeName))
-			if recordMsgDesc == nil {
-				continue // Skip if message not found
+		var recordTypeName string
+		var recordMsgDesc protoreflect.MessageDescriptor
+		switch {
+		case len(fieldName) > 1 && fieldName[0] == '_':
+			// RecordLayer convention: `_TypeName`.
+			recordTypeName = fieldName[1:]
+			recordMsgDesc = fd.Messages().ByName(protoreflect.Name(recordTypeName))
+		case field.Kind() == protoreflect.MessageKind:
+			// fdb-relational convention: derive type name from the
+			// field's type reference rather than the field name.
+			recordMsgDesc = field.Message()
+			if recordMsgDesc != nil {
+				recordTypeName = string(recordMsgDesc.Name())
 			}
-
-			// Use the proto field number as the record type index.
-			// Matches Java: RecordType.getRecordTypeKey() returns the smallest
-			// union field number matching this message type.
-			recordType := &RecordType{
-				Name:                 recordTypeName,
-				Descriptor:           recordMsgDesc,
-				PrimaryKey:           nil, // Will be set explicitly
-				SinceVersion:         0,   // Matches Java's null default
-				RecordTypeIndex:      int(field.Number()),
-				UnionFieldDescriptor: field, // Store the union field for reflection
-			}
-			b.recordTypes[recordTypeName] = recordType
 		}
+		if recordMsgDesc == nil || recordTypeName == "" {
+			continue
+		}
+
+		// Use the proto field number as the record type index.
+		// Matches Java: RecordType.getRecordTypeKey() returns the smallest
+		// union field number matching this message type.
+		recordType := &RecordType{
+			Name:                 recordTypeName,
+			Descriptor:           recordMsgDesc,
+			PrimaryKey:           nil, // Will be set explicitly
+			SinceVersion:         0,   // Matches Java's null default
+			RecordTypeIndex:      int(field.Number()),
+			UnionFieldDescriptor: field, // Store the union field for reflection
+		}
+		b.recordTypes[recordTypeName] = recordType
 	}
 
 	return b
@@ -802,9 +826,14 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()
 			msgType, err := protoregistry.GlobalTypes.FindMessageByName(rt.Descriptor.FullName())
 			if err != nil {
-				return nil, fmt.Errorf("record type %s not in proto registry: %w", rt.Name, err)
+				// Dynamic schemas (not in global proto registry) fall back to dynamicpb.
+				// This allows runtime-constructed schemas (e.g. from DDL) to be used
+				// for both serialization and deserialization.
+				desc := rt.Descriptor
+				rt.newMessage = func() proto.Message { return dynamicpb.NewMessage(desc) }
+			} else {
+				rt.newMessage = func() proto.Message { return msgType.New().Interface() }
 			}
-			rt.newMessage = func() proto.Message { return msgType.New().Interface() }
 			fnToRT[rt.unionFieldNumber] = rt
 		}
 	}
@@ -955,6 +984,34 @@ func (m *RecordMetaData) GetAllIndexes() map[string]*Index {
 	return m.indexes
 }
 
+// RecordTypesForIndex returns the record types that the given index covers.
+// Universal indexes cover all record types. Type-specific indexes cover only
+// the record types they are associated with.
+// Matches Java's RecordMetaData.recordTypesForIndex(Index).
+func (m *RecordMetaData) RecordTypesForIndex(idx *Index) []*RecordType {
+	// Check if it's a universal index.
+	for _, ui := range m.universalIndexes {
+		if ui.Name == idx.Name {
+			result := make([]*RecordType, 0, len(m.recordTypes))
+			for _, rt := range m.recordTypes {
+				result = append(result, rt)
+			}
+			return result
+		}
+	}
+	// Type-specific: find which types have this index.
+	var result []*RecordType
+	for _, rt := range m.recordTypes {
+		for _, i := range m.GetIndexesForRecordType(rt.Name) {
+			if i.Name == idx.Name {
+				result = append(result, rt)
+				break
+			}
+		}
+	}
+	return result
+}
+
 // GetFormerIndexes returns all former (deleted) indexes.
 // Matches Java's RecordMetaData.getFormerIndexes().
 func (m *RecordMetaData) GetFormerIndexes() []*FormerIndex {
@@ -1094,6 +1151,18 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 // works correctly after proto round-trip (FDB tuple unpack returns int64,
 // valueFromProto may return int32, and Go code may use int). Without this,
 // int64(42) != int(42) in Go's any comparison. Fixes bug 13.
+//
+// `[]byte` keys are normalized to `string` because byte slices are
+// unhashable in Go and would panic when used as a map key. Adversarial
+// proto inputs (e.g. via the FuzzRecordMetaDataFromProto fuzz target,
+// nightshift-53) can carry `[]byte` subspace keys; without this branch,
+// `RecordMetaDataBuilder.Build` would panic with "hash of unhashable
+// type: []uint8" rather than returning a typed error. The string-cast
+// preserves byte-equality semantics for keys with the same byte
+// content, but does collapse `[]byte("x")` and `"x"` into the same
+// equivalence class — that's a harmless conflation here because any
+// metadata that mixes the two for the same logical subspace is
+// already malformed.
 func normalizeSubspaceKey(key any) any {
 	switch k := key.(type) {
 	case int:
@@ -1102,6 +1171,19 @@ func normalizeSubspaceKey(key any) any {
 		return int64(k)
 	case int64:
 		return k
+	case []byte:
+		return string(k)
+	case tuple.Tuple:
+		// Nested tuples are produced by `fastDecodeTuple` when the
+		// proto-encoded subspace key carries an FDB nested-tuple type
+		// code. Like `[]byte`, a `tuple.Tuple` (= []any) is unhashable
+		// in Go and would panic on map insert. Java doesn't currently
+		// emit nested tuples as subspace keys, so this is preemptive
+		// hardening rather than a known-triggering case (the fuzz has
+		// run 16M+ iterations without finding one), but the cost is
+		// trivial and the alternative is a surprise panic if the input
+		// ever takes that shape.
+		return fmt.Sprintf("%v", k)
 	default:
 		return key
 	}

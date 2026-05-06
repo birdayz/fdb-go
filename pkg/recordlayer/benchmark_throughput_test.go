@@ -517,6 +517,13 @@ func benchThroughputInsertBatch(b *testing.B, batchSize int) {
 	ctx := context.Background()
 
 	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		// Raise tx timeout to 30 s — under container load a high-
+		// batch-size CreateOrOpen can exceed FDB's 5 s default while
+		// scanning the (by now non-trivial) subspace for the store
+		// header.
+		if err := rtx.tx.Options().SetTimeout(30_000); err != nil {
+			return nil, err
+		}
 		_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 		return nil, err
 	})
@@ -530,6 +537,9 @@ func benchThroughputInsertBatch(b *testing.B, batchSize int) {
 	for i := 0; i < b.N; i++ {
 		base := idGen.Add(int64(batchSize))
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			if err := rtx.tx.Options().SetTimeout(30_000); err != nil {
+				return nil, err
+			}
 			// Use Build() instead of Open() — skips store state FDB reads.
 			// Safe for InsertBatch: storeHeader=nil → no lock check,
 			// indexStates=nil → all indexes READABLE.
@@ -569,6 +579,9 @@ func benchThroughputInsertBatchConcurrent(b *testing.B, batchSize, goroutines in
 	ctx := context.Background()
 
 	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		if err := rtx.tx.Options().SetTimeout(30_000); err != nil {
+			return nil, err
+		}
 		_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 		return nil, err
 	})
@@ -587,6 +600,14 @@ func benchThroughputInsertBatchConcurrent(b *testing.B, batchSize, goroutines in
 				defer wg.Done()
 				base := idGen.Add(int64(batchSize))
 				_, runErr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					// Raise the per-tx timeout from FDB's 5 s default to
+					// 30 s so the 128-goroutine variant doesn't flake under
+					// container load. A single batch insert shouldn't take
+					// anywhere near 30 s; the longer ceiling just absorbs
+					// queueing delay when many concurrent txs contend.
+					if err := rtx.tx.Options().SetTimeout(30_000); err != nil {
+						return nil, err
+					}
 					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 					if err != nil {
 						return nil, err

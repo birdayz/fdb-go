@@ -505,7 +505,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	// --- Error handling ---
 	case "ON_ERROR":
 		code := int(sm.popInt64())
-		err := sm.currentTr().OnError(&wire.FDBError{Code: code})
+		err := sm.currentTr().OnError(ctx, &wire.FDBError{Code: code})
 		if err != nil {
 			sm.pushError(idx, err)
 		} else {
@@ -694,7 +694,7 @@ func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {
 		}
 		// Not empty yet, retry via OnError with not_committed for backoff sleep.
 		tr := sm.db.CreateTransaction()
-		tr.OnError(&wire.FDBError{Code: client.ErrNotCommitted})
+		tr.OnError(ctx, &wire.FDBError{Code: client.ErrNotCommitted})
 	}
 }
 

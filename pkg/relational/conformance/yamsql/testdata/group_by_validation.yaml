@@ -1,0 +1,189 @@
+# group_by_validation.yaml
+#
+# Java's groupby-tests.yamsql validates that SELECT columns must
+# either be in GROUP BY or wrapped in an aggregate. SQL standard
+# §7.10 General Rule 1: 'each column reference shall identify a
+# column whose scope is a Q which is a grouping column'.
+# Probes Go's enforcement vs Java's 42803 errors.
+name: group_by_validation
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t2 (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+  - INSERT INTO t2 VALUES (1, 10), (2, 20)
+tests:
+  # Java alignment: SELECT * with GROUP BY errors 42803 (* expands to
+  # non-grouped cols). nightshift-39: now matches Java.
+  - query: SELECT * FROM t1 GROUP BY col1
+    error_code: "42803"
+  # SELECT id with GROUP BY col1 errors 42803 (id not grouped).
+  # dayshift-40 aligned the proto-path with Java: the fd-exists check
+  # fires first (so undefined columns still surface as 42703), and a
+  # following groupByNames check rejects bare columns not in GROUP BY.
+  - query: SELECT id FROM t1 GROUP BY col1 ORDER BY id
+    error_code: "42803"
+  # Same violation expressed through a second ungrouped projection
+  # column alongside a valid grouped one. `col2` is in schema but not
+  # in GROUP BY, so still 42803 even though `col1` would be fine.
+  - query: SELECT col1, col2 FROM t1 GROUP BY col1 ORDER BY col1
+    error_code: "42803"
+  # Java: SELECT undefined_col → 42703 (undefined). Go matches.
+  - query: SELECT bla FROM t1 GROUP BY col1
+    error_code: "42703"
+  # Valid: SELECT col1 FROM t1 GROUP BY col1.
+  - query: SELECT col1 FROM t1 GROUP BY col1 ORDER BY col1
+    rows:
+      - [10]
+      - [20]
+  # Valid: SELECT aggregate alongside grouped column.
+  - query: SELECT col1, COUNT(*) FROM t1 GROUP BY col1 ORDER BY col1
+    rows:
+      - [10, 2]
+      - [20, 1]
+  # Valid: GROUP BY two cols, SELECT both.
+  - query: SELECT col1, col2 FROM t1 GROUP BY col1, col2 ORDER BY col1, col2
+    rows:
+      - [10, 100]
+      - [10, 200]
+      - [20, 300]
+  # Java alignment: SELECT count(*) without group-by col in projection
+  # but with GROUP BY (Java's aggregate-index-tests-count.yamsql).
+  # 'SELECT COUNT(*) FROM t GROUP BY col2' → one count row per col2 group.
+  - query: SELECT COUNT(*) FROM t1 GROUP BY col1 ORDER BY COUNT(*)
+    rows:
+      - [1]
+      - [2]
+  # SELECT aggregate-only without grouping col reference, with GROUP BY.
+  - query: SELECT SUM(col2) FROM t1 GROUP BY col1 ORDER BY SUM(col2)
+    rows:
+      - [300]
+      - [300]
+  # Map-path 42803 (dayshift-40): JOIN queries that reach
+  # aggregateMapRows also surface 42803 for ungrouped-but-defined
+  # columns, using the first-filtered-row probe as a schema proxy.
+  # When filtered is non-empty the pre-check runs; when empty the
+  # check is skipped (the silent-NULL behavior is preserved because
+  # we can't tell "defined" from "undefined" without a schema).
+  - query: |-
+      SELECT t1.col2 FROM t1, t2 WHERE t1.col1 = t2.x GROUP BY t1.col1 ORDER BY t1.col2
+    error_code: "42803"
+  # Java alignment (groupby-tests.yamsql): `GROUP BY col AS alias`
+  # is a syntactic extension; a single alias is accepted and the
+  # group key comes from the expression as usual. Java errors 42702
+  # on duplicate alias; we now match (swingshift-41).
+  - query: SELECT col1 FROM t1 GROUP BY col1 AS x ORDER BY col1
+    rows:
+      - [10]
+      - [20]
+  # Duplicate AS alias → 42702 AMBIGUOUS_COLUMN (matches Java's
+  # groupby-tests.yamsql).
+  - query: SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS x ORDER BY col1
+    error_code: "42702"
+
+  # Case-insensitive duplicate (SQL identifiers fold case): `x` and
+  # `X` are the same alias — must also error 42702. Pre-nightshift-42
+  # this silently overwrote the alias→col mapping.
+  - query: SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS X ORDER BY col1
+    error_code: "42702"
+
+  # Qualified GROUP BY key on a derived table — Java
+  # groupby-tests.yamsql line 117. The groupColIdx needs to register
+  # the bare last-segment so `SELECT col1` resolves against a GROUP
+  # BY of `x.col1`; pre-fix it emitted NULL for each group.
+  - query: SELECT col1 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY col1
+    rows:
+      - [10]
+      - [20]
+
+  # Mirror: unqualified GROUP BY key with qualified SELECT — also
+  # needs the bare / qualified symmetry in groupColIdx.
+  - query: SELECT x.col1 FROM (SELECT col1 FROM t1) AS x GROUP BY col1 ORDER BY col1
+    rows:
+      - [10]
+      - [20]
+
+  # Aggregate alongside a qualified GROUP BY on a derived table —
+  # exercises the GR1 pre-check (`groupByNames` bare-form registration)
+  # as well as the emit-path lookup. col1=10 has 2 rows, col1=20 has 1.
+  - query: SELECT x.col1, COUNT(*) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1
+    rows:
+      - [10, 2]
+      - [20, 1]
+
+  # Qualified arg inside aggregate: `MAX(x.col2)` with derived table
+  # `x` — the qualifier resolves through the derived-table alias.
+  # Java groupby-tests.yamsql line 126. t1 rows: (1,10,100),
+  # (2,10,200), (3,20,300) → MAX per col1 group: 10→200, 20→300.
+  - query: SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1
+    rows:
+      - [200]
+      - [300]
+
+  # Aggregate of a GROUP BY alias: `MAX(z)` where z aliases x.col1.
+  # Java groupby-tests.yamsql line 123. MAX of a group-key column per
+  # group collapses to that group's key value.
+  - query: SELECT MAX(z) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 AS z ORDER BY z
+    rows:
+      - [10]
+      - [20]
+
+  # COUNT(DISTINCT) is rejected by both engines (see
+  # distinct_aggregates.yaml for the full rationale).
+  - query: SELECT COUNT(DISTINCT z) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 AS z ORDER BY z
+    error_code: "0A000"
+
+  # Arithmetic on aggregates with qualified args (Java
+  # groupby-tests.yamsql line 143). t1 rows: (1,10,100), (2,10,200),
+  # (3,20,300). Per col1 group:
+  #   col1=10: SUM(col2)=300, COUNT(col2)=2, SUM/COUNT=150, AVG=150.0
+  #   col1=20: SUM(col2)=300, COUNT(col2)=1, SUM/COUNT=300, AVG=300.0
+  - query: |-
+      SELECT SUM(x.col2) / COUNT(x.col2), AVG(x.col2)
+      FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1
+    rows:
+      - [150, 150.0]
+      - [300, 300.0]
+
+  # Java groupby-tests.yamsql line 178 shape: aggregate alias in a
+  # derived table, referenced in the outer SELECT and WHERE.
+  # Inner: MIN(col2) per col1 group → 100 (col1=10), 300 (col1=20).
+  # Outer: WHERE G > 5 → both pass. SELECT G + 4 → 104, 304.
+  - query: |-
+      SELECT G + 4 FROM (
+        SELECT MIN(x.col2) AS G
+        FROM (SELECT col1, col2 FROM t1) AS x
+        GROUP BY x.col1
+      ) AS Y
+      WHERE G > 5 ORDER BY G
+    rows:
+      - [104]
+      - [304]
+  # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
+  # col1 AS x` — the alias becomes a usable SELECT-list reference;
+  # the output column is named `x` and its values are col1's distinct
+  # values. nightshift-42: implemented via post-parse rewrite of
+  # matching projCols to the underlying group-by column, preserving
+  # the alias as projAlias.
+  - query: SELECT x FROM t1 GROUP BY col1 AS x ORDER BY x
+    rows:
+      - [10]
+      - [20]
+
+  # Same pattern with an aggregate in the SELECT list — alias `x`
+  # resolves to col1, COUNT(*) aggregates per group. t1 has rows
+  # (1,10,100), (2,10,200), (3,20,300): col1=10 → 2 rows, col1=20
+  # → 1 row.
+  - query: SELECT x, COUNT(*) FROM t1 GROUP BY col1 AS x ORDER BY x
+    rows:
+      - [10, 2]
+      - [20, 1]
+
+  # Alias-of-alias (Java groupby-tests.yamsql line 105): the GROUP
+  # BY alias can be re-aliased in the SELECT list. Output column is
+  # named by the SELECT-list alias (XX), values come from the
+  # underlying GROUP BY column (col1).
+  - query: SELECT YY AS XX FROM t1 GROUP BY col1 AS YY ORDER BY XX
+    rows:
+      - [10]
+      - [20]

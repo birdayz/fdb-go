@@ -1,0 +1,61 @@
+# information_schema.yaml
+#
+# INFORMATION_SCHEMA.* system-table queries. The grammar rejects
+# unquoted `FROM INFORMATION_SCHEMA.TABLES` because TABLES is
+# reserved; double-quoting `"INFORMATION_SCHEMA"."TABLES"` works.
+# This scenario pins the currently-working shape and documents the
+# case-handling of the TABLE_NAME filter.
+#
+# The runner creates its scenario DB under an arbitrary path (see
+# runner_test.go: `/_conf_<name>`) so we filter by TABLE_NAME without
+# a TABLE_CATALOG constraint. Multiple yamsql scenarios run in
+# parallel, each creates and drops its own DB, so TABLE_NAME alone
+# is not unique across scenarios — but within a single scenario it
+# is, and the TABLE_NAME IN filter narrows to our own tables.
+name: information_schema
+schema_template: |
+  CREATE TABLE emp_systest (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE dept_systest (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup: []
+tests:
+  # SELECT with a named column now projects to only that column
+  # (dayshift-37 fix). Pre-fix the INFORMATION_SCHEMA route dropped
+  # the SELECT list entirely and returned every system-table column.
+  # Unquoted identifiers fold to upper case (SQL standard), so the
+  # DDL-created tables are stored as EMP_SYSTEST and DEPT_SYSTEST.
+  - query: |
+      SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES"
+      WHERE TABLE_NAME IN ('EMP_SYSTEST', 'DEPT_SYSTEST')
+      ORDER BY TABLE_NAME
+    rows:
+      - ['DEPT_SYSTEST']
+      - ['EMP_SYSTEST']
+
+  # Exact-match WHERE on the upper-folded TABLE_NAME.
+  - query: |
+      SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES"
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
+    rows:
+      - ['EMP_SYSTEST']
+
+  # COLUMNS: join via TABLE_NAME; project just the column name.
+  - query: |
+      SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS"
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
+      ORDER BY ORDINAL_POSITION
+    rows:
+      - ['ID']
+      - ['NAME']
+
+  # Aliased projection.
+  - query: |
+      SELECT TABLE_NAME AS t_name FROM "INFORMATION_SCHEMA"."TABLES"
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
+    rows:
+      - ['EMP_SYSTEST']
+
+  # Column not in the schema — clear error (42703).
+  - query: |
+      SELECT NOT_A_COLUMN FROM "INFORMATION_SCHEMA"."TABLES"
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
+    error_code: "42703"

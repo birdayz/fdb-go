@@ -1,0 +1,46 @@
+# distinct_join.yaml
+#
+# SELECT DISTINCT on JOIN / comma-join results — dedup happens on
+# the projected row, not on the input-table rows. Exercises the
+# intersection of the DISTINCT path with the map-backed JOIN
+# evaluator.
+name: distinct_join
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE tags (cust_id BIGINT NOT NULL, tag STRING, PRIMARY KEY (cust_id, tag))
+setup:
+  - INSERT INTO orders VALUES (1, 10), (2, 10), (3, 20), (4, 20)
+  - INSERT INTO tags VALUES (10, 'gold'), (10, 'pref'), (20, 'gold')
+tests:
+  # Without DISTINCT: cross-join produces duplicates on cust_id.
+  # cust 10 has 2 orders × 2 tags = 4 rows; cust 20 has 2 × 1 = 2.
+  - query: |
+      SELECT o.cust_id FROM orders AS o, tags AS t
+      WHERE o.cust_id = t.cust_id
+      ORDER BY o.cust_id
+    rows:
+      - [10]
+      - [10]
+      - [10]
+      - [10]
+      - [20]
+      - [20]
+
+  # DISTINCT collapses to unique cust_ids (2 rows).
+  - query: |
+      SELECT DISTINCT o.cust_id FROM orders AS o, tags AS t
+      WHERE o.cust_id = t.cust_id
+      ORDER BY o.cust_id
+    rows:
+      - [10]
+      - [20]
+
+  # DISTINCT on a pair — (cust_id, tag) pairs.
+  - query: |
+      SELECT DISTINCT o.cust_id, t.tag FROM orders AS o, tags AS t
+      WHERE o.cust_id = t.cust_id
+      ORDER BY o.cust_id, t.tag
+    rows:
+      - [10, 'gold']
+      - [10, 'pref']
+      - [20, 'gold']

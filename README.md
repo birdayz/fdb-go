@@ -4,15 +4,15 @@
 [![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
 
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
-Wire-compatible with Java Record Layer 4.10.6.0 — Go and Java applications can read
+Wire-compatible with Java Record Layer 4.11.1.0 — Go and Java applications can read
 and write the same data on a shared FDB cluster.
 
 ## Target versions
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| **FoundationDB** | **7.3.69** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
-| **Java Record Layer** | **4.10.6.0** | Wire compatibility target. Conformance tests run against this version. |
+| **FoundationDB** | **7.3.75** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
+| **Java Record Layer** | **4.11.1.0** | Wire compatibility target. Conformance tests run against this version. |
 | **Go** | **1.26.1** | Minimum Go version. |
 | **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
 
@@ -73,12 +73,60 @@ typed := recordlayer.NewTypedFDBRecordStore[*pb.Order](store)
 order, err := typed.LoadRecord(ctx, primaryKey)
 ```
 
+## SQL engine
+
+Built-in SQL engine via Go's `database/sql` interface. Queries are optimized by a
+Cascades-based query planner ported from Java's `fdb-relational-core`.
+
+```go
+import _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+
+db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+
+// DDL
+db.Exec("CREATE DATABASE /mydb")
+db.Exec(`CREATE SCHEMA TEMPLATE app_tmpl
+    CREATE TABLE Users (id BIGINT NOT NULL, name STRING, email STRING, PRIMARY KEY (id))
+    CREATE INDEX idx_email ON Users (email)`)
+db.Exec("CREATE SCHEMA /mydb/main WITH TEMPLATE app_tmpl")
+
+// DML
+db.Exec("INSERT INTO Users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')")
+db.Exec("UPDATE Users SET name = 'Bob' WHERE id = 1")
+
+// Queries — Cascades optimizer picks index scans, sort elimination, streaming aggregation
+rows, _ := db.Query("SELECT name FROM Users WHERE email = 'alice@example.com'")
+rows, _ = db.Query("SELECT name FROM Users ORDER BY id DESC")  // reverse PK scan
+rows, _ = db.Query("SELECT email, COUNT(*) FROM Users GROUP BY email ORDER BY email ASC")
+```
+
+Supported SQL:
+- SELECT with WHERE, ORDER BY (ASC/DESC), DISTINCT, GROUP BY, HAVING
+- Aggregates: COUNT, SUM, MIN, MAX, AVG
+- JOINs: INNER JOIN, comma-join (including self-joins)
+- CTEs: WITH ... AS (SELECT ...) — including chained CTEs
+- UNION ALL
+- INSERT, UPDATE, DELETE
+- CASE, COALESCE, CAST, arithmetic expressions
+- Computed projections with aliases
+
+ORDER BY requires a supporting index or PK (no physical sort operator, matching Java's Cascades architecture).
+Self-joins and CTE+JOINs correctly resolve alias-qualified column references.
+
+Not yet supported in the SQL engine:
+- LEFT/RIGHT OUTER JOIN (INNER only)
+- Subqueries in WHERE (EXISTS, IN (SELECT ...))
+- LIMIT/OFFSET (pagination is a future API-level feature)
+- Scalar functions (UPPER, LOWER, SUBSTRING, etc.) — Java's registry doesn't have them either
+- Mixed ASC/DESC in multi-column ORDER BY
+- CTE referenced inside UNION branches
+
 ## What works
 
 Records, indexes, cursors, and all the plumbing needed to share data with Java:
 
 - **CRUD** — save, load, delete, scan, existence checks, typed stores
-- **Indexes** — VALUE, VERSION, RANK, COUNT, SUM, MIN_EVER, MAX_EVER, MAX_EVER_VERSION, COUNT_NOT_NULL, COUNT_UPDATES, PERMUTED_MIN, PERMUTED_MAX
+- **Indexes** — VALUE, VERSION, RANK, COUNT, SUM, MIN_EVER, MAX_EVER, MAX_EVER_VERSION, COUNT_NOT_NULL, COUNT_UPDATES, PERMUTED_MIN, PERMUTED_MAX, TEXT, BITMAP_VALUE, MULTIDIMENSIONAL, TIME_WINDOW_LEADERBOARD, VECTOR (HNSW)
 - **Covering indexes** — KeyWithValueExpression (value columns stored in FDB value)
 - **Index operations** — scan (BY_VALUE, BY_RANK, BY_GROUP), rebuild, online build (BY_RECORDS), state management (READABLE/WRITE_ONLY/DISABLED/READABLE_UNIQUE_PENDING)
 - **Split records** — automatic chunking at 100KB, transparent reassembly
@@ -92,13 +140,11 @@ Records, indexes, cursors, and all the plumbing needed to share data with Java:
 - **Aggregate functions** — EvaluateAggregateFunction (COUNT, SUM, MIN, MAX, RANK functions)
 - **Store management** — format version 14, store locking (FORBID_RECORD_UPDATE, FULL_STORE), incarnation, header user fields
 - **Key expressions** — Field, RecordType, Empty, Composite (Then), Nesting, FanOut, Grouping, FunctionKey, KeyWithValue, Version
+- **Instrumentation** — StoreTimer with timed events and counters matching Java's FDBStoreTimer
+- **Store state caching** — FDBRecordStoreStateCache interface with PassThroughStoreStateCache default
 
 ## What doesn't (yet)
 
-- TEXT index (full-text with tokenizers)
-- BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD indexes
-- Store state caching
-- Timer/instrumentation
 - Synthetic record types (JoinedRecordType, UnnestedRecordType)
 
 Full gap analysis in [TODO.md](TODO.md).
@@ -106,7 +152,7 @@ Full gap analysis in [TODO.md](TODO.md).
 ## Conformance
 
 Wire compatibility is verified by a conformance suite that runs both Go and Java
-(Record Layer 4.10.6.0) against the same FDB instance, cross-validating reads and
+(Record Layer 4.11.1.0) against the same FDB instance, cross-validating reads and
 writes bidirectionally.
 
 ### Wire format
@@ -131,31 +177,75 @@ structure are all verified against Java.
 
 ### Test coverage
 
-315 conformance specs (Go↔Java cross-validation) and 838 unit/integration specs
-against real FDB via testcontainers. **1153 total specs.**
+434 conformance specs (Go↔Java cross-validation), 5320 Go test functions, and 2702
+Ginkgo specs against real FDB via testcontainers. **8000+ total test entry points.**
+1579-entry SQL corpus runs through the Go engine with zero failures.
 
 | Area | Conformance specs |
 |------|------------------:|
 | CRUD + existence + isolation + conflicts | 49 |
-| Multi-type records (Customer) | 12 |
-| Split records | 9 |
-| Scanning (forward, reverse, limits) | 12 |
+| Multi-type records (Customer) | 15 |
+| Split records | 10 |
+| Scanning (forward, reverse, limits, tuple ordering) | 13 |
 | Continuation tokens (record + index level) | 6 |
 | VALUE indexes (single, composite, fan-out, covering) | 22 |
 | COUNT/SUM/MIN_EVER/MAX_EVER indexes | 38 |
 | COUNT_NOT_NULL/COUNT_UPDATES/CLEAR_WHEN_ZERO | 12 |
 | MAX_EVER_VERSION index | 7 |
 | PERMUTED_MIN/MAX indexes | 10 |
-| VERSION index | varies |
 | RANK index | 14 |
+| TEXT index | 12 |
+| BITMAP_VALUE index | 6 |
+| MULTIDIMENSIONAL index | 15 |
+| VECTOR index (HNSW) | 18 |
+| TIME_WINDOW_LEADERBOARD index | 11 |
 | Record versioning | 4 |
 | Record counting | 6 |
 | RangeSet wire format | 4 |
-| Store header (v1 + v2), index state, lifecycle | 25 |
-| DeleteAllRecords / DeleteRecordsWhere | 11 |
+| Store header (v1 + v2), index state, lifecycle | 28 |
+| DeleteAllRecords / DeleteRecordsWhere | 10 |
 | OnlineIndexer | 7 |
 | RecordMetaData proto serialization | 21 |
 | TypedRecord cross-language encoding | 11 |
+
+## Getting started
+
+```sh
+# 1. Start FoundationDB (Docker)
+docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.63
+
+# 2. Get the cluster file
+docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster
+
+# 3. Use from Go
+go get github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver
+```
+
+```go
+package main
+
+import (
+    "database/sql"
+    "fmt"
+    _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+)
+
+func main() {
+    db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/tmp/fdb.cluster&schema=main")
+    db.Exec("CREATE DATABASE /myapp")
+    db.Exec(`CREATE SCHEMA TEMPLATE app CREATE TABLE Users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`)
+    db.Exec("CREATE SCHEMA /myapp/main WITH TEMPLATE app")
+
+    db.Exec("INSERT INTO Users VALUES (1, 'Alice'), (2, 'Bob')")
+
+    rows, _ := db.Query("SELECT id, name FROM Users ORDER BY id")
+    for rows.Next() {
+        var id int64; var name string
+        rows.Scan(&id, &name)
+        fmt.Printf("%d: %s\n", id, name)
+    }
+}
+```
 
 ## Building
 
@@ -171,10 +261,12 @@ just generate   # buf proto codegen
 ### Project layout
 
 ```
-pkg/recordlayer/    Main implementation
-gen/                Generated protobuf Go code
-proto/apple/        Apple's original proto definitions
-conformance/        Go↔Java cross-validation tests + Java conformance server
+pkg/recordlayer/        Record Layer implementation (CRUD, indexes, cursors, schema)
+pkg/relational/         SQL engine (parser, Cascades optimizer, executor, database/sql driver)
+pkg/fdbgo/              Pure Go FDB client (wire protocol, no CGo)
+gen/                    Generated protobuf Go code
+proto/apple/            Apple's original proto definitions
+conformance/            Go↔Java cross-validation tests + Java conformance server
 ```
 
 ### Running specific tests

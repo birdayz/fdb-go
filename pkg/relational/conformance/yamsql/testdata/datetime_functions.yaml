@@ -1,0 +1,144 @@
+# datetime_functions.yaml
+#
+# Two groups:
+#
+#   * Still in Go (SQL-standard form): CURRENT_DATE / CURRENT_TIMESTAMP /
+#     CURRENT_TIME / LOCALTIME / CURRENT_USER. Java's
+#     `BaseVisitor.visitSimpleFunctionCall` is `visitChildren(ctx)` —
+#     a structural no-op that doesn't error. Go's continued working
+#     implementation is a Go-only correctness improvement, not a
+#     divergent rejection. Values are non-deterministic so scenarios
+#     verify presence + structural shape via IS NOT NULL / IS NULL
+#     rather than literal value equality.
+#
+#   * Rejected (Java-aligned): MySQL-style
+#     aliases NOW / CURDATE / CURTIME / SYSDATE / UTC_TIMESTAMP /
+#     UTC_DATE / UTC_TIME. fdb-relational 4.11.1.0's function
+#     registry has no entries; Java's planner emits "Unsupported
+#     operator <NAME>" (0A000). Same architectural reason in both
+#     engines: no evaluator entry.
+#
+# Date-part functions YEAR / MONTH / DAY / HOUR / MINUTE / SECOND /
+# DAYOFMONTH / DAYOFWEEK / DAYOFYEAR are still in Go (TODO #28
+# scope).
+#
+# Returns:
+#   - CURRENT_DATE       → time.Time at midnight UTC of today
+#   - CURRENT_TIMESTAMP  → time.Now() UTC
+#   - CURRENT_TIME       → time.Now() UTC (no time-only type in Go;
+#                          surfaces same as CURRENT_TIMESTAMP)
+#   - LOCALTIME          → time.Now() UTC
+#   - CURRENT_USER       → empty string (no user-identity concept yet)
+name: datetime_functions
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1)
+tests:
+  # ---------------------------------------------------------------
+  # SQL-standard form — still in Go.
+  # ---------------------------------------------------------------
+  # CURRENT_TIMESTAMP IS NOT NULL — function evaluates without error.
+  - query: SELECT CURRENT_TIMESTAMP IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_DATE IS NOT NULL.
+  - query: SELECT CURRENT_DATE IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_TIME IS NOT NULL.
+  - query: SELECT CURRENT_TIME IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # LOCALTIME IS NOT NULL.
+  - query: SELECT LOCALTIME IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_USER returns empty string ('' is a known value, deterministic).
+  - query: SELECT CURRENT_USER FROM t WHERE id = 1
+    rows:
+      - ['']
+  # CURRENT_USER IS NOT NULL — empty string is not NULL per SQL rules.
+  - query: SELECT CURRENT_USER IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_USER = '' — empty string equality is deterministic.
+  - query: SELECT id FROM t WHERE CURRENT_USER = ''
+    rows:
+      - [1]
+  # Within-statement consistency: SQL standard requires multiple
+  # references to CURRENT_TIMESTAMP in the same statement to return
+  # the same value. nightshift-39 added connection.statementTime
+  # captured at QueryContext entry. Pre-fix, two time.Now() calls
+  # in the same statement could return different values (nanosecond
+  # timing); now they always match.
+  - query: SELECT CURRENT_TIMESTAMP = CURRENT_TIMESTAMP FROM t WHERE id = 1
+    rows:
+      - [true]
+  - query: SELECT CURRENT_DATE = CURRENT_DATE FROM t WHERE id = 1
+    rows:
+      - [true]
+  # Mixed: CURRENT_TIMESTAMP and LOCALTIME return the same instant.
+  - query: SELECT CURRENT_TIMESTAMP = LOCALTIME FROM t WHERE id = 1
+    rows:
+      - [true]
+  # Date-part functions: YEAR(CURRENT_DATE) is the current year — must
+  # be >= 2026 (when this code was written) and <= 9999. Using boolean
+  # checks since the actual year is non-deterministic.
+  - query: SELECT YEAR(CURRENT_DATE) >= 2026 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # MONTH() is 1..12; pin the range.
+  - query: SELECT MONTH(CURRENT_DATE) >= 1 AND MONTH(CURRENT_DATE) <= 12 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # DAY() is 1..31; pin the range.
+  - query: SELECT DAY(CURRENT_DATE) >= 1 AND DAY(CURRENT_DATE) <= 31 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # HOUR/MINUTE/SECOND are 0..N; CURRENT_DATE is midnight UTC so
+  # all three should be 0.
+  - query: SELECT HOUR(CURRENT_DATE) FROM t WHERE id = 1
+    rows:
+      - [0]
+  - query: SELECT MINUTE(CURRENT_DATE) FROM t WHERE id = 1
+    rows:
+      - [0]
+  - query: SELECT SECOND(CURRENT_DATE) FROM t WHERE id = 1
+    rows:
+      - [0]
+  # DAYOFWEEK returns 1=Sunday..7=Saturday (MySQL/Oracle convention,
+  # not Go's 0..6). Range pin.
+  - query: SELECT DAYOFWEEK(CURRENT_DATE) >= 1 AND DAYOFWEEK(CURRENT_DATE) <= 7 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # DAYOFYEAR is 1..366.
+  - query: SELECT DAYOFYEAR(CURRENT_DATE) >= 1 AND DAYOFYEAR(CURRENT_DATE) <= 366 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # YEAR(NULL) → NULL (NULL propagates through datetime functions).
+  - query: SELECT YEAR(CAST(NULL AS BIGINT)) IS NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+
+  # ---------------------------------------------------------------
+  # MySQL aliases — Java-aligned rejection (0A000).
+  # ---------------------------------------------------------------
+  - query: SELECT NOW() FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT SYSDATE() FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT UTC_TIMESTAMP() FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT CURDATE() FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT UTC_DATE() FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT CURTIME() FROM t WHERE id = 1
+    error_code: "42883"
+  - query: SELECT UTC_TIME() FROM t WHERE id = 1
+    error_code: "42883"
+  # MySQL alias inside a date-part call: rejection still fires at
+  # the inner function call.
+  - query: SELECT YEAR(NOW()) FROM t WHERE id = 1
+    error_code: "42883"

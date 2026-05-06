@@ -1,6 +1,12 @@
 # Don't inherit shell environment into actions — use Bazel's fixed defaults
 build --incompatible_strict_action_env
 
+# (Earlier drafts used --experimental_isolated_extension_usages for a
+# second isolated go_deps extension over cmd/frl/go.mod. Dropped: isolated
+# extensions duplicate every transitive dep, which broke the linker when
+# cmd/frl imports the root module. Bazel now uses ONE go_deps extension
+# fed by root go.mod; cmd/frl's direct deps are mirrored into root go.mod.)
+
 # Use remote JDK — no system Java dependency required
 build --java_runtime_version=remotejdk_21
 

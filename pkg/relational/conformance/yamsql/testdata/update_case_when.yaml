@@ -1,0 +1,56 @@
+# update_case_when.yaml
+#
+# UPDATE SET col = CASE ... END (Java's case-when.yamsql).
+# Verifies our UPDATE evaluator handles arbitrary expressions including
+# nested CASE in the SET expression.
+name: update_case_when
+schema_template: |
+  CREATE TABLE a (a1 BIGINT NOT NULL, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))
+setup:
+  - INSERT INTO a VALUES (1, 100, 10), (2, 200, 20), (3, 300, 30)
+tests:
+  # UPDATE with CASE — single-branch (no ELSE).
+  - query: UPDATE a SET a2 = CASE WHEN a1 = 1 THEN 4444 END
+  - query: SELECT a1, a2 FROM a ORDER BY a1
+    rows:
+      - [1, 4444]
+      - [2, ~]
+      - [3, ~]
+  # Reset.
+  - query: UPDATE a SET a2 = a1 * 100
+  # UPDATE with CASE handling NULL.
+  - query: UPDATE a SET a2 = CASE WHEN a2 IS NULL THEN 8888 ELSE 2222 END
+  - query: SELECT a1, a2 FROM a ORDER BY a1
+    rows:
+      - [1, 2222]
+      - [2, 2222]
+      - [3, 2222]
+  # Nested CASE in UPDATE.
+  - query: |-
+      UPDATE a SET a2 = CASE WHEN CASE WHEN a2 = 2222 THEN 8888 ELSE 2222 END > 4000
+                              THEN 4444 ELSE 6666 END
+  - query: SELECT a1, a2 FROM a ORDER BY a1
+    rows:
+      - [1, 4444]
+      - [2, 4444]
+      - [3, 4444]
+  # Pure int-int CASE branches to an integer column — matches Java,
+  # no narrowing needed.
+  - query: UPDATE a SET a2 = CASE WHEN a2 = 4444 THEN 1 ELSE 2 END
+  - query: SELECT a1, a2 FROM a ORDER BY a1
+    rows:
+      - [1, 1]
+      - [2, 1]
+      - [3, 1]
+  # Java alignment (case-when.yamsql): mixed int/float CASE branches
+  # assigned to a BIGINT column. Java errors 22000 (cannot_convert_type)
+  # because the CASE result type is DOUBLE (promotion of 1 and 2.2)
+  # and the assignment can't narrow it back to BIGINT. Pre-fix Go
+  # rejected with 22023 (INVALID_PARAMETER); post-fix Go returns
+  # 22000 to match Java's SQLSTATE.
+  #
+  # Use a predicate no row satisfies so the ELSE branch (2.2) fires
+  # on every row — otherwise the DOUBLE result is a whole 1.0 which
+  # narrows cleanly and doesn't exercise the type-mismatch path.
+  - query: UPDATE a SET a2 = CASE WHEN a1 = 99 THEN 1 ELSE 2.2 END
+    error_code: "22000"

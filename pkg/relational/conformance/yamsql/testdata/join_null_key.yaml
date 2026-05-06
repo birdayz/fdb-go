@@ -1,0 +1,36 @@
+# join_null_key.yaml
+#
+# SQL §7.6: NULL = NULL evaluates to UNKNOWN, so rows with NULL in a
+# join column do NOT join (the predicate filters them out, same
+# outcome as FALSE). Pre-swingshift-35 Go's tri-state bug could have
+# let them through; `TestFDB_JoinWithNullKey` pins the contract.
+name: join_null_key
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, null), (3, 20)
+  - INSERT INTO b VALUES (101, 10, 'alpha'), (102, null, 'beta'), (103, 20, 'gamma')
+tests:
+  # INNER JOIN on k=k excludes both NULL-keyed rows (NULL = NULL -> UNKNOWN).
+  - query: SELECT a.id, b.label FROM a, b WHERE a.k = b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [3, 'gamma']
+  # Cross-join + parenthesised NULL predicate. Pins the map-path
+  # RecordConstructor fix (review-caught round-6). NOT (a.k = NULL)
+  # evaluates UNKNOWN for every row so every row is filtered out.
+  # Pre-fix the map-path collapsed NULL=NULL to false, so NOT would
+  # flip to TRUE and every (a,b) pair would survive.
+  - query: SELECT a.id FROM a, b WHERE NOT (a.k = null) AND a.id = 1
+    rows: []
+  # NULL-safe equality via IS NOT DISTINCT FROM: treats NULL=NULL as
+  # TRUE, so the NULL-keyed rows (a.id=2, b.id=102) now match each
+  # other. Commonly used for NULL-preserving join semantics.
+  - query: SELECT a.id, b.label FROM a, b WHERE a.k IS NOT DISTINCT FROM b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [3, 'gamma']

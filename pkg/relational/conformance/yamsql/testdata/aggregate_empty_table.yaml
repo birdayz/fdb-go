@@ -1,0 +1,45 @@
+# aggregate_empty_table.yaml
+#
+# Empty table aggregate edge cases (Java's aggregate-empty-table.yamsql).
+# COUNT(*) on empty → 0; SUM/AVG/MIN/MAX on empty → NULL.
+# Verify Go matches Java for the no-index, ungrouped path.
+name: aggregate_empty_table
+schema_template: |
+  CREATE TABLE empty_t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup: []
+tests:
+  # COUNT(*) on empty table returns 0 (never NULL).
+  - query: SELECT COUNT(*) FROM empty_t
+    rows:
+      - [0]
+  # COUNT(col) on empty also returns 0.
+  - query: SELECT COUNT(n) FROM empty_t
+    rows:
+      - [0]
+  # SUM on empty is NULL (not 0).
+  - query: SELECT SUM(n) FROM empty_t
+    rows:
+      - [~]
+  # AVG on empty is NULL.
+  - query: SELECT AVG(n) FROM empty_t
+    rows:
+      - [~]
+  # MIN on empty is NULL.
+  - query: SELECT MIN(n) FROM empty_t
+    rows:
+      - [~]
+  # MAX on empty is NULL.
+  - query: SELECT MAX(n) FROM empty_t
+    rows:
+      - [~]
+  # COUNT(*) with WHERE that matches nothing → 0.
+  - query: SELECT COUNT(*) FROM empty_t WHERE id = 999
+    rows:
+      - [0]
+  # COUNT(*) with HAVING that filters out the empty-set row → no rows.
+  - query: SELECT COUNT(*) FROM empty_t HAVING COUNT(*) > 0
+    rows: []
+  # COUNT(*) with WHERE then HAVING.
+  - query: SELECT COUNT(*) FROM empty_t WHERE id > 0 HAVING COUNT(*) >= 0
+    rows:
+      - [0]

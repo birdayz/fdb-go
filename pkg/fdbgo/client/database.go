@@ -239,34 +239,20 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		delete(db.connPool, addr)
 	}
 
-	// In single-process clusters (all roles on one process), the topology may
-	// report a different IP than the coordinator address (e.g., Docker's
-	// internal 172.x vs the exposed localhost). Detect this by checking if
-	// ALL topology addresses share the same port as the coordinator AND only
-	// one coordinator exists. Reuse the coordinator connection for all.
+	// Dial a new connection. C++ FlowTransport creates one Peer (TCP connection)
+	// per unique NetworkAddress. No address aliasing or port-matching — each
+	// ip:port gets its own connection.
 	//
-	// This MUST NOT match when different processes are on different IPs
-	// (multi-node cluster) even if they share the same port number.
-
+	// TODO: C++ FlowTransport deduplicates bidirectional connections via
+	// ConnectionID exchange in ConnectPacket. When two processes connect to
+	// each other simultaneously, the lower-priority connection is dropped.
+	// We don't need this as a pure client (we never accept incoming connections),
+	// but should implement it if we ever add server-side functionality.
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
 	c, dialErr := transport.DialWith(dialCtx, addr, false, db.dialFn)
 	if dialErr != nil {
-		// Fallback: if the internal address failed (e.g., Docker networking),
-		// try the coordinator address with the same port.
-		if len(db.clusterFile.Coordinators) > 0 {
-			_, targetPort, _ := net.SplitHostPort(addr)
-			_, coordPort, _ := net.SplitHostPort(db.clusterFile.Coordinators[0])
-			if targetPort == coordPort {
-				coordAddr := db.clusterFile.Coordinators[0]
-				c, dialErr = transport.DialWith(dialCtx, coordAddr, false, db.dialFn)
-				if dialErr == nil {
-					db.connPool[addr] = c
-					return c, true, nil
-				}
-			}
-		}
 		return nil, false, dialErr
 	}
 
@@ -341,6 +327,13 @@ func (db *database) bootstrap(ctx context.Context) error {
 // tryAllCoordinators races all coordinators in parallel, returning the first
 // successful response. Matches C++ quorum(ok,1) pattern.
 func (db *database) tryAllCoordinators(ctx context.Context) (*DBInfo, error) {
+	if len(db.clusterFile.Coordinators) == 0 {
+		// Defensive — production cluster-file parsing rejects empty
+		// coordinator lists, but a hand-constructed *database in tests can
+		// reach this path. Without the guard, the for-loop below returns
+		// (nil, nil) and refreshTopology eventually nil-derefs in dbInfoEqual.
+		return nil, fmt.Errorf("no coordinators configured")
+	}
 	if len(db.clusterFile.Coordinators) == 1 {
 		// Fast path: single coordinator, no goroutine overhead.
 		return db.tryOneCoordinator(ctx, db.clusterFile.Coordinators[0])
@@ -481,14 +474,14 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 
 		result, err := fn(tx)
 		if err != nil {
-			if retryErr := tx.OnError(err); retryErr != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr // non-retryable
 			}
 			continue // tx has been reset in place, retryCount/backoff preserved
 		}
 
 		if err := tx.Commit(ctx); err != nil {
-			if retryErr := tx.OnError(err); retryErr != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}
 			continue // for commit_unknown_result: self-conflicting applied
@@ -509,7 +502,7 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 
 		result, err := fn(tx)
 		if err != nil {
-			if retryErr := tx.OnError(err); retryErr != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}
 			continue

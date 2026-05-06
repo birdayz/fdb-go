@@ -14,8 +14,9 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace file
-go.work
+# Go workspace files are intentionally committed — the cmd/frl multi-module
+# setup relies on go.work, so every contributor and CI sees the same workspace.
+
 
 # IDE files
 .idea/
@@ -47,6 +48,7 @@ bazel-bin
 bazel-out
 bazel-testlogs
 bazel-fdb-record-layer-go
+bazel-client-qualit
 .bazel-bep.jsonl
 test-report.html
 .tools/

@@ -1,0 +1,119 @@
+# composite_secondary_index_prefix_pushdown.yaml
+#
+# Pure-prefix pushdown on composite secondary indexes: when WHERE
+# only equates a leading subset of the index columns, the scan
+# narrows to tuple-prefix [prefixVals...] on the index subspace,
+# not a full type scan. Trailing non-equated (or non-indexed)
+# leaves stay post-filter via evalPredicate.
+#
+# Mirrors composite_pk_prefix_pushdown.yaml for the PK case.
+# Tried LAST of the secondary-index branches: tighter forms
+# (full-equality, IN-list, range, composite-range) win first.
+#
+# Correctness-only tests — the pushdown decision isn't directly
+# observable from results; regression safety: if the branch
+# wrongly fires on a query where the index prefix doesn't match,
+# or wrongly BAILS on a query that should take the branch, the
+# result set diverges and tests fail.
+name: composite_secondary_index_prefix_pushdown
+schema_template: |
+  CREATE TABLE rp (
+    id BIGINT NOT NULL,
+    region STRING,
+    plan STRING,
+    tier BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_plan ON rp (region, plan)
+  CREATE INDEX idx_region_plan_tier ON rp (region, plan, tier)
+setup:
+  - INSERT INTO rp VALUES
+      (1, 'us', 'pro', 1),
+      (2, 'us', 'pro', 2),
+      (3, 'us', 'free', 1),
+      (4, 'eu', 'pro', 1),
+      (5, 'eu', 'free', 2),
+      (6, 'us', 'pro', 3)
+tests:
+  # -------------------------------------------------------------------
+  # 2-col index, equality on leading col only → prefix pushdown fires.
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM rp WHERE region = 'us' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [6]
+
+  # 2-col index, residual on trailing col stays post-filter via
+  # evalPredicate. Result set narrows correctly regardless of whether
+  # the branch fires or falls through.
+  - query: SELECT id FROM rp WHERE region = 'us' AND tier = 1 ORDER BY id
+    rows:
+      - [1]
+      - [3]
+
+  # Leading col mismatch → prefix doesn't apply, falls through to
+  # full type scan. Verifies the branch isn't firing when leading
+  # col has no equality.
+  - query: SELECT id FROM rp WHERE plan = 'pro' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]
+      - [6]
+
+  # -------------------------------------------------------------------
+  # 3-col index, equality on first col only → 1-col prefix pushdown.
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
+    rows:
+      - [4]
+      - [5]
+
+  # 3-col index, equality on first two cols → 2-col prefix pushdown.
+  # Tighter than the 1-col variant above. The choice between
+  # idx_region_plan (2-col) and idx_region_plan_tier (3-col) depends
+  # on iteration order of GetIndexesForRecordType — whichever is
+  # picked first; both are correct.
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [6]
+
+  # Full equality on every index col of idx_region_plan → the
+  # full-equality branch (trySecondaryIndexFromWhere) should catch
+  # this, not the composite-prefix branch. Composite-prefix explicitly
+  # bails when every col is equated.
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' AND tier = 1 ORDER BY id
+    rows:
+      - [1]
+
+  # Equality gap: eq on first + third cols but not second → the
+  # prefix is only [region] (stops at first non-equated col).
+  # Trailing tier=1 stays post-filter. No bogus "skip-middle" behavior.
+  - query: SELECT id FROM rp WHERE region = 'us' AND tier = 2 ORDER BY id
+    rows:
+      - [2]
+
+  # -------------------------------------------------------------------
+  # UPDATE / DELETE through the DML dispatcher — same prefix pushdown
+  # fires via pkDispatchCursorFromWhere.
+  # -------------------------------------------------------------------
+
+  - query: UPDATE rp SET tier = 99 WHERE region = 'eu'
+    count: 2
+
+  - query: SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
+    rows:
+      - [4, 99]
+      - [5, 99]
+
+  - query: DELETE FROM rp WHERE region = 'eu'
+    count: 2
+
+  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
+    rows: []

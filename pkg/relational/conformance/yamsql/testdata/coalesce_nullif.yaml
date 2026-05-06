@@ -1,0 +1,33 @@
+# coalesce_nullif.yaml
+#
+# COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL
+# if all are NULL. NULLIF(a, b) returns NULL if a = b, else a.
+# Both are spec-level functions over the three-valued logic system.
+name: coalesce_nullif
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a STRING, b STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'x', 'y'), (2, null, 'y'), (3, 'x', null), (4, null, null)
+tests:
+  # COALESCE(a, b, 'default') — first non-null wins.
+  - query: SELECT id, COALESCE(a, b, 'default') FROM t ORDER BY id
+    rows:
+      - [1, 'x']
+      - [2, 'y']
+      - [3, 'x']
+      - [4, 'default']
+  # NULLIF is rejected — fdb-relational 4.11.1.0's function registry
+  # has no entry, so its planner returns "Unsupported operator NULLIF"
+  # (CLAUDE.md gotcha). Go's embedded engine matches by NOT having a
+  # NULLIF arm in the scalar-function evaluator switch. Same
+  # architectural reason in both engines: the function registry has no
+  # NULLIF evaluator. Workaround: `CASE WHEN a = b THEN NULL ELSE a END`.
+  - query: SELECT id, NULLIF(a, 'x') FROM t ORDER BY id
+    error_code: "42883"
+  # NULLIF rejected via the searched-CASE workaround.
+  - query: SELECT id, CASE WHEN a = 'y' THEN NULL ELSE a END FROM t ORDER BY id
+    rows:
+      - [1, 'x']
+      - [2, ~]
+      - [3, 'x']
+      - [4, ~]

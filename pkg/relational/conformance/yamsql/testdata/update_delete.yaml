@@ -1,0 +1,56 @@
+# update_delete.yaml
+#
+# UPDATE and DELETE with NULL-aware predicates. A predicate that
+# evaluates to UNKNOWN must filter the row out (same outcome as FALSE)
+# — so UPDATE SET ... WHERE v = NULL matches nothing, even the row
+# with v IS NULL. Only IS NULL / IS NOT NULL probes NULL directly.
+name: update_delete
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, null), (3, 20), (4, null)
+tests:
+  # UPDATE v = NULL does NOT match v IS NULL rows — the predicate
+  # v = NULL is UNKNOWN for every row.
+  - query: UPDATE t SET v = 99 WHERE v = NULL
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, ~]
+      - [3, 20]
+      - [4, ~]
+  # UPDATE v IS NULL does match them.
+  - query: UPDATE t SET v = 99 WHERE v IS NULL
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 99]
+      - [3, 20]
+      - [4, 99]
+  # DELETE WHERE IS NOT NULL — leaves only the already-updated rows
+  # (nothing, since 99 is not null).
+  - query: DELETE FROM t WHERE v IS NOT NULL
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [0]
+  # Re-seed + DELETE with complex predicate including AND/OR.
+  - query: INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, null)
+  - query: DELETE FROM t WHERE v < 15 OR v > 25
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [2, 20]
+      - [4, ~]
+  # DELETE with no WHERE removes all rows. SQL standard: missing
+  # WHERE is treated as always-true. evalPredicate returns true on
+  # nil whereExpr.
+  - query: DELETE FROM t
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [0]
+  # UPDATE with no WHERE updates all rows.
+  - query: INSERT INTO t VALUES (1, 10), (2, 20)
+  - query: UPDATE t SET v = 100
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 100]

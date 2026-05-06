@@ -53,10 +53,15 @@ func (c *grvCache) tryCache(priority uint32) (int64, bool) {
 
 	// Check ratekeeper throttle cooldown for the requesting priority.
 	// C++ checks lastRkBatchThrottleTime for BATCH, lastRkDefaultThrottleTime for DEFAULT.
+	// SYSTEM_IMMEDIATE never reaches here (bypasses cache at callsite), but guard
+	// explicitly to prevent bugs if the bypass is ever refactored.
 	var lastThrottle int64
-	if priority == grvPriorityBatch {
+	switch priority {
+	case grvPriorityBatch:
 		lastThrottle = c.lastRkBatch.Load()
-	} else {
+	case grvPrioritySystemImmediate:
+		return 0, false // SYSTEM_IMMEDIATE must always contact proxy
+	default:
 		lastThrottle = c.lastRkDefault.Load()
 	}
 	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
@@ -268,33 +273,91 @@ func (b *grvBatcher) flush(db *database) {
 	}
 }
 
+// grvRefreshMin is the floor for backgroundRefresher's adaptive delay.
+// Matches C++ backgroundGrvUpdater's std::max(0.001, ...) clamp.
+const grvRefreshMin = 1 * time.Millisecond
+
+// nextGRVRefreshDelay computes how long backgroundRefresher should sleep
+// before the next GRV proxy contact. Pure-function port of C++
+// NativeAPI.actor.cpp:backgroundGrvUpdater's wait expression.
+//
+// proxyBudget = MAX_PROXY_CONTACT_LAG - (now - lastProxy)
+// cacheBudget = (MAX_VERSION_CACHE_LAG - grvDelay) - (now - lastTime)
+// next = max(grvRefreshMin, min(proxyBudget, cacheBudget))
+//
+// `grvDelay` is the EMA of recent GRV RPC latency — subtracted from the
+// cache budget so the refresh completes before the cache becomes stale.
+func nextGRVRefreshDelay(now, lastProxy, lastTime time.Time, grvDelay time.Duration) time.Duration {
+	proxyBudget := maxProxyContactLag - now.Sub(lastProxy)
+	cacheBudget := (maxVersionCacheLag - grvDelay) - now.Sub(lastTime)
+	wait := proxyBudget
+	if cacheBudget < wait {
+		wait = cacheBudget
+	}
+	if wait < grvRefreshMin {
+		wait = grvRefreshMin
+	}
+	return wait
+}
+
 // backgroundRefresher proactively keeps the cache fresh.
-// Matches C++ backgroundGrvUpdater: contacts proxy before cache goes stale.
+//
+// Matches C++ NativeAPI.actor.cpp:backgroundGrvUpdater. Each iteration:
+//
+//	wait( max(0.001,
+//	          min(MAX_PROXY_CONTACT_LAG - (now - lastProxyTime),
+//	              (MAX_VERSION_CACHE_LAG - grvDelay) - (now - lastTime))) )
+//	... issue GRV ...
+//	grvDelay = (grvDelay + (now - curTime)) / 2  // EMA of RPC latency
+//
+// `grvDelay` is the EMA of GRV RPC latency, used as lead time so the
+// refresh completes BEFORE the cache would expire. `lastProxyTime` is
+// the last successful proxy contact (kept warm). `lastTime` is the
+// timestamp of the cached read version.
+//
+// Pre-2026-04-25 this was a fixed `maxVersionCacheLag/2` ticker — 2× the
+// RPC rate of C++ under low latency (when the cache budget is large).
+// Now matches C++: refresh just-in-time, scaled by observed latency.
 func (b *grvBatcher) backgroundRefresher(db *database) {
 	defer db.wg.Done()
-	ticker := time.NewTicker(maxVersionCacheLag / 2) // refresh at half the staleness window
-	defer ticker.Stop()
+
+	// EMA of GRV RPC latency. C++ initializes to 0.001s (1ms).
+	grvDelay := grvRefreshMin
+
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 
 	for {
+		wait := nextGRVRefreshDelay(
+			time.Now(),
+			time.Unix(0, db.grvCache.lastProxyContact.Load()),
+			time.Unix(0, db.grvCache.lastTime.Load()),
+			grvDelay,
+		)
+
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(wait)
+
 		select {
-		case <-ticker.C:
-			now := time.Now().UnixNano()
-			lastProxy := db.grvCache.lastProxyContact.Load()
-			lastGrv := db.grvCache.lastTime.Load()
-
-			// Refresh if cache is getting stale or we haven't contacted proxy recently.
-			needsRefresh := time.Duration(now-lastGrv) > (maxVersionCacheLag/2) ||
-				time.Duration(now-lastProxy) > maxProxyContactLag
-
-			if needsRefresh {
-				requestTime := time.Now()
-				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
-				// Background refresher uses default priority (8 << 24).
-				version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault, 1)
-				refreshCancel()
-				if err == nil {
-					b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
-				}
+		case <-timer.C:
+			requestTime := time.Now()
+			refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+			// Refresh at this batcher's own priority, not always DEFAULT.
+			// The BATCH batcher must refresh BATCH ratekeeper state
+			// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
+			// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
+			// its tryCache always returns false (refreshOnce never fires).
+			version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
+			refreshCancel()
+			if err == nil {
+				b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+				// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
+				grvDelay = (grvDelay + time.Since(requestTime)) / 2
 			}
 		case <-db.ctx.Done():
 			return

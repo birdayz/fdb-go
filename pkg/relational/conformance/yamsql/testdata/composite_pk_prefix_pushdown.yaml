@@ -1,0 +1,163 @@
+# composite_pk_prefix_pushdown.yaml
+#
+# Pure-prefix composite PK pushdown: equalities on a leading subset
+# of the PK cols with NO range / IN-list on any col. Narrows to the
+# tuple prefix `[rtk, eq_vals...]`; trailing unequated PK cols are
+# unconstrained at scan level and post-filtered by evalPredicate.
+#
+# Before this branch, such queries fell through to the full type scan
+# because:
+#   - PK equality requires ALL cols equated
+#   - IN-list / range / composite-range require at least one non-
+#     equality constraint
+# The pure-prefix branch plugs that gap: a strict subset of leading
+# equalities is still tighter than scanning every record of the type.
+#
+# Correctness: the scan loop re-applies the full WHERE via
+# evalPredicate to each yielded row, so residual predicates on
+# trailing cols (equality on c in PK (a,b,c) without b equated,
+# equality on non-PK cols, etc.) are handled identically to the
+# pre-pushdown path.
+name: composite_pk_prefix_pushdown
+schema_template: |
+  CREATE TABLE kv (
+    a BIGINT NOT NULL,
+    b BIGINT NOT NULL,
+    c BIGINT NOT NULL,
+    v BIGINT,
+    PRIMARY KEY (a, b, c)
+  )
+  CREATE TABLE kv2 (
+    a BIGINT NOT NULL,
+    b BIGINT NOT NULL,
+    label STRING,
+    PRIMARY KEY (a, b)
+  )
+setup:
+  - INSERT INTO kv VALUES
+      (1, 10, 100, 1000),
+      (1, 10, 200, 2000),
+      (1, 20, 100, 3000),
+      (1, 20, 300, 4000),
+      (2, 10, 100, 5000),
+      (2, 30, 100, 6000)
+  - INSERT INTO kv2 VALUES (1, 10, 'a'), (1, 20, 'b'), (2, 10, 'c'), (2, 20, 'd')
+tests:
+  # -------------------------------------------------------------------
+  # Single leading col equated on 3-col PK: prefix = [1], scan all
+  # rows where a = 1. c IN (a=1, any b, any c). Post-filter is a no-op.
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b, c FROM kv WHERE a = 1 ORDER BY b, c
+    rows:
+      - [1, 10, 100]
+      - [1, 10, 200]
+      - [1, 20, 100]
+      - [1, 20, 300]
+
+  # Leading-col prefix with residual on a non-PK col: the prefix
+  # narrows by a; v > 1500 is post-filtered by evalPredicate.
+  - query: SELECT a, b, c FROM kv WHERE a = 1 AND v > 1500 ORDER BY b, c
+    rows:
+      - [1, 10, 200]
+      - [1, 20, 100]
+      - [1, 20, 300]
+
+  # -------------------------------------------------------------------
+  # Two leading cols equated on 3-col PK: prefix = [1, 10].
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b, c FROM kv WHERE a = 1 AND b = 10 ORDER BY c
+    rows:
+      - [1, 10, 100]
+      - [1, 10, 200]
+
+  # Leading two equated + equality on non-PK column: prefix narrows
+  # by (a, b); v = 1000 post-filters.
+  - query: SELECT c FROM kv WHERE a = 1 AND b = 10 AND v = 1000
+    rows:
+      - [100]
+
+  # -------------------------------------------------------------------
+  # Residual equality on a TRAILING PK col after a break in the
+  # leading prefix — `a = 1 AND c = 100` on PK (a, b, c). `b` is
+  # unequated, so prefix = [1] only; `c = 100` is a post-filter.
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b, c FROM kv WHERE a = 1 AND c = 100 ORDER BY b
+    rows:
+      - [1, 10, 100]
+      - [1, 20, 100]
+
+  # -------------------------------------------------------------------
+  # Bail: no leading equality. WHERE b = 10 on PK (a, b, c) — b is
+  # not the first PK col. Must fall through to full scan; post-filter
+  # still produces the right rows.
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b, c FROM kv WHERE b = 10 ORDER BY a, c
+    rows:
+      - [1, 10, 100]
+      - [1, 10, 200]
+      - [2, 10, 100]
+
+  # -------------------------------------------------------------------
+  # Bail: full equality. WHERE a = 1 AND b = 10 AND c = 100. All cols
+  # equated → the equality path catches this first; the pure-prefix
+  # branch never runs. Output identical.
+  # -------------------------------------------------------------------
+
+  - query: SELECT v FROM kv WHERE a = 1 AND b = 10 AND c = 100
+    rows:
+      - [1000]
+
+  # -------------------------------------------------------------------
+  # 2-col PK pure-prefix: `WHERE a = 2` on PK (a, b). Narrows to
+  # [rtk, 2]; every row with a = 2 emerges in b order.
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b, label FROM kv2 WHERE a = 2 ORDER BY b
+    rows:
+      - [2, 10, 'c']
+      - [2, 20, 'd']
+
+  # Pure-prefix on 2-col PK with ORDER BY: naturalOrder = pkCols, so
+  # the sort is eliminated. (LIMIT was incidental; rejected at parse
+  # time as of fdb-relational 4.11.1.0.)
+  - query: SELECT a, b, label FROM kv2 WHERE a = 1 ORDER BY a, b
+    rows:
+      - [1, 10, 'a']
+      - [1, 20, 'b']
+
+  # -------------------------------------------------------------------
+  # No match: `WHERE a = 99` on PK (a, b). Pure-prefix narrows to an
+  # empty range; zero rows returned.
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b FROM kv2 WHERE a = 99
+    rows: []
+
+  # -------------------------------------------------------------------
+  # Type-mismatch on the leading PK col: `WHERE a = 'notanint'`. The
+  # extractor bails (LiteralMatchesPKKind fails), falling to the
+  # scan which surfaces 22000 via evalPredicate.
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b FROM kv2 WHERE a = 'notanint'
+    error_code: "22000"
+
+  # -------------------------------------------------------------------
+  # UPDATE / DELETE via pure-prefix pushdown.
+  # -------------------------------------------------------------------
+
+  - query: UPDATE kv2 SET label = 'updated' WHERE a = 1
+  - query: SELECT a, b, label FROM kv2 WHERE a = 1 ORDER BY b
+    rows:
+      - [1, 10, 'updated']
+      - [1, 20, 'updated']
+
+  - query: DELETE FROM kv2 WHERE a = 2
+  - query: SELECT a, b FROM kv2 ORDER BY a, b
+    rows:
+      - [1, 10]
+      - [1, 20]

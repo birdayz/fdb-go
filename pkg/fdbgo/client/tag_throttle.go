@@ -56,7 +56,14 @@ func parseTagThrottleInfo(data []byte) map[string]clientTagThrottleLimits {
 		return nil
 	}
 	off := 4
-	result := make(map[string]clientTagThrottleLimits, count)
+	// Don't pass `count` as the make() hint: count is wire-controlled, and a
+	// hostile or corrupt server can set it to ~4B → make() would reserve tens
+	// of GB and freeze the host. C++ uses unordered_map::insert without any
+	// pre-reserve (NativeAPI.actor.cpp), and the server hard-caps the set at
+	// SERVER_KNOBS->GLOBAL_TAG_THROTTLING_MAX_TAGS_TRACKED = 10 entries. We
+	// match: let the map grow naturally; the real safety bound is len(data)
+	// via the per-entry length checks below.
+	result := make(map[string]clientTagThrottleLimits)
 	now := time.Now()
 	for i := uint32(0); i < count; i++ {
 		if off+4 > len(data) {

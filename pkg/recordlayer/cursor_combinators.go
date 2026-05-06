@@ -2,11 +2,13 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // filterCursor wraps another cursor and filters records by a predicate.
@@ -35,6 +37,8 @@ func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 func (c *filterCursor[T]) Close() error {
 	return c.inner.Close()
 }
+
+func (c *filterCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
 
 // SkipCursor wraps a cursor and skips the first n elements.
 // Matches Java's RecordCursor.skip().
@@ -65,6 +69,8 @@ func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], erro
 }
 
 func (c *skipCursor[T]) Close() error { return c.inner.Close() }
+
+func (c *skipCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
 
 // LimitRowsCursor wraps a cursor and limits to at most n elements.
 // Matches Java's RecordCursor.limitRowsTo().
@@ -125,6 +131,8 @@ func (c *limitRowsCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T],
 
 func (c *limitRowsCursor[T]) Close() error { return c.inner.Close() }
 
+func (c *limitRowsCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
+
 // SkipThenLimit is a convenience that skips n elements then limits to m.
 // Matches Java's RecordCursor.skipThenLimit().
 func SkipThenLimit[T any](cursor RecordCursor[T], skip, limit int) RecordCursor[T] {
@@ -178,6 +186,13 @@ func (c *orElseCursor[T]) Close() error {
 		return c.active.Close()
 	}
 	return c.primary.Close()
+}
+
+func (c *orElseCursor[T]) IsClosed() bool {
+	if c.active != nil {
+		return c.active.IsClosed()
+	}
+	return c.primary.IsClosed()
 }
 
 // ConcatCursor concatenates two cursors: returns all results from the first cursor,
@@ -300,6 +315,8 @@ func (c *concatCursor[T]) Close() error {
 	return nil
 }
 
+func (c *concatCursor[T]) IsClosed() bool { return c.closed }
+
 // MapResultCursor applies a transformation function to each cursor result.
 // Unlike Map (which operates on iter.Seq), this operates at the RecordCursor level
 // and preserves continuations. Matches Java's MapResultCursor.
@@ -327,6 +344,8 @@ func (c *mapResultCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[
 }
 
 func (c *mapResultCursor[T, R]) Close() error { return c.inner.Close() }
+
+func (c *mapResultCursor[T, R]) IsClosed() bool { return c.inner.IsClosed() }
 
 // mapErrCursor wraps a cursor and transforms each value with a fallible function.
 type mapErrCursor[T, R any] struct {
@@ -358,6 +377,8 @@ func (c *mapErrCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[R],
 }
 
 func (c *mapErrCursor[T, R]) Close() error { return c.inner.Close() }
+
+func (c *mapErrCursor[T, R]) IsClosed() bool { return c.inner.IsClosed() }
 
 // flatMapCursor takes an outer cursor and, for each outer value, creates
 // an inner cursor via a function, flattening all inner results into a single stream.
@@ -615,6 +636,8 @@ func (c *flatMapCursor[T, V]) Close() error {
 	return firstErr
 }
 
+func (c *flatMapCursor[T, V]) IsClosed() bool { return c.closed }
+
 // autoContinuingCursor wraps a cursor generator and automatically creates new
 // transactions when the inner cursor stops due to limits (time, scan, byte, row).
 // This enables seamless scanning of large datasets across FDB's 5-second transaction
@@ -702,7 +725,7 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 
 	result, err := c.currentCursor.OnNext(ctx)
 	if err != nil {
-		if !isRetryableError(err) || attempt >= c.maxRetries {
+		if !c.isRetryableForContinuation(err) || attempt >= c.maxRetries {
 			return RecordCursorResult[T]{}, err
 		}
 		// Retryable error — create new cursor from last successful position
@@ -717,6 +740,23 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 	}
 
 	return result, nil
+}
+
+// isRetryableForContinuation extends isRetryableError with transaction_timed_out
+// (1031). Normally 1031 is not retryable — retrying the same transaction won't
+// help. But AutoContinuingCursor creates a NEW transaction with a saved
+// continuation, so it's safe to retry from the last successful position. This
+// handles the case where a scan hits FDB's 5-second transaction timeout before
+// the application-level time limit fires.
+func (c *autoContinuingCursor[T]) isRetryableForContinuation(err error) bool {
+	if isRetryableError(err) {
+		return true
+	}
+	var fdbErr fdb.Error
+	if errors.As(err, &fdbErr) && fdbErr.Code == 1031 { // transaction_timed_out
+		return true
+	}
+	return false
 }
 
 func (c *autoContinuingCursor[T]) lastContinuation() ([]byte, error) {
@@ -760,3 +800,5 @@ func (c *autoContinuingCursor[T]) Close() error {
 	}
 	return firstErr
 }
+
+func (c *autoContinuingCursor[T]) IsClosed() bool { return c.closed }

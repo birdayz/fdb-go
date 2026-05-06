@@ -181,3 +181,5 @@ func (c *recordKeyCursor) Close() error {
 	c.closed = true
 	return nil
 }
+
+func (c *recordKeyCursor) IsClosed() bool { return c.closed }

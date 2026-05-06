@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "keyspace",
+    srcs = [
+        "fdb_resolver.go",
+        "keyspace.go",
+        "resolver.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/keyspace",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_test(
+    name = "keyspace_test",
+    srcs = [
+        "bench_test.go",
+        "fdb_resolver_test.go",
+        "keyspace_test.go",
+        "resolver_test.go",
+    ],
+    embed = [":keyspace"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
+    ],
+)

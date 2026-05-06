@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v5
 
       - name: Build C++ oracle
         run: bazelisk build //cmd/fdb-diff-oracle:diff_oracle_bin
@@ -22,20 +22,33 @@ jobs:
       - name: Build Go fuzz test
         run: bazelisk build //cmd/fdb-diff-oracle:fdb-diff-oracle_test
 
+      - name: Resolve Bazel Go SDK
+        id: go-sdk
+        run: |
+          OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
+          GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          if [ -z "$GO_BIN" ]; then
+            echo "Bazel Go SDK not found — trying system go"
+            GO_BIN=go
+          fi
+          echo "go-bin=$GO_BIN" >> "$GITHUB_OUTPUT"
+          echo "Using Go: $GO_BIN ($($GO_BIN version))"
+
       - name: Run deterministic tests
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
-          DIFF_ORACLE_BIN="$ORACLE" go test -run=TestDiff -v -count=1 ./cmd/fdb-diff-oracle/
+          DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run=TestDiff -v -count=1 ./cmd/fdb-diff-oracle/
 
       - name: Fuzz oracle-compared types (10min each)
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
+          GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
           FAILED=0
           for target in FuzzGetReadVersionRequest FuzzGetValueRequest FuzzGetKeyRequest \
                         FuzzGetKeyValuesRequest FuzzGetKeyServerLocationsRequest \
                         FuzzCommitTransactionRequest FuzzCommitID FuzzNetworkAddress FuzzReplyPromise; do
             echo "=== $target (10m) ==="
-            OUTPUT=$(timeout 610 env DIFF_ORACLE_BIN="$ORACLE" go test \
+            OUTPUT=$(timeout 610 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
                 -fuzz="$target" -fuzztime=10m ./cmd/fdb-diff-oracle/ 2>&1) || {
               echo "FAIL: $target (exit code $?)"
               echo "$OUTPUT"
@@ -53,7 +66,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v5
 
       - name: Run tests with race detector
         run: >
@@ -74,7 +87,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v5
 
       - name: Build
         run: bazelisk build //cmd/fdb-binding-stress:fdb-binding-stress //cmd/fdb-stacktester:fdb-stacktester

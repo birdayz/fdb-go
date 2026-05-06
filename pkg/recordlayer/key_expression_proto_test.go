@@ -190,6 +190,79 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 			t.Fatal("expected error for Nesting without parent")
 		}
 	})
+
+	t.Run("split_size_zero", func(t *testing.T) {
+		t.Parallel()
+		// Crafted proto with Split.split_size = 0 must error, not panic
+		// (pre-swingshift-35 would have hit Split()'s invariant panic).
+		zero := int32(0)
+		_, err := KeyExpressionFromProto(&gen.KeyExpression{
+			Split: &gen.Split{
+				SplitSize: &zero,
+				Joined:    &gen.KeyExpression{Empty: &gen.Empty{}},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for split_size=0, got nil")
+		}
+	})
+
+	t.Run("key_with_value_split_point_negative", func(t *testing.T) {
+		t.Parallel()
+		// Crafted proto with KeyWithValue.split_point < 0 must error
+		// (pre-swingshift-35 would have propagated to downstream slicing).
+		ft := gen.Field_SCALAR
+		neg := int32(-1)
+		_, err := KeyExpressionFromProto(&gen.KeyExpression{
+			KeyWithValue: &gen.KeyWithValue{
+				InnerKey:   &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("x"), FanType: &ft}},
+				SplitPoint: &neg,
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for negative split_point, got nil")
+		}
+	})
+
+	t.Run("key_with_value_split_point_too_large", func(t *testing.T) {
+		t.Parallel()
+		// Crafted proto with KeyWithValue.split_point > inner.ColumnSize()
+		// must error. Inner is a single field → columnSize = 1; splitPoint=5 is out.
+		ft := gen.Field_SCALAR
+		big := int32(5)
+		_, err := KeyExpressionFromProto(&gen.KeyExpression{
+			KeyWithValue: &gen.KeyWithValue{
+				InnerKey:   &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("x"), FanType: &ft}},
+				SplitPoint: &big,
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for split_point beyond inner columnSize, got nil")
+		}
+	})
+
+	t.Run("depth_limit", func(t *testing.T) {
+		t.Parallel()
+		// Build a Nesting chain deeper than maxKeyExpressionDepth. Each
+		// layer wraps the inner KeyExpression in another Nesting; the
+		// depth guard must trip before the goroutine stack blows.
+		ft := gen.Field_SCALAR
+		var current *gen.KeyExpression = &gen.KeyExpression{
+			Field: &gen.Field{FieldName: proto.String("leaf"), FanType: &ft},
+		}
+		for i := 0; i < maxKeyExpressionDepth+10; i++ {
+			current = &gen.KeyExpression{
+				Nesting: &gen.Nesting{
+					Parent: &gen.Field{FieldName: proto.String("p"), FanType: &ft},
+					Child:  current,
+				},
+			}
+		}
+		_, err := KeyExpressionFromProto(current)
+		if err == nil {
+			t.Fatal("expected depth-limit error, got nil")
+		}
+	})
 }
 
 func TestKeyExpressionProtoWireRoundtrip(t *testing.T) {

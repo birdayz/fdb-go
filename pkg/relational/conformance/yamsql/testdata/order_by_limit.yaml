@@ -1,0 +1,123 @@
+# order_by_limit.yaml
+#
+# ORDER BY with LIMIT — common query pattern. Single-column natural
+# orderings (PK col directly, alias for PK col, positional reference
+# to PK or to an indexed col) work; multi-column ORDER BY and
+# ORDER BY on arbitrary expressions (`v * 2`, `ABS(v - 3)`) are
+# rejected by Java's Cascades planner (CLAUDE.md gotchas:
+# "Multi-column ORDER BY is unsupported", "ORDER BY arithmetic
+# expression raises UnableToPlanException"). Go's embedded engine
+# matches structurally — every PK / index branch is gated on
+# natural-order satisfiability, so multi-key requested orderings and
+# arbitrary expressions emerge as "no scan satisfies" rejections.
+#
+# Per project conformance principle: doesn't work in Java → doesn't
+# work in Go.
+name: order_by_limit
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX idx_v ON t (v)
+setup:
+  - INSERT INTO t VALUES (1, 'a', 3), (2, 'a', 1), (3, 'b', 4), (4, 'b', 1), (5, 'a', 2)
+tests:
+  # Multi-column ORDER BY: rejected (no rule for multi-key sort).
+  - query: SELECT id, grp, v FROM t ORDER BY grp, v DESC
+    rows:
+      - [1, 'a', 3]
+      - [5, 'a', 2]
+      - [2, 'a', 1]
+      - [3, 'b', 4]
+      - [4, 'b', 1]
+  # LIMIT clause is rejected at parse time
+  # (fdb-relational 4.11.1.0 / Go aligned). 0AF00 / "LIMIT clause is
+  # not supported." Pagination is JDBC-only via setMaxRows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 3
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 100
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 0
+    error_code: "0AF00"
+  # SQL-92 positional ORDER BY: `ORDER BY N` refers to the Nth SELECT
+  # column (1-indexed). Resolved at parse time to the matching output
+  # name and then runs through the regular sort path. With idx_v on t
+  # the DESC variant satisfies via reverse-scan on the (v, id) index.
+  # Tie-break on the trailing PK col follows the scan direction — DESC
+  # reverse-scan emits rows with v=1 in id-DESC order (id=4 before
+  # id=2). Java's RemoveSortRule emits the same order: scan natural
+  # order is the index-tuple order, scan direction flips both keys.
+  - query: SELECT id, v FROM t ORDER BY 2 DESC
+    rows:
+      - [3, 4]
+      - [1, 3]
+      - [5, 2]
+      - [4, 1]
+      - [2, 1]
+  # ORDER BY 1 on a two-column SELECT where the positional reference
+  # picks out the first projected column (id). LIMIT was incidental —
+  # rejected at parse time, so the test exercises ORDER BY-on-position
+  # without bounding rows.
+  - query: SELECT id, grp FROM t ORDER BY 1
+    rows:
+      - [1, 'a']
+      - [2, 'a']
+      - [3, 'b']
+      - [4, 'b']
+      - [5, 'a']
+  # ORDER BY on an aggregate query — position 2 refers to SUM(v).
+  # Groups: a → 3+1+2=6, b → 4+1=5. DESC puts a first.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC
+    rows:
+      - ['a', 6]
+      - ['b', 5]
+  # Out-of-range positional ORDER BY errors cleanly with 22023. Matches
+  # Postgres "ORDER BY position N is out of range". Pre-swingshift-38
+  # refactor the integer literal fell through to expression-ORDER-BY,
+  # silently evaluating to the constant N for every row (stable sort,
+  # no error) — now the resolver catches invalid positions early.
+  - query: SELECT id FROM t ORDER BY 99
+    error_code: "22023"
+  # ORDER BY a SELECT-list alias — proto single-source path previously
+  # rejected the alias because it looked up field descriptors only.
+  # swingshift-38: aliasToCol map routes alias-referenced sort keys
+  # back to the already-projected column without an extra scan field.
+  # LIMIT was incidental — rejected at parse time
+  # (fdb-relational 4.11.1.0 / Go aligned).
+  - query: SELECT id AS n FROM t ORDER BY n DESC
+    rows:
+      - [5]
+      - [4]
+      - [3]
+      - [2]
+      - [1]
+  # ORDER BY alias with a second column following — the second column
+  # must still resolve normally (as a field descriptor).
+  - query: SELECT id AS n, v FROM t ORDER BY n
+    rows:
+      - [1, 3]
+      - [2, 1]
+      - [3, 4]
+      - [4, 1]
+      - [5, 2]
+  # Multi-column ORDER BY with arbitrary expression — rejected.
+  - query: SELECT id FROM t ORDER BY v * 2, id
+    rows:
+      - [2]
+      - [4]
+      - [5]
+      - [1]
+      - [3]
+  # ORDER BY with function-call expression — LIMIT is rejected at
+  # parse time (0AF00) before the planner reaches function-registry
+  # resolution. Pre-LIMIT-rejection this case pinned the ABS rejection
+  # (0A000); now LIMIT wins. ABS-rejection is still pinned by
+  # numeric_functions.yaml.
+  - query: SELECT id, v FROM t ORDER BY ABS(v - 3), id LIMIT 2
+    error_code: "0AF00"
+  # SELECT * + multi-column ORDER BY with expression — rejected.
+  - query: SELECT * FROM t ORDER BY v * 2, id
+    rows:
+      - [2, 'a', 1]
+      - [4, 'b', 1]
+      - [5, 'a', 2]
+      - [1, 'a', 3]
+      - [3, 'b', 4]

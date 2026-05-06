@@ -66,6 +66,37 @@ const IndexOptionHNSWMMax0 = "hnswMMax0"
 // Matches Java's IndexOptions.HNSW_EF_CONSTRUCTION.
 const IndexOptionHNSWEfConstruction = "hnswEfConstruction"
 
+// IndexOptionHNSWUseInlining controls whether vector data is inlined into the HNSW node.
+// Matches Java's IndexOptions.HNSW_USE_INLINING.
+const IndexOptionHNSWUseInlining = "hnswUseInlining"
+
+// IndexOptionHNSWEfRepair specifies the search factor used during repair operations.
+// Matches Java's IndexOptions.HNSW_EF_REPAIR.
+const IndexOptionHNSWEfRepair = "hnswEfRepair"
+
+// IndexOptionHNSWUseRaBitQ enables RaBitQ quantization for approximate nearest neighbor.
+// Matches Java's IndexOptions.HNSW_USE_RABITQ.
+const IndexOptionHNSWUseRaBitQ = "hnswUseRaBitQ"
+
+// IndexOptionHNSWRaBitQNumExBits specifies the number of extra bits for RaBitQ.
+// Matches Java's IndexOptions.HNSW_RABITQ_NUM_EX_BITS.
+const IndexOptionHNSWRaBitQNumExBits = "hnswRaBitQNumExBits"
+
+// IndexOptionHNSWSampleVectorStatsProbability controls the probability of sampling vector stats.
+// Runtime-only option, safe to change without rebuild.
+// Matches Java's IndexOptions.HNSW_SAMPLE_VECTOR_STATS_PROBABILITY.
+const IndexOptionHNSWSampleVectorStatsProbability = "hnswSampleVectorStatsProbability"
+
+// IndexOptionHNSWMaintainStatsProbability controls the probability of maintaining stats.
+// Runtime-only option, safe to change without rebuild.
+// Matches Java's IndexOptions.HNSW_MAINTAIN_STATS_PROBABILITY.
+const IndexOptionHNSWMaintainStatsProbability = "hnswMaintainStatsProbability"
+
+// IndexOptionHNSWStatsThreshold specifies the minimum number of vectors for stats.
+// Runtime-only option, safe to change without rebuild.
+// Matches Java's IndexOptions.HNSW_STATS_THRESHOLD.
+const IndexOptionHNSWStatsThreshold = "hnswStatsThreshold"
+
 // vectorIndexMaintainer maintains a VECTOR index using an HNSW graph.
 // Wire-compatible with Java's VectorIndexMaintainer.
 //
@@ -554,6 +585,8 @@ func (c *vectorSearchCursor) Close() error {
 	c.closed = true
 	return nil
 }
+
+func (c *vectorSearchCursor) IsClosed() bool { return c.closed }
 
 // encodeVectorScanContinuation creates a VectorIndexScanContinuation protobuf.
 // Matches Java's Continuation.toByteString() which serializes all entries +

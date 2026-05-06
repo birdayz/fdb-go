@@ -160,6 +160,10 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 						index.Name, oldMetaDataVersion, newMetaDataVersion, err)
 				}
 			case IndexStateWriteOnly:
+				// Always clear and re-mark, matching Java's rebuildOrMarkIndex().
+				// The header version update and clearAndMark are in the same FDB
+				// transaction, so crash recovery is atomic — either both happen or
+				// neither. No need to check current state.
 				if _, err := store.ClearAndMarkIndexWriteOnly(index.Name); err != nil {
 					return fmt.Errorf("mark index %q write-only: %w", index.Name, err)
 				}
@@ -452,6 +456,22 @@ func DefaultIndexRebuildPolicy(index *Index, recordCount int64, indexOnNewRecord
 	return IndexStateDisabled
 }
 
+// WriteOnlyIfTooLargePolicy returns READABLE for small stores (inline rebuild)
+// and WRITE_ONLY for larger stores. WRITE_ONLY is the production-safe choice:
+// new writes maintain the index immediately, and the operator invokes
+// OnlineIndexer to backfill historical data. This avoids both:
+//   - READABLE: times out on large stores (single-transaction rebuild)
+//   - DISABLED: index is completely ignored, new writes don't maintain it
+//
+// Threshold matches Java's MAX_RECORDS_FOR_REBUILD = 200.
+func WriteOnlyIfTooLargePolicy(index *Index, recordCount int64, indexOnNewRecordTypes bool) IndexState {
+	const maxRecordsForRebuild = 200
+	if indexOnNewRecordTypes || recordCount <= maxRecordsForRebuild {
+		return IndexStateReadable
+	}
+	return IndexStateWriteOnly
+}
+
 // AlwaysRebuildPolicy always rebuilds indexes inline.
 // Matches Java's ALWAYS_READABLE_CHECKER behavior.
 func AlwaysRebuildPolicy(_ *Index, _ int64, _ bool) IndexState {
@@ -470,7 +490,7 @@ type StoreBuilder struct {
 	database                  *FDBDatabase             // for inheriting cache
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
-	assumeAllIndexesReadable  bool                     // if true, Build() pre-populates indexStates as all-readable, skipping lazy-load FDB reads
+	assumeAllIndexesReadable  bool                     // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
 }
 
 // NewStoreBuilder creates a new store builder
@@ -537,16 +557,10 @@ func (b *StoreBuilder) SetSkipPossiblyRebuild(skip bool) *StoreBuilder {
 	return b
 }
 
-// SetAssumeAllIndexesReadable makes Build() pre-populate the store with an
-// empty index state map (all indexes assumed readable). This eliminates the
-// lazy-load FDB reads that ensureStoreStateLoaded() would otherwise perform
-// on the first index operation.
-//
-// Use this when CreateOrOpen() has run at application startup and all indexes
-// are known to be in READABLE state. This is the common production pattern.
-//
-// WARNING: If any index is actually DISABLED or WRITE_ONLY, this will
-// incorrectly maintain it. Only safe when the store was properly initialized.
+// SetAssumeAllIndexesReadable pre-populates an empty indexStates map during Build(),
+// making ensureStoreStateLoaded() a complete no-op (zero FDB reads, zero lazy-load).
+// Safe when CreateOrOpen ran at startup and all indexes are known to be READABLE.
+// This is an explicit opt-in for maximum performance in the Build() path.
 func (b *StoreBuilder) SetAssumeAllIndexesReadable(assume bool) *StoreBuilder {
 	b.assumeAllIndexesReadable = assume
 	return b
@@ -588,9 +602,6 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		storeStateCache:    b.resolveCache(),
 	}
 	if b.assumeAllIndexesReadable {
-		// Pre-populate with shared empty sentinel = all indexes assumed READABLE.
-		// ensureStoreStateLoaded() becomes a no-op (sync.Once sees non-nil indexStates).
-		// Shared sentinel avoids make(map) alloc — read-only, never written to.
 		store.indexStates = make(map[string]IndexState)
 	}
 	return store

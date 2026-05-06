@@ -225,6 +225,18 @@ var _ = Describe("FDBDatabaseRunner", func() {
 	})
 
 	Describe("Commit hooks with runner", func() {
+		It("propagates pre-commit check errors", func() {
+			runner := NewFDBDatabaseRunner(sharedDB)
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
+				rtx.AddCommitCheck(func() error {
+					return errors.New("pre-commit validation failed")
+				})
+				return nil, nil
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("pre-commit validation failed"))
+		})
+
 		It("runs pre-commit checks", func() {
 			runner := NewFDBDatabaseRunner(sharedDB)
 			checkRan := false

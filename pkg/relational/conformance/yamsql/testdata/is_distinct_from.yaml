@@ -1,0 +1,80 @@
+# is_distinct_from.yaml
+#
+# IS DISTINCT FROM / IS NOT DISTINCT FROM — NULL-safe equality
+# operators from SQL:1999. Unlike `=` and `<>`, they treat NULL as
+# comparable (two NULLs are "not distinct", a NULL and a value are
+# "distinct"). Shape:
+#   A IS DISTINCT FROM B      ⇔  (A<>B) OR (A IS NULL) <> (B IS NULL)
+#   A IS NOT DISTINCT FROM B  ⇔  NOT(A IS DISTINCT FROM B)
+# Both return a two-valued boolean (never UNKNOWN).
+name: is_distinct_from
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'alpha'), (2, 'beta'), (3, null), (4, null)
+tests:
+  # Baseline: `=` treats NULL as UNKNOWN — rows with NULL don't pass.
+  - query: SELECT id FROM t WHERE label = 'alpha' ORDER BY id
+    rows:
+      - [1]
+  # IS DISTINCT FROM: NULL and 'alpha' are distinct, NULLs are NOT
+  # distinct from each other. So `label IS DISTINCT FROM 'alpha'`
+  # matches rows 2 (beta) AND 3+4 (NULL).
+  - query: SELECT id FROM t WHERE label IS DISTINCT FROM 'alpha' ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+  # IS NOT DISTINCT FROM NULL finds only the NULL rows — the
+  # NULL-safe equality check. `label = null` would return nothing
+  # because NULL-comparison is UNKNOWN.
+  - query: SELECT id FROM t WHERE label IS NOT DISTINCT FROM null ORDER BY id
+    rows:
+      - [3]
+      - [4]
+  # IS NOT DISTINCT FROM non-NULL behaves like plain `=`.
+  - query: SELECT id FROM t WHERE label IS NOT DISTINCT FROM 'beta'
+    rows:
+      - [2]
+  # IS DISTINCT FROM null excludes the NULL rows — the mirror.
+  - query: SELECT id FROM t WHERE label IS DISTINCT FROM null ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  # Java alignment: literal-on-left form (Java's distinct-from.yamsql).
+  # 'WHERE null IS DISTINCT FROM col' should be equivalent to col IS DISTINCT FROM null.
+  - query: SELECT id FROM t WHERE null IS DISTINCT FROM label ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  # Constant-on-both-sides edge case: 'null IS DISTINCT FROM null' is
+  # FALSE per SQL:1999 (NULLs are not distinct from each other).
+  - query: SELECT id FROM t WHERE null IS DISTINCT FROM null
+    rows: []
+  # 10 IS DISTINCT FROM 10 is FALSE (same value).
+  - query: SELECT id FROM t WHERE 10 IS DISTINCT FROM 10
+    rows: []
+  # 10 IS NOT DISTINCT FROM 10 is TRUE.
+  - query: SELECT id FROM t WHERE 10 IS NOT DISTINCT FROM 10 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+  # IS [NOT] DISTINCT FROM as a projected value (not a WHERE predicate).
+  # Pre-fix evalExprAtom's BinaryComparisonPredicate switch only handled
+  # =/!=/<>/</<=/>/>=; IS DISTINCT FROM fell through to "unsupported
+  # comparison operator". Now handled with nullSafeEqual, matching the
+  # tri-predicate path's handling.
+  - query: SELECT id, label IS DISTINCT FROM null FROM t WHERE id = 3
+    rows:
+      - [3, false]
+  - query: SELECT id, label IS NOT DISTINCT FROM null FROM t WHERE id = 3
+    rows:
+      - [3, true]
+  - query: SELECT id, label IS DISTINCT FROM 'alpha' FROM t ORDER BY id
+    rows:
+      - [1, false]
+      - [2, true]
+      - [3, true]
+      - [4, true]

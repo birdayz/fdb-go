@@ -31,8 +31,7 @@ func TestQueueModelPicksLeastLoaded(t *testing.T) {
 	qm := newQueueModel()
 	servers := makeServers("s1:4500", "s2:4500", "s3:4500")
 
-	// Simulate s1 having higher outstanding, s2 zero, s3 moderate.
-	// Add requests without ending them to build up smoothOutstanding.
+	// Simulate s1 having higher outstanding (5), s2 zero, s3 moderate (2).
 	for i := 0; i < 5; i++ {
 		_ = qm.startRequest("s1:4500")
 	}
@@ -40,9 +39,14 @@ func TestQueueModelPicksLeastLoaded(t *testing.T) {
 		_ = qm.startRequest("s3:4500")
 	}
 
-	s, _ := qm.chooseServer(servers)
-	if s.Address != "s2:4500" {
-		t.Fatalf("expected s2:4500 (zero outstanding), got %s", s.Address)
+	// With power-of-two random: the worst server (s1 with metric=5)
+	// should never be picked when both other candidates are better.
+	// Run 100 iterations to verify s1 is never selected.
+	for i := 0; i < 100; i++ {
+		s, _ := qm.chooseServer(servers)
+		if s.Address == "s1:4500" {
+			t.Fatalf("iteration %d: selected worst server s1 (metric=5) over s2 (0) and s3 (2)", i)
+		}
 	}
 }
 
@@ -372,7 +376,7 @@ func TestChooseTopTwo(t *testing.T) {
 	_ = delta
 
 	best, second = q.chooseTopTwo(servers)
-	// "fast" should be best (lowest outstanding), "medium" second.
+	// "slow" should never be primary; "fast" and "medium" are both valid under power-of-two random.
 	if servers[best].Address == "slow" {
 		t.Fatalf("slow should not be best: best=%d (%s)", best, servers[best].Address)
 	}

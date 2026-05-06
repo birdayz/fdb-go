@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "query",
+    srcs = [
+        "cascades_translator.go",
+        "plan.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/core/query/logical",
+    ],
+)
+
+go_test(
+    name = "query_test",
+    srcs = [
+        "cascades_translator_test.go",
+        "plan_test.go",
+    ],
+    embed = [":query"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/core/query/logical",
+    ],
+)

@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "combinatorics",
+    srcs = [
+        "partially_ordered_set.go",
+        "topological_sort.go",
+        "transitive_closure.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/combinatorics",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "combinatorics_test",
+    srcs = [
+        "combinatorics_test.go",
+        "fuzz_test.go",
+    ],
+    embed = [":combinatorics"],
+)

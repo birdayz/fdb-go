@@ -1,0 +1,118 @@
+# case_when.yaml
+#
+# CASE WHEN ... THEN ... ELSE ... END expressions. Covers:
+#   - searched-CASE (WHEN <predicate>) form
+#   - ELSE branch vs absent ELSE (evaluates to NULL)
+#   - NULL-tolerant predicate: WHEN x IS NULL handled distinctly
+name: case_when
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 5), (2, 15), (3, null), (4, 30)
+tests:
+  # Searched CASE with explicit ELSE.
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 'low'
+                      WHEN v < 20 THEN 'mid'
+                      ELSE 'high' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'low']
+      - [2, 'mid']
+      # v IS NULL → WHEN v < 10 is UNKNOWN, WHEN v < 20 is UNKNOWN, falls
+      # through to ELSE.
+      - [3, 'high']
+      - [4, 'high']
+  # IS NULL branch matches the NULL row first.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 'missing'
+                      WHEN v < 10 THEN 'low'
+                      ELSE 'other' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'low']
+      - [2, 'other']
+      - [3, 'missing']
+      - [4, 'other']
+  # No ELSE — unmatched rows evaluate to NULL.
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 'low' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'low']
+      - [2, ~]
+      - [3, ~]
+      - [4, ~]
+  # CASE inside a WHERE predicate. Classic "dynamic filter" shape —
+  # rejects rows whose CASE evaluates to 0.
+  - query: |-
+      SELECT id FROM t WHERE CASE WHEN v IS NULL THEN 0
+                                  WHEN v < 10 THEN 0
+                                  ELSE 1 END = 1
+      ORDER BY id
+    rows:
+      - [2]
+      - [4]
+  # ORDER BY on the alias of a CASE projection plus PK as tie-break
+  # (multi-column ORDER BY). Java rejects multi-column ORDER BY
+  # entirely (CLAUDE.md gotcha) and also rejects ORDER BY arbitrary
+  # expression (the alias resolves to a CASE expression). Same
+  # architectural reason in both engines.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 1 ELSE 0 END AS is_null
+      FROM t ORDER BY is_null DESC, id
+    rows:
+      - [3, 1]
+      - [1, 0]
+      - [2, 0]
+      - [4, 0]
+  # Java-aligned: mixed-type result branches. CASE WHEN cond THEN <int>
+  # ELSE <float> END — Java promotes both to DOUBLE so the result type
+  # is consistent. Verify Go matches: the integer branch should surface
+  # as float when the other branch is float.
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 10 ELSE 3.14 END
+      FROM t WHERE id = 1
+    rows:
+      - [1, 10.0]
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 10 ELSE 3.14 END
+      FROM t WHERE id = 2
+    rows:
+      - [2, 3.14]
+  # Boolean column directly as CASE condition — no comparison needed.
+  # Java requires version 4.3.5.0; pin our behavior.
+  # We need a boolean column for this — use IS NULL as a proxy.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 'absent' ELSE 'present' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'present']
+      - [2, 'present']
+      - [3, 'absent']
+      - [4, 'present']
+  # Nested CASE — Java's case-when.yamsql exercises this shape in an
+  # UPDATE. Flatten it to a SELECT for direct result verification:
+  # `CASE WHEN CASE WHEN v = 5 THEN 10 ELSE 20 END > 15 THEN 'big' ELSE 'small' END`.
+  # Inner CASE yields 10 for id=1 (v=5), 20 for the rest. Outer's
+  # predicate (>15) is FALSE for id=1, TRUE for id=2,3,4. NULL v is
+  # not captured by `v = 5`, so the inner ELSE fires → 20 → big.
+  - query: |-
+      SELECT id, CASE WHEN CASE WHEN v = 5 THEN 10 ELSE 20 END > 15
+                      THEN 'big' ELSE 'small' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'small']
+      - [2, 'big']
+      - [3, 'big']
+      - [4, 'big']
+  # CASE with arithmetic in THEN branches — result stays integer when
+  # both branches are integer-typed, matching Java's ADD_LL / SUB_LL.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 0 ELSE v + 1 END
+      FROM t ORDER BY id
+    rows:
+      - [1, 6]
+      - [2, 16]
+      - [3, 0]
+      - [4, 31]

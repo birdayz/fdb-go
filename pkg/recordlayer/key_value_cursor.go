@@ -710,3 +710,5 @@ func (c *keyValueCursor) Close() error {
 	c.closed = true
 	return nil
 }
+
+func (c *keyValueCursor) IsClosed() bool { return c.closed }

@@ -1,0 +1,124 @@
+# qualified_star.yaml
+#
+# SELECT <tbl>.* on a multi-source FROM clause restricts the projected
+# columns to the named source. Pre-dayshift-37 the qualifier was
+# silently treated as unqualified SELECT * in both single-source and
+# multi-source queries (producing all columns from all sources on
+# joins/comma-joins), and a wrong qualifier (`SELECT nope.*`) also
+# silently succeeded.
+name: qualified_star
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')
+  - INSERT INTO b VALUES (10, 'one'), (20, 'two')
+tests:
+  # Single-source a.* returns only a's columns in descriptor order.
+  - query: SELECT a.* FROM a ORDER BY id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+
+  # Comma-join cross-product projected as a.* returns a's columns only
+  # (one copy of each left row per right row). Pre-fix this path
+  # returned all four columns from the combined map.
+  - query: SELECT a.* FROM a, b ORDER BY a.id, b.id
+    rows:
+      - [1, 'alpha']
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [2, 'beta']
+
+  # Qualified-star resolves by alias. `b.*` on a comma-join returns
+  # only b's columns — `id` here is b's id (10, 20), not a's (1, 2).
+  # ORDER BY a.id, b.id: iterates a=1 over both b rows first, then a=2.
+  - query: SELECT b.* FROM a, b ORDER BY a.id, b.id
+    rows:
+      - [10, 'one']
+      - [20, 'two']
+      - [10, 'one']
+      - [20, 'two']
+
+  # Table alias on the left side resolves the qualifier too.
+  - query: SELECT x.* FROM a AS x, b WHERE x.id = 1 ORDER BY b.id
+    rows:
+      - [1, 'alpha']
+      - [1, 'alpha']
+
+  # Explicit INNER JOIN (vs comma-join) path through execSelectJoin.
+  # Both routes share the same projection code, but keeping a
+  # dedicated scenario pins the contract against future refactors
+  # that might diverge the two paths. a.id * 10 = b.id matches both
+  # rows (1→10, 2→20).
+  - query: |
+      SELECT a.* FROM a INNER JOIN b ON a.id * 10 = b.id ORDER BY a.id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+
+  # Wrong qualifier on a single-source FROM errors cleanly
+  # (42F01 undefined_table). Pre-fix this silently returned all rows.
+  - query: SELECT wrong.* FROM a
+    error_code: "42F01"
+
+  # Wrong qualifier on a multi-source FROM errors cleanly.
+  - query: SELECT nope.* FROM a, b
+    error_code: "42F01"
+
+  # Mixed qualifier-star + named column: `a.*, b.label`. a.* expands to
+  # all of a's columns in descriptor order, then b.label follows. With
+  # the comma-join cross-product (no WHERE), a rows × b rows = 4 rows;
+  # ORDER BY a.id, b.label gives a deterministic rowset.
+  - query: SELECT a.*, b.label FROM a, b ORDER BY a.id, b.label
+    rows:
+      - [1, 'alpha', 'one']
+      - [1, 'alpha', 'two']
+      - [2, 'beta',  'one']
+      - [2, 'beta',  'two']
+
+  # Named column first, then qualifier-star: `b.label, a.*`. Expansion
+  # preserves SELECT-list position; label comes first.
+  - query: SELECT b.label, a.* FROM a, b ORDER BY a.id, b.label
+    rows:
+      - ['one', 1, 'alpha']
+      - ['two', 1, 'alpha']
+      - ['one', 2, 'beta']
+      - ['two', 2, 'beta']
+
+  # Two qualifier-stars in one SELECT list: `a.*, b.*` produces every
+  # column from a followed by every column from b. Equivalent to
+  # SELECT * on a comma-join when the two sources have no overlapping
+  # column names.
+  - query: SELECT a.*, b.* FROM a, b ORDER BY a.id, b.id
+    rows:
+      - [1, 'alpha', 10, 'one']
+      - [1, 'alpha', 20, 'two']
+      - [2, 'beta',  10, 'one']
+      - [2, 'beta',  20, 'two']
+
+  # Named column on one source followed by qualifier-star on the other.
+  - query: SELECT a.id, b.* FROM a, b WHERE a.id = 1 ORDER BY b.id
+    rows:
+      - [1, 10, 'one']
+      - [1, 20, 'two']
+
+  # Wrong qualifier-star alongside a valid named column. The
+  # star-expansion path goes through resolveQualifierColumns and
+  # rejects qualifier `c` (no source matches). Pins that the star
+  # validation still fires in the mixed SELECT-list path.
+  # (Wrong qualifiers on *named* columns — e.g. `SELECT a.id, c.label`
+  #  with no source `c` — now also error 42F01 via the JOIN projection
+  #  path. See wrong_qualifier.yaml for the named-column coverage.)
+  - query: SELECT c.*, b.label FROM a, b
+    error_code: "42F01"
+
+  # Mixed qualifier-star on an explicit INNER JOIN (rather than a
+  # comma-join). Same projection code via execSelectJoin, but pinned
+  # to protect both paths.
+  - query: |
+      SELECT a.*, b.label FROM a INNER JOIN b ON a.id * 10 = b.id
+      ORDER BY a.id
+    rows:
+      - [1, 'alpha', 'one']
+      - [2, 'beta',  'two']

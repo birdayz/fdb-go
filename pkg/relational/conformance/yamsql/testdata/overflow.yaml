@@ -1,0 +1,55 @@
+# overflow.yaml
+#
+# nightshift-36: integer overflow is now checked. Java's
+# ArithmeticValue.PhysicalOperator ADD_LL / SUB_LL / MUL_LL use
+# Math.addExact / subtractExact / multiplyExact which throw
+# ArithmeticException on overflow. Our applyMathOp int64 fast-path
+# now mirrors that by returning SQLSTATE 22003 instead of silently
+# wrapping `MAX_INT + 1` back to `MIN_INT`.
+#
+# SQLSTATE: 22003 NUMERIC_VALUE_OUT_OF_RANGE — SQL standard code for
+# this class of data exception. Added to api/errcode.go in
+# nightshift-36 alongside the checked-arithmetic helpers. (Java's
+# fdb-relational-core maps ArithmeticException as an unchecked
+# exception with no explicit SQLSTATE, so strictly we're more
+# informative than Java here — at least the wire message carries a
+# class-22 code instead of leaking as a generic RuntimeException.)
+name: overflow
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  # MaxInt64 = 9223372036854775807, MinInt64 = -9223372036854775808.
+  - INSERT INTO t VALUES (1, 9223372036854775807, 1), (2, -9223372036854775808, 1), (3, 4611686018427387904, 3), (4, -9223372036854775808, -1)
+tests:
+  # MaxInt64 + 1 → overflow.
+  - query: SELECT a + b FROM t WHERE id = 1
+    error_code: "22003"
+  # MinInt64 - 1 → overflow.
+  - query: SELECT a - b FROM t WHERE id = 2
+    error_code: "22003"
+  # (MaxInt64/2 + 1) * 3 → overflow.
+  - query: SELECT a * b FROM t WHERE id = 3
+    error_code: "22003"
+  # MinInt64 / -1 → overflow (abs(MinInt64) doesn't fit in int64).
+  - query: SELECT a / b FROM t WHERE id = 4
+    error_code: "22003"
+  # Baseline: in-range ops succeed. MaxInt64 + (-1) is a non-trivial
+  # add the planner can't constant-fold away, exercising the checked
+  # add helper's happy path against an extremal operand.
+  - query: SELECT a + -1 FROM t WHERE id = 1
+    rows:
+      - [9223372036854775806]
+  # MinInt64 % -1 is 0 (Go runtime handles this specially — the
+  # modulus is defined as 0 even though the quotient overflows).
+  - query: SELECT a % b FROM t WHERE id = 4
+    rows:
+      - [0]
+  # Decimal literal that overflows float64 (≈1.8e308 is DBL_MAX, so
+  # 1e400 is +Inf after strconv.ParseFloat). Pre-nightshift-39 this
+  # errored 22023 (generic INVALID_PARAMETER); now 22003
+  # (NUMERIC_VALUE_OUT_OF_RANGE) matching other numeric overflow sites.
+  - query: SELECT 1e400 FROM t WHERE id = 1
+    error_code: "22003"
+  # Negative counterpart — -1e400 overflows to -Inf.
+  - query: SELECT -1e400 FROM t WHERE id = 1
+    error_code: "22003"

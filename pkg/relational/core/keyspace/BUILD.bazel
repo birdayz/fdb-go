@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "keyspace",
+    srcs = ["keyspace.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/relational/api",
+    ],
+)
+
+go_test(
+    name = "keyspace_test",
+    srcs = ["keyspace_test.go"],
+    deps = [
+        ":keyspace",
+        "//pkg/fdbgo/fdb/subspace",
+    ],
+)

@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "metadata",
+    srcs = [
+        "builder.go",
+        "column.go",
+        "doc.go",
+        "index.go",
+        "proto_types.go",
+        "schema_template.go",
+        "table.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)
+
+go_test(
+    name = "metadata_test",
+    srcs = [
+        "benchmark_test.go",
+        "index_test.go",
+        "proto_types_test.go",
+        "schema_template_test.go",
+    ],
+    embed = [":metadata"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/relational/api",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)

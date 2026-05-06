@@ -7,12 +7,15 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
-func TestIsIndexTypeIdempotent(t *testing.T) {
+func TestIsIndexIdempotent(t *testing.T) {
 	t.Parallel()
+
+	idxOfType := func(typ string) *Index {
+		return &Index{Type: typ}
+	}
 
 	idempotent := []string{
 		IndexTypeValue,
-		IndexTypeRank,
 		IndexTypeMinEverLong,
 		IndexTypeMaxEverLong,
 		IndexTypeMinEverTuple,
@@ -23,7 +26,7 @@ func TestIsIndexTypeIdempotent(t *testing.T) {
 		IndexTypePermutedMax,
 	}
 	for _, indexType := range idempotent {
-		if !isIndexTypeIdempotent(indexType) {
+		if !isIndexIdempotent(idxOfType(indexType)) {
 			t.Errorf("expected %s to be idempotent", indexType)
 		}
 	}
@@ -35,14 +38,29 @@ func TestIsIndexTypeIdempotent(t *testing.T) {
 		IndexTypeSum,
 	}
 	for _, indexType := range nonIdempotent {
-		if isIndexTypeIdempotent(indexType) {
+		if isIndexIdempotent(idxOfType(indexType)) {
 			t.Errorf("expected %s to be non-idempotent", indexType)
 		}
 	}
 
 	// Unknown types should be conservative (non-idempotent).
-	if isIndexTypeIdempotent("UNKNOWN_TYPE") {
+	if isIndexIdempotent(idxOfType("UNKNOWN_TYPE")) {
 		t.Error("unknown types should default to non-idempotent")
+	}
+
+	// RANK without CountDuplicates is idempotent.
+	rankIdx := idxOfType(IndexTypeRank)
+	if !isIndexIdempotent(rankIdx) {
+		t.Error("RANK without CountDuplicates should be idempotent")
+	}
+
+	// RANK with CountDuplicates is NOT idempotent.
+	// Matches Java's RankIndexMaintainer.isIdempotent() = !config.isCountDuplicates().
+	rankWithDups := &Index{Type: IndexTypeRank, Options: map[string]string{
+		IndexOptionRankCountDuplicates: "true",
+	}}
+	if isIndexIdempotent(rankWithDups) {
+		t.Error("RANK with CountDuplicates=true should NOT be idempotent")
 	}
 }
 

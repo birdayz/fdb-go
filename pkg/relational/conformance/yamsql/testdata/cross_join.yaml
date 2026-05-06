@@ -1,0 +1,44 @@
+# cross_join.yaml
+#
+# CROSS JOIN / comma-join / no-ON INNER JOIN all produce the
+# cartesian product. Pins the three surface syntaxes so the parser
+# can't silently split them into different execution paths.
+name: cross_join
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20)
+  - INSERT INTO b VALUES (1, 100), (2, 200)
+tests:
+  # Explicit CROSS JOIN syntax — rejected. fdb-relational 4.11.1.0
+  # NPEs on `a CROSS JOIN b` because the visitor unconditionally
+  # accepts the ON-clause expression which is null for CROSS JOIN
+  # (CLAUDE.md gotcha "Explicit `CROSS JOIN` syntax NPEs in
+  # fdb-relational"). Go's embedded engine matches by rejecting at
+  # parse time. Workaround: comma-join `FROM a, b`.
+  - query: SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
+    error_code: "0A000"
+  # Comma-join — same result.
+  - query: SELECT a.id, b.id FROM a, b ORDER BY a.id, b.id
+    rows:
+      - [1, 1]
+      - [1, 2]
+      - [2, 1]
+      - [2, 2]
+  # INNER JOIN with a trivially-true ON — also cartesian.
+  - query: SELECT a.id, b.id FROM a INNER JOIN b ON 1 = 1 ORDER BY a.id, b.id
+    rows:
+      - [1, 1]
+      - [1, 2]
+      - [2, 1]
+      - [2, 2]
+  # COUNT(*) over a cartesian product.
+  - query: SELECT COUNT(*) FROM a, b
+    rows:
+      - [4]
+  # Comma-join with a WHERE acting as the join predicate (SQL-89 style).
+  - query: SELECT a.v, b.w FROM a, b WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - [10, 100]
+      - [20, 200]

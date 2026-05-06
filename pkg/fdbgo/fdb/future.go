@@ -104,7 +104,6 @@ func newPendingFutureByteSlice(pending *client.PendingGet) FutureByteSlice {
 //
 // Single-goroutine: each future is created by tx.Get() and resolved by
 // the same goroutine. No sync.Once needed — plain bool flag suffices.
-// Pooled to avoid heap alloc per Get() call.
 type pendingFutureByteSlice struct {
 	pending  *client.PendingGet
 	val      []byte

@@ -1,0 +1,136 @@
+package values
+
+// DistanceRowNumberValue is the K-NN search Value: ROW_NUMBER()
+// computed within an HNSW vector index traversal, ORDERED BY a
+// specific distance metric. Mirrors Java's
+// `EuclideanDistanceRowNumberValue` / `EuclideanSquareDistanceRowNumberValue` /
+// `CosineDistanceRowNumberValue` / `DotProductDistanceRowNumberValue`
+// — Java has FOUR concrete classes, one per metric.
+//
+// The Go seed UNIFIES the four into a single concrete type with a
+// `Metric` field discriminator. The Java distinction matters
+// because the K-NN match rule selects on the concrete class type;
+// the Go unified design makes K-NN rules switch on Metric instead
+// (a one-line `if v.Metric == DistanceCosine`-style check). Both
+// expressions are equally matchable; the unified design avoids
+// 4× class-per-metric duplication.
+//
+// Used by the HNSW K-NN search-rewrite rule: when a query of the
+// form
+//
+//	ROW_NUMBER() OVER (PARTITION BY ... ORDER BY <metric>(field, queryVec)) <= K
+//
+// is detected, the planner rewrites it into a ScanIndex over the
+// HNSW index with a DistanceRankValueComparison capturing K +
+// queryVec; the resulting plan emits row-numbered candidates from
+// the index's graph traversal directly. This Value is the
+// post-rewrite shape — its eval is INDEX-ONLY (the ROW_NUMBER value
+// is computed during the index search, not from the base record).
+//
+// Result type: NotNullLong. ROW_NUMBER is always populated, 1-based.
+//
+// The HNSW config (EfSearch + IsReturningVectors) carries through
+// from the higher-order ROW_NUMBER form — same fields as
+// RowNumberValue's HNSW knobs.
+type DistanceRowNumberValue struct {
+	WindowedValue
+	Metric             DistanceOperator
+	EfSearch           *int
+	IsReturningVectors *bool
+}
+
+// NewDistanceRowNumberValue constructs a metric-specific row-number
+// value. partitioningValues are the OVER PARTITION BY columns;
+// argumentValues typically contain the distance arguments (vector
+// field + query vector) that the ORDER BY references.
+func NewDistanceRowNumberValue(metric DistanceOperator, partitioningValues, argumentValues []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
+	return &DistanceRowNumberValue{
+		WindowedValue: WindowedValue{
+			PartitioningValues: append([]Value(nil), partitioningValues...),
+			ArgumentValues:     append([]Value(nil), argumentValues...),
+		},
+		Metric:             metric,
+		EfSearch:           efSearch,
+		IsReturningVectors: isReturningVectors,
+	}
+}
+
+// Name returns a metric-specific function name matching Java's
+// per-class naming convention:
+//
+//	euclidean_distance_row_number
+//	euclidean_square_distance_row_number
+//	cosine_distance_row_number
+//	dot_product_distance_row_number
+func (v *DistanceRowNumberValue) Name() string {
+	return v.Metric.String() + "_row_number"
+}
+
+// Type returns NotNullLong — ROW_NUMBER is always populated.
+func (*DistanceRowNumberValue) Type() Type { return NotNullLong }
+
+// IsIndexOnly returns true — like base RowNumberValue, K-NN
+// row-numbers are computed during HNSW index traversal and
+// can't be reproduced from base record data alone.
+func (*DistanceRowNumberValue) IsIndexOnly() bool { return true }
+
+// Evaluate returns the current row number from the row-shape harness
+// pattern (`_row_number` key) — same as base RowNumberValue. Real
+// execution wires the HNSW search graph; the harness exposes the
+// per-row counter for testability.
+func (*DistanceRowNumberValue) Evaluate(evalCtx any) any {
+	if evalCtx == nil {
+		return nil
+	}
+	if m, ok := evalCtx.(map[string]any); ok {
+		if r, ok := m["_row_number"]; ok {
+			return r
+		}
+	}
+	return nil
+}
+
+// WithChildren returns a fresh DistanceRowNumberValue with split
+// children — partition + argument lists rebuilt via SplitNewChildren,
+// metric + HNSW config carry through unchanged.
+func (v *DistanceRowNumberValue) WithChildren(newChildren []Value) *DistanceRowNumberValue {
+	partition, argument := v.SplitNewChildren(newChildren)
+	return NewDistanceRowNumberValue(v.Metric, partition, argument, v.EfSearch, v.IsReturningVectors)
+}
+
+// Convenience constructors mirroring Java's class-per-metric naming
+// (EuclideanDistanceRowNumberValue, etc.). Construct from the unified
+// DistanceRowNumberValue type with the metric pre-set; useful for
+// callers that want to express "K-NN by Euclidean distance" without
+// passing the DistanceOperator parameter explicitly.
+//
+// Java's planner has separate concrete classes for each metric; the
+// Go-side equivalent is matching on `v.Metric` instead.
+
+// NewEuclideanDistanceRowNumberValue is sugar for the Euclidean
+// metric. Mirrors Java's `EuclideanDistanceRowNumberValue` constructor.
+func NewEuclideanDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
+	return NewDistanceRowNumberValue(DistanceEuclidean, partition, args, efSearch, isReturningVectors)
+}
+
+// NewEuclideanSquareDistanceRowNumberValue is sugar for the squared
+// Euclidean metric (cheaper than Euclidean for KNN since it avoids
+// the sqrt; same ordering). Mirrors Java's
+// `EuclideanSquareDistanceRowNumberValue` constructor.
+func NewEuclideanSquareDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
+	return NewDistanceRowNumberValue(DistanceEuclideanSquare, partition, args, efSearch, isReturningVectors)
+}
+
+// NewCosineDistanceRowNumberValue is sugar for the cosine metric.
+// Mirrors Java's `CosineDistanceRowNumberValue` constructor.
+func NewCosineDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
+	return NewDistanceRowNumberValue(DistanceCosine, partition, args, efSearch, isReturningVectors)
+}
+
+// NewDotProductDistanceRowNumberValue is sugar for the dot-product
+// metric. Mirrors Java's `DotProductDistanceRowNumberValue` constructor.
+func NewDotProductDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
+	return NewDistanceRowNumberValue(DistanceDotProduct, partition, args, efSearch, isReturningVectors)
+}
+
+var _ IndexOnly = (*DistanceRowNumberValue)(nil)

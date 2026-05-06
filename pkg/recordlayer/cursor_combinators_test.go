@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -33,6 +34,32 @@ func (c *errAfterNCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], e
 
 func (c *errAfterNCursor[T]) Close() error { return nil }
 
+func (c *errAfterNCursor[T]) IsClosed() bool { return false }
+
+// faultAfterNCursor wraps a real cursor and injects an error after N successful results.
+// Used to test AutoContinuingCursor's recovery from mid-scan errors.
+type faultAfterNCursor[T any] struct {
+	inner    RecordCursor[T]
+	afterN   int
+	faultErr error
+	count    int
+}
+
+func (c *faultAfterNCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.count >= c.afterN {
+		return RecordCursorResult[T]{}, c.faultErr
+	}
+	result, err := c.inner.OnNext(ctx)
+	if err == nil && result.HasNext() {
+		c.count++
+	}
+	return result, err
+}
+
+func (c *faultAfterNCursor[T]) Close() error { return c.inner.Close() }
+
+func (c *faultAfterNCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
+
 // oobStopCursorUnit returns N values then stops with a non-exhaustion reason.
 type oobStopCursorUnit[T any] struct {
 	items    []T
@@ -56,6 +83,8 @@ func (c *oobStopCursorUnit[T]) OnNext(_ context.Context) (RecordCursorResult[T],
 
 func (c *oobStopCursorUnit[T]) Close() error { return nil }
 
+func (c *oobStopCursorUnit[T]) IsClosed() bool { return false }
+
 // closeTrackerUnit wraps a cursor and tracks whether Close was called.
 type closeTrackerUnit[T any] struct {
 	inner  RecordCursor[T]
@@ -74,6 +103,8 @@ func (c *closeTrackerUnit[T]) Close() error {
 	c.closed.Store(true)
 	return c.inner.Close()
 }
+
+func (c *closeTrackerUnit[T]) IsClosed() bool { return c.closed.Load() }
 
 func (c *closeTrackerUnit[T]) wasClosed() bool {
 	return c.closed.Load()
@@ -912,6 +943,48 @@ var _ = Describe("CursorCombinatorsUnit", func() {
 				Expect(order.GetOrderId()).To(Equal(int64(10 - i)))
 			}
 		})
+
+		It("recovers from transaction_timed_out (1031) by creating new transaction", func() {
+			ks := specSubspace()
+			populate10Orders(ctx, metaData)
+
+			var generatorCalls atomic.Int32
+			runner := NewFDBDatabaseRunner(sharedDB)
+			cursor := NewAutoContinuingCursor(
+				runner,
+				func(rtx *FDBRecordContext, continuation []byte) RecordCursor[*FDBStoredRecord[proto.Message]] {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					scan := ForwardScan()
+					inner := store.ScanRecords(continuation, scan)
+
+					call := generatorCalls.Add(1)
+					if call == 1 {
+						// First transaction: inject transaction_timed_out after 3 records.
+						return &faultAfterNCursor[*FDBStoredRecord[proto.Message]]{
+							inner:    inner,
+							afterN:   3,
+							faultErr: fdb.Error{Code: 1031},
+						}
+					}
+					return inner
+				},
+				3, // maxRetries
+			)
+
+			records, err := AsList(ctx, cursor)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(records).To(HaveLen(10))
+
+			// Generator called twice: first tx (timed out after 3), second tx (completed).
+			Expect(generatorCalls.Load()).To(Equal(int32(2)))
+
+			for i, rec := range records {
+				order := rec.Record.(*gen.Order)
+				Expect(order.GetOrderId()).To(Equal(int64(i + 1)))
+			}
+		})
 	})
 
 	// ---- SkipThenLimit ----
@@ -1031,3 +1104,5 @@ func (c *callbackCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], 
 }
 
 func (c *callbackCursor[T]) Close() error { return nil }
+
+func (c *callbackCursor[T]) IsClosed() bool { return false }

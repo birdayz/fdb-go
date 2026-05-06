@@ -491,10 +491,16 @@ func normalizedEqual(a, b any) bool {
 	if math.IsNaN(af) || math.IsNaN(bf) {
 		return false
 	}
-	// For exact values (integers, simple fractions), exact comparison works.
-	// For floats that went through JSON serialization, small precision artifacts
-	// can appear (e.g. float32→Gson→JSON→float64 vs float32→float64 directly).
-	// Use relative tolerance for safety.
+	// When one side is float32 (from Go tuple decode) and the other is float64
+	// (from Java JSON), compare at float32 precision. Gson serializes Float(3.14)
+	// as "3.14" which Go deserializes as float64(3.14), but Go's tuple decoder
+	// returns float32(3.14). The float32→float64 promotion differs from parsing
+	// "3.14" as float64, causing ~1e-7 relative error that exceeds 1e-9 tolerance.
+	_, aIsF32 := a.(float32)
+	_, bIsF32 := b.(float32)
+	if aIsF32 || bIsF32 {
+		return float32(af) == float32(bf)
+	}
 	if af == bf {
 		return true
 	}

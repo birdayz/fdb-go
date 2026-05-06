@@ -1,0 +1,85 @@
+# ambiguous_column.yaml
+#
+# Java's join-tests.yamsql: SELECT unqualified column that appears in
+# multiple joined tables errors 42702 (ambiguous_column_reference).
+# Aligned with Java at dayshift-40 — execSelectJoin poisons ambiguous
+# bare columns with an ambiguousColumnMarker sentinel and the evaluator
+# + SELECT projection surface 42702 on lookup. Qualified references and
+# SELECT * (which dedupes to the first source, behavior preserved)
+# remain unaffected.
+name: ambiguous_column
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')
+  - INSERT INTO b VALUES (1, 'x'), (2, 'y')
+tests:
+  # Qualified column — unambiguous, works.
+  - query: SELECT a.name FROM a, b WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - ['alpha']
+      - ['beta']
+  # Unqualified 'name' is present in both a and b — 42702.
+  - query: SELECT name FROM a, b WHERE a.id = b.id ORDER BY a.id
+    error_code: "42702"
+  # Same for 'id' in SELECT list.
+  - query: SELECT id FROM a, b WHERE a.id = b.id ORDER BY a.id
+    error_code: "42702"
+  # Unqualified ambiguous column in WHERE predicate.
+  - query: SELECT a.id FROM a, b WHERE name = 'alpha'
+    error_code: "42702"
+  # Unqualified ambiguous column in ORDER BY.
+  - query: SELECT a.id FROM a, b WHERE a.id = b.id ORDER BY name
+    error_code: "42702"
+  # Unqualified ambiguous column in explicit INNER JOIN ON clause.
+  - query: SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE id > 0
+    error_code: "42702"
+  # Qualified columns everywhere — no ambiguity, works normally.
+  - query: |
+      SELECT a.id, a.name, b.name FROM a, b
+      WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - [1, 'alpha', 'x']
+      - [2, 'beta',  'y']
+  # SELECT * on overlapping schemas keeps current dedupe-by-first-source
+  # behavior. Java expands to all columns (a.id, a.name, b.id, b.name)
+  # but that's a separate SELECT * expansion gap — tracked in TODO. Pin
+  # the behavior we have today so it doesn't silently regress further.
+  - query: SELECT * FROM a, b WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+  # Ambiguous bare column as GROUP BY key — the group-key lookup in
+  # aggregateMapRows hits the sentinel and errors 42702.
+  - query: SELECT COUNT(*) FROM a, b WHERE a.id = b.id GROUP BY name
+    error_code: "42702"
+  # Ambiguous bare column as aggregate argument.
+  - query: SELECT COUNT(name) FROM a, b WHERE a.id = b.id
+    error_code: "42702"
+  # SELECT * on a CTE + table join with an overlapping column name.
+  # Reviewer-flagged starColAliases gap (dayshift-40 follow-up): the
+  # CTE-source branch now populates starColAliases with the CTE alias
+  # so the ambiguous-sentinel fallback resolves to the first source's
+  # qualified value. Cte cx has cols (id, name); so does table a.
+  # Expect 2 cols (the dedupe keeps cx.id / cx.name — first-source
+  # wins as documented above).
+  - query: |-
+      WITH cx AS (SELECT id, name FROM a) SELECT * FROM cx, b WHERE cx.id = b.id ORDER BY cx.id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+  # Disjoint-schema sanity check: same query against a second FROM that
+  # shares no column names — no sentinel trips.
+  - query: |
+      SELECT * FROM a WHERE id = 1 ORDER BY id
+    rows:
+      - [1, 'alpha']
+  # Java alignment probe (select-a-star.yamsql line 100): `SELECT A.*,
+  # A.* FROM A` duplicates every column. Java errors 42702 at the
+  # outer `SELECT A1 FROM (derived)` because both sources of `A1` are
+  # equally valid. Go surfaces 22023 instead — the derived-table
+  # materializer rejects duplicate column names (it builds a cte.cols
+  # list that can't hold two entries named `id`). Divergence pinned.
+  - query: SELECT id FROM (SELECT a.*, a.* FROM a) AS nested
+    error_code: "22023"

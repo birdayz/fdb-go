@@ -1,0 +1,46 @@
+# scalar_subquery_dml.yaml
+#
+# Scalar subquery on the right-hand side of UPDATE SET, in DELETE WHERE
+# (as a value to compare against, not IN-subquery), and other DML +
+# scalar-subquery interactions. Different code path from the
+# dml_subquery.yaml IN/EXISTS coverage — those go through the in-list
+# evaluator; this exercises the new SubqueryExpressionAtomContext as a
+# scalar value source.
+name: scalar_subquery_dml
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE config (k STRING NOT NULL, n BIGINT, PRIMARY KEY (k))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)
+  - INSERT INTO config VALUES ('threshold', 25), ('multiplier', 100)
+tests:
+  # UPDATE SET col = (SELECT scalar) — set every row's v to the
+  # scalar subquery result (a constant pulled from the config table).
+  - query: UPDATE t SET v = (SELECT n FROM config WHERE k = 'multiplier')
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 100]
+      - [3, 100]
+      - [4, 100]
+  # Reset.
+  - query: UPDATE t SET v = id * 10
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [4, 40]
+  # DELETE WHERE col > scalar subquery — delete rows above the threshold.
+  # threshold=25, so rows with v > 25 (id=3 v=30, id=4 v=40) are deleted.
+  - query: DELETE FROM t WHERE v > (SELECT n FROM config WHERE k = 'threshold')
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+  # UPDATE arithmetic with subquery on RHS.
+  - query: UPDATE t SET v = v + (SELECT n FROM config WHERE k = 'threshold')
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 35]
+      - [2, 45]

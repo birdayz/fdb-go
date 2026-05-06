@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "predicates",
+    srcs = [
+        "comparison_range.go",
+        "comparisons.go",
+        "exists_predicate.go",
+        "leaf_query_predicate.go",
+        "predicate_correlation.go",
+        "predicates.go",
+        "simplifier_predicate_values.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+)
+
+go_test(
+    name = "predicates_test",
+    srcs = [
+        "comparison_range_test.go",
+        "comparisons_null_table_test.go",
+        "comparisons_test.go",
+        "exists_predicate_test.go",
+        "fuzz_test.go",
+        "leaf_query_predicate_test.go",
+        "predicates_equivalence_test.go",
+        "predicates_test.go",
+        "simplifier_predicate_values_test.go",
+        "tautology_test.go",
+    ],
+    embed = [":predicates"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+)

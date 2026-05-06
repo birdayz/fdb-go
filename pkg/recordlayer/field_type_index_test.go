@@ -158,7 +158,7 @@ var _ = Describe("FieldTypeIndexes", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("float index normalizes to float64", func() {
+	It("float index stores as float32 (matches Java FDB tuple encoding)", func() {
 		idx := NewIndex("TypedRecord$val_float", Field("val_float"))
 		md := buildTypedRecordMeta(idx)
 
@@ -174,8 +174,9 @@ var _ = Describe("FieldTypeIndexes", func() {
 			kvs := scanIndexEntries(store, idx)
 			Expect(kvs).To(HaveLen(1))
 			t := unpackEntry(store, idx, kvs[0])
-			// float32 -> float64 loses precision, so use approximate match
-			Expect(t[0]).To(BeAssignableToTypeOf(float64(0)))
+			// Proto float fields must encode as float32 in FDB tuple (type code 0x20).
+			// Java's Tuple.add(Float) uses 0x20. Go must match.
+			Expect(t[0]).To(BeAssignableToTypeOf(float32(0)))
 			Expect(t[0]).To(BeNumerically("~", 3.14, 0.001))
 			return nil, nil
 		})
@@ -348,10 +349,10 @@ var _ = Describe("FieldTypeIndexes", func() {
 			kvs := scanIndexEntries(store, idx)
 			Expect(kvs).To(HaveLen(1))
 			t := unpackEntry(store, idx, kvs[0])
-			// (int64, float64, string, pk)
+			// (int64, float32, string, pk) — float proto field → float32
 			Expect(t).To(HaveLen(4))
 			Expect(t[0]).To(Equal(int64(42)))
-			Expect(t[1]).To(BeAssignableToTypeOf(float64(0)))
+			Expect(t[1]).To(BeAssignableToTypeOf(float32(0)))
 			Expect(t[1]).To(BeNumerically("~", 1.5, 0.001))
 			Expect(t[2]).To(Equal("abc"))
 			Expect(t[3]).To(Equal(int64(1)))
@@ -425,11 +426,12 @@ var _ = Describe("FieldTypeIndexes", func() {
 			Expect(entries).To(HaveLen(4))
 
 			// FDB tuple ordering: -Inf < -0.0 < 0.0 < +Inf
-			Expect(entries[0].IndexValues()[0]).To(BeNumerically("<", 0))
-			Expect(math.IsInf(entries[0].IndexValues()[0].(float64), -1)).To(BeTrue())
+			// float proto field → float32 in FDB tuple
+			firstVal := entries[0].IndexValues()[0].(float32)
+			Expect(math.IsInf(float64(firstVal), -1)).To(BeTrue())
 
-			lastVal := entries[len(entries)-1].IndexValues()[0].(float64)
-			Expect(math.IsInf(lastVal, 1)).To(BeTrue())
+			lastVal := entries[len(entries)-1].IndexValues()[0].(float32)
+			Expect(math.IsInf(float64(lastVal), 1)).To(BeTrue())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

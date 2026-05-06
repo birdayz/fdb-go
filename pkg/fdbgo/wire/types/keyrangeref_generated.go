@@ -22,28 +22,9 @@ type KeyRangeRef struct {
 	End   []byte // slot 1
 }
 
-func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(KeyRangeRefSlotBegin) {
-		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
-	}
-	if r.FieldPresent(KeyRangeRefSlotEnd) {
-		m.End = r.ReadBytes(KeyRangeRefSlotEnd)
-	}
-}
-
-func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
-	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
-	if r.FieldPresent(KeyRangeRefSlotBegin) {
-		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
-	}
-	if r.FieldPresent(KeyRangeRefSlotEnd) {
-		m.End = r.ReadBytes(KeyRangeRefSlotEnd)
-	}
-	return nil
-}
+// UnmarshalFromReader / UnmarshalFDB are defined in keyrangeref_custom.go to
+// invert the C++ single-key-range serialize optimization. The generator
+// (cmd/fdb-schema-extract/main.cpp) skips them when hasCustomSerialize is true.
 
 // ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef.
 func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
@@ -101,6 +82,18 @@ func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
 			}
 			elem.End = data[pos : pos+n : pos+n]
 			pos += n
+		}
+		// Apply the same single-key-optimization inversion as
+		// UnmarshalFromReader (see keyrangeref_custom.go). Without this, a
+		// vector element written by C++'s optimization (begin+\x00 == end →
+		// emit (end, empty)) would parse with Begin/End swapped.
+		// Note: after inversion, elem.Begin and elem.End share the same
+		// backing array (the original wire buffer). Same zero-copy
+		// convention as the rest of this function.
+		if len(elem.End) == 0 && len(elem.Begin) > 0 {
+			first := elem.Begin
+			elem.Begin = first[:len(first)-1]
+			elem.End = first
 		}
 		result = append(result, elem)
 	}

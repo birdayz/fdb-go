@@ -1,0 +1,45 @@
+# insert_values_expr.yaml
+#
+# INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc).
+# Java's inserts-updates-deletes.yamsql tests `insert into B select
+# b1*10, b2, b3 from B` — that's SELECT form. This probes the VALUES
+# form with expressions.
+name: insert_values_expr
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup: []
+tests:
+  # INSERT VALUES with arithmetic.
+  - query: INSERT INTO t VALUES (1, 2 + 3), (2, 10 * 10)
+  - query: SELECT id, n FROM t ORDER BY id
+    rows:
+      - [1, 5]
+      - [2, 100]
+  # INSERT VALUES with CASE expression.
+  - query: INSERT INTO t VALUES (3, CASE WHEN 1 < 2 THEN 999 ELSE 0 END)
+  - query: SELECT n FROM t WHERE id = 3
+    rows:
+      - [999]
+  # INSERT VALUES with CAST.
+  - query: INSERT INTO t VALUES (4, CAST('42' AS BIGINT))
+  - query: SELECT n FROM t WHERE id = 4
+    rows:
+      - [42]
+  # INSERT VALUES with function call — ABS is absent from
+  # fdb-relational 4.11.1.0's function registry; rejected with
+  # "Unsupported operator ABS" (0A000). Same architectural reason
+  # in both engines: no evaluator entry. Replace with arithmetic
+  # to keep the "INSERT VALUES with derived expression" shape
+  # exercised on a still-supported expression.
+  - query: INSERT INTO t VALUES (5, 25 * 2)
+  - query: SELECT n FROM t WHERE id = 5
+    rows:
+      - [50]
+  # Verify ABS itself is rejected on the INSERT-VALUES path.
+  - query: INSERT INTO t VALUES (50, ABS(-7))
+    error_code: "42883"
+  # INSERT VALUES with COALESCE.
+  - query: INSERT INTO t VALUES (6, COALESCE(null, null, 77))
+  - query: SELECT n FROM t WHERE id = 6
+    rows:
+      - [77]

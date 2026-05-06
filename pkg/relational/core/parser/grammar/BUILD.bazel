@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+go_library(
+    name = "grammar",
+    srcs = ["sync.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/grammar",
+    visibility = ["//visibility:public"],
+)
+
+# Regenerates pkg/relational/core/parser/gen/ from the .g4 grammars using the
+# ANTLR4 complete jar (fetched via MODULE.bazel http_file). Invoke via:
+#
+#     bazelisk run //pkg/relational/core/parser/grammar:generate_parser
+#
+# Wrapped by `just generate-parser`; CI gates drift via `just generate && git
+# diff --exit-code`. Uses Bazel's hermetic JDK via
+# @bazel_tools//tools/jdk:current_java_runtime, so CI runners don't need
+# `java` on PATH. The ANTLR complete jar is a standalone executable.
+sh_binary(
+    name = "generate_parser",
+    srcs = ["generate_parser.sh"],
+    data = [
+        "RelationalLexer.g4",
+        "RelationalParser.g4",
+        "@antlr4_tool_jar//file",
+        "@bazel_tools//tools/jdk:current_java_runtime",
+    ],
+    toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)

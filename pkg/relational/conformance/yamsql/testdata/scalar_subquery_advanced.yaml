@@ -1,0 +1,74 @@
+# scalar_subquery_advanced.yaml
+#
+# Edge-case probes for the scalar-subquery feature added in nightshift-39.
+# Exercises subquery placement in clauses other than the SELECT list:
+# HAVING, ORDER BY, function arguments, IS NULL, BETWEEN, nested
+# subqueries, subquery against a CTE. If any of these break we want
+# the regression to surface here, not in user code.
+name: scalar_subquery_advanced
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40), (5, 'c', null)
+tests:
+  # Subquery in HAVING — group SUM(v) compared to a global threshold.
+  # Threshold = MAX(v)/2 = 20. 'a' = 30 > 20 ✓; 'b' = 70 > 20 ✓; 'c' = NULL → UNKNOWN → drop.
+  - query: |
+      SELECT g, SUM(v) FROM t GROUP BY g
+      HAVING SUM(v) > (SELECT MAX(v) / 2 FROM t)
+      ORDER BY g
+    rows:
+      - ['a', 30]
+      - ['b', 70]
+  # Subquery in ORDER BY expression — rejected. Java's Cascades
+  # planner has no rule satisfying ORDER BY arbitrary expression
+  # (a subquery-bearing arithmetic expression here); rejection
+  # emerges from "no scan satisfies". Same architectural reason in
+  # both engines.
+  - query: SELECT id FROM t WHERE v IS NOT NULL ORDER BY v - (SELECT MIN(v) FROM t)
+    error_code: "0AF01"
+  # Bare scalar subquery returning a string. (Pre-cleanup this case
+  # used UPPER((SELECT g …)) to exercise subquery-as-function-argument;
+  # since UPPER is no longer in the function registry, the same shape
+  # reduces to a bare scalar subquery in the projection.)
+  - query: SELECT (SELECT g FROM t WHERE id = 1) FROM t WHERE id = 1
+    rows:
+      - ['a']
+  # Subquery in IS NULL predicate. Inner returns NULL for v=5.
+  # IS NULL on the subquery result → TRUE.
+  - query: SELECT id FROM t WHERE id = 5 AND (SELECT v FROM t WHERE id = 5) IS NULL
+    rows:
+      - [5]
+  # Subquery in BETWEEN. v BETWEEN MIN(v) AND MAX(v) → all non-null rows.
+  - query: SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t) AND (SELECT MAX(v) FROM t) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+  # Nested scalar subquery — outer subquery selects from inner subquery.
+  # Allowed: outer is scalar; inner is a derived table inside outer.
+  # MAX(v) = 40; the wrapping subquery just returns MAX directly.
+  - query: SELECT (SELECT MAX(x) FROM (SELECT v AS x FROM t) AS s) FROM t WHERE id = 1
+    rows:
+      - [40]
+  # Subquery against a CTE. Inner query references the CTE defined in
+  # the outer WITH clause.
+  - query: |-
+      WITH high AS (SELECT v FROM t WHERE v > 25)
+      SELECT id, (SELECT MIN(v) FROM high) FROM t WHERE id = 1
+    rows:
+      - [1, 30]
+  # Subquery + arithmetic + subquery in same expression. Two subqueries
+  # in one expression — both should pre-evaluate and cache independently.
+  - query: SELECT (SELECT MAX(v) FROM t) - (SELECT MIN(v) FROM t) FROM t WHERE id = 1
+    rows:
+      - [30]
+  # Subquery wrapped in COALESCE — handles NULL from zero-row subquery.
+  - query: SELECT COALESCE((SELECT v FROM t WHERE id = 999), 0) FROM t WHERE id = 1
+    rows:
+      - [0]
+  # Subquery in CASE expression branch.
+  - query: SELECT CASE WHEN id = 1 THEN (SELECT MAX(v) FROM t) ELSE 0 END FROM t WHERE id = 1
+    rows:
+      - [40]

@@ -177,9 +177,9 @@ func BenchmarkSaveRecord(b *testing.B) {
 	}
 }
 
-// BenchmarkSaveRecordBuild uses Build() + SetAssumeAllIndexesReadable —
-// the maximum-performance production path. Zero FDB reads for store open,
-// no lazy-load on first index operation. Requires CreateOrOpen at startup.
+// BenchmarkSaveRecordBuild measures SaveRecord with Build() instead of Open().
+// Build() skips the store state read — state is lazy-loaded on first index
+// operation. This matches Java's build() + preloadRecordStoreStateAsync().
 func BenchmarkSaveRecordBuild(b *testing.B) {
 	ensureBenchDB(b)
 
@@ -268,15 +268,22 @@ func BenchmarkLoadRecord(b *testing.B) {
 	}
 }
 
-// BenchmarkLoadRecordBuild uses Build() + SetAssumeAllIndexesReadable.
+// BenchmarkLoadRecordBuild measures LoadRecord with Build() instead of Open().
+// Build() skips the store state read — no lazy load needed for reads.
 func BenchmarkLoadRecordBuild(b *testing.B) {
 	ensureBenchDB(b)
+
 	md := benchMetaData(b)
 	ss := benchSubspace(b)
 	ctx := context.Background()
 
+	// Pre-create the store and save a record to load.
 	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-		store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		store, err := NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(ss).
+			CreateOrOpen()
 		if err != nil {
 			return nil, err
 		}
@@ -287,11 +294,17 @@ func BenchmarkLoadRecordBuild(b *testing.B) {
 	}
 
 	pk := tuple.Tuple{int64(1)}
+
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).SetAssumeAllIndexesReadable(true).Build()
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(md).
+				SetSubspace(ss).
+				SetAssumeAllIndexesReadable(true).
+				Build()
 			if err != nil {
 				return nil, err
 			}

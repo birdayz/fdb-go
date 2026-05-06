@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "functions",
+    srcs = [
+        "arith.go",
+        "ast_util.go",
+        "cast.go",
+        "compare.go",
+        "like.go",
+        "proto_value.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/parser/gen",
+        "@com_github_google_uuid//:uuid",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+go_test(
+    name = "functions_test",
+    srcs = [
+        "functions_test.go",
+        "proto_value_test.go",
+    ],
+    embed = [":functions"],
+    deps = [
+        "//gen",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)

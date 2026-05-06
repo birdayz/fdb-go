@@ -1,0 +1,36 @@
+# qualified_star_more.yaml
+#
+# More qualifier-star edge cases from Java's select-a-star.yamsql:
+# - Two-table comma-join with both A.* and B.*
+# - Aliased two-table comma-join with X.* and Y.*
+# - A.* with GROUP BY (Java errors 42803)
+name: qualified_star_more
+schema_template: |
+  CREATE TABLE a (a1 BIGINT NOT NULL, a2 BIGINT, PRIMARY KEY (a1))
+  CREATE TABLE b (b1 BIGINT NOT NULL, b2 BIGINT, PRIMARY KEY (b1))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO b VALUES (1, 100), (2, 200), (3, 300)
+tests:
+  # Java: SELECT A.*, B.* FROM A, B WHERE A.A1=B.B1.
+  - query: SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 ORDER BY a.a1
+    rows:
+      - [1, 10, 1, 100]
+      - [2, 20, 2, 200]
+      - [3, 30, 3, 300]
+  # Java: SELECT X.*, Y.* FROM A AS X, B AS Y WHERE X.A1=Y.B1.
+  - query: SELECT x.*, y.* FROM a AS x, b AS y WHERE x.a1 = y.b1 ORDER BY x.a1
+    rows:
+      - [1, 10, 1, 100]
+      - [2, 20, 2, 200]
+      - [3, 30, 3, 300]
+  # Java alignment: SELECT A.* FROM A GROUP BY A1 → 42803 (qualifier-star
+  # expands to all of A's cols, not all of which are in GROUP BY).
+  - query: SELECT a.* FROM a GROUP BY a1
+    error_code: "42803"
+  # Mixed SELECT A.*, B.* FROM A, B ... GROUP BY A1 — both qualifier-
+  # stars expand to their full column lists; most aren't in GROUP BY
+  # so 42803 on the first non-grouped column. Matches Java's
+  # select-a-star.yamsql trailer.
+  - query: SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 GROUP BY a1
+    error_code: "42803"

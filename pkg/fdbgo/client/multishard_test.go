@@ -24,7 +24,25 @@ type multiShardEnv struct {
 	numShards int
 }
 
+// shardSizeConfig parameterises FDB shard knobs so the multi-shard
+// suite can run against multiple shard-count regimes from the same
+// helper. Default (50KB max) yields ~20 shards from 1MB of data;
+// LargerShards (200KB max) yields ~5 shards.
+type shardSizeConfig struct {
+	minShardBytes string
+	maxShardBytes string
+}
+
+var (
+	defaultShardSize = shardSizeConfig{minShardBytes: "10000", maxShardBytes: "50000"}
+	largerShardSize  = shardSizeConfig{minShardBytes: "40000", maxShardBytes: "200000"}
+)
+
 func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
+	return setupMultiShardEnvWithConfig(t, ctx, defaultShardSize)
+}
+
+func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSizeConfig) *multiShardEnv {
 	t.Helper()
 	g := gomega.NewWithT(t)
 
@@ -33,8 +51,8 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 		tcfdb.WithDirectIP(),
 		tcfdb.WithProcessCount(3),
 		tcfdb.WithRedundancyMode("double"),
-		tcfdb.WithKnob("min_shard_bytes", "10000"),
-		tcfdb.WithKnob("max_shard_bytes", "50000"),
+		tcfdb.WithKnob("min_shard_bytes", cfg.minShardBytes),
+		tcfdb.WithKnob("max_shard_bytes", cfg.maxShardBytes),
 		tcfdb.WithKnob("shard_bytes_ratio", "2"),
 		tcfdb.WithKnob("storage_metrics_polling_delay", "1"),
 	)
@@ -187,6 +205,9 @@ func TestMultiShard(t *testing.T) {
 	})
 	t.Run("MoreFlagAtShardBoundary", func(t *testing.T) {
 		testMultiShard_MoreFlagAtShardBoundary(t, ctx, env)
+	})
+	t.Run("ContinuationCorrectnessWithCacheInvalidation", func(t *testing.T) {
+		testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t, ctx, env)
 	})
 }
 
@@ -1207,4 +1228,168 @@ func testMultiShard_MoreFlagAtShardBoundary(t *testing.T, ctx context.Context, e
 		pageLimit, numKeys, len(all))
 
 	t.Logf("more flag regression: all limits correct across %d shards", env.numShards)
+}
+
+// ContinuationCorrectnessWithCacheInvalidation: paginated GetRange across
+// multi-shard data must produce a correctly-ordered, deduplicated result
+// set EVEN when the location cache is invalidated mid-scan. The existing
+// GetRangeWithLimit test relies on the warm cache; this version drops the
+// cache between every page so that each page goes through a fresh
+// locateRange + GetKeyServerLocations round trip. Catches a class of bugs
+// where pagination semantics depend on cache stickiness — e.g. an off-by-one
+// on the recomputed shard boundary or a stale "more" flag carried over from
+// the previous round trip.
+//
+// Asserted invariants over the paginated result:
+//  1. Coverage: every seeded key is returned exactly once.
+//  2. Ordering: result is strictly ascending key-sorted.
+//  3. No duplicates: no key appears twice across all pages.
+//  4. Termination: pagination stops with !more (not because we hit the
+//     200-iteration safety bound).
+func testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	const pageLimit = 7
+
+	begin := []byte(env.prefix)
+	end := append([]byte(env.prefix), 0xFF)
+
+	// The env is shared across this whole TestMultiShard and earlier sub-tests
+	// (BatchedWrites, MoreFlagAtShardBoundary, ConcurrentWritesDuringDD)
+	// have already written under env.prefix with various suffixes. Snapshot
+	// the actual key count by issuing a single un-paginated scan; pagination
+	// must produce exactly the same set.
+	snapResult, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		// limit=0 → unlimited.
+		kvs, _, err := tx.GetRange(ctx, begin, end, 0)
+		return kvs, err
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	snapshot := snapResult.([]KeyValue)
+	wantTotal := len(snapshot)
+	g.Expect(wantTotal).To(gomega.BeNumerically(">", pageLimit),
+		"snapshot has fewer keys (%d) than pageLimit (%d) — paging won't be meaningful",
+		wantTotal, pageLimit)
+
+	var collected []KeyValue
+	cacheInvalidations := 0
+	var iterations int
+	const safetyBound = 5000 // generous: wantTotal/pageLimit pages, with slack
+
+	for iterations = 0; iterations < safetyBound; iterations++ {
+		// Drop the location cache for the prefix range BEFORE this page —
+		// forces a fresh locateRange call and exercises the
+		// cache-cold pagination path.
+		env.db.db.locCache.invalidateRange(begin, end, NoTenantID)
+		cacheInvalidations++
+
+		result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			kvs, more, err := tx.GetRange(ctx, begin, end, pageLimit)
+			if err != nil {
+				return nil, err
+			}
+			return []any{kvs, more}, nil
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "iteration %d", iterations)
+		parts := result.([]any)
+		kvs := parts[0].([]KeyValue)
+		more := parts[1].(bool)
+
+		collected = append(collected, kvs...)
+
+		if !more || len(kvs) == 0 {
+			break
+		}
+		// Standard pagination: advance begin past the last returned key.
+		begin = append(append([]byte{}, kvs[len(kvs)-1].Key...), 0)
+	}
+	g.Expect(iterations).To(gomega.BeNumerically("<", safetyBound),
+		"pagination did not terminate within %d iterations — runaway pages?", safetyBound)
+
+	// Coverage. Compare against the snapshot taken before pagination —
+	// pagination with cache invalidation must produce the same set.
+	if len(collected) != wantTotal {
+		t.Fatalf("want %d keys total (snapshot count), got %d (cache invalidation broke continuation?)",
+			wantTotal, len(collected))
+	}
+	for i, kv := range collected {
+		if !bytesEqual(kv.Key, snapshot[i].Key) {
+			t.Fatalf("key mismatch at index %d: paged=%q snapshot=%q",
+				i, kv.Key, snapshot[i].Key)
+		}
+		if !bytesEqual(kv.Value, snapshot[i].Value) {
+			t.Errorf("value mismatch at key %q", kv.Key)
+		}
+	}
+
+	// Strict ascending order.
+	for i := 1; i < len(collected); i++ {
+		if bytes.Compare(collected[i-1].Key, collected[i].Key) >= 0 {
+			t.Fatalf("ordering violated at index %d: %q >= %q (consecutive)",
+				i, collected[i-1].Key, collected[i].Key)
+		}
+	}
+
+	// Dedup. (Strict ascending implies no duplicates, but assert explicitly so
+	// a future change that loosens ordering still surfaces dup bugs.)
+	seen := make(map[string]struct{}, len(collected))
+	for _, kv := range collected {
+		if _, dup := seen[string(kv.Key)]; dup {
+			t.Fatalf("duplicate key in paginated result: %q", kv.Key)
+		}
+		seen[string(kv.Key)] = struct{}{}
+	}
+
+	t.Logf("continuation correctness: %d keys / %d pages / %d cache invalidations across %d shards",
+		len(collected), iterations+1, cacheInvalidations, env.numShards)
+}
+
+// TestMultiShard_LargerShards exercises a SUBSET of the multi-shard
+// suite against a SECOND shard-count config — max_shard_bytes=200KB
+// yields ~5 shards from 1MB of data instead of the ~20 shards the
+// default config produces.
+//
+// Why a subset: each setup pays a ~30s container-startup cost;
+// running the full 24-subtest matrix at every shard config would
+// triple `just test` time. The subset picks the topology-sensitive
+// tests where shard count matters most:
+//
+//   - GetRange: full scan correctness across shard boundaries
+//   - GetRangeWithLimit: paged scan with continuation across boundaries
+//     (this is the surface where the nightshift-9 bug + similar bugs
+//     hide)
+//   - GetKey: selector resolution across shard boundaries (also
+//     nightshift-9-prone)
+//   - ClearRange: range mutation that crosses shard boundaries
+//   - ContinuationCorrectnessWithCacheInvalidation: the most thorough
+//     boundary-correctness test
+//
+// Closes part of TODO HIGH 'Multi-shard test matrix' — adds varied
+// shard-count coverage without exploding container time.
+func TestMultiShard_LargerShards(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	env := setupMultiShardEnvWithConfig(t, ctx, largerShardSize)
+	if env.numShards <= 1 {
+		t.Skip("shard splits did not occur with larger-shards config")
+	}
+	t.Logf("running cross-shard tests across %d shards (large-shards config)", env.numShards)
+
+	t.Run("GetRange", func(t *testing.T) {
+		testMultiShard_GetRange(t, ctx, env)
+	})
+	t.Run("GetRangeWithLimit", func(t *testing.T) {
+		testMultiShard_GetRangeWithLimit(t, ctx, env)
+	})
+	t.Run("GetKey", func(t *testing.T) {
+		testMultiShard_GetKey(t, ctx, env)
+	})
+	t.Run("ClearRange", func(t *testing.T) {
+		testMultiShard_ClearRange(t, ctx, env)
+	})
+	t.Run("ContinuationCorrectnessWithCacheInvalidation", func(t *testing.T) {
+		testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t, ctx, env)
+	})
 }

@@ -474,6 +474,60 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(evolErr.Message).To(ContainSubstring("removed from meta-data"))
 		})
 
+		It("rejects former index without old index when addedVersion <= old version", func() {
+			// Scenario: new metadata has a FormerIndex for an index that didn't exist
+			// in old metadata (index was added and dropped between versions).
+			// The FormerIndex's addedVersion must be > old metadata version.
+			old := buildMetaData(5, nil)
+
+			// Build new metadata, then inject a FormerIndex with addedVersion=3 (<=5).
+			new := buildMetaData(10, nil)
+			new.formerIndexes = append(new.formerIndexes, &FormerIndex{
+				SubspaceKey:    "ephemeral_idx",
+				FormerName:     "ephemeral_idx",
+				AddedVersion:   3, // <= old.Version()==5 → should be rejected
+				RemovedVersion: 7, // > old.Version()==5 → passes removedVersion check
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("added version prior to old"))
+		})
+
+		It("accepts former index without old index when allowOlderFormerIndexAddedVersion", func() {
+			old := buildMetaData(5, nil)
+
+			new := buildMetaData(10, nil)
+			new.formerIndexes = append(new.formerIndexes, &FormerIndex{
+				SubspaceKey:    "ephemeral_idx",
+				FormerName:     "ephemeral_idx",
+				AddedVersion:   3, // <= old.Version()==5 → normally rejected
+				RemovedVersion: 7,
+			})
+
+			validator := NewMetaDataEvolutionValidator().
+				SetAllowOlderFormerIndexAddedVersion(true).
+				Build()
+			err := validator.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("accepts former index without old index when addedVersion > old version", func() {
+			old := buildMetaData(5, nil)
+
+			new := buildMetaData(10, nil)
+			new.formerIndexes = append(new.formerIndexes, &FormerIndex{
+				SubspaceKey:    "ephemeral_idx",
+				FormerName:     "ephemeral_idx",
+				AddedVersion:   6, // > old.Version()==5 → should pass
+				RemovedVersion: 8, // > old.Version()==5 → passes
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("accepts preserved former index", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -1447,6 +1501,534 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
 			Expect(evolErr.Message).To(ContainSubstring("proto syntax changed"))
+		})
+	})
+
+	Describe("index record type scope validation (RFC 019)", func() {
+		It("rejects index that drops a record type", func() {
+			// Build old: index covers Order via type-specific add
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// Build new: same index but now universal (covers all types)
+			// Then change to only cover Customer
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Customer", NewIndex("idx_price", Field("price")))
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("no longer covers record type"))
+		})
+
+		It("rejects index adding old record type without sinceVersion", func() {
+			// Old: index covers Order only
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// New: same index now covers both Order and Customer.
+			// Customer exists since version 0 (no sinceVersion), which is <= old version 1.
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("covers new record type"))
+		})
+
+		It("allows index keeping same record types", func() {
+			// Old: index covers Order
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// New: same index still covers only Order — no scope change.
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("allows index adding type with SinceVersion=0 when allowNoSinceVersion is true", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// Customer has SinceVersion=0 (default). Without allowNoSinceVersion,
+			// this would fail because 0 <= old.Version()==1.
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
+			})
+
+			validator := NewMetaDataEvolutionValidator().
+				SetAllowNoSinceVersion(true).
+				Build()
+			err := validator.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("index options validation (RFC 019)", func() {
+		It("allows dropping uniqueness without allowIndexRebuilds", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "false"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects adding uniqueness", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("made unique"))
+		})
+
+		It("rejects unknown option changes", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"someCustomOption": "a"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"someCustomOption": "b"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("option"))
+		})
+
+		It("allows option changes with allowIndexRebuilds", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "false"}
+				b.AddIndex("Order", idx)
+			})
+
+			validator := NewMetaDataEvolutionValidator().
+				SetAllowIndexRebuilds(true).
+				Build()
+			err := validator.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("allows allowedForQuery changes", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{IndexOptionAllowedForQuery: "false"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("allows replacedBy prefix changes", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddIndex("Order", idx)
+				// Add the replacement index so metadata validation passes.
+				b.AddIndex("Order", NewIndex("idx_price_v2", Field("price")))
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"replacedByNewIndex": "idx_price_v2"}
+				b.AddIndex("Order", idx)
+				b.AddIndex("Order", NewIndex("idx_price_v2", Field("price")))
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("allows dropping uniqueness from true to absent", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				// no unique option at all
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// TEXT index option validation
+		It("allows TEXT aggressiveConflictRanges change", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextAddAggressiveConflictRanges: "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("allows TEXT omitPositions change", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextOmitPositions: "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects TEXT tokenizer name change", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextTokenizerName: "english"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextTokenizerName: "french"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("text tokenizer changed"))
+		})
+
+		It("allows TEXT tokenizer version upgrade", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "1"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "2"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects TEXT tokenizer version downgrade", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "3"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_text", Field("price"))
+				idx.Type = IndexTypeText
+				idx.Options = map[string]string{IndexOptionTextTokenizerVersion: "1"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("text tokenizer version downgraded"))
+		})
+
+		// RANK index option validation
+		It("rejects RANK nLevels change", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_rank", Field("price"))
+				idx.Type = IndexTypeRank
+				idx.Options = map[string]string{IndexOptionRankNLevels: "6"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_rank", Field("price"))
+				idx.Type = IndexTypeRank
+				idx.Options = map[string]string{IndexOptionRankNLevels: "8"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("rank levels"))
+		})
+
+		It("allows RANK nLevels cosmetic change (absent to default)", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_rank", Field("price"))
+				idx.Type = IndexTypeRank
+				// no nLevels option — uses default 6
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_rank", Field("price"))
+				idx.Type = IndexTypeRank
+				idx.Options = map[string]string{IndexOptionRankNLevels: "6"} // explicit default
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects RANK countDuplicates change", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_rank", Field("price"))
+				idx.Type = IndexTypeRank
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_rank", Field("price"))
+				idx.Type = IndexTypeRank
+				idx.Options = map[string]string{IndexOptionRankCountDuplicates: "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("rank count duplicates"))
+		})
+
+		// PERMUTED_MIN/MAX option validation
+		It("rejects PERMUTED_MIN permutedSize change", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_pm", Field("price"))
+				idx.Type = IndexTypePermutedMin
+				idx.Options = map[string]string{IndexOptionPermutedSize: "1"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_pm", Field("price"))
+				idx.Type = IndexTypePermutedMin
+				idx.Options = map[string]string{IndexOptionPermutedSize: "2"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("permuted size"))
+		})
+
+		// VECTOR (HNSW) option validation
+		It("rejects HNSW structural option change (metric)", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_vec", Field("price"))
+				idx.Type = IndexTypeVector
+				idx.Options = map[string]string{IndexOptionVectorMetric: "EUCLIDEAN"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_vec", Field("price"))
+				idx.Type = IndexTypeVector
+				idx.Options = map[string]string{IndexOptionVectorMetric: "COSINE"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("hnswMetric"))
+		})
+
+		It("allows HNSW runtime option change (concurrency)", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_vec", Field("price"))
+				idx.Type = IndexTypeVector
+				idx.Options = map[string]string{IndexOptionHNSWMaxNumConcurrentNodeFetches: "16"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_vec", Field("price"))
+				idx.Type = IndexTypeVector
+				idx.Options = map[string]string{IndexOptionHNSWMaxNumConcurrentNodeFetches: "32"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects HNSW structural change when value actually differs", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_vec", Field("price"))
+				idx.Type = IndexTypeVector
+				idx.Options = map[string]string{IndexOptionHNSWM: "16"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_vec", Field("price"))
+				idx.Type = IndexTypeVector
+				idx.Options = map[string]string{IndexOptionHNSWM: "32"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("hnswM"))
+		})
+
+		// MULTIDIMENSIONAL (R-tree) option validation
+		It("rejects R-tree structural option change (maxM)", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_md", Field("price"))
+				idx.Type = IndexTypeMultidimensional
+				idx.Options = map[string]string{IndexOptionRTreeMaxM: "4"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_md", Field("price"))
+				idx.Type = IndexTypeMultidimensional
+				idx.Options = map[string]string{IndexOptionRTreeMaxM: "8"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("R-tree option"))
+		})
+
+		It("rejects R-tree splitS change", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_md", Field("price"))
+				idx.Type = IndexTypeMultidimensional
+				idx.Options = map[string]string{IndexOptionRTreeSplitS: "2"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_md", Field("price"))
+				idx.Type = IndexTypeMultidimensional
+				idx.Options = map[string]string{IndexOptionRTreeSplitS: "4"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("R-tree option"))
+		})
+
+		// Atomic mutation indexes (COUNT, SUM, etc.) use base validation
+		It("rejects clearWhenZero change for COUNT index via base validator", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_count", Ungrouped(Field("price")))
+				idx.Type = IndexTypeCount
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_count", Ungrouped(Field("price")))
+				idx.Type = IndexTypeCount
+				idx.Options = map[string]string{IndexOptionClearWhenZero: "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			// clearWhenZero is not in the base allowlist, so this SHOULD be rejected.
+			// Java has no override for atomic mutation indexes — clearWhenZero goes to
+			// base validator which rejects it.
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("option"))
+		})
+
+		It("allows no-op when options are identical", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true", IndexOptionAllowedForQuery: "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true", IndexOptionAllowedForQuery: "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

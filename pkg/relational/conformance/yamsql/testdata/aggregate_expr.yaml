@@ -1,0 +1,140 @@
+# aggregate_expr.yaml
+#
+# Aggregate functions accept arbitrary expressions as their argument
+# (e.g. SUM(qty*price), AVG(col/2), MIN(CASE ... END)). Bare-column
+# arguments go through a field-descriptor fast path on the proto-
+# backed evaluator; expression arguments are evaluated per-row via
+# evalExpr / evalExprOnMap. NULL propagation and empty-group
+# semantics match SQL standard on both paths.
+name: aggregate_expr
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, qty BIGINT, price BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 2, 100), (2, 3, 50), (3, 5, 20)
+tests:
+  # SUM over plain column — baseline, bare-column fast path.
+  - query: SELECT SUM(qty) FROM t
+    rows:
+      - [10]
+
+  # MIN/MAX over plain column.
+  - query: SELECT MIN(price), MAX(price) FROM t
+    rows:
+      - [20, 100]
+
+  # AVG over plain column — 170/3 of (100, 50, 20) = 56.67.
+  - query: SELECT AVG(price) FROM t
+    rows:
+      - [56.666666666666664]
+
+  # SUM over arithmetic expression: 2*100 + 3*50 + 5*20 = 200 + 150 + 100 = 450.
+  - query: SELECT SUM(qty * price) FROM t
+    rows:
+      - [450]
+
+  # AVG over arithmetic expression: (100/2 + 50/2 + 20/2) / 3 = 85/3 ≈ 28.33.
+  # Integer division in the expression: price/2 = 50, 25, 10 → avg = 85/3.
+  - query: SELECT AVG(price / 2) FROM t
+    rows:
+      - [28.333333333333332]
+
+  # MIN/MAX over expression.
+  - query: SELECT MIN(qty * price), MAX(qty * price) FROM t
+    rows:
+      - [100, 200]
+
+  # Aggregate over expression with alias.
+  - query: SELECT SUM(qty * price) AS revenue FROM t
+    rows:
+      - [450]
+
+  # Multiple aggregates mixing plain column and expression.
+  - query: SELECT SUM(qty), SUM(qty * price) FROM t
+    rows:
+      - [10, 450]
+
+  # COUNT over expression — NULLs propagate through arithmetic, so
+  # rows where any operand is NULL are skipped by COUNT(expr).
+  # All three rows have non-NULL qty and price, so COUNT = 3.
+  - query: SELECT COUNT(qty * price) FROM t
+    rows:
+      - [3]
+
+  # SUM(DISTINCT) is rejected by both engines (Java NPE on
+  # AggregateWindowedFunctionContext.ALL().getText() with DISTINCT;
+  # Go ErrCodeUnsupportedOperation). See distinct_aggregates.yaml.
+  - query: SELECT SUM(DISTINCT qty * price) FROM t
+    error_code: "0A000"
+
+  # Empty-group / all-NULL argument: SUM returns NULL (not 0), COUNT returns 0.
+  # Filter rejects all rows, so the aggregate runs over an empty input.
+  - query: SELECT SUM(qty * price), COUNT(qty * price) FROM t WHERE id < 0
+    rows:
+      - [~, 0]
+
+  # Aggregate over expression with GROUP BY: sum the product per qty bucket.
+  # (2,100) → 200, (3,50) → 150, (5,20) → 100 — each row is its own group.
+  - query: SELECT qty, SUM(qty * price) FROM t GROUP BY qty ORDER BY qty
+    rows:
+      - [2, 200]
+      - [3, 150]
+      - [5, 100]
+
+  # Non-numeric expression into SUM/AVG — rejects with 22023 (invalid parameter).
+  # CASE returning a string: SUM can't fold strings.
+  - query: "SELECT SUM(CASE WHEN id = 1 THEN 'hello' ELSE 'world' END) FROM t"
+    error_code: "22023"
+  # SUM(CASE WHEN cond THEN val ELSE 0 END) — conditional sum. Common
+  # SQL idiom for filtered aggregation. id=1 contributes 100, id=2
+  # contributes 50, id=3 contributes 0 → 150.
+  - query: "SELECT SUM(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t"
+    rows:
+      - [150]
+  # COUNT(CASE WHEN ...) counts non-NULL — id=1,2 match the predicate
+  # so CASE returns 1, id=3 falls to ELSE NULL so COUNT skips it.
+  - query: "SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t"
+    rows:
+      - [2]
+  # MAX(CASE WHEN ...) — pick the max of conditional values. 1→price=100,
+  # 2→price=50, 3→ELSE 0 → MAX=100.
+  - query: "SELECT MAX(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t"
+    rows:
+      - [100]
+  # AVG(CASE WHEN ...) — average over the matching rows when ELSE is
+  # NULL (so non-matching rows are excluded from the denominator too).
+  # id=1 → 100, id=2 → 50, id=3 → NULL (excluded). AVG = (100+50)/2 = 75.
+  - query: "SELECT AVG(CASE WHEN id < 3 THEN price END) FROM t"
+    rows:
+      - [75.0]
+  # SUM(CASE) with GROUP BY: per-group conditional sum. Group by qty
+  # (each row is its own group); CASE picks price for id<3 else 0.
+  - query: |-
+      SELECT qty, SUM(CASE WHEN id < 3 THEN price ELSE 0 END)
+      FROM t GROUP BY qty ORDER BY qty
+    rows:
+      - [2, 100]
+      - [3, 50]
+      - [5, 0]
+  # Java alignment: arithmetic between two aggregates (Java's
+  # composite-aggregates.yamsql 'SUM(col2) / COUNT(col2) FROM T2 GROUP BY col1').
+  # qty values = [2, 3, 5]; per-qty SUM(price)/COUNT(price) = price (each
+  # group has 1 row).
+  # NOTE: Without GROUP BY there is one group (all 3 rows). SUM(price) =
+  # 100+50+20 = 170; COUNT(price) = 3. SUM(BIGINT)/COUNT(*) integer-
+  # divides to match Java (170/3 = 56). Aligned nightshift-57 via the
+  # int-preserving SUM accumulator.
+  - query: |-
+      SELECT SUM(price) / COUNT(price) FROM t ORDER BY SUM(price) / COUNT(price)
+    rows:
+      - [56]
+  # Aggregate / aggregate without GROUP BY.
+  # SUM(qty) = 10 (int64 — accumulator preserves int when all inputs are
+  # integral), COUNT(*) = 3. Integer division = 3.
+  - query: SELECT SUM(qty) / COUNT(*) FROM t
+    rows:
+      - [3]
+  # Multiple aggregates with different expressions. SUM(qty) - COUNT(*)
+  # is now int64 - int64 = int64 (was float64 pre-nightshift-57).
+  - query: SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t
+    rows:
+      - [7, 7]

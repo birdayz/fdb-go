@@ -1,0 +1,53 @@
+# greatest_least.yaml
+#
+# swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL
+# (Java semantics: first NULL -> result NULL). Pre-fix Go skipped NULL
+# args (Postgres semantics), diverging from Java's VariadicFunctionValue
+# PhysicalOperator which short-circuits `if (i == null) return null`.
+name: greatest_least
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1)
+tests:
+  # All non-null.
+  - query: SELECT GREATEST(1, 5, 3) FROM t
+    rows:
+      - [5]
+  - query: SELECT LEAST(1, 5, 3) FROM t
+    rows:
+      - [1]
+  # Any-NULL propagates to NULL.
+  - query: SELECT GREATEST(1, NULL, 3) FROM t
+    rows:
+      - [~]
+  - query: SELECT LEAST(1, NULL, 3) FROM t
+    rows:
+      - [~]
+  # Single NULL arg.
+  - query: SELECT GREATEST(NULL) FROM t
+    rows:
+      - [~]
+  - query: SELECT LEAST(NULL) FROM t
+    rows:
+      - [~]
+  # Java alignment: int + double promotes to DOUBLE result type.
+  # Java's functions.yamsql: greatest(1, 2, 3.0, 4, 5) → 5.0.
+  - query: SELECT GREATEST(1, 2, 3.0, 4, 5) FROM t
+    rows:
+      - [5.0]
+  # Same for LEAST.
+  - query: SELECT LEAST(1, 2, 3.0, 4, 5) FROM t
+    rows:
+      - [1.0]
+  # All-string: comparison works lexicographically.
+  - query: SELECT GREATEST('apple', 'banana', 'cherry') FROM t
+    rows:
+      - ['cherry']
+  - query: SELECT LEAST('apple', 'banana', 'cherry') FROM t
+    rows:
+      - ['apple']
+  # Java alignment: cross-type (int + string) errors 22000
+  # (CANNOT_CONVERT_TYPE) per Java's CompareTreesMaker.
+  - query: SELECT GREATEST(1, 'a') FROM t
+    error_code: "22000"

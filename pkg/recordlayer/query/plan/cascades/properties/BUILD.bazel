@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "properties",
+    srcs = [
+        "cardinality.go",
+        "cost.go",
+        "extract.go",
+        "ordering.go",
+        "plan_property.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
+    ],
+)
+
+go_test(
+    name = "properties_test",
+    srcs = [
+        "cardinality_test.go",
+        "cost_test.go",
+        "extract_fuzz_test.go",
+        "extract_test.go",
+        "ordering_fuzz_test.go",
+        "ordering_test.go",
+        "plan_property_test.go",
+        "properties_bench_test.go",
+    ],
+    embed = [":properties"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+    ],
+)

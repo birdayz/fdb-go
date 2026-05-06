@@ -566,7 +566,7 @@ func GetPacker() *Packer {
 	return &Packer{p: p}
 }
 
-func PutPacker(pk *Packer) { packerPool.Put(pk.p) }
+func PutPacker(pk *Packer) { pk.Reset(); packerPool.Put(pk.p) }
 
 func (pk *Packer) Reset()                       { pk.p.versionstampPos = -1; pk.p.buf = pk.p.buf[:0] }
 func (pk *Packer) EncodeInt(val int64)          { pk.p.encodeInt(val) }

@@ -1,0 +1,83 @@
+# like.yaml
+#
+# LIKE pattern matching with SQL wildcards (% and _). Pins:
+#   - swingshift-35 3bc601bc: map-path LIKE on non-string LHS errors
+#     (pre-fix: silently stringified — match Java behaviour which also
+#     errors at the proto path).
+#   - NULL propagation through LIKE — 'abc' LIKE NULL is UNKNOWN.
+name: like
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'hello'), (2, 'help'), (3, 'world'), (4, null), (5, '')
+tests:
+  # Prefix match.
+  - query: SELECT id FROM t WHERE s LIKE 'hel%'
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  # Single-char wildcard.
+  - query: SELECT id FROM t WHERE s LIKE 'hel_'
+    rows:
+      - [2]
+  # No match.
+  - query: SELECT id FROM t WHERE s LIKE 'xyz'
+    rows: []
+  # Grammar rejects both `LIKE NULL` and `LIKE CAST(NULL AS STRING)` —
+  # the RHS accepts only string literals. swingshift-35 handover flags
+  # this as a known gap. NULL pattern semantics are still correct in
+  # the evaluator; they just aren't reachable from SQL.
+  # Plain match with a concrete pattern — NULL-valued row #4 is still
+  # filtered because its s is NULL (LHS) so the predicate is UNKNOWN.
+  - query: SELECT id FROM t WHERE s LIKE 'hello'
+    rows:
+      - [1]
+  # Empty string matches empty pattern.
+  - query: SELECT id FROM t WHERE s LIKE ''
+    rows:
+      - [5]
+  # NOT LIKE — inverse, but NULL still filtered (Kleene).
+  - query: SELECT id FROM t WHERE s NOT LIKE 'hel%'
+    unordered: true
+    rows:
+      - [3]
+      - [5]
+  # Java-aligned: % at start (suffix match).
+  - query: SELECT id FROM t WHERE s LIKE '%lp' ORDER BY id
+    rows:
+      - [2]
+  # Java-aligned: % on both sides (substring contains).
+  - query: SELECT id FROM t WHERE s LIKE '%el%' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  # Multiple _ wildcards.
+  - query: SELECT id FROM t WHERE s LIKE 'h___o'
+    rows:
+      - [1]
+  # Mix of % and _ — `_o%` matches strings starting with any char then o
+  # then anything: 'world' (w-o-rld).
+  - query: SELECT id FROM t WHERE s LIKE '_o%'
+    rows:
+      - [3]
+  # Pattern matching nothing returns empty even when string is empty.
+  - query: SELECT id FROM t WHERE s LIKE 'x_y'
+    rows: []
+  # Java alignment (like.yamsql): LIKE pattern is case-sensitive.
+  # 'hello' does NOT match 'HEL%'.
+  - query: SELECT id FROM t WHERE s LIKE 'HEL%'
+    rows: []
+  # Regex metacharacters in pattern — LIKE does NOT interpret them as
+  # regex. `s LIKE '(hello)'` looks for the literal string '(hello)'.
+  # None of our rows have parens so result is empty.
+  - query: SELECT id FROM t WHERE s LIKE '(hello)'
+    rows: []
+  # Same for bracket / brace / star / caret / dollar — all treated as
+  # literals by LIKE.
+  - query: SELECT id FROM t WHERE s LIKE '[h]ello'
+    rows: []
+  - query: SELECT id FROM t WHERE s LIKE 'h*llo'
+    rows: []
+  - query: SELECT id FROM t WHERE s LIKE '^hello'
+    rows: []

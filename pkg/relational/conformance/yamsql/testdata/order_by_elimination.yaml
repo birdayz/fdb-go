@@ -1,0 +1,454 @@
+# order_by_elimination.yaml
+#
+# ORDER BY elimination: when the chosen scan cursor emits rows in a
+# natural order that already satisfies sq.orderBy (all ASC, prefix
+# of naturalOrder), the post-scan in-memory sort is skipped. Tests
+# here pin the correctness invariant: result rows must match what a
+# full sort would produce, even when elimination fires.
+#
+# The elimination itself isn't directly observable from row contents.
+# This file's value is regression safety — if elimination incorrectly
+# fires on a query where the cursor order DOESN'T match (e.g. DESC,
+# mid-chain col), the result order would diverge and tests fail.
+#
+# Cursor natural orders (per execSelectQueryFull):
+#   - PK equality / PK range / composite-PK range: PK cols ASC
+#   - Secondary-index equality: PK cols ASC (index key fixed)
+#   - Secondary-index range: (idxCols..., PKCols...) ASC
+#   - Composite-secondary-index range: (idxCols..., PKCols...) ASC
+#   - Full type scan: PK cols ASC
+#   - IN-list / composite-IN-list: unsorted (sub-scan chain)
+name: order_by_elimination
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_v ON t (v)
+  CREATE INDEX idx_name ON t (name)
+  CREATE TABLE ab (
+    a BIGINT NOT NULL,
+    b BIGINT NOT NULL,
+    c BIGINT,
+    PRIMARY KEY (a, b)
+  )
+  CREATE INDEX idx_ab_c ON ab (c)
+  CREATE TABLE rp (
+    id BIGINT NOT NULL,
+    region STRING,
+    plan STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_plan ON rp (region, plan)
+setup:
+  - INSERT INTO t VALUES (3, 10, 'c'), (1, 30, 'a'), (2, 20, 'b'), (4, 40, 'd'), (5, 15, 'e')
+  - INSERT INTO ab VALUES (1, 10, 100), (2, 20, 200), (1, 20, 150), (2, 10, 250), (1, 30, 130)
+  - INSERT INTO rp VALUES
+      (1, 'us', 'pro'), (2, 'us', 'free'), (3, 'us', 'pro'),
+      (4, 'eu', 'pro'), (5, 'eu', 'free')
+tests:
+  # -------------------------------------------------------------------
+  # Full scan + ORDER BY id ASC — should eliminate sort, PK cols ASC
+  # -------------------------------------------------------------------
+
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 30]
+      - [2, 20]
+      - [3, 10]
+      - [4, 40]
+      - [5, 15]
+
+  # Full scan + ORDER BY on non-PK col — must actually sort (v).
+  - query: SELECT id, v FROM t ORDER BY v
+    rows:
+      - [3, 10]
+      - [5, 15]
+      - [2, 20]
+      - [1, 30]
+      - [4, 40]
+
+  # -------------------------------------------------------------------
+  # PK range + ORDER BY id ASC — eliminate sort
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM t WHERE id > 1 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # PK range + DESC — sort must run (cursor is ASC only).
+  - query: SELECT id FROM t WHERE id > 1 ORDER BY id DESC
+    rows:
+      - [5]
+      - [4]
+      - [3]
+      - [2]
+
+  # -------------------------------------------------------------------
+  # Secondary-index equality + ORDER BY PK — eliminate sort
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM t WHERE v = 10 ORDER BY id
+    rows:
+      - [3]
+
+  # Secondary-index range + ORDER BY v (the indexed col) — eliminate.
+  - query: SELECT id, v FROM t WHERE v >= 20 ORDER BY v
+    rows:
+      - [2, 20]
+      - [1, 30]
+      - [4, 40]
+
+  # Secondary-index range + ORDER BY (v, id) — prefix matches
+  # natural order (idxCol + PK suffix), eliminate.
+  - query: SELECT id, v FROM t WHERE v >= 20 ORDER BY v, id
+    rows:
+      - [2, 20]
+      - [1, 30]
+      - [4, 40]
+
+  # Secondary-index range + ORDER BY on DIFFERENT col — must sort.
+  - query: SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
+    rows:
+      - [1, 30, 'a']
+      - [2, 20, 'b']
+      - [4, 40, 'd']
+
+  # -------------------------------------------------------------------
+  # Composite PK range + ORDER BY (a, b) — eliminate
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a, b
+    rows:
+      - [1, 10]
+      - [1, 20]
+      - [1, 30]
+
+  # Composite PK range + ORDER BY a — prefix, eliminate. The scan
+  # emits in PK tuple order (a ASC, b ASC), which is a superset of
+  # `ORDER BY a`, so the result ordering is also deterministic
+  # beyond the `a` key (b ASC within each a group). Locked in to
+  # catch any regression that breaks PK tuple ordering.
+  - query: SELECT a, b FROM ab WHERE b > 5 ORDER BY a
+    rows:
+      - [1, 10]
+      - [1, 20]
+      - [1, 30]
+      - [2, 10]
+      - [2, 20]
+
+  # Composite PK range + ORDER BY b (non-prefix) — must sort.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+
+  # -------------------------------------------------------------------
+  # Composite secondary-index range + ORDER BY (region, plan)
+  # -------------------------------------------------------------------
+
+  - query: SELECT id, region, plan FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY region, plan
+    rows:
+      - [2, 'us', 'free']
+      - [1, 'us', 'pro']
+      - [3, 'us', 'pro']
+
+  # ORDER BY id on a secondary-index scan: id is in PK suffix, and
+  # natural order is (region, plan, id). ORDER BY [id] alone is NOT
+  # a prefix of (region, plan, id) — must sort.
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # -------------------------------------------------------------------
+  # PK equality — at-most-one row, sort is trivially no-op
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM t WHERE id = 3 ORDER BY id
+    rows:
+      - [3]
+
+  # -------------------------------------------------------------------
+  # NULLS FIRST/LAST — ASC + NULLS FIRST matches natural order for
+  # non-null data (tuple order puts NULLs first in ASC); NULLS LAST
+  # needs sort even when direction matches.
+  # -------------------------------------------------------------------
+
+  # ASC + NULLS FIRST (explicit): eliminate.
+  - query: SELECT id FROM t ORDER BY id ASC NULLS FIRST
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # ASC + NULLS LAST on PK: requested NULLS placement diverges from
+  # natural order (PK ASC is NULLS FIRST). No scan satisfies the
+  # NULLS LAST request, and Cascades has no rule to rearrange
+  # NULL placement post-scan, so rejection emerges from "no scan
+  # satisfies". Result rows would be the same (id is NOT NULL) but
+  # the planner can't prove that — same architectural reason as
+  # Java's UnableToPlan.
+  - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # -------------------------------------------------------------------
+  # LIMIT / OFFSET clauses are rejected at parse time as of
+  # fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY / 0AF00) — Java's
+  # AstNormalizer.visitLimitClause throws
+  # "LIMIT clause is not supported." (or
+  # "OFFSET clause is not supported." — Java checks offset first).
+  # Pagination is JDBC-only via Statement.setMaxRows. The
+  # early-termination plumbing remains in execSelectQueryFull for
+  # eventual setMaxRows-routing, but is unreachable from SQL. Pin
+  # the rejection here too so the surface stays Java-aligned.
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM t ORDER BY id LIMIT 3
+    error_code: "0AF00"
+
+  - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 2
+    error_code: "0AF00"
+
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    error_code: "0AF00"
+
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    error_code: "0AF00"
+
+  - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    error_code: "0AF00"
+
+  # -------------------------------------------------------------------
+  # ORDER BY alias + natural-order elim
+  # -------------------------------------------------------------------
+  #
+  # `SELECT id AS pk ... ORDER BY pk` should resolve the alias to id
+  # and eliminate the sort since id matches the PK natural order.
+
+  - query: SELECT id AS pk FROM t ORDER BY pk
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # Alias + LIMIT — LIMIT rejected at parse time (0AF00).
+  - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
+    error_code: "0AF00"
+
+  # Alias that shadows a different col — ORDER BY matches the
+  # alias's underlying column, not the alias's own name.
+  - query: SELECT v AS id FROM t ORDER BY id
+    rows:
+      - [10]
+      - [15]
+      - [20]
+      - [30]
+      - [40]
+
+  # -------------------------------------------------------------------
+  # ORDER BY DESC via reverse scan
+  #
+  # When sq.orderBy is a non-empty all-DESC prefix of naturalOrder,
+  # the dispatcher builds the cursor with ReverseScan. The cursor
+  # emits rows in reverse natural order, which IS the DESC the user
+  # asked for — the post-scan sort is skipped (same eliminator path
+  # as ASC) and LIMIT early-terminates.
+  #
+  # Directly observable: row order is correct DESC. If the reverse
+  # flag were applied but the eliminator still sorted ASC, the rows
+  # would come out DESC (reverse scan wins) — so the test still
+  # passes. If reverse weren't applied, the cursor would emit ASC
+  # and the sort would fix it up — also passes. So these tests
+  # verify correctness but not which path was taken. Bazel's build
+  # time + the elimination counter would surface regressions in the
+  # direction selection.
+  # -------------------------------------------------------------------
+
+  # Full type scan + ORDER BY id DESC — single-col PK, reverse scan.
+  - query: SELECT id FROM t ORDER BY id DESC
+    rows:
+      - [5]
+      - [4]
+      - [3]
+      - [2]
+      - [1]
+
+  # PK range + ORDER BY id DESC — reverse scan on the range.
+  - query: SELECT id FROM t WHERE id > 1 AND id < 5 ORDER BY id DESC
+    rows:
+      - [4]
+      - [3]
+      - [2]
+
+  # Composite PK range + ORDER BY (a DESC, b DESC) — reverse scan
+  # produces tuple order reversed.
+  - query: SELECT a, b FROM ab WHERE a = 1 AND b > 10 ORDER BY a DESC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+
+  # Composite PK pure prefix + ORDER BY (a DESC, b DESC) — reverse
+  # scan over the tuple-prefix [rtk, 1].
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+
+  # ORDER BY id DESC + LIMIT — LIMIT rejected at parse time (0AF00).
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    error_code: "0AF00"
+
+  # PK equality + ORDER BY id DESC — single row, direction irrelevant
+  # to the row set. Pins that the reverse-scan branch doesn't break
+  # the at-most-one case.
+  - query: SELECT id, v FROM t WHERE id = 3 ORDER BY id DESC
+    rows:
+      - [3, 10]
+
+  # Mixed ASC / DESC — can't satisfy with a single scan direction.
+  # Java's Cascades planner has no rule to mix ascending and
+  # descending sub-sorts; rejection emerges from "no scan satisfies".
+  # Same architectural reason in both engines.
+  - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+      - [2, 20]
+      - [2, 10]
+
+  # ORDER BY DESC with alias + LIMIT — LIMIT rejected at parse time
+  # (0AF00). The alias-resolves-to-PK-col reverse-scan path is still
+  # exercised by the LIMIT-less ORDER BY DESC alias case below /
+  # earlier.
+  - query: SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
+    error_code: "0AF00"
+
+  # ORDER BY DESC on a non-leading naturalOrder col, but the leading
+  # col is equated in WHERE. Equality-prefix relaxation: a is constant
+  # in the emission (a=1 for every row), so naturalOrder strips to
+  # [b] and ORDER BY b DESC matches the all-DESC prefix → reverse
+  # scan is applied, post-sort is skipped.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+
+  # -------------------------------------------------------------------
+  # Equality-prefix relaxation: leading equated cols strip from
+  # naturalOrder, ORDER BY matches the stripped remainder.
+  # -------------------------------------------------------------------
+
+  # Leading PK col equated, ORDER BY on next PK col ASC.
+  # naturalOrder=[a,b] (pkCols), equatedCols={a} → effective
+  # naturalOrder=[b]. orderBy=[b ASC] matches → sort eliminated.
+  - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC
+    rows:
+      - [2, 10]
+      - [2, 20]
+
+  # Leading PK col equated + LIMIT — LIMIT rejected at parse time
+  # (0AF00). The equality-prefix-relaxation forward-scan path is
+  # still exercised by the LIMIT-less case immediately above.
+  - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
+    error_code: "0AF00"
+
+  # ORDER BY includes the equated col followed by a non-equated col.
+  # `ORDER BY a DESC, b DESC` with a equated — a's direction is
+  # irrelevant (constant), only b DESC drives the decision. Reverse
+  # scan applies.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+
+  # ORDER BY on the equated col alone — every row has a=1, direction
+  # is a no-op. Forward scan + sort eliminated.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC
+    rows:
+      - [1, 10]
+      - [1, 20]
+      - [1, 30]
+
+  # Secondary-index path: region is equated, ORDER BY plan ASC. The
+  # idx_region_plan natural order is (region, plan, id). With region
+  # equated, effective naturalOrder is (plan, id). ORDER BY plan
+  # matches → sort eliminated. Note: reverse scan on secondary
+  # indexes is not yet plumbed through, so DESC variants would still
+  # sort — that's a separate follow-up.
+  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
+    rows:
+      - [2, 'us', 'free']
+      - [1, 'us', 'pro']
+      - [3, 'us', 'pro']
+
+  # Bail case: ORDER BY on a non-PK value col. c isn't in naturalOrder
+  # (which is (a, b) = pkCols) and isn't equated, so stripping leaves
+  # the orderBy unchanged with orderBy[0]=c ≠ na[0]=b → falls through
+  # to in-memory sort. Rows come out sorted by c ASC.
+  - query: SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
+    rows:
+      - [1, 10, 100]
+      - [1, 30, 130]
+      - [1, 20, 150]
+
+  # -------------------------------------------------------------------
+  # Secondary-index reverse scan (dayshift-46): DESC on the first
+  # index column now uses reverse scan instead of in-memory sort.
+  # -------------------------------------------------------------------
+
+  # Single-col secondary index: idx_v on t(v). naturalOrder=(v, id).
+  # ORDER BY v DESC is an all-DESC prefix → reverse scan applies.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC
+    rows:
+      - [4, 40]
+      - [1, 30]
+      - [2, 20]
+      - [5, 15]
+      - [3, 10]
+
+  # Same with LIMIT — LIMIT rejected at parse time (0AF00). The
+  # reverse-scan path is still exercised by the LIMIT-less DESC case
+  # immediately above.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
+    error_code: "0AF00"
+
+  # Composite secondary index range: idx_region_plan ordering is
+  # (region, plan, id). ORDER BY plan DESC under a pure-prefix
+  # pushdown with region equated: effective naturalOrder after
+  # equated strip is (plan, id). Reverse scan emits (region DESC,
+  # plan DESC, id DESC). Within region='us' and plan='pro' (two
+  # rows), id=3 comes before id=1 under reverse; then region='us'
+  # + plan='free' trails.
+  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
+    rows:
+      - [3, 'us', 'pro']
+      - [1, 'us', 'pro']
+      - [2, 'us', 'free']
+
+  # Equated leading + DESC on trailing non-equated col + LIMIT —
+  # LIMIT rejected at parse time (0AF00). The composite-secondary
+  # reverse-scan path under equality-prefix relaxation is still
+  # exercised by the LIMIT-less DESC case earlier in this file.
+  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
+    error_code: "0AF00"

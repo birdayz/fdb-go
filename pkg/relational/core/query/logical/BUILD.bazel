@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "logical",
+    srcs = [
+        "operator.go",
+        "operators.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+    ],
+)
+
+go_test(
+    name = "logical_test",
+    srcs = ["operators_test.go"],
+    embed = [":logical"],
+)

@@ -1,0 +1,127 @@
+# between.yaml
+#
+# swingshift-35 commit 8ee5e98d: BETWEEN / NOT BETWEEN Kleene short-circuit.
+# Java ExpressionVisitor rewrites
+#   x BETWEEN lo AND hi -> (lo <= x) AND (x <= hi)
+#   x NOT BETWEEN lo AND hi -> (x < lo) OR (x > hi)
+# then AND/OR combine via proper tri-state. Pre-fix Go collapsed any-NULL
+# operand to UNKNOWN up front, missing cases where one side is definitive.
+name: between
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 0), (2, 5), (3, 10), (4, 15), (5, 100)
+tests:
+  - query: SELECT id FROM t WHERE v BETWEEN 5 AND 15
+    unordered: true
+    rows:
+      - [2]
+      - [3]
+      - [4]
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 5 AND 15
+    unordered: true
+    rows:
+      - [1]
+      - [5]
+  # Kleene short-circuit: v=0, NOT BETWEEN 1 AND NULL
+  # -> (0 < 1) OR (0 > NULL)
+  # -> TRUE OR UNKNOWN
+  # -> TRUE (included). Pre-fix Go returned UNKNOWN (filtered out).
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 1 AND NULL
+    rows:
+      - [1]
+  # Inverse: v=100, BETWEEN NULL AND 50
+  # -> (NULL <= 100) AND (100 <= 50)
+  # -> UNKNOWN AND FALSE
+  # -> FALSE (excluded). Pre-fix Go returned UNKNOWN (also excluded by
+  # WHERE but the semantic is wrong).
+  - query: SELECT id FROM t WHERE v BETWEEN NULL AND 50
+    # Short-circuit on AND-FALSE gives FALSE for id=100, UNKNOWN for the
+    # rest — all filtered out.
+    rows: []
+  # BETWEEN with low > high → empty result. SQL spec: x BETWEEN a AND b
+  # means a <= x <= b, so a > b → impossible → empty.
+  # (Java's between.yamsql pins this exact case.)
+  - query: SELECT id FROM t WHERE v BETWEEN 15 AND 5
+    rows: []
+  # NOT BETWEEN with low > high → ALL non-NULL rows, since x NOT BETWEEN
+  # a AND b means x < a OR x > b. With a=15, b=5: x<15 OR x>5 covers
+  # everything except a narrow range (5 <= x <= 15) — but x<15 and x>5
+  # together cover all reals, so the OR is true for all x. (Java pins
+  # this too.)
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 15 AND 5 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # BETWEEN low = high → exact match (if v equals that value).
+  - query: SELECT id FROM t WHERE v BETWEEN 10 AND 10
+    rows:
+      - [3]
+  # BETWEEN with arithmetic expressions in bounds.
+  # v BETWEEN (2+3) AND (10*2) → v BETWEEN 5 AND 20.
+  - query: SELECT id FROM t WHERE v BETWEEN (2+3) AND (10*2) ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+  # BETWEEN with column-derived bounds — non-correlated subquery.
+  # MIN(v)=0, MAX(v)=100. Every non-NULL v is in [0, 100].
+  - query: SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t) AND (SELECT MAX(v) FROM t) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # BETWEEN with subquery-derived bounds. v values: 0, 5, 10, 15, 100.
+  # MIN(v) WHERE v >= 5 = 5, MAX(v) WHERE v <= 15 = 15. In [5, 15]:
+  # v=5 (id=2), v=10 (id=3), v=15 (id=4). (Pre-cleanup this used
+  # ABS(-5) / ABS(-15); ABS is now Java-rejected so the function-
+  # call shape is exercised through the still-supported subquery
+  # form. Dedicated ABS rejection is in numeric_functions.yaml.)
+  - query: SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t WHERE v >= 5) AND (SELECT MAX(v) FROM t WHERE v <= 15) ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+  # Java alignment: BETWEEN with cross-type bounds. Java's between.yamsql
+  # pins XX000 (internal_error) for `col1 BETWEEN 10 AND 'a'`. Go errors
+  # 22000 (CANNOT_CONVERT_TYPE) via the tri-predicate evaluator's type
+  # check — more specific than Java's generic XX000.
+  - query: SELECT id FROM t WHERE v BETWEEN 10 AND 'a'
+    error_code: "22000"
+  - query: SELECT id FROM t WHERE 'a' BETWEEN 10 AND 20
+    error_code: "22000"
+  # Java alignment (between.yamsql): ORed BETWEEN ranges.
+  # v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 selects the extremes.
+  - query: SELECT id FROM t WHERE v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [5]
+  # BETWEEN with cross-type numeric bounds (int AND double) — Java's
+  # between-compatible-types block. Bounds are promoted to double;
+  # v BETWEEN 4 AND 6.2 keeps v=5.
+  - query: SELECT id FROM t WHERE v BETWEEN 4 AND 6.2
+    rows:
+      - [2]
+  # Constant in BETWEEN's left-operand position. Java's between.yamsql
+  # tests this for count(*) filter shapes.
+  - query: SELECT COUNT(*) FROM t WHERE 4.5 BETWEEN 4 AND 6
+    rows:
+      - [5]
+  # Expression in left operand — `2+2 BETWEEN 1+1 AND 3+3` is TRUE for
+  # every row (predicate doesn't depend on the row).
+  - query: SELECT COUNT(*) FROM t WHERE 2+2 BETWEEN 1+1 AND 3+3
+    rows:
+      - [5]
+  # Java's between-nulls block: `v NOT BETWEEN NULL AND 2` expands to
+  # `v < NULL OR v > 2`. For v>2 rows the OR short-circuits to TRUE;
+  # for v<=2 rows both sides are UNKNOWN → UNKNOWN → excluded. Our 5
+  # rows: 0, 5, 10, 15, 100 → 4 rows with v > 2 (ids 2, 3, 4, 5).
+  - query: SELECT COUNT(*) FROM t WHERE v NOT BETWEEN NULL AND 2
+    rows:
+      - [4]

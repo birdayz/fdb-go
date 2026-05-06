@@ -45,6 +45,10 @@ const (
 	IndexOptionTextTokenizerVersion            = "textTokenizerVersion"
 	IndexOptionTextAddAggressiveConflictRanges = "textAddAggressiveConflictRanges"
 	IndexOptionTextOmitPositions               = "textOmitPositions"
+
+	// Runtime-only index option, always safe to change.
+	// Matches Java's IndexOptions.ALLOWED_FOR_QUERY_OPTION.
+	IndexOptionAllowedForQuery = "allowedForQuery"
 )
 
 // IndexPredicate is a function that determines whether a record should be indexed.

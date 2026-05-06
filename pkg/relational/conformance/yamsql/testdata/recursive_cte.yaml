@@ -1,0 +1,425 @@
+# recursive_cte.yaml
+#
+# WITH RECURSIVE CTEs — semi-naive (level-order) evaluation. Mirrors
+# Java's recursive-cte.yamsql pre-4.7.1.0 ordering (level-based). DFS
+# pre/post_order traversal is out of MVP scope — `TRAVERSAL ORDER
+# pre_order` and `post_order` explicitly error 0AF00.
+#
+# Test data shape (from Java's recursive-cte.yamsql):
+#
+#   1 (root, parent: -1)
+#   ├── 10
+#   │   ├── 40
+#   │   ├── 50
+#   │   │   └── 250
+#   │   └── 70
+#   └── 20
+#       ├── 100
+#       └── 210
+name: recursive_cte
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))
+  CREATE TABLE edge (src BIGINT NOT NULL, dst BIGINT NOT NULL, PRIMARY KEY (src, dst))
+setup:
+  - INSERT INTO t VALUES (1, -1), (10, 1), (20, 1), (40, 10), (50, 10), (70, 10), (100, 20), (210, 20), (250, 50)
+  # Cycle: 1 → 2 → 3 → 1 (all edges form a 3-node cycle).
+  - INSERT INTO edge VALUES (1, 2), (2, 3), (3, 1)
+tests:
+  # Ancestors of 250: walk parent links up to the root. Single-chain
+  # traversal — level-order and DFS coincide.
+  - query: |-
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      SELECT id FROM ancestors ORDER BY id DESC
+    rows:
+      - [250]
+      - [50]
+      - [10]
+      - [1]
+
+  # Descendants of root (parent = -1): every reachable row. Top-level
+  # ORDER BY id is stable across scan orders.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT id FROM descendants ORDER BY id
+    rows:
+      - [1]
+      - [10]
+      - [20]
+      - [40]
+      - [50]
+      - [70]
+      - [100]
+      - [210]
+      - [250]
+
+  # COUNT on a recursive CTE — confirms the materialised rows feed
+  # downstream aggregation cleanly.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT COUNT(*) FROM descendants
+    rows:
+      - [9]
+
+  # Descendants of id=50 — only 50 and 250. Proves the recursive join
+  # stops at leaves (not an off-by-one where 250 is missing or 10 creeps in).
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE id = 50
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT id FROM descendants ORDER BY id
+    rows:
+      - [50]
+      - [250]
+
+  # Seed with no matches → recursive branch never fires → empty result.
+  # Pins that an empty seed terminates cleanly without looping.
+  - query: |-
+      WITH RECURSIVE noseed AS (
+        SELECT id, parent FROM t WHERE id = 99999
+        UNION ALL
+        SELECT b.id, b.parent FROM noseed AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT id FROM noseed
+    rows: []
+
+  # RECURSIVE keyword on a body that does NOT self-reference. SQL spec
+  # & Postgres: RECURSIVE is a scope enabler, not a requirement — they
+  # would treat the CTE as a regular non-recursive CTE. fdb-relational
+  # 4.11.1.0 rejects with "condition is not met!" via its semantic-
+  # verifier check; per the project conformance principle (doesn't work
+  # in Java → doesn't work in Go), we reject too. ErrCode 0A000.
+  - query: |-
+      WITH RECURSIVE nonrec AS (
+        SELECT id FROM t WHERE parent = -1
+      )
+      SELECT id FROM nonrec
+    error_code: "0A000"
+
+  # Column-list rename on a recursive CTE. Outer columns come from the
+  # rename list, not the inner query.
+  - query: |-
+      WITH RECURSIVE ancestors(node, up) AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.up
+      )
+      SELECT node FROM ancestors ORDER BY node DESC
+    rows:
+      - [250]
+      - [50]
+      - [10]
+      - [1]
+
+  # Arity mismatch between seed and recursive branch → 42F64
+  # (UNION_INCORRECT_COLUMN_COUNT). Seed projects one column, recursive
+  # branch projects two.
+  - query: |-
+      WITH RECURSIVE ancestors AS (
+        SELECT id FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = 50
+      )
+      SELECT * FROM ancestors
+    error_code: "42F64"
+
+  # TRAVERSAL ORDER pre_order — DFS, emit each row before descending
+  # into its children. For a single chain the order is identical to
+  # level_order; the descendant-tree case below shows where they
+  # differ.
+  - query: |-
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      TRAVERSAL ORDER pre_order
+      SELECT id FROM ancestors
+    rows:
+      - [250]
+      - [50]
+      - [10]
+      - [1]
+
+  # TRAVERSAL ORDER post_order — DFS, emit each row AFTER descending
+  # into children. Single-chain ancestor reversal.
+  - query: |-
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      TRAVERSAL ORDER post_order
+      SELECT id FROM ancestors
+    rows:
+      - [1]
+      - [10]
+      - [50]
+      - [250]
+
+  # DFS pre-order descending from root — exposes real DFS vs BFS
+  # ordering. Tree: 1 → {10, 20}; 10 → {40, 50, 70}; 20 → {100, 210};
+  # 50 → {250}. Pre-order visits 10's subtree fully before 20's.
+  # Matches Java's recursive-cte.yamsql line 81 (version ≥ 4.7.1.0).
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      TRAVERSAL ORDER pre_order
+      SELECT id FROM descendants
+    rows:
+      - [1]
+      - [10]
+      - [40]
+      - [50]
+      - [250]
+      - [70]
+      - [20]
+      - [100]
+      - [210]
+
+  # DFS post-order over the same tree — each subtree is fully emitted
+  # (leaves first, then inner nodes) before the parent. Matches
+  # Java's recursive-cte.yamsql line 108.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      TRAVERSAL ORDER post_order
+      SELECT id FROM descendants
+    rows:
+      - [40]
+      - [250]
+      - [50]
+      - [70]
+      - [10]
+      - [100]
+      - [210]
+      - [20]
+      - [1]
+
+  # DFS on cyclic data with UNION DISTINCT — convergence via the
+  # shared `seen` set. Without dedup, DFS would recurse forever.
+  - query: |-
+      WITH RECURSIVE reach(n) AS (
+        SELECT src FROM edge WHERE src = 1
+        UNION
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+      )
+      TRAVERSAL ORDER pre_order
+      SELECT n FROM reach ORDER BY n
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # DFS on cyclic data with UNION ALL — bounded by the emit cap. Same
+  # 54F01 failure mode as level-order.
+  - query: |-
+      WITH RECURSIVE reach(n) AS (
+        SELECT src FROM edge WHERE src = 1
+        UNION ALL
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+      )
+      TRAVERSAL ORDER pre_order
+      SELECT n FROM reach
+    error_code: "54F01"
+
+  # TRAVERSAL ORDER level_order → accepted (matches our default).
+  - query: |-
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      TRAVERSAL ORDER level_order
+      SELECT id FROM ancestors ORDER BY id DESC
+    rows:
+      - [250]
+      - [50]
+      - [10]
+      - [1]
+
+  # Counter (1..5) via a depth predicate. The seed is a FROM-less
+  # SELECT literal (`SELECT 1 AS n`); fdb-relational 4.11.1.0 rejects
+  # at parse time via QueryVisitor.visitSimpleTable's
+  # `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
+  # "query is not supported")` — the assertion fires on every
+  # SimpleTable visit, including ones inside a recursive CTE base.
+  # Per the project conformance principle, Go aligns. ErrCode 0AF00.
+  - query: |-
+      WITH RECURSIVE counter(n) AS (
+        SELECT 1 AS n
+        UNION ALL
+        SELECT n + 1 FROM counter WHERE n < 5
+      )
+      SELECT n FROM counter ORDER BY n
+    error_code: "0AF00"
+
+  # Cycle + UNION DISTINCT: reachable set on a 1→2→3→1 cycle must be
+  # {1,2,3} and the recursion must terminate (via the seen-row filter,
+  # not via the iteration cap).
+  - query: |-
+      WITH RECURSIVE reach(n) AS (
+        SELECT src FROM edge WHERE src = 1
+        UNION
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+      )
+      SELECT n FROM reach ORDER BY n
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # Cycle + UNION ALL: must terminate via the iteration cap, not loop
+  # forever. Error 54F01 (execution limit reached).
+  - query: |-
+      WITH RECURSIVE reach(n) AS (
+        SELECT src FROM edge WHERE src = 1
+        UNION ALL
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+      )
+      SELECT n FROM reach
+    error_code: "54F01"
+
+  # Recursive CTE referenced via an alias (`FROM ancestors AS a`) —
+  # the alias is what column references in the recursive branch use,
+  # but the walker still detects the real CTE name and routes to the
+  # recursive path correctly.
+  - query: |-
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      SELECT COUNT(*) FROM ancestors
+    rows:
+      - [4]
+
+  # CTE name matches a table alias used inside the body. Self-reference
+  # detection must NOT trigger on the alias — only on a real table
+  # reference — so this evaluates as a non-recursive CTE. Unqualified
+  # projection used to sidestep the known `alias.col → dotted col name`
+  # quirk in non-recursive CTE materialisation. As of  the
+  # single-CTE WITH-RECURSIVE-no-self-ref form is rejected (Java
+  # alignment — "condition is not met!", ErrCode 0A000); the table
+  # alias `t AS x` is not a self-reference, just a name collision.
+  - query: |-
+      WITH RECURSIVE x AS (
+        SELECT id, parent FROM t AS x WHERE id = 250
+      )
+      SELECT id FROM x
+    error_code: "0A000"
+
+  # Using the recursive CTE in a comma-join (semi-join shape). IN-
+  # subquery is rejected (Java alignment, CLAUDE.md #10); the join
+  # is the supported rewrite that exercises CTE-result + base-table
+  # joining and preserves the same row set as the rejected
+  # `WHERE id IN (SELECT id FROM descendants)` form.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE id = 10
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT t.id FROM t, descendants WHERE t.id = descendants.id ORDER BY t.id
+    rows:
+      - [10]
+      - [40]
+      - [50]
+      - [70]
+      - [250]
+
+  # Qualified projection in a single-source CTE body — both the
+  # inner projection resolution (`d.id` resolves via the source
+  # alias `d`) and the CTE output name (bare `id`, not `d.id`)
+  # work end-to-end. Matches Postgres.
+  - query: |-
+      WITH qualified AS (SELECT d.id FROM t AS d WHERE d.parent = -1)
+      SELECT id FROM qualified
+    rows:
+      - [1]
+
+  # Multi-CTE WITH RECURSIVE list: first CTE is plain, second is
+  # recursive. Pre- Go silently routed the non-self-ref
+  # `roots` CTE through the regular path. Java rejects (verified via
+  # direct probe — ~1.2s response): every CTE under RECURSIVE must
+  # self-reference, including ones intended as plain non-recursive
+  # seeds. ErrCode 0A000 ("condition is not met!"). Workaround:
+  # promote the seed predicate inline into the recursive CTE's seed
+  # branch instead of a separate non-recursive CTE.
+  - query: |-
+      WITH RECURSIVE
+        roots AS (SELECT id FROM t WHERE parent = -1),
+        descendants(id, parent) AS (
+          SELECT id, parent FROM t WHERE id IN (SELECT id FROM roots)
+          UNION ALL
+          SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+        )
+      SELECT id FROM descendants ORDER BY id
+    error_code: "0A000"
+
+  # Nested WITH RECURSIVE — a recursive CTE followed by a
+  # non-recursive CTE that builds on it. Same Java alignment as the
+  # roots/descendants case above: every CTE under RECURSIVE must
+  # self-reference, including a downstream non-recursive consumer
+  # (`leaves`). ErrCode 0A000 ("condition is not met!"). Workaround:
+  # apply the leaf filter outside the WITH RECURSIVE clause via a
+  # wrapper SELECT.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      ),
+      leaves AS (
+        SELECT id FROM descendants
+        WHERE id NOT IN (SELECT parent FROM t WHERE parent IS NOT NULL)
+      )
+      SELECT id FROM leaves ORDER BY id
+    error_code: "0A000"
+
+  # Aggregate over the recursive CTE: sum of all node ids reachable
+  # from root. Exercises downstream aggregation on materialised
+  # recursive rows.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT SUM(id) FROM descendants
+    rows:
+      # 1 + 10 + 20 + 40 + 50 + 70 + 100 + 210 + 250 = 751
+      - [751]
+
+  # ORDER BY + LIMIT on top of the recursive CTE — LIMIT rejected at
+  # parse time as of fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY /
+  # 0AF00). Pre-rejection this case pinned ORDER BY-on-recursive-CTE
+  # cap behaviour; ORDER BY without LIMIT over the same recursive
+  # CTE is exercised by other tests in this file.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT id FROM descendants ORDER BY id LIMIT 3
+    error_code: "0AF00"

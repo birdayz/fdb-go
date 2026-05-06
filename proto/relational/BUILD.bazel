@@ -1,0 +1,12 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+
+proto_library(
+    name = "relational_proto",
+    srcs = glob(["*.proto"]),
+    strip_import_prefix = "/proto/relational",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//proto/apple:apple_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+)

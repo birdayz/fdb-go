@@ -1,0 +1,80 @@
+# in_subquery_decomposition.yaml
+#
+# `col IN (SELECT ...)` was previously decomposed via a pre-evaluator
+# into an IN-list pushdown, with a runtime fallback for correlated /
+# unsupported shapes. As of TODO #5 the entire IN-subquery feature is
+# rejected at predicate evaluation time (Java NPEs in
+# AstNormalizer.visitInPredicate; per CLAUDE.md principle #10 Go
+# aligns with that architectural reality and emits a clean error).
+# These tests pin the rejection across all the shapes the prior
+# decomposer used to handle (PK, secondary index, filtered, empty,
+# arithmetic projection, correlated, duplicates).
+name: in_subquery_decomposition
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_v ON t (v)
+  CREATE TABLE tags (
+    id BIGINT NOT NULL,
+    t_id BIGINT,
+    label STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES (1, 30, 'a'), (2, 20, 'b'), (3, 10, 'c'), (4, 40, 'd'), (5, 15, 'e')
+  - INSERT INTO tags VALUES (1, 1, 'red'), (2, 3, 'blue'), (3, 4, 'red'), (4, 5, 'green'), (99, 1, 'dup')
+tests:
+  # PK IN (SELECT ...) — rejected.
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags) ORDER BY id
+    error_code: "0AF00"
+
+  # Filtered subquery — same rejection.
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'red') ORDER BY id
+    error_code: "0AF00"
+
+  # Secondary-index IN (SELECT ...) — rejected.
+  - query: SELECT id, v FROM t WHERE v IN (SELECT t_id * 10 FROM tags WHERE label = 'red') ORDER BY v
+    error_code: "0AF00"
+
+  # Empty subquery — still rejected (rejection is syntactic).
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'nonexistent')
+    error_code: "0AF00"
+
+  # Subquery with NULL-droppable list — rejected.
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label IN ('red', 'blue')) ORDER BY id
+    error_code: "0AF00"
+
+  # Single-col arithmetic projection in subquery — rejected.
+  - query: SELECT id, v FROM t WHERE v IN (SELECT t_id * 10 FROM tags) ORDER BY v
+    error_code: "0AF00"
+
+  # Correlated IN-subquery — rejected at the IN-subquery level. The
+  # supported rewrite is a correlated EXISTS, exercised below.
+  - query: SELECT id FROM t WHERE id IN (SELECT tags.t_id FROM tags WHERE tags.t_id = t.id) ORDER BY id
+    error_code: "0AF00"
+
+  # Duplicate-result subquery — rejected.
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label IN ('red', 'dup')) ORDER BY id
+    error_code: "0AF00"
+
+  # Single-row subquery — rejected.
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'dup') ORDER BY id
+    error_code: "0AF00"
+
+  # Supported rewrites: EXISTS preserves the same row set as IN. Pin
+  # one PK + one secondary-index path to give regression cover for
+  # users migrating from the rejected IN form.
+  - query: SELECT id FROM t WHERE EXISTS (SELECT 1 FROM tags WHERE tags.t_id = t.id) ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [4]
+      - [5]
+  - query: SELECT id, v FROM t WHERE EXISTS (SELECT 1 FROM tags WHERE label = 'red' AND tags.t_id * 10 = t.v) ORDER BY v
+    rows:
+      - [3, 10]
+      - [4, 40]

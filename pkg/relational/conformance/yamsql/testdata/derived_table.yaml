@@ -1,0 +1,59 @@
+# derived_table.yaml
+#
+# Derived table: FROM (SELECT ...) AS alias. The inner query is
+# materialised into an in-memory CTE at execution time, then the
+# outer query runs against it via the CTE path. The alias MUST be
+# given (Java and Postgres both require this).
+name: derived_table
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50)
+tests:
+  # Basic projection from a derived table.
+  - query: SELECT id FROM (SELECT id, v FROM t WHERE v >= 30) AS x ORDER BY id
+    rows:
+      - [3]
+      - [4]
+      - [5]
+
+  # Derived table with aggregation; outer query further filters.
+  - query: |
+      SELECT g, s FROM
+        (SELECT g, SUM(v) AS s FROM t GROUP BY g) AS agg
+      WHERE s > 50
+      ORDER BY g
+    rows:
+      - [2, 70]
+
+  # Missing alias — the grammar itself requires one, rejected
+  # at parse time with SQLSTATE 42601 (syntax_error). Java/Postgres
+  # also require the alias, so this matches expected SQL semantics.
+  - query: SELECT id FROM (SELECT id FROM t)
+    error_code: "42601"
+
+  # Derived table with explicit columns in the outer SELECT list,
+  # including an alias on the outer-query column.
+  - query: |
+      SELECT x.v AS val FROM (SELECT id, v FROM t WHERE id = 3) AS x
+    rows:
+      - [30]
+
+  # Derived-table-as-extra-FROM-source: TODO #58 fix landed
+  # dayshift-66. The comma-join path now accepts SubqueryTableItem
+  # for any extra source; the dispatcher materializes each derived
+  # as a CTE before the join executor runs. `t, (SELECT … ) AS x`
+  # cross-joins t (5 rows) with the 2-row derived → 10-row product.
+  - query: |
+      SELECT t.id FROM t, (SELECT id FROM t WHERE id <= 2) AS x ORDER BY t.id
+    rows:
+      - [1]
+      - [1]
+      - [2]
+      - [2]
+      - [3]
+      - [3]
+      - [4]
+      - [4]
+      - [5]
+      - [5]

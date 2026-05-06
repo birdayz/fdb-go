@@ -1,0 +1,50 @@
+# bare_col_with_agg.yaml
+#
+# SQL §7.10 GR1: when a SELECT list contains an aggregate function,
+# every non-aggregate column must appear in GROUP BY. Without GROUP BY
+# at all, the query is implicitly one group — bare column references
+# violate the rule. Java errors 42803. nightshift-39: Go now matches.
+name: bare_col_with_agg
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Java alignment: bare column id alongside aggregate COUNT(*) with no
+  # GROUP BY errors 42803.
+  - query: SELECT id, COUNT(*) FROM t
+    error_code: "42803"
+  # Bare v with SUM(v) and no GROUP BY — same violation.
+  - query: SELECT v, SUM(v) FROM t
+    error_code: "42803"
+  # Bare expression referencing a column + aggregate, no GROUP BY.
+  # Java still errors 42803 because v+1 is a column reference.
+  - query: SELECT v + 1, SUM(v) FROM t
+    error_code: "42803"
+  # Valid: COUNT(*) alone (no bare column).
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+  # Valid: bare aggregate expression.
+  - query: SELECT SUM(v) FROM t
+    rows:
+      - [60]
+  # Valid: multiple aggregates in one SELECT (no bare column).
+  - query: SELECT COUNT(*), SUM(v), MAX(v), MIN(v) FROM t
+    rows:
+      - [3, 60, 30, 10]
+  # Valid: expression over aggregates (all aggregates, no bare cols).
+  - query: SELECT SUM(v) * 2 FROM t
+    rows:
+      - [120]
+  # Valid: bare column with DISTINCT — not an aggregate context.
+  - query: SELECT DISTINCT v FROM t ORDER BY v
+    rows:
+      - [10]
+      - [20]
+      - [30]
+  # Valid: constant literal alongside aggregate. Constant has no column
+  # reference so GR1 does not apply.
+  - query: SELECT 'total' AS label, COUNT(*) FROM t
+    rows:
+      - ['total', 3]

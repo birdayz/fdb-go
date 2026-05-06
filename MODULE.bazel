@@ -7,6 +7,9 @@ module(
 bazel_dep(name = "rules_go", version = "0.60.0")
 bazel_dep(name = "gazelle", version = "0.47.0")
 
+# Shell (sh_binary for codegen wrappers, e.g. the ANTLR parser generator).
+bazel_dep(name = "rules_shell", version = "0.6.1")
+
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 go_deps.module_override(
@@ -16,11 +19,13 @@ go_deps.module_override(
 )
 use_repo(
     go_deps,
+    "build_buf_go_protoyaml",
     "cc_mvdan_gofumpt",
     "co_honnef_go_tools",
-    "com_connectrpc_connect",
+    "com_github_antlr4_go_antlr_v4",
     "com_github_apple_foundationdb_bindings_go",
     "com_github_birdayz_protobuf_ecosystem",
+    "com_github_chzyer_readline",
     "com_github_docker_docker",
     "com_github_docker_go_connections",
     "com_github_google_uuid",
@@ -28,13 +33,18 @@ use_repo(
     "com_github_onsi_gomega",
     "com_github_planetscale_vtprotobuf",
     "com_github_rivo_uniseg",
+    "com_github_spf13_cobra",
     "com_github_testcontainers_testcontainers_go",
     "com_github_twmb_franz_go",
     "com_github_zeebo_xxh3",
+    "in_gopkg_yaml_v3",
+    "land_charm_fang_v2",
+    "land_charm_lipgloss_v2",
     "org_golang_google_protobuf",
     "org_golang_x_oauth2",
     "org_golang_x_text",
     "org_golang_x_tools",
+    "org_uber_go_mock",
 )
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
@@ -102,7 +112,13 @@ bazel_dep(name = "rules_android", version = "0.7.1")  # Override transitive dep 
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
-        "org.foundationdb:fdb-record-layer-core:4.10.6.0",
+        "org.foundationdb:fdb-record-layer-core:4.11.1.0",
+        # fdb-relational-* artifacts power the Java side of the
+        # plan-equivalence harness (RFC-022 §4.-1 Phase 2). Lowest
+        # published version on Maven Central is 4.10.18.0; we run
+        # 4.11.1.0 to match fdb-record-layer-core.
+        "org.foundationdb:fdb-relational-api:4.11.1.0",
+        "org.foundationdb:fdb-relational-core:4.11.1.0",
         "com.google.code.gson:gson:2.10.1",
         "com.google.protobuf:protobuf-java-util:4.29.3",
     ],
@@ -133,3 +149,16 @@ use_repo(npm, "metrognome_npm")
 sift_dataset = use_repo_rule("//:sift_repo.bzl", "sift_dataset")
 
 sift_dataset(name = "sift1m")
+
+# ANTLR4 complete jar (standalone executable with the Tool main class).
+# Used by //pkg/relational/core/parser/grammar:generate_parser to regenerate
+# the Go parser from the .g4 grammar files. Pin must match the antlr4-go
+# runtime declared in go.mod (github.com/antlr4-go/antlr/v4).
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "antlr4_tool_jar",
+    downloaded_file_path = "antlr-4.13.1-complete.jar",
+    sha256 = "bc13a9c57a8dd7d5196888211e5ede657cb64a3ce968608697e4f668251a8487",
+    urls = ["https://www.antlr.org/download/antlr-4.13.1-complete.jar"],
+)

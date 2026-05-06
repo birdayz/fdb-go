@@ -1,0 +1,58 @@
+# union_star.yaml
+#
+# Java's union.yamsql tests UNION ALL with SELECT * on either side.
+# Verify Go matches:
+#   - SELECT * UNION ALL SELECT * works
+#   - SELECT col-list UNION ALL SELECT * works (star expanded to PK + cols)
+#   - SELECT * UNION ALL SELECT col-list works
+#   - parenthesised right side
+name: union_star
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 1), (2, 20, 2)
+tests:
+  # Both sides * — straight UNION ALL of full rows.
+  - query: SELECT * FROM t1 UNION ALL SELECT * FROM t1
+    unordered: true
+    rows:
+      - [1, 10, 1]
+      - [2, 20, 2]
+      - [1, 10, 1]
+      - [2, 20, 2]
+  # Left explicit, right *.
+  - query: SELECT id, col1, col2 FROM t1 UNION ALL SELECT * FROM t1
+    unordered: true
+    rows:
+      - [1, 10, 1]
+      - [2, 20, 2]
+      - [1, 10, 1]
+      - [2, 20, 2]
+  # Left *, right explicit.
+  - query: SELECT * FROM t1 UNION ALL SELECT id, col1, col2 FROM t1
+    unordered: true
+    rows:
+      - [1, 10, 1]
+      - [2, 20, 2]
+      - [1, 10, 1]
+      - [2, 20, 2]
+  # Aliased columns on left.
+  - query: SELECT id AS W, col1 AS X, col2 AS Y FROM t1 UNION ALL SELECT * FROM t1
+    unordered: true
+    rows:
+      - [1, 10, 1]
+      - [2, 20, 2]
+      - [1, 10, 1]
+      - [2, 20, 2]
+  # Java pattern: aggregate over UNION ALL of aggregates (derived table).
+  # Each branch produces (sum, count); outer SUM/SUM combines them.
+  # t1: sum(col1)=30, count(*)=2 → (30, 2)
+  # The "union" returns 2 rows, then outer aggregates both.
+  # SUM(a) over [30, 30] = 60, SUM(b) over [2, 2] = 4.
+  - query: |-
+      SELECT SUM(a) AS a, SUM(b) AS b
+      FROM (SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1
+            UNION ALL
+            SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1) AS x
+    rows:
+      - [60, 4]

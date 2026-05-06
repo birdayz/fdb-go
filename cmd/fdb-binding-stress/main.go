@@ -1,8 +1,8 @@
 // fdb-binding-stress runs the FDB binding tester across many seeds and reports results.
 //
-// Each seed gets a fresh FDB Docker container. All output — FDB trace logs,
-// docker logs, tester stdout — is saved per-seed into a timestamped run directory.
-// A JSON report summarizes the run for machine consumption.
+// Each seed gets a fresh FDB Docker container (via testcontainers). All output — FDB
+// trace logs, docker logs, tester stdout — is saved per-seed into a timestamped run
+// directory. A JSON report summarizes the run for machine consumption.
 //
 // Usage:
 //
@@ -17,24 +17,18 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
-const (
-	fdbImage       = "foundationdb/foundationdb:7.3.75"
-	perSeedTimeout = 5 * time.Minute
-)
-
-// Per-process unique names to allow concurrent stress runs.
-var (
-	containerName = fmt.Sprintf("fdb-stress-%d", os.Getpid())
-	clusterFile   = fmt.Sprintf("/tmp/fdb-stress-%d.cluster", os.Getpid())
-)
+const perSeedTimeout = 5 * time.Minute
 
 // SeedResult is the per-seed result written to the JSON report.
 type SeedResult struct {
@@ -68,9 +62,6 @@ func main() {
 	flag.Parse()
 
 	stacktester, btRunDir := setup()
-
-	// Remove any leftover container with our name from a previous run (same PID reuse, or killed process).
-	exec.Command("docker", "rm", "-f", containerName).Run()
 
 	// Create timestamped output directory.
 	if *outDir == "" {
@@ -111,9 +102,6 @@ func main() {
 		t0 := time.Now()
 		r := runSeed(seed, *ops, *testName, stacktester, btRunDir, seedDir)
 		r.Duration = time.Since(t0).Seconds()
-
-		// Always collect logs.
-		collectLogs(seedDir)
 
 		report.Seeds = append(report.Seeds, r)
 
@@ -188,67 +176,43 @@ func main() {
 func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) SeedResult {
 	r := SeedResult{Seed: seed}
 
-	// Tear down any leftover container. Retry until the name is free.
-	for attempt := 0; attempt < 5; attempt++ {
-		exec.Command("docker", "rm", "-f", containerName).Run()
-		time.Sleep(1 * time.Second)
-		// Check if container is gone.
-		if err := exec.Command("docker", "inspect", containerName).Run(); err != nil {
-			break // container is gone
-		}
-	}
-
-	// Start FDB without port mapping. Connect via container IP directly.
-	// Port mapping causes Docker DNAT which confuses FDB's canonicalRemotePort
-	// tracking, triggering assertion spam at FlowTransport.actor.cpp:1545.
-	out, err := runOutput("docker", "run", "-d", "--name", containerName, fdbImage)
-	if err != nil {
-		r.Error = "docker run failed: " + strings.TrimSpace(string(out))
-		return r
-	}
-	// Clean up container when this seed finishes (regardless of success/failure).
-	// Without this, containers leak on early returns, process kill, or Ctrl-C.
-	defer exec.Command("docker", "rm", "-f", containerName).Run()
-
-	// Wait for FDB process to start, then configure, then wait for healthy.
-	time.Sleep(3 * time.Second)
-
-	run("docker", "exec", containerName, "fdbcli", "--exec",
-		"configure new single memory tenant_mode=optional_experimental")
-
-	// Wait for FDB to become healthy after configuration.
-	fdbReady := false
-	for attempt := 0; attempt < 15; attempt++ {
-		time.Sleep(2 * time.Second)
-		healthCtx, healthCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		cmd := exec.CommandContext(healthCtx, "docker", "exec", containerName,
-			"fdbcli", "--exec", "status minimal")
-		healthOut, healthErr := cmd.CombinedOutput()
-		healthCancel()
-		if healthErr == nil && (strings.Contains(string(healthOut), "available") || strings.Contains(string(healthOut), "Healthy")) {
-			fdbReady = true
-			break
-		}
-	}
-	if !fdbReady {
-		r.Error = "FDB container did not become healthy within 30s"
-		r.FDBAlive = false
-		return r
-	}
-
-	// Get container IP for direct connectivity (no DNAT).
-	containerIP, ipErr := runOutput("docker", "inspect", "-f",
-		"{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", containerName)
-	if ipErr != nil || strings.TrimSpace(string(containerIP)) == "" {
-		r.Error = "failed to get container IP"
-		return r
-	}
-	clusterContent := fmt.Sprintf("docker:docker@%s:4500", strings.TrimSpace(string(containerIP)))
-	os.WriteFile(clusterFile, []byte(clusterContent), 0o644)
-
-	// Run bindingtester with a context timeout.
+	// Start FDB via testcontainers. WithDirectIP avoids Docker DNAT which
+	// confuses FDB's canonicalRemotePort tracking in the C binding (used by
+	// the Python tester), triggering assertion spam at FlowTransport.actor.cpp.
 	ctx, cancel := context.WithTimeout(context.Background(), perSeedTimeout)
 	defer cancel()
+
+	container, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDirectIP(),
+		foundationdb.WithStorageEngine("memory"),
+	)
+	if err != nil {
+		r.Error = "container start failed: " + err.Error()
+		return r
+	}
+	defer func() {
+		collectLogs(ctx, container, seedDir)
+		container.Terminate(ctx)
+	}()
+
+	// Get cluster file with direct IP for the Python tester.
+	clusterContent, err := container.ClusterFile(ctx)
+	if err != nil {
+		r.Error = "get cluster file: " + err.Error()
+		return r
+	}
+
+	clusterFile, err := filepath.Abs(filepath.Join(seedDir, "fdb.cluster"))
+	if err != nil {
+		r.Error = "abs cluster file path: " + err.Error()
+		return r
+	}
+	if err := os.WriteFile(clusterFile, []byte(clusterContent), 0o644); err != nil {
+		r.Error = "write cluster file: " + err.Error()
+		return r
+	}
+
+	// Run bindingtester.
 	cmd := exec.CommandContext(ctx, "python3",
 		filepath.Join(btRunDir, "bindingtester/bindingtester.py"),
 		"--cluster-file", clusterFile,
@@ -271,11 +235,10 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 	output := buf.String()
 	os.WriteFile(filepath.Join(seedDir, "tester.log"), []byte(output), 0o644)
 
-	r.FDBAlive = isFDBAlive()
+	r.FDBAlive = isFDBAlive(ctx, container)
 	r.Pass = err == nil && strings.Contains(output, "had 0 incorrect result(s) and 0 error(s)")
 
 	if !r.Pass && r.Error == "" {
-		// Extract error line.
 		for _, line := range strings.Split(output, "\n") {
 			if strings.Contains(line, "incorrect result") {
 				r.Error = strings.TrimSpace(line)
@@ -293,18 +256,25 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 	return r
 }
 
-func collectLogs(seedDir string) {
+func collectLogs(ctx context.Context, container *foundationdb.Container, seedDir string) {
+	containerID := container.GetContainerID()
+
 	// FDB trace logs.
-	run("docker", "cp", containerName+":/var/fdb/logs", filepath.Join(seedDir, "fdb-logs"))
+	exec.CommandContext(ctx, "docker", "cp",
+		containerID+":/var/fdb/logs", filepath.Join(seedDir, "fdb-logs")).Run()
 
 	// Docker container logs.
-	out, _ := runOutput("docker", "logs", containerName)
-	os.WriteFile(filepath.Join(seedDir, "docker.log"), out, 0o644)
+	logReader, err := container.Logs(ctx)
+	if err == nil {
+		data, _ := io.ReadAll(logReader)
+		logReader.Close()
+		os.WriteFile(filepath.Join(seedDir, "docker.log"), data, 0o644)
+	}
 }
 
-func isFDBAlive() bool {
-	cmd := exec.Command("docker", "exec", containerName, "fdbcli", "--exec", "status")
-	return cmd.Run() == nil
+func isFDBAlive(ctx context.Context, container *foundationdb.Container) bool {
+	_, err := container.FDBCLIExec(ctx, "status")
+	return err == nil
 }
 
 func setup() (stacktester string, btRunDir string) {
@@ -325,6 +295,15 @@ func setup() (stacktester string, btRunDir string) {
 	stacktester, err := filepath.Abs("bazel-bin/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
 	if err != nil {
 		log.Fatalf("resolve stacktester path: %v", err)
+	}
+	// Resolve symlinks to get the stable cache path. The bazel-bin/ symlink
+	// gets recreated on every Bazel invocation, so if a concurrent build runs
+	// (e.g., pre-commit hook), the symlink points to a new directory and the
+	// old path breaks. EvalSymlinks resolves to the actual file in the Bazel
+	// cache which survives across builds.
+	stacktester, err = filepath.EvalSymlinks(stacktester)
+	if err != nil {
+		log.Fatalf("resolve stacktester symlinks: %v", err)
 	}
 	if _, err := os.Stat(stacktester); err != nil {
 		log.Fatalf("stacktester not found at %s", stacktester)
@@ -376,12 +355,4 @@ func findBindingTesterDir() (string, error) {
 func writeJSON(path string, v any) {
 	data, _ := json.MarshalIndent(v, "", "  ")
 	os.WriteFile(path, data, 0o644)
-}
-
-func run(name string, args ...string) {
-	exec.Command(name, args...).Run()
-}
-
-func runOutput(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
 }

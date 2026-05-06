@@ -1,0 +1,54 @@
+# case_insensitive_keywords.yaml
+#
+# SQL standard says keywords are case-insensitive. Java's QueryTypeTests
+# verifies "SelECT", "CrEaTe", "iNsErT", "UpDate", "dEleTe" all parse.
+# Verify Go matches.
+name: case_insensitive_keywords
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Mixed-case SELECT.
+  - query: SelECT id FROM t WHERE id = 1
+    rows:
+      - [1]
+  # all-lower select
+  - query: select id from t where id = 1
+    rows:
+      - [1]
+  # Mixed-case WHERE / FROM keywords.
+  - query: SELECT id WhErE id = 2 fRoM t
+    error_code: "42601"  # WHERE before FROM is a parse order issue
+  # Mixed-case ORDER BY — LIMIT was incidental (rejected at parse
+  # time as of fdb-relational 4.11.1.0); keep the mixed-case
+  # keyword check on ORDER BY / DESC alone.
+  - query: SELECT id frOm t OrDeR bY id deSc
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  # Mixed-case AND / OR.
+  - query: SELECT id FROM t WHERE id = 1 oR id = 3 OrDeR bY id
+    rows:
+      - [1]
+      - [3]
+  - query: SELECT id FROM t WHERE id > 1 AnD n < 30
+    rows:
+      - [2]
+  # IS NULL mixed case.
+  - query: SELECT id FROM t WHERE n iS nOt NUll ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # GROUP BY / HAVING mixed case.
+  - query: SELECT n, count(*) FrOm t GroUp By n HaviNg count(*) >= 1 ORDER BY n
+    rows:
+      - [10, 1]
+      - [20, 1]
+      - [30, 1]
+  # JOIN mixed case.
+  - query: SELECT a.id FROM t AS a INNer JoIn t AS b on a.id = b.id where a.id = 1
+    rows:
+      - [1]

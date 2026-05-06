@@ -1,0 +1,25 @@
+# select_no_from.yaml
+#
+# FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable
+# (line 225) asserts `simpleTableContext.fromClause() != null` with
+# `ErrorCode.UNSUPPORTED_QUERY` and message "query is not supported". Go's
+# `extractFromSimpleTable` mirrors the rejection at parse time. This file
+# pins the rejection across the constant-projection shapes that previously
+# worked end-to-end (literal arithmetic, string literal, NULL, NOT TRUE,
+# CAST on literal).
+name: select_no_from
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+tests:
+  - query: SELECT 1 + 2
+    error_code: "0AF00"
+  - query: SELECT 'hello'
+    error_code: "0AF00"
+  - query: SELECT NULL
+    error_code: "0AF00"
+  - query: SELECT 'abc'
+    error_code: "0AF00"
+  - query: SELECT NOT TRUE
+    error_code: "0AF00"
+  - query: SELECT CAST(1.7 AS BIGINT)
+    error_code: "0AF00"

@@ -1,0 +1,84 @@
+# insert_select.yaml
+#
+# INSERT INTO ... SELECT ... copies rows from one table to another.
+# Exercises: computed columns in the SELECT, NOT NULL enforcement
+# (swingshift-35 38410fec: INSERT...SELECT with NULL source raises
+# 23502), and the primary-key-duplicate-during-bulk-copy path.
+name: insert_select
+schema_template: |
+  CREATE TABLE src (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dst (id BIGINT NOT NULL, v BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO src VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Basic INSERT ... SELECT copies rows.
+  - query: INSERT INTO dst SELECT id, v FROM src
+  - query: SELECT id, v FROM dst ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # Duplicate PK during INSERT...SELECT: re-copying src into dst raises
+  # 23505 on the first conflict — nightshift-36's INSERT-PK-check fix
+  # applies to this path too.
+  - query: INSERT INTO dst SELECT id, v FROM src
+    error_code: "23505"
+  # After the failed bulk copy, dst must still have exactly 3 rows from
+  # the first successful insert (no partial state leaked).
+  - query: SELECT COUNT(*) FROM dst
+    rows:
+      - [3]
+  # INSERT...SELECT with expression projections — pre-swingshift-38 this
+  # errored 42703 because the column mapping used the SELECT output
+  # names ("id+100", "v*2"), which aren't real table fields. Now with
+  # no explicit column list the mapping is POSITIONAL to the table's
+  # declared field order (matches Postgres / SQL-92). So src rows
+  # (1,10), (2,20), (3,30) become dst rows (101,20), (102,40), (103,60).
+  - query: INSERT INTO dst SELECT id + 100, v * 2 FROM src
+  - query: SELECT id, v FROM dst WHERE id > 100 ORDER BY id
+    rows:
+      - [101, 20]
+      - [102, 40]
+      - [103, 60]
+  # INSERT...SELECT with constant expression — still positional.
+  - query: INSERT INTO dst SELECT 1000, 42 FROM src WHERE id = 1
+  - query: SELECT id, v FROM dst WHERE id = 1000
+    rows:
+      - [1000, 42]
+  # INSERT with explicit column list + SELECT expression. The explicit
+  # list wins over positional mapping — no regression on pre-existing
+  # by-name semantics when the user named the cols.
+  - query: INSERT INTO dst SELECT id + 2000, v FROM src WHERE id = 2
+  - query: SELECT id, v FROM dst WHERE id >= 2000 ORDER BY id
+    rows:
+      - [2002, 20]
+  # INSERT with an aggregate output into a BIGINT column. SUM/AVG
+  # accumulators produce float64 values (even for integer inputs)
+  # because the accumulator state is float64. convertToProtoValue's
+  # Int64Kind branch used to reject non-int64 inputs with 22023
+  # "cannot convert float64 to proto field kind int64"; now whole-
+  # valued float64 is coerced back to int64, matching Postgres/MySQL
+  # where `INSERT INTO t(n) SELECT SUM(v)` is well-defined.
+  - query: INSERT INTO dst SELECT 9001, SUM(v) FROM src
+  - query: SELECT id, v FROM dst WHERE id = 9001
+    rows:
+      - [9001, 60]
+  # AVG that happens to be a whole number — same path.
+  - query: INSERT INTO dst SELECT 9002, AVG(v) FROM src
+  - query: SELECT id, v FROM dst WHERE id = 9002
+    rows:
+      - [9002, 20]
+  # Non-integer float (AVG with non-divisible sum) still errors
+  # cleanly rather than silently truncating to the floor. With src =
+  # (id=1,v=10), (id=2,v=20), (id=3,v=30), AVG(v) = 20 (whole) but
+  # AVG(v+1) = 21 (still whole), so we need a divisor that doesn't
+  # evenly divide. src has 3 rows; AVG of 4 constants across 3 rows
+  # is not an integer: SUM(4)/3 = 4/3 for single-value, but we need
+  # a cleaner pathological. Use a 2-row source and an odd sum.
+  #
+  # dayshift-40: SQLSTATE tightened from 22023 (INVALID_PARAMETER) to
+  # 22000 (CANNOT_CONVERT_TYPE) to match Java's case-when.yamsql
+  # treatment of fractional float → integer assignment.
+  - query: INSERT INTO src VALUES (10, 5)
+  - query: INSERT INTO dst SELECT 9003, AVG(v) FROM src WHERE id IN (1, 10)
+    error_code: "22000"

@@ -5,6 +5,7 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-binding-stress",
     visibility = ["//visibility:private"],
+    deps = ["//pkg/testcontainers/foundationdb"],
 )
 
 go_binary(

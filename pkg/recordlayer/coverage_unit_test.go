@@ -32,6 +32,8 @@ func (c *failContCursor[T]) Close() error {
 	return nil
 }
 
+func (c *failContCursor[T]) IsClosed() bool { return c.closed }
+
 // failContinuation is a non-end continuation whose ToBytes always errors.
 type failContinuation struct{}
 
@@ -410,6 +412,48 @@ var _ = Describe("Coverage Unit Tests", func() {
 				equal: func(a, b int) bool { return a == b },
 			}
 			Expect(c.Close()).To(Succeed())
+		})
+	})
+
+	// cursor.go: IsClosed tracks closure state.
+	Describe("IsClosed", func() {
+		It("returns false before Close and true after on list cursor", func() {
+			cursor := FromList([]int{1, 2, 3})
+			Expect(cursor.IsClosed()).To(BeFalse())
+
+			Expect(cursor.Close()).To(Succeed())
+			Expect(cursor.IsClosed()).To(BeTrue())
+		})
+
+		It("works on filterCursor wrapping list cursor", func() {
+			inner := FromList([]int{1, 2, 3, 4, 5})
+			filtered := &filterCursor[int]{inner: inner, predicate: func(v int) bool { return v%2 == 0 }}
+			Expect(filtered.IsClosed()).To(BeFalse())
+
+			Expect(filtered.Close()).To(Succeed())
+			Expect(filtered.IsClosed()).To(BeTrue())
+		})
+
+		It("works on concat cursors", func() {
+			c := ConcatCursors[int](
+				func(_ []byte) RecordCursor[int] { return FromList([]int{1}) },
+				func(_ []byte) RecordCursor[int] { return FromList([]int{2}) },
+				nil,
+			)
+			Expect(c.IsClosed()).To(BeFalse())
+
+			Expect(c.Close()).To(Succeed())
+			Expect(c.IsClosed()).To(BeTrue())
+		})
+
+		It("empty cursor reports not-closed even after Close", func() {
+			c := Empty[int]()
+			Expect(c.IsClosed()).To(BeFalse())
+			// emptyCursor is stateless — Close is a no-op and IsClosed
+			// always returns false. This is intentional: emptyCursor has
+			// no resources to release.
+			Expect(c.Close()).To(Succeed())
+			Expect(c.IsClosed()).To(BeFalse())
 		})
 	})
 

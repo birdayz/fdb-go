@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "session",
+    srcs = ["session.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/keyspace",
+    ],
+)
+
+go_test(
+    name = "session_test",
+    srcs = ["session_test.go"],
+    embed = [":session"],
+    deps = ["//pkg/relational/api"],
+)

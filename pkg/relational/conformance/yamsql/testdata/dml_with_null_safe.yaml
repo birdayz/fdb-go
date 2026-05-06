@@ -1,0 +1,34 @@
+# dml_with_null_safe.yaml
+#
+# DML (UPDATE / DELETE) with IS NOT DISTINCT FROM in WHERE — the
+# null-safe equality. Used for idempotent upsert-like workflows
+# (delete/update rows whose columns ARE NULL too). Exercises the
+# nightshift-39 IS DISTINCT FROM fixes through DML paths.
+name: dml_with_null_safe
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, null), (3, 30), (4, null)
+tests:
+  # DELETE using IS NOT DISTINCT FROM null — delete NULL-valued rows.
+  - query: DELETE FROM t WHERE n IS NOT DISTINCT FROM null
+  - query: SELECT id, n FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [3, 30]
+  # Re-seed.
+  - query: INSERT INTO t VALUES (2, null), (4, null)
+  # UPDATE using IS NOT DISTINCT FROM null to fill NULL rows.
+  - query: UPDATE t SET n = 99 WHERE n IS NOT DISTINCT FROM null
+  - query: SELECT id, n FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 99]
+      - [3, 30]
+      - [4, 99]
+  # DELETE using IS DISTINCT FROM — delete non-NULL rows.
+  - query: DELETE FROM t WHERE n IS DISTINCT FROM 99
+  - query: SELECT id, n FROM t ORDER BY id
+    rows:
+      - [2, 99]
+      - [4, 99]

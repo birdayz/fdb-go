@@ -1,0 +1,51 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "api",
+    srcs = [
+        "array.go",
+        "catalog.go",
+        "connection.go",
+        "continuation.go",
+        "database_metadata.go",
+        "datatype.go",
+        "datatype_composite.go",
+        "datatype_primitive.go",
+        "direct_access.go",
+        "errcode.go",
+        "error.go",
+        "keyset.go",
+        "metadata.go",
+        "mocks_metadata.go",
+        "mocks_resultset.go",
+        "mocks_transaction.go",
+        "options.go",
+        "parsetree.go",
+        "resultset.go",
+        "row.go",
+        "sqltypes.go",
+        "struct.go",
+        "transaction.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api",
+    visibility = ["//visibility:public"],
+    deps = ["@org_uber_go_mock//gomock"],
+)
+
+go_test(
+    name = "api_test",
+    srcs = [
+        "array_struct_test.go",
+        "connection_test.go",
+        "database_metadata_test.go",
+        "datatype_bench_test.go",
+        "datatype_test.go",
+        "error_test.go",
+        "keyset_continuation_test.go",
+        "metadata_test.go",
+        "options_test.go",
+        "parsetree_test.go",
+        "sqltypes_test.go",
+    ],
+    embed = [":api"],
+)

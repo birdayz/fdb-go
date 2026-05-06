@@ -14,6 +14,16 @@ import (
 // Used as the value for VALUE index entries (which store no value data).
 var emptyTuplePacked = tuple.Tuple{}.Pack()
 
+// SAFETY: The unsafe cast (*tuple.Tuple)(unsafe.Pointer(&[]any{})) in the
+// insert fast path depends on tuple.Tuple being []TupleElement where
+// TupleElement is a defined type with underlying type any. From tuple.go:
+//   type TupleElement any   // defined type, underlying = interface{}
+//   type Tuple []TupleElement
+// Both []any and []TupleElement have identical memory layout (slice of
+// 16-byte interface values). If TupleElement ever becomes a struct or
+// constrained interface, the cast silently corrupts memory.
+// No compile-time check can enforce this — verify on tuple.go changes.
+
 // IndexMaintainer handles index updates and scanning.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer.
 type IndexMaintainer interface {
@@ -138,15 +148,15 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 						// Uniqueness check for UNIQUE indexes (unless InsertBatch skips it).
 						if m.index.IsUnique() {
 							if s, ok3 := m.store.(*FDBRecordStore); !ok3 || !s.skipUniquenessChecks {
-								// Need the key tuple for uniqueness check — extract from packed bytes.
 								keyTuple, uErr := fastSubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
-								if uErr == nil {
-									colCount := m.index.RootExpression.ColumnSize()
-									if colCount > 0 && len(keyTuple) > colCount {
-										entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
-										if err := m.checkUniqueness(entry); err != nil {
-											return err
-										}
+								if uErr != nil {
+									return fmt.Errorf("unpack index key for uniqueness check: %w", uErr)
+								}
+								colCount := m.index.RootExpression.ColumnSize()
+								if colCount > 0 && len(keyTuple) > colCount {
+									entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+									if err := m.checkUniqueness(entry); err != nil {
+										return err
 									}
 								}
 							}
@@ -162,6 +172,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
 				values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
 				if err == nil {
+					// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
 					key := *(*tuple.Tuple)(unsafe.Pointer(&values))
 					entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
 					return m.insertSingleEntry(entry, newRecord)
@@ -273,9 +284,11 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 	}
 
 	if m.index.IsUnique() {
-		entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -313,8 +326,7 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 
 	if m.index.IsUnique() && val != nil {
 		// Skip uniqueness check when called from InsertBatch — caller guarantees
-		// unique keys, and the check does an FDB GetRange per entry (15% CPU cost
-		// at 13K events/sec). The skipUniquenessChecks flag is set by InsertBatch.
+		// unique keys, and the check does an FDB GetRange per entry.
 		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
 			entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
 			if err := m.checkUniqueness(entry); err != nil {
@@ -351,8 +363,10 @@ func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FD
 	}
 
 	if m.index.IsUnique() && !indexKeyContainsNull(entry.key) {
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 

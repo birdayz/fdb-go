@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "parser",
+    srcs = [
+        "case_insensitive.go",
+        "doc.go",
+        "parser.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/parser/gen",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
+)
+
+go_test(
+    name = "parser_test",
+    srcs = [
+        "benchmark_test.go",
+        "fuzz_test.go",
+        "parser_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":parser"],
+    deps = ["//pkg/relational/api"],
+)

@@ -1,0 +1,32 @@
+# derived_table_renamed.yaml
+#
+# Derived table with column renaming via AS in the inner SELECT
+# (Java's join-tests.yamsql pattern):
+#   SELECT sq2.y, sq1.x FROM (SELECT ida AS x FROM a) sq1,
+#                            (SELECT idb AS y FROM b) sq2
+# Probes that:
+#   - The inner SELECT's AS aliases become the outer-visible column names
+#   - The outer SELECT can qualify by derived-table alias (sq1.x)
+#   - Comma-join works between two derived tables
+name: derived_table_renamed
+schema_template: |
+  CREATE TABLE a (ida BIGINT NOT NULL, PRIMARY KEY (ida))
+  CREATE TABLE b (idb BIGINT NOT NULL, PRIMARY KEY (idb))
+setup:
+  - INSERT INTO a VALUES (1)
+  - INSERT INTO b VALUES (4)
+tests:
+  # Two derived tables comma-joined — TODO #58 fix landed dayshift-66
+  # (extra-source parser now accepts SubqueryTableItem; dispatcher
+  # materializes each derived as a CTE before join execution).
+  - query: |-
+      SELECT sq2.y, sq1.x FROM
+        (SELECT ida AS x FROM a) AS sq1,
+        (SELECT idb AS y FROM b) AS sq2
+    rows:
+      - [4, 1]
+  - query: |-
+      SELECT sq.x, b.idb FROM
+        (SELECT ida AS x FROM a) AS sq, b
+    rows:
+      - [1, 4]

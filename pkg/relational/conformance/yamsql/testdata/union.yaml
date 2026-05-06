@@ -1,0 +1,29 @@
+# union.yaml
+#
+# UNION / UNION ALL — set operations over SELECT results. Pins:
+#   - UNION dedups identical rows (distinct semantics).
+#   - UNION ALL preserves duplicates.
+#   - Column counts must match.
+name: union
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO b VALUES (101, 20), (102, 30), (103, 40)
+tests:
+  # UNION ALL — 6 rows.
+  - query: SELECT v FROM a UNION ALL SELECT v FROM b
+    unordered: true
+    rows:
+      - [10]
+      - [20]
+      - [30]
+      - [20]
+      - [30]
+      - [40]
+  # UNION (without ALL) — Java rejects with verbatim "only UNION ALL is
+  # supported" (0A000); fdb-relational's planner has no de-duplication
+  # operator.
+  - query: SELECT v FROM a UNION SELECT v FROM b
+    error_code: "0AF00"

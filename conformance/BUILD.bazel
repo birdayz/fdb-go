@@ -27,11 +27,25 @@ java_library(
         "@maven//:org_foundationdb_fdb_extensions",
         "@maven//:org_foundationdb_fdb_java",
         "@maven//:org_foundationdb_fdb_record_layer_core",
+        # fdb-relational deps power the Java side of the
+        # plan-equivalence harness (RFC-022 §4.-1 Phase 2) and the
+        # Java↔Go SQL conformance harness Phase B. SqlPlanSteps wires
+        # in the EXPLAIN path; metrics-core comes along because
+        # RecordLayerEngine.makeEngine() takes a MetricRegistry.
+        "@maven//:io_dropwizard_metrics_metrics_core",
+        "@maven//:org_foundationdb_fdb_relational_api",
+        "@maven//:org_foundationdb_fdb_relational_core",
     ],
 )
 
 java_binary(
     name = "conformance_server",
+    # The conformance server handles 200+ requests in one suite run.
+    # Default JVM heap (~256MB) hits GC pressure after ~80-100 requests
+    # and per-request latency grows past the 30s HTTP timeout. -Xmx2g
+    # gives enough headroom for the full corpus without running into
+    # GC stalls.
+    jvm_flags = ["-Xmx2g"],
     main_class = "com.birdayz.conformance.ConformanceServer",
     visibility = ["//visibility:public"],
     runtime_deps = [":conformance_lib"],
@@ -75,13 +89,17 @@ go_test(
         "min_max_ever_index_conformance_test.go",
         "min_max_ever_tuple_index_conformance_test.go",
         "multidimensional_index_conformance_test.go",
+        "nesting_index_conformance_test.go",
         "online_indexer_conformance_test.go",
         "permuted_min_max_index_conformance_test.go",
+        "plan_diff_conformance_test.go",
         "rangeset_conformance_test.go",
         "rank_index_conformance_test.go",
         "rebuild_index_conformance_test.go",
         "reverse_scan_conformance_test.go",
+        "run_sql_conformance_test.go",
         "scan_conformance_test.go",
+        "schema_template_catalog_conformance_test.go",
         "split_conformance_test.go",
         "store_header_conformance_test.go",
         "store_header_v2_conformance_test.go",
@@ -97,14 +115,20 @@ go_test(
         "vector_index_conformance_test.go",
         "version_conformance_test.go",
         "version_index_conformance_test.go",
+        "yamsql_cross_engine_conformance_test.go",
     ],
     data = [":conformance_server"],
+    tags = ["conformance_java"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/catalog",
         "//pkg/testcontainers/foundationdb",
         "@com_github_google_uuid//:uuid",
         "@com_github_onsi_ginkgo_v2//:ginkgo",

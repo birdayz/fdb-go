@@ -1,0 +1,89 @@
+# cast.yaml
+#
+# swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance.
+#   - CAST(float AS INT) uses Math.round semantics (floor(x+0.5))
+#   - CAST(string AS INT/FLOAT) trims whitespace before parsing
+#   - CAST(string AS BOOLEAN) accepts only trim+lowercased 'true'/'false'/'1'/'0'
+#   - CAST(NULL AS <type>) returns NULL (not "unsupported cast" error)
+# dayshift-40: added scalar-column CAST scenarios mirroring Java's
+# cast-tests.yamsql (CAST in projection, WHERE predicate, aggregate
+# argument).
+name: cast
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+  CREATE TABLE test_cast (id BIGINT NOT NULL, num_col BIGINT, str_col STRING, bool_col BOOLEAN, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1)
+  - INSERT INTO test_cast VALUES (1, 123, 'hello', true), (2, 456, 'world', false), (3, 789, '123', null)
+tests:
+  # Float rounding — 1.6 → 2 (rounds up).
+  - query: SELECT CAST(1.6 AS BIGINT) FROM t
+    rows:
+      - [2]
+  # Negative tie: Java rounds toward +Inf, so -1.5 → -1 (not -2).
+  - query: SELECT CAST(-1.5 AS BIGINT) FROM t
+    rows:
+      - [-1]
+  # Negative rounding: -2.6 → -3 (rounds away from zero).
+  - query: SELECT CAST(-2.6 AS BIGINT) FROM t
+    rows:
+      - [-3]
+  # Whitespace trim on string → int.
+  - query: SELECT CAST(' 42 ' AS BIGINT) FROM t
+    rows:
+      - [42]
+  # Whitespace trim on string → float.
+  - query: SELECT CAST(' 3.14 ' AS DOUBLE) FROM t
+    rows:
+      - [3.14]
+  # CAST(NULL AS <type>) → NULL.
+  - query: SELECT CAST(NULL AS BIGINT) FROM t
+    rows:
+      - [~]
+  # CAST(huge_float AS BIGINT) — overflow raises 22F3H (INVALID_CAST),
+  # matching Java's CastValue which uses INVALID_CAST for all CAST
+  # failures (range overflow, NaN/Infinity, string-parse errors).
+  # Pre-swingshift-35 Go silently wrapped; nightshift-36 aligned the
+  # SQLSTATE to Java's 22F3H.
+  - query: SELECT CAST(1e20 AS BIGINT) FROM t
+    error_code: "22F3H"
+  - query: SELECT CAST(-1e20 AS BIGINT) FROM t
+    error_code: "22F3H"
+  # CAST('bogus' AS BOOLEAN) — pre-nightshift-39 this errored 22023
+  # (generic INVALID_PARAMETER); now 22F3H (INVALID_CAST) matching the
+  # other string-parse CAST failures (integer and float above).
+  - query: SELECT CAST('not a bool' AS BOOLEAN) FROM t
+    error_code: "22F3H"
+  # CAST(NaN) / CAST(Infinity) to integer — already 22F3H, pin for the
+  # full family. NaN poisons aggregates so this MUST reject, not silently
+  # wrap.
+  - query: SELECT CAST(CAST('not a number' AS DOUBLE) AS BIGINT) FROM t
+    error_code: "22F3H"
+  # Java alignment (cast-tests.yamsql): LONG value that overflows INTEGER
+  # (32-bit) → 22F3H. Java's CastValue validates range before narrowing
+  # BIGINT to INT. 9223372036854775807 (Long.MAX_VALUE) > Integer.MAX_VALUE.
+  - query: SELECT CAST(9223372036854775807 AS INTEGER) FROM t
+    error_code: "22F3H"
+  # Java-aligned scalar CAST scenarios (cast-tests.yamsql). Schema
+  # column + CAST exercises the expression-path rather than literals.
+  - query: SELECT CAST(num_col AS STRING) FROM test_cast WHERE id = 1
+    rows:
+      - ['123']
+  - query: SELECT CAST(num_col AS DOUBLE) FROM test_cast WHERE id = 1
+    rows:
+      - [123.0]
+  # Boolean to integer: true=1, false=0. Exercises an arithmetic
+  # expression over the CAST.
+  - query: SELECT id FROM test_cast WHERE CAST(bool_col AS INTEGER) + 1 > 1
+    rows:
+      - [1]
+  # CAST inside an aggregate — Java pins `SUM(CAST(num_col AS DOUBLE))`
+  # at 1368.0 for the 3-row fixture (123+456+789). Same shape.
+  - query: SELECT SUM(CAST(num_col AS DOUBLE)) FROM test_cast
+    rows:
+      - [1368.0]
+  # Both sides CAST in a WHERE predicate — equality on stringified
+  # values.
+  - query: SELECT id FROM test_cast WHERE CAST(num_col AS STRING) = CAST(123 AS STRING)
+    rows:
+      - [1]

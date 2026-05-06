@@ -1,0 +1,52 @@
+# multi_feature.yaml
+#
+# End-to-end scenario chaining several features at once: CTE + WHERE +
+# GROUP BY + aggregate + HAVING + ORDER BY. This is the kind of query
+# a real user might write, and exercises the whole execution pipeline
+# including the tri-state NULL handling the harness has spent the
+# shift hardening. (LIMIT was previously chained on too — Java rejects
+# LIMIT at parse time as of fdb-relational 4.11.1.0; the rejection
+# itself is pinned by offset.yaml.)
+name: multi_feature
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO orders VALUES (1, 100, 50), (2, 100, 75), (3, 100, null), (4, 200, 30), (5, 200, 30), (6, 300, 10)
+tests:
+  # CTE filters out low-value orders, then aggregate by customer,
+  # keep only customers whose total value exceeds 50, sort descending.
+  - query: |-
+      WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30)
+      SELECT customer_id, SUM(total) FROM hv
+      GROUP BY customer_id
+      HAVING SUM(total) > 50
+      ORDER BY customer_id DESC
+    rows:
+      # customer 100: 50+75 = 125 (id 3 excluded: total is NULL, < 30 UNKNOWN filtered).
+      # customer 200: 30+30 = 60.
+      # customer 300: 10 — excluded from CTE.
+      - [200, 60]
+      - [100, 125]
+  # Same query, ORDER BY SUM DESC — pins that ORDER-BY-aggregate-DESC
+  # works on the CTE-wrapped aggregate. LIMIT was incidental (rejected
+  # at parse time as of fdb-relational 4.11.1.0).
+  - query: |-
+      WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30)
+      SELECT customer_id, SUM(total) FROM hv
+      GROUP BY customer_id
+      HAVING SUM(total) > 50
+      ORDER BY SUM(total) DESC
+    rows:
+      - [100, 125]
+      - [200, 60]
+  # Column-to-column comparison in WHERE — pins that the predicate
+  # evaluator handles both sides via the same path (not literal-only).
+  # id=3 has total=NULL → 100 > NULL is UNKNOWN → filtered.
+  - query: SELECT id FROM orders WHERE customer_id > total
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [4]
+      - [5]
+      - [6]

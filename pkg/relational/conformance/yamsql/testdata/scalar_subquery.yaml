@@ -1,0 +1,49 @@
+# scalar_subquery.yaml
+#
+# Scalar subquery: `(SELECT ...)` used as a value-returning expression.
+# Grammar extension from nightshift-39 (subqueryExpressionAtom in
+# expressionAtom). SQL-standard semantics:
+#   - exactly one column (else syntax error 42601)
+#   - at most one row (else cardinality violation 21000)
+#   - zero rows → NULL
+# Uncorrelated only — the inner query cannot reference outer-row columns
+# (would need correlated-subquery binding, deferred to follow-up).
+name: scalar_subquery
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)
+tests:
+  # Simplest case: scalar subquery in SELECT list, uncorrelated, single row.
+  - query: SELECT (SELECT MAX(v) FROM t) FROM t WHERE id = 1
+    rows:
+      - [40]
+  # Scalar subquery as a scalar constant in every row of the outer query.
+  - query: SELECT id, (SELECT MAX(v) FROM t) FROM t ORDER BY id
+    rows:
+      - [1, 40]
+      - [2, 40]
+      - [3, 40]
+      - [4, 40]
+  # Scalar subquery in WHERE predicate.
+  - query: SELECT id FROM t WHERE v = (SELECT MAX(v) FROM t)
+    rows:
+      - [4]
+  # Scalar subquery in arithmetic.
+  - query: SELECT v - (SELECT MIN(v) FROM t) FROM t WHERE id = 4
+    rows:
+      - [30]
+  # Zero-row subquery returns NULL (not an error).
+  - query: SELECT (SELECT v FROM t WHERE id = 999) FROM t WHERE id = 1
+    rows:
+      - [~]
+  # >1 row subquery errors 21000 cardinality violation.
+  - query: SELECT (SELECT v FROM t) FROM t WHERE id = 1
+    error_code: "21000"
+  # >1 column subquery errors 42601 syntax error.
+  - query: SELECT (SELECT id, v FROM t WHERE id = 1) FROM t WHERE id = 1
+    error_code: "42601"
+  # Scalar subquery with aggregate and WHERE inside.
+  - query: SELECT id, v, (SELECT SUM(v) FROM t WHERE id > 2) AS total FROM t WHERE id = 1
+    rows:
+      - [1, 10, 70]

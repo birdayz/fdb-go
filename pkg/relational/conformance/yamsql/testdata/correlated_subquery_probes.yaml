@@ -1,0 +1,197 @@
+# correlated_subquery_probes.yaml
+#
+# Correlated subqueries reference outer-row columns. Supported for EXISTS
+# and IN in both the proto-path (single-source outer) and map-path (JOIN /
+# CTE outer) WHERE evaluator, via the outer-scope stack on
+# EmbeddedConnection. See `pushOuterScope` + `resolveOuterColumn`.
+#
+# Scalar subquery correlation (`SELECT (SELECT COUNT(*) FROM p WHERE
+# p.x = outer.id) FROM outer`) is NOT supported: scalar subqueries are
+# pre-evaluated before the outer scan starts (to avoid nested FDB txns),
+# which precludes per-row outer-row binding. Pinned below as 42703.
+name: correlated_subquery_probes
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)
+  - INSERT INTO project VALUES (100, 1), (101, 2)
+tests:
+  # Correlated EXISTS — inner references emp.id from outer. Alice and Bob
+  # have projects; Carol does not.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+  # Correlated NOT EXISTS — inverse of the above.
+  - query: SELECT fname FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
+    rows:
+      - ['Carol']
+  # Correlated IN — rejected (Java NPEs in
+  # AstNormalizer.visitInPredicate; CLAUDE.md #10 alignment).
+  - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
+    error_code: "0AF00"
+  # Correlated scalar subquery — scalar subqueries are pre-evaluated
+  # before the outer scan starts (no per-row execution), so correlation
+  # is unsupported. Inner errors 42703 at pre-eval time.
+  - query: SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp
+    error_code: "42703"
+  # Uncorrelated EXISTS still works (baseline).
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Carol']
+  # Uncorrelated IN — also rejected (rejection is syntactic, not
+  # semantic). The supported rewrite is uncorrelated EXISTS or a
+  # JOIN; the EXISTS-with-correlation form above already covers
+  # the "outer rows whose id is in the inner result" semantics.
+  - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project) ORDER BY id
+    error_code: "0AF00"
+  # LIMIT inside an EXISTS subquery is rejected at parse time as of
+  # fdb-relational 4.11.1.0 (LIMIT clause is not supported., 0AF00).
+  # Pre-rejection this probe pinned that ordering inside a
+  # set-existence check is benign; now LIMIT itself wins.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project ORDER BY id LIMIT 1) ORDER BY id
+    error_code: "0AF00"
+
+  # Correlated EXISTS with additional inner filter: keep outer iff the
+  # inner has a project with emp_id = outer.id AND inner.id >= 100.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id AND id >= 100) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Correlated NOT IN — also rejected.
+  - query: SELECT fname FROM emp WHERE id NOT IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
+    error_code: "0AF00"
+
+  # Correlated with non-matching literal filter: inner never returns
+  # rows, so EXISTS is always false.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id AND id = 99999)
+    rows: []
+
+  # Unresolvable correlated qualifier — `bogus` is not in scope at all.
+  # Inner has no project table aliased as `bogus`; outer doesn't expose
+  # it either. Error 42703 (column not found).
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = bogus.id)
+    error_code: "42703"
+
+  # Correlated EXISTS from a JOIN outer (map-path evaluator). Outer row
+  # is a map with qualified keys like `emp.id`, `project.id`. Inner's
+  # `emp.id` reference resolves via outerScopeFromMapRow's qualifier
+  # set. We cross-join emp+project on emp_id then re-check EXISTS
+  # correlated — redundant but exercises the map path.
+  - query: |
+      SELECT e.fname FROM emp AS e, project AS p
+      WHERE e.id = p.emp_id
+        AND EXISTS (SELECT 1 FROM project WHERE emp_id = e.id)
+      ORDER BY e.id
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Java alignment — join-tests.yamsql: correlated EXISTS inside a
+  # derived table that is itself joined. Outer derived materializes
+  # employees who have projects, then cross-joins / filters.
+  # `(SELECT fname FROM emp WHERE EXISTS ...)` is the correlated inner
+  # inside the derived; the outer SELECT then reads through the alias.
+  - query: |
+      SELECT fname FROM (
+        SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+      ) AS sq
+      ORDER BY fname
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Self-referential uncorrelated: inner FROM references the same table
+  # as outer but without outer-row binding. Java's `SELECT ida FROM a
+  # WHERE EXISTS (SELECT ida FROM a WHERE ida = 1)`. Keeps all outer
+  # rows iff the inner has any match at all.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM emp WHERE id = 1) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Carol']
+
+  # Self-correlated via user alias: `FROM emp AS e`, inner references
+  # `e.id`. The outer scope's qualifier set picks up both the proto
+  # descriptor name (EMP) and the SQL-level alias (E) via
+  # conn.currentSourceAliases, populated by the scan loop before
+  # evalPredicate fires. Filter keeps emp rows where there's a
+  # self-match with id > 1 — Bob (id=2) and Carol (id=3).
+  - query: |
+      SELECT fname FROM emp AS e
+      WHERE EXISTS (SELECT 1 FROM emp WHERE id = e.id AND id > 1)
+      ORDER BY id
+    rows:
+      - ['Bob']
+      - ['Carol']
+
+  # Both outer and inner use user aliases on different tables. Exercise
+  # the save/restore of currentSourceAliases across the inner scan:
+  # outer installs {E, EMP}, inner overwrites with {P, PROJECT} during
+  # its scan, and restores {E, EMP} on return so `e.id` resolves via
+  # the outer scope for every outer row.
+  - query: |
+      SELECT fname FROM emp AS e
+      WHERE EXISTS (SELECT 1 FROM project AS p WHERE p.emp_id = e.id)
+      ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Multi-source outer (JOIN), inner refers to one of the joined rows.
+  # Outer row is a map; outerScopeFromMapRow derives qualifiers from
+  # its keys. Inner's `emp.id` resolves via the row's emp.id entry.
+  # Cross-join emp and project (no ON), filter outer by EXISTS-inner.
+  # The EXISTS is always true when there is at least one project, so
+  # every (emp, project) cross-product row survives → 3 emp * 2
+  # projects = 6 rows; project emp_id in (1,2), both have matching
+  # emp.id projects so no filtering. GROUP BY emp name → 2 distinct
+  # emp names (Alice, Bob have projects; Carol doesn't but the outer
+  # filter is emp-correlated too via emp.id).
+  - query: |
+      SELECT DISTINCT e.fname FROM emp AS e, project AS p
+      WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = e.id)
+      ORDER BY e.fname
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # UPDATE with a correlated EXISTS predicate — only employees with a
+  # project get dept_id nulled out. The execUpdate scan loop pushes the
+  # source alias just like the SELECT path.
+  - query: UPDATE emp SET dept_id = 99 WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+  - query: SELECT fname, dept_id FROM emp ORDER BY id
+    rows:
+      - ['Alice', 99]
+      - ['Bob', 99]
+      - ['Carol', 10]
+
+  # DELETE with a correlated NOT EXISTS: remove employees without any
+  # project. Carol is the only one without a project.
+  - query: DELETE FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+  - query: SELECT fname FROM emp ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Doubly-nested correlation: an EXISTS inside another EXISTS, where
+  # the innermost subquery references the OUTERMOST row (not the
+  # middle one). The outerScopes stack is consulted innermost-first,
+  # but the innermost subquery can still resolve up to outermost when
+  # the middle layer doesn't shadow the qualifier. Only Alice/Bob have
+  # projects so Carol (already deleted by the prior test) doesn't
+  # factor into the expected output either way.
+  - query: |
+      SELECT fname FROM emp
+      WHERE EXISTS (
+        SELECT 1 FROM project
+        WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+      )
+      ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']

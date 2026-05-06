@@ -2,6 +2,7 @@ package client
 
 import (
 	"math"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,11 +57,6 @@ const (
 	futureVersionMaxBackoff     = 8.0 // FUTURE_VERSION_MAX_BACKOFF (growth capped here)
 	futureVersionBackoffGrowth  = 2.0 // BACKOFF_GROWTH_RATE
 
-	// Load balance knobs
-	loadBalanceMaxBadOptions = 1    // LOAD_BALANCE_MAX_BAD_OPTIONS
-	loadBalancePenaltyIsBad  = true // LOAD_BALANCE_PENALTY_IS_BAD
-	penaltyBadThreshold      = 1.001
-
 	// Speculative second request knobs (C++ CLIENT_KNOBS)
 	backupRequestDelay = 0.01 // BACKUP_REQUEST_DELAY (10ms minimum hedge delay)
 	secondMultiplier   = 2.0  // MODEL_SECOND_MULTIPLIER (latency × this = hedge delay)
@@ -89,11 +85,13 @@ func (q *QueueModel) getOrCreate(addr string) *queueData {
 	return d
 }
 
-// chooseServer picks the server with the lowest smoothOutstanding from the
-// given replica set. Matches C++ LoadBalance.actor.h server selection:
-// - Skip hard-failed servers (failedUntil not elapsed)
-// - Count penalty > 1.001 as "bad" when LOAD_BALANCE_PENALTY_IS_BAD
-// - Select by min smoothOutstanding.smoothTotal()
+// chooseServer picks a server from the replica set using the "power of two
+// random choices" algorithm, matching C++ basicLoadBalance with
+// LOAD_BALANCE_USE_BEST_OF_TWO_RANDOM:
+// 1. Pick two random candidate indices from available (non-failed) servers
+// 2. Select the one with lower smoothOutstanding metric
+// This distributes load better than deterministic min (which causes all
+// clients to converge on the same server under uniform load).
 func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 	if len(servers) == 1 {
 		return servers[0], 0
@@ -104,51 +102,48 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	bestIdx := -1
-	bestMetric := math.MaxFloat64
-	badServers := 0
-
+	// Build list of available (non-failed) server indices.
+	available := make([]int, 0, len(servers))
 	for i, s := range servers {
 		d := q.getOrCreate(s.Address)
-
-		// Skip servers in failedUntil backoff.
-		if now <= d.failedUntil {
-			badServers++
-			if badServers > loadBalanceMaxBadOptions+1 {
-				break // C++: stop iterating after too many bad
-			}
-			continue
-		}
-
-		// Penalty > threshold counts as "bad" but still considered.
-		if loadBalancePenaltyIsBad && d.penalty > penaltyBadThreshold {
-			badServers++
-		}
-
-		metric := d.smoothOutstanding.smoothTotal(now)
-		if bestIdx < 0 || metric < bestMetric {
-			bestIdx = i
-			bestMetric = metric
+		if now > d.failedUntil {
+			available = append(available, i)
 		}
 	}
 
-	if bestIdx >= 0 {
+	if len(available) == 0 {
+		// All servers failed — pick the one whose failedUntil expires soonest.
+		bestIdx := 0
+		bestExpiry := math.MaxFloat64
+		for i, s := range servers {
+			d := q.getOrCreate(s.Address)
+			if d.failedUntil < bestExpiry {
+				bestExpiry = d.failedUntil
+				bestIdx = i
+			}
+		}
 		return servers[bestIdx], bestIdx
 	}
 
-	// All servers failed — pick the one whose failedUntil expires soonest.
-	var bestExpiry float64 = math.MaxFloat64
-	for i, s := range servers {
-		d := q.getOrCreate(s.Address)
-		if d.failedUntil < bestExpiry {
-			bestExpiry = d.failedUntil
-			bestIdx = i
-		}
+	if len(available) == 1 {
+		return servers[available[0]], available[0]
 	}
-	if bestIdx < 0 {
-		bestIdx = 0
+
+	// Best of two random choices: pick two distinct random indices,
+	// select the one with lower metric.
+	a := rand.IntN(len(available))
+	b := rand.IntN(len(available) - 1)
+	if b >= a {
+		b++ // ensure b != a
 	}
-	return servers[bestIdx], bestIdx
+	idxA, idxB := available[a], available[b]
+	metricA := q.getOrCreate(servers[idxA].Address).smoothOutstanding.smoothTotal(now)
+	metricB := q.getOrCreate(servers[idxB].Address).smoothOutstanding.smoothTotal(now)
+
+	if metricA <= metricB {
+		return servers[idxA], idxA
+	}
+	return servers[idxB], idxB
 }
 
 // secondDelay returns the hedge delay for speculative second requests.
@@ -169,7 +164,9 @@ func (q *QueueModel) secondDelay(addr string) time.Duration {
 	return time.Duration(delay * float64(time.Second))
 }
 
-// chooseTopTwo picks the best and second-best servers from the replica set.
+// chooseTopTwo picks a primary and backup server for hedged reads.
+// Primary: power-of-two random (same as chooseServer) for load distribution.
+// Backup: best remaining server by metric (deterministic) for fast hedge.
 // Returns the indices. If only one server, secondIdx = -1.
 func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int) {
 	if len(servers) <= 1 {
@@ -201,20 +198,33 @@ func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int)
 		return candidates[0].idx, -1
 	}
 
-	// Find best and second-best by metric.
-	best, second := 0, 1
-	if candidates[1].metric < candidates[0].metric {
-		best, second = 1, 0
+	// Primary: power-of-two random selection for load distribution.
+	a := rand.IntN(len(candidates))
+	b := rand.IntN(len(candidates) - 1)
+	if b >= a {
+		b++
 	}
-	for i := 2; i < len(candidates); i++ {
-		if candidates[i].metric < candidates[best].metric {
-			second = best
-			best = i
-		} else if candidates[i].metric < candidates[second].metric {
-			second = i
+	primary := a
+	if candidates[b].metric < candidates[a].metric {
+		primary = b
+	}
+
+	// Backup: best remaining candidate by metric (deterministic for fast hedge).
+	backupCandIdx := -1
+	backupMetric := math.MaxFloat64
+	for i := range candidates {
+		if i == primary {
+			continue
+		}
+		if candidates[i].metric < backupMetric {
+			backupMetric = candidates[i].metric
+			backupCandIdx = i
 		}
 	}
-	return candidates[best].idx, candidates[second].idx
+	if backupCandIdx < 0 {
+		return candidates[primary].idx, -1
+	}
+	return candidates[primary].idx, candidates[backupCandIdx].idx
 }
 
 // startRequest increments smoothOutstanding by the server's current penalty.

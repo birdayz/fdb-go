@@ -63,8 +63,7 @@ func sendFrameWithHedge(
 	select {
 	case resp := <-pResult.replyCh:
 		// Primary replied before hedge timer. Use it.
-		pResult.cancel.Cancel()
-		pResult.cancel.Release()
+		pResult.replyHandle.Release()
 		return processReply(pResult, resp)
 
 	case <-timer.C:
@@ -79,8 +78,8 @@ func sendFrameWithHedge(
 		return raceReplies(ctx, pResult, sResult, timeout)
 
 	case <-ctx.Done():
-		pResult.cancel.Cancel()
-		pResult.cancel.Release()
+		pResult.replyHandle.Cancel()
+		pResult.replyHandle.Release()
 		return hedgeResult{err: ctx.Err()}
 	}
 }
@@ -91,12 +90,12 @@ type sendFunc func() inFlightRPC
 
 // inFlightRPC represents an in-flight RPC request.
 type inFlightRPC struct {
-	replyCh <-chan transport.Response
-	cancel  *transport.ReplyHandle
-	addr    string
-	delta   float64
-	start   time.Time
-	err     error
+	replyCh     <-chan transport.Response
+	replyHandle *transport.ReplyHandle
+	addr        string
+	delta       float64
+	start       time.Time
+	err         error
 }
 
 func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Duration) hedgeResult {
@@ -105,15 +104,15 @@ func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Durati
 
 	select {
 	case resp := <-inflight.replyCh:
-		inflight.cancel.Release()
+		inflight.replyHandle.Release()
 		return processReply(inflight, resp)
 	case <-timer.C:
-		inflight.cancel.Cancel()
-		inflight.cancel.Release()
+		inflight.replyHandle.Cancel()
+		inflight.replyHandle.Release()
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: context.DeadlineExceeded}
 	case <-ctx.Done():
-		inflight.cancel.Cancel()
-		inflight.cancel.Release()
+		inflight.replyHandle.Cancel()
+		inflight.replyHandle.Release()
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
 	}
 }
@@ -124,26 +123,26 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 
 	select {
 	case resp := <-a.replyCh:
-		b.cancel.Cancel() // Cancel loser
-		b.cancel.Release()
-		a.cancel.Release()
+		a.replyHandle.Release() // Winner: release
+		b.replyHandle.Cancel()  // Loser: cancel + release
+		b.replyHandle.Release()
 		return processReply(a, resp)
 	case resp := <-b.replyCh:
-		a.cancel.Cancel() // Cancel loser
-		a.cancel.Release()
-		b.cancel.Release()
+		b.replyHandle.Release() // Winner: release
+		a.replyHandle.Cancel()  // Loser: cancel + release
+		a.replyHandle.Release()
 		return processReply(b, resp)
 	case <-timer.C:
-		a.cancel.Cancel()
-		a.cancel.Release()
-		b.cancel.Cancel()
-		b.cancel.Release()
+		a.replyHandle.Cancel()
+		a.replyHandle.Release()
+		b.replyHandle.Cancel()
+		b.replyHandle.Release()
 		return hedgeResult{err: context.DeadlineExceeded}
 	case <-ctx.Done():
-		a.cancel.Cancel()
-		a.cancel.Release()
-		b.cancel.Cancel()
-		b.cancel.Release()
+		a.replyHandle.Cancel()
+		a.replyHandle.Release()
+		b.replyHandle.Cancel()
+		b.replyHandle.Release()
 		return hedgeResult{err: ctx.Err()}
 	}
 }

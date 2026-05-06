@@ -11,6 +11,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // ---------------------------------------------------------------------------
@@ -561,4 +562,245 @@ func fuzzTupleElemEqual(a, b any) bool {
 		}
 	}
 	return false
+}
+
+// FuzzKeyExpressionFromProto stresses the proto → KeyExpression parser with
+// arbitrary byte sequences. The recursive descent over Then/Nesting/Grouping
+// etc. is a DoS candidate: a crafted proto with deep or self-referential
+// nesting could blow the stack. This fuzz ensures parsing always terminates
+// either with a concrete (non-nil) expression or an error (not a panic).
+//
+// Seeds: a handful of simple KeyExpressions (field, empty, record type key,
+// nested then) plus a random few bytes to get mutation started.
+func FuzzKeyExpressionFromProto(f *testing.F) {
+	// Seed with a few valid KeyExpressions serialised to bytes.
+	seeds := []*gen.KeyExpression{
+		{Empty: &gen.Empty{}},
+		{RecordTypeKey: &gen.RecordTypeKey{}},
+		{Field: &gen.Field{FieldName: proto.String("x"), FanType: gen.Field_SCALAR.Enum()}},
+		{
+			Then: &gen.Then{Child: []*gen.KeyExpression{
+				{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}},
+				{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
+			}},
+		},
+		// Grouping — used by COUNT / SUM / MAX_EVER index types. The
+		// full-grouping form (all columns grouped, none grouped-out)
+		// is what `Ungrouped(Field("price"))` produces.
+		{
+			Grouping: &gen.Grouping{
+				WholeKey: &gen.KeyExpression{
+					Field: &gen.Field{FieldName: proto.String("price"), FanType: gen.Field_SCALAR.Enum()},
+				},
+				GroupedCount: proto.Int32(0),
+			},
+		},
+		// Grouping with a non-default grouped_count.
+		{
+			Grouping: &gen.Grouping{
+				WholeKey: &gen.KeyExpression{
+					Then: &gen.Then{Child: []*gen.KeyExpression{
+						{Field: &gen.Field{FieldName: proto.String("k"), FanType: gen.Field_SCALAR.Enum()}},
+						{Field: &gen.Field{FieldName: proto.String("v"), FanType: gen.Field_SCALAR.Enum()}},
+					}},
+				},
+				GroupedCount: proto.Int32(1),
+			},
+		},
+		// Nesting — used by indexes on nested message fields.
+		{
+			Nesting: &gen.Nesting{
+				Parent: &gen.Field{FieldName: proto.String("flower"), FanType: gen.Field_SCALAR.Enum()},
+				Child: &gen.KeyExpression{
+					Field: &gen.Field{FieldName: proto.String("color"), FanType: gen.Field_SCALAR.Enum()},
+				},
+			},
+		},
+		// KeyWithValue — covering indexes (k=index key, v=stored value).
+		{
+			KeyWithValue: &gen.KeyWithValue{
+				InnerKey: &gen.KeyExpression{
+					Then: &gen.Then{Child: []*gen.KeyExpression{
+						{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}},
+						{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
+					}},
+				},
+				SplitPoint: proto.Int32(1),
+			},
+		},
+		// Function — version function key expression (records timestamp /
+		// versionstamp into the index entry).
+		{
+			Function: &gen.Function{
+				Name:      proto.String("version"),
+				Arguments: &gen.KeyExpression{Empty: &gen.Empty{}},
+			},
+		},
+	}
+	for _, s := range seeds {
+		if b, err := proto.Marshal(s); err == nil {
+			f.Add(b)
+		}
+	}
+	// Pathological seeds.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add(bytes.Repeat([]byte{0xff}, 64))
+
+	f.Fuzz(func(t *testing.T, blob []byte) {
+		expr := &gen.KeyExpression{}
+		if err := proto.Unmarshal(blob, expr); err != nil {
+			// Bad proto bytes: parser rejects upstream, no work for us.
+			return
+		}
+		// Must not panic, must not return (nil, nil) — either a valid
+		// KeyExpression or a non-nil error.
+		ke, err := KeyExpressionFromProto(expr)
+		if err != nil {
+			return
+		}
+		if ke == nil {
+			t.Fatalf("KeyExpressionFromProto returned (nil, nil) for bytes %x", blob)
+		}
+	})
+}
+
+// FuzzRecordMetaDataFromProto stresses the MetaData proto loader. The
+// file-descriptor rebuild phase walks an arbitrary dependency graph that
+// attackers can shape (each dep names its own deps), so a self-referential
+// A→B→A proto would recurse until the goroutine stack overflows without
+// the in-progress cycle guard added in swingshift-35. This fuzz pins that
+// guard and the upstream proto-unmarshal / FileDescriptor build path.
+//
+// Seeds include real serialised metadata (via builder + build + ToProto),
+// the swingshift-35 4-byte regression bytes, and a handful of proto shapes
+// known to confuse descriptor resolvers.
+func FuzzRecordMetaDataFromProto(f *testing.F) {
+	// Seed 1: a minimal real MetaData proto.
+	md := &gen.MetaData{
+		Records: &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("empty.proto"),
+			Syntax:  proto.String("proto2"),
+			Package: proto.String("test"),
+		},
+	}
+	if b, err := proto.Marshal(md); err == nil {
+		f.Add(b)
+	}
+	// Seed 2: a proto with a dependency that references itself.
+	self := &gen.MetaData{
+		Records: &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("root.proto"),
+			Syntax:     proto.String("proto2"),
+			Package:    proto.String("test"),
+			Dependency: []string{"cycle.proto"},
+		},
+		Dependencies: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:       proto.String("cycle.proto"),
+				Syntax:     proto.String("proto2"),
+				Package:    proto.String("test"),
+				Dependency: []string{"cycle.proto"}, // self-reference
+			},
+		},
+	}
+	if b, err := proto.Marshal(self); err == nil {
+		f.Add(b)
+	}
+	// Seed 3: A→B→A cycle.
+	ab := &gen.MetaData{
+		Records: &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("a.proto"),
+			Syntax:     proto.String("proto2"),
+			Package:    proto.String("test"),
+			Dependency: []string{"b.proto"},
+		},
+		Dependencies: []*descriptorpb.FileDescriptorProto{
+			{Name: proto.String("a.proto"), Syntax: proto.String("proto2"), Dependency: []string{"b.proto"}},
+			{Name: proto.String("b.proto"), Syntax: proto.String("proto2"), Dependency: []string{"a.proto"}},
+		},
+	}
+	if b, err := proto.Marshal(ab); err == nil {
+		f.Add(b)
+	}
+	// Seed 4: real demo-proto metadata shipped through a real builder
+	// (no indexes). Captures the full FileDescriptor + dependencies +
+	// union descriptor that A2 cross-language tests exercise.
+	if b := buildSeedMetaDataBytes(false, false, false); b != nil {
+		f.Add(b)
+	}
+	// Seed 5: same but with a VALUE index on Order.price — pins the
+	// shape A2 spec #2 sends across the wire.
+	if b := buildSeedMetaDataBytes(true, false, false); b != nil {
+		f.Add(b)
+	}
+	// Seed 6: same but with a COUNT index on Order.price (atomic
+	// mutation maintainer + grouping expression). Shape from A2 spec
+	// #6 (COUNT index BY_GROUP).
+	if b := buildSeedMetaDataBytes(false, true, false); b != nil {
+		f.Add(b)
+	}
+	// Seed 7: same but with an ungrouped SUM index on Order.price —
+	// shape from A2 spec #8.
+	if b := buildSeedMetaDataBytes(false, false, true); b != nil {
+		f.Add(b)
+	}
+
+	// Pathological raw bytes.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0x0a, 0x00})
+	f.Add(bytes.Repeat([]byte{0xff}, 32))
+
+	f.Fuzz(func(t *testing.T, blob []byte) {
+		msg := &gen.MetaData{}
+		if err := proto.Unmarshal(blob, msg); err != nil {
+			return
+		}
+		// Must not panic or stack-overflow; must return either (non-nil, nil)
+		// or (nil, non-nil error). (nil, nil) is the forbidden state.
+		rmd, err := RecordMetaDataFromProto(msg)
+		if err != nil {
+			return
+		}
+		if rmd == nil {
+			t.Fatalf("RecordMetaDataFromProto returned (nil, nil) for bytes %x", blob)
+		}
+	})
+}
+
+// buildSeedMetaDataBytes constructs a real RecordMetaData via the
+// builder, optionally with a VALUE / COUNT / SUM index on Order.price,
+// and serialises to bytes for FuzzRecordMetaDataFromProto seeds.
+// Returns nil if any step fails (the fuzz target tolerates fewer
+// seeds gracefully).
+func buildSeedMetaDataBytes(withValueIndex, withCountIndex, withSumIndex bool) []byte {
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	if withValueIndex {
+		builder.AddIndex("Order", NewIndex("Order$price", Field("price")))
+	}
+	if withCountIndex {
+		builder.AddIndex("Order", NewCountIndex("Order$count_by_price",
+			GroupAll(Field("price"))))
+	}
+	if withSumIndex {
+		builder.AddIndex("Order", NewSumIndex("Order$total_price",
+			Ungrouped(Field("price"))))
+	}
+	md, err := builder.Build()
+	if err != nil {
+		return nil
+	}
+	mdProto, err := md.ToProto()
+	if err != nil {
+		return nil
+	}
+	b, err := proto.Marshal(mdProto)
+	if err != nil {
+		return nil
+	}
+	return b
 }

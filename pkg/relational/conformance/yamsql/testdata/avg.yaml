@@ -1,0 +1,26 @@
+# avg.yaml
+#
+# AVG over BIGINT returns DOUBLE (float) — matches Java's
+# AggregateValue which returns AVG as DOUBLE regardless of input type.
+# Important since our int64 fast-path in applyMathOp would turn
+# `sum/count` into truncated integer division, but the AVG accumulator
+# divides explicitly through `float64(count)` so the result is float.
+name: avg
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 1), (2, 2), (3, 3)
+tests:
+  # AVG(1,2,3) = 2.0, not 2 — output type is DOUBLE.
+  - query: SELECT AVG(v) FROM t
+    rows:
+      - [2.0]
+  # AVG that is not a whole number — AVG({1,2}) = 3/2 = 1.5 (integer
+  # division would truncate to 1).
+  - query: SELECT AVG(v) FROM t WHERE v <= 2
+    rows:
+      - [1.5]
+  # AVG over empty set — NULL (not 0, not divide-by-zero).
+  - query: SELECT AVG(v) FROM t WHERE v > 100
+    rows:
+      - [~]

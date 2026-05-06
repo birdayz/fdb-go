@@ -151,25 +151,32 @@ struct GoEmitterV5 {
         }
         fprintf(f, "}\n\n");
 
-        // UnmarshalFromReader.
-        fprintf(f, "func (m *%s) UnmarshalFromReader(r *wire.Reader) {\n", typeName);
-        emitReads(typeName, fields, "r");
-        fprintf(f, "}\n\n");
+        // Types with custom serialize logic (e.g. KeyRangeRef) provide
+        // hand-written precomputeSize/writeToBuffer AND
+        // UnmarshalFromReader/UnmarshalFDB in *_custom.go. The custom
+        // unmarshal must invert any optimization the custom marshal applies
+        // (e.g. KeyRangeRef's single-key-range "(end, empty)" trick).
+        // Caught by FuzzSplitRangeRequest_RoundTrip 2026-04-25.
+        bool hasCustomSerialize = (strcmp(typeName, "KeyRangeRef") == 0);
 
-        // UnmarshalFDB.
-        fprintf(f, "func (m *%s) UnmarshalFDB(data []byte) error {\n", typeName);
-        fprintf(f, "\tr, err := wire.NewReader(data)\n");
-        fprintf(f, "\tif err != nil { return err }\n");
-        emitReads(typeName, fields, "r");
-        fprintf(f, "\treturn nil\n}\n\n");
+        // UnmarshalFromReader.
+        if (!hasCustomSerialize) {
+            fprintf(f, "func (m *%s) UnmarshalFromReader(r *wire.Reader) {\n", typeName);
+            emitReads(typeName, fields, "r");
+            fprintf(f, "}\n\n");
+
+            // UnmarshalFDB.
+            fprintf(f, "func (m *%s) UnmarshalFDB(data []byte) error {\n", typeName);
+            fprintf(f, "\tr, err := wire.NewReader(data)\n");
+            fprintf(f, "\tif err != nil { return err }\n");
+            emitReads(typeName, fields, "r");
+            fprintf(f, "\treturn nil\n}\n\n");
+        }
 
         // Two-pass methods: precomputeSize + writeToBuffer.
         // NOTE: blobSize/writeBlob/measureEndOff/writeDirect removed — they were
         // dead code (MarshalFDB uses precomputeSize+writeToBuffer exclusively) and
         // contained the empty-vector-reloff bug.
-        // Types with custom serialize logic (e.g. KeyRangeRef) provide
-        // hand-written precomputeSize/writeToBuffer in *_custom.go.
-        bool hasCustomSerialize = (strcmp(typeName, "KeyRangeRef") == 0);
         if (!hasCustomSerialize) {
             emitPrecomputeSize(typeName, fields, maxAlign);
             emitWriteToBuffer(typeName, fields, maxAlign);

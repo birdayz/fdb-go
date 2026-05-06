@@ -1,0 +1,28 @@
+# gr1_join.yaml
+#
+# SQL §7.10 GR1 with JOIN queries: the bare-col-with-aggregate without
+# GROUP BY check also applies when the FROM clause has multiple tables
+# (JOIN paths). Java consistently errors 42803; verify Go's
+# extractFromSimpleTable-level validation covers the JOIN path.
+name: gr1_join
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20)
+  - INSERT INTO b VALUES (1, 100), (2, 200)
+tests:
+  # Cross-join with bare column + aggregate, no GROUP BY → 42803.
+  - query: SELECT a.id, COUNT(*) FROM a, b
+    error_code: "42803"
+  # INNER JOIN variant.
+  - query: SELECT a.id, SUM(b.w) FROM a INNER JOIN b ON a.id = b.id
+    error_code: "42803"
+  # Valid: pure aggregate across the join.
+  - query: SELECT COUNT(*) FROM a, b
+    rows:
+      - [4]
+  # Valid: aggregate of a.v summed across joined rows.
+  - query: SELECT SUM(a.v) FROM a, b WHERE a.id = b.id
+    rows:
+      - [30]

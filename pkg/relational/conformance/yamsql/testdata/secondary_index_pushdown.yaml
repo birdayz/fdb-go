@@ -1,0 +1,436 @@
+# secondary_index_pushdown.yaml
+#
+# Secondary-index pushdown: `SELECT ... WHERE col = literal` on a
+# non-PK column with a matching single-column value index narrows
+# the scan from ScanRecordsByType (full type scan + post-filter) to
+# ScanIndexRecords (index range scan + record fetch by PK).
+#
+# Result equivalence between index path and scan path is the
+# correctness invariant; the perf benefit (index range O(matches)
+# vs full type scan O(|T|)) is not directly observable from rows.
+name: secondary_index_pushdown
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    status STRING,
+    v BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_status ON t (status)
+  CREATE INDEX idx_v ON t (v)
+  CREATE TABLE t2 (
+    id BIGINT NOT NULL,
+    region STRING,
+    plan STRING,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_plan ON t2 (region, plan)
+setup:
+  - INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)
+  - INSERT INTO t2 VALUES (10, 'us', 'pro', 100), (11, 'us', 'free', 50), (12, 'us', 'pro', 200), (13, 'eu', 'pro', 300), (14, 'eu', 'free', 75)
+tests:
+  # Basic: WHERE on indexed column returns matching rows via index
+  # scan. Order of rows within the same index key is FDB scan order.
+  - query: SELECT id, status, v FROM t WHERE status = 'active' ORDER BY id
+    rows:
+      - [1, 'active', 10]
+      - [3, 'active', 30]
+
+  # Symmetric: literal on LHS.
+  - query: SELECT id FROM t WHERE 'archived' = status
+    rows:
+      - [2]
+
+  # No match → empty via index scan (cursor yields nothing, not an
+  # error).
+  - query: SELECT id FROM t WHERE status = 'nonexistent'
+    rows: []
+
+  # Index pushdown + extra non-PK predicate — index narrows the scan
+  # to the matching range, scan's evalPredicate applies `v > 20`
+  # post-filter on the loaded records.
+  - query: SELECT id FROM t WHERE status = 'active' AND v > 20
+    rows:
+      - [3]
+
+  # Index pushdown + LIMIT — LIMIT rejected at parse time as of
+  # fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY / 0AF00). The
+  # index-pushdown ORDER BY path is exercised by the LIMIT-less
+  # cases above.
+  - query: SELECT id FROM t WHERE status = 'active' ORDER BY id LIMIT 1
+    error_code: "0AF00"
+
+  # Non-indexed column → falls through to full scan (still correct).
+  - query: SELECT id FROM t WHERE v = 30
+    rows:
+      - [3]
+
+  # WHERE on PK column → PK pushdown takes precedence (tested in
+  # pk_pushdown.yaml); regression check that it still works when a
+  # secondary index ALSO exists on another column.
+  - query: SELECT id FROM t WHERE id = 2
+    rows:
+      - [2]
+
+  # Multiple VALUE indexes + AND equalities on both indexed cols —
+  # first-match semantics: the iteration order of
+  # GetIndexesForRecordType picks the first matching index, the
+  # other equality becomes a post-filter via the scan loop's
+  # evalPredicate. Result is identical regardless of which index
+  # gets picked.
+  - query: SELECT id FROM t WHERE status = 'active' AND v = 30
+    rows:
+      - [3]
+
+  # Secondary index on the `v` (int64) column — proves literal type
+  # check handles non-string indexed columns too.
+  - query: SELECT id, status FROM t WHERE v = 20
+    rows:
+      - [2, 'archived']
+
+  # UPDATE via secondary-index pushdown. Index narrows the scan to
+  # rows with status='deleted'; only one row (id=4) qualifies.
+  - query: UPDATE t SET v = 99 WHERE status = 'deleted'
+  - query: SELECT id, v FROM t WHERE status = 'deleted'
+    rows:
+      - [4, 99]
+  # Rows on other index values untouched.
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [10]
+
+  # DELETE via secondary-index pushdown.
+  - query: DELETE FROM t WHERE status = 'archived'
+  - query: SELECT id FROM t WHERE status = 'archived'
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+
+  # Composite secondary-index pushdown: idx_region_plan is (region,
+  # plan). `WHERE region = 'us' AND plan = 'pro'` matches both
+  # columns, pushdown builds a 2-element tuple range.
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10, 100]
+      - [12, 200]
+
+  # Composite index reverse-order AND — equality collection is
+  # order-insensitive.
+  - query: SELECT id FROM t2 WHERE plan = 'free' AND region = 'eu'
+    rows:
+      - [14]
+
+  # Composite index with only one of the two columns equated → not a
+  # contiguous range at the full key level, bails to scan. The scan
+  # path's evalPredicate applies the partial predicate.
+  - query: SELECT id FROM t2 WHERE region = 'us' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+      - [12]
+
+  # Composite index + extra non-index predicate — pushdown narrows
+  # to (region='eu', plan='pro'); scan filters amount > 100. Only
+  # row (13, eu, pro, 300) qualifies.
+  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan = 'pro' AND amount > 100
+    rows:
+      - [13]
+
+  # No-match composite index range → empty.
+  - query: SELECT id FROM t2 WHERE region = 'asia' AND plan = 'pro'
+    rows: []
+
+  # Composite index on mutation path — UPDATE via pushdown.
+  - query: UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan = 'pro'
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10, 999]
+      - [12, 999]
+  # Other rows untouched.
+  - query: SELECT amount FROM t2 WHERE id = 11
+    rows:
+      - [50]
+
+  # Composite index on DELETE path.
+  - query: DELETE FROM t2 WHERE region = 'eu' AND plan = 'free'
+  - query: SELECT COUNT(*) FROM t2 WHERE region = 'eu'
+    rows:
+      - [1]
+
+  # NULL literal in secondary-index WHERE: three-valued logic, never
+  # true, pushdown bails on NULL RHS, scan's evalPredicate also
+  # produces UNKNOWN. Empty result either way.
+  - query: SELECT id FROM t WHERE status = NULL
+    rows: []
+
+  # Composite index with a NULL literal on one side — same as above,
+  # pushdown bails on NULL RHS.
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan = NULL
+    rows: []
+
+  # ---------------------------------------------------------------
+  # Range predicates on a single-column VALUE index.
+  # ---------------------------------------------------------------
+  # Seed rows for idx_v: v ∈ {10, 20, 30, 40} (ids 1..4).
+  # Row with status='archived' (id=2) was DELETEd above, leaving
+  # ids 1, 3, 4 on the t table.
+
+  # Half-open lower bound inclusive: v >= 30.
+  - query: SELECT id FROM t WHERE v >= 30 ORDER BY id
+    rows:
+      - [3]
+      - [4]
+
+  # Half-open lower bound exclusive: v > 30.
+  - query: SELECT id FROM t WHERE v > 30 ORDER BY id
+    rows:
+      - [4]
+
+  # Half-open upper bound inclusive: v <= 20.
+  # Row (2, 20) was deleted; only (1, 10) remains below 20.
+  - query: SELECT id FROM t WHERE v <= 20 ORDER BY id
+    rows:
+      - [1]
+
+  # Half-open upper bound exclusive: v < 30.
+  - query: SELECT id FROM t WHERE v < 30 ORDER BY id
+    rows:
+      - [1]
+
+  # Bounded both sides: 20 < v < 40 — matches id=3 (v=30).
+  - query: SELECT id FROM t WHERE v > 20 AND v < 40 ORDER BY id
+    rows:
+      - [3]
+
+  # Bounded both sides inclusive: 10 <= v <= 30 — matches ids 1, 3.
+  - query: SELECT id FROM t WHERE v >= 10 AND v <= 30 ORDER BY id
+    rows:
+      - [1]
+      - [3]
+
+  # Bounded both sides with empty result (range doesn't cover any v).
+  - query: SELECT id FROM t WHERE v > 100 AND v < 200
+    rows: []
+
+  # Range + extra non-indexed predicate — index narrows the scan to
+  # v >= 20, evalPredicate applies id <> 3 on loaded rows.
+  - query: SELECT id FROM t WHERE v >= 20 AND id <> 3 ORDER BY id
+    rows:
+      - [4]
+
+  # Range pushdown on non-existent range (above max) → empty.
+  - query: SELECT id FROM t WHERE v > 9999
+    rows: []
+
+  # Symmetric: literal on LHS. extractColOpLiteral flips so that
+  # `50 > v` becomes `v < 50`. Matches ids 1, 3 (v=10, v=30).
+  - query: SELECT id FROM t WHERE 50 > v ORDER BY id
+    rows:
+      - [1]
+      - [3]
+
+  # UPDATE via secondary-index range pushdown.
+  - query: UPDATE t SET status = 'bulk' WHERE v >= 30
+  - query: SELECT id, status FROM t WHERE v >= 30 ORDER BY id
+    rows:
+      - [3, 'bulk']
+      - [4, 'bulk']
+  # Row below the range untouched.
+  - query: SELECT status FROM t WHERE id = 1
+    rows:
+      - ['active']
+
+  # DELETE via secondary-index range pushdown.
+  - query: DELETE FROM t WHERE v > 30
+  - query: SELECT id FROM t WHERE v > 30
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [2]
+
+  # ---------------------------------------------------------------
+  # Composite secondary-index: leading equalities + trailing-range.
+  # idx_region_plan is (region, plan). Composite range pushdown
+  # fires when `region = <eq>` and `plan` carries a range bound.
+  # Pure-equality composite is tested earlier above.
+  # ---------------------------------------------------------------
+  # Seed for composite range tests — fresh table to avoid state
+  # leakage from earlier UPDATE / DELETE on t2 above. Tests run in
+  # declared order so we re-seed t2 to a known shape.
+  - query: DELETE FROM t2
+  - query: INSERT INTO t2 VALUES (10, 'us', 'a', 100), (11, 'us', 'b', 50), (12, 'us', 'c', 200), (13, 'eu', 'b', 300), (14, 'eu', 'c', 75)
+
+  # Leading eq + trailing half-open range: region='us' AND plan > 'a'.
+  # Matches (11, 'us', 'b') and (12, 'us', 'c').
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan > 'a' ORDER BY id
+    rows:
+      - [11]
+      - [12]
+
+  # Leading eq + trailing bounded range inclusive: plan BETWEEN
+  # 'a' AND 'b' (written as two predicates). Matches us/a, us/b.
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan >= 'a' AND plan <= 'b' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+
+  # Leading eq + trailing half-open range upper bound exclusive.
+  # plan < 'c' on region='eu' matches only (13, 'eu', 'b').
+  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan < 'c'
+    rows:
+      - [13]
+
+  # Leading eq + trailing range empty result.
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan > 'z'
+    rows: []
+
+  # Leading eq + trailing range + extra non-index predicate —
+  # composite range narrows, evalPredicate applies amount > 60.
+  # us/a (100) and us/c (200) qualify.
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan >= 'a' AND amount > 60 ORDER BY id
+    rows:
+      - [10]
+      - [12]
+
+  # Missing leading equality → composite range pushdown bails,
+  # falls through to full scan. Still correct.
+  - query: SELECT id FROM t2 WHERE plan > 'a' ORDER BY id
+    rows:
+      - [11]
+      - [12]
+      - [13]
+      - [14]
+
+  # Composite range on UPDATE path.
+  - query: UPDATE t2 SET amount = 777 WHERE region = 'us' AND plan >= 'b'
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan >= 'b' ORDER BY id
+    rows:
+      - [11, 777]
+      - [12, 777]
+  # Untouched.
+  - query: SELECT amount FROM t2 WHERE id = 10
+    rows:
+      - [100]
+
+  # Composite range on DELETE path.
+  - query: DELETE FROM t2 WHERE region = 'eu' AND plan > 'a'
+  - query: SELECT id FROM t2 WHERE region = 'eu' ORDER BY id
+    rows: []
+  - query: SELECT COUNT(*) FROM t2
+    rows:
+      - [3]
+
+  # ---------------------------------------------------------------
+  # Composite secondary-index: range on a NON-last index column.
+  # Mirror of the PK composite range relaxation: the range may sit
+  # on the first index column (empty prefix) as well as the last.
+  # ---------------------------------------------------------------
+  # Re-seed t2 to a known shape.
+  - query: DELETE FROM t2
+  - query: INSERT INTO t2 VALUES (10, 'af', 'pro', 100), (11, 'eu', 'pro', 200), (12, 'us', 'pro', 300), (13, 'us', 'free', 400)
+
+  # Range on the FIRST index column of idx_region_plan (region).
+  # region < 'us' matches 'af' and 'eu' rows.
+  - query: SELECT id FROM t2 WHERE region < 'us' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+
+  # Range on first index col + equality on trailing index col.
+  # region <= 'us' narrows the scan; plan='pro' post-filters.
+  # Matches all rows with plan='pro' up to region='us' inclusive.
+  - query: SELECT id FROM t2 WHERE region <= 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+      - [12]
+
+  # Bounded range on first index col. region BETWEEN 'eu' AND 'us'.
+  - query: SELECT id FROM t2 WHERE region >= 'eu' AND region <= 'us' ORDER BY id
+    rows:
+      - [11]
+      - [12]
+      - [13]
+
+  # UPDATE via composite secondary-index range on first col.
+  - query: UPDATE t2 SET amount = 555 WHERE region < 'eu'
+  - query: SELECT id, amount FROM t2 WHERE region < 'eu'
+    rows:
+      - [10, 555]
+  # Untouched rows.
+  - query: SELECT amount FROM t2 WHERE id = 11
+    rows:
+      - [200]
+
+  # ---------------------------------------------------------------
+  # BETWEEN pushdown on secondary indexes (single-col + composite).
+  # ---------------------------------------------------------------
+  # Re-seed t for a clean single-col BETWEEN test on idx_v.
+  - query: DELETE FROM t
+  - query: INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30), (4, 'd', 40), (5, 'e', 50)
+
+  # Single-col secondary-index: BETWEEN on the indexed column.
+  - query: SELECT id FROM t WHERE v BETWEEN 20 AND 40 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+
+  # Single-col secondary-index: BETWEEN + extra post-filter.
+  - query: SELECT id FROM t WHERE v BETWEEN 10 AND 40 AND id <> 3 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]
+
+  # Single-col secondary-index: NOT BETWEEN falls through to full
+  # scan (non-contiguous), still correct.
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 20 AND 40 ORDER BY id
+    rows:
+      - [1]
+      - [5]
+
+  # Composite secondary-index: BETWEEN on the last index col with
+  # a leading equality.
+  - query: DELETE FROM t2
+  - query: INSERT INTO t2 VALUES (10, 'us', 'a', 100), (11, 'us', 'b', 50), (12, 'us', 'c', 200), (13, 'eu', 'b', 300)
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan BETWEEN 'a' AND 'b' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+
+  # Composite secondary-index: BETWEEN on the FIRST index col
+  # (empty prefix, relaxed composite range path).
+  - query: SELECT id FROM t2 WHERE region BETWEEN 'a' AND 'f' ORDER BY id
+    rows:
+      - [13]
+
+  # ---------------------------------------------------------------
+  # Edge cases: empty table, NULL values on indexed col.
+  # ---------------------------------------------------------------
+  # Empty table → range scan yields empty, no crash.
+  - query: DELETE FROM t
+  - query: SELECT id FROM t WHERE v > 10
+    rows: []
+  - query: SELECT id FROM t WHERE v BETWEEN 1 AND 100
+    rows: []
+
+  # NULL-valued indexed column: FDB indexes NULLs as the first key,
+  # but SQL range comparisons against NULL are UNKNOWN. The scan
+  # loop's evalPredicate drops UNKNOWN rows, so a range pushdown
+  # that starts from the tuple-encoded bound still returns correct
+  # results — NULL rows are never visited when the low bound is a
+  # concrete value, and are filtered out if reached (open-low range).
+  - query: INSERT INTO t VALUES (1, 'a', 10), (2, 'b', NULL), (3, 'c', 30)
+  - query: SELECT id FROM t WHERE v >= 10 ORDER BY id
+    rows:
+      - [1]
+      - [3]
+  # Open-low range: NULL row exists in the index but is filtered
+  # by the scan loop's evalPredicate (NULL <= 30 is UNKNOWN).
+  - query: SELECT id FROM t WHERE v <= 30 ORDER BY id
+    rows:
+      - [1]
+      - [3]

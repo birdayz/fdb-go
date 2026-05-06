@@ -569,6 +569,13 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 }
 
 // buildIndexMutual runs the mutual (concurrent) build path.
+//
+// LIMITATION: Multi-target mutual builds should only target idempotent indexes
+// (VALUE, RANK, VERSION, etc.). Non-idempotent indexes (COUNT, SUM, COUNT_UPDATES)
+// can double-count when two concurrent builders process the same fragment and one's
+// InsertRange(requireEmpty) detects the contest after index entries are already written.
+// Idempotent indexes are unaffected (SET is idempotent). Build non-idempotent indexes
+// with a separate single-target indexer.
 func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Time) (int64, error) {
 	mutual, err := newMutualIndexBuilder(oi)
 	if err != nil {
@@ -578,7 +585,12 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 
 	var totalRecords int64
 	for {
-		n, hasMore, err := mutual.buildMutual(ctx)
+		// Use buildRangeWithRetries for adaptive throttling + retry on transient
+		// FDB errors, matching the BY_RECORDS path. Without this, mutual builds
+		// had no limit adjustment on failure and no rate limiting.
+		n, hasMore, err := oi.buildRangeWithRetries(ctx, func(ctx context.Context) (int64, bool, error) {
+			return mutual.buildMutual(ctx)
+		})
 		if err != nil {
 			return totalRecords, fmt.Errorf("mutual build range: %w", err)
 		}
@@ -596,11 +608,6 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 					Elapsed:   elapsed,
 				}
 			}
-		}
-
-		// Inter-transaction throttle.
-		if oi.throttle != nil {
-			oi.throttle.waitForRateLimit()
 		}
 	}
 
@@ -1063,7 +1070,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		// which are incorrect for source-index-based builds.
 		// Matches Java's IndexingByIndex.validateSourceAndTargetIndexes().
 		if store.GetFormatVersion() < formatVersionCheckIndexBuildType {
-			if !isIndexTypeIdempotent(oi.primaryIndex().Type) {
+			if !isIndexIdempotent(oi.primaryIndex()) {
 				return nil, fmt.Errorf("online indexer: cannot build non-idempotent index %q from source index on format version %d (requires >= %d)",
 					oi.primaryIndex().Name, store.GetFormatVersion(), formatVersionCheckIndexBuildType)
 			}
@@ -1185,15 +1192,19 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 // updates. Idempotent indexes can safely use SNAPSHOT reads during online builds
 // because re-applying the same operation produces the same result.
 // Matches Java's IndexMaintainer.isIdempotent().
-func isIndexTypeIdempotent(indexType string) bool {
-	switch indexType {
-	case IndexTypeValue, IndexTypeRank,
+func isIndexIdempotent(index *Index) bool {
+	switch index.Type {
+	case IndexTypeValue,
 		IndexTypeMinEverLong, IndexTypeMaxEverLong,
 		IndexTypeMinEverTuple, IndexTypeMaxEverTuple,
 		IndexTypeMaxEverVersion, IndexTypeVersion,
 		IndexTypePermutedMin, IndexTypePermutedMax,
 		IndexTypeText:
 		return true
+	case IndexTypeRank:
+		// RANK is idempotent only when !CountDuplicates.
+		// Matches Java's RankIndexMaintainer.isIdempotent().
+		return index.Options[IndexOptionRankCountDuplicates] != "true"
 	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates, IndexTypeSum:
 		return false
 	default:
@@ -1202,13 +1213,14 @@ func isIndexTypeIdempotent(indexType string) bool {
 }
 
 // allTargetIndexesIdempotent returns true if all target indexes are idempotent.
+// Matches Java's IndexMaintainer.isIdempotent() per index.
 func (oi *OnlineIndexer) allTargetIndexesIdempotent() bool {
 	for _, idx := range oi.targetIndexes {
-		if !isIndexTypeIdempotent(idx.Type) {
+		if !isIndexIdempotent(idx) {
 			return false
 		}
 	}
-	return isIndexTypeIdempotent(oi.primaryIndex().Type)
+	return true
 }
 
 // shouldIndexRecordForIndex checks if a record should be indexed by a specific

@@ -1,0 +1,22 @@
+# window_function_probes.yaml
+#
+# DIAGNOSTIC ONLY: probes window function syntax. The grammar accepts
+# ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST OVER (...) but the
+# evaluator likely doesn't implement them. These probes pin the
+# CURRENT behaviour (clean error vs panic vs wrong answer) so a future
+# implementation can flip them to passing tests.
+name: window_function_probes
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40)
+tests:
+  # ROW_NUMBER() OVER () — simplest window; likely 0A000.
+  - query: SELECT id, ROW_NUMBER() OVER () FROM t ORDER BY id
+    error_code: "42883"
+  # RANK() OVER (ORDER BY v).
+  - query: SELECT id, RANK() OVER (ORDER BY v) FROM t ORDER BY id
+    error_code: "42883"
+  # DENSE_RANK() OVER (PARTITION BY g ORDER BY v).
+  - query: SELECT id, DENSE_RANK() OVER (PARTITION BY g ORDER BY v) FROM t ORDER BY id
+    error_code: "42883"

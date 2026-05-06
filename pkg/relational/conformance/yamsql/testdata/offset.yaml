@@ -1,0 +1,35 @@
+# offset.yaml
+#
+# OFFSET / LIMIT — fdb-relational 4.11.1.0's AstNormalizer rejects both
+# clauses at parse time with UNSUPPORTED_QUERY (0AF00). Pagination is a
+# JDBC-only knob via Statement.setMaxRows; SQL-level LIMIT N / OFFSET
+# M is not in the planner's repertoire. Java checks offset first, so
+# the combined `LIMIT N OFFSET M` shape errors on OFFSET. Go aligns at
+# parse time in extractFromSimpleTable. Per project conformance
+# principle: doesn't work in Java → doesn't work in Go.
+name: offset
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1), (2), (3), (4), (5)
+tests:
+  # LIMIT + OFFSET — OFFSET-first error.
+  - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 1
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 100
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 0
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 3
+    error_code: "0AF00"
+  # Bare LIMIT.
+  - query: SELECT id FROM t ORDER BY id LIMIT 0
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 5
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 100
+    error_code: "0AF00"
+  # OFFSET without LIMIT — grammar rejects 42601 (LIMIT-required).
+  # Standard SQL grammar nests OFFSET inside the LIMIT clause.
+  - query: SELECT id FROM t ORDER BY id OFFSET 2
+    error_code: "42601"
