@@ -158,12 +158,6 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		regularPreds = append(regularPreds, p)
 	}
 
-	// Apply non-EXISTS predicates as a filter on the outer.
-	currentOuterPlan := outerPlan
-	if len(regularPreds) > 0 {
-		currentOuterPlan = plans.NewRecordQueryPredicatesFilterPlan(outerPlan, regularPreds)
-	}
-
 	joinType := plans.JoinExists
 	if negated {
 		joinType = plans.JoinNotExists
@@ -182,9 +176,25 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		innerAlias = aliases[1]
 	}
 
-	// Build a NLJ-style plan: outer (possibly filtered) × FOD.
+	// When there are correlated join predicates (e.g. `sub.v = a.v`),
+	// use the raw inner scan instead of the FOD wrapper. The NLJ
+	// executor's with-predicates path collects all inner rows and
+	// tests each outer+inner combination against the predicates; a
+	// FOD limits the inner to one row, making correlation incomplete.
+	// Don't pre-filter the outer either -- correlated predicates
+	// reference inner columns that aren't in the outer row map.
+	//
+	// When there are NO correlated predicates (pure uncorrelated
+	// EXISTS), the FOD handles the "any row?" semantics correctly.
+	var nljInner plans.RecordQueryPlan
+	if len(regularPreds) > 0 {
+		nljInner = innerPlan
+	} else {
+		nljInner = fodPlan
+	}
+
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		currentOuterPlan, fodPlan,
+		outerPlan, nljInner,
 		regularPreds,
 		joinType,
 		outerAlias, innerAlias,
