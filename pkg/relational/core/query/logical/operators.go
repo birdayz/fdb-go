@@ -8,6 +8,14 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// ExistsSubquery pairs an existential alias with the logical plan for
+// an EXISTS subquery. Carried on LogicalFilter so the Cascades
+// translator can build ExistentialQuantifiers over the subquery plans.
+type ExistsSubquery struct {
+	Alias values.CorrelationIdentifier
+	Plan  LogicalOperator
+}
+
 // --- Leaf operators (no children) ----------------------------------
 
 // LogicalScan reads a single table. Empty Alias means "use the table
@@ -46,9 +54,10 @@ func (s *LogicalScan) Explain(indent string) string {
 // builder is constructed without a metadata-backed catalog (today's
 // naive_generator Explain path, which has no transaction in scope).
 type LogicalFilter struct {
-	Input         LogicalOperator
-	Predicate     predicates.QueryPredicate // preferred when non-nil
-	PredicateText string                    // source-text fallback
+	Input            LogicalOperator
+	Predicate        predicates.QueryPredicate // preferred when non-nil
+	PredicateText    string                    // source-text fallback
+	ExistsSubqueries []ExistsSubquery          // subquery plans for EXISTS predicates
 }
 
 // NewFilter constructs a text-only LogicalFilter — used by the

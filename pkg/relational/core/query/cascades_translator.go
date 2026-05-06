@@ -108,6 +108,33 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	if f.Predicate != nil && predicateContainsUnsafeFunction(f.Predicate) {
 		return nil
 	}
+
+	// EXISTS subqueries: when the filter carries existential subquery
+	// plans, build a SelectExpression with ForEach + Existential
+	// quantifiers. The ExistsPredicate in the predicate tree references
+	// the existential alias; the planner's ImplementSimpleSelectRule
+	// handles the existential quantifier via FirstOrDefaultPlan.
+	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
+		outerQ := expressions.ForEachQuantifier(innerRef)
+		quantifiers := []expressions.Quantifier{outerQ}
+
+		for _, esq := range f.ExistsSubqueries {
+			subRef := t.translateRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+		}
+
+		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
+		return expressions.NewSelectExpression(
+			resultValue,
+			quantifiers,
+			[]predicates.QueryPredicate{f.Predicate},
+		)
+	}
+
 	var preds []predicates.QueryPredicate
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
@@ -335,14 +362,26 @@ func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
-	if j.Kind != logical.JoinInner {
-		return nil
+	// For RIGHT JOIN, swap branches and treat as LEFT JOIN. The NLJ
+	// executor iterates the "outer" (left) and for each unmatched row
+	// emits NULLs for the inner (right) columns. Swapping makes the
+	// originally-right table the outer, which is exactly RIGHT JOIN
+	// semantics. This matches the standard approach — Java's Cascades
+	// doesn't distinguish RIGHT from LEFT either; the planner
+	// normalises RIGHT → LEFT with swapped children.
+	left := j.Left
+	right := j.Right
+	kind := j.Kind
+	if kind == logical.JoinRight {
+		left, right = right, left
+		kind = logical.JoinLeft
 	}
-	leftRef := t.translateRef(j.Left)
+
+	leftRef := t.translateRef(left)
 	if leftRef == nil {
 		return nil
 	}
-	rightRef := t.translateRef(j.Right)
+	rightRef := t.translateRef(right)
 	if rightRef == nil {
 		return nil
 	}
@@ -356,15 +395,25 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		}
 	}
 
-	leftAlias := sourceAlias(j.Left)
-	rightAlias := sourceAlias(j.Right)
+	leftAlias := sourceAlias(left)
+	rightAlias := sourceAlias(right)
+
+	// Map logical join kind to the expressions-level JoinType.
+	var joinType expressions.JoinType
+	switch kind {
+	case logical.JoinLeft:
+		joinType = expressions.JoinLeftOuter
+	default:
+		joinType = expressions.JoinInner
+	}
 
 	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
-	return expressions.NewSelectExpressionWithAliases(
+	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
 		preds,
 		[]string{leftAlias, rightAlias},
+		joinType,
 	)
 }
 

@@ -37,6 +37,7 @@ package embedded
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -986,12 +987,29 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		return op, nil
 	}
 
+	// Install a SubqueryPlanner on the resolver so EXISTS subqueries
+	// in WHERE clauses can be planned. The planner collects (alias,
+	// plan) pairs that get attached to the LogicalFilter after the
+	// walk succeeds.
+	var existsPlanner *existsSubqueryPlanner
+	if resolver != nil && md != nil {
+		existsPlanner = &existsSubqueryPlanner{md: md}
+		resolver.SetSubqueryPlanner(existsPlanner)
+	}
+
 	// Walk WHERE expression through the resolver to catch ambiguous/
 	// undefined column references before the predicate builder. The
 	// predicate builder swallows errors into text fallback — this
 	// check ensures semantic errors surface with correct SQLSTATE.
+	//
+	// When the walk succeeds AND the SubqueryPlanner collected EXISTS
+	// subqueries, use the pre-walk predicate directly — the
+	// buildWherePredicate functions don't have a SubqueryPlanner and
+	// would decline the EXISTS shape, falling back to text.
+	var preWalkPred predicates.QueryPredicate
 	if resolver != nil && sq.whereExpr.Expression() != nil {
-		if _, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression()); walkErr != nil {
+		walked, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
+		if walkErr != nil {
 			var ambigErr *semantic.AmbiguousColumnError
 			if errors.As(walkErr, &ambigErr) {
 				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
@@ -1016,7 +1034,20 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if errors.As(walkErr, &binErr) {
 				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
 			}
+		} else {
+			preWalkPred = walked
 		}
+	}
+
+	// When the pre-walk produced an EXISTS-bearing predicate, use it
+	// directly. The buildWherePredicate functions build their own
+	// resolvers without a SubqueryPlanner — they'd decline the EXISTS
+	// shape and fall back to text, losing the subquery plans.
+	if existsPlanner != nil && len(existsPlanner.subqueries) > 0 && preWalkPred != nil {
+		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		_ = upgradeFirstFilter(op, pred)
+		upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+		return op, nil
 	}
 
 	var pred predicates.QueryPredicate
@@ -1221,6 +1252,24 @@ func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]st
 			}
 		}
 	}
+}
+
+// upgradeFirstFilterExistsSubqueries walks the single-child chain
+// from op and, at the first LogicalFilter, attaches the EXISTS
+// subquery plans. Returns true when a Filter was found.
+func upgradeFirstFilterExistsSubqueries(op logical.LogicalOperator, subqueries []logical.ExistsSubquery) bool {
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			f.ExistsSubqueries = subqueries
+			return true
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			return false
+		}
+		cur = ch[0]
+	}
+	return false
 }
 
 // upgradeFirstFilter walks the single-child chain from op and, at
@@ -2548,4 +2597,32 @@ func buildLogicalPlanForUnionWithCatalog(
 		result = logical.NewSort(result, liftedSort.Keys)
 	}
 	return result, nil
+}
+
+// existsSubqueryPlanner implements expr.SubqueryPlanner. It builds
+// logical plans for EXISTS subqueries and collects the (alias, plan)
+// pairs that the LogicalFilter needs to carry to the Cascades
+// translator.
+type existsSubqueryPlanner struct {
+	md         *recordlayer.RecordMetaData
+	subqueries []logical.ExistsSubquery
+}
+
+func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
+	if q == nil {
+		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
+	}
+	innerOp, err := buildLogicalPlanForQueryWithCatalog(q, p.md)
+	if err != nil {
+		return values.CorrelationIdentifier{}, err
+	}
+	if innerOp == nil {
+		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: inner query could not be planned")
+	}
+	alias := values.UniqueCorrelationIdentifier()
+	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
+		Alias: alias,
+		Plan:  innerOp,
+	})
+	return alias, nil
 }

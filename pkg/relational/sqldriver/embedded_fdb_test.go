@@ -3672,9 +3672,8 @@ func TestFDB_InnerJoin(t *testing.T) {
 	))
 }
 
-// TestFDB_LeftJoin verifies LEFT JOIN is rejected by the Cascades planner.
-// Java's fdb-relational 4.11.1.0 does not support LEFT OUTER JOIN through
-// the Cascades path (no ExistentialQuantifier support in the relational layer).
+// TestFDB_LeftJoin verifies LEFT OUTER JOIN: unmatched rows from the
+// left table appear with NULLs for the right table's columns.
 func TestFDB_LeftJoin(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -3695,18 +3694,43 @@ func TestFDB_LeftJoin(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
+	// Alice has an order, Bob does not.
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// LEFT JOIN not supported — Cascades rejects with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		SELECT Customer.name, Ord.amount
 		FROM Customer
 		LEFT JOIN Ord ON Customer.id = Ord.customer_id`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name   string
+		amount *int64 // nullable
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.amount)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+
+	// Alice matched → amount=100; Bob unmatched → amount=NULL.
+	g.Expect(len(got)).To(gomega.Equal(2))
+	nameSet := map[string]*int64{}
+	for _, r := range got {
+		nameSet[r.name] = r.amount
+	}
+	g.Expect(nameSet).To(gomega.HaveKey("Alice"))
+	g.Expect(*nameSet["Alice"]).To(gomega.Equal(int64(100)))
+	g.Expect(nameSet).To(gomega.HaveKey("Bob"))
+	g.Expect(nameSet["Bob"]).To(gomega.BeNil()) // NULL
 }
 
 func TestFDB_JoinWhere(t *testing.T) {
@@ -3764,8 +3788,9 @@ func TestFDB_JoinWhere(t *testing.T) {
 	g.Expect(got).To(gomega.ConsistOf(row{1, 500}))
 }
 
-// TestFDB_RightJoin verifies RIGHT JOIN is rejected by the Cascades planner.
-// Java's fdb-relational 4.11.1.0 does not support RIGHT OUTER JOIN.
+// TestFDB_RightJoin verifies RIGHT OUTER JOIN: unmatched rows from the
+// right table appear with NULLs for the left table's columns.
+// Internally RIGHT JOIN is normalised to LEFT JOIN by swapping branches.
 func TestFDB_RightJoin(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -3786,18 +3811,44 @@ func TestFDB_RightJoin(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
+	// Customer Alice (id=1) has an order; order id=2 has no matching customer.
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (2, 99, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// RIGHT JOIN not supported — Cascades rejects with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	// RIGHT JOIN: all orders, with NULL customer name for unmatched.
+	rows, err := db.QueryContext(ctx, `
 		SELECT Customer.name, Ord.amount
 		FROM Customer
 		RIGHT JOIN Ord ON Customer.id = Ord.customer_id`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name   *string // nullable (unmatched customer)
+		amount int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.amount)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+
+	// Order 1 matched → name=Alice; Order 2 unmatched → name=NULL.
+	g.Expect(len(got)).To(gomega.Equal(2))
+	amountToName := map[int64]*string{}
+	for _, r := range got {
+		amountToName[r.amount] = r.name
+	}
+	g.Expect(amountToName).To(gomega.HaveKey(int64(100)))
+	g.Expect(*amountToName[int64(100)]).To(gomega.Equal("Alice"))
+	g.Expect(amountToName).To(gomega.HaveKey(int64(200)))
+	g.Expect(amountToName[int64(200)]).To(gomega.BeNil()) // NULL
 }
 
 func TestFDB_CountDistinct(t *testing.T) {

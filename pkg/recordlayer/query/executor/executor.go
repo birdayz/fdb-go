@@ -742,6 +742,29 @@ func executeNestedLoopJoin(
 	joinType := p.GetJoinType()
 	var results []QueryResult
 
+	// EXISTS / NOT EXISTS semi-join: the inner is a FirstOrDefault plan.
+	// For each outer row, run the inner once. EXISTS passes the outer
+	// row when the inner produces a non-null result; NOT EXISTS passes
+	// it when the inner is empty (null result).
+	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
+		for _, outerRow := range outerRows {
+			innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+			if innerErr != nil {
+				return nil, innerErr
+			}
+			innerResult, innerErr := innerCursor.OnNext(ctx)
+			_ = innerCursor.Close()
+			if innerErr != nil {
+				return nil, innerErr
+			}
+			hasRow := innerResult.HasNext() && innerResult.GetValue().Datum != nil
+			if (joinType == plans.JoinExists && hasRow) || (joinType == plans.JoinNotExists && !hasRow) {
+				results = append(results, outerRow)
+			}
+		}
+		return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	}
+
 	for _, outerRow := range outerRows {
 		innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
 		if err != nil {
@@ -763,7 +786,11 @@ func executeNestedLoopJoin(
 		}
 
 		if !matched && joinType == plans.JoinLeftOuter {
-			results = append(results, outerRow)
+			// Emit the outer row with qualified alias keys so that
+			// downstream projections (e.g. "CUSTOMER.NAME") resolve
+			// correctly. Inner-table columns are absent from the map;
+			// the ResultSet treats missing keys as NULL.
+			results = append(results, qualifyOuterRow(outerRow, p.GetOuterAlias()))
 		}
 	}
 
@@ -820,6 +847,36 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 		}
 	}
 	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+}
+
+// qualifyOuterRow builds a result row from an unmatched LEFT JOIN outer
+// row, adding alias-qualified keys (e.g. "CUSTOMER.NAME") so that
+// downstream projections using qualified column references resolve
+// correctly. This mirrors the outer-half of mergeRows without an inner.
+func qualifyOuterRow(outer QueryResult, outerAlias string) QueryResult {
+	outerMap, ok := outer.Datum.(map[string]any)
+	if !ok {
+		return outer
+	}
+	qualified := make(map[string]any, len(outerMap)*2)
+	outerType := recordTypeName(outer)
+	outerQual := outerAlias
+	if outerQual == "" {
+		outerQual = outerType
+	}
+	for k, v := range outerMap {
+		qualified[k] = v
+		if strings.Contains(k, ".") {
+			continue
+		}
+		if outerQual != "" {
+			qualified[outerQual+"."+strings.ToUpper(k)] = v
+		}
+		if outerAlias != "" && outerType != "" && outerAlias != outerType {
+			qualified[outerType+"."+strings.ToUpper(k)] = v
+		}
+	}
+	return QueryResult{Datum: qualified, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
 }
 
 func recordTypeName(qr QueryResult) string {

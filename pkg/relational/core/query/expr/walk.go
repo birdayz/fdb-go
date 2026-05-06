@@ -87,6 +87,12 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 			return nil, err
 		}
 		return &predicateValue{pred: r.ResolveNot(child)}, nil
+	case *antlrgen.ExistsExpressionAtomContext:
+		pred, err := r.walkExistsPredicate(c)
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: pred}, nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }
@@ -793,6 +799,8 @@ func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (predicates.Qu
 			return nil, err
 		}
 		return r.ResolveNot(child), nil
+	case *antlrgen.ExistsExpressionAtomContext:
+		return r.walkExistsPredicate(c)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }
@@ -1380,6 +1388,26 @@ type InvalidBinaryLiteralError struct {
 
 func (e *InvalidBinaryLiteralError) Error() string {
 	return fmt.Sprintf("invalid binary literal %q: %s", e.Text, e.Reason)
+}
+
+// walkExistsPredicate handles `EXISTS (SELECT ...)`. Delegates to the
+// Resolver's SubqueryPlanner to build the inner query's logical plan
+// and allocate a fresh existential alias. Returns an ExistsPredicate
+// wrapping the alias. Declines with UnsupportedExpressionShapeError
+// when no SubqueryPlanner is installed.
+func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext) (predicates.QueryPredicate, error) {
+	if r.subqueryPlanner == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS (no SubqueryPlanner)"}
+	}
+	q := ctx.Query()
+	if q == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS without inner Query"}
+	}
+	alias, err := r.subqueryPlanner.BuildExists(q)
+	if err != nil {
+		return nil, err
+	}
+	return predicates.NewExistsPredicate(alias), nil
 }
 
 // NumericOverflowLiteralError signals that a numeric literal overflows

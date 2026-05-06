@@ -70,8 +70,26 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
+
+// SubqueryPlanner is the callback interface for building EXISTS subquery
+// plans from the expr walker. The embedded package provides the
+// implementation that calls buildLogicalPlanForQuery and stores the
+// result. The Resolver itself is agnostic to how the plan is built —
+// it only needs a fresh existential alias and the plan reference.
+//
+// BuildExists receives the inner Query context from an
+// ExistsExpressionAtomContext and returns:
+//   - alias: a unique CorrelationIdentifier for the existential quantifier
+//   - err: non-nil when the inner query cannot be planned
+//
+// The planner stores the (alias → plan) mapping externally; the
+// Resolver creates an ExistsPredicate referencing the alias.
+type SubqueryPlanner interface {
+	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
+}
 
 // Resolver converts parsed SQL expressions into cascades Values. It
 // needs a Scope (to resolve identifiers) and an Analyzer (to run
@@ -104,6 +122,19 @@ type Resolver struct {
 	// NamedValue.Ordinal (1-based). Named parameters (`?foo` / `$bar`)
 	// keep their declared name and consume no ordinal slot.
 	nextOrdinal int
+	// subqueryPlanner is the callback for building EXISTS subquery
+	// plans. Set via SetSubqueryPlanner by the catalog-aware builder
+	// before walking WHERE predicates. nil means EXISTS subqueries
+	// decline with UnsupportedExpressionShapeError.
+	subqueryPlanner SubqueryPlanner
+}
+
+// SetSubqueryPlanner installs a callback that builds logical plans for
+// EXISTS subqueries. Must be called before WalkPredicate if EXISTS
+// support is desired. Passing nil disables EXISTS handling (the
+// walker declines with UnsupportedExpressionShapeError).
+func (r *Resolver) SetSubqueryPlanner(p SubqueryPlanner) {
+	r.subqueryPlanner = p
 }
 
 // New constructs a Resolver bound to a scope. Nil analyzer or nil

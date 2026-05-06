@@ -7,6 +7,19 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// JoinType carried on a SelectExpression to distinguish INNER vs OUTER
+// join semantics. Mirrors plans.JoinType but lives in the expressions
+// package to avoid a circular dependency (plans imports expressions).
+// The ImplementNestedLoopJoinRule maps this to the corresponding
+// plans.JoinType when creating the physical plan.
+type JoinType int
+
+const (
+	JoinInner     JoinType = iota
+	JoinLeftOuter          // LEFT OUTER JOIN — unmatched outer rows emit NULLs for inner columns
+	JoinCross              // CROSS JOIN — no predicate, cartesian product
+)
+
 // SelectExpression is the FROM-list / JOIN anchor — the one logical
 // operator that returns true from CanCorrelate. All others have at
 // most one child or have the SQL-set semantics that forbid
@@ -37,6 +50,7 @@ type SelectExpression struct {
 	quantifiers     []Quantifier
 	queryPredicates []predicates.QueryPredicate
 	sourceAliases   []string
+	joinType        JoinType // default JoinInner (zero value)
 }
 
 // NewSelectExpression builds a SELECT. quantifiers and predicates are
@@ -69,6 +83,28 @@ func NewSelectExpressionWithAliases(resultValue values.Value, quantifiers []Quan
 		sourceAliases:   copiedA,
 	}
 }
+
+// NewSelectExpressionWithJoinType builds a SELECT with source aliases
+// and an explicit join type (LEFT OUTER, CROSS, etc.).
+func NewSelectExpressionWithJoinType(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate, sourceAliases []string, joinType JoinType) *SelectExpression {
+	copiedQ := make([]Quantifier, len(quantifiers))
+	copy(copiedQ, quantifiers)
+	copiedP := make([]predicates.QueryPredicate, len(queryPredicates))
+	copy(copiedP, queryPredicates)
+	copiedA := make([]string, len(sourceAliases))
+	copy(copiedA, sourceAliases)
+	return &SelectExpression{
+		resultValue:     resultValue,
+		quantifiers:     copiedQ,
+		queryPredicates: copiedP,
+		sourceAliases:   copiedA,
+		joinType:        joinType,
+	}
+}
+
+// GetJoinType returns the join type (INNER, LEFT OUTER, CROSS).
+// Default (zero value) is JoinInner.
+func (e *SelectExpression) GetJoinType() JoinType { return e.joinType }
 
 // GetSourceAliases returns the SQL-level table aliases, parallel to
 // quantifiers. May be nil or shorter than quantifiers if aliases
@@ -132,6 +168,9 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 		return false
 	}
 	_ = aliases
+	if e.joinType != o.joinType {
+		return false
+	}
 	if values.ExplainValue(e.resultValue) != values.ExplainValue(o.resultValue) {
 		return false
 	}
@@ -151,6 +190,7 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 func (e *SelectExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("select|"))
+	h.Write([]byte{byte(e.joinType)})
 	h.Write([]byte(values.ExplainValue(e.resultValue)))
 	h.Write([]byte{0})
 	for _, p := range e.queryPredicates {
@@ -168,6 +208,7 @@ func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) RelationalE
 		quantifiers:     copied,
 		queryPredicates: e.queryPredicates,
 		sourceAliases:   e.sourceAliases,
+		joinType:        e.joinType,
 	}
 }
 

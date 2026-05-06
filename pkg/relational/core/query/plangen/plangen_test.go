@@ -1443,8 +1443,8 @@ func TestConvert_DeeplyNested_ProjectSortFilterScan(t *testing.T) {
 // at every level so callers using errors.Is can detect it.
 func TestConvert_RecursionPropagatesErrUnsupported(t *testing.T) {
 	t.Parallel()
-	// LEFT JOIN with text-only ON is unsupported.
-	inner := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "a.id = b.aid")
+	// LEFT JOIN without any predicate (no ON, no structured pred) is unsupported.
+	inner := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "")
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	outer := logical.NewFilterWithPredicate(inner, pT, "TRUE")
 	_, err := plangen.Convert(outer)
@@ -1798,12 +1798,22 @@ func TestConvert_Join_InnerWithTextPredicate(t *testing.T) {
 	}
 }
 
-func TestConvert_Join_LeftJoinNoStructuredPred_Unsupported(t *testing.T) {
+func TestConvert_Join_LeftJoinTextPred(t *testing.T) {
 	t.Parallel()
 	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "a.id = b.aid")
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("expected ErrUnsupported, got %v", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := got.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("got %T, want *SelectExpression", got)
+	}
+	if sel.GetJoinType() != expressions.JoinLeftOuter {
+		t.Fatalf("join type = %d, want JoinLeftOuter", sel.GetJoinType())
+	}
+	if len(sel.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(sel.GetPredicates()))
 	}
 }
 
