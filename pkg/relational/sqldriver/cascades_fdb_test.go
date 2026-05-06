@@ -1490,6 +1490,108 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 	}
 }
 
+func TestFDB_CascadesRecursiveCTE(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_reccte_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("reccte_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// Build a small hierarchy:
+	//   1 (root, parent=-1)
+	//   ├── 50 (parent=1)
+	//   │   └── 250 (parent=50)
+	//   └── 51 (parent=1)
+	for _, row := range [][2]int64{{1, -1}, {50, 1}, {51, 1}, {250, 50}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d)", row[0], row[1])); err != nil {
+			t.Fatalf("INSERT %d: %v", row[0], err)
+		}
+	}
+
+	// Recursive CTE: walk descendants of root (parent=-1).
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE descendants AS ("+
+			"SELECT id, parent FROM t WHERE parent = -1 "+
+			"UNION ALL "+
+			"SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id"+
+			") SELECT COUNT(*) FROM descendants")
+	if err != nil {
+		t.Fatalf("recursive CTE count query: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("expected a row")
+	}
+	var cnt int64
+	if err := rows.Scan(&cnt); err != nil {
+		t.Fatalf("scan count: %v", err)
+	}
+	if cnt != 4 {
+		t.Fatalf("expected COUNT(*)=4, got %d", cnt)
+	}
+	rows.Close()
+
+	// Verify that individual column values are NOT NULL.
+	// This is the key regression: before the fix, the recursive leg's
+	// datum used qualified keys ("B.ID") but the outer projection
+	// expected unqualified keys ("ID"), producing NULLs.
+	rows2, err := db.QueryContext(ctx,
+		"WITH RECURSIVE descendants AS ("+
+			"SELECT id, parent FROM t WHERE parent = -1 "+
+			"UNION ALL "+
+			"SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id"+
+			") SELECT id FROM descendants ORDER BY id")
+	if err != nil {
+		t.Fatalf("recursive CTE id query: %v", err)
+	}
+	defer rows2.Close()
+
+	var ids []int64
+	for rows2.Next() {
+		var id int64
+		if err := rows2.Scan(&id); err != nil {
+			t.Fatalf("scan id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows2.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	expected := []int64{1, 50, 51, 250}
+	if len(ids) != len(expected) {
+		t.Fatalf("expected %d rows, got %d: %v", len(expected), len(ids), ids)
+	}
+	for i, want := range expected {
+		if ids[i] != want {
+			t.Fatalf("row %d: expected %d, got %d (all ids: %v)", i, want, ids[i], ids)
+		}
+	}
+	t.Logf("Recursive CTE → %v ✓", ids)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
