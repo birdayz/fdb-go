@@ -299,12 +299,12 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			}
 			if len(allProj) > 0 {
 				proj := logical.NewProject(op, allProj, nil)
-				// All post-agg slots are aggregate outputs or expressions —
-				// mark all as "computed" so validateTablesAndColumns doesn't
-				// try to resolve them against the base table schema.
+				// Mark outExpr slots as computed (need Value resolution).
+				// Aggregate output and groupCol slots are column references
+				// to the aggregate's output — NOT computed.
 				computed := make([]bool, len(allProj))
-				for i := range computed {
-					computed[i] = true
+				for i, e := range allAntlr {
+					computed[i] = e != nil
 				}
 				proj.IsComputed = computed
 				op = proj
