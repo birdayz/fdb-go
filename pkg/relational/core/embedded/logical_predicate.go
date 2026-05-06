@@ -1781,7 +1781,10 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	}
 	for i := range sort.Keys {
 		ob := findOrderByForKey(sq, sort.Keys[i].Expr)
-		if ob == nil || ob.rawExpr == nil || ob.colName != "" {
+		if ob == nil || ob.rawExpr == nil {
+			continue
+		}
+		if ob.colName != "" && !strings.HasPrefix(ob.colName, "__orderby_aggexpr_") {
 			continue
 		}
 		v, err := resolver.WalkExpression(ob.rawExpr)
