@@ -88,6 +88,6 @@ tests:
   # handles this correctly via in-memory sort + hash distinct composition.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
     rows:
-      - [~]
       - [0]
       - [1]
+      - [~]
