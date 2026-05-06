@@ -195,10 +195,40 @@ func buildDerivedTableSource(
 	if err != nil || innerSQ == nil {
 		return semantic.ScopeSource{}, false
 	}
-	// Decline shapes the seed can't safely synthesise a column schema for.
-	if innerSQ.derivedQuery != nil ||
-		len(innerSQ.joins) > 0 ||
-		innerSQ.projCols == nil || // SELECT *
+	// Derived-of-derived: recursively build the inner scope.
+	if innerSQ.derivedQuery != nil {
+		innerSrc, ok := buildDerivedTableSource(md, innerSQ.tableName, innerSQ.derivedQuery)
+		if !ok {
+			return semantic.ScopeSource{}, false
+		}
+		aliasID := semantic.NewUnquoted(alias)
+		// Apply inner projection aliases if present.
+		cols := innerSrc.Table.Columns()
+		if innerSQ.projCols != nil {
+			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
+			for i, col := range innerSQ.projCols {
+				name := col
+				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
+					name = innerSQ.projAliases[i]
+				}
+				cols = append(cols, semantic.Column{
+					Id:       semantic.NewUnquoted(name),
+					Type:     "UNKNOWN",
+					Nullable: true,
+				})
+			}
+		}
+		virtualTable := &semantic.StaticTable{
+			TableName:    semantic.FromSegments([]string{alias}, false),
+			TableColumns: cols,
+		}
+		return semantic.ScopeSource{
+			Table:           virtualTable,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}, true
+	}
+	if len(innerSQ.joins) > 0 ||
 		len(innerSQ.aggCols) > 0 ||
 		innerSQ.countStar ||
 		innerSQ.tableName == "" {
