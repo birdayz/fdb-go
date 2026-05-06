@@ -883,7 +883,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if resolver != nil {
-		for _, gb := range sq.groupBy {
+		for i, gb := range sq.groupBy {
+			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+				continue
+			}
 			if err := resolveColumnName(resolver, gb); err != nil {
 				return nil, err
 			}
@@ -1490,13 +1493,42 @@ func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
 	return nil
 }
 
-func validateGroupByProjection(sq *selectQuery, _ *recordlayer.RecordMetaData) error {
+func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) error {
 	groupBySet := make(map[string]bool, len(sq.groupBy))
 	for _, gb := range sq.groupBy {
 		groupBySet[strings.ToUpper(gb)] = true
 		if dot := strings.LastIndex(gb, "."); dot >= 0 {
 			groupBySet[strings.ToUpper(gb[dot+1:])] = true
 		}
+	}
+
+	var tableFields map[string]bool
+	if md != nil && sq.tableName != "" {
+		rt := md.GetRecordType(sq.tableName)
+		if rt != nil && rt.Descriptor != nil {
+			fields := rt.Descriptor.Fields()
+			tableFields = make(map[string]bool, fields.Len())
+			for i := 0; i < fields.Len(); i++ {
+				tableFields[strings.ToUpper(string(fields.Get(i).Name()))] = true
+			}
+		}
+	}
+
+	checkColumn := func(col string) error {
+		upper := strings.ToUpper(col)
+		bare := upper
+		if dot := strings.LastIndex(bare, "."); dot >= 0 {
+			bare = bare[dot+1:]
+		}
+		if tableFields != nil && !tableFields[bare] {
+			return api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist", col)
+		}
+		if !groupBySet[bare] && !groupBySet[upper] {
+			return api.NewErrorf(api.ErrCodeGroupingError,
+				"column %q must appear in the GROUP BY clause or be used in an aggregate function", col)
+		}
+		return nil
 	}
 
 	if len(sq.aggCols) > 0 {
@@ -1508,13 +1540,8 @@ func validateGroupByProjection(sq *selectQuery, _ *recordlayer.RecordMetaData) e
 			if col == "" {
 				col = ac.outName
 			}
-			upper := strings.ToUpper(col)
-			if dot := strings.LastIndex(upper, "."); dot >= 0 {
-				upper = upper[dot+1:]
-			}
-			if !groupBySet[upper] && !groupBySet[strings.ToUpper(col)] {
-				return api.NewErrorf(api.ErrCodeGroupingError,
-					"column %q must appear in the GROUP BY clause or be used in an aggregate function", col)
+			if err := checkColumn(col); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -1524,13 +1551,8 @@ func validateGroupByProjection(sq *selectQuery, _ *recordlayer.RecordMetaData) e
 		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 			continue
 		}
-		upper := strings.ToUpper(col)
-		if dot := strings.LastIndex(upper, "."); dot >= 0 {
-			upper = upper[dot+1:]
-		}
-		if !groupBySet[upper] && !groupBySet[strings.ToUpper(col)] {
-			return api.NewErrorf(api.ErrCodeGroupingError,
-				"column %q must appear in the GROUP BY clause or be used in an aggregate function", col)
+		if err := checkColumn(col); err != nil {
+			return err
 		}
 	}
 	return nil
