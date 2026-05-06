@@ -24,8 +24,10 @@ import (
 //     Quantifiers range over freshly-allocated single-member
 //     Reference objects. Pointer identity with the input tree's
 //     References is NOT preserved.
-//   - Cycle-safe: walks down through Quantifiers only; the seed
-//     planner doesn't construct cycles.
+//   - Cycle-safe: a visited set guards against infinite recursion
+//     through cyclic Reference DAGs (e.g. recursive CTE expression
+//     trees where the RecursiveUnion's quantifiers could form
+//     back-edges through the Memo).
 //   - Switch-on-concrete-type for constructor dispatch — each
 //     concrete RelationalExpression type the seed exposes has an
 //     arm. Adding a new type requires extending this switch.
@@ -53,6 +55,21 @@ func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (
 	if stats == nil {
 		stats = DefaultStatistics{}
 	}
+	return extractBestPlanWithVisited(ref, stats, make(map[*expressions.Reference]bool))
+}
+
+// extractBestPlanWithVisited is the cycle-guarded inner loop for
+// ExtractBestPlanWith. The visited map prevents infinite recursion
+// when the Reference DAG contains back-edges (e.g. recursive CTE
+// expression trees).
+func extractBestPlanWithVisited(ref *expressions.Reference, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+	if ref == nil || len(ref.AllMembers()) == 0 {
+		return nil, nil
+	}
+	if visited[ref] {
+		return nil, nil
+	}
+	visited[ref] = true
 	less := CostLessWith(stats)
 	var best expressions.RelationalExpression
 	if finals := ref.FinalMembers(); len(finals) > 0 {
@@ -63,7 +80,7 @@ func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (
 	if best == nil {
 		return nil, nil
 	}
-	return rebuildExpression(best, stats)
+	return rebuildExpressionVisited(best, stats, visited)
 }
 
 // BestMemberSelector is the optional interface a planner implements
@@ -101,6 +118,22 @@ func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelec
 	if stats == nil {
 		stats = DefaultStatistics{}
 	}
+	return extractBestPlanFromSelectorVisited(ref, sel, stats, make(map[*expressions.Reference]bool))
+}
+
+// extractBestPlanFromSelectorVisited is the cycle-guarded inner loop
+// for ExtractBestPlanFromSelector. The visited map prevents infinite
+// recursion when the Reference DAG contains back-edges (e.g.
+// recursive CTE expression trees where RecursiveUnion quantifiers
+// form cycles through the Memo).
+func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+	if ref == nil || len(ref.AllMembers()) == 0 {
+		return nil, nil
+	}
+	if visited[ref] {
+		return nil, nil
+	}
+	visited[ref] = true
 	var best expressions.RelationalExpression
 	if sel != nil && sel.HasBestMember(ref) {
 		best = sel.BestMember(ref)
@@ -120,19 +153,20 @@ func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelec
 	if best == nil {
 		return nil, nil
 	}
-	return rebuildExpressionFromSelector(best, sel, stats)
+	return rebuildExpressionFromSelectorVisited(best, sel, stats, visited)
 }
 
-// rebuildExpressionFromSelector is the same switch-based rebuilder
-// as rebuildExpression but recurses through ExtractBestPlanFromSelector
-// to consult the selector at every Reference.
-func rebuildExpressionFromSelector(e expressions.RelationalExpression, sel BestMemberSelector, stats StatisticsProvider) (expressions.RelationalExpression, error) {
+// rebuildExpressionFromSelectorVisited is the same switch-based
+// rebuilder as rebuildExpression but recurses through
+// extractBestPlanFromSelectorVisited to consult the selector at
+// every Reference, with cycle detection.
+func rebuildExpressionFromSelectorVisited(e expressions.RelationalExpression, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
 	if e == nil {
 		return nil, nil
 	}
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
 	for _, q := range e.GetQuantifiers() {
-		inner, err := ExtractBestPlanFromSelector(q.GetRangesOver(), sel, stats)
+		inner, err := extractBestPlanFromSelectorVisited(q.GetRangesOver(), sel, stats, visited)
 		if err != nil {
 			return nil, err
 		}
@@ -160,11 +194,12 @@ func bestFrom(members []expressions.RelationalExpression, less func(a, b express
 	return best
 }
 
-// rebuildExpression returns a fresh RelationalExpression of the same
-// concrete type as `e`, with each Quantifier's Reference replaced by
-// a singleton Reference holding the recursively-extracted best plan
-// of the original Reference under `stats`.
-func rebuildExpression(e expressions.RelationalExpression, stats StatisticsProvider) (expressions.RelationalExpression, error) {
+// rebuildExpressionVisited returns a fresh RelationalExpression of the
+// same concrete type as `e`, with each Quantifier's Reference replaced
+// by a singleton Reference holding the recursively-extracted best plan
+// of the original Reference under `stats`. The visited map provides
+// cycle detection.
+func rebuildExpressionVisited(e expressions.RelationalExpression, stats StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -172,7 +207,7 @@ func rebuildExpression(e expressions.RelationalExpression, stats StatisticsProvi
 	// Quantifiers for the new expression's children.
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
 	for _, q := range e.GetQuantifiers() {
-		inner, err := ExtractBestPlanWith(q.GetRangesOver(), stats)
+		inner, err := extractBestPlanWithVisited(q.GetRangesOver(), stats, visited)
 		if err != nil {
 			return nil, err
 		}
