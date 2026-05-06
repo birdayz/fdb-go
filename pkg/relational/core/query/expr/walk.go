@@ -1,6 +1,8 @@
 package expr
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -85,6 +87,12 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 			return nil, err
 		}
 		return &predicateValue{pred: r.ResolveNot(child)}, nil
+	case *antlrgen.ExistsExpressionAtomContext:
+		pred, err := r.walkExistsPredicate(c)
+		if err != nil {
+			return nil, err
+		}
+		return &predicateValue{pred: pred}, nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }
@@ -135,6 +143,8 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value,
 		return r.walkPreparedParameter(a.PreparedStatementParameter())
 	case *antlrgen.BitExpressionAtomContext:
 		return r.walkBitExpression(a)
+	case *antlrgen.SubqueryExpressionAtomContext:
+		return r.walkScalarSubquery(a)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
 }
@@ -246,7 +256,8 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 }
 
 // walkSpecificFunction dispatches the SpecificFunction subtypes.
-// Handles CAST/CONVERT (DataTypeFunctionCall) and CASE (CaseFunctionCall).
+// Handles CAST/CONVERT (DataTypeFunctionCall), CASE (CaseFunctionCall),
+// and SQL-standard datetime/user functions (SimpleFunctionCall).
 func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (values.Value, error) {
 	if sf == nil {
 		return nil, fmt.Errorf("expr.walkSpecificFunction: nil")
@@ -256,6 +267,9 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 	}
 	if simpleCaseCtx, ok := sf.(*antlrgen.CaseExpressionFunctionCallContext); ok {
 		return r.walkSimpleCaseFunctionCall(simpleCaseCtx)
+	}
+	if simple, ok := sf.(*antlrgen.SimpleFunctionCallContext); ok {
+		return r.walkSimpleFunctionCall(simple)
 	}
 	cast, ok := sf.(*antlrgen.DataTypeFunctionCallContext)
 	if !ok {
@@ -293,6 +307,29 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 		}
 	}
 	return r.ResolveCast(inner, target)
+}
+
+// walkSimpleFunctionCall handles the SQL-standard no-argument datetime
+// and user functions: CURRENT_TIMESTAMP, CURRENT_DATE, CURRENT_TIME,
+// LOCALTIME, CURRENT_USER. These parse as SimpleFunctionCallContext
+// (grammar: specificFunction → simpleFunctionCall). Each maps to a
+// zero-arg ScalarFunctionValue whose Evaluate dispatches in
+// evalScalarFunction.
+func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContext) (values.Value, error) {
+	switch {
+	case ctx.CURRENT_TIMESTAMP() != nil:
+		return values.NewScalarFunctionValue("CURRENT_TIMESTAMP", values.NullableString), nil
+	case ctx.CURRENT_DATE() != nil:
+		return values.NewScalarFunctionValue("CURRENT_DATE", values.NullableString), nil
+	case ctx.CURRENT_TIME() != nil:
+		return values.NewScalarFunctionValue("CURRENT_TIME", values.NullableString), nil
+	case ctx.LOCALTIME() != nil:
+		return values.NewScalarFunctionValue("LOCALTIME", values.NullableString), nil
+	case ctx.CURRENT_USER() != nil:
+		return &values.ConstantValue{Value: "", Typ: values.NullableString}, nil
+	default:
+		return nil, &UnsupportedExpressionShapeError{Shape: "unsupported SimpleFunctionCall"}
+	}
 }
 
 // walkCaseFunctionCall handles searched CASE expressions:
@@ -554,7 +591,10 @@ func scalarFunctionResultType(name string) (values.Type, bool) {
 		"REVERSE", "LEFT", "RIGHT":
 		return values.TypeString, true
 	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
-		"POSITION":
+		"POSITION",
+		"YEAR", "MONTH", "DAY", "DAYOFMONTH",
+		"HOUR", "MINUTE", "SECOND",
+		"DAYOFWEEK", "DAYOFYEAR":
 		return values.TypeInt, true
 	case "SQRT", "POWER", "POW", "EXP", "LN", "LOG", "PI":
 		return values.TypeFloat, true
@@ -764,6 +804,8 @@ func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (predicates.Qu
 			return nil, err
 		}
 		return r.ResolveNot(child), nil
+	case *antlrgen.ExistsExpressionAtomContext:
+		return r.walkExistsPredicate(c)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }
@@ -944,7 +986,10 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		exprs := ilc.Expressions()
 		if exprs == nil {
-			return nil, &UnsupportedExpressionShapeError{Shape: "IN with subquery/parameter/column (walker handles explicit list only)"}
+			if ilc.QueryExpressionBody() != nil {
+				return nil, &UnsupportedExpressionShapeError{Shape: "IN with subquery"}
+			}
+			return nil, &InColumnRefError{}
 		}
 		ec, ok := exprs.(*antlrgen.ExpressionsContext)
 		if !ok {
@@ -1242,6 +1287,8 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 			text = strings.ReplaceAll(text[1:len(text)-1], "''", "'")
 		}
 		return r.ResolveConstant(text)
+	case *antlrgen.BytesConstantContext:
+		return r.walkBytesConstant(k)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", c)}
 }
@@ -1266,6 +1313,14 @@ func (*InListNullError) Error() string {
 	return "NULL values are not allowed in the IN list"
 }
 
+// InColumnRefError signals `x IN y` where y is a column reference,
+// not an explicit value list. Java rejects this as unsupported syntax.
+type InColumnRefError struct{}
+
+func (*InColumnRefError) Error() string {
+	return "IN with a column reference is not supported"
+}
+
 // UnsupportedExpressionShapeError signals a parse-tree shape the
 // seed walker doesn't handle. Callers catching this can fall back
 // to the existing logical-builder path (which handles the full
@@ -1276,6 +1331,108 @@ type UnsupportedExpressionShapeError struct {
 
 func (e *UnsupportedExpressionShapeError) Error() string {
 	return fmt.Sprintf("expr.WalkExpression: unsupported shape: %s", e.Shape)
+}
+
+// walkBytesConstant handles hex (`x'CAFE'`) and base64 (`b64'yv4='`)
+// byte literals. Matches Java's ExpressionVisitor.visitBytesLiteral
+// + ParseHelpers.parseBytes: strips the prefix/suffix, decodes the
+// body, and wraps the result in a ConstantValue with BYTES type.
+//
+// Invalid hex (odd length, non-hex chars) or invalid base64 surfaces
+// as InvalidBinaryLiteralError so callers can map to SQLSTATE 22F03.
+func (r *Resolver) walkBytesConstant(bc *antlrgen.BytesConstantContext) (values.Value, error) {
+	bl := bc.BytesLiteral()
+	if bl == nil {
+		return nil, &InvalidBinaryLiteralError{Text: bc.GetText(), Reason: "empty bytes literal"}
+	}
+	blc, ok := bl.(*antlrgen.BytesLiteralContext)
+	if !ok {
+		return nil, &InvalidBinaryLiteralError{Text: bc.GetText(), Reason: fmt.Sprintf("unexpected BytesLiteral ctx %T", bl)}
+	}
+	if hexLit := blc.HEXADECIMAL_LITERAL(); hexLit != nil {
+		text := hexLit.GetText()
+		body := stripBytesPrefix(text, "x")
+		out, err := hex.DecodeString(body)
+		if err != nil {
+			return nil, &InvalidBinaryLiteralError{Text: text, Reason: err.Error()}
+		}
+		return r.ResolveConstant(out)
+	}
+	if b64Lit := blc.BASE64_LITERAL(); b64Lit != nil {
+		text := b64Lit.GetText()
+		body := stripBytesPrefix(text, "b64")
+		out, err := base64.StdEncoding.Strict().DecodeString(body)
+		if err != nil {
+			return nil, &InvalidBinaryLiteralError{Text: text, Reason: err.Error()}
+		}
+		return r.ResolveConstant(out)
+	}
+	return nil, &InvalidBinaryLiteralError{Text: bc.GetText(), Reason: "bytes literal must be hex or base64"}
+}
+
+// stripBytesPrefix removes the `<prefix>'...'` wrapping from a bytes
+// literal text token (e.g. `x'CAFE'` → `CAFE`, `b64'yv4='` → `yv4=`).
+// Case-insensitive on the prefix.
+func stripBytesPrefix(text, prefix string) string {
+	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, prefix) {
+		text = text[len(prefix):]
+	}
+	text = strings.TrimPrefix(text, "'")
+	text = strings.TrimSuffix(text, "'")
+	return text
+}
+
+// InvalidBinaryLiteralError signals a malformed hex or base64 byte
+// literal. Should be mapped to SQLSTATE 22F03
+// INVALID_BINARY_REPRESENTATION by the caller.
+type InvalidBinaryLiteralError struct {
+	Text   string
+	Reason string
+}
+
+func (e *InvalidBinaryLiteralError) Error() string {
+	return fmt.Sprintf("invalid binary literal %q: %s", e.Text, e.Reason)
+}
+
+// walkScalarSubquery handles `(SELECT ...)` scalar subquery atoms.
+// Delegates to the Resolver's SubqueryPlanner.BuildScalar to build
+// the inner query's logical plan and allocate a fresh alias. Returns
+// a ScalarSubqueryValue referencing the alias. Declines with
+// UnsupportedExpressionShapeError when no SubqueryPlanner is installed.
+func (r *Resolver) walkScalarSubquery(ctx *antlrgen.SubqueryExpressionAtomContext) (values.Value, error) {
+	if r.subqueryPlanner == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "scalar subquery (no SubqueryPlanner)"}
+	}
+	q := ctx.Query()
+	if q == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "scalar subquery without inner Query"}
+	}
+	alias, err := r.subqueryPlanner.BuildScalar(q)
+	if err != nil {
+		return nil, err
+	}
+	return values.NewScalarSubqueryValue(alias), nil
+}
+
+// walkExistsPredicate handles `EXISTS (SELECT ...)`. Delegates to the
+// Resolver's SubqueryPlanner to build the inner query's logical plan
+// and allocate a fresh existential alias. Returns an ExistsPredicate
+// wrapping the alias. Declines with UnsupportedExpressionShapeError
+// when no SubqueryPlanner is installed.
+func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext) (predicates.QueryPredicate, error) {
+	if r.subqueryPlanner == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS (no SubqueryPlanner)"}
+	}
+	q := ctx.Query()
+	if q == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS without inner Query"}
+	}
+	alias, err := r.subqueryPlanner.BuildExists(q)
+	if err != nil {
+		return nil, err
+	}
+	return predicates.NewExistsPredicate(alias), nil
 }
 
 // NumericOverflowLiteralError signals that a numeric literal overflows

@@ -3672,9 +3672,8 @@ func TestFDB_InnerJoin(t *testing.T) {
 	))
 }
 
-// TestFDB_LeftJoin verifies LEFT JOIN is rejected by the Cascades planner.
-// Java's fdb-relational 4.11.1.0 does not support LEFT OUTER JOIN through
-// the Cascades path (no ExistentialQuantifier support in the relational layer).
+// TestFDB_LeftJoin verifies LEFT OUTER JOIN: unmatched rows from the
+// left table appear with NULLs for the right table's columns.
 func TestFDB_LeftJoin(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -3695,18 +3694,43 @@ func TestFDB_LeftJoin(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
+	// Alice has an order, Bob does not.
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// LEFT JOIN not supported — Cascades rejects with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		SELECT Customer.name, Ord.amount
 		FROM Customer
 		LEFT JOIN Ord ON Customer.id = Ord.customer_id`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name   string
+		amount *int64 // nullable
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.amount)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+
+	// Alice matched → amount=100; Bob unmatched → amount=NULL.
+	g.Expect(len(got)).To(gomega.Equal(2))
+	nameSet := map[string]*int64{}
+	for _, r := range got {
+		nameSet[r.name] = r.amount
+	}
+	g.Expect(nameSet).To(gomega.HaveKey("Alice"))
+	g.Expect(*nameSet["Alice"]).To(gomega.Equal(int64(100)))
+	g.Expect(nameSet).To(gomega.HaveKey("Bob"))
+	g.Expect(nameSet["Bob"]).To(gomega.BeNil()) // NULL
 }
 
 func TestFDB_JoinWhere(t *testing.T) {
@@ -3764,8 +3788,9 @@ func TestFDB_JoinWhere(t *testing.T) {
 	g.Expect(got).To(gomega.ConsistOf(row{1, 500}))
 }
 
-// TestFDB_RightJoin verifies RIGHT JOIN is rejected by the Cascades planner.
-// Java's fdb-relational 4.11.1.0 does not support RIGHT OUTER JOIN.
+// TestFDB_RightJoin verifies RIGHT OUTER JOIN: unmatched rows from the
+// right table appear with NULLs for the left table's columns.
+// Internally RIGHT JOIN is normalised to LEFT JOIN by swapping branches.
 func TestFDB_RightJoin(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -3786,18 +3811,44 @@ func TestFDB_RightJoin(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
+	// Customer Alice (id=1) has an order; order id=2 has no matching customer.
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (2, 99, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// RIGHT JOIN not supported — Cascades rejects with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	// RIGHT JOIN: all orders, with NULL customer name for unmatched.
+	rows, err := db.QueryContext(ctx, `
 		SELECT Customer.name, Ord.amount
 		FROM Customer
 		RIGHT JOIN Ord ON Customer.id = Ord.customer_id`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name   *string // nullable (unmatched customer)
+		amount int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.amount)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+
+	// Order 1 matched → name=Alice; Order 2 unmatched → name=NULL.
+	g.Expect(len(got)).To(gomega.Equal(2))
+	amountToName := map[int64]*string{}
+	for _, r := range got {
+		amountToName[r.amount] = r.name
+	}
+	g.Expect(amountToName).To(gomega.HaveKey(int64(100)))
+	g.Expect(*amountToName[int64(100)]).To(gomega.Equal("Alice"))
+	g.Expect(amountToName).To(gomega.HaveKey(int64(200)))
+	g.Expect(amountToName[int64(200)]).To(gomega.BeNil()) // NULL
 }
 
 func TestFDB_CountDistinct(t *testing.T) {
@@ -4046,12 +4097,60 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Flag (id, active) VALUES (1, 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// EXISTS subquery — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 1) ORDER BY name ASC`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	// EXISTS subquery — Flag has a row with active=1, so all
+	// Customer rows pass the EXISTS filter.
+	rows, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 1) ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).NotTo(gomega.HaveOccurred())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
+}
+
+// TestFDB_CorrelatedExistsSelfJoin exercises correlated EXISTS on a
+// self-join — outer `t AS o` and inner `t` reference the same table.
+// The inner scope must register `t` and the outer scope `o` so the
+// correlated predicate `t.id = o.id` resolves correctly.
+func TestFDB_CorrelatedExistsSelfJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_corr_exists_selfjoin")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_corr_exists_selfjoin")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cesj_tmpl
+		CREATE TABLE t (id BIGINT NOT NULL, status STRING, lbl STRING, v BIGINT, notes STRING, PRIMARY KEY (id))
+		CREATE INDEX idx_status ON t (status)
+		CREATE INDEX idx_v ON t (v)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_corr_exists_selfjoin/main WITH TEMPLATE cesj_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_corr_exists_selfjoin?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO t VALUES (1, 'active', 'x', 10, 'n1'), (2, 'archived', 'y', 20, 'n2'), (3, 'active', 'z', 30, 'n3'), (4, 'deleted', 'q', 40, 'n4')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).NotTo(gomega.HaveOccurred())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 3}))
 }
 
 // TestFDB_CTE verifies WITH (CTE) support: materialization, WHERE filter,
@@ -4280,15 +4379,19 @@ func TestFDB_CTEChaining(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Pricey', 300)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE chaining where over100 references price from over50 projection scope — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		WITH over50 AS (SELECT id, name, price FROM Product WHERE price > 50),
 		     over100 AS (SELECT id, name FROM over50 WHERE price > 100)
 		SELECT name FROM over100`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(names).To(gomega.ConsistOf("Mid", "Pricey"))
 }
 
 func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
@@ -4498,14 +4601,17 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Subquery in CASE expression — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	// Correlated EXISTS in CASE expression — now works.
+	rows, err := db.QueryContext(ctx, `
 		SELECT name, CASE WHEN EXISTS (SELECT 1 FROM Discount WHERE Discount.product_id = Product.id) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	for rows.Next() {
+		var name, status string
+		g.Expect(rows.Scan(&name, &status)).To(gomega.Succeed())
+		t.Logf("%s: %s", name, status)
+	}
 }
 
 func TestFDB_AggregateOnCTE(t *testing.T) {
@@ -5558,10 +5664,14 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 		g.Expect(rows2.Next()).To(gomega.BeFalse())
 	}
 
-	// EXISTS subquery — rejected (not supported in Cascades).
-	_, err = db.QueryContext(ctx,
+	// Correlated EXISTS subquery — now works via correlated EXISTS pipeline.
+	rows3, err := db.QueryContext(ctx,
 		`SELECT COUNT(*) FROM T WHERE EXISTS (SELECT id FROM T t2 WHERE t2.id = T.id)`)
-	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows3.Close()
+	g.Expect(rows3.Next()).To(gomega.BeTrue())
+	var existsCount int64
+	g.Expect(rows3.Scan(&existsCount)).To(gomega.Succeed())
 }
 
 func TestFDB_InsertSelectFromCTE(t *testing.T) {
@@ -5775,14 +5885,15 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 2, 200)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Parameterized subquery — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx,
+	// Correlated EXISTS with parameter — now works.
+	rows, err := db.QueryContext(ctx,
 		`SELECT COUNT(*) FROM Sales AS s WHERE EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
 		"gold")
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var cnt int64
+	g.Expect(rows.Scan(&cnt)).To(gomega.Succeed())
 }
 
 // TestFDB_PiFunctionRejected pins that bare `SELECT PI()` is rejected

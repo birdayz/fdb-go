@@ -829,25 +829,34 @@ func convertLimit(l *logical.LogicalLimit) (expressions.RelationalExpression, er
 }
 
 // convertJoin builds a SelectExpression from a LogicalJoin.
-// Supports: CROSS JOIN (no predicate), INNER JOIN with structured
-// OnPredicate or simple text ON (col = literal, col = col).
-// LEFT/RIGHT joins with text-only ON are unsupported.
+// Supports: CROSS JOIN (no predicate), INNER/LEFT/RIGHT JOIN with
+// structured OnPredicate or simple text ON (col = literal, col = col).
+// RIGHT JOIN is normalised to LEFT JOIN by swapping branches.
 func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, error) {
-	if j.Kind != logical.JoinInner && j.OnPredicate == nil {
-		return nil, fmt.Errorf("%w: LogicalJoin kind %v without structured predicate", ErrUnsupported, j.Kind)
+	// Normalise RIGHT → LEFT by swapping branches.
+	left := j.Left
+	right := j.Right
+	kind := j.Kind
+	if kind == logical.JoinRight {
+		left, right = right, left
+		kind = logical.JoinLeft
 	}
 
-	left, err := Convert(j.Left)
+	if kind != logical.JoinInner && j.OnPredicate == nil && j.OnText == "" {
+		return nil, fmt.Errorf("%w: LogicalJoin kind %v without predicate", ErrUnsupported, kind)
+	}
+
+	leftExpr, err := Convert(left)
 	if err != nil {
 		return nil, fmt.Errorf("join left: %w", err)
 	}
-	right, err := Convert(j.Right)
+	rightExpr, err := Convert(right)
 	if err != nil {
 		return nil, fmt.Errorf("join right: %w", err)
 	}
 
-	qL := expressions.ForEachQuantifier(expressions.InitialOf(left))
-	qR := expressions.ForEachQuantifier(expressions.InitialOf(right))
+	qL := expressions.ForEachQuantifier(expressions.InitialOf(leftExpr))
+	qR := expressions.ForEachQuantifier(expressions.InitialOf(rightExpr))
 
 	var preds []predicates.QueryPredicate
 	if j.OnPredicate != nil {
@@ -864,8 +873,16 @@ func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, erro
 		preds = parsed
 	}
 
+	var joinType expressions.JoinType
+	switch kind {
+	case logical.JoinLeft:
+		joinType = expressions.JoinLeftOuter
+	default:
+		joinType = expressions.JoinInner
+	}
+
 	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	return expressions.NewSelectExpression(rv, []expressions.Quantifier{qL, qR}, preds), nil
+	return expressions.NewSelectExpressionWithJoinType(rv, []expressions.Quantifier{qL, qR}, preds, nil, joinType), nil
 }
 
 // parsePredicateText parses a full predicate expression respecting SQL

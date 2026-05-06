@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -1163,21 +1162,27 @@ func TestFDB_CascadesCTEInUnion(t *testing.T) {
 	_, cascadesDB := setupCascadesTestDB(t)
 	ctx := context.Background()
 
-	// CTE referenced in each branch of a UNION ALL — the Cascades
-	// translator doesn't support CTE references inside UNION branches.
-	// Assert the expected rejection rather than skipping.
-	_, err := cascadesDB.QueryContext(ctx,
+	rows, err := cascadesDB.QueryContext(ctx,
 		"WITH base AS (SELECT item_id, name FROM Item) "+
 			"SELECT name FROM base WHERE item_id = 1 "+
 			"UNION ALL "+
 			"SELECT name FROM base WHERE item_id = 3")
-	if err == nil {
-		t.Fatal("expected CTE-in-UNION to be rejected")
+	if err != nil {
+		t.Fatalf("CTE-in-UNION query failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Cascades planner could not plan query") {
-		t.Fatalf("expected Cascades planner rejection, got: %v", err)
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
 	}
-	t.Logf("CTE-in-UNION correctly rejected: %v", err)
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %v", len(names), names)
+	}
+	t.Logf("CTE-in-UNION → %v ✓", names)
 }
 
 func TestFDB_CascadesCTEComplexStack(t *testing.T) {
@@ -1483,6 +1488,233 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows.Err: %v", err)
 	}
+}
+
+func TestFDB_CascadesRecursiveCTE(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_reccte_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("reccte_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// Build a small hierarchy:
+	//   1 (root, parent=-1)
+	//   ├── 50 (parent=1)
+	//   │   └── 250 (parent=50)
+	//   └── 51 (parent=1)
+	for _, row := range [][2]int64{{1, -1}, {50, 1}, {51, 1}, {250, 50}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d)", row[0], row[1])); err != nil {
+			t.Fatalf("INSERT %d: %v", row[0], err)
+		}
+	}
+
+	// Recursive CTE: walk descendants of root (parent=-1).
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE descendants AS ("+
+			"SELECT id, parent FROM t WHERE parent = -1 "+
+			"UNION ALL "+
+			"SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id"+
+			") SELECT COUNT(*) FROM descendants")
+	if err != nil {
+		t.Fatalf("recursive CTE count query: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("expected a row")
+	}
+	var cnt int64
+	if err := rows.Scan(&cnt); err != nil {
+		t.Fatalf("scan count: %v", err)
+	}
+	if cnt != 4 {
+		t.Fatalf("expected COUNT(*)=4, got %d", cnt)
+	}
+	rows.Close()
+
+	// Verify that individual column values are NOT NULL.
+	// This is the key regression: before the fix, the recursive leg's
+	// datum used qualified keys ("B.ID") but the outer projection
+	// expected unqualified keys ("ID"), producing NULLs.
+	rows2, err := db.QueryContext(ctx,
+		"WITH RECURSIVE descendants AS ("+
+			"SELECT id, parent FROM t WHERE parent = -1 "+
+			"UNION ALL "+
+			"SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id"+
+			") SELECT id FROM descendants ORDER BY id")
+	if err != nil {
+		t.Fatalf("recursive CTE id query: %v", err)
+	}
+	defer rows2.Close()
+
+	var ids []int64
+	for rows2.Next() {
+		var id int64
+		if err := rows2.Scan(&id); err != nil {
+			t.Fatalf("scan id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows2.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	expected := []int64{1, 50, 51, 250}
+	if len(ids) != len(expected) {
+		t.Fatalf("expected %d rows, got %d: %v", len(expected), len(ids), ids)
+	}
+	for i, want := range expected {
+		if ids[i] != want {
+			t.Fatalf("row %d: expected %d, got %d (all ids: %v)", i, want, ids[i], ids)
+		}
+	}
+	t.Logf("Recursive CTE → %v ✓", ids)
+}
+
+func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_ssq_proj_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("ssq_proj_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE T1 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE T2 (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (1, 10)"); err != nil {
+		t.Fatalf("INSERT T1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (2, 20)"); err != nil {
+		t.Fatalf("INSERT T1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO T2 VALUES (1, 100)"); err != nil {
+		t.Fatalf("INSERT T2: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO T2 VALUES (2, 200)"); err != nil {
+		t.Fatalf("INSERT T2: %v", err)
+	}
+
+	// Scalar subquery in SELECT projection: (SELECT MAX(w) FROM T2)
+	var id, v, maxW int64
+	err = db.QueryRowContext(ctx, "SELECT id, v, (SELECT MAX(w) FROM T2) AS max_w FROM T1 WHERE id = 1").Scan(&id, &v, &maxW)
+	if err != nil {
+		t.Fatalf("scalar subquery in projection: %v", err)
+	}
+	if id != 1 || v != 10 || maxW != 200 {
+		t.Fatalf("expected (1, 10, 200), got (%d, %d, %d)", id, v, maxW)
+	}
+	t.Logf("Cascades scalar subquery in projection → (%d, %d, %d) ✓", id, v, maxW)
+}
+
+func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_ssq_where_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("ssq_where_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE T1 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE T2 (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (1, 10)"); err != nil {
+		t.Fatalf("INSERT T1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (2, 20)"); err != nil {
+		t.Fatalf("INSERT T1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (3, 30)"); err != nil {
+		t.Fatalf("INSERT T1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO T2 VALUES (1, 15)"); err != nil {
+		t.Fatalf("INSERT T2: %v", err)
+	}
+
+	// Scalar subquery in WHERE: v > (SELECT w FROM T2 WHERE id = 1)
+	// Should return rows where v > 15, i.e. id=2 (v=20) and id=3 (v=30)
+	rows, err := db.QueryContext(ctx, "SELECT id FROM T1 WHERE v > (SELECT w FROM T2 WHERE id = 1) ORDER BY id")
+	if err != nil {
+		t.Fatalf("scalar subquery in WHERE: %v", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != 2 || ids[1] != 3 {
+		t.Fatalf("expected [2 3], got %v", ids)
+	}
+	t.Logf("Cascades scalar subquery in WHERE → %v ✓", ids)
 }
 
 func countRows(t *testing.T, rows *sql.Rows) int {

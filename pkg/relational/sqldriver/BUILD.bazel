@@ -27,6 +27,7 @@ go_test(
         "driver_test.go",
         "embedded_fdb_errors_test.go",
         "embedded_fdb_test.go",
+        "having_probe_test.go",
         "sql_integration_test.go",
     ],
     embed = [":sqldriver"],

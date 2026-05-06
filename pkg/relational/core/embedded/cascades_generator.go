@@ -104,7 +104,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
 	}
 
-	ref := query.TranslateToCascades(logicalOp)
+	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
@@ -114,7 +114,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(2_000) // CTE-inlined plans need ~1500 tasks for convergence; 1000 was too low
+		WithMaxTasks(10_000)
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
@@ -136,11 +136,44 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"Cascades planner could not plan query")
 	}
 
+	// Plan scalar subqueries independently through the Cascades pipeline.
+	var scalarSubs []scalarSubqueryBinding
+	for _, ssq := range scalarSubqueryPlans {
+		subRef := query.TranslateToCascades(ssq.Plan)
+		if subRef == nil {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"Cascades planner could not plan scalar subquery")
+		}
+		subPlanner := cascades.NewPlanner(rules, planCtx).
+			WithImplementationRules(cascades.DefaultImplementationRules()).
+			WithMaxTasks(10_000)
+		subBest, _, subErr := subPlanner.Plan(subRef)
+		if subErr != nil || subBest == nil {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"Cascades planner could not plan scalar subquery")
+		}
+		subPh, ok := subBest.(planExtractor)
+		if !ok {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"scalar subquery plan extraction failed")
+		}
+		subPlan := subPh.GetRecordQueryPlan()
+		if subPlan == nil {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"scalar subquery physical plan nil")
+		}
+		scalarSubs = append(scalarSubs, scalarSubqueryBinding{
+			alias: ssq.Alias,
+			plan:  subPlan,
+		})
+	}
+
 	return &cascadesPlan{
-		conn:         g.c,
-		md:           md,
-		physicalPlan: physPlan,
-		explain:      logicalOp.Explain(""),
+		conn:             g.c,
+		md:               md,
+		physicalPlan:     physPlan,
+		explain:          logicalOp.Explain(""),
+		scalarSubqueries: scalarSubs,
 	}, nil
 }
 
@@ -179,7 +212,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(2_000)
+		WithMaxTasks(10_000)
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
@@ -207,14 +240,24 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}, nil
 }
 
+// scalarSubqueryBinding pairs a correlation alias with a planned
+// inner RecordQueryPlan for a scalar subquery. The executor pre-runs
+// each and binds the scalar result under the alias before running
+// the outer plan.
+type scalarSubqueryBinding struct {
+	alias values.CorrelationIdentifier
+	plan  plans.RecordQueryPlan
+}
+
 // cascadesPlan wraps a Cascades-planned SELECT query with a pre-computed
 // physical plan. Planning happens at Plan-time; Execute only runs the plan.
 type cascadesPlan struct {
-	conn         *EmbeddedConnection
-	md           *recordlayer.RecordMetaData
-	physicalPlan plans.RecordQueryPlan
-	explain      string
-	isUpdate     bool
+	conn             *EmbeddedConnection
+	md               *recordlayer.RecordMetaData
+	physicalPlan     plans.RecordQueryPlan
+	explain          string
+	isUpdate         bool
+	scalarSubqueries []scalarSubqueryBinding
 }
 
 func (p *cascadesPlan) IsUpdate() bool { return p.isUpdate }
@@ -245,6 +288,20 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		}
 
 		evalCtx := executor.EmptyEvaluationContext()
+
+		// Pre-evaluate scalar subqueries and bind their results.
+		if len(p.scalarSubqueries) > 0 {
+			scalarResults := make(map[values.CorrelationIdentifier]any, len(p.scalarSubqueries))
+			for _, ssq := range p.scalarSubqueries {
+				result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.plan, store, evalCtx)
+				if ssqErr != nil {
+					return nil, ssqErr
+				}
+				scalarResults[ssq.alias] = result
+			}
+			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
+		}
+
 		cursor, execErr := executor.ExecutePlan(ctx, p.physicalPlan, store, evalCtx, nil,
 			recordlayer.DefaultExecuteProperties())
 		if execErr != nil {
@@ -358,11 +415,19 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if ip, ok := plan.(innerPlan); ok {
 		return deriveColumnsFromPlan(ip.GetInner(), md)
 	}
-	scan := findScanPlan(plan)
-	if scan == nil || len(scan.GetRecordTypes()) == 0 {
+	// Leaf plan: either a primary-key scan or an index scan. Both
+	// carry GetRecordTypes(); the index scan's executor fetches the
+	// full record via indexFetchCursor, so all columns are available.
+	var recordTypes []string
+	if scan := findScanPlan(plan); scan != nil {
+		recordTypes = scan.GetRecordTypes()
+	} else if idxPlan := findIndexPlan(plan); idxPlan != nil {
+		recordTypes = idxPlan.GetRecordTypes()
+	}
+	if len(recordTypes) == 0 {
 		return nil
 	}
-	rt := md.GetRecordType(scan.GetRecordTypes()[0])
+	rt := md.GetRecordType(recordTypes[0])
 	if rt == nil || rt.Descriptor == nil {
 		return nil
 	}
@@ -395,15 +460,44 @@ func findScanPlan(p plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
 	}
 }
 
-func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	scan := findScanPlan(proj.GetInner())
-	var desc protoreflect.MessageDescriptor
-	if scan != nil && len(scan.GetRecordTypes()) > 0 {
-		rt := md.GetRecordType(scan.GetRecordTypes()[0])
-		if rt != nil && rt.Descriptor != nil {
-			desc = rt.Descriptor
+// findIndexPlan walks through innerPlan wrappers (filters, type
+// filters, etc.) to find a leaf RecordQueryIndexPlan.
+func findIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
+	for {
+		if idx, ok := p.(*plans.RecordQueryIndexPlan); ok {
+			return idx
+		}
+		if ip, ok := p.(innerPlan); ok {
+			p = ip.GetInner()
+		} else {
+			return nil
 		}
 	}
+}
+
+// findLeafDescriptor locates the protoreflect.MessageDescriptor for
+// the record type at the leaf of the plan tree. Works for both
+// primary-key scans (RecordQueryScanPlan) and secondary-index scans
+// (RecordQueryIndexPlan).
+func findLeafDescriptor(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) protoreflect.MessageDescriptor {
+	var recordTypes []string
+	if scan := findScanPlan(p); scan != nil {
+		recordTypes = scan.GetRecordTypes()
+	} else if idx := findIndexPlan(p); idx != nil {
+		recordTypes = idx.GetRecordTypes()
+	}
+	if len(recordTypes) == 0 {
+		return nil
+	}
+	rt := md.GetRecordType(recordTypes[0])
+	if rt == nil {
+		return nil
+	}
+	return rt.Descriptor
+}
+
+func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	desc := findLeafDescriptor(proj.GetInner(), md)
 	aliases := proj.GetAliases()
 	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
 	for i, v := range proj.GetProjections() {
@@ -424,8 +518,16 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if typeName == "" {
 			typeName = "UNKNOWN"
 		}
+		// Use the alias as the datum lookup key (Name) when available.
+		// executeProjection stores values under both the original name
+		// and the alias, so the alias is a valid lookup key and gives
+		// CTE consumers the column name they reference.
+		colName := strings.ToUpper(name)
+		if label != "" {
+			colName = label
+		}
 		cols[i] = executor.ColumnDef{
-			Name:     strings.ToUpper(name),
+			Name:     colName,
 			Label:    label,
 			TypeName: typeName,
 		}
@@ -434,26 +536,12 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 }
 
 func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	scan := findScanPlan(agg.GetInner())
-	var desc protoreflect.MessageDescriptor
-	if scan != nil && len(scan.GetRecordTypes()) > 0 {
-		rt := md.GetRecordType(scan.GetRecordTypes()[0])
-		if rt != nil {
-			desc = rt.Descriptor
-		}
-	}
+	desc := findLeafDescriptor(agg.GetInner(), md)
 	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
 }
 
 func deriveColumnsFromHashAggregation(agg *plans.RecordQueryHashAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	scan := findScanPlan(agg.GetInner())
-	var desc protoreflect.MessageDescriptor
-	if scan != nil && len(scan.GetRecordTypes()) > 0 {
-		rt := md.GetRecordType(scan.GetRecordTypes()[0])
-		if rt != nil {
-			desc = rt.Descriptor
-		}
-	}
+	desc := findLeafDescriptor(agg.GetInner(), md)
 	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
 }
 
@@ -946,6 +1034,12 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 				if sf.CURRENT_TIMESTAMP() != nil {
 					return "CURRENT_TIMESTAMP"
 				}
+				if sf.LOCALTIME() != nil {
+					return "LOCALTIME"
+				}
+				if sf.CURRENT_USER() != nil {
+					return "CURRENT_USER"
+				}
 			}
 		}
 	}
@@ -956,7 +1050,8 @@ func isAllowedFunction(name string) bool {
 	switch name {
 	case "COUNT", "SUM", "MIN", "MAX", "AVG",
 		"CASE", "CAST", "IF",
-		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME":
+		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME",
+		"CURRENT_USER":
 		return true
 	}
 	return values.IsCascadesSafeScalarFunction(name)

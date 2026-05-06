@@ -9,6 +9,14 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
+// ScalarSubqueryPlan pairs a correlation alias with a logical operator
+// tree for a scalar subquery. Collected during translation and passed
+// to the executor for pre-evaluation.
+type ScalarSubqueryPlan struct {
+	Alias values.CorrelationIdentifier
+	Plan  logical.LogicalOperator
+}
+
 // TranslateToCascades converts a logical.LogicalOperator tree into a
 // cascades RelationalExpression tree rooted in a Reference. This is
 // the bridge between the SQL parser's logical plan and the Cascades
@@ -18,14 +26,27 @@ import (
 // Returns nil if the operator tree contains shapes that can't be
 // translated (unsupported operators fall through to nil).
 func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
+	ref, _ := TranslateToCascadesWithSubqueries(op)
+	return ref
+}
+
+// TranslateToCascadesWithSubqueries is like TranslateToCascades but
+// also returns any scalar subquery plans collected during translation.
+// These must be planned independently and pre-evaluated by the
+// executor before running the main plan.
+func TranslateToCascadesWithSubqueries(op logical.LogicalOperator) (*expressions.Reference, []ScalarSubqueryPlan) {
 	t := &cascadesTranslator{
-		cteScope: make(map[string]logical.LogicalOperator),
+		cteScope:     make(map[string]logical.LogicalOperator),
+		cteExprScope: make(map[string]expressions.RelationalExpression),
 	}
-	return t.translateRef(op)
+	ref := t.translateRef(op)
+	return ref, t.scalarSubqueries
 }
 
 type cascadesTranslator struct {
-	cteScope map[string]logical.LogicalOperator
+	cteScope         map[string]logical.LogicalOperator
+	cteExprScope     map[string]expressions.RelationalExpression
+	scalarSubqueries []ScalarSubqueryPlan
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
@@ -74,6 +95,10 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 
 func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.RelationalExpression {
 	key := strings.ToUpper(s.Table)
+	// Pre-translated expression scope (recursive CTE references).
+	if expr, ok := t.cteExprScope[key]; ok {
+		return expr
+	}
 	if body, ok := t.cteScope[key]; ok {
 		// Remove this CTE from scope while translating its body so that
 		// scans inside the body resolve to real tables, not back to the
@@ -102,6 +127,57 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	if f.Predicate != nil && predicateContainsUnsafeFunction(f.Predicate) {
 		return nil
 	}
+
+	// Collect scalar subquery plans — they'll be planned independently
+	// and pre-evaluated by the executor.
+	for _, ssq := range f.ScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
+
+	// EXISTS subqueries: when the filter carries existential subquery
+	// plans, build a SelectExpression with ForEach + Existential
+	// quantifiers. The ExistsPredicate in the predicate tree references
+	// the existential alias; the planner's ImplementSimpleSelectRule
+	// handles the existential quantifier via FirstOrDefaultPlan.
+	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
+		outerQ := expressions.ForEachQuantifier(innerRef)
+		quantifiers := []expressions.Quantifier{outerQ}
+
+		allPreds := []predicates.QueryPredicate{f.Predicate}
+		for _, esq := range f.ExistsSubqueries {
+			subRef := t.translateRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+			if esq.JoinPredicate != nil {
+				allPreds = append(allPreds, esq.JoinPredicate)
+			}
+		}
+
+		var sourceAliases []string
+		outerAlias := sourceAlias(f.Input)
+		if outerAlias != "" {
+			sourceAliases = []string{outerAlias}
+			for _, esq := range f.ExistsSubqueries {
+				innerA := sourceAlias(esq.Plan)
+				sourceAliases = append(sourceAliases, innerA)
+			}
+		}
+
+		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
+		return expressions.NewSelectExpressionWithAliases(
+			resultValue,
+			quantifiers,
+			allPreds,
+			sourceAliases,
+		)
+	}
+
 	var preds []predicates.QueryPredicate
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
@@ -210,6 +286,14 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 }
 
 func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
+	// Collect scalar subquery plans from projections.
+	for _, ssq := range p.ScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
+
 	innerRef := t.translateRef(p.Input)
 	if innerRef == nil {
 		return nil
@@ -253,7 +337,11 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	}
 	groupKeys := make([]values.Value, len(a.GroupKeys))
 	for i, key := range a.GroupKeys {
-		groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
+		if i < len(a.GroupKeyValues) && a.GroupKeyValues[i] != nil {
+			groupKeys[i] = a.GroupKeyValues[i]
+		} else {
+			groupKeys[i] = &values.FieldValue{Field: key, Typ: values.UnknownType}
+		}
 	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
 	for i, aggText := range a.Aggregates {
@@ -275,6 +363,33 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		return groupBy
 	}
 	groupByRef := expressions.InitialOf(groupBy)
+
+	// When HAVING carries EXISTS subqueries, build a SelectExpression
+	// with existential quantifiers — same pattern as translateFilter.
+	if len(a.HavingExistsSubqueries) > 0 {
+		outerQ := expressions.ForEachQuantifier(groupByRef)
+		quantifiers := []expressions.Quantifier{outerQ}
+		allPreds := []predicates.QueryPredicate{a.HavingPredicate}
+		for _, esq := range a.HavingExistsSubqueries {
+			subRef := t.translateRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+			if esq.JoinPredicate != nil {
+				allPreds = append(allPreds, esq.JoinPredicate)
+			}
+		}
+		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
+		return expressions.NewSelectExpressionWithAliases(
+			resultValue,
+			quantifiers,
+			allPreds,
+			nil,
+		)
+	}
+
 	return expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{a.HavingPredicate},
 		expressions.ForEachQuantifier(groupByRef),
@@ -325,14 +440,26 @@ func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
-	if j.Kind != logical.JoinInner {
-		return nil
+	// For RIGHT JOIN, swap branches and treat as LEFT JOIN. The NLJ
+	// executor iterates the "outer" (left) and for each unmatched row
+	// emits NULLs for the inner (right) columns. Swapping makes the
+	// originally-right table the outer, which is exactly RIGHT JOIN
+	// semantics. This matches the standard approach — Java's Cascades
+	// doesn't distinguish RIGHT from LEFT either; the planner
+	// normalises RIGHT → LEFT with swapped children.
+	left := j.Left
+	right := j.Right
+	kind := j.Kind
+	if kind == logical.JoinRight {
+		left, right = right, left
+		kind = logical.JoinLeft
 	}
-	leftRef := t.translateRef(j.Left)
+
+	leftRef := t.translateRef(left)
 	if leftRef == nil {
 		return nil
 	}
-	rightRef := t.translateRef(j.Right)
+	rightRef := t.translateRef(right)
 	if rightRef == nil {
 		return nil
 	}
@@ -346,40 +473,221 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		}
 	}
 
-	leftAlias := sourceAlias(j.Left)
-	rightAlias := sourceAlias(j.Right)
+	leftAlias := sourceAlias(left)
+	rightAlias := sourceAlias(right)
+
+	// Map logical join kind to the expressions-level JoinType.
+	var joinType expressions.JoinType
+	switch kind {
+	case logical.JoinLeft:
+		joinType = expressions.JoinLeftOuter
+	default:
+		joinType = expressions.JoinInner
+	}
 
 	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
-	return expressions.NewSelectExpressionWithAliases(
+	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
 		preds,
 		[]string{leftAlias, rightAlias},
+		joinType,
 	)
 }
 
 func sourceAlias(op logical.LogicalOperator) string {
-	switch o := op.(type) {
-	case *logical.LogicalScan:
-		if o.Alias != "" {
-			return strings.ToUpper(o.Alias)
+	for cur := op; cur != nil; {
+		switch o := cur.(type) {
+		case *logical.LogicalScan:
+			if o.Alias != "" {
+				return strings.ToUpper(o.Alias)
+			}
+			return strings.ToUpper(o.Table)
+		case *logical.LogicalJoin:
+			return sourceAlias(o.Right)
+		default:
+			ch := cur.Children()
+			if len(ch) == 1 {
+				cur = ch[0]
+				continue
+			}
+			return ""
 		}
-		return strings.ToUpper(o.Table)
-	case *logical.LogicalJoin:
-		return sourceAlias(o.Right)
-	default:
-		return ""
 	}
+	return ""
 }
 
 func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	if c.Recursive {
-		return nil
+		return t.translateRecursiveCTE(c)
 	}
 	t.cteScope[strings.ToUpper(c.Name)] = c.Body
 	result := t.translateOp(c.Main)
 	delete(t.cteScope, strings.ToUpper(c.Name))
 	return result
+}
+
+// translateRecursiveCTE translates a WITH RECURSIVE CTE into a
+// RecursiveUnionExpression. Mirrors Java's
+// QueryVisitor.handleRecursiveNamedQuery:
+//  1. Partition the UNION ALL body into seed (non-recursive) and
+//     recursive (self-referencing) branches.
+//  2. Translate the seed branch normally.
+//  3. Translate the recursive branch with the CTE self-reference
+//     resolving to a TempTableScanExpression.
+//  4. Wrap both legs in TempTableInsertExpression.
+//  5. Create RecursiveUnionExpression with scan/insert aliases.
+//  6. Translate the Main query with the CTE name resolving to the
+//     RecursiveUnionExpression.
+func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
+	cteName := strings.ToUpper(c.Name)
+
+	// The body must be a UNION ALL.
+	union, ok := c.Body.(*logical.LogicalUnion)
+	if !ok || union.Distinct || len(union.Inputs) < 2 {
+		return nil
+	}
+
+	// Partition branches into seed (no self-reference) and recursive
+	// (references the CTE name).
+	var seedBranches, recursiveBranches []logical.LogicalOperator
+	for _, branch := range union.Inputs {
+		if logicalOpReferencesCTE(branch, cteName) {
+			recursiveBranches = append(recursiveBranches, branch)
+		} else {
+			seedBranches = append(seedBranches, branch)
+		}
+	}
+	if len(seedBranches) == 0 || len(recursiveBranches) == 0 {
+		return nil
+	}
+
+	scanAlias := values.NamedCorrelationIdentifier(cteName + "forScan")
+	insertAlias := values.NamedCorrelationIdentifier(cteName + "forInsert")
+
+	// Translate the seed leg. Multiple seed branches become a union.
+	var seedExpr expressions.RelationalExpression
+	if len(seedBranches) == 1 {
+		seedExpr = t.translateOp(seedBranches[0])
+	} else {
+		seedExpr = t.translateUnion(&logical.LogicalUnion{Inputs: seedBranches, Distinct: false})
+	}
+	if seedExpr == nil {
+		return nil
+	}
+
+	// Wrap seed in TempTableInsert.
+	seedRef := expressions.InitialOf(seedExpr)
+	seedInsert := expressions.NewTempTableInsertExpression(
+		expressions.ForEachQuantifier(seedRef), insertAlias, false)
+
+	// Translate the recursive leg with the CTE self-reference resolving
+	// to a TempTableScanExpression(scanAlias).
+	t.cteExprScope[cteName] = expressions.NewTempTableScanExpression(scanAlias)
+	var recursiveExpr expressions.RelationalExpression
+	if len(recursiveBranches) == 1 {
+		recursiveExpr = t.translateOp(recursiveBranches[0])
+	} else {
+		recursiveExpr = t.translateUnion(&logical.LogicalUnion{Inputs: recursiveBranches, Distinct: false})
+	}
+	delete(t.cteExprScope, cteName)
+	if recursiveExpr == nil {
+		return nil
+	}
+
+	// Normalize the recursive leg's output columns to match the seed's
+	// schema. In standard SQL, the CTE's output column names are defined
+	// by the seed. The recursive branch often uses qualified column
+	// references (e.g. SELECT b.id, b.parent) which produce datum keys
+	// like "B.ID" instead of the seed's unqualified "ID". Without this
+	// normalization, the outer query (and DFS recursion) can't find the
+	// expected columns, yielding NULL for every row.
+	seedCols := extractOuterProjectionColumns(seedBranches[0])
+	recCols := extractOuterProjectionColumns(recursiveBranches[0])
+	if len(seedCols) > 0 && len(recCols) > 0 && len(seedCols) == len(recCols) {
+		needsRemap := false
+		for i := range seedCols {
+			if !strings.EqualFold(seedCols[i], recCols[i]) {
+				needsRemap = true
+				break
+			}
+		}
+		if needsRemap {
+			// Wrap the recursive expression with a projection that reads
+			// from the recursive column names and stores under the seed
+			// column names.
+			remapVals := make([]values.Value, len(recCols))
+			for i, rc := range recCols {
+				remapVals[i] = &values.FieldValue{
+					Field: strings.ToUpper(rc),
+					Typ:   values.UnknownType,
+				}
+			}
+			remapAliases := make([]string, len(seedCols))
+			for i, sc := range seedCols {
+				remapAliases[i] = strings.ToUpper(sc)
+			}
+			recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
+				remapVals,
+				remapAliases,
+				expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
+			)
+		}
+	}
+
+	// Wrap recursive leg in TempTableInsert.
+	recursiveRef := expressions.InitialOf(recursiveExpr)
+	recursiveInsert := expressions.NewTempTableInsertExpression(
+		expressions.ForEachQuantifier(recursiveRef), insertAlias, false)
+
+	// Build RecursiveUnionExpression.
+	seedInsertRef := expressions.InitialOf(seedInsert)
+	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
+	recUnion := expressions.NewRecursiveUnionExpression(
+		expressions.ForEachQuantifier(seedInsertRef),
+		expressions.ForEachQuantifier(recursiveInsertRef),
+		scanAlias, insertAlias,
+		expressions.TraversalAny,
+	)
+
+	// Register the RecursiveUnionExpression so that the Main query's
+	// scan of the CTE name resolves to it.
+	t.cteExprScope[cteName] = recUnion
+	result := t.translateOp(c.Main)
+	delete(t.cteExprScope, cteName)
+	return result
+}
+
+// extractOuterProjectionColumns returns the column names from the
+// outermost LogicalProject in a logical operator tree. Returns nil if
+// no LogicalProject is found. Used by translateRecursiveCTE to detect
+// schema mismatches between seed and recursive branches.
+func extractOuterProjectionColumns(op logical.LogicalOperator) []string {
+	if p, ok := op.(*logical.LogicalProject); ok {
+		return p.Projections
+	}
+	return nil
+}
+
+// logicalOpReferencesCTE walks a LogicalOperator tree and reports
+// whether any LogicalScan references the given CTE name (case-
+// insensitive). Used to partition UNION ALL branches into seed vs
+// recursive legs.
+func logicalOpReferencesCTE(op logical.LogicalOperator, cteName string) bool {
+	if op == nil {
+		return false
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if strings.EqualFold(scan.Table, cteName) {
+			return true
+		}
+	}
+	for _, child := range op.Children() {
+		if logicalOpReferencesCTE(child, cteName) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {

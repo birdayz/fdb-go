@@ -357,7 +357,7 @@ func executeFilter(
 	}
 
 	preds := p.GetPredicates()
-	hasParams := len(evalCtx.params) > 0
+	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (keep bool) {
@@ -371,7 +371,7 @@ func executeFilter(
 				}
 			}()
 			var rowCtx any = qr.Datum
-			if hasParams {
+			if needsRowCtx {
 				if m, ok := qr.Datum.(map[string]any); ok {
 					rowCtx = evalCtx.RowContext(m)
 				}
@@ -458,7 +458,8 @@ func executeProjection(
 	}
 
 	projections := p.GetProjections()
-	hasParams := len(evalCtx.params) > 0
+	aliases := p.GetAliases()
+	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -466,12 +467,12 @@ func executeProjection(
 		}
 		projected := make(map[string]any, len(projections))
 		var rowCtx any = qr.Datum
-		if hasParams {
+		if needsRowCtx {
 			if m, ok := qr.Datum.(map[string]any); ok {
 				rowCtx = evalCtx.RowContext(m)
 			}
 		}
-		for _, proj := range projections {
+		for i, proj := range projections {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -489,7 +490,17 @@ func executeProjection(
 						}
 					}
 				}()
-				projected[projectionColumnName(proj)] = proj.Evaluate(rowCtx)
+				key := projectionColumnName(proj)
+				val := proj.Evaluate(rowCtx)
+				projected[key] = val
+				// Also store under the alias so that outer projections
+				// (e.g. CTE consumers) can resolve the aliased name.
+				if i < len(aliases) && aliases[i] != "" {
+					aliasKey := strings.ToUpper(aliases[i])
+					if aliasKey != key {
+						projected[aliasKey] = val
+					}
+				}
 			}()
 			if evalErr != nil {
 				return qr
@@ -585,14 +596,25 @@ func executeUnion(
 		if err != nil {
 			return nil, err
 		}
-		if branchIdx == 0 && len(items) > 0 {
-			if m, ok := items[0].Datum.(map[string]any); ok {
-				firstBranchKeys = mapKeysOrdered(m)
+		if branchIdx == 0 {
+			firstBranchKeys = planColumnNames(inner)
+			if firstBranchKeys == nil && len(items) > 0 {
+				if m, ok := items[0].Datum.(map[string]any); ok {
+					firstBranchKeys = mapKeysOrdered(m)
+				}
 			}
 		}
 		if branchIdx > 0 && len(firstBranchKeys) > 0 {
-			for i := range items {
-				items[i] = remapUnionColumns(items[i], firstBranchKeys)
+			srcKeys := planColumnNames(inner)
+			if srcKeys == nil && len(items) > 0 {
+				if m, ok := items[0].Datum.(map[string]any); ok {
+					srcKeys = mapKeysOrdered(m)
+				}
+			}
+			if srcKeys != nil {
+				for i := range items {
+					items[i] = remapUnionColumnsByPosition(items[i], srcKeys, firstBranchKeys)
+				}
 			}
 		}
 		all = append(all, items...)
@@ -607,6 +629,54 @@ func mapKeysOrdered(m map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func planColumnNames(p plans.RecordQueryPlan) []string {
+	for {
+		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
+			projs := proj.GetProjections()
+			names := make([]string, len(projs))
+			aliases := proj.GetAliases()
+			for i, v := range projs {
+				if i < len(aliases) && aliases[i] != "" {
+					names[i] = strings.ToUpper(aliases[i])
+				} else {
+					names[i] = projectionColumnName(v)
+				}
+			}
+			return names
+		}
+		type hasInner interface{ GetInner() plans.RecordQueryPlan }
+		if ip, ok := p.(hasInner); ok {
+			p = ip.GetInner()
+		} else {
+			return nil
+		}
+	}
+}
+
+func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok || len(srcKeys) != len(targetKeys) {
+		return qr
+	}
+	needsRemap := false
+	for i := range srcKeys {
+		if srcKeys[i] != targetKeys[i] {
+			needsRemap = true
+			break
+		}
+	}
+	if !needsRemap {
+		return qr
+	}
+	remapped := make(map[string]any, len(m))
+	for i, srcKey := range srcKeys {
+		if v, ok := m[srcKey]; ok {
+			remapped[targetKeys[i]] = v
+		}
+	}
+	return QueryResult{Datum: remapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 }
 
 func remapUnionColumns(qr QueryResult, targetKeys []string) QueryResult {
@@ -731,6 +801,49 @@ func executeNestedLoopJoin(
 	joinType := p.GetJoinType()
 	var results []QueryResult
 
+	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
+		if len(preds) == 0 {
+			for _, outerRow := range outerRows {
+				innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+				if innerErr != nil {
+					return nil, innerErr
+				}
+				innerResult, innerErr := innerCursor.OnNext(ctx)
+				_ = innerCursor.Close()
+				if innerErr != nil {
+					return nil, innerErr
+				}
+				hasRow := innerResult.HasNext() && innerResult.GetValue().Datum != nil
+				if (joinType == plans.JoinExists && hasRow) || (joinType == plans.JoinNotExists && !hasRow) {
+					results = append(results, outerRow)
+				}
+			}
+		} else {
+			innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+			if innerErr != nil {
+				return nil, innerErr
+			}
+			innerRows, innerErr := CollectAll(ctx, innerCursor)
+			if innerErr != nil {
+				return nil, innerErr
+			}
+			for _, outerRow := range outerRows {
+				matched := false
+				for _, innerRow := range innerRows {
+					combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
+					if passesJoinPredicates(combined, preds, evalCtx) {
+						matched = true
+						break
+					}
+				}
+				if (joinType == plans.JoinExists && matched) || (joinType == plans.JoinNotExists && !matched) {
+					results = append(results, outerRow)
+				}
+			}
+		}
+		return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	}
+
 	for _, outerRow := range outerRows {
 		innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
 		if err != nil {
@@ -752,7 +865,11 @@ func executeNestedLoopJoin(
 		}
 
 		if !matched && joinType == plans.JoinLeftOuter {
-			results = append(results, outerRow)
+			// Emit the outer row with qualified alias keys so that
+			// downstream projections (e.g. "CUSTOMER.NAME") resolve
+			// correctly. Inner-table columns are absent from the map;
+			// the ResultSet treats missing keys as NULL.
+			results = append(results, qualifyOuterRow(outerRow, p.GetOuterAlias()))
 		}
 	}
 
@@ -781,6 +898,12 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 
 	for k, v := range outerMap {
 		merged[k] = v
+		// If the key already contains a dot, it was qualified by a previous NLJ
+		// level (e.g. "EMP.NAME" from an inner join). Preserve it as-is to avoid
+		// double-qualification like "EMP.EMP.NAME". Only qualify bare keys.
+		if strings.Contains(k, ".") {
+			continue
+		}
 		if outerQual != "" {
 			merged[outerQual+"."+strings.ToUpper(k)] = v
 		}
@@ -792,6 +915,9 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 		if innerQual == "" || innerQual != outerQual {
 			merged[k] = v
 		}
+		if strings.Contains(k, ".") {
+			continue
+		}
 		if innerQual != "" {
 			merged[innerQual+"."+strings.ToUpper(k)] = v
 		}
@@ -800,6 +926,36 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 		}
 	}
 	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+}
+
+// qualifyOuterRow builds a result row from an unmatched LEFT JOIN outer
+// row, adding alias-qualified keys (e.g. "CUSTOMER.NAME") so that
+// downstream projections using qualified column references resolve
+// correctly. This mirrors the outer-half of mergeRows without an inner.
+func qualifyOuterRow(outer QueryResult, outerAlias string) QueryResult {
+	outerMap, ok := outer.Datum.(map[string]any)
+	if !ok {
+		return outer
+	}
+	qualified := make(map[string]any, len(outerMap)*2)
+	outerType := recordTypeName(outer)
+	outerQual := outerAlias
+	if outerQual == "" {
+		outerQual = outerType
+	}
+	for k, v := range outerMap {
+		qualified[k] = v
+		if strings.Contains(k, ".") {
+			continue
+		}
+		if outerQual != "" {
+			qualified[outerQual+"."+strings.ToUpper(k)] = v
+		}
+		if outerAlias != "" && outerType != "" && outerAlias != outerType {
+			qualified[outerType+"."+strings.ToUpper(k)] = v
+		}
+	}
+	return QueryResult{Datum: qualified, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
 }
 
 func recordTypeName(qr QueryResult) string {
@@ -814,7 +970,7 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 		return true
 	}
 	var rowCtx any = combined.Datum
-	if len(evalCtx.params) > 0 {
+	if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 {
 		if m, ok := combined.Datum.(map[string]any); ok {
 			rowCtx = evalCtx.RowContext(m)
 		}
@@ -998,7 +1154,7 @@ func aggKeyName(k values.Value) string {
 	if fv, ok := k.(*values.FieldValue); ok {
 		return strings.ToUpper(fv.Field)
 	}
-	return strings.ToUpper(k.Name())
+	return strings.ToUpper(values.ExplainValue(k))
 }
 
 func isNumeric(v any) bool {
@@ -1165,7 +1321,7 @@ func executeUpdate(
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}
 			var rowCtx any = qr.Datum
-			if len(evalCtx.params) > 0 {
+			if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 {
 				if m, ok := qr.Datum.(map[string]any); ok {
 					rowCtx = evalCtx.RowContext(m)
 				}
@@ -1389,8 +1545,9 @@ func executeRecursiveLevelUnion(
 	}
 	allResults = append(allResults, items...)
 
-	for {
-		if len(insertTable.GetList()) == 0 {
+	const maxRecursionDepth = 1000
+	for level := 0; ; level++ {
+		if len(insertTable.GetList()) == 0 || level >= maxRecursionDepth {
 			break
 		}
 

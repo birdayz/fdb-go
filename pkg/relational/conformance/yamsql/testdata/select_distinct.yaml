@@ -83,10 +83,11 @@ tests:
   # ... not found in table ...". Same code path that rejects ORDER BY
   # of any expression-named-projection.
   #
-  # Note: SELECT DISTINCT is itself rejected by fdb-relational entirely
-  # (CLAUDE.md gotcha) — Go's embedded engine implements DISTINCT as
-  # a Go-only feature. Aligning Go to reject DISTINCT outright is a
-  # separate larger conformance task tracked in TODO.md; this file
-  # tests Go-only DISTINCT semantics until that lands.
+  # Go extension: DISTINCT + positional ORDER BY on an expression.
+  # Java rejects all DISTINCT; Go's Cascades + ImplementDistinctFinalRule
+  # handles this correctly via in-memory sort + hash distinct composition.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
-    error_code: "22023"
+    rows:
+      - [0]
+      - [1]
+      - [~]

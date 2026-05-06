@@ -48,6 +48,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -399,6 +400,8 @@ func ExplainValue(v Value) string {
 			conds[i] = ExplainValue(c)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
+	case *ScalarSubqueryValue:
+		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
 	}
 	return v.Name()
 }
@@ -593,8 +596,9 @@ type ParameterBinder interface {
 // (ParameterBinder). Pass this when evaluating expressions that mix
 // field references and prepared-statement parameters.
 type RowEvalContext struct {
-	Datum  map[string]any
-	Binder ParameterBinder
+	Datum            map[string]any
+	Binder           ParameterBinder
+	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
 }
 
 func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
@@ -656,7 +660,10 @@ func IsCascadesSafeScalarFunction(name string) bool {
 	switch name {
 	case "COALESCE", "IFNULL",
 		"GREATEST", "LEAST",
-		"BITAND", "BITOR", "BITXOR":
+		"BITAND", "BITOR", "BITXOR",
+		"YEAR", "MONTH", "DAY", "DAYOFMONTH",
+		"HOUR", "MINUTE", "SECOND",
+		"DAYOFWEEK", "DAYOFYEAR":
 		return true
 	}
 	return false
@@ -1247,8 +1254,68 @@ func evalScalarFunction(name string, args []any) any {
 			return nil
 		}
 		return a ^ b
+	case "YEAR", "MONTH", "DAY", "DAYOFMONTH",
+		"HOUR", "MINUTE", "SECOND",
+		"DAYOFWEEK", "DAYOFYEAR":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			// Also handle time.Time if the argument was already parsed.
+			if t, tok := args[0].(time.Time); tok {
+				return datePartFromTime(name, t)
+			}
+			return nil
+		}
+		var t time.Time
+		var err error
+		for _, layout := range []string{
+			"2006-01-02 15:04:05",
+			"2006-01-02",
+			"15:04:05",
+		} {
+			t, err = time.Parse(layout, s)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			return nil
+		}
+		return datePartFromTime(name, t)
+	case "CURRENT_TIMESTAMP":
+		return time.Now().UTC().Format("2006-01-02 15:04:05")
+	case "CURRENT_DATE":
+		return time.Now().UTC().Format("2006-01-02")
+	case "CURRENT_TIME", "LOCALTIME":
+		return time.Now().UTC().Format("15:04:05")
 	}
 	return nil
+}
+
+// datePartFromTime extracts an integer date-part from a time.Time value.
+// DAYOFWEEK uses MySQL convention: Sunday=1 .. Saturday=7.
+func datePartFromTime(name string, t time.Time) int64 {
+	switch name {
+	case "YEAR":
+		return int64(t.Year())
+	case "MONTH":
+		return int64(t.Month())
+	case "DAY", "DAYOFMONTH":
+		return int64(t.Day())
+	case "HOUR":
+		return int64(t.Hour())
+	case "MINUTE":
+		return int64(t.Minute())
+	case "SECOND":
+		return int64(t.Second())
+	case "DAYOFWEEK":
+		return int64(t.Weekday()) + 1
+	case "DAYOFYEAR":
+		return int64(t.YearDay())
+	}
+	return 0
 }
 
 // compareScalar returns -1 / 0 / 1 for a < b / a == b / a > b under the

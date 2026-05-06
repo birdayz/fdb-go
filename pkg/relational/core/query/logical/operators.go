@@ -8,6 +8,26 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// ExistsSubquery pairs an existential alias with the logical plan for
+// an EXISTS subquery. Carried on LogicalFilter so the Cascades
+// translator can build ExistentialQuantifiers over the subquery plans.
+type ExistsSubquery struct {
+	Alias         values.CorrelationIdentifier
+	Plan          LogicalOperator
+	JoinPredicate predicates.QueryPredicate
+}
+
+// ScalarSubquery pairs a correlation alias with the logical plan for
+// a scalar subquery `(SELECT MAX(v) FROM t2)`. Carried on
+// LogicalFilter and LogicalProject so the Cascades translator can
+// build inner plans. The executor pre-evaluates these and binds the
+// scalar result under Alias before evaluating the outer plan's
+// predicates/projections.
+type ScalarSubquery struct {
+	Alias values.CorrelationIdentifier
+	Plan  LogicalOperator
+}
+
 // --- Leaf operators (no children) ----------------------------------
 
 // LogicalScan reads a single table. Empty Alias means "use the table
@@ -46,9 +66,11 @@ func (s *LogicalScan) Explain(indent string) string {
 // builder is constructed without a metadata-backed catalog (today's
 // naive_generator Explain path, which has no transaction in scope).
 type LogicalFilter struct {
-	Input         LogicalOperator
-	Predicate     predicates.QueryPredicate // preferred when non-nil
-	PredicateText string                    // source-text fallback
+	Input            LogicalOperator
+	Predicate        predicates.QueryPredicate // preferred when non-nil
+	PredicateText    string                    // source-text fallback
+	ExistsSubqueries []ExistsSubquery          // subquery plans for EXISTS predicates
+	ScalarSubqueries []ScalarSubquery          // subquery plans for scalar subqueries
 }
 
 // NewFilter constructs a text-only LogicalFilter — used by the
@@ -91,11 +113,12 @@ func (f *LogicalFilter) Explain(indent string) string {
 // returns nil for the whole query. Non-nil slots are used directly
 // as projection Values in the Cascades plan.
 type LogicalProject struct {
-	Input           LogicalOperator
-	Projections     []string
-	Aliases         []string       // parallel to Projections; "" means no alias
-	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
-	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	Input            LogicalOperator
+	Projections      []string
+	Aliases          []string         // parallel to Projections; "" means no alias
+	ProjectedValues  []values.Value   // parallel to Projections; nil slot = walker declined
+	IsComputed       []bool           // parallel to Projections; true = expression, not plain column ref
+	ScalarSubqueries []ScalarSubquery // subquery plans for scalar subqueries in projections
 }
 
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {
@@ -200,13 +223,15 @@ func (d *LogicalDistinct) Explain(indent string) string {
 // GroupKeys are the grouping-column expressions; Aggregates holds the
 // aggregate-call text with aliases.
 type LogicalAggregate struct {
-	Input             LogicalOperator
-	GroupKeys         []string
-	Aggregates        []string       // e.g. "SUM(a)", "COUNT(*)"
-	Aliases           []string       // parallel to Aggregates
-	AggregateOperands []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
-	Having            string         // canonical HAVING predicate, "" when absent
-	HavingPredicate   predicates.QueryPredicate
+	Input                  LogicalOperator
+	GroupKeys              []string
+	GroupKeyValues         []values.Value // resolved Value trees for GROUP BY expressions; nil slot = bare column
+	Aggregates             []string       // e.g. "SUM(a)", "COUNT(*)"
+	Aliases                []string       // parallel to Aggregates
+	AggregateOperands      []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
+	Having                 string         // canonical HAVING predicate, "" when absent
+	HavingPredicate        predicates.QueryPredicate
+	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
 }
 
 func NewAggregate(input LogicalOperator, groupKeys, aggs, aliases []string, having string) *LogicalAggregate {

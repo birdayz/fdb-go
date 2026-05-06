@@ -2052,8 +2052,9 @@ func TestAggKeyName_NonFieldValue(t *testing.T) {
 	t.Parallel()
 	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
 	got := aggKeyName(cv)
-	if got != strings.ToUpper(cv.Name()) {
-		t.Fatalf("expected %s, got %s", strings.ToUpper(cv.Name()), got)
+	want := strings.ToUpper(values.ExplainValue(cv))
+	if got != want {
+		t.Fatalf("expected %s, got %s", want, got)
 	}
 }
 

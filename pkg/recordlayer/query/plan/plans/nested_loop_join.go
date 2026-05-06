@@ -35,6 +35,8 @@ const (
 	JoinInner JoinType = iota
 	JoinLeftOuter
 	JoinCross
+	JoinExists    // semi-join for EXISTS subqueries
+	JoinNotExists // anti semi-join for NOT EXISTS subqueries
 )
 
 func (jt JoinType) String() string {
@@ -45,6 +47,10 @@ func (jt JoinType) String() string {
 		return "LEFT OUTER"
 	case JoinCross:
 		return "CROSS"
+	case JoinExists:
+		return "EXISTS"
+	case JoinNotExists:
+		return "NOT EXISTS"
 	}
 	return "UNKNOWN"
 }

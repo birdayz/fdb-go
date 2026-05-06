@@ -49,12 +49,12 @@ func executePredicatesFilter(
 		return nil, err
 	}
 	preds := p.GetPredicates()
-	hasParams := evalCtx != nil && len(evalCtx.params) > 0
+	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0)
 	return &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) bool {
 			var rowCtx any = qr.Datum
-			if hasParams {
+			if needsRowCtx {
 				if m, ok := qr.Datum.(map[string]any); ok {
 					rowCtx = evalCtx.RowContext(m)
 				}
@@ -467,7 +467,10 @@ func (c *singleResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursor
 			recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
 	c.done = true
-	return recordlayer.NewResultWithValue(c.value, &recordlayer.EndContinuation{}), nil
+	// Use nil continuation — a single-result cursor doesn't support
+	// resumption. EndContinuation is rejected by NewResultWithValue
+	// (a value result must have a resumable continuation).
+	return recordlayer.NewResultWithValue(c.value, nil), nil
 }
 
 func (c *singleResultCursor) Close() error   { c.closed = true; return nil }

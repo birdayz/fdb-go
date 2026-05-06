@@ -70,8 +70,33 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
+
+// SubqueryPlanner is the callback interface for building subquery
+// plans from the expr walker. The embedded package provides the
+// implementation that calls buildLogicalPlanForQuery and stores the
+// result. The Resolver itself is agnostic to how the plan is built —
+// it only needs a fresh alias and the plan reference.
+//
+// BuildExists receives the inner Query context from an
+// ExistsExpressionAtomContext and returns:
+//   - alias: a unique CorrelationIdentifier for the existential quantifier
+//   - err: non-nil when the inner query cannot be planned
+//
+// BuildScalar receives the inner Query context from a
+// SubqueryExpressionAtomContext (scalar subquery) and returns:
+//   - alias: a unique CorrelationIdentifier for the scalar subquery
+//   - err: non-nil when the inner query cannot be planned
+//
+// The planner stores the (alias → plan) mapping externally; the
+// Resolver creates an ExistsPredicate or ScalarSubqueryValue
+// referencing the alias.
+type SubqueryPlanner interface {
+	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
+	BuildScalar(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
+}
 
 // Resolver converts parsed SQL expressions into cascades Values. It
 // needs a Scope (to resolve identifiers) and an Analyzer (to run
@@ -104,6 +129,19 @@ type Resolver struct {
 	// NamedValue.Ordinal (1-based). Named parameters (`?foo` / `$bar`)
 	// keep their declared name and consume no ordinal slot.
 	nextOrdinal int
+	// subqueryPlanner is the callback for building EXISTS subquery
+	// plans. Set via SetSubqueryPlanner by the catalog-aware builder
+	// before walking WHERE predicates. nil means EXISTS subqueries
+	// decline with UnsupportedExpressionShapeError.
+	subqueryPlanner SubqueryPlanner
+}
+
+// SetSubqueryPlanner installs a callback that builds logical plans for
+// EXISTS subqueries. Must be called before WalkPredicate if EXISTS
+// support is desired. Passing nil disables EXISTS handling (the
+// walker declines with UnsupportedExpressionShapeError).
+func (r *Resolver) SetSubqueryPlanner(p SubqueryPlanner) {
+	r.subqueryPlanner = p
 }
 
 // New constructs a Resolver bound to a scope. Nil analyzer or nil
@@ -173,7 +211,20 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			field = real
 		}
 	}
-	if src.CorrelationName != "" && len(r.scope.Sources()) > 1 {
+	needsQualification := len(r.scope.Sources()) > 1
+	if !needsQualification && src.CorrelationName != "" {
+		isLocal := false
+		for _, localSrc := range r.scope.Sources() {
+			if localSrc.CorrelationName == src.CorrelationName {
+				isLocal = true
+				break
+			}
+		}
+		if !isLocal {
+			needsQualification = true
+		}
+	}
+	if src.CorrelationName != "" && needsQualification {
 		field = src.CorrelationName + "." + field
 	}
 	return &values.FieldValue{
@@ -483,6 +534,8 @@ func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 		return &values.ConstantValue{Value: float64(v), Typ: values.TypeFloat}, nil
 	case float64:
 		return &values.ConstantValue{Value: v, Typ: values.TypeFloat}, nil
+	case []byte:
+		return &values.ConstantValue{Value: v, Typ: values.NullableBytes}, nil
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
 }
