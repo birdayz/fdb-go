@@ -231,12 +231,8 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			aggs = []string{"COUNT(*)"}
 			aggAliases = []string{sq.countStarAlias}
 		} else {
-			var sortOnlyCount int
 			for _, ac := range sq.aggCols {
 				if ac.aggFunc != "" {
-					if ac.sortOnly {
-						sortOnlyCount++
-					}
 					arg := ac.aggArg
 					if arg == "" && ac.aggExpr != nil {
 						arg = canonicalTextOf(ac.aggExpr)
