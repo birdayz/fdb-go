@@ -12,8 +12,9 @@ import (
 // an EXISTS subquery. Carried on LogicalFilter so the Cascades
 // translator can build ExistentialQuantifiers over the subquery plans.
 type ExistsSubquery struct {
-	Alias values.CorrelationIdentifier
-	Plan  LogicalOperator
+	Alias         values.CorrelationIdentifier
+	Plan          LogicalOperator
+	JoinPredicate predicates.QueryPredicate
 }
 
 // ScalarSubquery pairs a correlation alias with the logical plan for

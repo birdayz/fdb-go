@@ -742,24 +742,44 @@ func executeNestedLoopJoin(
 	joinType := p.GetJoinType()
 	var results []QueryResult
 
-	// EXISTS / NOT EXISTS semi-join: the inner is a FirstOrDefault plan.
-	// For each outer row, run the inner once. EXISTS passes the outer
-	// row when the inner produces a non-null result; NOT EXISTS passes
-	// it when the inner is empty (null result).
 	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
-		for _, outerRow := range outerRows {
+		if len(preds) == 0 {
+			for _, outerRow := range outerRows {
+				innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+				if innerErr != nil {
+					return nil, innerErr
+				}
+				innerResult, innerErr := innerCursor.OnNext(ctx)
+				_ = innerCursor.Close()
+				if innerErr != nil {
+					return nil, innerErr
+				}
+				hasRow := innerResult.HasNext() && innerResult.GetValue().Datum != nil
+				if (joinType == plans.JoinExists && hasRow) || (joinType == plans.JoinNotExists && !hasRow) {
+					results = append(results, outerRow)
+				}
+			}
+		} else {
 			innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
 			if innerErr != nil {
 				return nil, innerErr
 			}
-			innerResult, innerErr := innerCursor.OnNext(ctx)
-			_ = innerCursor.Close()
+			innerRows, innerErr := CollectAll(ctx, innerCursor)
 			if innerErr != nil {
 				return nil, innerErr
 			}
-			hasRow := innerResult.HasNext() && innerResult.GetValue().Datum != nil
-			if (joinType == plans.JoinExists && hasRow) || (joinType == plans.JoinNotExists && !hasRow) {
-				results = append(results, outerRow)
+			for _, outerRow := range outerRows {
+				matched := false
+				for _, innerRow := range innerRows {
+					combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
+					if passesJoinPredicates(combined, preds, evalCtx) {
+						matched = true
+						break
+					}
+				}
+				if (joinType == plans.JoinExists && matched) || (joinType == plans.JoinNotExists && !matched) {
+					results = append(results, outerRow)
+				}
 			}
 		}
 		return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil

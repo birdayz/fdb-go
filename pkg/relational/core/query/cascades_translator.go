@@ -146,6 +146,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		outerQ := expressions.ForEachQuantifier(innerRef)
 		quantifiers := []expressions.Quantifier{outerQ}
 
+		allPreds := []predicates.QueryPredicate{f.Predicate}
 		for _, esq := range f.ExistsSubqueries {
 			subRef := t.translateRef(esq.Plan)
 			if subRef == nil {
@@ -153,13 +154,27 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			}
 			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 			quantifiers = append(quantifiers, existQ)
+			if esq.JoinPredicate != nil {
+				allPreds = append(allPreds, esq.JoinPredicate)
+			}
+		}
+
+		var sourceAliases []string
+		outerAlias := sourceAlias(f.Input)
+		if outerAlias != "" {
+			sourceAliases = []string{outerAlias}
+			for _, esq := range f.ExistsSubqueries {
+				innerA := sourceAlias(esq.Plan)
+				sourceAliases = append(sourceAliases, innerA)
+			}
 		}
 
 		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
-		return expressions.NewSelectExpression(
+		return expressions.NewSelectExpressionWithAliases(
 			resultValue,
 			quantifiers,
-			[]predicates.QueryPredicate{f.Predicate},
+			allPreds,
+			sourceAliases,
 		)
 	}
 
@@ -454,17 +469,25 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 }
 
 func sourceAlias(op logical.LogicalOperator) string {
-	switch o := op.(type) {
-	case *logical.LogicalScan:
-		if o.Alias != "" {
-			return strings.ToUpper(o.Alias)
+	for cur := op; cur != nil; {
+		switch o := cur.(type) {
+		case *logical.LogicalScan:
+			if o.Alias != "" {
+				return strings.ToUpper(o.Alias)
+			}
+			return strings.ToUpper(o.Table)
+		case *logical.LogicalJoin:
+			return sourceAlias(o.Right)
+		default:
+			ch := cur.Children()
+			if len(ch) == 1 {
+				cur = ch[0]
+				continue
+			}
+			return ""
 		}
-		return strings.ToUpper(o.Table)
-	case *logical.LogicalJoin:
-		return sourceAlias(o.Right)
-	default:
-		return ""
 	}
+	return ""
 }
 
 func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {

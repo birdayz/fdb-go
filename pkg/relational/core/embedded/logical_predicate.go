@@ -977,7 +977,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// WHERE walks can build inner plans for EXISTS and scalar subqueries.
 	var existsPlanner *existsSubqueryPlanner
 	if md != nil {
-		existsPlanner = &existsSubqueryPlanner{md: md}
+		existsPlanner = &existsSubqueryPlanner{
+			md:          md,
+			outerScopes: buildOuterScopeSources(sq, md),
+		}
 	}
 
 	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
@@ -2645,10 +2648,39 @@ func buildLogicalPlanForUnionWithCatalog(
 // logical plans for EXISTS and scalar subqueries and collects the
 // (alias, plan) pairs that the LogicalFilter/LogicalProject need to
 // carry to the Cascades translator.
+func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData) map[string]semantic.ScopeSource {
+	if sq == nil || md == nil || sq.tableName == "" {
+		return nil
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	sources := make(map[string]semantic.ScopeSource)
+	addSrc := func(tableName, alias string) {
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err != nil {
+			return
+		}
+		a := semantic.NewUnquoted(alias)
+		if alias == "" {
+			a = semantic.NewUnquoted(tableName)
+		}
+		sources[strings.ToUpper(a.Name())] = semantic.ScopeSource{
+			Table: tbl, Alias: a, CorrelationName: a.Name(),
+		}
+	}
+	addSrc(sq.tableName, sq.tableAlias)
+	for _, j := range sq.joins {
+		addSrc(j.tableName, j.alias)
+	}
+	return sources
+}
+
 type existsSubqueryPlanner struct {
 	md               *recordlayer.RecordMetaData
+	outerScopes      map[string]semantic.ScopeSource
 	subqueries       []logical.ExistsSubquery
 	scalarSubqueries []logical.ScalarSubquery
+	lastJoinPredicate predicates.QueryPredicate
 }
 
 func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
@@ -2656,18 +2688,84 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
 	}
 	innerOp, err := buildLogicalPlanForQueryWithCatalog(q, p.md)
+	isUndefinedCol := false
 	if err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeUndefinedColumn {
+			isUndefinedCol = true
+		}
+	}
+	if err != nil && (!isUndefinedCol || len(p.outerScopes) == 0) {
 		return values.CorrelationIdentifier{}, err
+	}
+	if isUndefinedCol {
+		p.lastJoinPredicate = nil
+		innerOp, err = p.buildCorrelatedExists(q)
+		if err != nil {
+			return values.CorrelationIdentifier{}, err
+		}
 	}
 	if innerOp == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: inner query could not be planned")
 	}
 	alias := values.UniqueCorrelationIdentifier()
 	p.subqueries = append(p.subqueries, logical.ExistsSubquery{
-		Alias: alias,
-		Plan:  innerOp,
+		Alias:         alias,
+		Plan:          innerOp,
+		JoinPredicate: p.lastJoinPredicate,
 	})
+	p.lastJoinPredicate = nil
 	return alias, nil
+}
+
+func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) (logical.LogicalOperator, error) {
+	if q == nil {
+		return nil, fmt.Errorf("correlated EXISTS: nil query")
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return nil, fmt.Errorf("correlated EXISTS: unsupported query body shape %T", q.QueryExpressionBody())
+	}
+	sq, err := extractFromQueryTerm(body)
+	if err != nil || sq == nil {
+		return nil, fmt.Errorf("correlated EXISTS: %w", err)
+	}
+
+	innerAlias := sq.tableAlias
+	if innerAlias == "" {
+		innerAlias = sq.tableName
+	}
+	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+
+	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
+		return op, nil
+	}
+
+	cat := rlcatalog.Wrap(p.md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+
+	outerScope := semantic.NewScope(nil)
+	for _, src := range p.outerScopes {
+		_ = outerScope.AddSource(src)
+	}
+
+	innerScope := semantic.NewScope(outerScope)
+	tbl, tblErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
+	if tblErr != nil {
+		return nil, fmt.Errorf("correlated EXISTS: resolve inner table %q: %w", sq.tableName, tblErr)
+	}
+	aliasID := semantic.NewUnquoted(innerAlias)
+	_ = innerScope.AddSource(semantic.ScopeSource{
+		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
+	})
+
+	resolver := expr.New(analyzer, innerScope)
+	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
+	if walkErr != nil {
+		return nil, fmt.Errorf("correlated EXISTS: walk predicate: %w", walkErr)
+	}
+	p.lastJoinPredicate = predicates.SimplifyPredicateValues(pred)
+	return op, nil
 }
 
 func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
