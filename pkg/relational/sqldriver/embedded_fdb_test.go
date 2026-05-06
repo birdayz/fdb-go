@@ -4238,13 +4238,20 @@ func TestFDB_DerivedTable(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Pricey', 150)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Derived table (subquery in FROM) — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx, `
+	// Derived table (subquery in FROM) — now works via catalog-aware
+	// inner plan building.
+	rows, err := db.QueryContext(ctx, `
 		SELECT name FROM (SELECT id, name FROM Product WHERE price > 100) AS expensive ORDER BY name ASC`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+		names = append(names, n)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Expensive", "Pricey"}))
 }
 
 func TestFDB_CTEChaining(t *testing.T) {
@@ -6706,13 +6713,13 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (2, 20), (3, 30)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Nested derived-table (subquery in FROM) — must be rejected with 0AF00.
-	_, err = db.QueryContext(ctx,
-		`SELECT SUM(D.n) FROM (SELECT n FROM T WHERE id = 1) AS D`)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF00"))
+	// Derived-table (subquery in FROM) — now works via catalog-aware path.
+	var total sql.NullInt64
+	err = db.QueryRowContext(ctx,
+		`SELECT SUM(D.n) FROM (SELECT n FROM T WHERE id = 1) AS D`).Scan(&total)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(total.Valid).To(gomega.BeTrue())
+	g.Expect(total.Int64).To(gomega.Equal(int64(10)))
 }
 
 // TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34

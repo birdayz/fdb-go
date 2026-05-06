@@ -681,11 +681,34 @@ func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.Recor
 }
 
 func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
+	// For derived tables, build the inner plan through the catalog-aware
+	// path so WHERE predicates get upgraded. Java's visitSubqueryTableItem
+	// recursively visits through the same typed visitor.
+	if sq.derivedQuery != nil && md != nil {
+		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
+			sq.derivedQuery.QueryExpressionBody(), md, cteScopes)
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		if innerOp != nil {
+			// Build the outer plan (Sort, Limit, Project) on top of
+			// the catalog-aware inner plan.
+			op := buildOuterPlanOnDerived(sq, innerOp)
+			if op == nil {
+				return nil, nil
+			}
+			return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, cteScopes)
+		}
+	}
+
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil || md == nil || sq == nil {
 		return op, nil
 	}
+	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, cteScopes)
+}
 
+func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's
 	// QueryVisitor holding a SemanticAnalyzer.
@@ -1753,6 +1776,67 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 		}
 	}
 	return nil
+}
+
+// buildOuterPlanOnDerived builds the Sort/Limit/Project/Distinct shell
+// from a selectQuery on top of an already-built inner plan (derived table).
+// Mirrors buildLogicalPlanForSelect's post-FROM logic but skips the
+// FROM-source and aggregate sections (those are in the inner plan).
+func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) logical.LogicalOperator {
+	op := innerOp
+
+	if sq.whereExpr != nil {
+		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
+	}
+
+	if len(sq.orderBy) > 0 {
+		keys := make([]logical.SortKey, 0, len(sq.orderBy))
+		for _, ob := range sq.orderBy {
+			dir := logical.SortAsc
+			if !ob.ascending {
+				dir = logical.SortDesc
+			}
+			e := ob.colName
+			if e == "" && ob.rawExpr != nil {
+				e = ob.rawExpr.GetText()
+			}
+			nullsFirst := ob.ascending
+			if ob.nullsFirst != nil {
+				nullsFirst = *ob.nullsFirst
+			}
+			keys = append(keys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
+		}
+		op = logical.NewSort(op, keys)
+	}
+
+	if sq.limit >= 0 || sq.offset > 0 {
+		op = logical.NewLimit(op, sq.limit, sq.offset)
+	}
+
+	if len(sq.projCols) > 0 {
+		projs := make([]string, len(sq.projCols))
+		aliases := make([]string, len(sq.projCols))
+		computed := make([]bool, len(sq.projCols))
+		for i, col := range sq.projCols {
+			projs[i] = col
+			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
+				computed[i] = true
+			}
+			if sq.projAliases != nil && i < len(sq.projAliases) {
+				aliases[i] = sq.projAliases[i]
+			}
+		}
+		proj := logical.NewProject(op, projs, aliases)
+		proj.IsComputed = computed
+		op = proj
+	}
+
+	if sq.distinct {
+		op = logical.NewDistinct(op)
+	}
+
+	return op
 }
 
 func hasAnyQualifiedStar(sq *selectQuery) bool {
