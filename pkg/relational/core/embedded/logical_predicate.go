@@ -301,7 +301,7 @@ func buildDerivedTableSource(
 // The join nodes are created in order matching sq.joins, so we match
 // them sequentially by walking the left-child spine (the builder chains
 // joins left-to-right with op = NewJoin(op, right, ...)).
-func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) {
+func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) error {
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
@@ -370,7 +370,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		}
 	}
 	if !scopeOK {
-		return
+		return nil
 	}
 	resolver := expr.New(analyzer, scope)
 
@@ -381,11 +381,19 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			break
 		}
 		if sq.joins[sqIdx].onExpr != nil && j.OnPredicate == nil {
-			if pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr); walkErr == nil {
-				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
+			pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr)
+			if walkErr != nil {
+				var srcNotFound *semantic.SourceNotFoundError
+				if errors.As(walkErr, &srcNotFound) {
+					return api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"no FROM source aliased as %s", srcNotFound.Alias.Name())
+				}
+				continue
 			}
+			j.OnPredicate = predicates.SimplifyPredicateValues(pred)
 		}
 	}
+	return nil
 }
 
 // buildWherePredicateFromCTEScope builds a predicate using a CTE-derived
@@ -910,7 +918,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if len(sq.joins) > 0 {
-		upgradeJoinOnPredicates(op, sq, md, cteScopes)
+		if err := upgradeJoinOnPredicates(op, sq, md, cteScopes); err != nil {
+			return nil, err
+		}
 	}
 
 	if len(sq.aggCols) > 0 {
@@ -946,6 +956,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if errors.As(walkErr, &inListNull) {
 				return nil, api.NewError(api.ErrCodeCannotConvertType,
 					"IN-list contains NULL literal")
+			}
+			var srcNotFound *semantic.SourceNotFoundError
+			if errors.As(walkErr, &srcNotFound) {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"no FROM source aliased as %s", srcNotFound.Alias.Name())
 			}
 		}
 	}
