@@ -211,7 +211,20 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 			field = real
 		}
 	}
-	if src.CorrelationName != "" && len(r.scope.Sources()) > 1 {
+	needsQualification := len(r.scope.Sources()) > 1
+	if !needsQualification && src.CorrelationName != "" {
+		isLocal := false
+		for _, localSrc := range r.scope.Sources() {
+			if localSrc.CorrelationName == src.CorrelationName {
+				isLocal = true
+				break
+			}
+		}
+		if !isLocal {
+			needsQualification = true
+		}
+	}
+	if src.CorrelationName != "" && needsQualification {
 		field = src.CorrelationName + "." + field
 	}
 	return &values.FieldValue{
