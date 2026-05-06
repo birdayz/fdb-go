@@ -2108,6 +2108,13 @@ func buildLogicalPlanForUnionWithCatalog(
 	if left == nil || right == nil {
 		return nil, nil
 	}
+
+	var liftedSort *logical.LogicalSort
+	if s, ok := right.(*logical.LogicalSort); ok {
+		liftedSort = s
+		right = s.Input
+	}
+
 	inputs := []logical.LogicalOperator{left, right}
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
@@ -2115,5 +2122,9 @@ func buildLogicalPlanForUnionWithCatalog(
 	if err := validateUnionColumnCounts(inputs); err != nil {
 		return nil, err
 	}
-	return logical.NewUnion(inputs, distinct), nil
+	var result logical.LogicalOperator = logical.NewUnion(inputs, distinct)
+	if liftedSort != nil {
+		result = logical.NewSort(result, liftedSort.Keys)
+	}
+	return result, nil
 }
