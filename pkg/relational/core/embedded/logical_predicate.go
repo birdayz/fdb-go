@@ -230,11 +230,11 @@ func buildDerivedTableSource(
 			CorrelationName: aliasID.Name(),
 		}, true
 	}
-	if len(innerSQ.joins) > 0 ||
-		len(innerSQ.aggCols) > 0 ||
-		innerSQ.countStar ||
-		innerSQ.tableName == "" {
+	if len(innerSQ.joins) > 0 || innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
+	}
+	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
+		return buildDerivedTableSourceFromAgg(alias, innerSQ)
 	}
 	for _, e := range innerSQ.projExprs {
 		if e != nil {
@@ -294,6 +294,45 @@ func buildDerivedTableSource(
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
 		ColumnAliasMap:  colAliasMap,
+	}, true
+}
+
+func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.ScopeSource, bool) {
+	var columns []semantic.Column
+	if sq.countStar {
+		name := "COUNT(*)"
+		if sq.countStarAlias != "" {
+			name = sq.countStarAlias
+		}
+		columns = append(columns, semantic.Column{
+			Id: semantic.NewUnquoted(name), Type: "BIGINT", Nullable: false,
+		})
+	}
+	for _, ac := range sq.aggCols {
+		name := ac.outName
+		if name == "" {
+			if ac.groupCol != "" {
+				name = ac.groupCol
+			} else {
+				continue
+			}
+		}
+		columns = append(columns, semantic.Column{
+			Id: semantic.NewUnquoted(name), Type: "UNKNOWN", Nullable: true,
+		})
+	}
+	if len(columns) == 0 {
+		return semantic.ScopeSource{}, false
+	}
+	aliasID := semantic.NewUnquoted(alias)
+	virtualTable := &semantic.StaticTable{
+		TableName:    semantic.FromSegments([]string{alias}, false),
+		TableColumns: columns,
+	}
+	return semantic.ScopeSource{
+		Table:           virtualTable,
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
 	}, true
 }
 
@@ -2213,12 +2252,55 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 // buildOuterPlanOnDerived builds the Sort/Limit/Project/Distinct shell
 // from a selectQuery on top of an already-built inner plan (derived table).
 // Mirrors buildLogicalPlanForSelect's post-FROM logic but skips the
-// FROM-source and aggregate sections (those are in the inner plan).
+// FROM-source section (those are in the inner plan).
 func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) logical.LogicalOperator {
 	op := innerOp
 
 	if sq.whereExpr != nil {
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
+	}
+
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		dtPrefix := strings.ToUpper(sq.tableName) + "."
+		stripDT := func(s string) string {
+			if strings.HasPrefix(strings.ToUpper(s), dtPrefix) {
+				return s[len(dtPrefix):]
+			}
+			return s
+		}
+		var aggs, aggAliases []string
+		keys := make([]string, len(sq.groupBy))
+		for i, k := range sq.groupBy {
+			keys[i] = stripDT(k)
+		}
+		if sq.countStar {
+			aggs = []string{"COUNT(*)"}
+			aggAliases = []string{sq.countStarAlias}
+		} else {
+			for _, ac := range sq.aggCols {
+				if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					arg = stripDT(arg)
+					distinctPfx := ""
+					if ac.aggDistinct {
+						distinctPfx = "DISTINCT "
+					}
+					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+					aggAliases = append(aggAliases, ac.outName)
+				}
+			}
+		}
+		having := ""
+		if sq.havingExpr != nil {
+			having = canonicalTextOf(sq.havingExpr)
+		}
+		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
 	}
 
 	if len(sq.orderBy) > 0 {
