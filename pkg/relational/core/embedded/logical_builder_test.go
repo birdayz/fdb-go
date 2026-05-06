@@ -298,7 +298,7 @@ func TestBuildLogicalPlan_UnionAll(t *testing.T) {
 }
 
 // UNION (implicit DISTINCT): no quantifier.
-func TestBuildLogicalPlan_UnionDistinct(t *testing.T) {
+func TestBuildLogicalPlan_UnionDistinctRejectsLikeCatalog(t *testing.T) {
 	t.Parallel()
 	root, err := parser.Parse("SELECT id FROM a UNION SELECT id FROM b")
 	if err != nil {
@@ -307,11 +307,8 @@ func TestBuildLogicalPlan_UnionDistinct(t *testing.T) {
 	stmt := root.Statements().AllStatement()[0]
 	sel := stmt.SelectStatement()
 	op := buildLogicalPlanForQueryBody(sel.Query().QueryExpressionBody())
-	if op == nil {
-		t.Fatal("expected non-nil")
-	}
-	if !strings.Contains(op.Explain(""), "UnionDistinct") {
-		t.Fatalf("expected UnionDistinct, got %q", op.Explain(""))
+	if op != nil {
+		t.Fatalf("expected nil for UNION DISTINCT (only UNION ALL supported), got %q", op.Explain(""))
 	}
 }
 

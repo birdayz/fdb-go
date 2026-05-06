@@ -2824,6 +2824,10 @@ func qualifyBareFieldValue(v values.Value, qualifier string) {
 	})
 }
 
+// NOTE: qualifyBareFieldValue mutates FieldValue.Field in place. This is
+// safe because buildCorrelatedExists constructs a fresh predicate tree via
+// resolver.WalkPredicate each call. Do NOT call on shared/memoized trees.
+
 func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: nil query context")

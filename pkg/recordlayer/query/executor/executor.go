@@ -27,6 +27,8 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+type innerPlanAccessor interface{ GetInner() plans.RecordQueryPlan }
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -646,8 +648,7 @@ func planColumnNames(p plans.RecordQueryPlan) []string {
 			}
 			return names
 		}
-		type hasInner interface{ GetInner() plans.RecordQueryPlan }
-		if ip, ok := p.(hasInner); ok {
+		if ip, ok := p.(innerPlanAccessor); ok {
 			p = ip.GetInner()
 		} else {
 			return nil
