@@ -2273,14 +2273,15 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
 	}
 
-	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
-		dtPrefix := strings.ToUpper(sq.tableName) + "."
-		stripDT := func(s string) string {
-			if strings.HasPrefix(strings.ToUpper(s), dtPrefix) {
-				return s[len(dtPrefix):]
-			}
-			return s
+	dtPrefix := strings.ToUpper(sq.tableName) + "."
+	stripDT := func(s string) string {
+		if strings.HasPrefix(strings.ToUpper(s), dtPrefix) {
+			return s[len(dtPrefix):]
 		}
+		return s
+	}
+
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		var aggs, aggAliases []string
 		keys := make([]string, len(sq.groupBy))
 		for i, k := range sq.groupBy {
@@ -2367,7 +2368,7 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 			if !ob.ascending {
 				dir = logical.SortDesc
 			}
-			e := ob.colName
+			e := stripDT(ob.colName)
 			if e == "" && ob.rawExpr != nil {
 				e = ob.rawExpr.GetText()
 			}
@@ -2389,7 +2390,7 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
-			projs[i] = col
+			projs[i] = stripDT(col)
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
 				computed[i] = true
