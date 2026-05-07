@@ -1284,12 +1284,10 @@ func evalScalarFunction(name string, args []any) any {
 			return nil
 		}
 		return datePartFromTime(name, t)
-	case "CURRENT_TIMESTAMP":
+	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
 		return time.Now().UTC().Format("2006-01-02 15:04:05")
 	case "CURRENT_DATE":
 		return time.Now().UTC().Format("2006-01-02")
-	case "CURRENT_TIME", "LOCALTIME":
-		return time.Now().UTC().Format("15:04:05")
 	}
 	return nil
 }
