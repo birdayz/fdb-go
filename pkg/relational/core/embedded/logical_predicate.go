@@ -1994,10 +1994,9 @@ func buildLogicalPlanForQueryWithCatalog(
 	recursive := ctesCtx.RECURSIVE() != nil
 	traversalOrder := 0
 	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
-		txt := strings.ToLower(toc.GetText())
-		if strings.Contains(txt, "pre") {
+		if toc.PRE_ORDER() != nil {
 			traversalOrder = 1
-		} else if strings.Contains(txt, "post") {
+		} else if toc.POST_ORDER() != nil {
 			traversalOrder = 2
 		}
 	}

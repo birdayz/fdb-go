@@ -540,6 +540,17 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 	switch o := op.(type) {
 	case *logical.LogicalProject:
 		return o.Projections
+	case *logical.LogicalAggregate:
+		var cols []string
+		cols = append(cols, o.GroupKeys...)
+		for i, agg := range o.Aggregates {
+			if i < len(o.Aliases) && o.Aliases[i] != "" {
+				cols = append(cols, o.Aliases[i])
+			} else {
+				cols = append(cols, agg)
+			}
+		}
+		return cols
 	case *logical.LogicalDistinct:
 		return extractOutputColumns(o.Input)
 	case *logical.LogicalSort:

@@ -1558,8 +1558,11 @@ func executeRecursiveLevelUnion(
 
 	const maxRecursionDepth = 1000
 	for level := 0; ; level++ {
-		if len(insertTable.GetList()) == 0 || level >= maxRecursionDepth {
+		if len(insertTable.GetList()) == 0 {
 			break
+		}
+		if level >= maxRecursionDepth {
+			return nil, fmt.Errorf("recursive CTE exceeded maximum recursion depth of %d", maxRecursionDepth)
 		}
 
 		scanTable, insertTable = insertTable, scanTable
@@ -1632,7 +1635,7 @@ func dfsVisit(
 	depth, maxDepth int,
 ) error {
 	if depth >= maxDepth {
-		return nil
+		return fmt.Errorf("recursive CTE exceeded maximum depth of %d", maxDepth)
 	}
 
 	if preorder {
