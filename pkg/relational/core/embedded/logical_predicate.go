@@ -239,9 +239,6 @@ func buildDerivedTableSource(
 	if len(innerSQ.joins) > 0 || innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
 	}
-	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
-		return buildDerivedTableSourceFromAgg(alias, innerSQ)
-	}
 	for _, e := range innerSQ.projExprs {
 		if e != nil {
 			// Computed expression — type unknown without Phase 4.0 Type
@@ -1992,12 +1989,12 @@ func buildLogicalPlanForQueryWithCatalog(
 		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
-	traversalOrder := 0
+	traversalOrder := logical.TraversalLevelOrder
 	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
 		if toc.PRE_ORDER() != nil {
-			traversalOrder = 1
+			traversalOrder = logical.TraversalPreOrder
 		} else if toc.POST_ORDER() != nil {
-			traversalOrder = 2
+			traversalOrder = logical.TraversalPostOrder
 		}
 	}
 	ctes := ctesCtx.AllNamedQuery()
@@ -2371,6 +2368,13 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 				sq.postAggExprs = allAntlr
 			}
 		} else if len(keys) > 0 {
+			hasSortOnly := false
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly {
+					hasSortOnly = true
+					break
+				}
+			}
 			var visibleProj, visibleAliases []string
 			for _, ac := range sq.aggCols {
 				if ac.sortOnly || ac.hidden {
@@ -2409,7 +2413,7 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 					break
 				}
 			}
-			if len(visibleProj) < totalOutput || hasAggAlias {
+			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAggAlias) {
 				op = logical.NewProject(op, visibleProj, visibleAliases)
 			}
 		}
