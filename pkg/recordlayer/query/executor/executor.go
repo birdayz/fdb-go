@@ -27,6 +27,8 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+type innerPlanAccessor interface{ GetInner() plans.RecordQueryPlan }
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -646,8 +648,7 @@ func planColumnNames(p plans.RecordQueryPlan) []string {
 			}
 			return names
 		}
-		type hasInner interface{ GetInner() plans.RecordQueryPlan }
-		if ip, ok := p.(hasInner); ok {
+		if ip, ok := p.(innerPlanAccessor); ok {
 			p = ip.GetInner()
 		} else {
 			return nil
@@ -1083,11 +1084,16 @@ func executeAggregation(
 		result := make(map[string]any)
 		for _, agg := range aggregates {
 			name := aggResultName(agg)
+			var val any
 			switch agg.Function {
 			case expressions.AggCount:
-				result[name] = int64(0)
+				val = int64(0)
 			default:
-				result[name] = nil
+				val = nil
+			}
+			result[name] = val
+			if agg.Alias != "" && agg.Alias != name {
+				result[agg.Alias] = val
 			}
 		}
 		return recordlayer.FromList([]QueryResult{{Datum: result}}), nil
@@ -1102,31 +1108,36 @@ func executeAggregation(
 		}
 		for i, agg := range aggregates {
 			name := aggResultName(agg)
+			var val any
 			switch agg.Function {
 			case expressions.AggCount:
 				if isCountStar(agg) {
-					result[name] = gs.count
+					val = gs.count
 				} else {
-					result[name] = gs.counts[i]
+					val = gs.counts[i]
 				}
 			case expressions.AggSum:
 				if gs.counts[i] == 0 {
-					result[name] = nil
+					val = nil
 				} else if gs.allInt[i] {
-					result[name] = gs.sumsI[i]
+					val = gs.sumsI[i]
 				} else {
-					result[name] = gs.sums[i]
+					val = gs.sums[i]
 				}
 			case expressions.AggMin:
-				result[name] = gs.mins[i]
+				val = gs.mins[i]
 			case expressions.AggMax:
-				result[name] = gs.maxs[i]
+				val = gs.maxs[i]
 			case expressions.AggAvg:
 				if gs.counts[i] > 0 {
-					result[name] = gs.sums[i] / float64(gs.counts[i])
+					val = gs.sums[i] / float64(gs.counts[i])
 				} else {
-					result[name] = nil
+					val = nil
 				}
+			}
+			result[name] = val
+			if agg.Alias != "" && agg.Alias != name {
+				result[agg.Alias] = val
 			}
 		}
 		results = append(results, QueryResult{Datum: result})
@@ -1547,8 +1558,11 @@ func executeRecursiveLevelUnion(
 
 	const maxRecursionDepth = 1000
 	for level := 0; ; level++ {
-		if len(insertTable.GetList()) == 0 || level >= maxRecursionDepth {
+		if len(insertTable.GetList()) == 0 {
 			break
+		}
+		if level >= maxRecursionDepth {
+			return nil, fmt.Errorf("recursive CTE exceeded maximum recursion depth of %d", maxRecursionDepth)
 		}
 
 		scanTable, insertTable = insertTable, scanTable
@@ -1598,8 +1612,10 @@ func executeRecursiveDfsJoin(
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
 
+	const maxRecursionDepth = 256
+
 	for _, root := range rootRows {
-		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results); err != nil {
+		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth); err != nil {
 			return nil, err
 		}
 	}
@@ -1616,7 +1632,12 @@ func dfsVisit(
 	preorder bool,
 	props recordlayer.ExecuteProperties,
 	results *[]QueryResult,
+	depth, maxDepth int,
 ) error {
+	if depth >= maxDepth {
+		return fmt.Errorf("recursive CTE exceeded maximum depth of %d", maxDepth)
+	}
+
 	if preorder {
 		*results = append(*results, node)
 	}
@@ -1635,7 +1656,7 @@ func dfsVisit(
 	}
 
 	for _, child := range children {
-		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results); err != nil {
+		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth); err != nil {
 			return err
 		}
 	}

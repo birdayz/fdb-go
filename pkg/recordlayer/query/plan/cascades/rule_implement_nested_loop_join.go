@@ -104,8 +104,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 // ForEach outer and an Existential inner (EXISTS subquery).
 // Wraps the inner in FirstOrDefault and uses a semi-join (EXISTS
 // or NOT EXISTS) plan shape. Non-EXISTS predicates (e.g. `x > 5`
-// in `WHERE x > 5 AND EXISTS (...)`) are applied as a separate
-// PredicatesFilterPlan on the outer before the semi-join.
+// in `WHERE x > 5 AND EXISTS (...)`) are passed as NLJ join
+// predicates evaluated against the merged outer+inner row.
 func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	call *ExpressionRuleCall,
 	sel *expressions.SelectExpression,
@@ -137,8 +137,9 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	fodRef := call.MemoizeExpression(fodWrapper)
 
 	// Separate predicates into EXISTS-related and non-EXISTS.
-	// Non-EXISTS predicates are applied as a filter on the outer;
-	// the EXISTS/NOT-EXISTS predicate drives the join type.
+	// Non-EXISTS predicates become NLJ join predicates evaluated
+	// against the merged outer+inner row; EXISTS/NOT-EXISTS drives
+	// the join type.
 	allPreds := sel.GetPredicates()
 	var regularPreds []predicates.QueryPredicate
 	negated := false

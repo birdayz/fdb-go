@@ -352,6 +352,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
 			spec.Operand = a.AggregateOperands[i]
 		}
+		if i < len(a.Aliases) && a.Aliases[i] != "" {
+			spec.Alias = strings.ToUpper(a.Aliases[i])
+		}
 		aggSpecs = append(aggSpecs, spec)
 	}
 	groupBy := expressions.NewGroupByExpression(
@@ -521,10 +524,43 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 	if c.Recursive {
 		return t.translateRecursiveCTE(c)
 	}
-	t.cteScope[strings.ToUpper(c.Name)] = c.Body
+	body := c.Body
+	if len(c.ColumnAliases) > 0 {
+		if origCols := extractOutputColumns(body); len(origCols) == len(c.ColumnAliases) {
+			body = logical.NewProject(body, origCols, c.ColumnAliases)
+		}
+	}
+	t.cteScope[strings.ToUpper(c.Name)] = body
 	result := t.translateOp(c.Main)
 	delete(t.cteScope, strings.ToUpper(c.Name))
 	return result
+}
+
+func extractOutputColumns(op logical.LogicalOperator) []string {
+	switch o := op.(type) {
+	case *logical.LogicalProject:
+		return o.Projections
+	case *logical.LogicalAggregate:
+		var cols []string
+		cols = append(cols, o.GroupKeys...)
+		for i, agg := range o.Aggregates {
+			if i < len(o.Aliases) && o.Aliases[i] != "" {
+				cols = append(cols, o.Aliases[i])
+			} else {
+				cols = append(cols, agg)
+			}
+		}
+		return cols
+	case *logical.LogicalDistinct:
+		return extractOutputColumns(o.Input)
+	case *logical.LogicalSort:
+		return extractOutputColumns(o.Input)
+	case *logical.LogicalLimit:
+		return extractOutputColumns(o.Input)
+	case *logical.LogicalFilter:
+		return extractOutputColumns(o.Input)
+	}
+	return nil
 }
 
 // translateRecursiveCTE translates a WITH RECURSIVE CTE into a
@@ -643,11 +679,18 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Build RecursiveUnionExpression.
 	seedInsertRef := expressions.InitialOf(seedInsert)
 	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
+	strategy := expressions.TraversalAny
+	switch c.TraversalOrder {
+	case 1:
+		strategy = expressions.TraversalPreorder
+	case 2:
+		strategy = expressions.TraversalPostorder
+	}
 	recUnion := expressions.NewRecursiveUnionExpression(
 		expressions.ForEachQuantifier(seedInsertRef),
 		expressions.ForEachQuantifier(recursiveInsertRef),
 		scanAlias, insertAlias,
-		expressions.TraversalAny,
+		strategy,
 	)
 
 	// Register the RecursiveUnionExpression so that the Main query's

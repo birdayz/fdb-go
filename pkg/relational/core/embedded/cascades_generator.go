@@ -114,7 +114,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(10_000)
+		WithMaxTasks(10_000) // recursive CTEs + IN 5+ converge at ~6k tasks
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
@@ -146,7 +146,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		}
 		subPlanner := cascades.NewPlanner(rules, planCtx).
 			WithImplementationRules(cascades.DefaultImplementationRules()).
-			WithMaxTasks(10_000)
+			WithMaxTasks(10_000) // recursive CTEs + IN 5+ converge at ~6k tasks
 		subBest, _, subErr := subPlanner.Plan(subRef)
 		if subErr != nil || subBest == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
@@ -212,7 +212,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(10_000)
+		WithMaxTasks(10_000) // recursive CTEs + IN 5+ converge at ~6k tasks
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
@@ -568,6 +568,9 @@ func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 
 func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	outerCols := deriveColumnsFromPlan(nlj.GetOuter(), md)
+	if nlj.GetJoinType() == plans.JoinExists || nlj.GetJoinType() == plans.JoinNotExists {
+		return outerCols
+	}
 	innerCols := deriveColumnsFromPlan(nlj.GetInner(), md)
 	if outerCols == nil && innerCols == nil {
 		return nil

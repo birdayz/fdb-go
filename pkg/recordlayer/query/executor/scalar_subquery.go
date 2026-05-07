@@ -2,10 +2,10 @@ package executor
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 // EvaluateScalarSubquery executes a scalar subquery plan and returns
@@ -43,7 +43,8 @@ func EvaluateScalarSubquery(
 	}
 
 	if len(rows) > 1 {
-		return nil, fmt.Errorf("scalar subquery returned more than one row")
+		return nil, api.NewErrorf(api.ErrCodeCardinalityViolation,
+			"scalar subquery returned more than one row")
 	}
 	if len(rows) == 0 {
 		return nil, nil
@@ -53,13 +54,15 @@ func EvaluateScalarSubquery(
 	row := rows[0]
 	datum, ok := row.Datum.(map[string]any)
 	if !ok {
-		// If datum is already a scalar (e.g. from a projection), return it.
 		return row.Datum, nil
 	}
 	if len(datum) == 0 {
 		return nil, nil
 	}
-	// Return the first (and should be only) column value.
+	if len(datum) != 1 {
+		return nil, api.NewErrorf(api.ErrCodeSyntaxError,
+			"scalar subquery must return exactly one column, got %d", len(datum))
+	}
 	for _, v := range datum {
 		return v, nil
 	}

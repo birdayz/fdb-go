@@ -197,6 +197,12 @@ func buildDerivedTableSource(
 	if err != nil || innerSQ == nil {
 		return semantic.ScopeSource{}, false
 	}
+	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
+		if len(innerSQ.joins) == 0 && innerSQ.tableName != "" {
+			return buildDerivedTableSourceFromAgg(alias, innerSQ)
+		}
+		return semantic.ScopeSource{}, false
+	}
 	// Derived-of-derived: recursively build the inner scope.
 	if innerSQ.derivedQuery != nil {
 		innerSrc, ok := buildDerivedTableSource(md, innerSQ.tableName, innerSQ.derivedQuery)
@@ -230,11 +236,11 @@ func buildDerivedTableSource(
 			CorrelationName: aliasID.Name(),
 		}, true
 	}
-	if len(innerSQ.joins) > 0 ||
-		len(innerSQ.aggCols) > 0 ||
-		innerSQ.countStar ||
-		innerSQ.tableName == "" {
+	if len(innerSQ.joins) > 0 || innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
+	}
+	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
+		return buildDerivedTableSourceFromAgg(alias, innerSQ)
 	}
 	for _, e := range innerSQ.projExprs {
 		if e != nil {
@@ -294,6 +300,45 @@ func buildDerivedTableSource(
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
 		ColumnAliasMap:  colAliasMap,
+	}, true
+}
+
+func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.ScopeSource, bool) {
+	var columns []semantic.Column
+	if sq.countStar {
+		name := "COUNT(*)"
+		if sq.countStarAlias != "" {
+			name = sq.countStarAlias
+		}
+		columns = append(columns, semantic.Column{
+			Id: semantic.NewUnquoted(name), Type: "BIGINT", Nullable: false,
+		})
+	}
+	for _, ac := range sq.aggCols {
+		name := ac.outName
+		if name == "" {
+			if ac.groupCol != "" {
+				name = ac.groupCol
+			} else {
+				continue
+			}
+		}
+		columns = append(columns, semantic.Column{
+			Id: semantic.NewUnquoted(name), Type: "UNKNOWN", Nullable: true,
+		})
+	}
+	if len(columns) == 0 {
+		return semantic.ScopeSource{}, false
+	}
+	aliasID := semantic.NewUnquoted(alias)
+	virtualTable := &semantic.StaticTable{
+		TableName:    semantic.FromSegments([]string{alias}, false),
+		TableColumns: columns,
+	}
+	return semantic.ScopeSource{
+		Table:           virtualTable,
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
 	}, true
 }
 
@@ -736,15 +781,13 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	// For derived tables, build the inner plan through the catalog-aware
 	// path so WHERE predicates get upgraded. Java's visitSubqueryTableItem
 	// recursively visits through the same typed visitor.
-	if sq.derivedQuery != nil && md != nil {
+	if sq.derivedQuery != nil && md != nil && len(sq.joins) == 0 {
 		innerOp, innerErr := buildLogicalPlanForQueryBodyWithCTECatalog(
 			sq.derivedQuery.QueryExpressionBody(), md, cteScopes)
 		if innerErr != nil {
 			return nil, innerErr
 		}
 		if innerOp != nil {
-			// Build the outer plan (Sort, Limit, Project) on top of
-			// the catalog-aware inner plan.
 			op := buildOuterPlanOnDerived(sq, innerOp)
 			if op == nil {
 				return nil, nil
@@ -1345,6 +1388,9 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	if len(sq.postAggExprs) > 0 {
 		resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 		if resolver == nil {
+			resolver = buildSelectScope(sq, md, cteScopes)
+		}
+		if resolver == nil {
 			return
 		}
 		if subqPlanner != nil {
@@ -1395,6 +1441,9 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		return
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		resolver = buildSelectScope(sq, md, cteScopes)
+	}
 	if resolver == nil {
 		return
 	}
@@ -1510,6 +1559,9 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		return
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
+	if resolver == nil {
+		resolver = buildSelectScope(sq, md, cteScopes)
+	}
 	if resolver == nil {
 		return
 	}
@@ -1940,6 +1992,14 @@ func buildLogicalPlanForQueryWithCatalog(
 		return main, nil
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
+	traversalOrder := 0
+	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		if toc.PRE_ORDER() != nil {
+			traversalOrder = 1
+		} else if toc.POST_ORDER() != nil {
+			traversalOrder = 2
+		}
+	}
 	ctes := ctesCtx.AllNamedQuery()
 	for i := len(ctes) - 1; i >= 0; i-- {
 		nq := ctes[i]
@@ -1954,7 +2014,19 @@ func buildLogicalPlanForQueryWithCatalog(
 		if body == nil {
 			return nil, nil
 		}
-		main = logical.NewCTE(name, body, main, recursive)
+		cte := logical.NewCTE(name, body, main, recursive)
+		cte.TraversalOrder = traversalOrder
+		if colAliases := nq.GetColumnAliases(); colAliases != nil {
+			if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
+				aliases := aliasList.AllFullId()
+				names := make([]string, len(aliases))
+				for j, fid := range aliases {
+					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+				}
+				cte.ColumnAliases = names
+			}
+		}
+		main = cte
 	}
 	return main, nil
 }
@@ -2204,12 +2276,143 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 // buildOuterPlanOnDerived builds the Sort/Limit/Project/Distinct shell
 // from a selectQuery on top of an already-built inner plan (derived table).
 // Mirrors buildLogicalPlanForSelect's post-FROM logic but skips the
-// FROM-source and aggregate sections (those are in the inner plan).
+// FROM-source section (those are in the inner plan).
 func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) logical.LogicalOperator {
 	op := innerOp
 
 	if sq.whereExpr != nil {
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
+	}
+
+	dtPrefix := strings.ToUpper(sq.tableName) + "."
+	stripDT := func(s string) string {
+		if strings.HasPrefix(strings.ToUpper(s), dtPrefix) {
+			return s[len(dtPrefix):]
+		}
+		return s
+	}
+
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		var aggs, aggAliases []string
+		keys := make([]string, len(sq.groupBy))
+		for i, k := range sq.groupBy {
+			keys[i] = stripDT(k)
+		}
+		if sq.countStar {
+			aggs = []string{"COUNT(*)"}
+			aggAliases = []string{sq.countStarAlias}
+		} else {
+			for _, ac := range sq.aggCols {
+				if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					arg = stripDT(arg)
+					distinctPfx := ""
+					if ac.aggDistinct {
+						distinctPfx = "DISTINCT "
+					}
+					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+					aggAliases = append(aggAliases, ac.outName)
+				}
+			}
+		}
+		having := ""
+		if sq.havingExpr != nil {
+			having = canonicalTextOf(sq.havingExpr)
+		}
+		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
+
+		hasOutExpr := false
+		for _, ac := range sq.aggCols {
+			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly && !ac.hidden {
+				hasOutExpr = true
+				break
+			}
+		}
+		if hasOutExpr {
+			var allProj []string
+			var allAntlr []antlrgen.IExpressionContext
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly || ac.hidden {
+					continue
+				}
+				if ac.outExpr != nil && ac.aggFunc == "" {
+					allProj = append(allProj, strings.TrimSpace(ac.outExpr.GetText()))
+					allAntlr = append(allAntlr, ac.outExpr)
+				} else if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					arg = stripDT(arg)
+					allProj = append(allProj, ac.aggFunc+"("+arg+")")
+					allAntlr = append(allAntlr, nil)
+				} else if ac.groupCol != "" {
+					allProj = append(allProj, stripDT(ac.groupCol))
+					allAntlr = append(allAntlr, nil)
+				}
+			}
+			if len(allProj) > 0 {
+				proj := logical.NewProject(op, allProj, nil)
+				computed := make([]bool, len(allProj))
+				for i, e := range allAntlr {
+					computed[i] = e != nil
+				}
+				proj.IsComputed = computed
+				op = proj
+				sq.postAggExprs = allAntlr
+			}
+		} else if len(keys) > 0 {
+			var visibleProj, visibleAliases []string
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly || ac.hidden {
+					continue
+				}
+				if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					arg = stripDT(arg)
+					canonical := ac.aggFunc + "(" + arg + ")"
+					visibleProj = append(visibleProj, canonical)
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
+				} else if ac.groupCol != "" {
+					visibleProj = append(visibleProj, stripDT(ac.groupCol))
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
+				}
+			}
+			totalOutput := len(keys) + len(aggs)
+			hasAggAlias := false
+			for i, a := range visibleAliases {
+				if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
+					hasAggAlias = true
+					break
+				}
+			}
+			if len(visibleProj) < totalOutput || hasAggAlias {
+				op = logical.NewProject(op, visibleProj, visibleAliases)
+			}
+		}
 	}
 
 	if len(sq.orderBy) > 0 {
@@ -2219,7 +2422,7 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 			if !ob.ascending {
 				dir = logical.SortDesc
 			}
-			e := ob.colName
+			e := stripDT(ob.colName)
 			if e == "" && ob.rawExpr != nil {
 				e = ob.rawExpr.GetText()
 			}
@@ -2241,7 +2444,7 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
-			projs[i] = col
+			projs[i] = stripDT(col)
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
 				computed[i] = true
@@ -2823,6 +3026,10 @@ func qualifyBareFieldValue(v values.Value, qualifier string) {
 		return true
 	})
 }
+
+// NOTE: qualifyBareFieldValue mutates FieldValue.Field in place. This is
+// safe because buildCorrelatedExists constructs a fresh predicate tree via
+// resolver.WalkPredicate each call. Do NOT call on shared/memoized trees.
 
 func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {

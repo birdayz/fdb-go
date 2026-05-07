@@ -85,24 +85,19 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 	if setQ == nil {
 		return nil
 	}
-	distinct := true
-	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
-		distinct = false
+	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
+		return nil
 	}
 	left := buildLogicalPlanForQueryBody(setQ.GetLeft())
 	right := buildLogicalPlanForQueryBody(setQ.GetRight())
 	if left == nil || right == nil {
 		return nil
 	}
-	// Flatten nested UNIONs of the same quantifier. The grammar
-	// left-associates: A UNION B UNION C → SetQuery(SetQuery(A, B), C).
-	// When the inner and outer quantifiers match, lift C into the
-	// inner's Inputs list for a single LogicalUnion([A, B, C]).
 	inputs := []logical.LogicalOperator{left, right}
-	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
+	if innerUnion, ok := left.(*logical.LogicalUnion); ok && !innerUnion.Distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
-	return logical.NewUnion(inputs, distinct)
+	return logical.NewUnion(inputs, false)
 }
 
 // Phase 3 logical-plan builder — narrow-scope seed.
@@ -332,6 +327,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 				}
 			}
 			var visibleProj []string
+			var visibleAliases []string
 			for _, ac := range sq.aggCols {
 				if ac.sortOnly || ac.hidden {
 					continue
@@ -344,14 +340,35 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
-					visibleProj = append(visibleProj, ac.aggFunc+"("+arg+")")
+					canonical := ac.aggFunc + "(" + arg + ")"
+					visibleProj = append(visibleProj, canonical)
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
 				} else if ac.groupCol != "" {
 					visibleProj = append(visibleProj, ac.groupCol)
+					alias := ""
+					if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+						alias = ac.outName
+					}
+					visibleAliases = append(visibleAliases, alias)
 				}
 			}
 			totalOutput := len(keys) + len(aggs)
-			if !hasSortOnly && len(visibleProj) < totalOutput {
-				op = logical.NewProject(op, visibleProj, nil)
+			hasAggAlias := false
+			for i, a := range visibleAliases {
+				if a != "" && i < len(visibleProj) {
+					upper := strings.ToUpper(visibleProj[i])
+					if strings.Contains(upper, "(") {
+						hasAggAlias = true
+						break
+					}
+				}
+			}
+			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAggAlias) {
+				op = logical.NewProject(op, visibleProj, visibleAliases)
 			}
 		}
 	}
