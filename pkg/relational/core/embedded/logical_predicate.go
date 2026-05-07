@@ -197,6 +197,12 @@ func buildDerivedTableSource(
 	if err != nil || innerSQ == nil {
 		return semantic.ScopeSource{}, false
 	}
+	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
+		if len(innerSQ.joins) == 0 && innerSQ.tableName != "" {
+			return buildDerivedTableSourceFromAgg(alias, innerSQ)
+		}
+		return semantic.ScopeSource{}, false
+	}
 	// Derived-of-derived: recursively build the inner scope.
 	if innerSQ.derivedQuery != nil {
 		innerSrc, ok := buildDerivedTableSource(md, innerSQ.tableName, innerSQ.derivedQuery)
