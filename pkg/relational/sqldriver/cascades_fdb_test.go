@@ -861,6 +861,37 @@ func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
 	t.Logf("Cascades CTE projection alias → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEColumnAliases(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// WITH c(alias1, alias2) AS (...) renames body columns.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH priced(product, cost) AS (SELECT name, price FROM Item) "+
+			"SELECT product FROM priced WHERE cost > 100 ORDER BY product")
+	if err != nil {
+		t.Fatalf("CTE column aliases not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(names) != 1 || names[0] != "Gadget" {
+		t.Fatalf("expected [Gadget], got %v", names)
+	}
+	t.Logf("CTE column aliases → %v ✓", names)
+}
+
 func TestFDB_CascadesCTEUnionBody(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
