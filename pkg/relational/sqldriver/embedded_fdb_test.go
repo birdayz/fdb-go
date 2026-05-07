@@ -4393,6 +4393,13 @@ func TestFDB_DerivedTableAggAlias(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(counts).To(gomega.Equal([]int64{1, 1, 1}))
+
+	// Computed expression over aggregate: SUM(n) / COUNT(n) through derived table.
+	row3 := db.QueryRowContext(ctx, `SELECT SUM(n) / COUNT(n) FROM (SELECT n FROM t1 WHERE n IS NOT NULL) AS sub`)
+	var avg int64
+	g.Expect(row3.Scan(&avg)).To(gomega.Succeed())
+	// (10+20+40)/3 = 23 (integer division)
+	g.Expect(avg).To(gomega.BeNumerically(">=", 23))
 }
 
 func TestFDB_CTEChaining(t *testing.T) {
