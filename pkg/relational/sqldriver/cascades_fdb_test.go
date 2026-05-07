@@ -1592,6 +1592,76 @@ func TestFDB_CascadesRecursiveCTE(t *testing.T) {
 	t.Logf("Recursive CTE → %v ✓", ids)
 }
 
+func TestFDB_CascadesRecursiveCTEPostOrder(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := "/casc_reccte_postorder"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE reccte_po CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE reccte_po", dbPath)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// Chain: 1 → 10 → 50 → 250
+	for _, row := range [][2]int64{{1, -1}, {10, 1}, {50, 10}, {250, 50}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d)", row[0], row[1])); err != nil {
+			t.Fatalf("INSERT %d: %v", row[0], err)
+		}
+	}
+
+	// Post-order: walk ancestors from 250, emit children before parents.
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE ancestors AS ("+
+			"SELECT id, parent FROM t WHERE id = 250 "+
+			"UNION ALL "+
+			"SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent"+
+			") TRAVERSAL ORDER post_order "+
+			"SELECT id FROM ancestors")
+	if err != nil {
+		t.Fatalf("recursive CTE post_order: %v", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	expected := []int64{1, 10, 50, 250}
+	if len(ids) != len(expected) {
+		t.Fatalf("expected %d rows, got %d: %v", len(expected), len(ids), ids)
+	}
+	for i, want := range expected {
+		if ids[i] != want {
+			t.Fatalf("row %d: expected %d, got %d (all: %v)", i, want, ids[i], ids)
+		}
+	}
+	t.Logf("Post-order: %v ✓", ids)
+}
+
 func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
