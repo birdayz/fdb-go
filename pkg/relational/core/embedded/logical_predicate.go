@@ -1382,6 +1382,9 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	if len(sq.postAggExprs) > 0 {
 		resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 		if resolver == nil {
+			resolver = buildSelectScope(sq, md, cteScopes)
+		}
+		if resolver == nil {
 			return
 		}
 		if subqPlanner != nil {
