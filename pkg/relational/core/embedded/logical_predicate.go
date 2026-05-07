@@ -2316,7 +2316,50 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 		}
 		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
 
-		if len(keys) > 0 {
+		hasOutExpr := false
+		for _, ac := range sq.aggCols {
+			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly && !ac.hidden {
+				hasOutExpr = true
+				break
+			}
+		}
+		if hasOutExpr {
+			var allProj []string
+			var allAntlr []antlrgen.IExpressionContext
+			for _, ac := range sq.aggCols {
+				if ac.sortOnly || ac.hidden {
+					continue
+				}
+				if ac.outExpr != nil && ac.aggFunc == "" {
+					allProj = append(allProj, strings.TrimSpace(ac.outExpr.GetText()))
+					allAntlr = append(allAntlr, ac.outExpr)
+				} else if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					arg = stripDT(arg)
+					allProj = append(allProj, ac.aggFunc+"("+arg+")")
+					allAntlr = append(allAntlr, nil)
+				} else if ac.groupCol != "" {
+					allProj = append(allProj, stripDT(ac.groupCol))
+					allAntlr = append(allAntlr, nil)
+				}
+			}
+			if len(allProj) > 0 {
+				proj := logical.NewProject(op, allProj, nil)
+				computed := make([]bool, len(allProj))
+				for i, e := range allAntlr {
+					computed[i] = e != nil
+				}
+				proj.IsComputed = computed
+				op = proj
+				sq.postAggExprs = allAntlr
+			}
+		} else if len(keys) > 0 {
 			var visibleProj, visibleAliases []string
 			for _, ac := range sq.aggCols {
 				if ac.sortOnly || ac.hidden {
