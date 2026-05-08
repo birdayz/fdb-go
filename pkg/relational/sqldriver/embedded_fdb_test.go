@@ -4402,6 +4402,44 @@ func TestFDB_DerivedTableAggAlias(t *testing.T) {
 	g.Expect(avg).To(gomega.BeNumerically(">=", 23))
 }
 
+func TestFDB_DerivedTableSortOnlyAgg(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dt_sortonly")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_sortonly")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dts_tmpl
+		CREATE TABLE t1 (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_sortonly/main WITH TEMPLATE dts_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dt_sortonly?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO t1 VALUES (1, 10), (2, 10), (3, 20), (4, 20), (5, 20)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Inner query orders by COUNT(*) but only projects n — the aggregate
+	// is sort-only and must not leak into the derived table's output.
+	rows, err := db.QueryContext(ctx,
+		`SELECT n FROM (SELECT n FROM t1 GROUP BY n ORDER BY COUNT(*)) AS sub`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var vals []int64
+	for rows.Next() {
+		var v int64
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		vals = append(vals, v)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(vals).To(gomega.ConsistOf(int64(10), int64(20)))
+}
+
 func TestFDB_CTEChaining(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
