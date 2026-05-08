@@ -1773,7 +1773,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 
 	if len(sq.aggCols) > 0 {
 		for _, ac := range sq.aggCols {
-			if ac.aggFunc != "" || ac.hidden || ac.sortOnly || ac.outExpr != nil {
+			if ac.aggFunc != "" || !ac.visible || ac.outExpr != nil {
 				continue
 			}
 			col := ac.groupCol
@@ -2355,7 +2355,10 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		if ob == nil || ob.rawExpr == nil {
 			continue
 		}
-		if ob.colName != "" && !strings.HasPrefix(ob.colName, "__orderby_aggexpr_") {
+		if ob.colName != "" {
+			continue
+		}
+		if ob.rawExpr == nil {
 			continue
 		}
 		v, err := resolver.WalkExpression(ob.rawExpr)

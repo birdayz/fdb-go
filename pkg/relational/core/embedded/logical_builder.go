@@ -325,7 +325,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		// the outExpr-only projection would drop the aggregate columns.
 		hasOutExpr := false
 		for _, ac := range sq.aggCols {
-			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly && !ac.hidden {
+			if ac.outExpr != nil && ac.aggFunc == "" && ac.visible {
 				hasOutExpr = true
 				break
 			}
@@ -334,7 +334,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			var allProj []string
 			var allAntlr []antlrgen.IExpressionContext
 			for _, ac := range sq.aggCols {
-				if ac.sortOnly || ac.hidden {
+				if !ac.visible {
 					continue
 				}
 				if ac.outExpr != nil && ac.aggFunc == "" {
@@ -370,17 +370,17 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				sq.postAggExprs = allAntlr
 			}
 		} else if len(keys) > 0 {
-			hasSortOnly := false
+			hasNonVisible := false
 			for _, ac := range sq.aggCols {
-				if ac.sortOnly {
-					hasSortOnly = true
+				if !ac.visible {
+					hasNonVisible = true
 					break
 				}
 			}
 			var visibleProj []string
 			var visibleAliases []string
 			for _, ac := range sq.aggCols {
-				if ac.sortOnly || ac.hidden {
+				if !ac.visible {
 					continue
 				}
 				if ac.aggFunc != "" {
@@ -416,9 +416,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					break
 				}
 			}
-			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasSortOnly
+			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
 			if needsStrip {
-				if hasSortOnly {
+				if hasNonVisible {
 					sq.postSortStripProj = visibleProj
 					sq.postSortStripAliases = visibleAliases
 				} else {

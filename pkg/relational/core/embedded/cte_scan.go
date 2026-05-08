@@ -302,7 +302,7 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		outRows = outRows[:sq.limit]
 	}
 	if len(sq.aggCols) > 0 {
-		colNames, outRows = stripAggregateSortOnly(sq, colNames, outRows)
+		colNames, outRows = stripAggregateNonVisible(sq, colNames, outRows)
 	}
 
 	return &staticRows{cols: colNames, colTypes: colTypes, rows: outRows}, nil

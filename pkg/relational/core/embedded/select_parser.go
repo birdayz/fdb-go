@@ -2,7 +2,6 @@ package embedded
 
 import (
 	"database/sql/driver"
-	"fmt"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -201,8 +200,8 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
 type aggSelectCol struct {
 	outName string // output column name
-	// Exactly one of groupCol / aggFunc / outExpr is set (hidden entries
-	// always have aggFunc set).
+	// Exactly one of groupCol / aggFunc / outExpr is set (non-visible entries
+	// harvested from HAVING/ORDER BY always have aggFunc set).
 	groupCol string // plain group-by column reference
 	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
 	aggArg   string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
@@ -211,19 +210,11 @@ type aggSelectCol struct {
 	// nil for bare-column args and for COUNT(*).
 	aggExpr     antlrgen.IExpressionContext
 	aggDistinct bool // true when COUNT(DISTINCT col)
-	// hidden aggregates contribute to group accumulation and HAVING evaluation
-	// but are excluded from the projected output and the sort. Used for
-	// aggregates harvested from HAVING that aren't also in the SELECT list,
-	// so `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0` returns one column
-	// (grp) while still running the SUM.
-	hidden bool
-	// sortOnly aggregates are harvested from ORDER BY and appended to the
-	// emit data so the sort can find them via colIdx. They're stripped from
-	// the user-visible output after the sort runs. Combined with hidden:
-	//   visible row column = !hidden && !sortOnly.
-	//   sort-accessible column = !hidden.
-	//   accumulated column = always.
-	sortOnly bool
+	// visible is true when the aggregate appears in the user's SELECT list.
+	// Non-visible entries are harvested from HAVING or ORDER BY — they
+	// contribute to accumulation/evaluation but are excluded from (or
+	// stripped after) the projected output.
+	visible bool
 	// outExpr is a post-aggregation expression that references aggregate
 	// outputs and/or group-by columns. Evaluated at emit time against a
 	// rowMap that already contains all aggCols values. Used for SELECT-list
@@ -516,7 +507,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
 					}
 				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct})
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, visible: true})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -548,8 +539,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						// the trailing SELECT element based on what the
 						// expression references:
 						//   - wraps aggregates → harvest any novel inner
-						//     aggregates (add as hidden accumulators) and
-						//     route the expression itself to outExpr.
+						//     aggregates (add as non-visible accumulators)
+						//     and route the expression itself to outExpr.
 						//   - constant-only (no columns) → outExpr so it's
 						//     emitted once per group like SUM does.
 						//   - bare column or column-only expression →
@@ -565,9 +556,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 							// Harvest aggregates that aren't already
 							// accumulated. `SELECT SUM(a), SUM(b)+1`:
 							// SUM(a) is already in aggCols (bare), SUM(b)
-							// is novel — must be added as hidden so the
-							// rowMap at emit time has SUM(b) available for
-							// outExpr evaluation. Dedup by outName.
+							// is novel — must be added as non-visible so
+							// the rowMap at emit time has SUM(b) available
+							// for outExpr evaluation. Dedup by outName.
 							existingNames := make(map[string]struct{}, len(aggCols))
 							for _, ac := range aggCols {
 								existingNames[ac.outName] = struct{}{}
@@ -576,13 +567,13 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 								if _, seen := existingNames[h.outName]; seen {
 									continue
 								}
-								h.hidden = true
+								// h.visible stays false — inner aggregate not in user's SELECT list.
 								aggCols = append(aggCols, h)
 								existingNames[h.outName] = struct{}{}
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						case expr != nil && !exprReferencesColumn(expr):
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						case expr != nil:
 							// Expression references columns but contains no
 							// aggregates. Java permits this when the columns
@@ -595,9 +586,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 							// the rowMap lookup errors at emit time with
 							// "column not in row" — close to SQL standard's
 							// 42803 grouping_error.
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						default:
-							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName, visible: true})
 						}
 					} else {
 						projCols = append(projCols, colName)
@@ -617,7 +608,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// top level, so they land in projExprs with projCols[i] holding
 		// the expression text. Promote each such slot to an aggSelectCol
 		// with an outExpr (evaluated post-aggregation against the rowMap),
-		// harvest the referenced aggregates as hidden accumulators, and
+		// harvest the referenced aggregates as non-visible accumulators, and
 		// drop the slot from projCols. Has to happen before the plain-col
 		// reclassification below so those slots aren't treated as
 		// group-by references.
@@ -660,14 +651,14 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						continue
 					}
 					existing[h.outName] = struct{}{}
-					h.hidden = true
+					// h.visible stays false — inner aggregate not in user's SELECT list.
 					promoted = append(promoted, h)
 				}
 				outName := projAliases[i]
 				if outName == "" {
 					outName = col
 				}
-				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i]})
+				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i], visible: true})
 			}
 			if len(promoted) > 0 {
 				projCols = newProjCols
@@ -710,7 +701,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				switch {
 				case slotExpr != nil && !exprReferencesColumn(slotExpr):
-					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 				case slotExpr != nil:
 					// Expression on group-by columns (no aggregates, no
 					// constants-only). Java permits this when all referenced
@@ -718,9 +709,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					// post-aggregation against the rowMap holding group-by
 					// values. Symmetric with the in-SELECT-loop case at the
 					// mixed-agg classification site above.
-					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, groupCol: c}
+					extra[i] = aggSelectCol{outName: out, groupCol: c, visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -1247,9 +1238,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				// Constant or column-referencing expression — both route
 				// to outExpr and are evaluated post-aggregation against
 				// the rowMap (which carries group-by column values).
-				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, groupCol: c}
+				extra[i] = aggSelectCol{outName: out, groupCol: c, visible: true}
 			}
 		}
 		sq.aggCols = extra
@@ -1393,7 +1384,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if sq.countStarAlias != "" {
 			outName = sq.countStarAlias
 		}
-		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT"})
+		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT", visible: true})
 		sq.projCols = []string{outName}
 		sq.projAliases = []string{""}
 		sq.projExprs = []antlrgen.IExpressionContext{nil}
@@ -1411,78 +1402,46 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// If projCols still holds plain columns at this point, reclassify them
 	// as group-by references in aggCols (mirror of the SELECT-list-aggregate
 	// path's existing reclassification).
-	type harvestSource struct {
-		expr     antlrgen.IExpressionContext
-		sortOnly bool // true when the source is ORDER BY (sort-visible); false for HAVING (hidden)
-	}
-	var harvestSources []harvestSource
+	var harvestExprs []antlrgen.IExpressionContext
 	if sq.havingExpr != nil {
-		harvestSources = append(harvestSources, harvestSource{expr: sq.havingExpr, sortOnly: false})
+		harvestExprs = append(harvestExprs, sq.havingExpr)
 	}
 	for _, ob := range sq.orderBy {
 		if ob.rawExpr != nil {
-			harvestSources = append(harvestSources, harvestSource{expr: ob.rawExpr, sortOnly: true})
+			harvestExprs = append(harvestExprs, ob.rawExpr)
 		}
 	}
-	if len(harvestSources) > 0 {
+	if len(harvestExprs) > 0 {
 		existing := make(map[string]struct{}, len(sq.aggCols))
 		for _, ac := range sq.aggCols {
 			existing[ac.outName] = struct{}{}
 		}
 		var newAggs []aggSelectCol
-		for _, src := range harvestSources {
-			for _, ac := range harvestAggregates(src.expr) {
+		for _, hexpr := range harvestExprs {
+			for _, ac := range harvestAggregates(hexpr) {
 				if _, ok := existing[ac.outName]; ok {
-					// Already accumulated. If we now see this aggregate from
-					// an ORDER BY source and the existing entry is hidden
-					// (HAVING-only), upgrade to sortOnly so the sort can
-					// find it via colIdx. sortOnly subsumes hidden — both
-					// HAVING (via rowMap) and ORDER BY (via colIdx) are
-					// satisfied, and the column gets stripped post-sort.
-					// Walk both already-attached sq.aggCols and the
-					// pending newAggs since HAVING harvest runs first.
-					if src.sortOnly {
-						for k := range sq.aggCols {
-							if sq.aggCols[k].outName == ac.outName && sq.aggCols[k].hidden {
-								sq.aggCols[k].hidden = false
-								sq.aggCols[k].sortOnly = true
-							}
-						}
-						for k := range newAggs {
-							if newAggs[k].outName == ac.outName && newAggs[k].hidden {
-								newAggs[k].hidden = false
-								newAggs[k].sortOnly = true
-							}
-						}
-					}
 					continue
 				}
 				existing[ac.outName] = struct{}{}
-				if src.sortOnly {
-					ac.sortOnly = true
-				} else {
-					ac.hidden = true
-				}
+				// ac.visible stays false — not in user's SELECT list.
 				newAggs = append(newAggs, ac)
 			}
 		}
 		// ORDER BY items that wrap aggregates in an expression (e.g.
-		// `ORDER BY SUM(v) * 2`) get their own sortOnly outExpr aggCols
-		// entry. The proto sort path can then look up the entry via
-		// colIdx[sentinel] and find a per-group value evaluated from the
-		// wrapping expression. Inner aggregates were harvested as hidden
-		// above so the rowMap at outExpr eval time has them available.
+		// `ORDER BY SUM(v) * 2`) get their own non-visible outExpr
+		// aggCols entry. The proto sort path can then look up the entry
+		// via colIdx and find a per-group value evaluated from the
+		// wrapping expression. Inner aggregates were harvested above so
+		// the rowMap at outExpr eval time has them available. Clear
+		// colName so the Value-based sort resolver picks up rawExpr.
 		for obIdx, ob := range sq.orderBy {
 			if ob.expr == nil || len(harvestAggregates(ob.expr)) == 0 {
 				continue
 			}
-			sentinel := fmt.Sprintf("__orderby_aggexpr_%d__", obIdx)
 			newAggs = append(newAggs, aggSelectCol{
-				outName:  sentinel,
-				outExpr:  ob.expr,
-				sortOnly: true,
+				outExpr: ob.expr,
 			})
-			sq.orderBy[obIdx].colName = sentinel
+			sq.orderBy[obIdx].colName = ""
 			sq.orderBy[obIdx].expr = nil
 		}
 		if len(newAggs) > 0 {
@@ -1510,7 +1469,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc})
+					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, visible: true})
 				}
 				sq.aggCols = append(prepended, sq.aggCols...)
 				sq.projCols = nil
