@@ -2116,7 +2116,16 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if err != nil {
 		return nil, err
 	}
-	right, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetRight(), md, cteScopes)
+
+	// The grammar attaches a trailing ORDER BY to the rightmost
+	// simpleTable. For a UNION, that ORDER BY applies to the combined
+	// result (SQL standard), NOT to the right branch alone. Strip it
+	// from the right branch before building (so column validation
+	// doesn't reject LEFT-branch column names against the right table)
+	// and lift it to wrap the whole UNION.
+	var liftedSortKeys []logical.SortKey
+	var right logical.LogicalOperator
+	right, liftedSortKeys, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, cteScopes)
 	if err != nil {
 		return nil, err
 	}
@@ -2124,14 +2133,18 @@ func buildLogicalPlanForUnionWithCTECatalog(
 		return nil, nil
 	}
 
-	var liftedSort *logical.LogicalSort
-	if s, ok := right.(*logical.LogicalSort); ok {
-		liftedSort = s
-		right = s.Input
-	} else if p, ok := right.(*logical.LogicalProject); ok {
-		if s, ok := p.Input.(*logical.LogicalSort); ok {
-			liftedSort = s
-			p.Input = s.Input
+	// Legacy fallback: if the right branch's sort wasn't stripped at
+	// the selectQuery level (e.g. nested UNION), peel it off the
+	// logical plan tree.
+	if len(liftedSortKeys) == 0 {
+		if s, ok := right.(*logical.LogicalSort); ok {
+			liftedSortKeys = s.Keys
+			right = s.Input
+		} else if p, ok := right.(*logical.LogicalProject); ok {
+			if s, ok := p.Input.(*logical.LogicalSort); ok {
+				liftedSortKeys = s.Keys
+				p.Input = s.Input
+			}
 		}
 	}
 
@@ -2145,16 +2158,77 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if err := validateUnionColumnTypes(inputs, md); err != nil {
 		return nil, err
 	}
-	if liftedSort != nil {
+	if len(liftedSortKeys) > 0 {
+		liftedSort := &logical.LogicalSort{Keys: liftedSortKeys}
 		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
 			return nil, err
 		}
 	}
 	var result logical.LogicalOperator = logical.NewUnion(inputs, false)
-	if liftedSort != nil {
-		result = logical.NewSort(result, liftedSort.Keys)
+	if len(liftedSortKeys) > 0 {
+		result = logical.NewSort(result, liftedSortKeys)
 	}
 	return result, nil
+}
+
+// buildUnionRightBranchStrippingOrderBy builds the right branch of a
+// UNION, stripping any trailing ORDER BY from the simpleTable before
+// building the logical plan. Returns the built plan and the stripped
+// sort keys (empty if there was no ORDER BY). For non-simpleTable
+// right branches (e.g. nested UNION), falls through to the normal
+// builder and returns empty sort keys.
+func buildUnionRightBranchStrippingOrderBy(
+	body antlrgen.IQueryExpressionBodyContext,
+	md *recordlayer.RecordMetaData,
+	cteScopes map[string]semantic.ScopeSource,
+) (logical.LogicalOperator, []logical.SortKey, error) {
+	qtd, ok := body.(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, cteScopes)
+		return op, nil, err
+	}
+	simpleTable, ok := qtd.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, cteScopes)
+		return op, nil, err
+	}
+	sq, err := extractFromSimpleTable(simpleTable)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Save and strip ORDER BY.
+	var sortKeys []logical.SortKey
+	if len(sq.orderBy) > 0 {
+		for _, ob := range sq.orderBy {
+			e := ob.colName
+			if e == "" && ob.rawExpr != nil {
+				e = ob.rawExpr.GetText()
+			}
+			dir := logical.SortAsc
+			if !ob.ascending {
+				dir = logical.SortDesc
+			}
+			nullsFirst := ob.ascending
+			if ob.nullsFirst != nil {
+				nullsFirst = *ob.nullsFirst
+			}
+			sortKeys = append(sortKeys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
+		}
+		sq.orderBy = nil
+	}
+
+	if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
+		return nil, nil, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
+	}
+	if err := validateQualifiedStarSources(sq, md); err != nil {
+		return nil, nil, err
+	}
+	op, err := buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return op, sortKeys, nil
 }
 
 // upgradeSortKeyValues walks the logical plan's LogicalSort and resolves
@@ -2821,7 +2895,13 @@ func buildLogicalPlanForUnionWithCatalog(
 	if err != nil {
 		return nil, err
 	}
-	right, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetRight(), md)
+
+	// Same ORDER BY stripping as the CTE-catalog variant: strip the
+	// trailing ORDER BY from the right branch before building so
+	// column validation doesn't reject LEFT-branch names.
+	var liftedSortKeys []logical.SortKey
+	var right logical.LogicalOperator
+	right, liftedSortKeys, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2829,14 +2909,15 @@ func buildLogicalPlanForUnionWithCatalog(
 		return nil, nil
 	}
 
-	var liftedSort *logical.LogicalSort
-	if s, ok := right.(*logical.LogicalSort); ok {
-		liftedSort = s
-		right = s.Input
-	} else if p, ok := right.(*logical.LogicalProject); ok {
-		if s, ok := p.Input.(*logical.LogicalSort); ok {
-			liftedSort = s
-			p.Input = s.Input
+	if len(liftedSortKeys) == 0 {
+		if s, ok := right.(*logical.LogicalSort); ok {
+			liftedSortKeys = s.Keys
+			right = s.Input
+		} else if p, ok := right.(*logical.LogicalProject); ok {
+			if s, ok := p.Input.(*logical.LogicalSort); ok {
+				liftedSortKeys = s.Keys
+				p.Input = s.Input
+			}
 		}
 	}
 
@@ -2850,14 +2931,15 @@ func buildLogicalPlanForUnionWithCatalog(
 	if err := validateUnionColumnTypes(inputs, md); err != nil {
 		return nil, err
 	}
-	if liftedSort != nil {
+	if len(liftedSortKeys) > 0 {
+		liftedSort := &logical.LogicalSort{Keys: liftedSortKeys}
 		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
 			return nil, err
 		}
 	}
 	var result logical.LogicalOperator = logical.NewUnion(inputs, false)
-	if liftedSort != nil {
-		result = logical.NewSort(result, liftedSort.Keys)
+	if len(liftedSortKeys) > 0 {
+		result = logical.NewSort(result, liftedSortKeys)
 	}
 	return result, nil
 }
