@@ -663,7 +663,8 @@ func IsCascadesSafeScalarFunction(name string) bool {
 		"BITAND", "BITOR", "BITXOR",
 		"YEAR", "MONTH", "DAY", "DAYOFMONTH",
 		"HOUR", "MINUTE", "SECOND",
-		"DAYOFWEEK", "DAYOFYEAR":
+		"DAYOFWEEK", "DAYOFYEAR",
+		"CURRENT_DATE", "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
 		return true
 	}
 	return false
