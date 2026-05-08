@@ -1067,7 +1067,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 
 	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
-		upgradeProjectionValues(op, sq, md, cteScopes, existsPlanner)
+		if err := upgradeProjectionValues(op, sq, md, cteScopes, existsPlanner); err != nil {
+			return nil, err
+		}
 	}
 
 	// Attach scalar subqueries from projections to the LogicalProject.
@@ -1475,10 +1477,10 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredica
 // are stored in LogicalProject.ProjectedValues; failed slots remain nil
 // (the Cascades translator treats nil as "plain column reference" when
 // the text isn't a computed expression, or "cannot translate" otherwise).
-func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) {
+func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, subqPlanner *existsSubqueryPlanner) error {
 	proj := findProjection(op)
 	if proj == nil {
-		return
+		return nil
 	}
 	// Post-aggregation projections: walk through the Resolver using base
 	// table scope, then rewrite AggregateValues to FieldValue references.
@@ -1488,7 +1490,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			resolver = buildSelectScope(sq, md, cteScopes)
 		}
 		if resolver == nil {
-			return
+			return nil
 		}
 		if subqPlanner != nil {
 			resolver.SetSubqueryPlanner(subqPlanner)
@@ -1523,26 +1525,33 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			}
 			v, err := resolver.WalkExpression(e)
 			if err != nil {
+				// Propagate real semantic errors (e.g. 42703 undefined
+				// column from a correlated scalar subquery). Only
+				// UnsupportedExpressionShapeError should be swallowed.
+				var apiErr *api.Error
+				if errors.As(err, &apiErr) {
+					return err
+				}
 				continue
 			}
 			v = rewriteAggregateValuesInTree(v)
 			vals[i] = v
 		}
 		proj.ProjectedValues = vals
-		return
+		return nil
 	}
 
 	// Regular projections.
 	exprs := sq.projExprs
 	if len(exprs) == 0 {
-		return
+		return nil
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 	if resolver == nil {
 		resolver = buildSelectScope(sq, md, cteScopes)
 	}
 	if resolver == nil {
-		return
+		return nil
 	}
 	if subqPlanner != nil {
 		resolver.SetSubqueryPlanner(subqPlanner)
@@ -1558,6 +1567,13 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		}
 		v, err := resolver.WalkExpressionForProjection(e)
 		if err != nil {
+			// Propagate real semantic errors (e.g. 42703 undefined
+			// column from a correlated scalar subquery). Only
+			// UnsupportedExpressionShapeError should be swallowed.
+			var apiErr *api.Error
+			if errors.As(err, &apiErr) {
+				return err
+			}
 			continue
 		}
 		if !isCascadesSafeValue(v) {
@@ -1567,6 +1583,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		vals[i] = v
 	}
 	proj.ProjectedValues = vals
+	return nil
 }
 
 // isCascadesSafeValue checks whether v's tree contains only Value types

@@ -80,3 +80,41 @@ func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 		g.Expect(rows.Next()).To(gomega.BeFalse(), "expected exactly one row")
 	})
 }
+
+// TestFDB_CorrelatedScalarSubqueryError verifies that a correlated scalar
+// subquery referencing an outer table errors with 42703 (undefined column),
+// not 0AF00 (Cascades planner failure). Java rejects the correlation
+// reference at the semantic scope level because the inner query has no
+// access to the outer table's columns.
+func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_corrssq")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_corrssq")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE corrssq_tmpl "+
+			"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_corrssq/s WITH TEMPLATE corrssq_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_corrssq?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Correlated scalar subquery: inner WHERE references outer table "emp".
+	// Java rejects this with 42703 because the inner scope has no source
+	// for "emp".
+	t.Run("correlated_scalar_subquery_42703", func(t *testing.T) {
+		_, err := db.QueryContext(ctx,
+			"SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp")
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("42703"))
+	})
+}
