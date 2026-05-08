@@ -7447,3 +7447,52 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeTrue())
 	rows.Close()
 }
+
+func TestFDB_CTEChainedColumnAliases(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cte_chain_alias")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_chain_alias")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_alias_tmpl
+		CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_chain_alias/main WITH TEMPLATE chain_alias_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cte_chain_alias?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for _, vals := range []string{
+		"(1, 10)", "(2, 20)", "(3, 30)", "(4, 40)",
+	} {
+		_, err = db.ExecContext(ctx, "INSERT INTO t (id, v) VALUES "+vals)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// Chained CTE column aliases: base renames id->d, v->val; filtered
+	// renames d->x, val->y. The outer SELECT must resolve x and y
+	// through the two-level alias chain.
+	rows, err := db.QueryContext(ctx, `
+		WITH base(d, val) AS (SELECT id, v FROM t),
+		     filtered(x, y) AS (SELECT d, val FROM base WHERE val > 15)
+		SELECT x, y FROM filtered ORDER BY x`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ x, y int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.x, &r.y)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{2, 20}, {3, 30}, {4, 40},
+	}), "chained CTE column aliases: base(d,val), filtered(x,y)")
+}

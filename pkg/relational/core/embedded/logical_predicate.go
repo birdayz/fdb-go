@@ -981,22 +981,18 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
-	if cteScopes != nil {
-		var allMaps []map[string]string
-		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found && src.ColumnAliasMap != nil {
-			allMaps = append(allMaps, src.ColumnAliasMap)
-		}
-		for _, j := range sq.joins {
-			if src, found := cteScopes[strings.ToUpper(j.tableName)]; found && src.ColumnAliasMap != nil {
-				allMaps = append(allMaps, src.ColumnAliasMap)
-			}
-		}
-		if !cteAliasMapsCollide(allMaps) {
-			for _, m := range allMaps {
-				rewriteProjectionAliases(op, m)
-			}
-		}
-	}
+	// NOTE: CTE column-alias rewriting is intentionally NOT applied here.
+	// The CTE alias wrapper (translateCTE → NewProject(origCols, aliases))
+	// stores values under BOTH the original key and the alias key in the
+	// executor's datum map. FieldValues created from the user's alias
+	// names (e.g. "d", "val") resolve correctly because the alias keys
+	// are present. Rewriting projection names to the underlying table
+	// columns (via ColumnAliasMap) is redundant for single-level CTEs
+	// and actively breaks chained CTEs: when CTE B reads from CTE A's
+	// aliased columns and CTE C reads from CTE B's aliased columns,
+	// the rewrite maps through only one level of aliasing, producing
+	// FieldValues that point to intermediate names absent from the
+	// output datum.
 	if sq.derivedQuery != nil {
 		if src, ok := buildDerivedTableSource(md, sq.tableName, sq.derivedQuery); ok && src.ColumnAliasMap != nil {
 			rewriteProjectionAliases(op, src.ColumnAliasMap)
