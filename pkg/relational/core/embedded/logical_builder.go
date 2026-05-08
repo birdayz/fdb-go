@@ -261,6 +261,22 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
 	}
 
+	return buildSelectShell(op, sq, "")
+}
+
+// buildSelectShell builds the Aggregate/Sort/Limit/Projection/Distinct
+// shell on top of an already-built FROM source. Shared between
+// buildLogicalPlanForSelect (plain tables) and the derived-table path.
+// stripPrefix, when non-empty, is removed from column names (derived
+// table qualifier like "X.").
+func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix string) logical.LogicalOperator {
+	strip := func(s string) string {
+		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+			return s[len(stripPrefix):]
+		}
+		return s
+	}
+
 	// Aggregate / GROUP BY. Three shapes collapse here:
 	//   - Bare COUNT(*): no group keys, single COUNT(*) aggregate.
 	//   - GROUP BY without aggregates: just the group keys.
@@ -268,7 +284,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		var aggs, aggAliases []string
-		keys := append([]string{}, sq.groupBy...)
+		keys := make([]string, len(sq.groupBy))
+		for i, k := range sq.groupBy {
+			keys[i] = strip(k)
+		}
 		if sq.countStar {
 			aggs = []string{"COUNT(*)"}
 			aggAliases = []string{sq.countStarAlias}
@@ -282,6 +301,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
+					arg = strip(arg)
 					distinctPfx := ""
 					if ac.aggDistinct {
 						distinctPfx = "DISTINCT "
@@ -328,10 +348,11 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
+					arg = strip(arg)
 					allProj = append(allProj, ac.aggFunc+"("+arg+")")
 					allAntlr = append(allAntlr, nil)
 				} else if ac.groupCol != "" {
-					allProj = append(allProj, ac.groupCol)
+					allProj = append(allProj, strip(ac.groupCol))
 					allAntlr = append(allAntlr, nil)
 				}
 			}
@@ -370,6 +391,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
+					arg = strip(arg)
 					canonical := ac.aggFunc + "(" + arg + ")"
 					visibleProj = append(visibleProj, canonical)
 					alias := ""
@@ -378,7 +400,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					}
 					visibleAliases = append(visibleAliases, alias)
 				} else if ac.groupCol != "" {
-					visibleProj = append(visibleProj, ac.groupCol)
+					visibleProj = append(visibleProj, strip(ac.groupCol))
 					alias := ""
 					if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
 						alias = ac.outName
@@ -389,12 +411,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			totalOutput := len(keys) + len(aggs)
 			hasAggAlias := false
 			for i, a := range visibleAliases {
-				if a != "" && i < len(visibleProj) {
-					upper := strings.ToUpper(visibleProj[i])
-					if strings.Contains(upper, "(") {
-						hasAggAlias = true
-						break
-					}
+				if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
+					hasAggAlias = true
+					break
 				}
 			}
 			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasSortOnly
@@ -416,7 +435,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			if !ob.ascending {
 				dir = logical.SortDesc
 			}
-			expr := ob.colName
+			expr := strip(ob.colName)
 			if expr == "" && ob.rawExpr != nil {
 				expr = ob.rawExpr.GetText()
 			}
@@ -447,7 +466,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
-			projs[i] = col
+			projs[i] = strip(col)
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
 				computed[i] = true
