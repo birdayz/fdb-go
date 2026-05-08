@@ -958,6 +958,16 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 						if projAliasSet[strings.ToUpper(ob.colName)] {
 							continue
 						}
+						// The ORDER BY rawExpr may reference a GROUP BY
+						// alias (`ORDER BY z` where `GROUP BY x.col1 AS
+						// z`). classifySelectElements rewrites ob.colName
+						// to the underlying column, so colName now differs
+						// from the rawExpr text. Try resolving the
+						// rewritten colName through the scope; if it
+						// resolves, the reference is valid.
+						if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
+							continue
+						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q does not exist", ob.colName)
 					}

@@ -1073,6 +1073,19 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 				}
 			}
 		}
+		// Rewrite ORDER BY entries that reference a GROUP BY alias
+		// (`ORDER BY z` where `GROUP BY x.col1 AS z`) to the underlying
+		// column. Without this the Cascades sort key references a field
+		// name that doesn't exist in the aggregate output schema.
+		for i := range cls.orderBy {
+			ob := &cls.orderBy[i]
+			if ob.expr != nil || ob.colName == "" {
+				continue
+			}
+			if underlying, _, ok := aliasResolves(ob.colName); ok {
+				ob.colName = underlying
+			}
+		}
 	}
 
 	// SQL §7.10 General Rule 1 / Java alignment: when GROUP BY is present,

@@ -303,7 +303,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
@@ -649,7 +649,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 // resolution. aggCols is the aggregate classification from
 // classifySelectElements, used as a fallback when the SELECT list
 // was reclassified (projCols nil, aggCols non-nil).
-func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string) logical.LogicalOperator {
+func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int) logical.LogicalOperator {
 	orderByCtx := simpleTable.OrderByClause()
 	if orderByCtx == nil {
 		return op
@@ -660,6 +660,20 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			return s[len(stripPrefix):]
 		}
 		return s
+	}
+
+	// resolveGroupByAlias rewrites a GROUP BY alias to the underlying
+	// column name. Returns the resolved name and true when the alias
+	// matched; otherwise returns the original name and false.
+	resolveGroupByAlias := func(name string) (string, bool) {
+		if groupByAliases == nil {
+			return name, false
+		}
+		idx, ok := groupByAliases[strings.ToUpper(name)]
+		if !ok || idx >= len(groupBy) {
+			return name, false
+		}
+		return groupBy[idx], true
 	}
 
 	obExprs := orderByCtx.AllOrderByExpression()
@@ -719,6 +733,13 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		// Prefer plain column / aggregate lookup.
 		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 		if nameErr == nil {
+			// Resolve GROUP BY alias (`ORDER BY z` where `GROUP BY
+			// x.col1 AS z`) to the underlying column before building
+			// the sort key, so the Cascades planner sees a field that
+			// actually exists in the aggregate output schema.
+			if resolved, ok := resolveGroupByAlias(colName); ok {
+				colName = resolved
+			}
 			key := strings.ToUpper(colName)
 			if seenOrderCols[key] {
 				continue

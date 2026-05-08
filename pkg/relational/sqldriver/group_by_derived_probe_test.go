@@ -102,6 +102,50 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(results).To(gomega.Equal([]int64{10}))
 	})
 
+	// group_by_validation test 18: GROUP BY x.col1 AS z with derived table.
+	// The alias z must be usable in SELECT (MAX(z)) and ORDER BY (ORDER BY z).
+	// Pre-fix: errored 42703 "column Z does not exist" because the scope
+	// walker didn't recognise GROUP BY aliases and the Cascades sort key
+	// referenced a non-existent field.
+	t.Run("group_by_alias_derived_max_z", func(t *testing.T) {
+		// Use a separate DB/schema to match YAML test data:
+		// t1 rows: (1,10,100), (2,10,200), (3,20,300)
+		setupA := openTestDB(t, "/testdb_gbalias")
+		g.Expect(setupA.ExecContext(ctx, "CREATE DATABASE /testdb_gbalias")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setupA.ExecContext(ctx,
+			"CREATE SCHEMA TEMPLATE gbalias_tmpl "+
+				"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setupA.ExecContext(ctx,
+			"CREATE SCHEMA /testdb_gbalias/s WITH TEMPLATE gbalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+		dsnA := fmt.Sprintf("fdbsql:///testdb_gbalias?cluster_file=%s&schema=s", clusterFilePath)
+		dbA, openErr := sql.Open("fdbsql", dsnA)
+		g.Expect(openErr).NotTo(gomega.HaveOccurred())
+		defer dbA.Close()
+
+		g.Expect(dbA.ExecContext(ctx,
+			"INSERT INTO t1 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)")).Error().NotTo(gomega.HaveOccurred())
+
+		rows, err := dbA.QueryContext(ctx,
+			`SELECT MAX(z) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 AS z ORDER BY z`)
+		if err != nil {
+			t.Fatalf("query error: %v", err)
+		}
+		defer rows.Close()
+		var results []int64
+		for rows.Next() {
+			var v int64
+			g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+			results = append(results, v)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		// MAX(z) where z is the group key (col1):
+		// col1=10 group → MAX(10) = 10
+		// col1=20 group → MAX(20) = 20
+		// ORDER BY z (ASC) → [10, 20]
+		g.Expect(results).To(gomega.Equal([]int64{10, 20}))
+	})
+
 	// group_by_proj_expr test 1: a+b in projection, both in GROUP BY
 	t.Run("a_plus_b_grouped", func(t *testing.T) {
 		setup2 := openTestDB(t, "/testdb_gbpe")
