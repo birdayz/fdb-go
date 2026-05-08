@@ -921,6 +921,18 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
+	for _, ob := range sq.orderBy {
+		if ob.rawExpr != nil {
+			hasSubquery := false
+			walkScalarSubqueries(ob.rawExpr, func(_ antlrgen.IQueryContext) {
+				hasSubquery = true
+			})
+			if hasSubquery {
+				return nil, api.NewError(api.ErrCodeUnsupportedSort,
+					"ORDER BY with scalar subquery is not supported")
+			}
+		}
+	}
 	if resolver != nil {
 		for _, ob := range sq.orderBy {
 			if ob.rawExpr != nil {
