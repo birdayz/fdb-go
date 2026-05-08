@@ -23,6 +23,7 @@ go_library(
         "order_by.go",
         "pk_prefix_pushdown.go",
         "pk_pushdown.go",
+        "plan_visitor.go",
         "projection_fold.go",
         "recursive_cte.go",
         "scalar_functions.go",
