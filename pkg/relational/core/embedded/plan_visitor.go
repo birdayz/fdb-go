@@ -14,10 +14,14 @@ package embedded
 // the non-aggregate projection and DISTINCT.
 //
 // The complex aggregate classification (SELECT element parsing, GROUP BY
-// interaction, HAVING harvesting — ~500 lines) still delegates to
-// extractFromSimpleTable. Everything else walks the ANTLR tree directly.
+// interaction, HAVING harvesting) delegates to classifySelectElements
+// which returns a selectClassification — NOT a selectQuery. The Cascades
+// path never constructs a selectQuery struct directly; it only builds one
+// via the toSelectQuery bridge when the _postBuild catalog-aware upgrade
+// pass requires it.
 //
-// The proto/naive generator continues using the old pipeline directly.
+// The proto/naive generator continues using extractFromSimpleTable (which
+// calls classifySelectElements internally and merges with FROM info).
 
 import (
 	"strings"
@@ -37,6 +41,61 @@ import (
 type PlanVisitor struct {
 	md        *recordlayer.RecordMetaData
 	cteScopes map[string]semantic.ScopeSource
+}
+
+// collectSelectNames does a lightweight scan of the SELECT element list
+// to extract output column names and aliases. It does NOT perform
+// aggregate classification — it simply returns the surface-level name
+// for each SELECT element position, used by ORDER BY positional
+// reference resolution.
+//
+// For COUNT(*) or aggregate functions, it returns the canonical
+// reconstructed name (e.g. "COUNT(*)", "SUM(v)"). For plain columns,
+// it returns the column name. For computed expressions, it returns
+// either the alias or the canonical expression text. SELECT * and
+// SELECT qualifier.* return nil (positional refs are invalid).
+func collectSelectNames(simpleTable *antlrgen.SimpleTableContext) (cols []string, aliases []string) {
+	selElems := simpleTable.SelectElements()
+	if selElems == nil {
+		return nil, nil
+	}
+	elems := selElems.AllSelectElement()
+	for _, elem := range elems {
+		switch e := elem.(type) {
+		case *antlrgen.SelectStarElementContext:
+			// SELECT * — positional refs invalid (no named columns)
+			return nil, nil
+		case *antlrgen.SelectQualifierStarElementContext:
+			if len(elems) == 1 {
+				// sole qualifier.* — no positional refs
+				return nil, nil
+			}
+			// mixed: placeholder slot
+			cols = append(cols, "")
+			aliases = append(aliases, "")
+		case *antlrgen.SelectExpressionElementContext:
+			alias := ""
+			if e.Uid() != nil {
+				alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+			}
+			// Try plain column name first.
+			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
+			if nameErr != nil {
+				// Computed expression: use alias if present, else
+				// canonical expression text.
+				if alias != "" {
+					cols = append(cols, alias)
+				} else {
+					cols = append(cols, canonicalTextOf(e.Expression()))
+				}
+				aliases = append(aliases, alias)
+			} else {
+				cols = append(cols, colName)
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	return cols, aliases
 }
 
 // NewPlanVisitor creates a PlanVisitor with the given metadata.
@@ -174,14 +233,15 @@ func (v *PlanVisitor) VisitQueryBody(body antlrgen.IQueryExpressionBodyContext) 
 //  1. FROM clause  → visitFrom     → scan/derived/join operator
 //  2. WHERE clause → visitWhere    → wrap with filter
 //  3. SELECT+GROUP BY+HAVING → visitSelectGroupBy → wrap with aggregate
-//  4. ORDER BY     → visitOrderBy  → wrap with sort
-//  5. LIMIT/OFFSET → visitLimit    → wrap with limit
-//  6. Projection   → visitFinalProjection + DISTINCT
+//  4. ORDER BY     → visitOrderBy  → wrap with sort (ANTLR direct)
+//  5. LIMIT/OFFSET → visitLimit    → wrap with limit (ANTLR direct)
+//  6. Projection   → visitFinalProjection + DISTINCT (ANTLR direct)
 //
-// Step 3 delegates to the existing extractFromSimpleTable pipeline for
-// aggregate classification because that logic is ~500 lines of complex
-// interaction between SELECT elements, GROUP BY, HAVING, and aggregate
-// harvesting. Everything else walks the ANTLR tree directly.
+// Aggregate classification delegates to classifySelectElements which
+// returns a selectClassification — the Cascades path never constructs a
+// selectQuery struct directly. For the _postBuild catalog-aware upgrade
+// pass, the classification is converted to a selectQuery via the
+// toSelectQuery bridge.
 func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext) (logical.LogicalOperator, error) {
 	if termCtx == nil {
 		return nil, nil
@@ -191,31 +251,35 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		return nil, nil
 	}
 
-	// Parse the full selectQuery for aggregate classification, validation,
-	// and the complex GROUP BY / HAVING / ORDER BY interactions that are
-	// too tangled to factor. The selectQuery is consumed only by
-	// visitSelectGroupBy and the _postBuild catalog-aware upgrade pass.
-	sq, err := extractFromSimpleTable(simpleTable)
+	// Step 1: FROM → parse the source first. Java's QueryVisitor
+	// rejects FROM-less SELECTs before any function dispatch, so
+	// parseFromSource must run before classification/validation.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+
+	// Classify SELECT elements, GROUP BY, HAVING, ORDER BY. This is
+	// the pure parse-tree classification — no FROM, no selectQuery.
+	cls, err := classifySelectElements(simpleTable)
 	if err != nil {
 		return nil, err
 	}
 
 	// Validate unsupported functions before building the plan.
-	if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-		return nil, api.NewError(api.ErrCodeUndefinedFunction,
-			"Unsupported operator "+fn)
+	for _, expr := range cls.projExprs {
+		if fn := findUnsupportedFunctionInParseTree(expr); fn != "" {
+			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+				"Unsupported operator "+fn)
+		}
 	}
 
-	// Validate qualified star sources.
-	if err := validateQualifiedStarSources(sq, v.md); err != nil {
+	// Validate qualified star sources against FROM.
+	if err := validateQualifiedStarSourcesFromClassification(cls, fs, v.md); err != nil {
 		return nil, err
 	}
 
-	// Step 1: FROM → build scan/derived/join operator directly from
-	// ANTLR parse tree, bypassing selectQuery's FROM fields. The
-	// pre-built derived table inner plans are written back into
-	// sq.joins[i].catalogAwareInnerPlan for the _postBuild pass.
-	op, err := v.visitFrom(simpleTable, sq)
+	op, err := v.visitFrom(simpleTable, fs)
 	if err != nil {
 		return nil, err
 	}
@@ -227,31 +291,36 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	op = v.visitWhere(op, simpleTable)
 
 	// Step 3: SELECT + GROUP BY + HAVING → aggregate classification
-	// and operator building. Delegates to the existing machinery via
-	// buildSelectShell's aggregate section.
-	op, stripPrefix := v.visitSelectGroupBy(op, sq)
+	// and operator building.
+	op, stripPrefix := v.visitSelectGroupBy(op, cls, fs)
 
-	// Step 4: ORDER BY → wrap with sort from selectQuery.orderBy
-	// (parsed by extractFromSimpleTable with dedup, positional refs,
-	// alias resolution).
-	op = v.visitOrderBy(op, sq, stripPrefix)
+	// Collect SELECT column names and aliases from ANTLR for ORDER BY
+	// positional reference resolution. This is a lightweight scan —
+	// aggregate classification stays in the selectClassification.
+	selectCols, selectAliases := collectSelectNames(simpleTable)
+
+	// Step 4: ORDER BY → wrap with sort directly from ANTLR. Reads
+	// simpleTable.OrderByClause() and resolves positional references
+	// against the SELECT column list.
+	hasAggregate := cls.countStar || len(cls.aggCols) > 0
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
 	// Sort so sort-key columns remain accessible.
-	if len(sq.postSortStripProj) > 0 {
-		op = logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
+	if len(cls.postSortStripProj) > 0 {
+		op = logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
 	}
 
 	// Step 5: LIMIT/OFFSET → wrap with limit directly from ANTLR.
-	// extractFromSimpleTable rejects LIMIT/OFFSET for this codebase
+	// classifySelectElements rejects LIMIT/OFFSET for this codebase
 	// (Java's AstNormalizer does the same), so this is always a no-op.
-	// Reading from ANTLR rather than sq.limit/sq.offset makes the
-	// independence explicit.
 	op = v.visitLimit(op, simpleTable)
 
-	// Step 6: Projection (non-aggregate) + DISTINCT.
-	op = v.visitFinalProjection(op, sq, stripPrefix)
+	// Step 6: Projection (non-aggregate) + DISTINCT → directly from
+	// ANTLR. Only builds a projection for non-aggregate queries;
+	// aggregate queries have their projection handled in visitSelectGroupBy.
+	op = v.visitFinalProjection(op, simpleTable, hasAggregate, stripPrefix)
 	if simpleTable.DISTINCT() != nil {
 		op = logical.NewDistinct(op)
 	}
@@ -260,29 +329,27 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// predicate resolution, sort key Value resolution, projection Value
 	// resolution, aggregate operand resolution, qualified star expansion,
 	// and all semantic validation (ambiguous columns, undefined columns,
-	// GROUP BY projection validation, etc.).
+	// GROUP BY projection validation, etc.). Build a selectQuery via the
+	// toSelectQuery bridge — this is the only place the Cascades path
+	// creates a selectQuery, and only when metadata is available.
+	// The fs.joins carry catalogAwareInnerPlan fields written by
+	// visitFrom, so toSelectQuery picks them up naturally.
 	if v.md != nil {
+		sq := cls.toSelectQuery(fs)
 		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, v.md, v.cteScopes)
 	}
 	return op, nil
 }
 
-// visitFrom builds the FROM-source subtree by walking the ANTLR parse
-// tree directly via parseFromSource. For derived tables (subquery in
-// FROM), it recursively calls v.VisitQueryBody to build the inner plan —
-// CTE scopes flow naturally through the visitor instance.
+// visitFrom builds the FROM-source subtree from the pre-parsed
+// fromSource. For derived tables (subquery in FROM), it recursively
+// calls v.VisitQueryBody to build the inner plan — CTE scopes flow
+// naturally through the visitor instance.
 //
-// The sq parameter is used only to write back catalogAwareInnerPlan on
-// derived-table JOIN sources so that _postBuild can reuse the pre-built
-// inner plans. visitFrom does NOT read FROM-related fields (tableName,
-// tableAlias, derivedQuery, joins) from sq — those come from ANTLR.
-func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, sq *selectQuery) (logical.LogicalOperator, error) {
-	// Parse FROM directly from the ANTLR parse tree.
-	fs, err := parseFromSource(simpleTable)
-	if err != nil {
-		return nil, err
-	}
-
+// Pre-built derived table inner plans are written back to
+// fs.joins[i].catalogAwareInnerPlan so that toSelectQuery carries them
+// into the _postBuild bridge selectQuery.
+func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fromSource) (logical.LogicalOperator, error) {
 	var op logical.LogicalOperator
 	if fs.derivedQuery != nil {
 		// Derived table: recursively build inner plan via the visitor.
@@ -315,14 +382,11 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, sq *se
 	}
 
 	// Pre-build derived table inner plans for JOIN sources through the
-	// visitor. Store the result in sq.joins[i].catalogAwareInnerPlan so
-	// that if _postBuild triggers a needRebuild (qualified star
-	// expansion), buildLogicalPlanForSelect can use the already-built
-	// inner plan rather than falling back to the old non-CTE-aware path.
-	//
-	// This is the one place visitFrom writes back to sq — the coupling
-	// exists because _postBuild's rebuilder reads catalogAwareInnerPlan
-	// from sq.joins.
+	// visitor. Write back to fs.joins[i].catalogAwareInnerPlan so
+	// toSelectQuery carries them into the _postBuild bridge. If
+	// _postBuild triggers a needRebuild (qualified star expansion),
+	// buildLogicalPlanForSelect can use the already-built inner plan
+	// rather than falling back to the old non-CTE-aware path.
 	for i := range fs.joins {
 		fj := &fs.joins[i]
 		if fj.derivedQuery == nil {
@@ -334,10 +398,6 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, sq *se
 		}
 		if innerOp != nil {
 			fj.catalogAwareInnerPlan = innerOp
-			// Write back to sq.joins so _postBuild can find it.
-			if i < len(sq.joins) {
-				sq.joins[i].catalogAwareInnerPlan = innerOp
-			}
 		}
 	}
 
@@ -407,21 +467,20 @@ func (v *PlanVisitor) visitWhere(op logical.LogicalOperator, simpleTable *antlrg
 }
 
 // visitSelectGroupBy builds the aggregate/GROUP BY/HAVING shell around
-// the current operator. This delegates to the existing buildSelectShell
-// aggregate section because the SELECT element classification, GROUP BY
-// interaction, and HAVING harvesting involve ~500 lines of complex logic.
+// the current operator using the selectClassification from
+// classifySelectElements.
 //
 // Returns the wrapped operator and a stripPrefix (non-empty for derived
 // table queries where column names need prefix stripping).
-func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQuery) (logical.LogicalOperator, string) {
-	if sq == nil {
+func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *selectClassification, fs *fromSource) (logical.LogicalOperator, string) {
+	if cls == nil {
 		return op, ""
 	}
 
 	// Determine strip prefix for derived tables.
 	stripPrefix := ""
-	if sq.derivedQuery != nil {
-		stripPrefix = strings.ToUpper(sq.tableName) + "."
+	if fs != nil && fs.derivedQuery != nil {
+		stripPrefix = strings.ToUpper(fs.tableName) + "."
 	}
 
 	strip := func(s string) string {
@@ -435,20 +494,20 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQ
 	//   - Bare COUNT(*): no group keys, single COUNT(*) aggregate.
 	//   - GROUP BY without aggregates: just the group keys.
 	//   - Mixed: aggCols carries both group-col and agg-function entries.
-	if !sq.countStar && len(sq.aggCols) == 0 && len(sq.groupBy) == 0 {
+	if !cls.countStar && len(cls.aggCols) == 0 && len(cls.groupBy) == 0 {
 		return op, stripPrefix
 	}
 
 	var aggs, aggAliases []string
-	keys := make([]string, len(sq.groupBy))
-	for i, k := range sq.groupBy {
+	keys := make([]string, len(cls.groupBy))
+	for i, k := range cls.groupBy {
 		keys[i] = strip(k)
 	}
-	if sq.countStar {
+	if cls.countStar {
 		aggs = []string{"COUNT(*)"}
-		aggAliases = []string{sq.countStarAlias}
+		aggAliases = []string{cls.countStarAlias}
 	} else {
-		for _, ac := range sq.aggCols {
+		for _, ac := range cls.aggCols {
 			if ac.aggFunc != "" {
 				arg := ac.aggArg
 				if arg == "" && ac.aggExpr != nil {
@@ -468,15 +527,15 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQ
 		}
 	}
 	having := ""
-	if sq.havingExpr != nil {
-		having = canonicalTextOf(sq.havingExpr)
+	if cls.havingExpr != nil {
+		having = canonicalTextOf(cls.havingExpr)
 	}
 	op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
 
 	// Post-aggregation projection for mixed SELECT lists that contain
 	// both aggregates and computed expressions / constants.
 	hasOutExpr := false
-	for _, ac := range sq.aggCols {
+	for _, ac := range cls.aggCols {
 		if ac.outExpr != nil && ac.aggFunc == "" && ac.visible {
 			hasOutExpr = true
 			break
@@ -485,7 +544,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQ
 	if hasOutExpr {
 		var allProj []string
 		var allAntlr []antlrgen.IExpressionContext
-		for _, ac := range sq.aggCols {
+		for _, ac := range cls.aggCols {
 			if !ac.visible {
 				continue
 			}
@@ -516,11 +575,11 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQ
 			}
 			proj.IsComputed = computed
 			op = proj
-			sq.postAggExprs = allAntlr
+			cls.postAggExprs = allAntlr
 		}
 	} else if len(keys) > 0 {
 		hasNonVisible := false
-		for _, ac := range sq.aggCols {
+		for _, ac := range cls.aggCols {
 			if !ac.visible {
 				hasNonVisible = true
 				break
@@ -528,7 +587,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQ
 		}
 		var visibleProj []string
 		var visibleAliases []string
-		for _, ac := range sq.aggCols {
+		for _, ac := range cls.aggCols {
 			if !ac.visible {
 				continue
 			}
@@ -568,8 +627,8 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQ
 		needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
 		if needsStrip {
 			if hasNonVisible {
-				sq.postSortStripProj = visibleProj
-				sq.postSortStripAliases = visibleAliases
+				cls.postSortStripProj = visibleProj
+				cls.postSortStripAliases = visibleAliases
 			} else {
 				op = logical.NewProject(op, visibleProj, visibleAliases)
 			}
@@ -579,12 +638,20 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, sq *selectQ
 	return op, stripPrefix
 }
 
-// visitOrderBy builds the LogicalSort operator from the selectQuery's
-// parsed ORDER BY clauses. The ORDER BY parsing (dedup, positional
-// reference resolution, alias resolution) was done by
-// extractFromSimpleTable; this method builds the sort keys.
-func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, sq *selectQuery, stripPrefix string) logical.LogicalOperator {
-	if len(sq.orderBy) == 0 {
+// visitOrderBy builds the LogicalSort operator by reading ORDER BY
+// expressions directly from the ANTLR parse tree. Handles positional
+// references (ORDER BY 1), plain column names, aggregate function
+// references, expression ORDER BY, direction (ASC/DESC), NULLS
+// FIRST/LAST, and duplicate detection.
+//
+// selectCols/selectAliases are the pre-aggregate-classification
+// column names from the SELECT list, used for positional reference
+// resolution. aggCols is the aggregate classification from
+// classifySelectElements, used as a fallback when the SELECT list
+// was reclassified (projCols nil, aggCols non-nil).
+func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string) logical.LogicalOperator {
+	orderByCtx := simpleTable.OrderByClause()
+	if orderByCtx == nil {
 		return op
 	}
 
@@ -595,33 +662,88 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, sq *selectQuery, 
 		return s
 	}
 
-	keys := make([]logical.SortKey, 0, len(sq.orderBy))
-	for _, ob := range sq.orderBy {
+	obExprs := orderByCtx.AllOrderByExpression()
+	if len(obExprs) == 0 {
+		return op
+	}
+
+	// Java errors 42701 (COLUMN_ALREADY_EXISTS) on `ORDER BY b, b`
+	// with the same column repeated. Stricter than Postgres, but
+	// matching Java's behavior for 100% alignment.
+	seenOrderCols := make(map[string]bool)
+	keys := make([]logical.SortKey, 0, len(obExprs))
+
+	for _, obExpr := range obExprs {
+		ascending := true
+		var nullsFirst *bool
+		if oc := obExpr.OrderClause(); oc != nil {
+			if oc.DESC() != nil {
+				ascending = false
+			}
+			if oc.NULLS() != nil {
+				f := oc.FIRST() != nil
+				nullsFirst = &f
+			}
+		}
+
 		dir := logical.SortAsc
-		if !ob.ascending {
+		if !ascending {
 			dir = logical.SortDesc
 		}
-		expr := strip(ob.colName)
-		if expr == "" && ob.rawExpr != nil {
-			expr = ob.rawExpr.GetText()
+		nf := ascending // default: ASC → NULLS FIRST, DESC → NULLS LAST
+		if nullsFirst != nil {
+			nf = *nullsFirst
 		}
-		nullsFirst := ob.ascending
-		if ob.nullsFirst != nil {
-			nullsFirst = *ob.nullsFirst
+
+		// Handle positional references `ORDER BY N`.
+		posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
+		if posErr != nil {
+			// Error during positional resolution — this was already
+			// validated by classifySelectElements, so this shouldn't
+			// happen. Build what we have so far.
+			break
 		}
-		keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst})
+		if isPos {
+			key := strings.ToUpper(posName)
+			if seenOrderCols[key] {
+				// Duplicate — classifySelectElements already errors on
+				// this, so we'll never reach here in practice. Skip to
+				// match the validated behavior.
+				continue
+			}
+			seenOrderCols[key] = true
+			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf})
+			continue
+		}
+
+		// Prefer plain column / aggregate lookup.
+		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
+		if nameErr == nil {
+			key := strings.ToUpper(colName)
+			if seenOrderCols[key] {
+				continue
+			}
+			seenOrderCols[key] = true
+			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf})
+		} else {
+			// Expression ORDER BY — use the raw expression text.
+			keys = append(keys, logical.SortKey{Expr: obExpr.Expression().GetText(), Dir: dir, NullsFirst: nf})
+		}
+	}
+
+	if len(keys) == 0 {
+		return op
 	}
 	return logical.NewSort(op, keys)
 }
 
 // visitLimit checks the ANTLR parse tree for a LIMIT clause. For this
 // codebase, LIMIT/OFFSET are rejected at parse time by
-// extractFromSimpleTable (matching Java's AstNormalizer), so the LIMIT
+// classifySelectElements (matching Java's AstNormalizer), so the LIMIT
 // clause is never present when this method runs — it was already
-// rejected before the visitor pipeline starts. Reading from ANTLR
-// rather than sq.limit/sq.offset makes the independence explicit.
+// rejected before the visitor pipeline starts.
 func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
-	// extractFromSimpleTable rejects LIMIT/OFFSET before we get here,
+	// classifySelectElements rejects LIMIT/OFFSET before we get here,
 	// so simpleTable.LimitClause() is always nil in practice. This
 	// guard is purely defensive future-proofing.
 	if simpleTable.LimitClause() != nil {
@@ -632,11 +754,21 @@ func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrg
 	return op
 }
 
-// visitFinalProjection builds the non-aggregate projection.
-// Aggregate queries have their projection handled in visitSelectGroupBy;
-// this handles the plain SELECT column list case.
-func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, sq *selectQuery, stripPrefix string) logical.LogicalOperator {
-	if len(sq.projCols) == 0 {
+// visitFinalProjection builds the non-aggregate projection by reading
+// SELECT elements directly from the ANTLR parse tree. Aggregate
+// queries have their projection handled in visitSelectGroupBy; this
+// only fires when hasAggregate is false.
+//
+// SELECT * (projCols nil) and SELECT qualifier.* (sole qualifier-star)
+// skip the projection node — the downstream scan delivers all columns.
+// Mixed qualifier-star + named columns are handled as regular slots.
+func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, hasAggregate bool, stripPrefix string) logical.LogicalOperator {
+	if hasAggregate {
+		return op
+	}
+
+	selElems := simpleTable.SelectElements()
+	if selElems == nil {
 		return op
 	}
 
@@ -647,19 +779,62 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, sq *selec
 		return s
 	}
 
-	projs := make([]string, len(sq.projCols))
-	aliases := make([]string, len(sq.projCols))
-	computed := make([]bool, len(sq.projCols))
-	for i, col := range sq.projCols {
-		projs[i] = strip(col)
-		if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-			projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
-			computed[i] = true
-		}
-		if sq.projAliases != nil && i < len(sq.projAliases) {
-			aliases[i] = sq.projAliases[i]
+	elems := selElems.AllSelectElement()
+	if len(elems) == 0 {
+		return op
+	}
+
+	// Check for SELECT * or sole SELECT qualifier.* — no projection.
+	if len(elems) == 1 {
+		switch elems[0].(type) {
+		case *antlrgen.SelectStarElementContext:
+			return op
+		case *antlrgen.SelectQualifierStarElementContext:
+			return op
 		}
 	}
+
+	var projs []string
+	var aliases []string
+	var computed []bool
+
+	for _, elem := range elems {
+		switch e := elem.(type) {
+		case *antlrgen.SelectStarElementContext:
+			// Mixed * with other elements — already rejected by
+			// classifySelectElements. Defensive no-op.
+			return op
+		case *antlrgen.SelectQualifierStarElementContext:
+			// Mixed qualifier.* slot — placeholder. The downstream
+			// execution expands it.
+			projs = append(projs, "")
+			aliases = append(aliases, "")
+			computed = append(computed, false)
+		case *antlrgen.SelectExpressionElementContext:
+			alias := ""
+			if e.Uid() != nil {
+				alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+			}
+			// Try plain column name first.
+			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
+			if nameErr != nil {
+				// Computed expression: use the raw expression text.
+				exprText := strings.TrimSpace(e.Expression().GetText())
+				projs = append(projs, exprText)
+				aliases = append(aliases, alias)
+				computed = append(computed, true)
+			} else {
+				projs = append(projs, strip(colName))
+				aliases = append(aliases, alias)
+				computed = append(computed, false)
+			}
+		}
+	}
+
+	if len(projs) == 0 {
+		return op
+	}
+
 	proj := logical.NewProject(op, projs, aliases)
 	proj.IsComputed = computed
 	return proj

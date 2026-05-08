@@ -1309,6 +1309,49 @@ func validateQualifiedStarSources(sq *selectQuery, md *recordlayer.RecordMetaDat
 	return nil
 }
 
+// validateQualifiedStarSourcesFromClassification validates qualified
+// star sources using the selectClassification (projection qualifiers)
+// and fromSource (table names, aliases, join info). Used by the
+// Cascades path which has these as separate objects.
+func validateQualifiedStarSourcesFromClassification(cls *selectClassification, fs *fromSource, md *recordlayer.RecordMetaData) error {
+	if cls == nil || fs == nil || md == nil {
+		return nil
+	}
+	validSources := make(map[string]bool)
+	if fs.tableName != "" {
+		validSources[strings.ToUpper(fs.tableName)] = true
+		if fs.tableAlias != "" {
+			validSources[strings.ToUpper(fs.tableAlias)] = true
+		}
+	}
+	for _, j := range fs.joins {
+		if j.tableName != "" {
+			validSources[strings.ToUpper(j.tableName)] = true
+		}
+		if j.alias != "" {
+			validSources[strings.ToUpper(j.alias)] = true
+		}
+	}
+	check := func(qual string) error {
+		if qual == "" {
+			return nil
+		}
+		if !validSources[strings.ToUpper(qual)] {
+			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", strings.ToUpper(qual))
+		}
+		return nil
+	}
+	if err := check(cls.projQualifier); err != nil {
+		return err
+	}
+	for _, q := range cls.projStarQualifiers {
+		if err := check(q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func cteAliasMapsCollide(maps []map[string]string) bool {
 	if len(maps) <= 1 {
 		return false

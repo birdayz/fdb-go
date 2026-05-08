@@ -454,7 +454,92 @@ func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery,
 	return extractFromSimpleTable(simpleTable)
 }
 
-func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQuery, error) {
+// selectClassification holds the classified SELECT-list elements,
+// GROUP BY keys, HAVING expression, ORDER BY clauses, and all the
+// reclassification/harvest results. It contains everything
+// extractFromSimpleTable produces EXCEPT the FROM-derived fields
+// (tableName, tableAlias, joins, derivedQuery, whereExpr) and the
+// execution-only fields (projConstFolded, limit, offset).
+//
+// PlanVisitor uses selectClassification directly for operator building
+// (the Cascades path never constructs a selectQuery). The proto path
+// continues using extractFromSimpleTable which calls
+// classifySelectElements internally and merges the result with FROM.
+type selectClassification struct {
+	projCols           []string
+	projAliases        []string
+	projExprs          []antlrgen.IExpressionContext
+	projStarQualifiers []string
+	projQualifier      string
+	countStar          bool
+	countStarAlias     string
+	aggCols            []aggSelectCol
+	distinct           bool
+	orderBy            []orderByClause
+	groupBy            []string
+	groupByExprs       []antlrgen.IExpressionContext
+	groupByAliases     map[string]int
+	havingExpr         antlrgen.IExpressionContext
+	// postAggExprs is populated by the visitor's visitSelectGroupBy when
+	// post-aggregation computed projections are emitted.
+	postAggExprs []antlrgen.IExpressionContext
+	// postSortStripProj / postSortStripAliases are populated by the
+	// visitor's visitSelectGroupBy when non-visible aggregate columns
+	// need stripping after the Sort operator.
+	postSortStripProj    []string
+	postSortStripAliases []string
+}
+
+// toSelectQuery builds a selectQuery from the classification and the
+// FROM-derived fields. This is a bridge for _postBuild which still
+// needs a selectQuery for catalog-aware upgrades. The classification
+// fields are shallow-copied (slices share backing arrays).
+func (cls *selectClassification) toSelectQuery(fs *fromSource) *selectQuery {
+	var whereExpr antlrgen.IWhereExprContext
+	var tableName, tableAlias string
+	var joins []joinClause
+	var derivedQuery antlrgen.IQueryContext
+	if fs != nil {
+		tableName = fs.tableName
+		tableAlias = fs.tableAlias
+		joins = fs.joins
+		derivedQuery = fs.derivedQuery
+		whereExpr = fs.whereExpr
+	}
+	return &selectQuery{
+		tableName:            tableName,
+		tableAlias:           tableAlias,
+		joins:                joins,
+		derivedQuery:         derivedQuery,
+		whereExpr:            whereExpr,
+		projCols:             cls.projCols,
+		projAliases:          cls.projAliases,
+		projExprs:            cls.projExprs,
+		projStarQualifiers:   cls.projStarQualifiers,
+		projQualifier:        cls.projQualifier,
+		countStar:            cls.countStar,
+		countStarAlias:       cls.countStarAlias,
+		aggCols:              cls.aggCols,
+		distinct:             cls.distinct,
+		orderBy:              cls.orderBy,
+		groupBy:              cls.groupBy,
+		groupByExprs:         cls.groupByExprs,
+		groupByAliases:       cls.groupByAliases,
+		havingExpr:           cls.havingExpr,
+		postAggExprs:         cls.postAggExprs,
+		postSortStripProj:    cls.postSortStripProj,
+		postSortStripAliases: cls.postSortStripAliases,
+		limit:                -1,
+	}
+}
+
+// classifySelectElements walks the SELECT, GROUP BY, HAVING, ORDER BY,
+// and LIMIT clauses of a SimpleTableContext and returns a
+// selectClassification. This is the pure parse-tree classification
+// logic extracted from extractFromSimpleTable — it does NOT parse the
+// FROM clause. Both extractFromSimpleTable (proto path) and
+// PlanVisitor.VisitSimpleTable (Cascades path) delegate here.
+func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectClassification, error) {
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
@@ -722,16 +807,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
-	// Parse FROM clause via the shared parseFromSource helper.
-	fs, err := parseFromSource(simpleTable)
-	if err != nil {
-		return nil, err
-	}
-	sq := &selectQuery{
-		tableName:          fs.tableName,
-		tableAlias:         fs.tableAlias,
-		joins:              fs.joins,
-		derivedQuery:       fs.derivedQuery,
+	cls := &selectClassification{
 		projCols:           projCols,
 		projAliases:        projAliases,
 		projExprs:          projExprs,
@@ -741,8 +817,6 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		countStarAlias:     countStarAlias,
 		aggCols:            aggCols,
 		distinct:           simpleTable.DISTINCT() != nil,
-		whereExpr:          fs.whereExpr,
-		limit:              -1,
 	}
 
 	// Parse ORDER BY clause.
@@ -787,7 +861,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						"duplicate column %q in ORDER BY", posName)
 				}
 				seenOrderCols[key] = true
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,
@@ -807,9 +881,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						"duplicate column %q in ORDER BY", colName)
 				}
 				seenOrderCols[key] = true
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 			} else {
-				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
+				cls.orderBy = append(cls.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}
 		}
 	}
@@ -876,18 +950,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				seenAliases[aliasKey] = true
 			}
-			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
+			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, cls.aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
 			if isPos {
-				sq.groupBy = append(sq.groupBy, posName)
-				sq.groupByExprs = append(sq.groupByExprs, nil)
+				cls.groupBy = append(cls.groupBy, posName)
+				cls.groupByExprs = append(cls.groupByExprs, nil)
 				if aliasName != "" {
-					if sq.groupByAliases == nil {
-						sq.groupByAliases = make(map[string]int)
+					if cls.groupByAliases == nil {
+						cls.groupByAliases = make(map[string]int)
 					}
-					sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+					cls.groupByAliases[strings.ToUpper(aliasName)] = len(cls.groupBy) - 1
 				}
 				continue
 			}
@@ -909,26 +983,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					if i >= len(selectExprsSnapshot) || selectExprsSnapshot[i] == nil {
 						break
 					}
-					sq.groupBy = append(sq.groupBy, canonicalTextOf(selectExprsSnapshot[i]))
-					sq.groupByExprs = append(sq.groupByExprs, selectExprsSnapshot[i])
+					cls.groupBy = append(cls.groupBy, canonicalTextOf(selectExprsSnapshot[i]))
+					cls.groupByExprs = append(cls.groupByExprs, selectExprsSnapshot[i])
 					redirected = true
 					break
 				}
 				if !redirected {
-					sq.groupBy = append(sq.groupBy, colName)
-					sq.groupByExprs = append(sq.groupByExprs, nil)
+					cls.groupBy = append(cls.groupBy, colName)
+					cls.groupByExprs = append(cls.groupByExprs, nil)
 				}
 			} else {
 				// Synthesize a display name from the expression text; the
 				// value used for grouping comes from evaluating the expr.
-				sq.groupBy = append(sq.groupBy, canonicalTextOf(item.Expression()))
-				sq.groupByExprs = append(sq.groupByExprs, item.Expression())
+				cls.groupBy = append(cls.groupBy, canonicalTextOf(item.Expression()))
+				cls.groupByExprs = append(cls.groupByExprs, item.Expression())
 			}
 			if aliasName != "" {
-				if sq.groupByAliases == nil {
-					sq.groupByAliases = make(map[string]int)
+				if cls.groupByAliases == nil {
+					cls.groupByAliases = make(map[string]int)
 				}
-				sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+				cls.groupByAliases[strings.ToUpper(aliasName)] = len(cls.groupBy) - 1
 			}
 		}
 
@@ -940,20 +1014,20 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// group-by items (groupByExprs[i] == nil) are handled;
 		// expression group keys keep their synthetic display name.
 		aliasResolves := func(name string) (underlying string, outName string, ok bool) {
-			idx, aliased := sq.groupByAliases[strings.ToUpper(name)]
+			idx, aliased := cls.groupByAliases[strings.ToUpper(name)]
 			if !aliased {
 				return "", "", false
 			}
-			if idx < len(sq.groupByExprs) && sq.groupByExprs[idx] != nil {
+			if idx < len(cls.groupByExprs) && cls.groupByExprs[idx] != nil {
 				return "", "", false
 			}
-			return sq.groupBy[idx], name, true
+			return cls.groupBy[idx], name, true
 		}
-		for i := range sq.projCols {
-			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+		for i := range cls.projCols {
+			if i < len(cls.projExprs) && cls.projExprs[i] != nil {
 				continue
 			}
-			col := sq.projCols[i]
+			col := cls.projCols[i]
 			if col == "" {
 				continue
 			}
@@ -961,15 +1035,15 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if !ok {
 				continue
 			}
-			if i >= len(sq.projAliases) {
+			if i >= len(cls.projAliases) {
 				padded := make([]string, i+1)
-				copy(padded, sq.projAliases)
-				sq.projAliases = padded
+				copy(padded, cls.projAliases)
+				cls.projAliases = padded
 			}
-			if sq.projAliases[i] == "" {
-				sq.projAliases[i] = outName
+			if cls.projAliases[i] == "" {
+				cls.projAliases[i] = outName
 			}
-			sq.projCols[i] = underlying
+			cls.projCols[i] = underlying
 		}
 		// Also rewrite aggCols entries: when the SELECT list mixes
 		// plain-col refs with aggregates, bare columns are classified
@@ -977,8 +1051,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// Also rewrite aggregate arguments — `MAX(z)` where z is a
 		// GROUP BY alias needs the arg resolved to the underlying col
 		// before per-row evaluation.
-		for i := range sq.aggCols {
-			ac := &sq.aggCols[i]
+		for i := range cls.aggCols {
+			ac := &cls.aggCols[i]
 			if ac.outExpr != nil {
 				continue
 			}
@@ -1006,7 +1080,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// an aggregate. Both SELECT * and SELECT qualifier.* with GROUP BY
 	// error 42803 because the star expansion includes all source columns,
 	// which generally aren't all in GROUP BY.
-	if len(sq.groupBy) > 0 && len(projCols) == 0 && !countStar && len(sq.aggCols) == 0 {
+	if len(cls.groupBy) > 0 && len(projCols) == 0 && !countStar && len(cls.aggCols) == 0 {
 		// projCols == nil + projQualifier == "" → SELECT *
 		// projCols == nil + projQualifier != "" → SELECT qualifier.*
 		// Either way, the star expands to ungrouped columns. Java 42803.
@@ -1023,7 +1097,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// reclassify projCols into aggCols entries (groupCol for bare
 	// columns, outExpr for expressions) so the aggregate pipeline
 	// activates and emits one row per distinct group.
-	if len(sq.groupBy) > 0 && len(sq.aggCols) == 0 && len(projCols) > 0 {
+	if len(cls.groupBy) > 0 && len(cls.aggCols) == 0 && len(projCols) > 0 {
 		for _, q := range projStarQualifiers {
 			if q != "" {
 				// Java errors 42803 (grouping error) for `SELECT a.* ...
@@ -1057,15 +1131,15 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				extra[i] = aggSelectCol{outName: out, groupCol: c, visible: true}
 			}
 		}
-		sq.aggCols = extra
+		cls.aggCols = extra
 		projCols = nil
 		projAliases = nil
 		projExprs = nil
 		projStarQualifiers = nil
-		sq.projCols = nil
-		sq.projAliases = nil
-		sq.projExprs = nil
-		sq.projStarQualifiers = nil
+		cls.projCols = nil
+		cls.projAliases = nil
+		cls.projExprs = nil
+		cls.projStarQualifiers = nil
 	}
 
 	// SQL §7.10 GR1: when a SELECT list contains aggregates, every
@@ -1075,21 +1149,21 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Java's groupby-tests.yamsql 42803 pattern extended to the
 	// no-GROUP-BY-at-all variant.
 	//
-	// The SELECT loop at line 3352 silently reclassifies a bare-column
-	// element as `aggSelectCol{groupCol: ...}` when aggregates are in
-	// the list — checking projCols alone misses those. Walk sq.aggCols
-	// for entries that are neither aggregates nor outExprs (bare group
-	// column references) and for outExprs that reference columns:
-	// both are GR1 violations when there's no GROUP BY.
-	hasAggregates := sq.countStar
-	for _, ac := range sq.aggCols {
+	// The SELECT loop silently reclassifies a bare-column element as
+	// `aggSelectCol{groupCol: ...}` when aggregates are in the list —
+	// checking projCols alone misses those. Walk cls.aggCols for entries
+	// that are neither aggregates nor outExprs (bare group column
+	// references) and for outExprs that reference columns: both are GR1
+	// violations when there's no GROUP BY.
+	hasAggregates := cls.countStar
+	for _, ac := range cls.aggCols {
 		if ac.aggFunc != "" {
 			hasAggregates = true
 			break
 		}
 	}
-	if hasAggregates && len(sq.groupBy) == 0 {
-		for _, ac := range sq.aggCols {
+	if hasAggregates && len(cls.groupBy) == 0 {
+		for _, ac := range cls.aggCols {
 			if ac.aggFunc != "" {
 				continue // aggregate — fine
 			}
@@ -1120,7 +1194,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Parse HAVING clause (only meaningful with GROUP BY).
 	havingCtx := simpleTable.HavingClause()
 	if havingCtx != nil {
-		sq.havingExpr = havingCtx.GetHavingExpr()
+		cls.havingExpr = havingCtx.GetHavingExpr()
 	}
 
 	// Redirect aggCols groupCol entries that came from a SELECT-list
@@ -1128,10 +1202,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// expression text, so the proto path's groupExprByName check fires
 	// and skips the FD lookup. Walks selectExprsSnapshot to find the
 	// original projExpr for each groupCol entry; matches against
-	// sq.groupBy[] by GetText. Idempotent — runs once after both
+	// cls.groupBy[] by GetText. Idempotent — runs once after both
 	// SELECT-list reclassification (if any) and GROUP BY parsing.
-	if len(sq.aggCols) > 0 && len(sq.groupBy) > 0 && len(selectExprsSnapshot) > 0 {
-		for ai, ac := range sq.aggCols {
+	if len(cls.aggCols) > 0 && len(cls.groupBy) > 0 && len(selectExprsSnapshot) > 0 {
+		for ai, ac := range cls.aggCols {
 			if ac.groupCol == "" {
 				continue
 			}
@@ -1150,9 +1224,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				continue
 			}
 			projText := canonicalTextOf(origExpr)
-			for gi, gn := range sq.groupBy {
-				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
-					sq.aggCols[ai].groupCol = gn
+			for gi, gn := range cls.groupBy {
+				if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && projText == gn {
+					cls.aggCols[ai].groupCol = gn
 					break
 				}
 			}
@@ -1171,16 +1245,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// time — and the underlying column ('amt') is not in the rowMap
 	// because GROUP BY summarized the rows. Symmetric with the alias
 	// redirect just above.
-	if len(sq.aggCols) > 0 && len(sq.groupBy) > 0 {
-		for ai, ac := range sq.aggCols {
+	if len(cls.aggCols) > 0 && len(cls.groupBy) > 0 {
+		for ai, ac := range cls.aggCols {
 			if ac.outExpr == nil || ac.aggFunc != "" {
 				continue
 			}
 			outExprText := canonicalTextOf(ac.outExpr)
-			for gi, gn := range sq.groupBy {
-				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && outExprText == gn {
-					sq.aggCols[ai].outExpr = nil
-					sq.aggCols[ai].groupCol = gn
+			for gi, gn := range cls.groupBy {
+				if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && outExprText == gn {
+					cls.aggCols[ai].outExpr = nil
+					cls.aggCols[ai].groupCol = gn
 					break
 				}
 			}
@@ -1192,42 +1266,42 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// alias (if any) propagates so `SELECT COUNT(*) AS n FROM t GROUP BY g`
 	// emits the column as `n`. Also set projCols so the downstream projection
 	// narrows the aggregate output (keys+aggs) to just the COUNT column.
-	if sq.countStar && len(sq.groupBy) > 0 {
-		sq.countStar = false
+	if cls.countStar && len(cls.groupBy) > 0 {
+		cls.countStar = false
 		outName := "COUNT(*)"
-		if sq.countStarAlias != "" {
-			outName = sq.countStarAlias
+		if cls.countStarAlias != "" {
+			outName = cls.countStarAlias
 		}
-		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT", visible: true})
-		sq.projCols = []string{outName}
-		sq.projAliases = []string{""}
-		sq.projExprs = []antlrgen.IExpressionContext{nil}
-		sq.projStarQualifiers = []string{""}
+		cls.aggCols = append(cls.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT", visible: true})
+		cls.projCols = []string{outName}
+		cls.projAliases = []string{""}
+		cls.projExprs = []antlrgen.IExpressionContext{nil}
+		cls.projStarQualifiers = []string{""}
 	}
 
 	// Harvest aggregates referenced in HAVING and ORDER BY that aren't
 	// already in aggCols. Otherwise queries like
 	//   SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0
 	//   SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) DESC
-	// have aggCols == nil → the executor never runs the aggregate pipeline
-	// → GROUP BY is silently ignored. The HAVING / ORDER BY resolver already
+	// have aggCols == nil -> the executor never runs the aggregate pipeline
+	// -> GROUP BY is silently ignored. The HAVING / ORDER BY resolver already
 	// looks up aggregates by their reconstructed output name ("COUNT(*)",
 	// "SUM(v)"), so matching aggCols entries make the evaluation round-trip.
 	// If projCols still holds plain columns at this point, reclassify them
 	// as group-by references in aggCols (mirror of the SELECT-list-aggregate
 	// path's existing reclassification).
 	var harvestExprs []antlrgen.IExpressionContext
-	if sq.havingExpr != nil {
-		harvestExprs = append(harvestExprs, sq.havingExpr)
+	if cls.havingExpr != nil {
+		harvestExprs = append(harvestExprs, cls.havingExpr)
 	}
-	for _, ob := range sq.orderBy {
+	for _, ob := range cls.orderBy {
 		if ob.rawExpr != nil {
 			harvestExprs = append(harvestExprs, ob.rawExpr)
 		}
 	}
 	if len(harvestExprs) > 0 {
-		existing := make(map[string]struct{}, len(sq.aggCols))
-		for _, ac := range sq.aggCols {
+		existing := make(map[string]struct{}, len(cls.aggCols))
+		for _, ac := range cls.aggCols {
 			existing[ac.outName] = struct{}{}
 		}
 		var newAggs []aggSelectCol
@@ -1248,18 +1322,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// wrapping expression. Inner aggregates were harvested above so
 		// the rowMap at outExpr eval time has them available. Clear
 		// colName so the Value-based sort resolver picks up rawExpr.
-		for obIdx, ob := range sq.orderBy {
+		for obIdx, ob := range cls.orderBy {
 			if ob.expr == nil || len(harvestAggregates(ob.expr)) == 0 {
 				continue
 			}
 			newAggs = append(newAggs, aggSelectCol{
 				outExpr: ob.expr,
 			})
-			sq.orderBy[obIdx].colName = ""
-			sq.orderBy[obIdx].expr = nil
+			cls.orderBy[obIdx].colName = ""
+			cls.orderBy[obIdx].expr = nil
 		}
 		if len(newAggs) > 0 {
-			if len(sq.aggCols) == 0 && len(projCols) > 0 {
+			if len(cls.aggCols) == 0 && len(projCols) > 0 {
 				// No SELECT-list aggregates yet; demote the plain projCols
 				// to group-by references so the aggregate pipeline knows
 				// how to surface them in each output row. When the projExpr
@@ -1267,7 +1341,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				// AS bucket ... GROUP BY v/10`), point groupCol at the
 				// matching groupBy[] string so the proto path's
 				// groupExprByName check fires and skips the FD lookup.
-				prepended := make([]aggSelectCol, 0, len(projCols)+len(sq.aggCols))
+				prepended := make([]aggSelectCol, 0, len(projCols)+len(cls.aggCols))
 				for i, c := range projCols {
 					out := projAliases[i]
 					if out == "" {
@@ -1276,8 +1350,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					gc := c
 					if i < len(projExprs) && projExprs[i] != nil {
 						projText := canonicalTextOf(projExprs[i])
-						for gi, gn := range sq.groupBy {
-							if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
+						for gi, gn := range cls.groupBy {
+							if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && projText == gn {
 								gc = gn
 								break
 							}
@@ -1285,17 +1359,32 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					}
 					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, visible: true})
 				}
-				sq.aggCols = append(prepended, sq.aggCols...)
-				sq.projCols = nil
-				sq.projAliases = nil
-				sq.projExprs = nil
-				sq.projStarQualifiers = nil
+				cls.aggCols = append(prepended, cls.aggCols...)
+				cls.projCols = nil
+				cls.projAliases = nil
+				cls.projExprs = nil
+				cls.projStarQualifiers = nil
 			}
-			sq.aggCols = append(sq.aggCols, newAggs...)
+			cls.aggCols = append(cls.aggCols, newAggs...)
 		}
 	}
 
-	return sq, nil
+	return cls, nil
+}
+
+func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQuery, error) {
+	cls, err := classifySelectElements(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse FROM clause via the shared parseFromSource helper.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+
+	return cls.toSelectQuery(fs), nil
 }
 
 // exprReferencesColumn reports whether the expression tree contains any
