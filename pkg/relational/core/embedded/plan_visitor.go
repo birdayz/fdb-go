@@ -41,6 +41,7 @@ import (
 type PlanVisitor struct {
 	md        *recordlayer.RecordMetaData
 	cteScopes map[string]semantic.ScopeSource
+	cteBodies map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
 }
 
 // collectSelectNames does a lightweight scan of the SELECT element list
@@ -120,11 +121,17 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 
 	ctesCtx := q.Ctes()
 
-	// Pre-scan CTE definitions to extract column schemas. Process in
-	// declaration order so CTE B can reference CTE A's derived schema.
+	// Pre-scan CTE definitions to extract column schemas and eagerly
+	// build CTE body plans. Process in declaration order so CTE B can
+	// reference CTE A's derived schema. The eager body plans are needed
+	// so scalar subqueries that reference outer CTEs can build
+	// self-contained logical plans (wrapped with LogicalCTE).
 	if ctesCtx != nil {
 		if v.cteScopes == nil {
 			v.cteScopes = make(map[string]semantic.ScopeSource)
+		}
+		if v.cteBodies == nil {
+			v.cteBodies = make(map[string]logical.LogicalOperator)
 		}
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
@@ -150,6 +157,14 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					src = applyCTEColumnAliases(src, colAliases)
 				}
 				v.cteScopes[upper] = src
+			}
+			// Eagerly build the CTE body plan so scalar subqueries
+			// that reference this CTE can wrap themselves with it.
+			if inner := nq.Query(); inner != nil {
+				bodyOp, bodyErr := v.VisitQueryBody(inner.QueryExpressionBody())
+				if bodyErr == nil && bodyOp != nil {
+					v.cteBodies[upper] = bodyOp
+				}
 			}
 		}
 	}
@@ -177,18 +192,22 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 	for i := len(ctes) - 1; i >= 0; i-- {
 		nq := ctes[i]
 		name := functions.FullIdToName(nq.GetName())
-		var body logical.LogicalOperator
-		if inner := nq.Query(); inner != nil {
-			if recursive {
-				qeb := inner.QueryExpressionBody()
-				if _, isSet := qeb.(*antlrgen.SetQueryContext); !isSet {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"recursive CTE requires UNION ALL body")
+		upper := strings.ToUpper(name)
+		// Reuse eagerly-built body plans when available (non-recursive).
+		body := v.cteBodies[upper]
+		if body == nil {
+			if inner := nq.Query(); inner != nil {
+				if recursive {
+					qeb := inner.QueryExpressionBody()
+					if _, isSet := qeb.(*antlrgen.SetQueryContext); !isSet {
+						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+							"recursive CTE requires UNION ALL body")
+					}
 				}
-			}
-			body, err = v.VisitQueryBody(inner.QueryExpressionBody())
-			if err != nil {
-				return nil, err
+				body, err = v.VisitQueryBody(inner.QueryExpressionBody())
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		if body == nil {
@@ -336,7 +355,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// visitFrom, so toSelectQuery picks them up naturally.
 	if v.md != nil {
 		sq := cls.toSelectQuery(fs)
-		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, v.md, v.cteScopes)
+		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, v.md, v.cteScopes, v.cteBodies)
 	}
 	return op, nil
 }

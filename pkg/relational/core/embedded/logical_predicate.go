@@ -826,7 +826,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, cteScopes)
 }
 
-func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource) (logical.LogicalOperator, error) {
+func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, cteScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) (logical.LogicalOperator, error) {
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's
 	// QueryVisitor holding a SemanticAnalyzer.
@@ -1054,9 +1054,15 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// WHERE walks can build inner plans for EXISTS and scalar subqueries.
 	var existsPlanner *existsSubqueryPlanner
 	if md != nil {
+		var bodies map[string]logical.LogicalOperator
+		if len(cteBodies) > 0 {
+			bodies = cteBodies[0]
+		}
 		existsPlanner = &existsSubqueryPlanner{
 			md:          md,
 			outerScopes: buildOuterScopeSources(sq, md),
+			cteScopes:   cteScopes,
+			cteBodies:   bodies,
 		}
 	}
 
@@ -2041,6 +2047,125 @@ func buildLogicalPlanForInsertWithCatalog(
 	return insertOp
 }
 
+// buildLogicalPlanForQueryWithCTECatalog is like
+// buildLogicalPlanForQueryWithCatalog but accepts external CTE scopes
+// from an enclosing WITH clause. Used by scalar subquery planning where
+// the inner query (e.g. `SELECT MIN(v) FROM high`) references a CTE
+// defined in the outer query's WITH clause. The outer scopes are merged
+// with any CTEs the inner query itself defines (inner shadows outer on
+// name collision, matching SQL scoping rules).
+func buildLogicalPlanForQueryWithCTECatalog(
+	q antlrgen.IQueryContext,
+	md *recordlayer.RecordMetaData,
+	outerCTEScopes map[string]semantic.ScopeSource,
+) (logical.LogicalOperator, error) {
+	if len(outerCTEScopes) == 0 {
+		return buildLogicalPlanForQueryWithCatalog(q, md)
+	}
+	if q == nil {
+		return nil, nil
+	}
+	if md == nil {
+		return buildLogicalPlanForQuery(q), nil
+	}
+
+	ctesCtx := q.Ctes()
+
+	// Start with outer CTE scopes, then overlay any inner CTE defs
+	// (inner shadows outer on name collision).
+	cteScopes := make(map[string]semantic.ScopeSource, len(outerCTEScopes))
+	for k, v := range outerCTEScopes {
+		cteScopes[k] = v
+	}
+	if ctesCtx != nil {
+		// Track inner CTE names to detect sibling duplicates.
+		innerCTEs := make(map[string]bool)
+		for _, nq := range ctesCtx.AllNamedQuery() {
+			name := functions.FullIdToName(nq.GetName())
+			upper := strings.ToUpper(name)
+			if innerCTEs[upper] {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
+			innerCTEs[upper] = true
+			// Inner CTE shadowing an outer CTE is fine (SQL scoping).
+			if src, ok := buildCTEColumnSource(md, name, nq.Query(), cteScopes); ok {
+				if colAliases := nq.GetColumnAliases(); colAliases != nil {
+					if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
+						aliases := aliasList.AllFullId()
+						if nAliases := len(aliases); nAliases > 0 && src.Table != nil {
+							nCols := len(src.Table.Columns())
+							if nAliases != nCols {
+								return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+									"cte query has %d column(s), however %d aliases defined",
+									nCols, nAliases)
+							}
+						}
+					}
+					src = applyCTEColumnAliases(src, colAliases)
+				}
+				cteScopes[upper] = src
+			}
+		}
+	}
+
+	main, err := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, cteScopes)
+	if err != nil {
+		return nil, err
+	}
+	if main == nil {
+		return nil, nil
+	}
+	if ctesCtx == nil {
+		return main, nil
+	}
+	recursive := ctesCtx.RECURSIVE() != nil
+	traversalOrder := logical.TraversalLevelOrder
+	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		if toc.PRE_ORDER() != nil {
+			traversalOrder = logical.TraversalPreOrder
+		} else if toc.POST_ORDER() != nil {
+			traversalOrder = logical.TraversalPostOrder
+		}
+	}
+	ctes := ctesCtx.AllNamedQuery()
+	for i := len(ctes) - 1; i >= 0; i-- {
+		nq := ctes[i]
+		name := functions.FullIdToName(nq.GetName())
+		var body logical.LogicalOperator
+		if inner := nq.Query(); inner != nil {
+			if recursive {
+				qeb := inner.QueryExpressionBody()
+				if _, isSet := qeb.(*antlrgen.SetQueryContext); !isSet {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"recursive CTE requires UNION ALL body")
+				}
+			}
+			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, cteScopes)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if body == nil {
+			return nil, nil
+		}
+		cte := logical.NewCTE(name, body, main, recursive)
+		cte.TraversalOrder = traversalOrder
+		if colAliases := nq.GetColumnAliases(); colAliases != nil {
+			if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
+				aliases := aliasList.AllFullId()
+				names := make([]string, len(aliases))
+				for j, fid := range aliases {
+					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+				}
+				cte.ColumnAliases = names
+			}
+		}
+		main = cte
+	}
+	return main, nil
+}
+
 // buildLogicalPlanForQueryWithCatalog is the catalog-aware variant
 // of buildLogicalPlanForQuery. Recurses into CTE bodies and the
 // query body so WHERE clauses anywhere in the tree pick up the
@@ -2916,6 +3041,8 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData) map
 type existsSubqueryPlanner struct {
 	md                *recordlayer.RecordMetaData
 	outerScopes       map[string]semantic.ScopeSource
+	cteScopes         map[string]semantic.ScopeSource
+	cteBodies         map[string]logical.LogicalOperator // CTE name → body plan, for wrapping scalar subquery plans
 	subqueries        []logical.ExistsSubquery
 	scalarSubqueries  []logical.ScalarSubquery
 	lastJoinPredicate predicates.QueryPredicate
@@ -2925,7 +3052,7 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("EXISTS: nil query context")
 	}
-	innerOp, err := buildLogicalPlanForQueryWithCatalog(q, p.md)
+	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.cteScopes)
 	isUndefinedCol := false
 	if err != nil {
 		var apiErr *api.Error
@@ -3059,17 +3186,60 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: nil query context")
 	}
-	innerOp, err := buildLogicalPlanForQueryWithCatalog(q, p.md)
+	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.cteScopes)
 	if err != nil {
 		return values.CorrelationIdentifier{}, err
 	}
 	if innerOp == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: inner query could not be planned")
 	}
+	// If the inner plan references outer CTEs (from a WITH clause on the
+	// enclosing query), wrap it with LogicalCTE nodes so the Cascades
+	// translator's cteScope can resolve the scan. Without this, a scan
+	// on a CTE name (e.g. SELECT MIN(v) FROM high) would be translated
+	// as a table scan on a nonexistent table.
+	innerOp = p.wrapWithOuterCTEs(innerOp)
 	alias := values.UniqueCorrelationIdentifier()
 	p.scalarSubqueries = append(p.scalarSubqueries, logical.ScalarSubquery{
 		Alias: alias,
 		Plan:  innerOp,
 	})
 	return alias, nil
+}
+
+// wrapWithOuterCTEs wraps op with LogicalCTE nodes for every outer CTE
+// whose name appears as a LogicalScan in the plan tree. This makes the
+// plan self-contained so the Cascades translator can resolve CTE scan
+// references without external scope.
+func (p *existsSubqueryPlanner) wrapWithOuterCTEs(op logical.LogicalOperator) logical.LogicalOperator {
+	if len(p.cteBodies) == 0 {
+		return op
+	}
+	refs := collectScanTableNames(op)
+	for name, body := range p.cteBodies {
+		if refs[name] {
+			op = logical.NewCTE(name, body, op, false)
+		}
+	}
+	return op
+}
+
+// collectScanTableNames returns the set of UPPER-CASE table names
+// referenced by LogicalScan nodes in the plan tree.
+func collectScanTableNames(op logical.LogicalOperator) map[string]bool {
+	names := make(map[string]bool)
+	collectScanTableNamesInner(op, names)
+	return names
+}
+
+func collectScanTableNamesInner(op logical.LogicalOperator, names map[string]bool) {
+	if op == nil {
+		return
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		names[strings.ToUpper(scan.Table)] = true
+	}
+	for _, ch := range op.Children() {
+		collectScanTableNamesInner(ch, names)
+	}
 }
