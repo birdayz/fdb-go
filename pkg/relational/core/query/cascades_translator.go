@@ -681,9 +681,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
 	strategy := expressions.TraversalAny
 	switch c.TraversalOrder {
-	case 1:
+	case logical.TraversalPreOrder:
 		strategy = expressions.TraversalPreorder
-	case 2:
+	case logical.TraversalPostOrder:
 		strategy = expressions.TraversalPostorder
 	}
 	recUnion := expressions.NewRecursiveUnionExpression(
