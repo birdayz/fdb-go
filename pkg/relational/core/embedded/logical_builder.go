@@ -397,8 +397,14 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					}
 				}
 			}
-			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAggAlias) {
-				op = logical.NewProject(op, visibleProj, visibleAliases)
+			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasSortOnly
+			if needsStrip {
+				if hasSortOnly {
+					sq.postSortStripProj = visibleProj
+					sq.postSortStripAliases = visibleAliases
+				} else {
+					op = logical.NewProject(op, visibleProj, visibleAliases)
+				}
 			}
 		}
 	}
@@ -421,6 +427,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst})
 		}
 		op = logical.NewSort(op, keys)
+	}
+
+	if len(sq.postSortStripProj) > 0 {
+		op = logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
 	}
 
 	// LIMIT: sq.limit < 0 means "no limit". Offset alone (LIMIT -1

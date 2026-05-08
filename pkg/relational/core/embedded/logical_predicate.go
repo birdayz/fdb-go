@@ -2542,8 +2542,14 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 					break
 				}
 			}
-			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAggAlias) {
-				op = logical.NewProject(op, visibleProj, visibleAliases)
+			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasSortOnly
+			if needsStrip {
+				if hasSortOnly {
+					sq.postSortStripProj = visibleProj
+					sq.postSortStripAliases = visibleAliases
+				} else {
+					op = logical.NewProject(op, visibleProj, visibleAliases)
+				}
 			}
 		}
 	}
@@ -2568,11 +2574,15 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 		op = logical.NewSort(op, keys)
 	}
 
+	if len(sq.postSortStripProj) > 0 {
+		op = logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
+	}
+
 	if sq.limit >= 0 || sq.offset > 0 {
 		op = logical.NewLimit(op, sq.limit, sq.offset)
 	}
 
-	if len(sq.projCols) > 0 && len(sq.aggCols) == 0 && !sq.countStar {
+	if len(sq.projCols) > 0 {
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))

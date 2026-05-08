@@ -136,4 +136,43 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 			{2, 2, 4, 60, 60, 1, 60.0},
 		}))
 	})
+
+	// group_by_proj_expr test 2: no aggregates, just expression on group cols
+	t.Run("a_times_100_plus_b_no_agg", func(t *testing.T) {
+		setup3 := openTestDB(t, "/testdb_gbpe2")
+		g.Expect(setup3.ExecContext(ctx, "CREATE DATABASE /testdb_gbpe2")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setup3.ExecContext(ctx,
+			"CREATE SCHEMA TEMPLATE gbpe2_tmpl "+
+				"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setup3.ExecContext(ctx,
+			"CREATE SCHEMA /testdb_gbpe2/s WITH TEMPLATE gbpe2_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+		dsn3 := fmt.Sprintf("fdbsql:///testdb_gbpe2?cluster_file=%s&schema=s", clusterFilePath)
+		db3, err := sql.Open("fdbsql", dsn3)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer db3.Close()
+
+		g.Expect(db3.ExecContext(ctx,
+			"INSERT INTO t VALUES "+
+				"(1, 1, 1, 10), (2, 1, 1, 20), (3, 1, 2, 30), "+
+				"(4, 2, 1, 40), (5, 2, 1, 50), (6, 2, 2, 60)")).Error().NotTo(gomega.HaveOccurred())
+
+		rows, err := db3.QueryContext(ctx,
+			"SELECT a, b, a*100+b FROM t GROUP BY a, b ORDER BY a, b")
+		if err != nil {
+			t.Fatalf("query error: %v", err)
+		}
+		defer rows.Close()
+		type row struct{ a, b, expr int64 }
+		var results []row
+		for rows.Next() {
+			var r row
+			g.Expect(rows.Scan(&r.a, &r.b, &r.expr)).To(gomega.Succeed())
+			results = append(results, r)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		g.Expect(results).To(gomega.Equal([]row{
+			{1, 1, 101}, {1, 2, 102}, {2, 1, 201}, {2, 2, 202},
+		}))
+	})
 }

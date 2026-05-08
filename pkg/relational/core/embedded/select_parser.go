@@ -119,6 +119,12 @@ type selectQuery struct {
 	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
 	// When set, tableName holds the alias; the query is materialized at execution time.
 	derivedQuery antlrgen.IQueryContext
+	// postSortStripProj is the visible-only projection to emit after Sort
+	// (strips sort-only columns). Populated when hasSortOnly is true in the
+	// aggregate path; the projection is deferred so Sort can reference the
+	// sort-only columns before they are stripped.
+	postSortStripProj    []string
+	postSortStripAliases []string
 }
 
 // joinClause describes a single JOIN part in a SELECT query.
@@ -1251,6 +1257,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		projAliases = nil
 		projExprs = nil
 		projStarQualifiers = nil
+		sq.projCols = nil
+		sq.projAliases = nil
+		sq.projExprs = nil
+		sq.projStarQualifiers = nil
 	}
 
 	// SQL §7.10 GR1: when a SELECT list contains aggregates, every
