@@ -1852,6 +1852,11 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 // Each key references a field in the datum map; direction is
 // ascending by default.
 func sortByKeys(items []QueryResult, keys []string, directions []bool) {
+	// PK tiebreaker direction matches the last explicit sort key.
+	pkDesc := false
+	if len(directions) > 0 {
+		pkDesc = directions[len(directions)-1]
+	}
 	sort.SliceStable(items, func(i, j int) bool {
 		for k, key := range keys {
 			vi := fieldFromDatum(items[i].Datum, key)
@@ -1866,8 +1871,41 @@ func sortByKeys(items []QueryResult, keys []string, directions []bool) {
 			}
 			return cmp < 0
 		}
+		// All explicit sort keys equal — break ties by PK.
+		if items[i].PrimaryKey != nil && items[j].PrimaryKey != nil {
+			cmp := comparePKTuples(items[i].PrimaryKey, items[j].PrimaryKey)
+			if cmp != 0 {
+				if pkDesc {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
 		return false
 	})
+}
+
+// comparePKTuples compares two primary key tuples using their packed
+// byte representation, which preserves FDB tuple ordering. Returns
+// -1, 0, or 1.
+func comparePKTuples(a, b tuple.Tuple) int {
+	ap := a.Pack()
+	bp := b.Pack()
+	for i := 0; i < len(ap) && i < len(bp); i++ {
+		if ap[i] < bp[i] {
+			return -1
+		}
+		if ap[i] > bp[i] {
+			return 1
+		}
+	}
+	if len(ap) < len(bp) {
+		return -1
+	}
+	if len(ap) > len(bp) {
+		return 1
+	}
+	return 0
 }
 
 func projectionColumnName(v values.Value) string {
@@ -1990,6 +2028,15 @@ func executeInMemorySort(
 	}
 
 	keys := p.GetSortKeys()
+	// Determine the PK tiebreaker direction: match the last explicit
+	// sort key's direction. When all explicit sort keys compare equal,
+	// Java orders by PK in the same direction as the outermost sort
+	// column (reverse scan on a composite index emits PKs in
+	// descending order within each tied group).
+	pkDesc := false
+	if len(keys) > 0 {
+		pkDesc = keys[len(keys)-1].Desc
+	}
 	sort.SliceStable(results, func(i, j int) bool {
 		for _, k := range keys {
 			var ci, cj any
@@ -2019,6 +2066,17 @@ func executeInMemorySort(
 				return cmp > 0
 			}
 			return cmp < 0
+		}
+		// All explicit sort keys are equal — break ties by primary
+		// key so the output matches Java's index-scan ordering.
+		if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
+			cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
+			if cmp != 0 {
+				if pkDesc {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
 		}
 		return false
 	})

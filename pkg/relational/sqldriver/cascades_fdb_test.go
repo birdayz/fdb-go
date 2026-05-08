@@ -1876,6 +1876,131 @@ func TestFDB_CascadesMinMaxStringRejected(t *testing.T) {
 	t.Logf("Scalar subquery MIN(name) correctly rejected: %v", err)
 }
 
+// Tied sort keys must break by primary key. When the sort direction
+// is DESC, the PK tiebreaker is also DESC (matching Java's index scan
+// behaviour where a reverse scan on a composite index emits PKs in
+// descending order within each tied group).
+func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_sorttie_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("sorttie_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE rp (id BIGINT NOT NULL, region STRING, plan STRING, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_region_plan ON rp (region, plan)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert: ids 1 and 3 share plan='pro', id 2 has plan='free'.
+	if _, err := db.ExecContext(ctx, "INSERT INTO rp VALUES (1, 'us', 'pro')"); err != nil {
+		t.Fatalf("INSERT 1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO rp VALUES (2, 'us', 'free')"); err != nil {
+		t.Fatalf("INSERT 2: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO rp VALUES (3, 'us', 'pro')"); err != nil {
+		t.Fatalf("INSERT 3: %v", err)
+	}
+
+	// DESC sort: tied plan='pro' should have id=3 before id=1 (PK DESC tiebreaker).
+	rows, err := db.QueryContext(ctx,
+		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC")
+	if err != nil {
+		t.Fatalf("ORDER BY plan DESC: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id     int64
+		region string
+		plan   string
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.region, &r.plan); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	// Expected: [3, 'us', 'pro'], [1, 'us', 'pro'], [2, 'us', 'free']
+	expected := []row{
+		{3, "us", "pro"},
+		{1, "us", "pro"},
+		{2, "us", "free"},
+	}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+	}
+	for i := range expected {
+		if got[i] != expected[i] {
+			t.Fatalf("row %d: expected %+v, got %+v\nfull result: %+v", i, expected[i], got[i], got)
+		}
+	}
+	t.Logf("DESC PK tiebreaker correct: %+v", got)
+
+	// ASC sort: tied plan='free' has only id=2, tied plan='pro' should
+	// have id=1 before id=3 (PK ASC tiebreaker).
+	rows2, err := db.QueryContext(ctx,
+		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan ASC")
+	if err != nil {
+		t.Fatalf("ORDER BY plan ASC: %v", err)
+	}
+	defer rows2.Close()
+
+	var got2 []row
+	for rows2.Next() {
+		var r row
+		if err := rows2.Scan(&r.id, &r.region, &r.plan); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got2 = append(got2, r)
+	}
+	if err := rows2.Err(); err != nil {
+		t.Fatalf("rows2.Err: %v", err)
+	}
+
+	// Expected: [2, 'us', 'free'], [1, 'us', 'pro'], [3, 'us', 'pro']
+	expected2 := []row{
+		{2, "us", "free"},
+		{1, "us", "pro"},
+		{3, "us", "pro"},
+	}
+	if len(got2) != len(expected2) {
+		t.Fatalf("expected %d rows, got %d: %+v", len(expected2), len(got2), got2)
+	}
+	for i := range expected2 {
+		if got2[i] != expected2[i] {
+			t.Fatalf("row %d: expected %+v, got %+v\nfull result: %+v", i, expected2[i], got2[i], got2)
+		}
+	}
+	t.Logf("ASC PK tiebreaker correct: %+v", got2)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
