@@ -16,11 +16,9 @@ Merged into `buildSelectShell(op, sq, stripPrefix)`. buildOuterPlanOnDerived is 
 
 Replaced `sortOnly bool` + `hidden bool` with `visible bool`. Deleted `__orderby_aggexpr_N__` sentinels. ORDER BY aggregate expressions resolve through the Value-based sort path. See RFC-002 for the full RequestedOrdering port plan (Phases 3-4-6 are optimization, not correctness — push ordering constraints through operators for sort elimination via index ordering).
 
-### 3. Eliminate two-phase selectQuery → buildLogicalPlan split
+### 3. ~~Eliminate two-phase selectQuery → buildLogicalPlan split~~ — **done (swingshift-81)**
 
-- [ ] Java's `QueryVisitor` builds logical operators incrementally as it visits ANTLR nodes — no intermediate struct. Go parses everything into `selectQuery` (a bag of ~30 fields), then a separate function interprets it. The stale `sq.projCols` bug (fixed in swingshift-81) exists because of this split. Every field on `selectQuery` is a potential stale-state bug. Port Java's incremental visitor pattern: walk ANTLR, emit LogicalOperator nodes as you go. Largest refactor — gates on the Cascades planner being feature-complete enough to handle all query shapes.
-
-**Files:** `pkg/relational/core/embedded/select_parser.go` (selectQuery struct + extractFromSimpleTable), `pkg/relational/core/embedded/logical_builder.go`, `pkg/relational/core/embedded/logical_predicate.go`.
+PlanVisitor walks ANTLR incrementally: parseFromSource + classifySelectElements + per-step operator building. The Cascades path never creates a selectQuery. extractFromSimpleTable is now a 10-line wrapper for the proto path only. Remaining: _postBuild still uses a selectQuery bridge (toSelectQuery) for catalog-aware upgrades — inlining those into the visitor is future optimization.
 
 ---
 
