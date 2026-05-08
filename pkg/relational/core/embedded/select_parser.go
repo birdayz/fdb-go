@@ -722,213 +722,27 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
-	fromClause := simpleTable.FromClause()
-	if fromClause == nil {
-		// FROM-less SELECT: fdb-relational 4.11.1.0's QueryVisitor's
-		// visitSimpleTable asserts simpleTableContext.fromClause() is
-		// non-null with `Assert.notNullUnchecked(... ErrorCode.
-		// UNSUPPORTED_QUERY, "query is not supported")`. The check
-		// fires universally — including FROM-less SELECTs inside CTE
-		// base cases (every SimpleTable visit hits the gate, no CTE-
-		// context bypass). Match byte-equal. Standalone constant
-		// projection like `SELECT 1+1` and CTE bases like
-		// `WITH base AS (SELECT 1 AS n) ...` both reject.
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"query is not supported")
+	// Parse FROM clause via the shared parseFromSource helper.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, err
 	}
-
-	sources := fromClause.TableSources()
-	if sources == nil || len(sources.AllTableSource()) == 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"FROM clause missing table source")
-	}
-	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported table source %T", sources.AllTableSource()[0])
-	}
-	// Additional comma-separated sources become implicit cross joins; the
-	// WHERE clause supplies any join predicate.
-	var extraCrossJoins []joinClause
-	for _, extra := range sources.AllTableSource()[1:] {
-		eb, isBase := extra.(*antlrgen.TableSourceBaseContext)
-		if !isBase {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"unsupported extra table source %T", extra)
-		}
-		// Bare-source joins are not supported on extras (grammar quirk).
-		if len(eb.AllJoinPart()) > 0 {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-				"JOIN clauses on comma-separated FROM sources are not supported")
-		}
-		switch item := eb.TableSourceItem().(type) {
-		case *antlrgen.AtomTableItemContext:
-			uids := item.TableName().FullId().AllUid()
-			parts := make([]string, len(uids))
-			for i, u := range uids {
-				parts[i] = functions.StripIdentifierQuotes(u.GetText())
-			}
-			tblName := strings.Join(parts, ".")
-			alias := tblName
-			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
-			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
-			}
-			extraCrossJoins = append(extraCrossJoins, joinClause{
-				tableName: tblName,
-				joinType:  "INNER",
-				alias:     alias,
-				onExpr:    nil,
-			})
-		case *antlrgen.SubqueryTableItemContext:
-			alias := ""
-			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
-			}
-			if alias == "" {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					"derived table in FROM must have an alias")
-			}
-			extraCrossJoins = append(extraCrossJoins, joinClause{
-				tableName:    alias,
-				joinType:     "INNER",
-				alias:        alias,
-				onExpr:       nil,
-				derivedQuery: item.Query(),
-			})
-		default:
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"FROM: comma-separated sources must be plain table names, got %T",
-				eb.TableSourceItem())
-		}
-	}
-	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
-	// a plain atom table. Build a common `sq` in either case so the
-	// post-construction pipeline (ORDER BY / LIMIT / GROUP BY / HAVING /
-	// GR1 validation) applies uniformly — pre-swingshift-41 the derived
-	// branch returned early, dropping all of those.
-	var sq *selectQuery
-	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
-		alias := ""
-		if subItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
-		}
-		if alias == "" {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
-		}
-		// Derived-table-on-the-right + comma-joined remains a separate
-		// gap (the extra-source parser still rejects SubqueryTableItem at
-		// line ~3757; see derived_table_renamed.yaml's 0A000 pin). For the
-		// left-derived case, thread extraCrossJoins so `(sub) AS x, b, c`
-		// runs the comma-joined real tables on the right.
-		sq = &selectQuery{
-			tableName:          alias,
-			tableAlias:         alias,
-			joins:              extraCrossJoins,
-			projCols:           projCols,
-			projAliases:        projAliases,
-			projExprs:          projExprs,
-			projStarQualifiers: projStarQualifiers,
-			projQualifier:      projQualifier,
-			countStar:          countStar,
-			countStarAlias:     countStarAlias,
-			aggCols:            aggCols,
-			distinct:           simpleTable.DISTINCT() != nil,
-			whereExpr:          fromClause.WhereExpr(),
-			limit:              -1,
-			derivedQuery:       subItem.Query(),
-		}
-	} else {
-		atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"unsupported table source item %T; only plain table names are supported",
-				srcBase.TableSourceItem())
-		}
-		// Build table name from uid segments, stripping identifier quotes.
-		// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
-		uids := atomItem.TableName().FullId().AllUid()
-		parts := make([]string, len(uids))
-		for i, u := range uids {
-			parts[i] = functions.StripIdentifierQuotes(u.GetText())
-		}
-		// Only use Uid() as alias when AS is explicit. Without AS, the parser may
-		// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
-		// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
-		// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
-		// InnerJoinContext to a LEFT/RIGHT join.
-		leftAlias := ""
-		promotedJoinType := ""
-		// Grammar is `tableName (AS? alias=uid)?` — AS optional.
-		// Pick up implicit aliases via GetAlias() (was previously
-		// gated on AS being present, which lost `FROM Order o` etc).
-		// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
-		// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
-		// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
-		// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
-		// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
-		// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
-		// literal alias.
-		if atomItem.GetAlias() != nil {
-			aliasRaw := atomItem.GetAlias().GetText()
-			aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
-			// Structural quote-detection: post-case-fold,
-			// `aliasRaw != aliasTxt` is also true whenever the
-			// raw alias has any lowercase character (the helper
-			// upper-cases unquoted text). Use a structural check
-			// so a lowercased alias `from a hello` doesn't get
-			// classified as quoted.
-			isQuoted := len(aliasRaw) >= 2 &&
-				((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
-					(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
-			if atomItem.AS() == nil && !isQuoted {
-				up := strings.ToUpper(aliasTxt)
-				if up == "LEFT" || up == "RIGHT" {
-					promotedJoinType = up
-				} else {
-					leftAlias = aliasTxt
-				}
-			} else {
-				leftAlias = aliasTxt
-			}
-		}
-		if leftAlias == "" {
-			leftAlias = strings.Join(parts, ".")
-		}
-
-		// Parse JOIN clauses.
-		var joins []joinClause
-		for _, jp := range srcBase.AllJoinPart() {
-			jc, jErr := extractJoinClause(jp)
-			if jErr != nil {
-				return nil, jErr
-			}
-			joins = append(joins, jc)
-		}
-		// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-		if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
-			joins[0].joinType = promotedJoinType
-		}
-		// Implicit cross joins from comma-separated FROM sources run last; the
-		// WHERE predicate decides which combinations survive.
-		joins = append(joins, extraCrossJoins...)
-
-		sq = &selectQuery{
-			tableName:          strings.Join(parts, "."),
-			tableAlias:         leftAlias,
-			joins:              joins,
-			projCols:           projCols,
-			projAliases:        projAliases,
-			projExprs:          projExprs,
-			projStarQualifiers: projStarQualifiers,
-			projQualifier:      projQualifier,
-			countStar:          countStar,
-			countStarAlias:     countStarAlias,
-			aggCols:            aggCols,
-			distinct:           simpleTable.DISTINCT() != nil,
-			whereExpr:          fromClause.WhereExpr(),
-			limit:              -1,
-		}
+	sq := &selectQuery{
+		tableName:          fs.tableName,
+		tableAlias:         fs.tableAlias,
+		joins:              fs.joins,
+		derivedQuery:       fs.derivedQuery,
+		projCols:           projCols,
+		projAliases:        projAliases,
+		projExprs:          projExprs,
+		projStarQualifiers: projStarQualifiers,
+		projQualifier:      projQualifier,
+		countStar:          countStar,
+		countStarAlias:     countStarAlias,
+		aggCols:            aggCols,
+		distinct:           simpleTable.DISTINCT() != nil,
+		whereExpr:          fs.whereExpr,
+		limit:              -1,
 	}
 
 	// Parse ORDER BY clause.
@@ -1614,6 +1428,207 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 		aggExpr:     argExpr,
 		aggDistinct: isDistinct,
 	}, true
+}
+
+// fromSource holds the parsed FROM-clause metadata: table name, alias,
+// derived-query reference, JOIN clauses, and WHERE expression. Extracted
+// from ANTLR by parseFromSource so both extractFromSimpleTable (which
+// needs it for selectQuery assembly) and PlanVisitor.visitFrom (which
+// builds the operator tree directly from ANTLR) share a single parsing
+// path.
+type fromSource struct {
+	tableName    string
+	tableAlias   string
+	derivedQuery antlrgen.IQueryContext
+	joins        []joinClause
+	whereExpr    antlrgen.IWhereExprContext
+}
+
+// parseFromSource walks the FROM clause of a SimpleTableContext and
+// returns the parsed source metadata. Returns an error for unsupported
+// shapes (missing FROM, CROSS JOIN on extras, etc.). This is the
+// single source of truth for FROM parsing — both extractFromSimpleTable
+// and PlanVisitor.visitFrom delegate here.
+func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, error) {
+	fromClause := simpleTable.FromClause()
+	if fromClause == nil {
+		// FROM-less SELECT: fdb-relational 4.11.1.0's QueryVisitor's
+		// visitSimpleTable asserts simpleTableContext.fromClause() is
+		// non-null with `Assert.notNullUnchecked(... ErrorCode.
+		// UNSUPPORTED_QUERY, "query is not supported")`. The check
+		// fires universally — including FROM-less SELECTs inside CTE
+		// base cases (every SimpleTable visit hits the gate, no CTE-
+		// context bypass). Match byte-equal. Standalone constant
+		// projection like `SELECT 1+1` and CTE bases like
+		// `WITH base AS (SELECT 1 AS n) ...` both reject.
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"query is not supported")
+	}
+
+	sources := fromClause.TableSources()
+	if sources == nil || len(sources.AllTableSource()) == 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"FROM clause missing table source")
+	}
+	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source %T", sources.AllTableSource()[0])
+	}
+	// Additional comma-separated sources become implicit cross joins; the
+	// WHERE clause supplies any join predicate.
+	var extraCrossJoins []joinClause
+	for _, extra := range sources.AllTableSource()[1:] {
+		eb, isBase := extra.(*antlrgen.TableSourceBaseContext)
+		if !isBase {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported extra table source %T", extra)
+		}
+		// Bare-source joins are not supported on extras (grammar quirk).
+		if len(eb.AllJoinPart()) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"JOIN clauses on comma-separated FROM sources are not supported")
+		}
+		switch item := eb.TableSourceItem().(type) {
+		case *antlrgen.AtomTableItemContext:
+			uids := item.TableName().FullId().AllUid()
+			parts := make([]string, len(uids))
+			for i, u := range uids {
+				parts[i] = functions.StripIdentifierQuotes(u.GetText())
+			}
+			tblName := strings.Join(parts, ".")
+			alias := tblName
+			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName: tblName,
+				joinType:  "INNER",
+				alias:     alias,
+				onExpr:    nil,
+			})
+		case *antlrgen.SubqueryTableItemContext:
+			alias := ""
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			if alias == "" {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"derived table in FROM must have an alias")
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName:    alias,
+				joinType:     "INNER",
+				alias:        alias,
+				onExpr:       nil,
+				derivedQuery: item.Query(),
+			})
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"FROM: comma-separated sources must be plain table names, got %T",
+				eb.TableSourceItem())
+		}
+	}
+	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
+	// a plain atom table.
+	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
+		alias := ""
+		if subItem.GetAlias() != nil {
+			alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
+		}
+		if alias == "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
+		}
+		return &fromSource{
+			tableName:    alias,
+			tableAlias:   alias,
+			joins:        extraCrossJoins,
+			whereExpr:    fromClause.WhereExpr(),
+			derivedQuery: subItem.Query(),
+		}, nil
+	}
+
+	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source item %T; only plain table names are supported",
+			srcBase.TableSourceItem())
+	}
+	// Build table name from uid segments, stripping identifier quotes.
+	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
+	uids := atomItem.TableName().FullId().AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+	}
+	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
+	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
+	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
+	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
+	// InnerJoinContext to a LEFT/RIGHT join.
+	leftAlias := ""
+	promotedJoinType := ""
+	// Grammar is `tableName (AS? alias=uid)?` — AS optional.
+	// Pick up implicit aliases via GetAlias() (was previously
+	// gated on AS being present, which lost `FROM Order o` etc).
+	// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
+	// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
+	// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
+	// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
+	// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
+	// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
+	// literal alias.
+	if atomItem.GetAlias() != nil {
+		aliasRaw := atomItem.GetAlias().GetText()
+		aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
+		// Structural quote-detection: post-case-fold,
+		// `aliasRaw != aliasTxt` is also true whenever the
+		// raw alias has any lowercase character (the helper
+		// upper-cases unquoted text). Use a structural check
+		// so a lowercased alias `from a hello` doesn't get
+		// classified as quoted.
+		isQuoted := len(aliasRaw) >= 2 &&
+			((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
+				(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
+		if atomItem.AS() == nil && !isQuoted {
+			up := strings.ToUpper(aliasTxt)
+			if up == "LEFT" || up == "RIGHT" {
+				promotedJoinType = up
+			} else {
+				leftAlias = aliasTxt
+			}
+		} else {
+			leftAlias = aliasTxt
+		}
+	}
+	if leftAlias == "" {
+		leftAlias = strings.Join(parts, ".")
+	}
+
+	// Parse JOIN clauses.
+	var joins []joinClause
+	for _, jp := range srcBase.AllJoinPart() {
+		jc, jErr := extractJoinClause(jp)
+		if jErr != nil {
+			return nil, jErr
+		}
+		joins = append(joins, jc)
+	}
+	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
+	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
+		joins[0].joinType = promotedJoinType
+	}
+	// Implicit cross joins from comma-separated FROM sources run last; the
+	// WHERE predicate decides which combinations survive.
+	joins = append(joins, extraCrossJoins...)
+
+	return &fromSource{
+		tableName:  strings.Join(parts, "."),
+		tableAlias: leftAlias,
+		joins:      joins,
+		whereExpr:  fromClause.WhereExpr(),
+	}, nil
 }
 
 // extractJoinClause parses a single JOIN part (INNER JOIN, LEFT JOIN, etc.) from

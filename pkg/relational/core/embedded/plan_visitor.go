@@ -211,10 +211,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		return nil, err
 	}
 
-	// Step 1: FROM → build scan/derived/join operator from ANTLR.
-	// Derived tables use recursive v.VisitQueryBody instead of
-	// buildLogicalPlanForQueryBodyWithCTECatalog.
-	op, err := v.visitFrom(sq)
+	// Step 1: FROM → build scan/derived/join operator directly from
+	// ANTLR parse tree, bypassing selectQuery's FROM fields. The
+	// pre-built derived table inner plans are written back into
+	// sq.joins[i].catalogAwareInnerPlan for the _postBuild pass.
+	op, err := v.visitFrom(simpleTable, sq)
 	if err != nil {
 		return nil, err
 	}
@@ -222,10 +223,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		return nil, nil
 	}
 
-	// Step 2: WHERE → wrap with filter from ANTLR.
-	if sq.whereExpr != nil {
-		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
-	}
+	// Step 2: WHERE → wrap with filter directly from ANTLR.
+	op = v.visitWhere(op, simpleTable)
 
 	// Step 3: SELECT + GROUP BY + HAVING → aggregate classification
 	// and operator building. Delegates to the existing machinery via
@@ -244,15 +243,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		op = logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
 	}
 
-	// Step 5: LIMIT/OFFSET → wrap with limit.
+	// Step 5: LIMIT/OFFSET → wrap with limit directly from ANTLR.
 	// extractFromSimpleTable rejects LIMIT/OFFSET for this codebase
-	// (Java's AstNormalizer does the same), so sq.limit == -1 and
-	// sq.offset == 0. The operator is only built when values are set.
-	op = v.visitLimit(op, sq)
+	// (Java's AstNormalizer does the same), so this is always a no-op.
+	// Reading from ANTLR rather than sq.limit/sq.offset makes the
+	// independence explicit.
+	op = v.visitLimit(op, simpleTable)
 
 	// Step 6: Projection (non-aggregate) + DISTINCT.
 	op = v.visitFinalProjection(op, sq, stripPrefix)
-	if sq.distinct {
+	if simpleTable.DISTINCT() != nil {
 		op = logical.NewDistinct(op)
 	}
 
@@ -267,43 +267,28 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	return op, nil
 }
 
-// visitFrom builds the FROM-source subtree from the selectQuery's parsed
-// FROM metadata. For derived tables (subquery in FROM), it recursively
-// calls v.VisitQueryBody to build the inner plan — this is the key
-// structural improvement over the old pipeline which used
-// buildLogicalPlanForQueryBodyWithCTECatalog for inner plans.
+// visitFrom builds the FROM-source subtree by walking the ANTLR parse
+// tree directly via parseFromSource. For derived tables (subquery in
+// FROM), it recursively calls v.VisitQueryBody to build the inner plan —
+// CTE scopes flow naturally through the visitor instance.
 //
-// Returns the built operator. The selectQuery carries tableName,
-// tableAlias, joins, and derivedQuery that describe the FROM shape.
-func (v *PlanVisitor) visitFrom(sq *selectQuery) (logical.LogicalOperator, error) {
-	if sq == nil {
-		return nil, nil
-	}
-
-	// No FROM: VALUES query (SELECT without FROM rejected by
-	// extractFromSimpleTable for this codebase).
-	if sq.tableName == "" && sq.derivedQuery == nil {
-		rows := make([]string, len(sq.projCols))
-		aliases := make([]string, len(sq.projCols))
-		for i, col := range sq.projCols {
-			expr := col
-			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				expr = strings.TrimSpace(sq.projExprs[i].GetText())
-			}
-			rows[i] = expr
-			if sq.projAliases != nil && i < len(sq.projAliases) {
-				aliases[i] = sq.projAliases[i]
-			}
-		}
-		return logical.NewValues(rows, aliases), nil
+// The sq parameter is used only to write back catalogAwareInnerPlan on
+// derived-table JOIN sources so that _postBuild can reuse the pre-built
+// inner plans. visitFrom does NOT read FROM-related fields (tableName,
+// tableAlias, derivedQuery, joins) from sq — those come from ANTLR.
+func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, sq *selectQuery) (logical.LogicalOperator, error) {
+	// Parse FROM directly from the ANTLR parse tree.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, err
 	}
 
 	var op logical.LogicalOperator
-	if sq.derivedQuery != nil {
+	if fs.derivedQuery != nil {
 		// Derived table: recursively build inner plan via the visitor.
-		// This is the key improvement: CTE scopes flow naturally through
-		// the visitor instance, and inner plans get catalog-aware upgrades.
-		innerOp, innerErr := v.VisitQueryBody(sq.derivedQuery.QueryExpressionBody())
+		// CTE scopes flow naturally through the visitor instance, and
+		// inner plans get catalog-aware upgrades.
+		innerOp, innerErr := v.VisitQueryBody(fs.derivedQuery.QueryExpressionBody())
 		if innerErr != nil {
 			return nil, innerErr
 		}
@@ -319,38 +304,46 @@ func (v *PlanVisitor) visitFrom(sq *selectQuery) (logical.LogicalOperator, error
 		// detects a derived table with no joins, it returns directly via
 		// buildOuterPlanOnDerived(sq, innerOp). So the needRebuild path
 		// only fires for the non-derived case. Safe.
-		if len(sq.joins) > 0 {
-			op = logical.NewCTE(sq.tableName, innerOp,
-				logical.NewScan(sq.tableName, ""), false)
+		if len(fs.joins) > 0 {
+			op = logical.NewCTE(fs.tableName, innerOp,
+				logical.NewScan(fs.tableName, ""), false)
 		} else {
 			op = innerOp
 		}
 	} else {
-		op = logical.NewScan(sq.tableName, sq.tableAlias)
+		op = logical.NewScan(fs.tableName, fs.tableAlias)
 	}
 
 	// Pre-build derived table inner plans for JOIN sources through the
-	// visitor. Store the result in j.catalogAwareInnerPlan so that if
-	// _postBuild triggers a needRebuild (qualified star expansion),
-	// buildLogicalPlanForSelect can use the already-built inner plan
-	// rather than falling back to the old non-CTE-aware path.
-	for i := range sq.joins {
-		j := &sq.joins[i]
-		if j.derivedQuery == nil {
+	// visitor. Store the result in sq.joins[i].catalogAwareInnerPlan so
+	// that if _postBuild triggers a needRebuild (qualified star
+	// expansion), buildLogicalPlanForSelect can use the already-built
+	// inner plan rather than falling back to the old non-CTE-aware path.
+	//
+	// This is the one place visitFrom writes back to sq — the coupling
+	// exists because _postBuild's rebuilder reads catalogAwareInnerPlan
+	// from sq.joins.
+	for i := range fs.joins {
+		fj := &fs.joins[i]
+		if fj.derivedQuery == nil {
 			continue
 		}
-		innerOp, innerErr := v.VisitQueryBody(j.derivedQuery.QueryExpressionBody())
+		innerOp, innerErr := v.VisitQueryBody(fj.derivedQuery.QueryExpressionBody())
 		if innerErr != nil {
 			return nil, innerErr
 		}
 		if innerOp != nil {
-			j.catalogAwareInnerPlan = innerOp
+			fj.catalogAwareInnerPlan = innerOp
+			// Write back to sq.joins so _postBuild can find it.
+			if i < len(sq.joins) {
+				sq.joins[i].catalogAwareInnerPlan = innerOp
+			}
 		}
 	}
 
 	// JOINs chain left-to-right from the primary scan. Each join wraps
 	// the current op as Left and scans the joined table as Right.
-	for _, j := range sq.joins {
+	for _, j := range fs.joins {
 		var right logical.LogicalOperator
 		if j.catalogAwareInnerPlan != nil {
 			// Use the pre-built inner plan from the visitor.
@@ -396,6 +389,21 @@ func (v *PlanVisitor) visitFrom(sq *selectQuery) (logical.LogicalOperator, error
 	}
 
 	return op, nil
+}
+
+// visitWhere wraps the current operator with a LogicalFilter when the
+// FROM clause contains a WHERE expression. Reads the WHERE directly from
+// the ANTLR parse tree rather than from selectQuery.whereExpr.
+func (v *PlanVisitor) visitWhere(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
+	fromClause := simpleTable.FromClause()
+	if fromClause == nil {
+		return op
+	}
+	whereExpr := fromClause.WhereExpr()
+	if whereExpr == nil {
+		return op
+	}
+	return logical.NewFilter(op, canonicalTextOf(whereExpr))
 }
 
 // visitSelectGroupBy builds the aggregate/GROUP BY/HAVING shell around
@@ -606,14 +614,20 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, sq *selectQuery, 
 	return logical.NewSort(op, keys)
 }
 
-// visitLimit builds the LogicalLimit operator. For this codebase,
-// LIMIT/OFFSET are rejected at parse time by extractFromSimpleTable
-// (matching Java's AstNormalizer), so sq.limit is always -1 and
-// sq.offset is always 0. The operator is only built when values are set
-// (future-proofing for when LIMIT support is added).
-func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, sq *selectQuery) logical.LogicalOperator {
-	if sq.limit >= 0 || sq.offset > 0 {
-		return logical.NewLimit(op, sq.limit, sq.offset)
+// visitLimit checks the ANTLR parse tree for a LIMIT clause. For this
+// codebase, LIMIT/OFFSET are rejected at parse time by
+// extractFromSimpleTable (matching Java's AstNormalizer), so the LIMIT
+// clause is never present when this method runs — it was already
+// rejected before the visitor pipeline starts. Reading from ANTLR
+// rather than sq.limit/sq.offset makes the independence explicit.
+func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
+	// extractFromSimpleTable rejects LIMIT/OFFSET before we get here,
+	// so simpleTable.LimitClause() is always nil in practice. This
+	// guard is purely defensive future-proofing.
+	if simpleTable.LimitClause() != nil {
+		// When LIMIT support is added, parse the clause here and build
+		// logical.NewLimit(op, limit, offset).
+		return op
 	}
 	return op
 }
