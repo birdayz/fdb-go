@@ -137,6 +137,49 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		}))
 	})
 
+	// group_by_multi test 9: SELECT expr AS alias FROM t GROUP BY expr HAVING ... ORDER BY agg
+	// The GROUP BY expression (amt/100) is an ArithmeticValue. The projection
+	// references it as a FieldValue whose name is the raw SQL text. The aggregate
+	// executor stores the group key under ExplainValue (with outer parens). If
+	// the projection can't find the value, it returns NULL for every row.
+	t.Run("expr_group_by_with_having_order_by_agg", func(t *testing.T) {
+		setup4 := openTestDB(t, "/testdb_gbexpr")
+		g.Expect(setup4.ExecContext(ctx, "CREATE DATABASE /testdb_gbexpr")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setup4.ExecContext(ctx,
+			"CREATE SCHEMA TEMPLATE gbexpr_tmpl "+
+				"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setup4.ExecContext(ctx,
+			"CREATE SCHEMA /testdb_gbexpr/s WITH TEMPLATE gbexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+		dsn4 := fmt.Sprintf("fdbsql:///testdb_gbexpr?cluster_file=%s&schema=s", clusterFilePath)
+		db4, err := sql.Open("fdbsql", dsn4)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer db4.Close()
+
+		g.Expect(db4.ExecContext(ctx,
+			"INSERT INTO sales VALUES "+
+				"(1, 'east', 'a', 100), (2, 'east', 'a', 50), (3, 'east', 'b', 200), "+
+				"(4, 'west', 'a', 300), (5, 'west', 'b', 400), (6, 'west', 'b', 25)")).Error().NotTo(gomega.HaveOccurred())
+
+		rows, err := db4.QueryContext(ctx,
+			"SELECT amt / 100 AS bucket FROM sales GROUP BY amt / 100 HAVING COUNT(*) >= 1 ORDER BY MAX(amt) DESC")
+		if err != nil {
+			t.Fatalf("query error: %v", err)
+		}
+		defer rows.Close()
+		var results []int64
+		for rows.Next() {
+			var v sql.NullInt64
+			g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+			if !v.Valid {
+				t.Fatal("got NULL, expected integer value")
+			}
+			results = append(results, v.Int64)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		g.Expect(results).To(gomega.Equal([]int64{4, 3, 2, 1, 0}))
+	})
+
 	// group_by_proj_expr test 2: no aggregates, just expression on group cols
 	t.Run("a_times_100_plus_b_no_agg", func(t *testing.T) {
 		setup3 := openTestDB(t, "/testdb_gbpe2")

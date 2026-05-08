@@ -1156,7 +1156,19 @@ func executeAggregation(
 		gs := groups[gk]
 		result := make(map[string]any)
 		for i, k := range groupingKeys {
-			result[aggKeyName(k)] = gs.keyVals[i]
+			name := aggKeyName(k)
+			result[name] = gs.keyVals[i]
+			// Expression group keys (e.g. ArithmeticValue for `amt / 100`)
+			// produce an ExplainValue with outer parentheses: "(AMT / 100)".
+			// Projections above the aggregate reference the key by the raw
+			// SQL text (no outer parens): "AMT / 100". Store under both
+			// forms so lookups from either naming convention succeed.
+			if len(name) >= 2 && name[0] == '(' && name[len(name)-1] == ')' {
+				stripped := name[1 : len(name)-1]
+				if _, exists := result[stripped]; !exists {
+					result[stripped] = gs.keyVals[i]
+				}
+			}
 		}
 		for i, agg := range aggregates {
 			name := aggResultName(agg)
