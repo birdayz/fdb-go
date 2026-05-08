@@ -1524,6 +1524,9 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, cteScopes)
 	if resolver == nil {
+		resolver = buildSelectScope(sq, md, cteScopes)
+	}
+	if resolver == nil {
 		return
 	}
 	operands := make([]values.Value, len(agg.Aggregates))
@@ -1829,13 +1832,27 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 			CorrelationName: aliasID.Name(),
 		}) == nil
 	}
+	addDerived := func(alias string, derivedQuery antlrgen.IQueryContext) bool {
+		if src, ok := buildDerivedTableSource(md, alias, derivedQuery); ok {
+			return scope.AddSource(src) == nil
+		}
+		return false
+	}
 	if sq.tableName != "" {
-		if !addSource(sq.tableName, sq.tableAlias) {
+		if sq.derivedQuery != nil {
+			if !addDerived(sq.tableName, sq.derivedQuery) {
+				return nil
+			}
+		} else if !addSource(sq.tableName, sq.tableAlias) {
 			return nil
 		}
 	}
 	for _, j := range sq.joins {
-		if !addSource(j.tableName, j.alias) {
+		if j.derivedQuery != nil {
+			if !addDerived(j.alias, j.derivedQuery) {
+				return nil
+			}
+		} else if !addSource(j.tableName, j.alias) {
 			return nil
 		}
 	}
@@ -2555,7 +2572,7 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 		op = logical.NewLimit(op, sq.limit, sq.offset)
 	}
 
-	if len(sq.projCols) > 0 {
+	if len(sq.projCols) > 0 && len(sq.aggCols) == 0 && !sq.countStar {
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
