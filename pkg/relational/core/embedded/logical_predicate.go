@@ -1999,6 +1999,13 @@ func buildLogicalPlanForQueryWithCatalog(
 		name := functions.FullIdToName(nq.GetName())
 		var body logical.LogicalOperator
 		if inner := nq.Query(); inner != nil {
+			if recursive {
+				qeb := inner.QueryExpressionBody()
+				if _, isSet := qeb.(*antlrgen.SetQueryContext); !isSet {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"recursive CTE requires UNION ALL body")
+				}
+			}
 			body, err = buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, cteScopes)
 			if err != nil {
 				return nil, err

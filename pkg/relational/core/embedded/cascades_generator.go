@@ -309,6 +309,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			if errors.As(execErr, &typeMismatch) {
 				return nil, api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
 			}
+			var depthExceeded *executor.RecursiveCTEDepthExceededError
+			if errors.As(execErr, &depthExceeded) {
+				return nil, api.NewError(api.ErrCodeExecutionLimitReached, depthExceeded.Error())
+			}
 			return nil, execErr
 		}
 

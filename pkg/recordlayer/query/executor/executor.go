@@ -29,6 +29,14 @@ import (
 
 type innerPlanAccessor interface{ GetInner() plans.RecordQueryPlan }
 
+type RecursiveCTEDepthExceededError struct {
+	MaxDepth int
+}
+
+func (e *RecursiveCTEDepthExceededError) Error() string {
+	return fmt.Sprintf("recursive CTE exceeded maximum depth of %d", e.MaxDepth)
+}
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -905,11 +913,25 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 		if strings.Contains(k, ".") {
 			continue
 		}
+		// When the outer row is already a merged NLJ result, it may
+		// contain both bare keys (e.g. "NAME") and qualified keys
+		// (e.g. "EMP.NAME", "DEPT.NAME") from a previous join level.
+		// The bare key holds the value from whichever side wrote last
+		// (non-deterministic between outer/inner of the prior NLJ).
+		// Re-qualifying this bare key under outerQual/outerType would
+		// overwrite the correctly-qualified key that already exists.
+		// Only set the qualified form when it isn't already present.
 		if outerQual != "" {
-			merged[outerQual+"."+strings.ToUpper(k)] = v
+			qualKey := outerQual + "." + strings.ToUpper(k)
+			if _, exists := outerMap[qualKey]; !exists {
+				merged[qualKey] = v
+			}
 		}
 		if outerAlias != "" && outerType != "" && outerAlias != outerType {
-			merged[outerType+"."+strings.ToUpper(k)] = v
+			qualKey := outerType + "." + strings.ToUpper(k)
+			if _, exists := outerMap[qualKey]; !exists {
+				merged[qualKey] = v
+			}
 		}
 	}
 	for k, v := range innerMap {
@@ -1635,7 +1657,7 @@ func dfsVisit(
 	depth, maxDepth int,
 ) error {
 	if depth >= maxDepth {
-		return fmt.Errorf("recursive CTE exceeded maximum depth of %d", maxDepth)
+		return &RecursiveCTEDepthExceededError{MaxDepth: maxDepth}
 	}
 
 	if preorder {
