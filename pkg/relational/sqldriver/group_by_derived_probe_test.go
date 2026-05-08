@@ -272,4 +272,43 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 			{1, 1, 101}, {1, 2, 102}, {2, 1, 201}, {2, 2, 202},
 		}))
 	})
+
+	// Cross-join with derived table: t.id must resolve to the outer
+	// table's id, not the derived table's (which shares the same
+	// underlying record type).
+	t.Run("cross_join_derived_qualified_column", func(t *testing.T) {
+		setupCJ := openTestDB(t, "/testdb_cjderived")
+		g.Expect(setupCJ.ExecContext(ctx, "CREATE DATABASE /testdb_cjderived")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setupCJ.ExecContext(ctx,
+			"CREATE SCHEMA TEMPLATE cjderived_tmpl "+
+				"CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+		g.Expect(setupCJ.ExecContext(ctx,
+			"CREATE SCHEMA /testdb_cjderived/s WITH TEMPLATE cjderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+		dsnCJ := fmt.Sprintf("fdbsql:///testdb_cjderived?cluster_file=%s&schema=s", clusterFilePath)
+		dbCJ, openErr := sql.Open("fdbsql", dsnCJ)
+		g.Expect(openErr).NotTo(gomega.HaveOccurred())
+		defer dbCJ.Close()
+
+		g.Expect(dbCJ.ExecContext(ctx,
+			"INSERT INTO t VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50)")).Error().NotTo(gomega.HaveOccurred())
+
+		// SELECT t.id FROM t, (SELECT id FROM t WHERE id <= 2) AS x ORDER BY t.id
+		// Outer table t has 5 rows, derived table x has 2 rows.
+		// Cross product: 10 rows, t.id cycling through all 5 values twice.
+		rows, err := dbCJ.QueryContext(ctx,
+			"SELECT t.id FROM t, (SELECT id FROM t WHERE id <= 2) AS x ORDER BY t.id")
+		if err != nil {
+			t.Fatalf("query error: %v", err)
+		}
+		defer rows.Close()
+		var results []int64
+		for rows.Next() {
+			var v int64
+			g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+			results = append(results, v)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		g.Expect(results).To(gomega.Equal([]int64{1, 1, 2, 2, 3, 3, 4, 4, 5, 5}))
+	})
 }

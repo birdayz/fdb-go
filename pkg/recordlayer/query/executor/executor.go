@@ -988,7 +988,10 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 			merged[innerQual+"."+strings.ToUpper(k)] = v
 		}
 		if innerAlias != "" && innerType != "" && innerAlias != innerType {
-			merged[innerType+"."+strings.ToUpper(k)] = v
+			qualKey := innerType + "." + strings.ToUpper(k)
+			if _, exists := merged[qualKey]; !exists {
+				merged[qualKey] = v
+			}
 		}
 	}
 	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
