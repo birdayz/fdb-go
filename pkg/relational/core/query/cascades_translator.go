@@ -331,6 +331,12 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if a.Having != "" && a.HavingPredicate == nil {
 		return nil
 	}
+	for _, ssq := range a.HavingScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
 	innerRef := t.translateRef(a.Input)
 	if innerRef == nil {
 		return nil

@@ -232,6 +232,7 @@ type LogicalAggregate struct {
 	Having                 string         // canonical HAVING predicate, "" when absent
 	HavingPredicate        predicates.QueryPredicate
 	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING
+	HavingScalarSubqueries []ScalarSubquery // scalar subquery plans inside HAVING
 }
 
 func NewAggregate(input LogicalOperator, groupKeys, aggs, aliases []string, having string) *LogicalAggregate {

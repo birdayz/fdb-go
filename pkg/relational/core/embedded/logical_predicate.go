@@ -1583,6 +1583,10 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		agg.HavingExistsSubqueries = subqPlanner.subqueries
 		subqPlanner.subqueries = nil
 	}
+	if subqPlanner != nil && len(subqPlanner.scalarSubqueries) > 0 {
+		agg.HavingScalarSubqueries = subqPlanner.scalarSubqueries
+		subqPlanner.scalarSubqueries = nil
+	}
 }
 
 func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.QueryPredicate {

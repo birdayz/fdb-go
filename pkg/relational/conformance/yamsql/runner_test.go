@@ -59,7 +59,7 @@ func TestMain(m *testing.M) {
 func TestYamsqlConformance(t *testing.T) {
 	t.Parallel()
 	if os.Getenv("YAMSQL_RUN_FAILING") == "" {
-		t.Skip("conformance: ~11/98 fail — ~87/98 pass (88.8%)")
+		t.Skip("conformance: ~10/98 fail — ~88/98 pass (89.8%)")
 	}
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
