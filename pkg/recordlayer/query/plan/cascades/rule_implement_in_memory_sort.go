@@ -52,6 +52,11 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	// Top-down: push ordering constraint to inner reference so
+	// downstream rules (index scans) can satisfy it.
+	requestedOrdering := sortExpressionToRequestedOrdering(s)
+	call.PushConstraint(innerRef, []*RequestedOrdering{requestedOrdering})
+
 	innerPlan := findPhysicalPlan(innerRef)
 	if innerPlan == nil {
 		return

@@ -38,6 +38,10 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	// Top-down: push ordering constraint to inner reference so
+	// downstream rules (index scans) can satisfy it.
+	call.PushConstraint(innerRef, []*RequestedOrdering{requestedOrdering})
+
 	if requestedOrdering.IsPreserve() {
 		for _, m := range innerRef.FinalMembers() {
 			call.YieldFinalExpression(m)
