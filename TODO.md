@@ -8,21 +8,17 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ## Java-alignment refactors (structural divergences that cause cascading bugs)
 
-### 1. Merge buildLogicalPlanForSelect / buildOuterPlanOnDerived
+### 1. ~~Merge buildLogicalPlanForSelect / buildOuterPlanOnDerived~~ — **done (swingshift-81)**
 
-- [ ] These are ~200 lines of near-identical aggregate/sort/projection logic. Every fix requires touching both. Java has ONE `generateSelect` that works for both derived and non-derived — the derived table's inner plan is just another input to the same visitor. Merge into one function, parameterised on the inner plan source. Eliminates the "fixed in one but not the other" bug class.
+Merged into `buildSelectShell(op, sq, stripPrefix)`. buildOuterPlanOnDerived is now 6 lines.
 
-**Files:** `pkg/relational/core/embedded/logical_builder.go` (`buildLogicalPlanForSelect`), `pkg/relational/core/embedded/logical_predicate.go` (`buildOuterPlanOnDerived`).
+### 2. ~~Eliminate sortOnly/hidden aggSelectCol flags~~ — **done (swingshift-81)**
 
-### 2. Eliminate sortOnly/hidden aggSelectCol flags
-
-- [ ] Java doesn't have `sortOnly` or `hidden`. It carries ORDER BY as `RequestedOrdering` on the `SelectExpression` — the planner satisfies ordering, no extra columns ever appear in the output. Go materializes ORDER BY aggregates as extra columns, sorts, then strips via `postSortStripProj`. The `sortOnly`/`hidden` flags on `aggSelectCol` are complexity that Java doesn't have. Port Java's `RequestedOrdering` integration with `generateSelect` and `OrderByExpression.pullUp`.
-
-**Files:** `pkg/relational/core/embedded/select_parser.go` (aggSelectCol, harvest logic), `pkg/relational/core/embedded/logical_builder.go` (postSortStripProj), `pkg/relational/core/embedded/logical_predicate.go` (same in derived variant).
+Replaced `sortOnly bool` + `hidden bool` with `visible bool`. Deleted `__orderby_aggexpr_N__` sentinels. ORDER BY aggregate expressions resolve through the Value-based sort path. See RFC-002 for the full RequestedOrdering port plan (Phases 3-4-6 are optimization, not correctness — push ordering constraints through operators for sort elimination via index ordering).
 
 ### 3. Eliminate two-phase selectQuery → buildLogicalPlan split
 
-- [ ] Java's `QueryVisitor` builds logical operators incrementally as it visits ANTLR nodes — no intermediate struct. Go parses everything into `selectQuery` (a bag of ~30 fields), then a separate function interprets it. The stale `sq.projCols` bug (fixed in swingshift-81) exists because of this split. Every field on `selectQuery` is a potential stale-state bug. Port Java's incremental visitor pattern: walk ANTLR, emit LogicalOperator nodes as you go. Largest refactor of the three — gates on #1 and #2 being done first.
+- [ ] Java's `QueryVisitor` builds logical operators incrementally as it visits ANTLR nodes — no intermediate struct. Go parses everything into `selectQuery` (a bag of ~30 fields), then a separate function interprets it. The stale `sq.projCols` bug (fixed in swingshift-81) exists because of this split. Every field on `selectQuery` is a potential stale-state bug. Port Java's incremental visitor pattern: walk ANTLR, emit LogicalOperator nodes as you go. Largest refactor — gates on the Cascades planner being feature-complete enough to handle all query shapes.
 
 **Files:** `pkg/relational/core/embedded/select_parser.go` (selectQuery struct + extractFromSimpleTable), `pkg/relational/core/embedded/logical_builder.go`, `pkg/relational/core/embedded/logical_predicate.go`.
 
