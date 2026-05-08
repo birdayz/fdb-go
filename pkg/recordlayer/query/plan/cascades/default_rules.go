@@ -72,6 +72,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSortConstantKeysElimRule(),
 		NewPullFilterAboveSortRule(),
 		NewUnsortedSortElimRule(),
+		NewPushOrderingThroughGroupByRule(),
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
 		NewInComparisonToExplodeRule(),
