@@ -72,6 +72,16 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		g.Expect(results).To(gomega.Equal([]int64{20, 40}))
 	})
 
+	// derived_table_group_by test 5 (index 4): x.col1 + x.col2 where col2 is
+	// NOT in GROUP BY must error 42803. Java rejects this because col2 is
+	// neither grouped nor aggregated.
+	t.Run("derived_col1_plus_col2_ungrouped_42803", func(t *testing.T) {
+		_, err := db.QueryContext(ctx,
+			"SELECT x.col1 + x.col2 FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1")
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("42803"))
+	})
+
 	// derived_table_group_by test 7: nested aggregate in derived + outer filter
 	t.Run("nested_derived_agg_plus_literal", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx,

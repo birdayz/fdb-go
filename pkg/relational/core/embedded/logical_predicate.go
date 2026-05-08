@@ -1816,7 +1816,21 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 
 	if len(sq.aggCols) > 0 {
 		for _, ac := range sq.aggCols {
-			if ac.aggFunc != "" || !ac.visible || ac.outExpr != nil {
+			if ac.aggFunc != "" || !ac.visible {
+				continue
+			}
+			if ac.outExpr != nil {
+				// Expression entry (e.g. `x.col1 + x.col2`). Walk the
+				// expression tree for column references outside of
+				// aggregate calls and verify each is in GROUP BY.
+				// Expressions that are purely constant or only reference
+				// aggregate results are fine.
+				refs := harvestColumnRefs(ac.outExpr)
+				for _, ref := range refs {
+					if err := checkColumn(ref); err != nil {
+						return err
+					}
+				}
 				continue
 			}
 			col := ac.groupCol
