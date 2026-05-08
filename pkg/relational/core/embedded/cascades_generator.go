@@ -588,9 +588,31 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	if outerCols == nil && innerCols == nil {
 		return nil
 	}
+	// When outer and inner share column names (e.g. SELECT * FROM a, b
+	// where both have "id"), the merged row map's bare keys hold the
+	// inner side's values (last-write-wins in mergeRows). To read the
+	// correct values for each side, qualify bare column names with the
+	// join alias so the ResultSet reads "A.ID" / "B.ID" from the map
+	// instead of both hitting the bare "ID" key. Already-qualified
+	// columns (from a nested NLJ) are left as-is to avoid double-
+	// qualification like "B.A.ID".
+	outerAlias := strings.ToUpper(nlj.GetOuterAlias())
+	innerAlias := strings.ToUpper(nlj.GetInnerAlias())
 	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
-	cols = append(cols, outerCols...)
-	cols = append(cols, innerCols...)
+	for _, c := range outerCols {
+		qual := c
+		if outerAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = outerAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
+	for _, c := range innerCols {
+		qual := c
+		if innerAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = innerAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
 	return cols
 }
 

@@ -23,6 +23,7 @@ go_library(
 go_test(
     name = "sqldriver_test",
     srcs = [
+        "ambiguous_column_star_test.go",
         "cascades_fdb_test.go",
         "driver_test.go",
         "embedded_fdb_errors_test.go",

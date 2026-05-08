@@ -1360,9 +1360,23 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 	if err := check(cls.projQualifier); err != nil {
 		return err
 	}
+	// Detect duplicate qualifier-star references. `SELECT a.*, a.* FROM a`
+	// would expand to duplicate columns (id, name, id, name). Java errors
+	// 42702 at the outer SELECT referencing the ambiguous column; Go
+	// surfaces 22023 here because expanding the same source twice produces
+	// a column list the downstream materialiser/executor can't disambiguate.
+	starSeen := make(map[string]bool, len(cls.projStarQualifiers))
 	for _, q := range cls.projStarQualifiers {
 		if err := check(q); err != nil {
 			return err
+		}
+		if q != "" {
+			up := strings.ToUpper(q)
+			if starSeen[up] {
+				return api.NewErrorf(api.ErrCodeInvalidParameter,
+					"qualifier %q expanded more than once in SELECT list — duplicate columns", q)
+			}
+			starSeen[up] = true
 		}
 	}
 	return nil
