@@ -259,9 +259,18 @@ func buildDerivedTableSource(
 		return semantic.ScopeSource{}, false
 	}
 
-	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
+	projCols := innerSQ.projCols
+	if projCols == nil {
+		// SELECT * — use all columns from the inner table in schema order.
+		allCols := innerTbl.Columns()
+		projCols = make([]string, len(allCols))
+		for i, c := range allCols {
+			projCols[i] = c.Id.Name()
+		}
+	}
+	columns := make([]semantic.Column, 0, len(projCols))
 	var colAliasMap map[string]string
-	for i, col := range innerSQ.projCols {
+	for i, col := range projCols {
 		bareName := col
 		if dot := strings.LastIndex(col, "."); dot >= 0 {
 			bareName = col[dot+1:]
