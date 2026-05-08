@@ -161,26 +161,40 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 
 	// Build the FROM-source subtree. Either a plain table scan or a
 	// derived table (subquery in FROM). For derived tables we
-	// recursively build the inner logical plan and wrap it in a
-	// LogicalScan stand-in carrying the alias as the "table name" —
-	// there's no dedicated LogicalDerived operator in the seed, so
-	// the inner plan surfaces as-is with the alias lost at the
-	// logical level. (A follow-up can add LogicalSubquery if rules
-	// need to distinguish.)
+	// recursively build the inner logical plan and wrap it as a CTE
+	// so that the user-supplied alias (e.g. "sq1") is preserved in
+	// the logical tree. The CTE wrapper ensures that sourceAlias
+	// (used by the NLJ rule to set outerAlias/innerAlias on the
+	// physical plan) returns the derived-table alias rather than the
+	// underlying table name. Without this, column qualification in
+	// mergeRows uses the wrong qualifier and projections like
+	// "sq1.x" resolve to NULL.
 	var op logical.LogicalOperator
 	if sq.derivedQuery != nil {
+		var innerOp logical.LogicalOperator
 		body := sq.derivedQuery.QueryExpressionBody()
 		if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
 			if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
 				if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-					op = buildLogicalPlanForSelect(inner)
+					innerOp = buildLogicalPlanForSelect(inner)
 				}
 			}
 		}
-		if op == nil {
+		if innerOp == nil {
 			// Derived query is out of the inner builder's scope — bail
 			// rather than emit a misleading partial tree.
 			return nil
+		}
+		// Wrap as CTE so the alias surfaces in the logical tree.
+		// When there are no joins the outer operators (filter, sort,
+		// project) can reference the inner plan directly — the CTE
+		// wrapper would add an unnecessary indirection and change
+		// datum key layout. Only wrap when joins are present.
+		if len(sq.joins) > 0 {
+			op = logical.NewCTE(sq.tableName, innerOp,
+				logical.NewScan(sq.tableName, ""), false)
+		} else {
+			op = innerOp
 		}
 	} else {
 		op = logical.NewScan(sq.tableName, sq.tableAlias)
@@ -193,18 +207,34 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	for _, j := range sq.joins {
 		var right logical.LogicalOperator
 		if j.catalogAwareInnerPlan != nil {
-			right = j.catalogAwareInnerPlan
+			// catalogAwareInnerPlan is the inner plan built through the
+			// catalog-aware path. Wrap it in a CTE so the join alias
+			// is preserved (same logic as the primary source above).
+			if j.alias != "" {
+				right = logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
+					logical.NewScan(j.alias, ""), false)
+			} else {
+				right = j.catalogAwareInnerPlan
+			}
 		} else if j.derivedQuery != nil {
+			var innerRight logical.LogicalOperator
 			body := j.derivedQuery.QueryExpressionBody()
 			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
 				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
 					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-						right = buildLogicalPlanForSelect(inner)
+						innerRight = buildLogicalPlanForSelect(inner)
 					}
 				}
 			}
-			if right == nil {
+			if innerRight == nil {
 				return nil
+			}
+			// Wrap as CTE so the alias surfaces in sourceAlias.
+			if j.alias != "" {
+				right = logical.NewCTE(j.alias, innerRight,
+					logical.NewScan(j.alias, ""), false)
+			} else {
+				right = innerRight
 			}
 		} else {
 			right = logical.NewScan(j.tableName, j.alias)

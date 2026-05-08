@@ -508,6 +508,13 @@ func sourceAlias(op logical.LogicalOperator) string {
 			return strings.ToUpper(o.Table)
 		case *logical.LogicalJoin:
 			return sourceAlias(o.Right)
+		case *logical.LogicalCTE:
+			// CTE-wrapped derived tables: the CTE name IS the
+			// derived-table alias. Return it directly so the NLJ
+			// executor qualifies merged-row keys under the alias
+			// the user specified (e.g. "sq1"), not the underlying
+			// table name buried inside the CTE body.
+			return strings.ToUpper(o.Name)
 		default:
 			ch := cur.Children()
 			if len(ch) == 1 {

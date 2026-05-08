@@ -3018,3 +3018,93 @@ func TestFromStoredRecord(t *testing.T) {
 		t.Error("Record pointer mismatch")
 	}
 }
+
+// TestMergeRows_ChainedJoin verifies that mergeRows does not clobber
+// already-qualified keys when the outer row is itself a merged NLJ
+// result. Regression test for the join_chained conformance failure
+// where the third row of a 3-way join returned dept.name instead of
+// emp.name in the first projection column.
+func TestMergeRows_ChainedJoin(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the output of the first NLJ: emp(3, Carol, 10) JOIN dept(10, Engineering).
+	// The inner (dept) overwrites bare keys ("ID", "NAME") because it runs second.
+	firstNLJ := QueryResult{
+		Datum: map[string]any{
+			"ID":          int64(10),     // dept's ID (overwrote emp's)
+			"NAME":        "Engineering", // dept's NAME (overwrote emp's)
+			"DEPT_ID":     int64(10),
+			"EMP.ID":      int64(3), // emp's qualified key
+			"EMP.NAME":    "Carol",  // emp's qualified key
+			"EMP.DEPT_ID": int64(10),
+			"DEPT.ID":     int64(10),
+			"DEPT.NAME":   "Engineering",
+		},
+	}
+	project := QueryResult{
+		Datum: map[string]any{
+			"ID":     int64(102),
+			"EMP_ID": int64(3),
+		},
+	}
+
+	// The second NLJ merges firstNLJ (outer, alias="DEPT") with project (inner, alias="PROJECT").
+	merged := mergeRows(firstNLJ, project, "DEPT", "PROJECT")
+	m, ok := merged.Datum.(map[string]any)
+	if !ok {
+		t.Fatalf("merged.Datum type = %T, want map[string]any", merged.Datum)
+	}
+
+	// The critical check: EMP.NAME must still be "Carol", not "Engineering".
+	// Before the fix, re-qualifying the bare key "NAME" (= "Engineering") under
+	// outerType "EMP" overwrote the correct "EMP.NAME" = "Carol".
+	if v := m["EMP.NAME"]; v != "Carol" {
+		t.Errorf("EMP.NAME = %v, want Carol", v)
+	}
+	if v := m["DEPT.NAME"]; v != "Engineering" {
+		t.Errorf("DEPT.NAME = %v, want Engineering", v)
+	}
+	if v := m["EMP.ID"]; v != int64(3) {
+		t.Errorf("EMP.ID = %v, want 3", v)
+	}
+	if v := m["PROJECT.ID"]; v != int64(102) {
+		t.Errorf("PROJECT.ID = %v, want 102", v)
+	}
+	if v := m["PROJECT.EMP_ID"]; v != int64(3) {
+		t.Errorf("PROJECT.EMP_ID = %v, want 3", v)
+	}
+}
+
+// TestMergeRows_DerivedTableAlias verifies that mergeRows correctly
+// qualifies keys under the derived table alias (e.g. "SQ1") rather
+// than the underlying table name.
+func TestMergeRows_DerivedTableAlias(t *testing.T) {
+	t.Parallel()
+
+	// Derived table output: (SELECT ida AS x FROM a) AS sq1
+	// executeProjection produces {IDA: 1, X: 1}
+	outer := QueryResult{
+		Datum: map[string]any{
+			"IDA": int64(1),
+			"X":   int64(1),
+		},
+	}
+	inner := QueryResult{
+		Datum: map[string]any{
+			"IDB": int64(4),
+		},
+	}
+
+	merged := mergeRows(outer, inner, "SQ1", "B")
+	m, ok := merged.Datum.(map[string]any)
+	if !ok {
+		t.Fatalf("merged.Datum type = %T, want map[string]any", merged.Datum)
+	}
+
+	if v := m["SQ1.X"]; v != int64(1) {
+		t.Errorf("SQ1.X = %v, want 1", v)
+	}
+	if v := m["B.IDB"]; v != int64(4) {
+		t.Errorf("B.IDB = %v, want 4", v)
+	}
+}
