@@ -595,6 +595,11 @@ func executeUnion(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
+	var md *recordlayer.RecordMetaData
+	if store != nil {
+		md = store.GetRecordMetaData()
+	}
+
 	var all []QueryResult
 	var firstBranchKeys []string
 	for branchIdx, inner := range inners {
@@ -607,7 +612,7 @@ func executeUnion(
 			return nil, err
 		}
 		if branchIdx == 0 {
-			firstBranchKeys = planColumnNames(inner)
+			firstBranchKeys = planColumnNamesWithMD(inner, md)
 			if firstBranchKeys == nil && len(items) > 0 {
 				if m, ok := items[0].Datum.(map[string]any); ok {
 					firstBranchKeys = mapKeysOrdered(m)
@@ -615,7 +620,7 @@ func executeUnion(
 			}
 		}
 		if branchIdx > 0 && len(firstBranchKeys) > 0 {
-			srcKeys := planColumnNames(inner)
+			srcKeys := planColumnNamesWithMD(inner, md)
 			if srcKeys == nil && len(items) > 0 {
 				if m, ok := items[0].Datum.(map[string]any); ok {
 					srcKeys = mapKeysOrdered(m)
@@ -642,6 +647,10 @@ func mapKeysOrdered(m map[string]any) []string {
 }
 
 func planColumnNames(p plans.RecordQueryPlan) []string {
+	return planColumnNamesWithMD(p, nil)
+}
+
+func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
 	for {
 		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
 			projs := proj.GetProjections()
@@ -659,9 +668,30 @@ func planColumnNames(p plans.RecordQueryPlan) []string {
 		if ip, ok := p.(innerPlanAccessor); ok {
 			p = ip.GetInner()
 		} else {
-			return nil
+			break
 		}
 	}
+	if rt, ok := p.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
+		names := make([]string, len(rt.Fields))
+		for i, f := range rt.Fields {
+			names[i] = strings.ToUpper(f.Name)
+		}
+		return names
+	}
+	if md != nil {
+		if scan, ok := p.(*plans.RecordQueryScanPlan); ok && len(scan.GetRecordTypes()) == 1 {
+			rt := md.GetRecordType(scan.GetRecordTypes()[0])
+			if rt != nil && rt.Descriptor != nil {
+				fields := rt.Descriptor.Fields()
+				names := make([]string, fields.Len())
+				for i := 0; i < fields.Len(); i++ {
+					names[i] = strings.ToUpper(string(fields.Get(i).Name()))
+				}
+				return names
+			}
+		}
+	}
+	return nil
 }
 
 func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
