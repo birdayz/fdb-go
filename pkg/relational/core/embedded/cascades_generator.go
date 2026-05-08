@@ -314,6 +314,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			if errors.As(execErr, &depthExceeded) {
 				return nil, api.NewError(api.ErrCodeExecutionLimitReached, depthExceeded.Error())
 			}
+			var aggTypeMismatch *executor.AggregateTypeMismatchError
+			if errors.As(execErr, &aggTypeMismatch) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
+			}
 			return nil, execErr
 		}
 
@@ -323,6 +327,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return nil, nil
 	})
 	if txErr != nil {
+		var aggTypeMismatch *executor.AggregateTypeMismatchError
+		if errors.As(txErr, &aggTypeMismatch) {
+			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
+		}
 		if strings.Contains(txErr.Error(), "cannot aggregate non-numeric") {
 			return query.Result{}, api.NewError(api.ErrCodeInvalidParameter, txErr.Error())
 		}

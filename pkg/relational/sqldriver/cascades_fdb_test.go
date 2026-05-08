@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -1816,6 +1817,63 @@ func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 		t.Fatalf("expected [2 3], got %v", ids)
 	}
 	t.Logf("Cascades scalar subquery in WHERE → %v ✓", ids)
+}
+
+// TestFDB_CascadesMinMaxStringRejected verifies that MIN/MAX over a
+// STRING column returns error 0A000 (unsupported operation), matching
+// Java's fdb-relational which only installs numeric MIN/MAX overloads.
+func TestFDB_CascadesMinMaxStringRejected(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// MIN(name) where name is STRING — must fail with 0A000.
+	_, err := cascadesDB.QueryContext(ctx, "SELECT MIN(name) FROM Item")
+	if err == nil {
+		t.Fatal("expected error for MIN(name) on STRING column, got nil")
+	}
+	if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "type mismatch") {
+		t.Fatalf("expected 0A000 / type mismatch error, got: %v", err)
+	}
+	t.Logf("MIN(name) correctly rejected: %v", err)
+
+	// MAX(name) where name is STRING — must also fail.
+	_, err = cascadesDB.QueryContext(ctx, "SELECT MAX(name) FROM Item")
+	if err == nil {
+		t.Fatal("expected error for MAX(name) on STRING column, got nil")
+	}
+	if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "type mismatch") {
+		t.Fatalf("expected 0A000 / type mismatch error, got: %v", err)
+	}
+	t.Logf("MAX(name) correctly rejected: %v", err)
+
+	// MIN(price) where price is BIGINT — must still succeed.
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT MIN(price) FROM Item")
+	if err != nil {
+		t.Fatalf("MIN(price) on BIGINT should succeed: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("expected 1 row from MIN(price)")
+	}
+	var minPrice int64
+	if err := rows.Scan(&minPrice); err != nil {
+		t.Fatalf("scan MIN(price): %v", err)
+	}
+	if minPrice != 50 {
+		t.Fatalf("expected MIN(price) = 50, got %d", minPrice)
+	}
+	t.Logf("MIN(price) on BIGINT → %d (correct)", minPrice)
+
+	// Scalar subquery wrapping: SELECT (SELECT MIN(name) FROM Item)
+	_, err = cascadesDB.QueryContext(ctx, "SELECT (SELECT MIN(name) FROM Item) FROM Item WHERE item_id = 1")
+	if err == nil {
+		t.Fatal("expected error for scalar subquery MIN(name) on STRING, got nil")
+	}
+	if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "type mismatch") {
+		t.Fatalf("expected 0A000 / type mismatch for scalar subquery, got: %v", err)
+	}
+	t.Logf("Scalar subquery MIN(name) correctly rejected: %v", err)
 }
 
 func countRows(t *testing.T, rows *sql.Rows) int {

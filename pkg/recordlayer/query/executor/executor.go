@@ -37,6 +37,19 @@ func (e *RecursiveCTEDepthExceededError) Error() string {
 	return fmt.Sprintf("recursive CTE exceeded maximum depth of %d", e.MaxDepth)
 }
 
+// AggregateTypeMismatchError is returned when MIN or MAX is applied to
+// a non-numeric column. Java's fdb-relational rejects this with
+// "VerifyException: unable to encapsulate aggregate operation due to
+// type mismatch(es)" — the function registry only installs numeric
+// MIN/MAX overloads.
+type AggregateTypeMismatchError struct {
+	Message string
+}
+
+func (e *AggregateTypeMismatchError) Error() string {
+	return e.Message
+}
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -1123,6 +1136,11 @@ func executeAggregation(
 				gs.allInt[i] = false
 			}
 
+			if !isNumeric(val) {
+				return nil, &AggregateTypeMismatchError{
+					Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
+				}
+			}
 			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
 				gs.mins[i] = val
 			}
