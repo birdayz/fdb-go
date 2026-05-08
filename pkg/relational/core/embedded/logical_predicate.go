@@ -870,6 +870,16 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		proj := findProjection(op)
 		for i, col := range sq.projCols {
 			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				if proj != nil {
+					if v, walkErr := resolver.WalkExpression(sq.projExprs[i]); walkErr == nil && v != nil {
+						if proj.ProjectedValues == nil {
+							proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+						}
+						if i < len(proj.ProjectedValues) {
+							proj.ProjectedValues[i] = v
+						}
+					}
+				}
 				continue
 			}
 			if err := resolveColumnName(resolver, col); err != nil {
