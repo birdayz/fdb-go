@@ -16,9 +16,9 @@ Comprehensive audit of all known divergences between Go's Cascades implementatio
 
 **Consequence:** In Go, simple sort eliminations happen during exploration (before physical plans exist), so `ImplementSortRule`'s strictlySorted path never fires for simple cases. In Java, strictlySorted is always set when applicable because RemoveSortRule is the sole sort handler.
 
-**Fix:** Remove `SortOverOrderedElimRule` from `BatchAExpressionRules()`. Sort elimination should happen exclusively in `ImplementSortRule` (PLANNING phase), matching Java 1:1.
+**Fix:** ~~Remove `SortOverOrderedElimRule` from `BatchAExpressionRules()`.~~ **DONE (dayshift-82).** Sort elimination now happens exclusively in `ImplementSortRule` (PLANNING phase), matching Java 1:1. All sort tests converted from `Explore()` to `Plan()` with `WithImplementationRules`.
 
-**Effort:** ~0.5 shift. Remove rule, update tests. Low risk — `ImplementSortRule` already handles the same cases.
+**Effort:** 0.5 shift (completed).
 
 **Files:**
 - `pkg/recordlayer/query/plan/cascades/rule_sort_over_ordered_elim.go` (Go-only exploration rule)
