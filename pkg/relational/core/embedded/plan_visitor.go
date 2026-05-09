@@ -505,6 +505,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"column reference %q is ambiguous", ob.colName)
 					}
+					var srcNotFound *semantic.SourceNotFoundError
+					if errors.As(walkErr, &srcNotFound) {
+						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+							"Unknown reference %s", srcNotFound.Alias.Name())
+					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
 						if projAliasSet[strings.ToUpper(ob.colName)] {
@@ -645,8 +650,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			}
 			var srcNotFound *semantic.SourceNotFoundError
 			if errors.As(walkErr, &srcNotFound) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"no FROM source aliased as %s", srcNotFound.Alias.Name())
+				return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+					"Unknown reference %s", srcNotFound.Alias.Name())
 			}
 			var inColRef *expr.InColumnRefError
 			if errors.As(walkErr, &inColRef) {

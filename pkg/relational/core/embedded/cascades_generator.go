@@ -935,6 +935,15 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 					}
 					upper := strings.ToUpper(col)
 					if dot := strings.IndexByte(upper, '.'); dot >= 0 {
+						qual := upper[:dot]
+						scanName := strings.ToUpper(scan.Table)
+						if scan.Alias != "" {
+							scanName = strings.ToUpper(scan.Alias)
+						}
+						if qual != scanName {
+							return api.NewErrorf(api.ErrCodeUndefinedTable,
+								"Unknown reference %s", qual)
+						}
 						upper = upper[dot+1:]
 					}
 					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
