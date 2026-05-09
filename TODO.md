@@ -38,7 +38,7 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 
 | ID | Divergence | Go approach | Java approach | Criticality | Effort |
 |---|---|---|---|---|---|
-| **D-2** | PushOrdering rules | ExpressionRules (EXPLORE): structural rewrites | ImplementationRules (PLANNING): constraint-push | LOW — same results, Go's memo larger | 2-3 shifts |
+| ~~**D-2**~~ | ~~PushOrdering rules~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~DONE~~ | ~~done~~ |
 | **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Postgres-inspired: multi-dim, memoized | NONE — intentional (RFC-024) | N/A |
 | **D-5** | InComparison architecture | Union of filter legs per IN-element | SelectExpression + ExplodeExpression | LOW — same results, less elegant | 2-3 shifts |
 | ~~**D-7**~~ | ~~Multi-aggregate matching~~ | ~~Multi-aggregate via index intersection~~ | ~~Multi-aggregate via index intersection~~ | ~~DONE~~ | ~~done~~ |

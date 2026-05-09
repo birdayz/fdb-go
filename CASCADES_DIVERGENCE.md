@@ -40,17 +40,11 @@ Ported Java's `CardinalitiesProperty` 1:1. Go now has `Cardinality` (single boun
 
 ## OPEN ARCHITECTURAL DIVERGENCES
 
-### D-2: PushOrdering rules — structural rewrite vs constraint propagation
+### ~~D-2: PushOrdering rules — constraint propagation~~ — DONE (nightshift-84)
 
-**Java:** `PushRequestedOrdering*` rules extend `CascadesRule` and implement `PreOrderRule`. They run during the PLANNING phase in pre-order (top-down). They push ordering CONSTRAINTS to child References via the constraint map — no structural tree changes.
+All 10 `PushOrderingThrough*` rules converted from EXPLORE-phase structural rewrites (ExpressionRules that physically moved Sort nodes) to PLANNING-phase constraint propagation (ImplementationRules that push `RequestedOrdering` constraints top-down via `ConstraintMap`). Matching Java's `PushRequestedOrdering*` architecture 1:1.
 
-**Go:** `PushOrderingThrough*` rules are ExpressionRules that fire during EXPLORE phase. They perform STRUCTURAL REWRITES — physically moving Sort nodes below Filter/GroupBy/Distinct/Union/etc, creating new expression tree variants in the memo.
-
-**Consequence:** Go's memo contains structural variants (Sort-below-Filter as alternative to Sort-above-Filter). Java's memo doesn't — Sort stays in place, constraints propagate. Both produce correct results but Go's memo is larger and the optimization path is different.
-
-**Fix:** Convert all 10 `PushOrderingThrough*` rules from ExpressionRule (structural rewrite) to ImplementationRule (constraint push).
-
-**Effort:** ~2-3 shifts. Major architectural change touching 10 rules + all dependent tests.
+Transparent rules (Sort, Distinct, Unique, Delete, Filter, Insert, Update, TempTableInsert): pass ordering constraints through unchanged. Complex rules (Projection, GroupBy, Union): translate/synthesize orderings. Expression partition fix ensures ordered and unordered plans get separate partitions for sort elimination.
 
 ---
 
