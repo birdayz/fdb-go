@@ -248,6 +248,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		insertArityScenario(),
 		insertValuesExprScenario(),
 		dmlReturningProbesScenario(),
+		dmlWithNullSafeScenario(),
+		scalarSubqueryAdvancedScenario(),
 	}
 }
 
@@ -4264,6 +4266,77 @@ func dmlReturningProbesScenario() *yamsql.Scenario {
 			{Query: "SELECT n FROM t WHERE id = 2", Rows: [][]any{{99}}},
 			// INSERT ... RETURNING — parser rejects → 42601.
 			{Query: "INSERT INTO t VALUES (4, 40) RETURNING id, n", ErrorCode: "42601"},
+		},
+	}
+}
+
+// dmlWithNullSafeScenario mirrors testdata/dml_with_null_safe.yaml.
+// DML (UPDATE / DELETE) with IS NOT DISTINCT FROM in WHERE — the
+// null-safe equality. Stateful steps: DELETE then SELECT, INSERT then
+// UPDATE then SELECT. DML tests are auto-skipped; SELECT queries run
+// independently against the setup state. Drops NOT NULL on PK
+// (fdb-relational restriction; PK is implicitly NOT NULL).
+func dmlWithNullSafeScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "dml_with_null_safe",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, null), (3, 30), (4, null)",
+		},
+		Tests: []yamsql.Test{
+			// DELETE using IS NOT DISTINCT FROM null — delete NULL-valued rows.
+			{Query: "DELETE FROM t WHERE n IS NOT DISTINCT FROM null"},
+			{Query: "SELECT id, n FROM t ORDER BY id", Rows: [][]any{{1, 10}, {3, 30}}},
+			// Re-seed.
+			{Query: "INSERT INTO t VALUES (2, null), (4, null)"},
+			// UPDATE using IS NOT DISTINCT FROM null to fill NULL rows.
+			{Query: "UPDATE t SET n = 99 WHERE n IS NOT DISTINCT FROM null"},
+			{Query: "SELECT id, n FROM t ORDER BY id", Rows: [][]any{{1, 10}, {2, 99}, {3, 30}, {4, 99}}},
+			// DELETE using IS DISTINCT FROM — delete non-NULL rows.
+			{Query: "DELETE FROM t WHERE n IS DISTINCT FROM 99"},
+			{Query: "SELECT id, n FROM t ORDER BY id", Rows: [][]any{{2, 99}, {4, 99}}},
+		},
+	}
+}
+
+// scalarSubqueryAdvancedScenario mirrors testdata/scalar_subquery_advanced.yaml.
+// Edge-case probes for scalar subqueries in clauses beyond the SELECT
+// list: HAVING, ORDER BY, IS NULL, BETWEEN, nested subqueries, CTE
+// references, COALESCE wrapping, CASE branches. Some tests use GROUP BY
+// and ORDER BY expressions — included as-is to surface divergences.
+// Drops NOT NULL on PK (fdb-relational restriction; PK is implicitly
+// NOT NULL).
+func scalarSubqueryAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "scalar_subquery_advanced",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40), (5, 'c', null)",
+		},
+		Tests: []yamsql.Test{
+			// Subquery in HAVING — group SUM(v) compared to a global threshold.
+			// Threshold = MAX(v)/2 = 20. 'a' = 30 > 20; 'b' = 70 > 20; 'c' = NULL → drop.
+			{Query: "SELECT g, SUM(v) FROM t GROUP BY g HAVING SUM(v) > (SELECT MAX(v) / 2 FROM t) ORDER BY g", Rows: [][]any{{"a", 30}, {"b", 70}}},
+			// Subquery in ORDER BY expression — rejected. Java's Cascades
+			// planner has no rule satisfying ORDER BY arbitrary expression;
+			// same architectural reason in both engines.
+			{Query: "SELECT id FROM t WHERE v IS NOT NULL ORDER BY v - (SELECT MIN(v) FROM t)", ErrorCode: "0AF01"},
+			// Bare scalar subquery returning a string.
+			{Query: "SELECT (SELECT g FROM t WHERE id = 1) FROM t WHERE id = 1", Rows: [][]any{{"a"}}},
+			// Subquery in IS NULL predicate. Inner returns NULL for v=5.
+			{Query: "SELECT id FROM t WHERE id = 5 AND (SELECT v FROM t WHERE id = 5) IS NULL", Rows: [][]any{{5}}},
+			// Subquery in BETWEEN. v BETWEEN MIN(v) AND MAX(v) → all non-null rows.
+			{Query: "SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t) AND (SELECT MAX(v) FROM t) ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}}},
+			// Nested scalar subquery — outer subquery selects from inner subquery.
+			{Query: "SELECT (SELECT MAX(x) FROM (SELECT v AS x FROM t) AS s) FROM t WHERE id = 1", Rows: [][]any{{40}}},
+			// Subquery against a CTE.
+			{Query: "WITH high AS (SELECT v FROM t WHERE v > 25) SELECT id, (SELECT MIN(v) FROM high) FROM t WHERE id = 1", Rows: [][]any{{1, 30}}},
+			// Two subqueries in one expression — both pre-evaluate independently.
+			{Query: "SELECT (SELECT MAX(v) FROM t) - (SELECT MIN(v) FROM t) FROM t WHERE id = 1", Rows: [][]any{{30}}},
+			// Subquery wrapped in COALESCE — handles NULL from zero-row subquery.
+			{Query: "SELECT COALESCE((SELECT v FROM t WHERE id = 999), 0) FROM t WHERE id = 1", Rows: [][]any{{0}}},
+			// Subquery in CASE expression branch.
+			{Query: "SELECT CASE WHEN id = 1 THEN (SELECT MAX(v) FROM t) ELSE 0 END FROM t WHERE id = 1", Rows: [][]any{{40}}},
 		},
 	}
 }
