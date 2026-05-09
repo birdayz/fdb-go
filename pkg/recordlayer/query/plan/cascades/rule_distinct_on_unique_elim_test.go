@@ -257,3 +257,51 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 		}
 	}
 }
+
+// TestDistinctFinal_WrapsAllFinalMembers verifies the wrapping path
+// yields a DistinctWrapper for EVERY physical FinalMember, not just
+// the first. Regression test for the early-return bug.
+func TestDistinctFinal_WrapsAllFinalMembers(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"ITEMS"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	// Insert TWO physical FinalMembers to simulate multiple candidates.
+	scanRef.InsertFinal(makeFakePlanWrapper("ITEMS"))
+	fwd := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, false)
+	rev := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, true)
+	scanRef.InsertFinal(&physicalScanWrapper{plan: fwd})
+	scanRef.InsertFinal(&physicalScanWrapper{plan: rev})
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	// Project a non-PK column so elimination does NOT fire.
+	proj := expressions.NewLogicalProjectionExpression(
+		[]values.Value{
+			&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
+		},
+		scanQ,
+	)
+	projRef := expressions.InitialOf(proj)
+	// Copy FinalMembers to projRef so the rule has plans to wrap.
+	for _, m := range scanRef.FinalMembers() {
+		projRef.InsertFinal(m)
+	}
+	projQ := expressions.ForEachQuantifier(projRef)
+
+	distinct := expressions.NewLogicalDistinctExpression(projQ)
+	distinctRef := expressions.InitialOf(distinct)
+
+	// PK is "ID" but projection only has "NAME" → no elimination.
+	ctx := &pkPlanContext{pk: map[string][]string{"ITEMS": {"ID"}}}
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+
+	wrapCount := 0
+	for _, r := range results {
+		if _, ok := r.(*physicalDistinctWrapper); ok {
+			wrapCount++
+		}
+	}
+	if wrapCount < 2 {
+		t.Fatalf("expected at least 2 DistinctWrappers (one per FinalMember), got %d", wrapCount)
+	}
+}
