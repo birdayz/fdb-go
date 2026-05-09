@@ -242,6 +242,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		scalarSubqueryTypesScenario(),
 		inSubqueryDecompositionScenario(),
 		subqueryInScenario(),
+		updateDeleteScenario(),
+		updateCaseWhenScenario(),
+		updateSetExprScenario(),
 	}
 }
 
@@ -4034,6 +4037,129 @@ func subqueryInScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) ORDER BY id", Rows: [][]any{{1}, {3}}},
 			// Supported rewrite: comma-join with DISTINCT.
 			{Query: "SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id", Rows: [][]any{{2}}},
+		},
+	}
+}
+
+// updateDeleteScenario mirrors testdata/update_delete.yaml.
+// UPDATE and DELETE with NULL-aware predicates. The full YAML is a
+// multi-stage chain where each DML changes state for the next
+// verification SELECT. The harness auto-skips DML tests (non-query),
+// so the complete DML chain goes into Setup and only the final-state
+// SELECTs appear as runnable tests. Intermediate DML and SELECT tests
+// are included for coverage once the harness supports DML execution.
+// Drops NOT NULL on PK.
+func updateDeleteScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "update_delete",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, null), (3, 20), (4, null)",
+			// UPDATE WHERE v = NULL matches nothing (UNKNOWN for every row).
+			"UPDATE t SET v = 99 WHERE v = NULL",
+			// UPDATE WHERE v IS NULL matches NULL rows.
+			"UPDATE t SET v = 99 WHERE v IS NULL",
+			// DELETE WHERE v IS NOT NULL removes all non-null rows.
+			"DELETE FROM t WHERE v IS NOT NULL",
+			// Re-seed.
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, null)",
+			// DELETE with compound predicate.
+			"DELETE FROM t WHERE v < 15 OR v > 25",
+			// DELETE with no WHERE removes all.
+			"DELETE FROM t",
+			// Final insert + unconditional UPDATE.
+			"INSERT INTO t VALUES (1, 10), (2, 20)",
+			"UPDATE t SET v = 100",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped until harness extension).
+			{Query: "UPDATE t SET v = 99 WHERE v = NULL"},
+			{Query: "UPDATE t SET v = 99 WHERE v IS NULL"},
+			{Query: "DELETE FROM t WHERE v IS NOT NULL"},
+			{Query: "DELETE FROM t WHERE v < 15 OR v > 25"},
+			{Query: "DELETE FROM t"},
+			{Query: "UPDATE t SET v = 100"},
+			// Verification of final state after the complete chain:
+			// two rows both with v=100.
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{{1, 100}, {2, 100}}},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{2}}},
+		},
+	}
+}
+
+// updateCaseWhenScenario mirrors testdata/update_case_when.yaml.
+// UPDATE SET col = CASE ... END — verifies the UPDATE evaluator
+// handles arbitrary expressions including nested CASE in the SET
+// expression. The full YAML chain mutates state across rounds;
+// all DML goes into Setup and final-state SELECTs are runnable tests.
+// Intermediate DML tests and the error_code test are included for
+// coverage once the harness supports them. Drops NOT NULL on PK.
+func updateCaseWhenScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "update_case_when",
+		SchemaTemplate: "CREATE TABLE a (a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 100, 10), (2, 200, 20), (3, 300, 30)",
+			// CASE — single branch (no ELSE), unmatched rows get NULL.
+			"UPDATE a SET a2 = CASE WHEN a1 = 1 THEN 4444 END",
+			// Reset.
+			"UPDATE a SET a2 = a1 * 100",
+			// CASE handling NULL — a2 IS NULL check (none are null after reset).
+			"UPDATE a SET a2 = CASE WHEN a2 IS NULL THEN 8888 ELSE 2222 END",
+			// Nested CASE in UPDATE.
+			"UPDATE a SET a2 = CASE WHEN CASE WHEN a2 = 2222 THEN 8888 ELSE 2222 END > 4000 THEN 4444 ELSE 6666 END",
+			// Pure int-int CASE.
+			"UPDATE a SET a2 = CASE WHEN a2 = 4444 THEN 1 ELSE 2 END",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped until harness extension).
+			{Query: "UPDATE a SET a2 = CASE WHEN a1 = 1 THEN 4444 END"},
+			{Query: "UPDATE a SET a2 = a1 * 100"},
+			{Query: "UPDATE a SET a2 = CASE WHEN a2 IS NULL THEN 8888 ELSE 2222 END"},
+			{Query: "UPDATE a SET a2 = CASE WHEN CASE WHEN a2 = 2222 THEN 8888 ELSE 2222 END > 4000 THEN 4444 ELSE 6666 END"},
+			{Query: "UPDATE a SET a2 = CASE WHEN a2 = 4444 THEN 1 ELSE 2 END"},
+			// Verification of final state: all rows have a2=1.
+			{Query: "SELECT a1, a2 FROM a ORDER BY a1", Rows: [][]any{{1, 1}, {2, 1}, {3, 1}}},
+			// Mixed int/float CASE assigned to BIGINT column — Java errors
+			// 22000 (cannot_convert_type) because the CASE result type is
+			// DOUBLE and the assignment can't narrow back to BIGINT.
+			{Query: "UPDATE a SET a2 = CASE WHEN a1 = 99 THEN 1 ELSE 2.2 END", ErrorCode: "22000"},
+		},
+	}
+}
+
+// updateSetExprScenario mirrors testdata/update_set_expr.yaml.
+// UPDATE ... SET col = <expression> where the RHS references other
+// columns (arithmetic, CASE, function calls) and tests multiple
+// column assignments in a single SET. All DML goes into Setup;
+// final-state SELECTs are runnable tests. Intermediate DML tests
+// are included for coverage once the harness supports them.
+// Drops NOT NULL on PK.
+func updateSetExprScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "update_set_expr",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c')",
+			// Arithmetic in SET.
+			"UPDATE t SET v = v + 5 WHERE id = 1",
+			// CASE in SET.
+			"UPDATE t SET label = CASE WHEN v >= 20 THEN 'big' WHEN v IS NULL THEN 'unknown' ELSE 'small' END WHERE id IN (2, 3)",
+			// Multiple assignments.
+			"UPDATE t SET v = 100, label = 'z' WHERE id = 1",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped until harness extension).
+			{Query: "UPDATE t SET v = v + 5 WHERE id = 1"},
+			{Query: "UPDATE t SET label = CASE WHEN v >= 20 THEN 'big' WHEN v IS NULL THEN 'unknown' ELSE 'small' END WHERE id IN (2, 3)"},
+			{Query: "UPDATE t SET v = 100, label = 'z' WHERE id = 1"},
+			// Verification of final state after the complete chain.
+			// id=1: v=100 (was 10→15→100), label='z'.
+			// id=2: v=20 (unchanged), label='big'.
+			// id=3: v=null (unchanged), label='unknown'.
+			{Query: "SELECT id, v, label FROM t ORDER BY id", Rows: [][]any{{1, 100, "z"}, {2, 20, "big"}, {3, nil, "unknown"}}},
+			{Query: "SELECT v, label FROM t WHERE id = 1", Rows: [][]any{{100, "z"}}},
+			{Query: "SELECT id, label FROM t ORDER BY id", Rows: [][]any{{1, "z"}, {2, "big"}, {3, "unknown"}}},
 		},
 	}
 }
