@@ -1,0 +1,213 @@
+package cascades
+
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+)
+
+// ExpressionMatchAdjuster is an optional interface that a
+// RelationalExpression can implement to support match adjustment.
+// When the AdjustMatches pass encounters a candidate expression that
+// implements this interface, it calls AdjustMatch to produce a refined
+// MatchInfo wrapping the existing PartialMatch's MatchInfo.
+//
+// In Java, this is the default method
+// RelationalExpression.adjustMatch(PartialMatch) which returns
+// Optional.empty(). Concrete overrides exist on MatchableSortExpression
+// and SelectExpression.
+type ExpressionMatchAdjuster interface {
+	// AdjustMatch attempts to refine the given PartialMatch by
+	// absorbing this expression on the candidate side. Returns a new
+	// MatchInfo on success, or nil if the expression cannot be
+	// absorbed.
+	AdjustMatch(pm PartialMatch) MatchInfo
+}
+
+// AdjustMatches walks all References reachable from rootRef and, for
+// every existing PartialMatch, attempts to absorb candidate-side-only
+// expressions one level up from the matched candidate ref. On success,
+// a new PartialMatch with AdjustedMatchInfo is stored on the same
+// query Reference but pointing to the parent candidate Reference.
+//
+// This is the Go equivalent of Java's AdjustMatchRule, which fires on
+// PartialMatches via a TransformPartialMatch task. In the Go seed,
+// AdjustMatches is called explicitly after MatchLeafRule and
+// MatchIntermediateRule have run, rather than being scheduled as a
+// rule.
+//
+// Ports Java's
+// com.apple.foundationdb.record.query.plan.cascades.rules.AdjustMatchRule.
+func AdjustMatches(rootRef *expressions.Reference) {
+	visited := map[*expressions.Reference]bool{}
+	adjustMatchesRecursive(rootRef, visited)
+}
+
+// adjustMatchesRecursive visits every Reference reachable from ref
+// (depth-first, children before parents) and runs adjustPartialMatch
+// on each existing PartialMatch.
+func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if visited[ref] {
+		return
+	}
+	visited[ref] = true
+
+	// Visit children first so that child-level matches are adjusted
+	// before parent-level matches (bottom-up).
+	for _, m := range ref.AllMembers() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				adjustMatchesRecursive(childRef, visited)
+			}
+		}
+	}
+
+	// Adjust partial matches on this ref.
+	for _, candAny := range ref.GetPartialMatchCandidates() {
+		cand := candAny.(MatchCandidate)
+		// Snapshot the current matches — adjustPartialMatch may append
+		// new matches; we must not iterate those.
+		matches := GetPartialMatchesForCandidate(ref, cand)
+		for _, pm := range matches {
+			adjustPartialMatch(ref, cand, pm)
+		}
+	}
+}
+
+// adjustPartialMatch implements the core of Java's AdjustMatchRule.
+// For the given PartialMatch, it finds candidate expressions one level
+// up from the matched candidate ref in the candidate's Traversal. For
+// each such parent expression with exactly one quantifier ranging over
+// the matched candidate ref, it attempts to absorb that expression via
+// ExpressionMatchAdjuster.AdjustMatch. If the expression does not
+// implement ExpressionMatchAdjuster, no adjustment occurs (matching
+// Java's default Optional.empty() return).
+//
+// Mirrors Java's AdjustMatchRule.onMatch + matchWithCandidate.
+func adjustPartialMatch(queryRef *expressions.Reference, candidate MatchCandidate, pm PartialMatch) {
+	pmi, ok := pm.(*PartialMatchImpl)
+	if !ok {
+		return
+	}
+
+	traversal := candidate.GetTraversal()
+	if traversal == nil {
+		return
+	}
+
+	// Java calls matchCandidate.findReferencingExpressions(ImmutableList.of(queryReference)).
+	// That method internally looks up partial matches for THIS candidate
+	// on the query reference, gets each partial match's candidate ref,
+	// and walks UP from those candidate refs in the traversal.
+	//
+	// Since we already have the specific PartialMatch, we can go
+	// directly: find parent (ref, expr) pairs for this match's
+	// candidate ref.
+	candidateRef := pmi.GetCandidateRef()
+	parentPairs := traversal.GetParentRefPairs(candidateRef)
+
+	for _, parent := range parentPairs {
+		parentRef := parent.ref
+		parentExpr := parent.expr
+
+		adjustedMI := matchWithCandidate(pmi, parentExpr)
+		if adjustedMI == nil {
+			continue
+		}
+
+		// Create a new PartialMatch at the SAME query ref/expression
+		// but with the PARENT candidate ref. This mirrors Java's
+		// call.yieldPartialMatch which creates a new PartialMatch
+		// using the incomplete match's query expression and alias map,
+		// but the new candidate reference and adjusted match info.
+		newPM := NewPartialMatch(
+			pmi.GetBoundAliasMap(),
+			candidate,
+			queryRef,
+			pmi.GetQueryExpression(),
+			parentRef,
+			adjustedMI,
+		)
+		AddPartialMatchForCandidate(queryRef, candidate, newPM)
+	}
+}
+
+// matchWithCandidate checks whether a candidate expression can be
+// absorbed into the given partial match. Mirrors Java's
+// AdjustMatchRule.matchWithCandidate.
+//
+// Requirements for absorption:
+//  1. The candidate expression must have exactly one quantifier.
+//  2. That quantifier must range over the partial match's candidate ref.
+//  3. The candidate expression must not introduce external correlations
+//     beyond what its child provides (getCorrelatedTo equality check).
+//  4. The expression must successfully adjust the match (via
+//     ExpressionMatchAdjuster or the default AdjustedBuilder).
+func matchWithCandidate(pm *PartialMatchImpl, candidateExpr expressions.RelationalExpression) MatchInfo {
+	quantifiers := candidateExpr.GetQuantifiers()
+
+	// Java: Verify.verify(!candidateExpression.getQuantifiers().isEmpty())
+	if len(quantifiers) == 0 {
+		return nil
+	}
+
+	// Java: if (candidateExpression.getQuantifiers().size() > 1) return Optional.empty()
+	if len(quantifiers) > 1 {
+		return nil
+	}
+
+	// Single quantifier — get its child reference.
+	candidateQ := quantifiers[0]
+	otherRangesOver := candidateQ.GetRangesOver()
+
+	// Java: if (!candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo()))
+	// In the seed, deep correlation computation is not yet implemented
+	// (both return empty sets), so this check always passes. We include
+	// it for structural fidelity — it will naturally become meaningful
+	// when deep correlation computation lands.
+	if !correlatedToEquals(candidateExpr, otherRangesOver) {
+		return nil
+	}
+
+	// Java: if (partialMatch.getCandidateRef() != otherRangesOver) return Optional.empty()
+	// The quantifier must range over the same ref the partial match
+	// points to.
+	if pm.GetCandidateRef() != otherRangesOver {
+		return nil
+	}
+
+	// Delegate to the expression's adjustMatch.
+	// Java: return candidateExpression.adjustMatch(partialMatch)
+	if adjuster, ok := candidateExpr.(ExpressionMatchAdjuster); ok {
+		return adjuster.AdjustMatch(pm)
+	}
+
+	// Default: Java's RelationalExpression.adjustMatch returns
+	// Optional.empty(). Most expressions cannot be absorbed.
+	return nil
+}
+
+// correlatedToEquals checks whether a candidate expression's
+// getCorrelatedTo set equals the child Reference's getCorrelatedTo set.
+// In the seed, deep correlation computation is not yet implemented, so
+// we compare GetCorrelatedToWithoutChildren of the expression against
+// the empty set (which is what Reference.getCorrelatedTo returns in the
+// seed). This matches Java's check:
+//
+//	!candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())
+//
+// When deep correlation computation lands, this function should use the
+// full getCorrelatedTo on both sides.
+func correlatedToEquals(expr expressions.RelationalExpression, _ *expressions.Reference) bool {
+	// In the seed, both sides return empty correlation sets. The
+	// expression's getCorrelatedToWithoutChildren is the node-local
+	// correlations; the full getCorrelatedTo would add children's
+	// correlations. Since AdjustMatch fires on single-quantifier
+	// expressions where the quantifier IS the child, the full
+	// getCorrelatedTo equals getCorrelatedToWithoutChildren union
+	// child's correlations. The check verifies the expression doesn't
+	// introduce correlations beyond what the child already has.
+	//
+	// For now, we check that the expression has no node-local
+	// correlations, which is the seed-appropriate approximation.
+	nodeCorrs := expr.GetCorrelatedToWithoutChildren()
+	return len(nodeCorrs) == 0
+}
