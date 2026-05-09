@@ -5,7 +5,8 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascad
 // RebasePredicate replaces correlation references in a predicate tree
 // according to the alias map. Returns the original predicate if no
 // references match. Handles ComparisonPredicate, AndPredicate,
-// OrPredicate, NotPredicate, ValuePredicate, ConstantPredicate.
+// OrPredicate, NotPredicate, ValuePredicate, ExistsPredicate,
+// ConstantPredicate.
 //
 // Ports Java's QueryPredicate.rebase(AliasMap).
 func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
@@ -47,6 +48,11 @@ func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
 			return p
 		}
 		return NewNot(newChild)
+	case *ExistsPredicate:
+		if newAlias, ok := aliases[pred.ExistentialAlias]; ok {
+			return NewExistsPredicate(newAlias)
+		}
+		return p
 	case *ConstantPredicate:
 		return p
 	default:

@@ -84,8 +84,14 @@ func TestRebasePredicate_Not(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *NotPredicate, got %T", result)
 	}
-	vp := not.Child.(*ValuePredicate)
-	qov := vp.Value.(*values.QuantifiedObjectValue)
+	vp, ok2 := not.Child.(*ValuePredicate)
+	if !ok2 {
+		t.Fatalf("expected child to be *ValuePredicate, got %T", not.Child)
+	}
+	qov, ok3 := vp.Value.(*values.QuantifiedObjectValue)
+	if !ok3 {
+		t.Fatalf("expected value to be *QuantifiedObjectValue, got %T", vp.Value)
+	}
 	if qov.Correlation != newAlias {
 		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
 	}
@@ -125,6 +131,32 @@ func TestRebasePredicate_Or(t *testing.T) {
 	}
 	if qov.Correlation != newAlias {
 		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	}
+}
+
+func TestRebasePredicate_Exists(t *testing.T) {
+	t.Parallel()
+	oldAlias := values.NamedCorrelationIdentifier("old")
+	newAlias := values.NamedCorrelationIdentifier("new")
+	p := NewExistsPredicate(oldAlias)
+	result := RebasePredicate(p, values.AliasMap{oldAlias: newAlias})
+	ep, ok := result.(*ExistsPredicate)
+	if !ok {
+		t.Fatalf("expected *ExistsPredicate, got %T", result)
+	}
+	if ep.ExistentialAlias != newAlias {
+		t.Fatalf("expected rebased alias %v, got %v", newAlias, ep.ExistentialAlias)
+	}
+}
+
+func TestRebasePredicate_ExistsNoChange(t *testing.T) {
+	t.Parallel()
+	p := NewExistsPredicate(values.NamedCorrelationIdentifier("other"))
+	result := RebasePredicate(p, values.AliasMap{
+		values.NamedCorrelationIdentifier("x"): values.NamedCorrelationIdentifier("y"),
+	})
+	if result != p {
+		t.Fatal("exists with no matching alias should return same pointer")
 	}
 }
 
