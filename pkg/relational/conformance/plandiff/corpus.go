@@ -17366,8 +17366,6 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, v FROM T_DV_04",
 		},
 
-		// --- swingshift-83: error-code alignment probes ---
-
 		{
 			Name:           "error_unknown_qualifier_select",
 			SchemaTemplate: "CREATE TABLE T_ERR_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
@@ -17425,8 +17423,6 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT name FROM T_ERR_09A, T_ERR_09B WHERE T_ERR_09A.id = T_ERR_09B.id",
 		},
-
-		// --- swingshift-83: result-set alignment probes ---
 
 		{
 			Name:           "aggregate_count_star_empty",
@@ -17495,8 +17491,6 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_INL_01 WHERE v IN (10, NULL)",
 		},
 
-		// --- swingshift-83: type-mismatch error code probes ---
-
 		{
 			Name:           "error_type_mismatch_where_eq",
 			SchemaTemplate: "CREATE TABLE T_TM_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
@@ -17515,8 +17509,6 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_TM_03 VALUES (1, 10)"},
 			Query:          "SELECT id FROM T_TM_03 WHERE v IN ('text', 'other')",
 		},
-
-		// --- swingshift-83: DML error probes ---
 
 		{
 			Name:           "error_update_nonexistent_col",
