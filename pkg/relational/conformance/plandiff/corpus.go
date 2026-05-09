@@ -17425,6 +17425,75 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT name FROM T_ERR_09A, T_ERR_09B WHERE T_ERR_09A.id = T_ERR_09B.id",
 		},
+
+		// --- swingshift-83: result-set alignment probes ---
+
+		{
+			Name:           "aggregate_count_star_empty",
+			SchemaTemplate: "CREATE TABLE T_AGG_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT COUNT(*) FROM T_AGG_01",
+		},
+		{
+			Name:           "aggregate_sum_empty",
+			SchemaTemplate: "CREATE TABLE T_AGG_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT SUM(v) FROM T_AGG_02",
+		},
+		{
+			Name:           "aggregate_group_by_having",
+			SchemaTemplate: "CREATE TABLE T_AGG_03 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG_03 VALUES (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,2,50)"},
+			Query:          "SELECT g, SUM(v) FROM T_AGG_03 GROUP BY g HAVING SUM(v) > 50 ORDER BY g",
+		},
+		{
+			Name:           "cte_basic_with_aggregate",
+			SchemaTemplate: "CREATE TABLE T_CTE_01 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CTE_01 VALUES (1,1,10),(2,1,20),(3,2,30)"},
+			Query:          "WITH sums AS (SELECT g, SUM(v) AS total FROM T_CTE_01 GROUP BY g) SELECT g, total FROM sums ORDER BY g",
+		},
+		{
+			Name:           "join_self_qualified",
+			SchemaTemplate: "CREATE TABLE T_JOIN_01 (id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_JOIN_01 VALUES (1, NULL, 'root'), (2, 1, 'child1'), (3, 1, 'child2')"},
+			Query:          "SELECT c.name, p.name FROM T_JOIN_01 AS c, T_JOIN_01 AS p WHERE c.parent_id = p.id ORDER BY c.id",
+		},
+		{
+			Name:           "distinct_on_pk",
+			SchemaTemplate: "CREATE TABLE T_DIST_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DIST_01 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT DISTINCT id FROM T_DIST_01 ORDER BY id",
+		},
+		{
+			Name:           "coalesce_null_fallback",
+			SchemaTemplate: "CREATE TABLE T_COAL_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_COAL_01 VALUES (1, 10), (2, NULL), (3, 30)"},
+			Query:          "SELECT id, COALESCE(v, -1) FROM T_COAL_01 ORDER BY id",
+		},
+		{
+			Name:           "case_when_null",
+			SchemaTemplate: "CREATE TABLE T_CASE_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CASE_01 VALUES (1, 10), (2, NULL), (3, 30)"},
+			Query:          "SELECT id, CASE WHEN v IS NULL THEN 'missing' ELSE 'present' END FROM T_CASE_01 ORDER BY id",
+		},
+		{
+			Name:           "between_predicate",
+			SchemaTemplate: "CREATE TABLE T_BTW_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BTW_01 VALUES (1,5),(2,10),(3,15),(4,20),(5,25)"},
+			Query:          "SELECT id FROM T_BTW_01 WHERE v BETWEEN 10 AND 20 ORDER BY id",
+		},
+		{
+			Name:           "error_not_null_violation",
+			SchemaTemplate: "CREATE TABLE T_NN_01 (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NN_01 VALUES (1, 'ok')"},
+			Query:          "INSERT INTO T_NN_01 VALUES (2, NULL)",
+		},
+		{
+			Name:           "error_in_list_null",
+			SchemaTemplate: "CREATE TABLE T_INL_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_INL_01 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_INL_01 WHERE v IN (10, NULL)",
+		},
 	}
 }
 
