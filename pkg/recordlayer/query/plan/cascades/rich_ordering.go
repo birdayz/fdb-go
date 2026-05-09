@@ -538,6 +538,66 @@ func (o *RichOrdering) PushDown(mapping map[string]values.Value) *RichOrdering {
 	return o.PullUp(mapping)
 }
 
+// PullUpThroughValue translates this ordering through a result value.
+// For each ordering key, uses Value.PullUpValue to compute the
+// pulled-up key. Bindings are preserved. Keys that cannot be pulled
+// up are dropped.
+//
+// Ports Java's Ordering.pullUp(Value, EvaluationContext, AliasMap,
+// Set<CorrelationIdentifier>) using the direct algorithmic pullUp
+// from values.PullUpValue.
+func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values.CorrelationIdentifier) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+
+	pulledUpMap := values.PullUpValues(o.keys, resultValue, alias)
+	if len(pulledUpMap) == 0 {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+
+	newBM := make(map[values.Value][]OrderingBinding, len(pulledUpMap))
+	var newKeys []values.Value
+	for _, key := range o.keys {
+		if pulledUp, ok := pulledUpMap[key]; ok {
+			newBM[pulledUp] = o.bindingMap[key]
+			newKeys = append(newKeys, pulledUp)
+		}
+	}
+	if len(newKeys) == 0 {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+	return NewRichOrdering(newBM, newKeys, o.distinct)
+}
+
+// PushDownThroughValue translates this ordering's keys from output
+// space back to input space through a result value. For each ordering
+// key, uses Value.PushDownValue to compute the pushed-down key.
+// Bindings are preserved. Keys that cannot be pushed down are dropped.
+//
+// Ports Java's Ordering.pushDown(Value, EvaluationContext, AliasMap,
+// Set<CorrelationIdentifier>).
+func (o *RichOrdering) PushDownThroughValue(resultValue values.Value, upperAlias values.CorrelationIdentifier) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+
+	pushed := values.PushDownValues(o.keys, resultValue, upperAlias)
+
+	newBM := make(map[values.Value][]OrderingBinding, len(o.bindingMap))
+	var newKeys []values.Value
+	for i, key := range o.keys {
+		if pushed[i] != nil {
+			newBM[pushed[i]] = o.bindingMap[key]
+			newKeys = append(newKeys, pushed[i])
+		}
+	}
+	if len(newKeys) == 0 {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+	return NewRichOrdering(newBM, newKeys, o.distinct)
+}
+
 // CreateUnionOrdering creates a RichOrdering from a single provided
 // ordering, treating all sorted bindings as union-compatible.
 // Used as the starting point for union-merge in ImplementDistinctUnionRule.

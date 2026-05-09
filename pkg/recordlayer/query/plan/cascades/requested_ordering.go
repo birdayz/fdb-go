@@ -109,3 +109,38 @@ func (o *RequestedOrdering) GetValueRequestedSortOrderMap() map[values.Value]Req
 	}
 	return m
 }
+
+// PushDownThroughValue translates this requested ordering's keys
+// through a result value, expressing them in terms of the result
+// value's inputs. Each ordering part's value is pushed down; sort
+// orders are preserved. Parts that cannot be pushed down are dropped.
+// If all parts are dropped, returns a preserve ordering.
+//
+// Ports Java's RequestedOrdering.pushDown(Value, CorrelationIdentifier,
+// EvaluationContext, AliasMap, Set<CorrelationIdentifier>).
+func (o *RequestedOrdering) PushDownThroughValue(resultValue values.Value, upperAlias values.CorrelationIdentifier) *RequestedOrdering {
+	if o.IsPreserve() {
+		return PreserveOrdering()
+	}
+
+	keyValues := make([]values.Value, len(o.parts))
+	for i, p := range o.parts {
+		keyValues[i] = p.Value
+	}
+
+	pushed := values.PushDownValues(keyValues, resultValue, upperAlias)
+
+	var newParts []RequestedOrderingPart
+	for i, p := range o.parts {
+		if pushed[i] != nil {
+			newParts = append(newParts, RequestedOrderingPart{
+				Value:     pushed[i],
+				SortOrder: p.SortOrder,
+			})
+		}
+	}
+	if len(newParts) == 0 {
+		return PreserveOrdering()
+	}
+	return NewRequestedOrdering(newParts, DistinctnessPreserveDistinctness, o.exhaustive)
+}
