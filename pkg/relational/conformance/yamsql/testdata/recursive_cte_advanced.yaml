@@ -1,0 +1,42 @@
+# recursive_cte_advanced.yaml
+#
+# Advanced recursive CTE edge cases — regression guards for column alias
+# rename resolution and descendant traversal patterns fixed during
+# swingshift-81. The basic recursive CTE file covers ancestors, cycles,
+# traversal orders; this file targets the alias-rename and multi-shape
+# traversal gaps that were broken before the fix.
+name: recursive_cte_advanced
+schema_template: |
+  CREATE TABLE tree (id BIGINT NOT NULL, parent BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO tree VALUES
+      (1, null, 'root'), (2, 1, 'child1'), (3, 1, 'child2'),
+      (4, 2, 'grandchild1'), (5, 3, 'grandchild2')
+tests:
+  # Recursive CTE with column alias rename
+  - query: |-
+      WITH RECURSIVE anc(node, up) AS (
+        SELECT id, parent FROM tree WHERE id = 5
+        UNION ALL
+        SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.up
+      )
+      SELECT node FROM anc ORDER BY node
+    rows:
+      - [1]
+      - [3]
+      - [5]
+  # Descendant traversal
+  - query: |-
+      WITH RECURSIVE desc_tree AS (
+        SELECT id, parent, label FROM tree WHERE id = 1
+        UNION ALL
+        SELECT t.id, t.parent, t.label FROM desc_tree AS d, tree AS t
+        WHERE t.parent = d.id
+      )
+      SELECT label FROM desc_tree ORDER BY id
+    rows:
+      - ['root']
+      - ['child1']
+      - ['child2']
+      - ['grandchild1']
+      - ['grandchild2']
