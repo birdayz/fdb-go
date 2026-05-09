@@ -256,3 +256,25 @@ func TestPlanCache_ScalarSubqueryBindings(t *testing.T) {
 		t.Fatalf("wrong subs returned: %v", gotSubs)
 	}
 }
+
+func BenchmarkPlanCache_Hit(b *testing.B) {
+	c := NewPlanCache(256)
+	plan := &stubPlan{label: "select-all"}
+	sql := "SELECT * FROM Item WHERE item_id = 42"
+	h := QueryHash(sql)
+	c.Put(h, sql, plan, nil)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.Get(h)
+	}
+}
+
+func BenchmarkPlanCache_Miss(b *testing.B) {
+	c := NewPlanCache(256)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.Get(99999)
+	}
+}
