@@ -17365,6 +17365,66 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, v FROM T_DV_04",
 		},
+
+		// --- swingshift-83: error-code alignment probes ---
+
+		{
+			Name:           "error_unknown_qualifier_select",
+			SchemaTemplate: "CREATE TABLE T_ERR_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_01 VALUES (1, 10)"},
+			Query:          "SELECT x.id FROM T_ERR_01",
+		},
+		{
+			Name:           "error_unknown_qualifier_where",
+			SchemaTemplate: "CREATE TABLE T_ERR_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_02 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_ERR_02 WHERE x.id = 1",
+		},
+		{
+			Name:           "error_undefined_column_where",
+			SchemaTemplate: "CREATE TABLE T_ERR_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_03 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_ERR_03 WHERE nonexistent = 1",
+		},
+		{
+			Name:           "error_undefined_table_from",
+			SchemaTemplate: "CREATE TABLE T_ERR_04 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_04 VALUES (1)"},
+			Query:          "SELECT id FROM NoSuchTable",
+		},
+		{
+			Name:           "error_group_by_violation",
+			SchemaTemplate: "CREATE TABLE T_ERR_05 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_05 VALUES (1, 1, 10), (2, 1, 20)"},
+			Query:          "SELECT id FROM T_ERR_05 GROUP BY g",
+		},
+		{
+			Name:           "error_insert_arity_too_few",
+			SchemaTemplate: "CREATE TABLE T_ERR_06 (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "INSERT INTO T_ERR_06 (id, v, w) VALUES (1)",
+		},
+		{
+			Name:           "error_insert_arity_too_many",
+			SchemaTemplate: "CREATE TABLE T_ERR_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "INSERT INTO T_ERR_07 (id, v) VALUES (1, 2, 3, 4, 5)",
+		},
+		{
+			Name:           "error_duplicate_order_by",
+			SchemaTemplate: "CREATE TABLE T_ERR_08 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_08 VALUES (1, 10)"},
+			Query:          "SELECT v FROM T_ERR_08 ORDER BY v, v",
+		},
+		{
+			Name:           "error_ambiguous_column_join",
+			SchemaTemplate: "CREATE TABLE T_ERR_09A (id BIGINT, name STRING, PRIMARY KEY (id))\nCREATE TABLE T_ERR_09B (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ERR_09A VALUES (1, 'a')",
+				"INSERT INTO T_ERR_09B VALUES (1, 'b')",
+			},
+			Query: "SELECT name FROM T_ERR_09A, T_ERR_09B WHERE T_ERR_09A.id = T_ERR_09B.id",
+		},
 	}
 }
 
