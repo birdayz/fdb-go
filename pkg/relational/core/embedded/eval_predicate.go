@@ -525,15 +525,14 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 		return triFalse, err
 	}
 
-	// Cross-type bounds are an error, same as plain comparison (Java's
-	// between.yamsql pins XX000 for this; we use 22000 CANNOT_CONVERT_TYPE
-	// matching the rest of our cross-type rejection surface).
+	// Cross-type bounds are an error. Java's between.yamsql uses 42804
+	// (DATATYPE_MISMATCH) for type-incompatible BETWEEN operands.
 	if fieldVal != nil && lo != nil && !valuesComparable(fieldVal, lo) {
-		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}
 	if fieldVal != nil && hi != nil && !valuesComparable(fieldVal, hi) {
-		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}
 
