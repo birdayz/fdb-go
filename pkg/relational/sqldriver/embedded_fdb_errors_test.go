@@ -285,3 +285,28 @@ func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 		})
 	}
 }
+
+// TestFDB_Errors_UndefinedTableInJoin verifies that referencing a
+// nonexistent table in a JOIN produces 42F01 (not 0AF00).
+func TestFDB_Errors_UndefinedTableInJoin(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_errs_join_undef", "errs_join_undef",
+		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
+		t.Fatalf("setup INSERT: %v", err)
+	}
+
+	_, err := db.QueryContext(ctx, "SELECT t.id FROM t, nonexistent WHERE t.id = nonexistent.id")
+	if err == nil {
+		t.Fatal("expected error for nonexistent table in JOIN, got nil")
+	}
+	got := asAPIError(err)
+	if got == nil {
+		t.Fatalf("expected api.Error, got: %v", err)
+	}
+	t.Logf("SQL → code=%s msg=%s", got.Code, got.Message)
+	if got.Code != api.ErrCodeUndefinedTable {
+		t.Errorf("error code = %q, want %q (42F01)", got.Code, api.ErrCodeUndefinedTable)
+	}
+}
