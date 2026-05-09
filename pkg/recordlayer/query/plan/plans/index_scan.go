@@ -36,6 +36,7 @@ type RecordQueryIndexPlan struct {
 	recordTypes     []string
 	flowedType      values.Type
 	reverse         bool
+	strictlySorted  bool
 }
 
 // NewRecordQueryIndexPlan constructs an index scan plan.
@@ -77,6 +78,19 @@ func (p *RecordQueryIndexPlan) GetFlowedType() values.Type { return p.flowedType
 // IsReverse reports the scan direction.
 func (p *RecordQueryIndexPlan) IsReverse() bool { return p.reverse }
 
+// IsStrictlySorted reports whether the scan's ordering uniquely
+// determines each record (no two adjacent records share the same key).
+// Set by RemoveSortRule when DISTINCT covers all ordering keys or a
+// unique index satisfies the full key set.
+func (p *RecordQueryIndexPlan) IsStrictlySorted() bool { return p.strictlySorted }
+
+// WithStrictlySorted returns a shallow copy with strictlySorted=true.
+func (p *RecordQueryIndexPlan) WithStrictlySorted() *RecordQueryIndexPlan {
+	cp := *p
+	cp.strictlySorted = true
+	return &cp
+}
+
 // GetResultType returns the row Type.
 func (p *RecordQueryIndexPlan) GetResultType() values.Type { return p.flowedType }
 
@@ -90,7 +104,7 @@ func (p *RecordQueryIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool
 	if !ok {
 		return false
 	}
-	if p.indexName != o.indexName || p.reverse != o.reverse {
+	if p.indexName != o.indexName || p.reverse != o.reverse || p.strictlySorted != o.strictlySorted {
 		return false
 	}
 	if !typeEquals(p.flowedType, o.flowedType) {
@@ -126,6 +140,11 @@ func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte{byte(cr.GetRangeType())})
 	}
 	if p.reverse {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
+	if p.strictlySorted {
 		h.Write([]byte{1})
 	} else {
 		h.Write([]byte{0})

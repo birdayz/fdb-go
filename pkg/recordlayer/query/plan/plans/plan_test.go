@@ -105,3 +105,69 @@ func TestExplain_Renders(t *testing.T) {
 		t.Fatalf("filter Explain = %q, want %q", got, want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RecordQueryIndexPlan: WithStrictlySorted / IsStrictlySorted
+// ---------------------------------------------------------------------------
+
+func TestRecordQueryIndexPlan_StrictlySorted(t *testing.T) {
+	t.Parallel()
+
+	orig := NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false)
+	if orig.IsStrictlySorted() {
+		t.Fatal("new index plan should not be strictlySorted")
+	}
+
+	strict := orig.WithStrictlySorted()
+	if !strict.IsStrictlySorted() {
+		t.Fatal("WithStrictlySorted plan should be strictlySorted")
+	}
+
+	// Original must be unmodified (shallow copy, not mutation).
+	if orig.IsStrictlySorted() {
+		t.Fatal("original plan must remain non-strictlySorted after WithStrictlySorted")
+	}
+
+	// All other fields must be preserved.
+	if strict.GetIndexName() != orig.GetIndexName() {
+		t.Fatalf("index name = %q, want %q", strict.GetIndexName(), orig.GetIndexName())
+	}
+	if strict.IsReverse() != orig.IsReverse() {
+		t.Fatalf("reverse = %v, want %v", strict.IsReverse(), orig.IsReverse())
+	}
+	if !values.UnknownType.Equals(strict.GetFlowedType()) {
+		t.Fatalf("flowed type changed")
+	}
+
+	// EqualsWithoutChildren distinguishes strictlySorted from non-.
+	if Equals(orig, strict) {
+		t.Fatal("non-strictlySorted and strictlySorted plans should not be equal")
+	}
+
+	// Two strictlySorted copies of the same plan should be equal.
+	strict2 := orig.WithStrictlySorted()
+	if !Equals(strict, strict2) {
+		t.Fatal("two strictlySorted copies of the same plan should be equal")
+	}
+
+	// HashCodeWithoutChildren should differ.
+	h1 := orig.HashCodeWithoutChildren()
+	h2 := strict.HashCodeWithoutChildren()
+	if h1 == h2 {
+		t.Fatal("hash codes should differ between strictlySorted and non-strictlySorted")
+	}
+}
+
+func TestRecordQueryIndexPlan_WithStrictlySorted_Reverse(t *testing.T) {
+	t.Parallel()
+
+	orig := NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, true)
+	strict := orig.WithStrictlySorted()
+
+	if !strict.IsReverse() {
+		t.Fatal("reverse flag should be preserved by WithStrictlySorted")
+	}
+	if !strict.IsStrictlySorted() {
+		t.Fatal("should be strictlySorted")
+	}
+}

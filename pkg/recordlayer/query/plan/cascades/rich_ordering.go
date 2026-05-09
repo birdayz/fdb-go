@@ -120,6 +120,37 @@ func (o *RichOrdering) IsDistinct() bool {
 	return o.distinct
 }
 
+// GetEqualityBoundValues returns the set of values that have at least
+// one fixed (equality-bound) binding. Matches Java's
+// Ordering.getEqualityBoundValues() which uses
+// Multimaps.filterValues(Binding::isFixed).keySet().
+func (o *RichOrdering) GetEqualityBoundValues() map[values.Value]struct{} {
+	result := make(map[values.Value]struct{})
+	for v, bindings := range o.bindingMap {
+		for _, b := range bindings {
+			if b.IsFixed() {
+				result[v] = struct{}{}
+				break
+			}
+		}
+	}
+	return result
+}
+
+// GetOrderingKeys returns the non-equality-bound ordering keys (those
+// that contribute to the sort order). Mirrors Java's
+// Ordering.getOrderingSet().getSet() filtered to the keys list.
+func (o *RichOrdering) GetOrderingKeys() []values.Value {
+	var result []values.Value
+	for _, v := range o.keys {
+		bindings := o.bindingMap[v]
+		if !AreAllBindingsFixed(bindings) {
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
 // SortOrder returns the aggregate sort order of a value's bindings.
 // If all bindings are sorted with the same direction, returns that
 // direction. If mixed or all fixed, returns ProvidedSortOrderFixed.

@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // ImplementSortRule removes a logical LogicalSortExpression when the
@@ -49,6 +50,12 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	requestedParts := requestedOrdering.GetParts()
+	sortValueNames := make(map[string]struct{}, len(requestedParts))
+	for _, part := range requestedParts {
+		sortValueNames[values.ExplainValue(part.Value)] = struct{}{}
+	}
+
 	partitions := ToPlanPartitions(innerRef)
 	for _, partition := range partitions {
 		ordering := computePartitionOrdering(partition)
@@ -56,8 +63,23 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			continue
 		}
 
+		eqBound := ordering.GetEqualityBoundValues()
+		eqBoundNames := make(map[string]struct{}, len(eqBound))
+		for v := range eqBound {
+			eqBoundNames[values.ExplainValue(v)] = struct{}{}
+		}
+		equalityBoundUnsorted := len(eqBound)
+		seenEqBound := make(map[string]bool, len(requestedParts))
+		for _, part := range requestedParts {
+			name := values.ExplainValue(part.Value)
+			if _, ok := eqBoundNames[name]; ok && !seenEqBound[name] {
+				seenEqBound[name] = true
+				equalityBoundUnsorted--
+			}
+		}
+
 		preserveDistinctReq := NewRequestedOrdering(
-			requestedOrdering.GetParts(),
+			requestedParts,
 			DistinctnessPreserveDistinctness,
 			requestedOrdering.IsExhaustive(),
 		)
@@ -65,8 +87,40 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			continue
 		}
 
+		// Java RemoveSortRule lines 112-125: when the partition is
+		// distinct and all ordering values are covered by sort keys
+		// or equality-bound keys, yield strictlySorted copies.
+		if partition.IsDistinct() {
+			allCovered := true
+			for _, v := range ordering.GetOrderingKeys() {
+				name := values.ExplainValue(v)
+				_, inSort := sortValueNames[name]
+				// inEq can be true for mixed-binding keys (one fixed +
+				// one sorted) — GetOrderingKeys excludes all-fixed but
+				// GetEqualityBoundValues includes any-fixed.
+				_, inEq := eqBoundNames[name]
+				if !inSort && !inEq {
+					allCovered = false
+					break
+				}
+			}
+			if allCovered {
+				for _, expr := range partition.GetExpressions() {
+					call.YieldFinalExpression(makeStrictlySorted(expr))
+				}
+				continue
+			}
+		}
+
+		// Java RemoveSortRule lines 127-141: check each plan for
+		// unique-index coverage → strictlySorted.
+		numKeys := len(requestedParts) + equalityBoundUnsorted
 		for _, expr := range partition.GetExpressions() {
-			call.YieldFinalExpression(expr)
+			if strictlyOrderedIfUnique(expr, numKeys) {
+				call.YieldFinalExpression(makeStrictlySorted(expr))
+			} else {
+				call.YieldFinalExpression(expr)
+			}
 		}
 	}
 }
@@ -100,6 +154,35 @@ func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *Re
 	return NewRequestedOrdering(parts, DistinctnessNotDistinct, false)
 }
 
+// strictlyOrderedIfUnique checks whether the given expression is a unique
+// index scan whose column count is covered by numKeys (requested sort keys +
+// equality-bound unsorted keys). Mirrors Java's RemoveSortRule.strictlyOrderedIfUnique.
+func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int) bool {
+	w, ok := expr.(*physicalIndexScanWrapper)
+	if !ok {
+		return false
+	}
+	return w.unique && numKeys >= len(w.columnNames)
+}
+
+// makeStrictlySorted returns an expression with its inner plan marked
+// as strictlySorted. For index scans, this creates a new wrapper with
+// a cloned plan. For other plan types, returns the expression unchanged.
+func makeStrictlySorted(expr expressions.RelationalExpression) expressions.RelationalExpression {
+	w, ok := expr.(*physicalIndexScanWrapper)
+	if !ok {
+		return expr
+	}
+	return &physicalIndexScanWrapper{
+		plan:        w.plan.WithStrictlySorted(),
+		columnNames: w.columnNames,
+		unique:      w.unique,
+	}
+}
+
+// computePartitionOrdering returns the ordering of the first physical
+// plan in the partition. All members share the same ordering by
+// construction (partitions are keyed on ordering properties).
 func computePartitionOrdering(partition *PlanPartition) *RichOrdering {
 	for _, expr := range partition.GetExpressions() {
 		if ph, ok := expr.(physicalPlanExpression); ok {

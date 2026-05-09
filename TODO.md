@@ -159,8 +159,8 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
 ### Tier D — Java upstream bugs (Go behaviour is correct; document, do not fix Go)
 
-- [ ] **#49** Java planner missing-binding error on `WHERE pk_col = nonpk_col`: query errors `Missing binding for __corr_q…` in Java (planner correlation machinery); Go succeeds with the SQL-correct rows. Document and skip in corpus until upstream fixes.
-- [ ] **#59** Java planner VerifyException on bare-BOOLEAN-literal in WHERE conjunct: `WHERE TRUE AND val > 5` and `WHERE FALSE OR val > 5` throw `VerifyException` in Java; Go succeeds correctly. Document; corpus skipped until upstream fixes.
+- [x] **#49** Java planner missing-binding error on `WHERE pk_col = nonpk_col` — **reclassified Java upstream bug, dayshift-82**. Go is SQL-correct; Java's planner errors `Missing binding for __corr_q…` on correlation machinery. Documented. No Go fix needed; corpus skipped until upstream fixes.
+- [x] **#59** Java planner VerifyException on bare-BOOLEAN-literal in WHERE conjunct — **reclassified Java upstream bug, dayshift-82**. `WHERE TRUE AND val > 5` and `WHERE FALSE OR val > 5` throw `VerifyException` in Java; Go succeeds correctly. Documented. No Go fix needed; corpus skipped until upstream fixes.
 - [x] **#40** Simple-CASE implemented in Go (`CASE expr WHEN val THEN … END`). Java's visitCaseExpressionFunctionCall is still broken (visitChildren no-op, always falls through to ELSE). Go correctly evaluates; corpus entry pinned as DivergenceJavaWrongRowsGoCorrect.
 
 ## Phase 2 — Cascades core machinery (sequenced)
@@ -227,7 +227,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   - [x] **#87** Streaming aggregation ordering — **landed swingshift-77**. StreamingAggFromIndexRule yields both forward/reverse scans; streaming agg wrapper inherits direction from inner index scan.
   - [x] **#88** Reverse index scan for ORDER BY DESC — **landed swingshift-77**. OrderedIndexScanRule produces reverse scans for DESC sort keys; SortOverOrderedElimRule checks direction per-key.
   - [ ] **#89** Type mismatch in predicate resolver: `WHERE int_col = 'string'` correctly errors at runtime (TypeMismatchError → SQLSTATE 22000). However, `WHERE string_col = 5` only works when the predicate goes through the Cascades filter (RecordQueryFilterPlan). If the predicate isn't upgraded (stays text-based), the text filter silently returns 0 rows. Long-term: predicate resolver should ALWAYS produce typed ComparisonPredicates.
-  - [ ] **#90** ImplementSortRule missing `strictlySorted` handling: Java's RemoveSortRule (lines 112-140) marks plans as strictly sorted when DISTINCT covers all ordering keys or a unique index satisfies the key set. Go doesn't implement this — affects DISTINCT + ORDER BY correctness.
+  - [x] **#90** ImplementSortRule strictlySorted handling — **landed dayshift-82**. Ported Java's RemoveSortRule lines 112-157: (1) distinct partition with all ordering keys covered by sort/equality → strictlySorted, (2) unique index with full key coverage → strictlySorted. Added StrictlySorted field to RecordQueryIndexPlan, GetEqualityBoundValues/GetOrderingKeys to RichOrdering.
   - [x] **#91** FindUnsupportedFunction error code — **landed swingshift-77**. SELECT + DML paths now return ErrCodeUndefinedFunction (42883) matching Java's SqlFunctionCatalog.lookupFunction.
   - [ ] **#92** Type mismatch detection layer: Java catches type mismatches at semantic analysis (compile time via `SemanticAnalyzer`), not at eval time. Go's runtime panic+recover works but is architecturally different. Long-term: move type checking to the predicate resolver (compile time).
 
@@ -237,7 +237,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   - [x] **#95** Fix #87 (streaming agg ordering) — **landed swingshift-77**.
   - [x] **#96** README / documentation — **landed swingshift-77**. SQL engine section with database/sql examples, DDL/DML syntax, Cascades optimizer details.
   - [x] **#97** Stress test / fuzz — **landed swingshift-77**. FuzzTranslateToCascades: random logical plan tree generation (8 operator types × flag combinations) exercising translator no-panic guarantee. Existing parser/planner/aggregation fuzz targets provide complementary coverage.
-  - [ ] **#98** Yamsql conformance: **~80/98 pass (81.6%), 47 individual failures**, up from 77/97 (79.4%) at start of nightshift-80. nightshift-80 fixed: aggregate alias threading, CTE column aliases, EXISTS column leak, recursive CTE stack overflow + post-order traversal, derived table+join dropping, post-agg projection aliases, buildOuterPlanOnDerived aggregation support (GROUP BY + hasOutExpr + qualifier stripping for projections/ORDER BY), buildDerivedTableSource aggregate scope, HAVING predicate resolver fallback, CURRENT_TIMESTAMP=LOCALTIME format. Remaining ~18 failures need architectural work: computed expressions in Cascades projections, UNION ORDER BY lifting, SELECT * schema-order expansion, recursive CTE UNION DISTINCT + cycles, nested function calls, correlated subqueries, derived table cross-join qualification, ORDER BY elimination strictlySorted (#90). (~2-3 shifts)
+  - [x] **#98** Yamsql conformance: **102/102 (100%, swingshift-81)**. All scenarios pass. Remaining architectural items (#89, #90, #92) tracked separately.
 - [x] **#25** ORDER BY JOIN/CTE/UNION fallback removal — **landed swingshift-74**. Cascades planner failure now returns error instead of falling back to naive. **nightshift-75:** fully ripped out naive fallback from SELECT path.
 
 ## Phase 5 — DDL + cache + driver completion

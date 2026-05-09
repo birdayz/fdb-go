@@ -131,7 +131,9 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
 		NewImplementIntersectionRule(),
-		NewSortOverOrderedElimRule(),
+		// SortOverOrderedElimRule REMOVED (D-1): Java's RemoveSortRule
+		// is PLANNING-phase only. Sort elimination now happens exclusively
+		// in ImplementSortRule (DefaultImplementationRules).
 		NewImplementStreamingAggregationRule(),
 		NewImplementHashAggregationRule(),
 		NewStreamingAggFromIndexRule(),

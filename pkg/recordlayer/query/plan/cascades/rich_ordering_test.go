@@ -965,3 +965,96 @@ func TestRequestedOrdering_PushDownThroughValue_AllDropped(t *testing.T) {
 		t.Fatal("expected preserve ordering when all parts are dropped")
 	}
 }
+
+func TestRichOrdering_GetEqualityBoundValues(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding(nil)},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {FixedBinding(nil), FixedBinding(nil)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+	eq := o.GetEqualityBoundValues()
+	if _, ok := eq[a]; !ok {
+		t.Fatal("a should be equality-bound")
+	}
+	if _, ok := eq[b]; ok {
+		t.Fatal("b should NOT be equality-bound (sorted)")
+	}
+	if _, ok := eq[c]; !ok {
+		t.Fatal("c should be equality-bound (multiple fixed)")
+	}
+	if len(eq) != 2 {
+		t.Fatalf("expected 2 equality-bound values, got %d", len(eq))
+	}
+}
+
+func TestRichOrdering_GetEqualityBoundValues_MixedBindings(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding(nil), SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	eq := o.GetEqualityBoundValues()
+	if _, ok := eq[a]; !ok {
+		t.Fatal("a should be equality-bound (has at least one fixed binding, matching Java's filterValues(isFixed))")
+	}
+}
+
+func TestRichOrdering_GetEqualityBoundValues_Empty(t *testing.T) {
+	t.Parallel()
+	o := EmptyOrdering()
+	eq := o.GetEqualityBoundValues()
+	if len(eq) != 0 {
+		t.Fatalf("empty ordering should have no equality-bound values, got %d", len(eq))
+	}
+}
+
+func TestRichOrdering_GetOrderingKeys(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding(nil)},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+	keys := o.GetOrderingKeys()
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 ordering keys (b, c), got %d", len(keys))
+	}
+	if keys[0] != b || keys[1] != c {
+		t.Fatal("ordering keys should be [b, c]")
+	}
+}
+
+func TestRichOrdering_GetOrderingKeys_AllFixed(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding(nil)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	keys := o.GetOrderingKeys()
+	if len(keys) != 0 {
+		t.Fatalf("all-fixed ordering should have no ordering keys, got %d", len(keys))
+	}
+}
