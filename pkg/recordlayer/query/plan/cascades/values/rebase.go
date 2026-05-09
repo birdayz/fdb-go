@@ -49,6 +49,12 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 			return v
 		}
 		return &CastValue{Child: newChild, Target: val.Target}
+	case *PromoteValue:
+		newChild := RebaseValue(val.Child, aliases)
+		if newChild == val.Child {
+			return v
+		}
+		return &PromoteValue{Child: newChild, Target: val.Target}
 	case *ScalarFunctionValue:
 		changed := false
 		newArgs := make([]Value, len(val.Args))
