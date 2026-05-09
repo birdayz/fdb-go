@@ -78,7 +78,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPullFilterAboveSortRule(),
 		NewUnsortedSortElimRule(),
 		NewPushOrderingThroughGroupByRule(),
-		NewPushOrderingThroughProjectionRule(),
+		// PushOrderingThroughProjectionRule REMOVED: moved to PLANNING
+		// phase as PushRequestedOrderingThroughProjectionRule (DefaultImplementationRules).
 		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
 		// phase as PushRequestedOrderingThroughFilterRule (DefaultImplementationRules).
 		// PushOrderingThroughDistinctRule REMOVED (D-2): moved to PLANNING
@@ -195,6 +196,7 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughInsertRule(),
 		NewPushRequestedOrderingThroughUpdateRule(),
 		NewPushRequestedOrderingThroughTempTableInsertRule(),
+		NewPushRequestedOrderingThroughProjectionRule(),
 
 		// --- Java-ported rules (1:1 with fdb-record-layer-core) ---
 		NewImplementSimpleSelectRule(),
