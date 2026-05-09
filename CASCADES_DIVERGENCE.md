@@ -10,9 +10,11 @@ Comprehensive audit of all known divergences between Go's Cascades implementatio
 
 Removed Go-only `SortOverOrderedElimRule` (EXPLORE phase). Sort elimination now happens exclusively in `ImplementSortRule` (PLANNING phase), matching Java's `RemoveSortRule` 1:1. Dead code file `rule_sort_over_ordered_elim.go` deleted.
 
-### ~~D-3: DistinctOnUniqueElimRule — exploration vs physical planning~~ — DONE (current shift)
+### ~~D-3: DistinctOnUniqueElimRule — exploration vs physical planning~~ — MOSTLY DONE (swingshift-83)
 
-Removed Go-only `DistinctOnUniqueElimRule` (EXPLORE phase) and `ImplementDistinctRule` (BatchA EXPLORE phase). Distinct elimination + implementation now happens exclusively in `ImplementDistinctFinalRule` (PLANNING phase), matching Java's `ImplementDistinctRule` (ImplementationCascadesRule). PlanContext threaded through to PLANNING-phase rules via `FireImplementationRuleWithContext`. Dead code file `rule_distinct_on_unique_elim.go` deleted.
+Removed Go-only `DistinctOnUniqueElimRule` (EXPLORE phase) and `ImplementDistinctRule` (BatchA EXPLORE phase). Distinct elimination + implementation now happens exclusively in `ImplementDistinctFinalRule` (PLANNING phase), matching Java's `ImplementDistinctRule` (ImplementationCascadesRule). PlanContext threaded through to PLANNING-phase rules via `FireImplementationRuleWithContext`. Dead code files deleted.
+
+**Remaining gap:** Go's elimination check uses logical-level PK column coverage (walks LogicalProjectionExpression to check projected fields against PK). Java's check uses physical-level `DistinctRecordsProperty` on the plan partition. Go's approach misses cases where a unique-index scan makes DISTINCT redundant without explicit PK column projection. Fixing this requires aligning Go's `computeDistinctRecords` for `RecordQueryProjectionPlan` to distinguish pass-through projections from reshaping ones (matching Java's `RecordQueryMapPlan` logic).
 
 ### ~~D-9: PatternForLikeValue DOTALL mismatch~~ — RETRACTED (dayshift-82)
 

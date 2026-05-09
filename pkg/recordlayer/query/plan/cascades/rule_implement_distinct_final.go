@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -70,7 +68,6 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
 		call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
-		return
 	}
 }
 
@@ -177,7 +174,7 @@ func uniqueKeysCovered(uniqueKeyCols []string, projectedCols map[string]struct{}
 	for _, col := range uniqueKeyCols {
 		found := false
 		for pc := range projectedCols {
-			if strings.EqualFold(col, pc) {
+			if eqFold(col, pc) {
 				found = true
 				break
 			}

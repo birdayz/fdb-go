@@ -55,7 +55,6 @@ go_library(
         "rule_filter_merge.go",
         "rule_finalize_expressions.go",
         "rule_implement_delete.go",
-        "rule_implement_distinct.go",
         "rule_implement_distinct_final.go",
         "rule_implement_distinct_union.go",
         "rule_implement_explode.go",
