@@ -648,6 +648,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				return nil, api.NewError(api.ErrCodeCannotConvertType,
 					"IN-list contains NULL literal")
 			}
+			var colNotFound *semantic.ColumnNotFoundError
+			if errors.As(walkErr, &colNotFound) {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q does not exist", colNotFound.Id.Name())
+			}
 			var srcNotFound *semantic.SourceNotFoundError
 			if errors.As(walkErr, &srcNotFound) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
