@@ -86,6 +86,21 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 			return v
 		}
 		return &RecordConstructorValue{Fields: newFields}
+	case *NotValue:
+		newChild := RebaseValue(val.Child, aliases)
+		if newChild == val.Child {
+			return v
+		}
+		return &NotValue{Child: newChild}
+	case *AggregateValue:
+		if val.Operand == nil {
+			return v
+		}
+		newOperand := RebaseValue(val.Operand, aliases)
+		if newOperand == val.Operand {
+			return v
+		}
+		return &AggregateValue{Op: val.Op, Operand: newOperand}
 	case *ParameterValue:
 		return v
 	default:
