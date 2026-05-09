@@ -91,6 +91,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
 		NewZeroLimitRule(),
+		NewRemoveRangeOneRule(),
 	}
 }
 
