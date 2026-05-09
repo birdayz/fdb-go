@@ -1,0 +1,45 @@
+# recursive_cte_aggregate.yaml
+#
+# Recursive CTE combined with aggregation — exercises the interaction
+# between RecursiveLevelUnionPlan and the hash/streaming aggregation
+# operators.
+name: recursive_cte_aggregate
+schema_template: |
+  CREATE TABLE tree (id BIGINT NOT NULL, parent_id BIGINT, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO tree VALUES (1, NULL, 10), (2, 1, 20), (3, 1, 30), (4, 2, 40), (5, 2, 50)
+tests:
+  # Count all descendants of root.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, v FROM tree WHERE parent_id IS NULL
+        UNION ALL
+        SELECT c.id, c.v FROM tree c, descendants d WHERE c.parent_id = d.id
+      )
+      SELECT COUNT(*) FROM descendants
+    rows:
+      - [5]
+  # Sum all values in the tree.
+  - query: |-
+      WITH RECURSIVE all_nodes AS (
+        SELECT id, v FROM tree WHERE parent_id IS NULL
+        UNION ALL
+        SELECT c.id, c.v FROM tree c, all_nodes a WHERE c.parent_id = a.id
+      )
+      SELECT SUM(v) FROM all_nodes
+    rows:
+      - [150]
+  # Recursive CTE with ORDER BY on the result.
+  - query: |-
+      WITH RECURSIVE all_nodes AS (
+        SELECT id FROM tree WHERE parent_id IS NULL
+        UNION ALL
+        SELECT c.id FROM tree c, all_nodes a WHERE c.parent_id = a.id
+      )
+      SELECT id FROM all_nodes ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]

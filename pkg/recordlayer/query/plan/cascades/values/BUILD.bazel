@@ -69,6 +69,7 @@ go_test(
         "integration_test.go",
         "like_match_test.go",
         "pullup_test.go",
+        "rebase_fuzz_test.go",
         "rebase_test.go",
         "scalar_functions_extra2_test.go",
         "scalar_functions_extra_test.go",
