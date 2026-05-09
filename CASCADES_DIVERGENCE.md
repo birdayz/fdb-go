@@ -120,9 +120,13 @@ Physical operator that materializes inner result and sorts in memory. Fallback w
 
 Gates: DecorrelateValuesRule (scalar subqueries), AbstractDataAccessRule, MatchPartition infrastructure.
 
-### M-2: MatchPartition / PartialMatch / Compensation
+### M-2: MatchPartition / PartialMatch / Compensation — MOSTLY PORTED (nightshift-84)
 
-Required for advanced index matching (partial index utilization, compensation predicates). Gates: covering index via Cascades.
+Foundation types complete: TranslationMap, BiMap (structural equality), GroupByMappings, MatchedOrderingPart, MatchInfo (Regular + Adjusted + Builder), Compensation (No/Impossible/ForMatch), PartialMatchImpl, MatchPartition, SingleMatchedAccess, MaxMatchMap (with TranslateQueryValueMaybe/PullUpMaybe/AdjustMaybe), Traversal (candidate tree walker), Value.Replace tree substitution.
+
+Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchIntermediateRule (composing child matches), AdjustMatches (absorbing candidate-side expressions). All three fire during EXPLORE via MatchingRules().
+
+**Remaining:** PredicateMultiMap (full predicate mapping, currently placeholder). ValueEquivalence (semantic equality beyond structural). Full recursive MaxMatchMap.compute (currently seed: structural equality + pairwise child recursion).
 
 ### M-3: PushReferencedFields rules (5 rules)
 
@@ -136,9 +140,9 @@ Java's ImplementationRules match against PlanPartition property sets (ordering, 
 
 ## PRIORITY ORDER FOR REMAINING 1:1 ALIGNMENT
 
-1. **Scalar subqueries** — biggest user-visible gap. Needs DecorrelateValuesRule + SelectExpression. AliasMap (M-1) now ported as foundation. ~2-3 shifts.
-2. **D-7** (multi-aggregate) — 1 shift
+1. **D-7** (multi-aggregate) — M-2 foundation now in place; needs RecordQueryMultiIntersectionOnValuesPlan + AggregateDataAccessRule intersection logic. ~1 shift.
+2. **Scalar subqueries** — biggest user-visible gap. Needs DecorrelateValuesRule + SelectExpression. AliasMap + TranslationMap + MaxMatchMap foundations ready. ~2-3 shifts.
 3. ~~**D-8** (CardinalityProperty split) — DONE~~
 4. ~~**D-11** (ConstantObjectValue promotion) — DONE~~
 5. **D-2** (PushOrdering constraint vs structural) — 2-3 shifts
-6. **D-5** (InComparison architecture) — 2-3 shifts (M-1 foundation now available)
+6. **D-5** (InComparison architecture) — 2-3 shifts (M-1 + M-2 foundations now available)
