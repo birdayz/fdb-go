@@ -121,7 +121,10 @@ func (o *RichOrdering) IsDistinct() bool {
 }
 
 // GetEqualityBoundValues returns the set of values whose bindings are
-// all fixed (equality-bound). Mirrors Java's Ordering.getEqualityBoundValues().
+// all fixed (equality-bound). Java's version uses filterValues(isFixed)
+// which keeps values with ANY fixed binding; ours requires ALL bindings
+// fixed. In practice index scans produce single-binding entries so the
+// difference is moot.
 func (o *RichOrdering) GetEqualityBoundValues() map[values.Value]struct{} {
 	result := make(map[values.Value]struct{})
 	for v, bindings := range o.bindingMap {
