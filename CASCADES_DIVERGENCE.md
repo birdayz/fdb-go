@@ -128,9 +128,13 @@ Physical operator that materializes inner result and sorts in memory. Fallback w
 
 ## MISSING JAVA INFRASTRUCTURE (not yet ported)
 
-### M-1: TranslationMap
+### M-1: TranslationMap — PARTIALLY PORTED (swingshift-83)
 
-Required for correlation rebasing in subquery decorrelation, predicate push-down through correlated quantifiers. Gates: DecorrelateValuesRule, AbstractDataAccessRule, MatchPartition infrastructure.
+**Ported:** `AliasMap` (bidirectional CorrelationIdentifier mapping, immutable, builder pattern) in `alias_map.go`. `ForwardMap()` bridge to existing `values.RebaseValue()`. 8 unit tests.
+
+**Remaining:** Wire `AliasMap` into `PushRequestedOrderingThroughSortRule` alias translation (currently not needed — Go's ordering parts are pure FieldValues). Extend `values.RebaseValue` to handle all Value types (currently handles QuantifiedObjectValue, ArithmeticValue). Build `DecorrelateValuesRule` using the AliasMap infrastructure.
+
+Gates: DecorrelateValuesRule (scalar subqueries), AbstractDataAccessRule, MatchPartition infrastructure.
 
 ### M-2: MatchPartition / PartialMatch / Compensation
 
@@ -148,8 +152,9 @@ Java's ImplementationRules match against PlanPartition property sets (ordering, 
 
 ## PRIORITY ORDER FOR REMAINING 1:1 ALIGNMENT
 
-1. **D-11** (ConstantObjectValue promotion) — 0.5 shift
+1. **Scalar subqueries** — biggest user-visible gap. Needs DecorrelateValuesRule + SelectExpression. AliasMap (M-1) now ported as foundation. ~2-3 shifts.
 2. **D-7** (multi-aggregate) — 1 shift
 3. **D-8** (CardinalityProperty split) — 0.5 shift
-4. **D-2** (PushOrdering constraint vs structural) — 2-3 shifts
-5. **D-5** (InComparison architecture) — 2-3 shifts (gated on M-1)
+4. **D-11** (ConstantObjectValue promotion) — 0.5 shift (not triggered yet)
+5. **D-2** (PushOrdering constraint vs structural) — 2-3 shifts
+6. **D-5** (InComparison architecture) — 2-3 shifts (M-1 foundation now available)
