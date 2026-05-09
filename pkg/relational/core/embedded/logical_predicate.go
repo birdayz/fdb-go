@@ -1134,6 +1134,16 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if errors.As(walkErr, &binErr) {
 				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
 			}
+			// When a nested correlated EXISTS fails because the outer
+			// scope is insufficient (e.g. inner EXISTS references a
+			// grandparent table), propagate as ErrCodeUndefinedColumn
+			// so the caller's BuildExists can fall back to
+			// buildCorrelatedExists with its richer outer scope.
+			if strings.Contains(walkErr.Error(), "correlated EXISTS:") ||
+				strings.Contains(walkErr.Error(), "nested correlated EXISTS:") {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"nested correlated EXISTS: %v", walkErr)
+			}
 		} else {
 			preWalkPred = walked
 		}
@@ -1146,6 +1156,22 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	hasSubqueries := existsPlanner != nil && (len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0)
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
+
+		// Semi-join optimization: when the filter sits on a cross-join
+		// and a correlated EXISTS references the same table as the
+		// join's right side with the same equi-join column pair, the
+		// cross-join is redundant — the EXISTS subsumes it. Drop the
+		// cross-join, strip the join predicate from the WHERE, and keep
+		// only the EXISTS. This matches Java's Cascades behavior.
+		if len(sq.joins) > 0 && len(existsPlanner.subqueries) == 1 {
+			esq := existsPlanner.subqueries[0]
+			if esq.JoinPredicate != nil {
+				if eliminated := eliminateRedundantCrossJoin(op, sq, pred, esq); eliminated {
+					return op, nil
+				}
+			}
+		}
+
 		_ = upgradeFirstFilter(op, pred)
 		if len(existsPlanner.subqueries) > 0 {
 			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
@@ -1420,6 +1446,174 @@ func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]st
 // upgradeFirstFilterExistsSubqueries walks the single-child chain
 // from op and, at the first LogicalFilter, attaches the EXISTS
 // subquery plans. Returns true when a Filter was found.
+// eliminateRedundantCrossJoin detects and eliminates a cross-join that is
+// subsumed by a correlated EXISTS on the same table. When the cross-join's
+// right table matches the EXISTS scan table and the filter's join predicate
+// is equivalent to the EXISTS correlation, the cross-join is redundant —
+// replacing it with a simple EXISTS semi-join on the left table avoids
+// duplicate rows and matches Java's Cascades behavior.
+//
+// Returns true when the optimization fired (op modified in-place).
+func eliminateRedundantCrossJoin(
+	op logical.LogicalOperator,
+	sq *selectQuery,
+	pred predicates.QueryPredicate,
+	esq logical.ExistsSubquery,
+) bool {
+	if len(sq.joins) != 1 {
+		return false
+	}
+	joinTableName := sq.joins[0].tableName
+
+	// Check if the EXISTS scan references the same table.
+	existsTable := ""
+	for cur := esq.Plan; cur != nil; {
+		if s, ok := cur.(*logical.LogicalScan); ok {
+			existsTable = s.Table
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if existsTable == "" || !strings.EqualFold(joinTableName, existsTable) {
+		return false
+	}
+
+	// Check if the filter predicate contains a comparison between left
+	// and right table columns that matches the EXISTS join predicate.
+	filterComps := extractComparisonFieldPairs(pred)
+	existsComps := extractComparisonFieldPairs(esq.JoinPredicate)
+	if len(filterComps) == 0 || len(existsComps) == 0 {
+		return false
+	}
+	subsumes := false
+	for _, fc := range filterComps {
+		for _, ec := range existsComps {
+			fL := bareCol(fc[0])
+			fR := bareCol(fc[1])
+			eL := bareCol(ec[0])
+			eR := bareCol(ec[1])
+			if (fL == eL && fR == eR) || (fL == eR && fR == eL) {
+				subsumes = true
+			}
+		}
+	}
+	if !subsumes {
+		return false
+	}
+
+	// Strip the join predicate from the filter predicate — keep only
+	// the EXISTS predicate.
+	existsPred := stripNonExistsPredicates(pred)
+	if existsPred == nil {
+		return false
+	}
+
+	// Replace the LogicalJoin with just the left child (the main table
+	// scan). Walk the operator chain to find the LogicalFilter and the
+	// LogicalJoin beneath it.
+	for cur := op; cur != nil; {
+		f, ok := cur.(*logical.LogicalFilter)
+		if !ok {
+			ch := cur.Children()
+			if len(ch) != 1 {
+				return false
+			}
+			cur = ch[0]
+			continue
+		}
+		join, joinOK := f.Input.(*logical.LogicalJoin)
+		if !joinOK {
+			return false
+		}
+		// Replace the join with just its left child.
+		f.Input = join.Left
+		f.Predicate = existsPred
+		f.ExistsSubqueries = []logical.ExistsSubquery{esq}
+		return true
+	}
+	return false
+}
+
+// extractComparisonFieldPairs extracts [left, right] field name pairs
+// from comparison predicates in a predicate tree.
+func extractComparisonFieldPairs(p predicates.QueryPredicate) [][2]string {
+	if p == nil {
+		return nil
+	}
+	var pairs [][2]string
+	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
+		cp, ok := qp.(*predicates.ComparisonPredicate)
+		if !ok {
+			return true
+		}
+		lFV, lOK := cp.Operand.(*values.FieldValue)
+		if !lOK {
+			return true
+		}
+		if cp.Comparison.Operand == nil {
+			return true
+		}
+		rFV, rOK := cp.Comparison.Operand.(*values.FieldValue)
+		if !rOK {
+			return true
+		}
+		pairs = append(pairs, [2]string{
+			strings.ToUpper(lFV.Field),
+			strings.ToUpper(rFV.Field),
+		})
+		return true
+	})
+	return pairs
+}
+
+// bareCol extracts the unqualified column name from a potentially
+// qualified field reference (e.g. "E.ID" → "ID").
+func bareCol(field string) string {
+	if dot := strings.LastIndexByte(field, '.'); dot >= 0 {
+		return field[dot+1:]
+	}
+	return field
+}
+
+// stripNonExistsPredicates removes non-EXISTS predicates from an AND
+// tree, returning only the EXISTS (or NOT EXISTS) predicate. Returns
+// nil if no EXISTS predicate is found.
+func stripNonExistsPredicates(p predicates.QueryPredicate) predicates.QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	if _, ok := p.(*predicates.ExistsPredicate); ok {
+		return p
+	}
+	if not, ok := p.(*predicates.NotPredicate); ok {
+		ch := not.Children()
+		if len(ch) == 1 {
+			if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
+				return p
+			}
+		}
+	}
+	if and, ok := p.(*predicates.AndPredicate); ok {
+		var existsPreds []predicates.QueryPredicate
+		for _, sub := range and.SubPredicates {
+			if ep := stripNonExistsPredicates(sub); ep != nil {
+				existsPreds = append(existsPreds, ep)
+			}
+		}
+		if len(existsPreds) == 1 {
+			return existsPreds[0]
+		}
+		if len(existsPreds) > 1 {
+			return predicates.NewAnd(existsPreds...)
+		}
+	}
+	return nil
+}
+
 func upgradeFirstFilterExistsSubqueries(op logical.LogicalOperator, subqueries []logical.ExistsSubquery) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
@@ -3161,9 +3355,44 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	})
 
 	resolver := expr.New(analyzer, innerScope)
+
+	// Install a SubqueryPlanner on the resolver so that nested EXISTS
+	// subqueries in the inner WHERE can be planned. The nested planner's
+	// outer scopes include both the current planner's outer scopes and
+	// the inner table — this enables correlation across multiple levels
+	// (e.g. innermost EXISTS referencing outermost emp.id).
+	nestedOuterScopes := make(map[string]semantic.ScopeSource, len(p.outerScopes)+1)
+	for k, v := range p.outerScopes {
+		nestedOuterScopes[k] = v
+	}
+	nestedOuterScopes[strings.ToUpper(aliasID.Name())] = semantic.ScopeSource{
+		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
+	}
+	nestedPlanner := &existsSubqueryPlanner{
+		md:          p.md,
+		outerScopes: nestedOuterScopes,
+		cteScopes:   p.cteScopes,
+	}
+	resolver.SetSubqueryPlanner(nestedPlanner)
+
 	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
 	if walkErr != nil {
 		return nil, fmt.Errorf("correlated EXISTS: walk predicate: %w", walkErr)
+	}
+
+	// If the nested planner collected EXISTS subqueries, the inner WHERE
+	// has its own EXISTS that may be correlated with an even-outer scope.
+	// Hoist the nested EXISTS's correlated join predicate to this level
+	// so it's evaluated against the outer row (which has the correlated
+	// columns). The middle plan becomes an uncorrelated scan — the
+	// EXISTS just checks if the inner EXISTS's correlated match holds.
+	if len(nestedPlanner.subqueries) > 0 {
+		// Use the inner EXISTS's plan as *this* EXISTS's plan, and hoist
+		// its join predicate to this level. The middle query's scan is
+		// effectively replaced by the inner EXISTS scan.
+		innerESQ := nestedPlanner.subqueries[0]
+		p.lastJoinPredicate = innerESQ.JoinPredicate
+		return innerESQ.Plan, nil
 	}
 
 	// The predicate will be evaluated in a merged NLJ context where both

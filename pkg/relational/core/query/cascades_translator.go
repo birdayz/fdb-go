@@ -114,10 +114,6 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	innerRef := t.translateRef(f.Input)
-	if innerRef == nil {
-		return nil
-	}
 	if f.Predicate == nil && f.PredicateText != "" {
 		return nil
 	}
@@ -142,6 +138,23 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// quantifiers. The ExistsPredicate in the predicate tree references
 	// the existential alias; the planner's ImplementSimpleSelectRule
 	// handles the existential quantifier via FirstOrDefaultPlan.
+	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
+		// When the filter's input is a join, flatten into a single
+		// SelectExpression with ForEach(left), ForEach(right), and
+		// Existential(exists_scan). This avoids nesting one
+		// SelectExpression (the join) inside another (the EXISTS filter),
+		// which causes the Cascades planner to diverge. The NLJ rule
+		// handles the 2+1 quantifier shape directly.
+		if join, ok := f.Input.(*logical.LogicalJoin); ok {
+			return t.translateJoinWithExists(join, f)
+		}
+	}
+
+	innerRef := t.translateRef(f.Input)
+	if innerRef == nil {
+		return nil
+	}
+
 	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
 		outerQ := expressions.ForEachQuantifier(innerRef)
 		quantifiers := []expressions.Quantifier{outerQ}
@@ -500,6 +513,103 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		[]expressions.Quantifier{leftQ, rightQ},
 		preds,
 		[]string{leftAlias, rightAlias},
+		joinType,
+	)
+}
+
+// translateJoinWithExists builds a flat SelectExpression from a LogicalJoin
+// + LogicalFilter that carries EXISTS subqueries. Instead of nesting one
+// SelectExpression (the join) inside another (the EXISTS filter), this
+// method produces a single SelectExpression with ForEach(left),
+// ForEach(right), and Existential quantifiers. The combined predicate
+// covers both the join ON and the filter WHERE. The NLJ rule's
+// implementJoinWithExistential path handles this 2+1 pattern.
+func (t *cascadesTranslator) translateJoinWithExists(
+	j *logical.LogicalJoin,
+	f *logical.LogicalFilter,
+) expressions.RelationalExpression {
+	left := j.Left
+	right := j.Right
+	kind := j.Kind
+	if kind == logical.JoinRight {
+		left, right = right, left
+		kind = logical.JoinLeft
+	}
+
+	// Collect scalar subquery plans from the filter.
+	for _, ssq := range f.ScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
+
+	// Flatten join + EXISTS into a single SelectExpression
+	// with ForEach(left), ForEach(right), and Existential quantifiers.
+	leftRef := t.translateRef(left)
+	if leftRef == nil {
+		return nil
+	}
+	rightRef := t.translateRef(right)
+	if rightRef == nil {
+		return nil
+	}
+
+	leftQ := expressions.ForEachQuantifier(leftRef)
+	rightQ := expressions.ForEachQuantifier(rightRef)
+	quantifiers := []expressions.Quantifier{leftQ, rightQ}
+
+	// Combine join ON predicates + filter WHERE predicates. Flatten
+	// any top-level AND so the NLJ rule can split join predicates
+	// from EXISTS predicates at the individual predicate level.
+	var allPreds []predicates.QueryPredicate
+	if j.OnPredicate != nil {
+		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
+			allPreds = append(allPreds, qp)
+		}
+	}
+	if f.Predicate != nil {
+		if and, ok := f.Predicate.(*predicates.AndPredicate); ok {
+			allPreds = append(allPreds, and.SubPredicates...)
+		} else {
+			allPreds = append(allPreds, f.Predicate)
+		}
+	}
+
+	// Add EXISTS subqueries as existential quantifiers.
+	for _, esq := range f.ExistsSubqueries {
+		subRef := t.translateRef(esq.Plan)
+		if subRef == nil {
+			return nil
+		}
+		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+		quantifiers = append(quantifiers, existQ)
+		if esq.JoinPredicate != nil {
+			allPreds = append(allPreds, esq.JoinPredicate)
+		}
+	}
+
+	leftAlias := sourceAlias(left)
+	rightAlias := sourceAlias(right)
+	sourceAliases := []string{leftAlias, rightAlias}
+	for _, esq := range f.ExistsSubqueries {
+		sourceAliases = append(sourceAliases, sourceAlias(esq.Plan))
+	}
+
+	var joinType expressions.JoinType
+	switch kind {
+	case logical.JoinLeft:
+		joinType = expressions.JoinLeftOuter
+	default:
+		joinType = expressions.JoinInner
+	}
+
+	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
+	return expressions.NewSelectExpressionWithJoinType(
+		resultValue,
+		quantifiers,
+		allPreds,
+		sourceAliases,
 		joinType,
 	)
 }

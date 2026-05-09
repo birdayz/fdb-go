@@ -854,6 +854,7 @@ func executeNestedLoopJoin(
 	var results []QueryResult
 
 	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
+		outerAlias := p.GetOuterAlias()
 		if len(preds) == 0 {
 			for _, outerRow := range outerRows {
 				innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
@@ -867,6 +868,9 @@ func executeNestedLoopJoin(
 				}
 				hasRow := innerResult.HasNext() && innerResult.GetValue().Datum != nil
 				if (joinType == plans.JoinExists && hasRow) || (joinType == plans.JoinNotExists && !hasRow) {
+					if outerAlias != "" {
+						outerRow = qualifyOuterRow(outerRow, outerAlias)
+					}
 					results = append(results, outerRow)
 				}
 			}
@@ -882,13 +886,16 @@ func executeNestedLoopJoin(
 			for _, outerRow := range outerRows {
 				matched := false
 				for _, innerRow := range innerRows {
-					combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
+					combined := mergeRows(outerRow, innerRow, outerAlias, p.GetInnerAlias())
 					if passesJoinPredicates(combined, preds, evalCtx) {
 						matched = true
 						break
 					}
 				}
 				if (joinType == plans.JoinExists && matched) || (joinType == plans.JoinNotExists && !matched) {
+					if outerAlias != "" {
+						outerRow = qualifyOuterRow(outerRow, outerAlias)
+					}
 					results = append(results, outerRow)
 				}
 			}
