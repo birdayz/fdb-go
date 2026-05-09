@@ -123,6 +123,7 @@ func (e *LogicalProjectionExpression) WithQuantifiers(quantifiers []Quantifier) 
 	return &LogicalProjectionExpression{
 		inner:           quantifiers[0],
 		projectedValues: e.projectedValues,
+		aliases:         e.aliases,
 	}
 }
 

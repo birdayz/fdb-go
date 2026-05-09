@@ -651,6 +651,13 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// like "B.ID" instead of the seed's unqualified "ID". Without this
 	// normalization, the outer query (and DFS recursion) can't find the
 	// expected columns, yielding NULL for every row.
+	//
+	// The temp table MUST use the seed's original column names (not the
+	// CTE column aliases). The semantic analyzer's ColumnAliasMap
+	// reverse-maps aliased references (e.g. `a.up`) back to the
+	// original column names (e.g. `A.PARENT`) in the WHERE predicate's
+	// FieldValues. So the temp table datum keys must be the originals
+	// for the recursive branch's join predicates to match.
 	seedCols := extractOuterProjectionColumns(seedBranches[0])
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(seedCols) > 0 && len(recCols) > 0 && len(seedCols) == len(recCols) {
@@ -706,9 +713,45 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		strategy,
 	)
 
-	// Register the RecursiveUnionExpression so that the Main query's
+	// Apply CTE column aliases as a rename projection over the
+	// recursive union's output. The temp table internally uses the
+	// seed's original column names (ID, PARENT) because the semantic
+	// analyzer's ColumnAliasMap reverse-maps aliased references
+	// (`a.up` → `A.PARENT`) in the recursive branch's predicates.
+	// The rename only applies to the outward-facing datum so the
+	// main query can reference the aliased names (NODE, UP).
+	var cteResult expressions.RelationalExpression = recUnion
+	if len(c.ColumnAliases) > 0 && len(seedCols) > 0 && len(seedCols) == len(c.ColumnAliases) {
+		needsRename := false
+		for i := range seedCols {
+			if !strings.EqualFold(seedCols[i], c.ColumnAliases[i]) {
+				needsRename = true
+				break
+			}
+		}
+		if needsRename {
+			renameVals := make([]values.Value, len(seedCols))
+			for i, sc := range seedCols {
+				renameVals[i] = &values.FieldValue{
+					Field: strings.ToUpper(sc),
+					Typ:   values.UnknownType,
+				}
+			}
+			renameAliases := make([]string, len(c.ColumnAliases))
+			for i, a := range c.ColumnAliases {
+				renameAliases[i] = strings.ToUpper(a)
+			}
+			cteResult = expressions.NewLogicalProjectionExpressionWithAliases(
+				renameVals,
+				renameAliases,
+				expressions.ForEachQuantifier(expressions.InitialOf(recUnion)),
+			)
+		}
+	}
+
+	// Register the (possibly-renamed) result so that the Main query's
 	// scan of the CTE name resolves to it.
-	t.cteExprScope[cteName] = recUnion
+	t.cteExprScope[cteName] = cteResult
 	result := t.translateOp(c.Main)
 	delete(t.cteExprScope, cteName)
 	return result
