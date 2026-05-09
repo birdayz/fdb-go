@@ -133,4 +133,39 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 	return eqFold(opFV.Field, c.aggColumn)
 }
 
+// MatchesSingleAggregateOf reports whether this candidate's grouping
+// keys match gb's grouping keys AND this candidate covers the aggregate
+// at index aggIndex in gb's aggregate list. Used by the multi-aggregate
+// intersection path: each candidate covers one aggregate while all
+// share the same grouping columns.
+func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.GroupByExpression, aggIndex int) bool {
+	keys := gb.GetGroupingKeys()
+	if len(keys) != len(c.groupCols) {
+		return false
+	}
+	for i, k := range keys {
+		fv, ok := k.(*values.FieldValue)
+		if !ok {
+			return false
+		}
+		if !eqFold(fv.Field, c.groupCols[i]) {
+			return false
+		}
+	}
+
+	aggs := gb.GetAggregates()
+	if aggIndex < 0 || aggIndex >= len(aggs) {
+		return false
+	}
+	agg := aggs[aggIndex]
+	if agg.Function != c.aggFunction {
+		return false
+	}
+	opFV, ok := agg.Operand.(*values.FieldValue)
+	if !ok {
+		return false
+	}
+	return eqFold(opFV.Field, c.aggColumn)
+}
+
 var _ MatchCandidate = (*AggregateIndexMatchCandidate)(nil)

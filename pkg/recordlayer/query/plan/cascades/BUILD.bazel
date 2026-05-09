@@ -35,6 +35,7 @@ go_library(
         "physical_limit_wrapper.go",
         "physical_map_wrapper.go",
         "physical_merge_sort_union_wrapper.go",
+        "physical_multi_intersection_wrapper.go",
         "physical_nested_loop_join_wrapper.go",
         "physical_predicates_filter_wrapper.go",
         "physical_recursive_dfs_join_wrapper.go",

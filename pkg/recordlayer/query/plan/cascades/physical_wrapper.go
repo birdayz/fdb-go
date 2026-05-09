@@ -34,6 +34,24 @@ func IsPhysicalIntersection(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// IsPhysicalMultiIntersection reports whether the given
+// RelationalExpression is a physicalMultiIntersectionWrapper.
+func IsPhysicalMultiIntersection(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalMultiIntersectionWrapper)
+	return ok
+}
+
+// GetPhysicalMultiIntersectionPlan returns the underlying
+// RecordQueryMultiIntersectionOnValuesPlan if expr is a
+// physicalMultiIntersectionWrapper, nil otherwise.
+func GetPhysicalMultiIntersectionPlan(expr expressions.RelationalExpression) *plans.RecordQueryMultiIntersectionOnValuesPlan {
+	w, ok := expr.(*physicalMultiIntersectionWrapper)
+	if !ok {
+		return nil
+	}
+	return w.plan
+}
+
 // IsPhysicalFilter reports whether the given RelationalExpression is
 // a physicalFilterWrapper.
 func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
