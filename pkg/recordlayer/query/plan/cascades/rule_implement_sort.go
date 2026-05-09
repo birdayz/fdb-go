@@ -69,8 +69,11 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			eqBoundNames[values.ExplainValue(v)] = struct{}{}
 		}
 		equalityBoundUnsorted := len(eqBound)
+		seenEqBound := make(map[string]bool, len(requestedParts))
 		for _, part := range requestedParts {
-			if _, ok := eqBoundNames[values.ExplainValue(part.Value)]; ok {
+			name := values.ExplainValue(part.Value)
+			if _, ok := eqBoundNames[name]; ok && !seenEqBound[name] {
+				seenEqBound[name] = true
 				equalityBoundUnsorted--
 			}
 		}
@@ -92,6 +95,9 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			for _, v := range ordering.GetOrderingKeys() {
 				name := values.ExplainValue(v)
 				_, inSort := sortValueNames[name]
+				// inEq can be true for mixed-binding keys (one fixed +
+				// one sorted) — GetOrderingKeys excludes all-fixed but
+				// GetEqualityBoundValues includes any-fixed.
 				_, inEq := eqBoundNames[name]
 				if !inSort && !inEq {
 					allCovered = false
@@ -174,6 +180,9 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 	}
 }
 
+// computePartitionOrdering returns the ordering of the first physical
+// plan in the partition. All members share the same ordering by
+// construction (partitions are keyed on ordering properties).
 func computePartitionOrdering(partition *PlanPartition) *RichOrdering {
 	for _, expr := range partition.GetExpressions() {
 		if ph, ok := expr.(physicalPlanExpression); ok {
