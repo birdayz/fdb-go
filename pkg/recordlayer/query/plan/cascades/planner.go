@@ -194,6 +194,11 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 		return nil, tasks, ErrPlannerCapHit
 	}
 
+	// MATCHING phase: after EXPLORE converges, adjust partial matches
+	// by absorbing candidate-side-only expressions (AdjustMatchRule).
+	// No-op when no PartialMatches were created during EXPLORE.
+	AdjustMatches(rootRef)
+
 	// PLANNING phase: fire implementation rules bottom-up to finalize
 	// exploratory expressions into final members.
 	if len(p.implementationRules) > 0 {
