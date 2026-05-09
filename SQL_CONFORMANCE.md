@@ -122,7 +122,10 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | Unknown table | 42F01 | Y | Y | validateTablesAndColumns + SourceNotFoundError |
 | Unknown column | 42703 | Y | Y | ColumnNotFoundError in WHERE/SELECT/ORDER BY |
 | Ambiguous column | 42702 | Y | Y | JOIN ambiguity detection |
-| Unknown qualifier | 42F01 | Y | Y | SourceNotFoundError → 42F01 (swingshift-83) |
+| Unknown qualifier | 42703 | Y | Y | SourceNotFoundError → 42703 (swingshift-83) |
+| Type mismatch in comparison | 42804 | Y | Y | COMPARISON_OF_INCOMPATIBLE_TYPES → DATATYPE_MISMATCH |
+| Type mismatch in BETWEEN | 42804 | Y | Y | Same as comparison |
+| IN-list type mismatch | 42804 | Y | Y | Same as comparison |
 | GROUP BY violation | 42803 | Y | Y | Non-grouped column in SELECT |
 | Duplicate ORDER BY | 42701 | Y | Y | |
 | UNION column mismatch | 42F64 | Y | Y | |
