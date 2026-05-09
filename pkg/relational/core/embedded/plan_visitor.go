@@ -916,7 +916,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 				continue
 			}
 			if ac.outExpr != nil && ac.aggFunc == "" {
-				allProj = append(allProj, strings.TrimSpace(ac.outExpr.GetText()))
+				allProj = append(allProj, canonicalTextOf(ac.outExpr))
 				allAntlr = append(allAntlr, ac.outExpr)
 			} else if ac.aggFunc != "" {
 				arg := ac.aggArg
@@ -1208,7 +1208,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
 			if nameErr != nil {
 				// Computed expression: use the raw expression text.
-				exprText := strings.TrimSpace(e.Expression().GetText())
+				exprText := canonicalTextOf(e.Expression())
 				projs = append(projs, exprText)
 				aliases = append(aliases, alias)
 				computed = append(computed, true)
