@@ -155,8 +155,8 @@ Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and re
 
 ## Yamsql Conformance
 
-105 scenario test suite. Current: **105/105 pass (100%)**.
+115 scenario test suite. Current: **115/115 pass (100%)**.
 
 ## Cascades Divergence Status
 
-See `CASCADES_DIVERGENCE.md` for the full audit. 6 divergences resolved (D-1, D-3, D-8, D-9, D-10, D-12). Remaining: D-2 (PushOrdering structural vs constraint, 2-3 shifts), D-4 (cost model, by design), D-5 (InComparison architecture), D-7 (multi-aggregate), D-11 (ConstantObjectValue promotion).
+See `CASCADES_DIVERGENCE.md` for the full audit. **11 divergences resolved** (D-1, D-2, D-3, D-7, D-8, D-9, D-10, D-11, D-12). Remaining: D-4 (cost model, by design — intentional), D-5 (InComparison architecture, 2-3 shifts — needs AbstractDataAccessRule).
