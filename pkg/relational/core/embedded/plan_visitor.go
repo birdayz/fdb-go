@@ -657,8 +657,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			if errors.As(walkErr, &binErr) {
 				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
 			}
-			if strings.Contains(walkErr.Error(), "correlated EXISTS:") ||
-				strings.Contains(walkErr.Error(), "nested correlated EXISTS:") {
+			var corrExistsErr *CorrelatedExistsError
+			if errors.As(walkErr, &corrExistsErr) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"nested correlated EXISTS: %v", walkErr)
 			}
