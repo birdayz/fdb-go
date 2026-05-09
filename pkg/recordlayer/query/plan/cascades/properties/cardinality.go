@@ -161,9 +161,10 @@ func UnknownMaxCardinality() Cardinalities {
 // ---------------------------------------------------------------------------
 
 // IntersectCardinalities merges cardinalities for an intersection
-// operation. For min: if one side is unknown but the other isn't,
-// we can set min to 0 (intersection can only reduce rows). For max:
-// take the min of known maxes (intersection bounded by smallest input).
+// operation. For min: if both sides are known, set to 0 (intersection
+// can be empty); if either is unknown, result is unknown. For max:
+// take the min of known maxes (intersection bounded by smallest
+// input); unknown propagates.
 // Matches Java's CardinalitiesVisitor.intersectCardinalities().
 func IntersectCardinalities(items []Cardinalities) Cardinalities {
 	minCard := UnknownCardinality()

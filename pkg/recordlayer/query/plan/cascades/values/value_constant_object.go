@@ -130,14 +130,15 @@ func promoteConstant(obj any, target Type) any {
 			return obj // already matches
 		}
 	case int:
-		// Go's int is platform-dependent but treated as int64 (LONG).
+		// Go's int is platform-dependent; always widen to int64 for
+		// TypeCodeLong (Java stores long, never bare int).
 		switch tc {
+		case TypeCodeLong:
+			return int64(v)
 		case TypeCodeFloat:
 			return float32(v)
 		case TypeCodeDouble:
 			return float64(v)
-		case TypeCodeLong:
-			return obj // already matches
 		}
 	case float32:
 		switch tc {

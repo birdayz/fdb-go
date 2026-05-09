@@ -353,7 +353,10 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		}
 	case *plans.RecordQueryPredicatesFilterPlan:
 		child := cardinalitiesFromChildRef(w)
-		return child.Floor(0)
+		return properties.Cardinalities{
+			Min: properties.OfCardinality(0),
+			Max: child.GetMaxCardinality(),
+		}
 
 	// --- Scans ---
 	case *plans.RecordQueryScanPlan:

@@ -220,6 +220,23 @@ func TestConstantObjectValue_PromoteInt64ToFloat(t *testing.T) {
 	}
 }
 
+func TestConstantObjectValue_PromoteGoIntToInt64(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("a")
+	v := NewConstantObjectValue(alias, "c1", NullableLong)
+	stub := &stubConstantDeref{values: map[constantKey]any{
+		{alias: alias, constantID: "c1"}: int(42),
+	}}
+	got := v.Evaluate(stub)
+	i64, ok := got.(int64)
+	if !ok {
+		t.Fatalf("Evaluate = %v (%T), want int64 (not bare int)", got, got)
+	}
+	if i64 != 42 {
+		t.Fatalf("Evaluate = %d, want 42", i64)
+	}
+}
+
 func TestConstantObjectValue_RelationTypePassThrough(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("a")

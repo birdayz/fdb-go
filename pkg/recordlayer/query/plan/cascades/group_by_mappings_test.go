@@ -295,17 +295,16 @@ func TestBiMapCopy(t *testing.T) {
 	}
 }
 
-func TestBiMapCopyNil(t *testing.T) {
+func TestBiMapCopyNilPanics(t *testing.T) {
 	t.Parallel()
 
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Copy on nil BiMap should panic")
+		}
+	}()
 	var bm *BiMap[string, int]
-	cp := bm.Copy()
-	if cp == nil {
-		t.Fatal("Copy of nil BiMap should return empty BiMap, not nil")
-	}
-	if cp.Len() != 0 {
-		t.Fatalf("expected len 0, got %d", cp.Len())
-	}
+	bm.Copy()
 }
 
 func TestBiMapRangeContents(t *testing.T) {

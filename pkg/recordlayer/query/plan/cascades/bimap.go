@@ -147,12 +147,7 @@ func (b *BiMap[K, V]) Range(fn func(key K, value V) bool) {
 // Copy returns a deep copy of the BiMap.
 func (b *BiMap[K, V]) Copy() *BiMap[K, V] {
 	if b == nil {
-		return &BiMap[K, V]{
-			entries: make(map[string]*biMapEntry[K, V]),
-			inverse: make(map[string]string),
-			keyStr:  func(k K) string { return fmt.Sprintf("%v", k) },
-			valStr:  func(v V) string { return fmt.Sprintf("%v", v) },
-		}
+		panic("BiMap.Copy on nil receiver")
 	}
 	c := &BiMap[K, V]{
 		entries: make(map[string]*biMapEntry[K, V], len(b.entries)),
