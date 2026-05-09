@@ -149,7 +149,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		for i, col := range sq.projCols {
 			expr := col
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				expr = strings.TrimSpace(sq.projExprs[i].GetText())
+				expr = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 			}
 			rows[i] = expr
 			if sq.projAliases != nil && i < len(sq.projAliases) {
@@ -338,7 +338,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					continue
 				}
 				if ac.outExpr != nil && ac.aggFunc == "" {
-					allProj = append(allProj, strings.TrimSpace(ac.outExpr.GetText()))
+					allProj = append(allProj, strings.TrimSpace(canonicalTextOf(ac.outExpr)))
 					allAntlr = append(allAntlr, ac.outExpr)
 				} else if ac.aggFunc != "" {
 					arg := ac.aggArg
@@ -468,7 +468,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		for i, col := range sq.projCols {
 			projs[i] = strip(col)
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
+				projs[i] = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 				computed[i] = true
 			}
 			if sq.projAliases != nil && i < len(sq.projAliases) {
@@ -609,7 +609,7 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		}
 		sets = append(sets, logical.Assignment{
 			Column: col,
-			Expr:   strings.TrimSpace(el.Expression().GetText()),
+			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)

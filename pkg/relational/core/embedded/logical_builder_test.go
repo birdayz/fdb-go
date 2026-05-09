@@ -445,7 +445,7 @@ func TestBuildLogicalPlan_Update(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Update(T SET V=v+1)\n  Filter(id = 5)\n    Scan(T)"
+	want := "Update(T SET V=v + 1)\n  Filter(id = 5)\n    Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

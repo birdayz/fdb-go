@@ -19,6 +19,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
@@ -545,7 +546,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if i < len(aliases) && aliases[i] != "" {
 			label = strings.ToUpper(aliases[i])
 		}
-		typeName := aggregateTypeName(name, desc)
+		typeName := valueTypeName(v, desc)
 		if typeName == "" && desc != nil {
 			typeName = protoFieldTypeName(desc, name)
 		}
@@ -720,26 +721,31 @@ func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageD
 	}
 }
 
-func aggregateTypeName(name string, desc protoreflect.MessageDescriptor) string {
-	upper := strings.ToUpper(strings.TrimSpace(name))
-	if strings.HasPrefix(upper, "COUNT(") {
+// valueTypeName resolves the SQL type name for a Value. For
+// AggregateValue nodes, it inspects the typed Op field instead of
+// string-parsing the ExplainValue output. For plain field references,
+// it falls through and returns "".
+func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
+	av, ok := v.(*values.AggregateValue)
+	if !ok {
+		return ""
+	}
+	switch av.Op {
+	case values.AggCount, values.AggCountStar:
 		return "BIGINT"
-	}
-	if strings.HasPrefix(upper, "AVG(") {
+	case values.AggAvg:
 		return "DOUBLE"
-	}
-	if strings.HasPrefix(upper, "SUM(") || strings.HasPrefix(upper, "MIN(") || strings.HasPrefix(upper, "MAX(") {
-		lparen := strings.Index(upper, "(")
-		rparen := strings.LastIndex(upper, ")")
-		if lparen >= 0 && rparen > lparen && desc != nil {
-			operand := strings.TrimSpace(upper[lparen+1 : rparen])
-			if t := protoFieldTypeName(desc, operand); t != "UNKNOWN" {
+	case values.AggSum, values.AggMin, values.AggMax:
+		if av.Operand != nil && desc != nil {
+			operandName := values.ExplainValue(av.Operand)
+			if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
 				return t
 			}
 		}
 		return "BIGINT"
+	default:
+		return "UNKNOWN"
 	}
-	return ""
 }
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
@@ -1010,16 +1016,20 @@ func findLogicalScan(op logical.LogicalOperator) *logical.LogicalScan {
 }
 
 // referencesInformationSchema walks the ANTLR parse tree and returns
-// true if any table name contains "INFORMATION_SCHEMA". Uses typed
-// parse tree nodes — no string matching on raw SQL text.
+// true if any table name references the INFORMATION_SCHEMA. Walks
+// typed FullId → Uid nodes — no GetText on the table name.
 func referencesInformationSchema(ctx antlr.Tree) bool {
 	if ctx == nil {
 		return false
 	}
 	if atom, ok := ctx.(*antlrgen.AtomTableItemContext); ok {
 		if tn := atom.TableName(); tn != nil {
-			if strings.Contains(strings.ToUpper(tn.GetText()), "INFORMATION_SCHEMA") {
-				return true
+			if fid := tn.FullId(); fid != nil {
+				for _, uid := range fid.AllUid() {
+					if strings.EqualFold(functions.StripIdentifierQuotes(uid.GetText()), "INFORMATION_SCHEMA") {
+						return true
+					}
+				}
 			}
 		}
 	}
