@@ -128,6 +128,28 @@ func TestAliasMap_Derived(t *testing.T) {
 	}
 }
 
+func TestAliasMap_ForwardMap(t *testing.T) {
+	t.Parallel()
+	a := values.UniqueCorrelationIdentifier()
+	b := values.UniqueCorrelationIdentifier()
+	m := AliasMapOfAliases(a, b)
+
+	fwd := m.ForwardMap()
+	if got, ok := fwd[a]; !ok || got != b {
+		t.Fatalf("ForwardMap[a] = %v, %v; want %v, true", got, ok, b)
+	}
+
+	qov := &values.QuantifiedObjectValue{Correlation: a, Typ: values.UnknownType}
+	rebased := values.RebaseValue(qov, fwd)
+	rebasedQOV, ok := rebased.(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("rebased = %T, want *QuantifiedObjectValue", rebased)
+	}
+	if rebasedQOV.Correlation != b {
+		t.Fatalf("rebased.Correlation = %v, want %v", rebasedQOV.Correlation, b)
+	}
+}
+
 func TestAliasMap_Compose(t *testing.T) {
 	t.Parallel()
 	a := values.UniqueCorrelationIdentifier()

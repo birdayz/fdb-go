@@ -132,6 +132,13 @@ func (m *AliasMap) IsEmpty() bool { return len(m.forward) == 0 }
 // Size returns the number of mappings.
 func (m *AliasMap) Size() int { return len(m.forward) }
 
+// ForwardMap returns the forward (source→target) map suitable for
+// passing to values.RebaseValue. This is the bridge between the
+// cascades-level AliasMap and the values-level rebase infrastructure.
+func (m *AliasMap) ForwardMap() values.AliasMap {
+	return values.AliasMap(m.forward)
+}
+
 // Sources returns all source aliases.
 func (m *AliasMap) Sources() []values.CorrelationIdentifier {
 	result := make([]values.CorrelationIdentifier, 0, len(m.forward))
