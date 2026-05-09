@@ -369,50 +369,20 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 // a FieldValue whose field name starts with the given alias prefix
 // (case-insensitive). Used to classify predicates as belonging to the
 // join level or the EXISTS level.
+//
+// Uses walkPredicateFieldValues (shared with PushFilterBelowJoinRule)
+// to recursively visit ALL FieldValues in the predicate's value trees,
+// regardless of nesting depth or value type.
 func predicateReferencesAlias(p predicates.QueryPredicate, alias string) bool {
 	if alias == "" {
 		return false
 	}
 	prefix := strings.ToUpper(alias) + "."
 	found := false
-	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
-		if found {
-			return false
+	walkPredicateFieldValues(p, func(fv *values.FieldValue) {
+		if strings.HasPrefix(strings.ToUpper(fv.Field), prefix) {
+			found = true
 		}
-		switch pred := qp.(type) {
-		case *predicates.ComparisonPredicate:
-			if fieldReferencesAlias(pred.Operand, prefix) {
-				found = true
-				return false
-			}
-			if pred.Comparison.Operand != nil && fieldReferencesAlias(pred.Comparison.Operand, prefix) {
-				found = true
-				return false
-			}
-		case *predicates.ValuePredicate:
-			if fieldReferencesAlias(pred.Value, prefix) {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
-}
-
-func fieldReferencesAlias(v values.Value, prefix string) bool {
-	found := false
-	values.WalkValue(v, func(node values.Value) bool {
-		if found {
-			return false
-		}
-		if fv, ok := node.(*values.FieldValue); ok {
-			if strings.HasPrefix(strings.ToUpper(fv.Field), prefix) {
-				found = true
-				return false
-			}
-		}
-		return true
 	})
 	return found
 }

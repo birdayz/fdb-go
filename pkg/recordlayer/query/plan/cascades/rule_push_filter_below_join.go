@@ -258,11 +258,17 @@ func stripAliasPredicate(p predicates.QueryPredicate, prefix string) predicates.
 // stripAliasValue returns a copy of v where FieldValues with the
 // alias prefix have it stripped. Non-FieldValue nodes and FieldValues
 // without the prefix are returned unchanged.
+//
+// Uses values.MapFieldValues to recursively walk ALL value types
+// (ArithmeticValue, CastValue, ScalarFunctionValue, etc.) and strip
+// the alias prefix from any FieldValue at any depth. This handles
+// arbitrarily nested expressions like UPPER(A.NAME), A.X + B.Y,
+// CAST(A.COL AS INT), etc.
 func stripAliasValue(v values.Value, prefix string) values.Value {
 	if v == nil {
 		return nil
 	}
-	if fv, ok := v.(*values.FieldValue); ok {
+	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
 		upper := strings.ToUpper(fv.Field)
 		if strings.HasPrefix(upper, prefix) {
 			return &values.FieldValue{
@@ -271,37 +277,7 @@ func stripAliasValue(v values.Value, prefix string) values.Value {
 			}
 		}
 		return fv
-	}
-	// For composite values (ArithValue, CastValue, etc.), recurse
-	// into children and rebuild if any child changed.
-	children := v.Children()
-	if len(children) == 0 {
-		return v
-	}
-	changed := false
-	newChildren := make([]values.Value, len(children))
-	for i, c := range children {
-		nc := stripAliasValue(c, prefix)
-		if nc != c {
-			changed = true
-		}
-		newChildren[i] = nc
-	}
-	if !changed {
-		return v
-	}
-	// Rebuild the value with new children. For the seed, composite
-	// values are rare in WHERE predicates pushed below joins; the
-	// common case is a direct FieldValue comparison. If we encounter
-	// a composite value type that doesn't support WithChildren, fall
-	// back to the original value.
-	type childReplacer interface {
-		WithChildren([]values.Value) values.Value
-	}
-	if cr, ok := v.(childReplacer); ok {
-		return cr.WithChildren(newChildren)
-	}
-	return v
+	})
 }
 
 var _ ExpressionRule = (*PushFilterBelowJoinRule)(nil)

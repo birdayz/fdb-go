@@ -505,14 +505,25 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 	return NewRichOrderingWithDeps(bm, keys, deps, outer.distinct || inner.distinct)
 }
 
-// PullUp translates this ordering through a value mapping. For each
-// ordering key, if the mapping contains a replacement, the key is
-// renamed. Bindings are preserved. Keys not in the mapping are dropped.
+// PullUp translates this ordering through a string-keyed value mapping.
+// For each ordering key, if the mapping contains a replacement (keyed
+// by ExplainValue string), the key is renamed. Bindings are preserved.
+// Keys not in the mapping are dropped.
 //
-// Simplified port of Java's Ordering.pullUp — handles the common case
-// of FieldValue→FieldValue renaming through projections. The full
-// Java version uses Value.pullUp() which handles arbitrary value
-// hierarchies and correlation translation.
+// This is the simpler of two pull-up paths:
+//   - PullUp(mapping): string-keyed FieldValue-to-FieldValue renaming.
+//     Used by projection rules and callers that build an explicit
+//     rename map.
+//   - PullUpThroughValue(resultValue, alias): full Value-tree-aware
+//     pull-up via values.PullUpValue. Handles RecordConstructorValue
+//     decomposition and passthrough (QOV/ObjectValue) semantics.
+//     Used by callers that have a result-value structure rather than
+//     a flat rename map.
+//
+// Both paths produce correct results for their use cases. Callers
+// should prefer PullUpThroughValue when the result value is available,
+// as it handles nested value structures (e.g. record constructors)
+// that a flat string map cannot represent.
 func (o *RichOrdering) PullUp(mapping map[string]values.Value) *RichOrdering {
 	if o == nil {
 		return nil

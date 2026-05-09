@@ -67,6 +67,15 @@ func pullUpThroughRecordConstructor(v Value, rc *RecordConstructorValue, alias C
 // pullUpThroughPassthrough handles pull-up through an identity-like
 // result value (QOV, ObjectValue). Field accesses pass through
 // unchanged.
+//
+// Limitation: the pulled-up value is a bare FieldValue without anchoring
+// it to the alias. In multi-source contexts (e.g. joins), Java would
+// produce a FieldAccessValue(QuantifiedObjectValue(alias), field) to
+// disambiguate which source the field comes from. Go doesn't have
+// FieldAccessValue yet. In practice this is safe because the call sites
+// (ordering pullup) use this in single-source contexts where there's no
+// ambiguity. If multi-source passthrough pull-up is needed, either add
+// FieldAccessValue or prefix the field with the alias ("alias.field").
 func pullUpThroughPassthrough(v Value, alias CorrelationIdentifier) Value {
 	if fv, ok := v.(*FieldValue); ok {
 		return &FieldValue{Field: fv.Field, Typ: fv.Typ}
@@ -158,15 +167,12 @@ func PushDownValues(toBePushedDown []Value, resultValue Value, upperAlias Correl
 	return result
 }
 
-// semanticEqual checks if two values are semantically equivalent,
-// using ExplainValue comparison (the same approach used by
-// valuesEqual in rich_ordering.go).
+// semanticEqual checks if two values are structurally equivalent.
+// Uses ValuesStructurallyEqual which recursively compares value trees
+// by concrete type and field values, rather than the fragile
+// ExplainValue string comparison which could theoretically produce
+// false positives on structurally different values that happen to
+// render identically.
 func semanticEqual(a, b Value) bool {
-	if a == b {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return ExplainValue(a) == ExplainValue(b)
+	return ValuesStructurallyEqual(a, b)
 }

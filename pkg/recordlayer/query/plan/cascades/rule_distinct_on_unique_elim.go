@@ -25,11 +25,21 @@ import (
 // column set (or the full row when there's no projection), the
 // Distinct is eliminated.
 //
-// Java equivalent: this optimization emerges from ImplementDistinctRule
-// + DistinctRecordsProperty in Java, where the physical implementation
-// phase detects that the inner plans already produce distinct records.
-// Go applies it earlier as a logical rewrite so the Distinct node
-// never reaches physical planning.
+// Divergence from Java: this is a logical rewrite rule that Java does
+// NOT have. In Java, the equivalent optimization happens during the
+// physical planning phase via ImplementDistinctRule + the
+// DistinctRecordsProperty property. Java's physical ImplementDistinctRule
+// checks DistinctRecordsProperty on the inner plan — if the inner
+// already produces distinct records (because it scans a unique index
+// covering all projected columns), the Distinct operator is elided at
+// physical plan construction time.
+//
+// Go applies the same optimization earlier, as a logical rewrite, so
+// the Distinct node is removed before physical planning. The
+// optimization is semantically equivalent: in both cases, a Distinct
+// over a provably-unique column set is a no-op and is eliminated. The
+// difference is purely in WHEN it fires (logical phase in Go vs.
+// physical phase in Java).
 type DistinctOnUniqueElimRule struct {
 	matcher matching.BindingMatcher
 }
