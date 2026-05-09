@@ -380,8 +380,8 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			return triFalse, err
 		}
 		if litVal == nil {
-			// Java verbatim: "NULL values are not allowed in the IN list".
-			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+			// Java: "NULL values are not allowed in the IN list" (42809).
+			return triFalse, api.NewErrorf(api.ErrCodeWrongObjectType,
 				"NULL values are not allowed in the IN list")
 		}
 		values = append(values, litVal)

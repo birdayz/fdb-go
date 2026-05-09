@@ -645,8 +645,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			}
 			var inListNull *expr.InListNullError
 			if errors.As(walkErr, &inListNull) {
-				return nil, api.NewError(api.ErrCodeCannotConvertType,
-					"IN-list contains NULL literal")
+				return nil, api.NewError(api.ErrCodeWrongObjectType,
+					"NULL values are not allowed in the IN list")
 			}
 			var colNotFound *semantic.ColumnNotFoundError
 			if errors.As(walkErr, &colNotFound) {
