@@ -239,6 +239,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		compositePKCrossScenario(),
 		uniqueViolationScenario(),
 		notNullViolationScenario(),
+		scalarSubqueryTypesScenario(),
+		inSubqueryDecompositionScenario(),
+		subqueryInScenario(),
 	}
 }
 
@@ -3916,6 +3919,121 @@ func notNullViolationScenario() *yamsql.Scenario {
 			{Query: "UPDATE t SET name = NULL WHERE id = 1", ErrorCode: "23502"},
 			// Baseline: the valid row is still intact.
 			{Query: "SELECT id, name FROM t", Rows: [][]any{{1, "alice"}}},
+		},
+	}
+}
+
+// scalarSubqueryTypesScenario mirrors testdata/scalar_subquery_types.yaml.
+// Type-coverage probes for scalar subqueries: string, boolean, double,
+// NULL, comparison, arithmetic expression. Drops NOT NULL on PK.
+// error_code tests (MIN on non-numeric, LIMIT) are included as-is and
+// auto-skipped by the harness.
+func scalarSubqueryTypesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "scalar_subquery_types",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, active BOOLEAN, score DOUBLE, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_t_score ON t (score)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'alice', true, 9.5), (2, 'bob', false, 7.25), (3, 'carol', true, null)",
+		},
+		Tests: []yamsql.Test{
+			// String-returning scalar subquery.
+			{Query: "SELECT (SELECT name FROM t WHERE id = 1) FROM t WHERE id = 2", Rows: [][]any{{"alice"}}},
+			// Boolean-returning scalar subquery.
+			{Query: "SELECT (SELECT active FROM t WHERE id = 2) FROM t WHERE id = 1", Rows: [][]any{{false}}},
+			// Double-returning scalar subquery.
+			{Query: "SELECT (SELECT score FROM t WHERE id = 1) FROM t WHERE id = 2", Rows: [][]any{{9.5}}},
+			// Subquery returning explicit NULL (column is NULL on this row).
+			{Query: "SELECT (SELECT score FROM t WHERE id = 3) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			// String comparison via subquery.
+			{Query: "SELECT id FROM t WHERE name = (SELECT name FROM t WHERE id = 2)", Rows: [][]any{{2}}},
+			// Boolean comparison via subquery.
+			{Query: "SELECT id FROM t WHERE active = (SELECT active FROM t WHERE id = 1) ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// Subquery feeding into a scalar arithmetic expression.
+			{Query: "SELECT (SELECT score FROM t WHERE id = 1) + 0.5 FROM t WHERE id = 1", Rows: [][]any{{10.0}}},
+			// MIN over non-numeric (STRING) — rejected.
+			{Query: "SELECT (SELECT MIN(name) FROM t) FROM t WHERE id = 1", ErrorCode: "0A000"},
+			// ORDER BY + LIMIT 1 — LIMIT rejected at parse time.
+			{Query: "SELECT (SELECT name FROM t ORDER BY score DESC LIMIT 1) FROM t WHERE id = 1", ErrorCode: "0AF00"},
+		},
+	}
+}
+
+// inSubqueryDecompositionScenario mirrors testdata/in_subquery_decomposition.yaml.
+// `col IN (SELECT ...)` is rejected at predicate evaluation time. These
+// tests pin the rejection across all shapes (PK, secondary index,
+// filtered, empty, arithmetic projection, correlated, duplicates). The
+// two EXISTS rewrites at the bottom are the supported alternatives.
+// Drops NOT NULL on PK.
+func inSubqueryDecompositionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "in_subquery_decomposition",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, name STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE TABLE tags (id BIGINT, t_id BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 30, 'a'), (2, 20, 'b'), (3, 10, 'c'), (4, 40, 'd'), (5, 15, 'e')",
+			"INSERT INTO tags VALUES (1, 1, 'red'), (2, 3, 'blue'), (3, 4, 'red'), (4, 5, 'green'), (99, 1, 'dup')",
+		},
+		Tests: []yamsql.Test{
+			// PK IN (SELECT ...) — rejected.
+			{Query: "SELECT id FROM t WHERE id IN (SELECT t_id FROM tags) ORDER BY id", ErrorCode: "0AF00"},
+			// Filtered subquery — same rejection.
+			{Query: "SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'red') ORDER BY id", ErrorCode: "0AF00"},
+			// Secondary-index IN (SELECT ...) — rejected.
+			{Query: "SELECT id, v FROM t WHERE v IN (SELECT t_id * 10 FROM tags WHERE label = 'red') ORDER BY v", ErrorCode: "0AF00"},
+			// Empty subquery — still rejected (rejection is syntactic).
+			{Query: "SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'nonexistent')", ErrorCode: "0AF00"},
+			// Subquery with NULL-droppable list — rejected.
+			{Query: "SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label IN ('red', 'blue')) ORDER BY id", ErrorCode: "0AF00"},
+			// Single-col arithmetic projection in subquery — rejected.
+			{Query: "SELECT id, v FROM t WHERE v IN (SELECT t_id * 10 FROM tags) ORDER BY v", ErrorCode: "0AF00"},
+			// Correlated IN-subquery — rejected at the IN-subquery level.
+			{Query: "SELECT id FROM t WHERE id IN (SELECT tags.t_id FROM tags WHERE tags.t_id = t.id) ORDER BY id", ErrorCode: "0AF00"},
+			// Duplicate-result subquery — rejected.
+			{Query: "SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label IN ('red', 'dup')) ORDER BY id", ErrorCode: "0AF00"},
+			// Single-row subquery — rejected.
+			{Query: "SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'dup') ORDER BY id", ErrorCode: "0AF00"},
+			// Supported rewrite: EXISTS preserves the same row set as IN.
+			{Query: "SELECT id FROM t WHERE EXISTS (SELECT 1 FROM tags WHERE tags.t_id = t.id) ORDER BY id", Rows: [][]any{{1}, {3}, {4}, {5}}},
+			{Query: "SELECT id, v FROM t WHERE EXISTS (SELECT 1 FROM tags WHERE label = 'red' AND tags.t_id * 10 = t.v) ORDER BY v", Rows: [][]any{{3, 10}, {4, 40}}},
+		},
+	}
+}
+
+// subqueryInScenario mirrors testdata/subquery_in.yaml.
+// `col IN (subquery)` and `col NOT IN (subquery)` are rejected
+// (Java NPEs in AstNormalizer; Go emits 0AF00). EXISTS / NOT EXISTS
+// and comma-join are the supported rewrites. Drops NOT NULL on PK.
+func subqueryInScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "subquery_in",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 1), (2, 2), (3, 3)",
+			"INSERT INTO b VALUES (101, 2), (102, null)",
+		},
+		Tests: []yamsql.Test{
+			// IN-subquery — rejected.
+			{Query: "SELECT id FROM a WHERE v IN (SELECT v FROM b)", ErrorCode: "0AF00"},
+			// NOT IN-subquery — also rejected.
+			{Query: "SELECT id FROM a WHERE v NOT IN (SELECT v FROM b)", ErrorCode: "0AF00"},
+			// Empty subquery shape — still rejected.
+			{Query: "SELECT id FROM a WHERE v IN (SELECT v FROM b WHERE id > 999)", ErrorCode: "0AF00"},
+			{Query: "SELECT id FROM a WHERE v NOT IN (SELECT v FROM b WHERE id > 999) ORDER BY id", ErrorCode: "0AF00"},
+			// Concrete-value subquery shape — still rejected.
+			{Query: "SELECT id FROM a WHERE v IN (SELECT v FROM b WHERE v IS NOT NULL AND v != 2)", ErrorCode: "0AF00"},
+			// Multi-column subquery — still rejected at IN-subquery level.
+			{Query: "SELECT id FROM a WHERE v IN (SELECT id, v FROM b)", ErrorCode: "0AF00"},
+			// Cross-type subquery via CTE — still rejected.
+			{Query: "WITH s AS (SELECT 'x' AS label FROM a WHERE id = 1)\nSELECT id FROM a WHERE v IN (SELECT label FROM s)", ErrorCode: "0AF00"},
+			{Query: "WITH s AS (SELECT 'x' AS label FROM a WHERE id = 1)\nSELECT id FROM a WHERE v NOT IN (SELECT label FROM s)", ErrorCode: "0AF00"},
+			// Supported rewrite: EXISTS / NOT EXISTS.
+			{Query: "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) ORDER BY id", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// Supported rewrite: comma-join with DISTINCT.
+			{Query: "SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id", Rows: [][]any{{2}}},
 		},
 	}
 }
