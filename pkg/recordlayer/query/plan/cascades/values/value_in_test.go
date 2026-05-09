@@ -137,6 +137,17 @@ func TestInOpValue_Evaluate_Float64ProbeMatchesInt64(t *testing.T) {
 	}
 }
 
+func TestInOpValue_Evaluate_Int32VsInt64Coercion(t *testing.T) {
+	t.Parallel()
+	v := NewInOpValue(
+		LiteralValue(int32(5)),
+		LiteralValue([]any{int64(3), int64(5), int64(7)}),
+	)
+	if got := v.Evaluate(nil); got != true {
+		t.Fatalf("int32(5) IN [int64(3), int64(5), int64(7)] = %v, want true", got)
+	}
+}
+
 func TestInOpValue_Evaluate_MixedNumericMiss(t *testing.T) {
 	t.Parallel()
 	v := NewInOpValue(

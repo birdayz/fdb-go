@@ -49,26 +49,21 @@ func equalsAny(a, b any) bool {
 	if _, ok := b.([]byte); ok {
 		return false
 	}
-	if af, bf, ok := promoteToFloat64(a, b); ok {
+	if af, bf, ok := promoteNumeric(a, b); ok {
 		return af == bf
 	}
 	return a == b
 }
 
-// promoteToFloat64 promotes mixed int/float pairs to float64 for
-// comparison. Matches Java's Comparisons.evalComparison(EQUALS, ...)
-// which performs numeric coercion.
-func promoteToFloat64(a, b any) (float64, float64, bool) {
+// promoteNumeric promotes mixed-type numeric pairs for comparison.
+// Matches Java's Comparisons.evalComparison(EQUALS) which coerces all
+// numerics to a common type. Only triggers when both are numeric —
+// same-type pairs already work via Go's == operator, but cross-type
+// (int32 vs int64, int64 vs float64) need promotion.
+func promoteNumeric(a, b any) (float64, float64, bool) {
 	af, aok := toFloat64(a)
 	bf, bok := toFloat64(b)
 	if !aok || !bok {
-		return 0, 0, false
-	}
-	_, aIsFloat := a.(float64)
-	_, bIsFloat := b.(float64)
-	_, aIsFloat32 := a.(float32)
-	_, bIsFloat32 := b.(float32)
-	if !aIsFloat && !bIsFloat && !aIsFloat32 && !bIsFloat32 {
 		return 0, 0, false
 	}
 	return af, bf, true
