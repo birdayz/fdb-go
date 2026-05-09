@@ -1458,17 +1458,18 @@ func TestAllPlanTypes_DistinctTypeHashes(t *testing.T) {
 	// Plans with no operator-specific params, all should have distinct
 	// type-discriminator hashes.
 	hashes := map[string]uint64{
-		"Limit":     NewRecordQueryLimitPlan(nil, 0, 0).HashCodeWithoutChildren(),
-		"Filter":    NewRecordQueryFilterPlan(nil, nil).HashCodeWithoutChildren(),
-		"Sort":      NewRecordQuerySortPlan(nil, nil).HashCodeWithoutChildren(),
-		"Distinct":  NewRecordQueryDistinctPlan(nil).HashCodeWithoutChildren(),
-		"Project":   NewRecordQueryProjectionPlan(nil, nil).HashCodeWithoutChildren(),
-		"Union":     NewRecordQueryUnionPlan(nil).HashCodeWithoutChildren(),
-		"Intersect": NewRecordQueryIntersectionPlan(nil, nil).HashCodeWithoutChildren(),
-		"Values":    NewRecordQueryValuesPlan(nil).HashCodeWithoutChildren(),
-		"Scan":      NewRecordQueryScanPlan(nil, values.UnknownType, false).HashCodeWithoutChildren(),
-		"HashAgg":   NewRecordQueryHashAggregationPlan(nil, nil, nil).HashCodeWithoutChildren(),
-		"StreamAgg": NewRecordQueryStreamingAggregationPlan(nil, nil, nil).HashCodeWithoutChildren(),
+		"Limit":          NewRecordQueryLimitPlan(nil, 0, 0).HashCodeWithoutChildren(),
+		"Filter":         NewRecordQueryFilterPlan(nil, nil).HashCodeWithoutChildren(),
+		"Sort":           NewRecordQuerySortPlan(nil, nil).HashCodeWithoutChildren(),
+		"Distinct":       NewRecordQueryDistinctPlan(nil).HashCodeWithoutChildren(),
+		"Project":        NewRecordQueryProjectionPlan(nil, nil).HashCodeWithoutChildren(),
+		"Union":          NewRecordQueryUnionPlan(nil).HashCodeWithoutChildren(),
+		"Intersect":      NewRecordQueryIntersectionPlan(nil, nil).HashCodeWithoutChildren(),
+		"MultiIntersect": NewRecordQueryMultiIntersectionOnValuesPlan(nil, nil, nil).HashCodeWithoutChildren(),
+		"Values":         NewRecordQueryValuesPlan(nil).HashCodeWithoutChildren(),
+		"Scan":           NewRecordQueryScanPlan(nil, values.UnknownType, false).HashCodeWithoutChildren(),
+		"HashAgg":        NewRecordQueryHashAggregationPlan(nil, nil, nil).HashCodeWithoutChildren(),
+		"StreamAgg":      NewRecordQueryStreamingAggregationPlan(nil, nil, nil).HashCodeWithoutChildren(),
 	}
 	seen := make(map[uint64]string)
 	for name, h := range hashes {

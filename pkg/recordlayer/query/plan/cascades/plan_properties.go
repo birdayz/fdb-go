@@ -90,6 +90,7 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
+		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryInUnionPlan:
 		return true
 	case *plans.RecordQueryUnorderedUnionPlan:
@@ -170,6 +171,7 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
+		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryUnorderedUnionPlan,
 		*plans.RecordQueryRecursiveDfsJoinPlan,
 		*plans.RecordQueryRecursiveLevelUnionPlan:
@@ -220,6 +222,7 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
+		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryUnorderedUnionPlan:
 		return commonPKFromChildren(plan.GetChildren())
 	default:
@@ -388,6 +391,8 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 
 	// --- Set operations: intersection ---
 	case *plans.RecordQueryIntersectionPlan:
+		return properties.IntersectCardinalities(cardinalitiesFromChildRefs(w))
+	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
 		return properties.IntersectCardinalities(cardinalitiesFromChildRefs(w))
 
 	// --- Distinct: same as child (distinct doesn't change bounds) ---
