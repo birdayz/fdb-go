@@ -11,9 +11,10 @@ package expressions
 // into finalMembers. AllMembers() returns the union for code that
 // doesn't care about the distinction (matcher, cost extraction).
 type Reference struct {
-	members        []RelationalExpression
-	finalMembers   []RelationalExpression
-	planProperties any // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
+	members         []RelationalExpression
+	finalMembers    []RelationalExpression
+	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
+	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
 }
 
 // InitialOf returns a Reference holding the single expression e as its
@@ -182,6 +183,60 @@ func (r *Reference) GetPlanProperties() any { return r.planProperties }
 
 // SetPlanProperties sets the planner-phase property map on this Reference.
 func (r *Reference) SetPlanProperties(m any) { r.planProperties = m }
+
+// AddPartialMatch stores a partial match for the given candidate.
+// Returns true if newly added. Uses any-typed parameters to avoid
+// circular imports (cascades → expressions); the cascades package
+// provides typed wrappers. Mirrors Java's
+// Reference.addPartialMatchForCandidate.
+func (r *Reference) AddPartialMatch(candidate any, match any) bool {
+	if r.partialMatchMap == nil {
+		r.partialMatchMap = make(map[any][]any)
+	}
+	existing := r.partialMatchMap[candidate]
+	for _, e := range existing {
+		if e == match {
+			return false // already present
+		}
+	}
+	r.partialMatchMap[candidate] = append(existing, match)
+	return true
+}
+
+// GetPartialMatchesFor returns all partial matches for the given
+// candidate. Mirrors Java's Reference.getPartialMatchesForCandidate.
+func (r *Reference) GetPartialMatchesFor(candidate any) []any {
+	if r.partialMatchMap == nil {
+		return nil
+	}
+	return r.partialMatchMap[candidate]
+}
+
+// GetAllPartialMatches returns all partial matches across all
+// candidates. Mirrors Java's partialMatchMap.values().
+func (r *Reference) GetAllPartialMatches() []any {
+	if r.partialMatchMap == nil {
+		return nil
+	}
+	var result []any
+	for _, matches := range r.partialMatchMap {
+		result = append(result, matches...)
+	}
+	return result
+}
+
+// GetPartialMatchCandidates returns all candidates that have partial
+// matches. Mirrors Java's partialMatchMap.keySet().
+func (r *Reference) GetPartialMatchCandidates() []any {
+	if r.partialMatchMap == nil {
+		return nil
+	}
+	result := make([]any, 0, len(r.partialMatchMap))
+	for k := range r.partialMatchMap {
+		result = append(result, k)
+	}
+	return result
+}
 
 // sameChildReferences returns true if a and b have the same
 // Quantifier count AND every Quantifier's Reference is the same
