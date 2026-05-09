@@ -113,3 +113,37 @@ func TestInOpValue_Evaluate_ListNotSliceReturnsNil(t *testing.T) {
 		t.Fatalf("Evaluate with non-slice list = %v, want nil", got)
 	}
 }
+
+func TestInOpValue_Evaluate_MixedNumericCoercion(t *testing.T) {
+	t.Parallel()
+	// int64 probe matches float64 list element (numeric coercion).
+	v := NewInOpValue(
+		LiteralValue(int64(2)),
+		LiteralValue([]any{float64(1), float64(2), float64(3)}),
+	)
+	if got := v.Evaluate(nil); got != true {
+		t.Fatalf("int64(2) IN [1.0, 2.0, 3.0] = %v, want true", got)
+	}
+}
+
+func TestInOpValue_Evaluate_Float64ProbeMatchesInt64(t *testing.T) {
+	t.Parallel()
+	v := NewInOpValue(
+		LiteralValue(float64(5)),
+		LiteralValue([]any{int64(3), int64(5), int64(7)}),
+	)
+	if got := v.Evaluate(nil); got != true {
+		t.Fatalf("float64(5) IN [3, 5, 7] = %v, want true", got)
+	}
+}
+
+func TestInOpValue_Evaluate_MixedNumericMiss(t *testing.T) {
+	t.Parallel()
+	v := NewInOpValue(
+		LiteralValue(int64(4)),
+		LiteralValue([]any{float64(1), float64(2), float64(3)}),
+	)
+	if got := v.Evaluate(nil); got != false {
+		t.Fatalf("int64(4) IN [1.0, 2.0, 3.0] = %v, want false", got)
+	}
+}

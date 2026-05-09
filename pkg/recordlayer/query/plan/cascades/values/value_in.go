@@ -47,10 +47,48 @@ func equalsAny(a, b any) bool {
 		return false
 	}
 	if _, ok := b.([]byte); ok {
-		// a is not []byte but b is — different types.
 		return false
 	}
+	if af, bf, ok := promoteToFloat64(a, b); ok {
+		return af == bf
+	}
 	return a == b
+}
+
+// promoteToFloat64 promotes mixed int/float pairs to float64 for
+// comparison. Matches Java's Comparisons.evalComparison(EQUALS, ...)
+// which performs numeric coercion.
+func promoteToFloat64(a, b any) (float64, float64, bool) {
+	af, aok := toFloat64(a)
+	bf, bok := toFloat64(b)
+	if !aok || !bok {
+		return 0, 0, false
+	}
+	_, aIsFloat := a.(float64)
+	_, bIsFloat := b.(float64)
+	_, aIsFloat32 := a.(float32)
+	_, bIsFloat32 := b.(float32)
+	if !aIsFloat && !bIsFloat && !aIsFloat32 && !bIsFloat32 {
+		return 0, 0, false
+	}
+	return af, bf, true
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }
 
 // NewInOpValue constructs an InOpValue.
@@ -93,16 +131,9 @@ func (*InOpValue) Type() Type { return NullableBoolean }
 //   - nil if probe or list is nil-Value, or list doesn't evaluate
 //     to a slice.
 //
-// CONFORMANCE NOTE: matching uses Go's `==` on `any`, which is
-// dynamic-type-AND-value equality. Java's InOpValue uses
-// `Comparisons.evalComparison(EQUALS, ...)` which performs
-// numeric coercion (int64 == float64 if values are equal). This
-// is a divergence on mixed-numeric IN lists like
-// `WHERE x IN (1, 2.0, 3L)` where probe is int64. Today no
-// planner rule rewrites IN-list comparisons to InOpValue, so the
-// gap is theoretical. When such a rule lands, this Evaluate must
-// route through the SQL-equality comparator (currently
-// predicates.cmpAny — needs promotion to a values-level helper).
+// equalsAny performs numeric coercion for mixed int/float
+// comparisons, matching Java's Comparisons.evalComparison(EQUALS).
+// D-10 in CASCADES_DIVERGENCE.md — fixed dayshift-82.
 func (v *InOpValue) Evaluate(evalCtx any) any {
 	if v.Probe == nil || v.List == nil {
 		return nil
