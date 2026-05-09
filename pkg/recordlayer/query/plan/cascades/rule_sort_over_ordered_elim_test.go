@@ -6,6 +6,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // TestSortOverOrderedElim_IndexProvidesSortOrder verifies that
@@ -344,5 +345,167 @@ func TestSortOverOrderedElim_DescSortEliminated(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("DESC sort should be eliminated by a reverse index scan")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// strictlyOrderedIfUnique unit tests
+// ---------------------------------------------------------------------------
+
+// TestStrictlySorted_UniqueIndexFullCoverage: unique index with numKeys
+// covering all columns should be detected as strictly ordered.
+func TestStrictlySorted_UniqueIndexFullCoverage(t *testing.T) {
+	t.Parallel()
+
+	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
+	w := &physicalIndexScanWrapper{
+		plan:        idx,
+		columnNames: []string{"A", "B"},
+		unique:      true,
+	}
+
+	// numKeys == len(columnNames): full coverage.
+	if !strictlyOrderedIfUnique(w, 2) {
+		t.Fatal("unique index with numKeys == len(columns) should be strictly ordered")
+	}
+
+	// numKeys > len(columnNames): still covers everything.
+	if !strictlyOrderedIfUnique(w, 5) {
+		t.Fatal("unique index with numKeys > len(columns) should be strictly ordered")
+	}
+}
+
+// TestStrictlySorted_UniqueIndexPartialCoverage: unique index but numKeys
+// less than the number of columns — not enough coverage.
+func TestStrictlySorted_UniqueIndexPartialCoverage(t *testing.T) {
+	t.Parallel()
+
+	idx := plans.NewRecordQueryIndexPlan("idx_u", nil, []string{"T"}, values.UnknownType, false)
+	w := &physicalIndexScanWrapper{
+		plan:        idx,
+		columnNames: []string{"A", "B", "C"},
+		unique:      true,
+	}
+
+	// numKeys < len(columnNames): partial coverage.
+	if strictlyOrderedIfUnique(w, 2) {
+		t.Fatal("unique index with numKeys < len(columns) should NOT be strictly ordered")
+	}
+
+	if strictlyOrderedIfUnique(w, 0) {
+		t.Fatal("unique index with numKeys=0 should NOT be strictly ordered")
+	}
+}
+
+// TestStrictlySorted_NonUniqueIndex: non-unique index should never be
+// strictly ordered, regardless of numKeys.
+func TestStrictlySorted_NonUniqueIndex(t *testing.T) {
+	t.Parallel()
+
+	idx := plans.NewRecordQueryIndexPlan("idx_nu", nil, []string{"T"}, values.UnknownType, false)
+	w := &physicalIndexScanWrapper{
+		plan:        idx,
+		columnNames: []string{"A"},
+		unique:      false,
+	}
+
+	if strictlyOrderedIfUnique(w, 1) {
+		t.Fatal("non-unique index should NOT be strictly ordered even with full coverage")
+	}
+	if strictlyOrderedIfUnique(w, 100) {
+		t.Fatal("non-unique index should NOT be strictly ordered even with excess numKeys")
+	}
+}
+
+// TestStrictlyOrderedIfUnique_NonIndexExpression: a non-index expression
+// should never be strictly ordered.
+func TestStrictlyOrderedIfUnique_NonIndexExpression(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	w := &physicalScanWrapper{plan: scan}
+
+	if strictlyOrderedIfUnique(w, 100) {
+		t.Fatal("non-index expression should never be strictly ordered")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// makeStrictlySorted unit tests
+// ---------------------------------------------------------------------------
+
+// TestMakeStrictlySorted_IndexScan: makeStrictlySorted on a
+// physicalIndexScanWrapper creates a new wrapper whose inner plan has
+// strictlySorted=true.
+func TestMakeStrictlySorted_IndexScan(t *testing.T) {
+	t.Parallel()
+
+	idx := plans.NewRecordQueryIndexPlan("idx_x", nil, []string{"T"}, values.UnknownType, false)
+	orig := &physicalIndexScanWrapper{
+		plan:        idx,
+		columnNames: []string{"A", "B"},
+		unique:      true,
+	}
+
+	result := makeStrictlySorted(orig)
+
+	// Must return a new physicalIndexScanWrapper, not the same pointer.
+	resultW, ok := result.(*physicalIndexScanWrapper)
+	if !ok {
+		t.Fatal("makeStrictlySorted should return a physicalIndexScanWrapper")
+	}
+	if resultW == orig {
+		t.Fatal("makeStrictlySorted should return a new wrapper, not the original")
+	}
+
+	// The inner plan should be strictlySorted.
+	if !resultW.plan.IsStrictlySorted() {
+		t.Fatal("result plan should be strictlySorted")
+	}
+
+	// Original must be unmodified.
+	if orig.plan.IsStrictlySorted() {
+		t.Fatal("original plan should remain non-strictlySorted")
+	}
+
+	// Metadata preserved.
+	if len(resultW.columnNames) != 2 || resultW.columnNames[0] != "A" || resultW.columnNames[1] != "B" {
+		t.Fatalf("columnNames = %v, want [A B]", resultW.columnNames)
+	}
+	if !resultW.unique {
+		t.Fatal("unique flag should be preserved")
+	}
+}
+
+// TestMakeStrictlySorted_NonIndexScan: makeStrictlySorted on a
+// non-index expression returns the expression unchanged.
+func TestMakeStrictlySorted_NonIndexScan(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	w := &physicalScanWrapper{plan: scan}
+
+	result := makeStrictlySorted(w)
+	if result != w {
+		t.Fatal("makeStrictlySorted on non-index expression should return the same pointer")
+	}
+}
+
+// TestMakeStrictlySorted_Idempotent: calling makeStrictlySorted on an
+// already-strictlySorted wrapper still produces a correct result.
+func TestMakeStrictlySorted_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	idx := plans.NewRecordQueryIndexPlan("idx_idem", nil, []string{"T"}, values.UnknownType, false)
+	orig := &physicalIndexScanWrapper{
+		plan:        idx.WithStrictlySorted(),
+		columnNames: []string{"A"},
+		unique:      true,
+	}
+
+	result := makeStrictlySorted(orig)
+	resultW := result.(*physicalIndexScanWrapper)
+	if !resultW.plan.IsStrictlySorted() {
+		t.Fatal("double makeStrictlySorted should still be strictlySorted")
 	}
 }
