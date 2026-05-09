@@ -202,6 +202,24 @@ func GoExtensionImplementationRules() []ImplementationRule {
 	}
 }
 
+// MatchingRules returns the matching rules that seed the partial-match
+// infrastructure. These fire during the EXPLORE phase alongside
+// expression rules but serve a different purpose: they establish
+// PartialMatch instances between the query graph and MatchCandidate
+// traversals, which are then consumed by implementation rules to
+// produce index-scan plans.
+//
+// Mirrors Java's PlanningRuleSet.MATCHING_RULES:
+//   - MatchLeafRule: seeds leaf-to-leaf matches
+//   - MatchIntermediateRule: propagates matches upward (future)
+//
+// Compose with: append(DefaultExpressionRules(), MatchingRules()...)
+func MatchingRules() []ExpressionRule {
+	return []ExpressionRule{
+		NewMatchLeafRule(),
+	}
+}
+
 // init registers the default rules in the rule registry under their
 // concrete-type names ("FilterMergeRule", etc.) — discoverable via
 // LookupRule / RegisteredRuleNames for diagnostic output.
@@ -211,6 +229,7 @@ func GoExtensionImplementationRules() []ImplementationRule {
 func init() {
 	registerDefaultRules()
 	registerBatchARules()
+	registerMatchingRules()
 }
 
 func registerDefaultRules() {
@@ -230,6 +249,16 @@ func registerDefaultRules() {
 
 func registerBatchARules() {
 	for _, r := range BatchAExpressionRules() {
+		name := shortTypeName(r)
+		if LookupRule(name) != nil {
+			continue
+		}
+		RegisterRule(name, r)
+	}
+}
+
+func registerMatchingRules() {
+	for _, r := range MatchingRules() {
 		name := shortTypeName(r)
 		if LookupRule(name) != nil {
 			continue
