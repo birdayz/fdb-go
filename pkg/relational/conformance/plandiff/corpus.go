@@ -17555,6 +17555,24 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT T_LOJ_01.id, T_LOJ_02.label FROM T_LOJ_01 LEFT OUTER JOIN T_LOJ_02 ON T_LOJ_01.v = T_LOJ_02.ref ORDER BY T_LOJ_01.id",
 		},
+		{
+			Name:           "scalar_subquery_in_projection",
+			SchemaTemplate: "CREATE TABLE T_SSQ_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SSQ_01 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id, (SELECT MAX(v) FROM T_SSQ_01) AS max_v FROM T_SSQ_01 ORDER BY id",
+		},
+		{
+			Name:           "scalar_subquery_in_where",
+			SchemaTemplate: "CREATE TABLE T_SSQ_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SSQ_02 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id FROM T_SSQ_02 WHERE v > (SELECT MIN(v) FROM T_SSQ_02) ORDER BY id",
+		},
+		{
+			Name:           "recursive_cte_basic",
+			SchemaTemplate: "CREATE TABLE T_RCTE_02 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RCTE_02 VALUES (1, NULL), (2, 1), (3, 1), (4, 2)"},
+			Query:          "WITH RECURSIVE tree AS (SELECT id FROM T_RCTE_02 WHERE parent IS NULL UNION ALL SELECT c.id FROM T_RCTE_02 c, tree t WHERE c.parent = t.id) SELECT id FROM tree ORDER BY id",
+		},
 	}
 }
 
