@@ -217,6 +217,7 @@ func GoExtensionImplementationRules() []ImplementationRule {
 func MatchingRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewMatchLeafRule(),
+		NewMatchIntermediateRule(),
 	}
 }
 
