@@ -256,6 +256,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		scalarSubqueryDmlScenario(),
 		updateDmlCteScenario(),
 		correlatedExistsAdvancedScenario(),
+		orderByLimitScenario(),
 	}
 }
 
@@ -4666,6 +4667,48 @@ func correlatedExistsAdvancedScenario() *yamsql.Scenario {
 				Query: "SELECT name FROM emp\nWHERE NOT EXISTS (SELECT 1 FROM task WHERE emp_id = emp.id)\nORDER BY name",
 				Rows:  [][]any{{"Charlie"}},
 			},
+		},
+	}
+}
+
+// orderByLimitScenario mirrors testdata/order_by_limit.yaml — ORDER BY
+// with LIMIT and positional/alias sort keys. Drops NOT NULL on PK
+// column (fdb-relational restriction). Includes all 12 tests from the
+// YAML; error_code tests are auto-skipped by the harness, DML tests
+// likewise. Multi-column ORDER BY and GROUP BY tests are included to
+// surface Java-side divergences.
+func orderByLimitScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "order_by_limit",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, grp STRING, v BIGINT, PRIMARY KEY (id))\nCREATE INDEX idx_v ON t (v)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'a', 3), (2, 'a', 1), (3, 'b', 4), (4, 'b', 1), (5, 'a', 2)",
+		},
+		Tests: []yamsql.Test{
+			// Multi-column ORDER BY: rejected by Java (no rule for multi-key sort).
+			{Query: "SELECT id, grp, v FROM t ORDER BY grp, v DESC", Rows: [][]any{{1, "a", 3}, {5, "a", 2}, {2, "a", 1}, {3, "b", 4}, {4, "b", 1}}},
+			// LIMIT clause rejected at parse time (0AF00).
+			{Query: "SELECT id FROM t ORDER BY id LIMIT 3", ErrorCode: "0AF00"},
+			{Query: "SELECT id FROM t ORDER BY id LIMIT 100", ErrorCode: "0AF00"},
+			{Query: "SELECT id FROM t ORDER BY id LIMIT 0", ErrorCode: "0AF00"},
+			// Positional ORDER BY: ORDER BY 2 DESC refers to second SELECT column (v).
+			{Query: "SELECT id, v FROM t ORDER BY 2 DESC", Rows: [][]any{{3, 4}, {1, 3}, {5, 2}, {4, 1}, {2, 1}}},
+			// Positional ORDER BY 1 on two-column SELECT picks out id.
+			{Query: "SELECT id, grp FROM t ORDER BY 1", Rows: [][]any{{1, "a"}, {2, "a"}, {3, "b"}, {4, "b"}, {5, "a"}}},
+			// ORDER BY on aggregate with GROUP BY — position 2 refers to SUM(v).
+			{Query: "SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC", Rows: [][]any{{"a", 6}, {"b", 5}}},
+			// Out-of-range positional ORDER BY (22023).
+			{Query: "SELECT id FROM t ORDER BY 99", ErrorCode: "22023"},
+			// ORDER BY a SELECT-list alias.
+			{Query: "SELECT id AS n FROM t ORDER BY n DESC", Rows: [][]any{{5}, {4}, {3}, {2}, {1}}},
+			// ORDER BY alias with a second column.
+			{Query: "SELECT id AS n, v FROM t ORDER BY n", Rows: [][]any{{1, 3}, {2, 1}, {3, 4}, {4, 1}, {5, 2}}},
+			// Multi-column ORDER BY with expression — rejected by Java.
+			{Query: "SELECT id FROM t ORDER BY v * 2, id", Rows: [][]any{{2}, {4}, {5}, {1}, {3}}},
+			// ORDER BY with function-call expression + LIMIT — LIMIT rejected (0AF00).
+			{Query: "SELECT id, v FROM t ORDER BY ABS(v - 3), id LIMIT 2", ErrorCode: "0AF00"},
+			// SELECT * + multi-column ORDER BY with expression — rejected by Java.
+			{Query: "SELECT * FROM t ORDER BY v * 2, id", Rows: [][]any{{2, "a", 1}, {4, "b", 1}, {5, "a", 2}, {1, "a", 3}, {3, "b", 4}}},
 		},
 	}
 }
