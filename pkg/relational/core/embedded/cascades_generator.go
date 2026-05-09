@@ -333,7 +333,8 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		if execErr != nil {
 			var typeMismatch *predicates.TypeMismatchError
 			if errors.As(execErr, &typeMismatch) {
-				return nil, api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
+				return nil, api.NewError(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
 			}
 			var depthExceeded *executor.RecursiveCTEDepthExceededError
 			if errors.As(execErr, &depthExceeded) {
@@ -868,7 +869,8 @@ func (r *cascadesRows) Next(dest []driver.Value) error {
 			}
 			var typeMismatch *predicates.TypeMismatchError
 			if errors.As(err, &typeMismatch) {
-				return api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
+				return api.NewError(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
 			}
 			return err
 		}

@@ -281,10 +281,9 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	// FALSE for these comparisons → empty result set, the dangerous
 	// kind of bug. Now we error to match Java.
 	if !valuesComparable(left, right) {
-		// Java verbatim: "The operands of a comparison operator are
-		// not compatible." (period included). Cross-engine corpus
-		// `type_mismatch_compare` pins byte-equality.
-		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+		// Java maps SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES →
+		// ErrorCode.DATATYPE_MISMATCH (42804).
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}
 
@@ -387,11 +386,11 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		values = append(values, litVal)
 	}
 	for _, litVal := range values {
-		// Java alignment: cross-type IN element errors 22000
-		// (CANNOT_CONVERT_TYPE), matching the comparison-operator path.
+		// Java maps type-incompatible comparisons to 42804
+		// (DATATYPE_MISMATCH) via SemanticException translation.
 		if !valuesComparable(fieldVal, litVal) {
-			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"cannot compare %T with %T in IN list", fieldVal, litVal)
+			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
 		}
 		if valuesEqual(fieldVal, litVal) {
 			if in.NOT() != nil {

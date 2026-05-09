@@ -3,22 +3,22 @@
 # swingshift-35 commit 6853cee5: valuesEqual and compareValues no longer
 # fall through to fmt.Sprintf("%v", ...) for cross-type pairs. A literal
 # '5' (string) must NOT equal 5 (int) — the old bug made this TRUE.
-# nightshift-39: Java-aligned. Cross-type comparison now errors SQLSTATE
-# 22000 (CANNOT_CONVERT_TYPE) instead of silently returning false.
-# Matches Java's PromoteValue.isPromotionNeeded → SemanticException
-# (INCOMPATIBLE_TYPE) → ErrorCode.CANNOT_CONVERT_TYPE.
+# nightshift-39: Java-aligned. Cross-type comparison now errors instead
+# of silently returning false. Java maps
+# SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES → 42804
+# (DATATYPE_MISMATCH) via ExceptionUtil.translateErrorCode.
 name: mixed_type_equality
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 5, '5'), (2, 10, 'ten'), (3, 5, 'five')
 tests:
-  # '5' (string literal) vs 5 (int column) — must error 22000.
+  # '5' (string literal) vs 5 (int column) — 42804 (datatype mismatch).
   - query: SELECT id FROM t WHERE n = '5'
-    error_code: "22000"
+    error_code: "42804"
   # IN-list with any incompatible element errors.
   - query: SELECT id FROM t WHERE n IN ('5', 'ten')
-    error_code: "22000"
+    error_code: "42804"
   # Same-type still works.
   - query: SELECT id FROM t WHERE n = 5
     unordered: true

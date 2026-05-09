@@ -157,8 +157,8 @@ func evalScalarFunctionCallCore(
 			// string compare in compareValues, yielding semantically
 			// undefined results.
 			if !valuesComparable(v, best) {
-				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"cannot compare %T with %T in %s", v, best, name)
+				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
 			}
 			cmp := functions.CompareValues(v, best)
 			if (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {

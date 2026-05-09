@@ -56,7 +56,6 @@ tests:
     error_code: "42601"
   # Java alignment: IN list with incompatible types (Java's
   # in-predicate.yamsql probes `e IN ('foo', 35 + 4)` where e is INT).
-  # Java errors 22000 (cannot_convert_type). Probe Go's behavior for
-  # a mixed-type IN list against a BIGINT column.
+  # Java maps COMPARISON_OF_INCOMPATIBLE_TYPES → 42804 (DATATYPE_MISMATCH).
   - query: SELECT a FROM ta WHERE b IN ('foo', 3)
-    error_code: "22000"
+    error_code: "42804"

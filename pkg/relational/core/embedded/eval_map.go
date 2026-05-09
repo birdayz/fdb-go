@@ -121,8 +121,8 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 			return nil, nil
 		}
 		if !valuesComparable(left, right) {
-			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"cannot compare %T with %T", left, right)
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
 		}
 		cmp := functions.CompareValues(left, right)
 		switch opText {

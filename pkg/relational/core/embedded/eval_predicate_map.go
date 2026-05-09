@@ -358,14 +358,14 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		if hiErr != nil {
 			return triFalse, hiErr
 		}
-		// Cross-type bounds error consistently with the proto path.
+		// Cross-type bounds error: 42804 (DATATYPE_MISMATCH).
 		if fieldVal != nil && lo != nil && !valuesComparable(fieldVal, lo) {
-			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, lo)
+			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
 		}
 		if fieldVal != nil && hi != nil && !valuesComparable(fieldVal, hi) {
-			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, hi)
+			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
 		}
 		compareTri := func(a, b driver.Value, want func(int) bool) triBool {
 			if a == nil || b == nil {
@@ -426,8 +426,8 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				continue
 			}
 			if !valuesComparable(fieldVal, litVal) {
-				return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"cannot compare %T with %T in IN list", fieldVal, litVal)
+				return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
 			}
 			if valuesEqual(fieldVal, litVal) {
 				if p.NOT() != nil {
