@@ -51,9 +51,9 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	requestedParts := requestedOrdering.GetParts()
-	sortValuesSet := make(map[values.Value]struct{}, len(requestedParts))
+	sortValueNames := make(map[string]struct{}, len(requestedParts))
 	for _, part := range requestedParts {
-		sortValuesSet[part.Value] = struct{}{}
+		sortValueNames[values.ExplainValue(part.Value)] = struct{}{}
 	}
 
 	partitions := ToPlanPartitions(innerRef)
@@ -63,10 +63,14 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			continue
 		}
 
-		equalityBoundKeys := ordering.GetEqualityBoundValues()
-		equalityBoundUnsorted := len(equalityBoundKeys)
+		eqBound := ordering.GetEqualityBoundValues()
+		eqBoundNames := make(map[string]struct{}, len(eqBound))
+		for v := range eqBound {
+			eqBoundNames[values.ExplainValue(v)] = struct{}{}
+		}
+		equalityBoundUnsorted := len(eqBound)
 		for _, part := range requestedParts {
-			if _, ok := equalityBoundKeys[part.Value]; ok {
+			if _, ok := eqBoundNames[values.ExplainValue(part.Value)]; ok {
 				equalityBoundUnsorted--
 			}
 		}
@@ -86,8 +90,9 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 		if partition.IsDistinct() {
 			allCovered := true
 			for _, v := range ordering.GetOrderingKeys() {
-				_, inSort := sortValuesSet[v]
-				_, inEq := equalityBoundKeys[v]
+				name := values.ExplainValue(v)
+				_, inSort := sortValueNames[name]
+				_, inEq := eqBoundNames[name]
 				if !inSort && !inEq {
 					allCovered = false
 					break

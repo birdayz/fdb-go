@@ -245,6 +245,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		updateDeleteScenario(),
 		updateCaseWhenScenario(),
 		updateSetExprScenario(),
+		insertArityScenario(),
+		insertValuesExprScenario(),
+		dmlReturningProbesScenario(),
 	}
 }
 
@@ -4160,6 +4163,107 @@ func updateSetExprScenario() *yamsql.Scenario {
 			{Query: "SELECT id, v, label FROM t ORDER BY id", Rows: [][]any{{1, 100, "z"}, {2, 20, "big"}, {3, nil, "unknown"}}},
 			{Query: "SELECT v, label FROM t WHERE id = 1", Rows: [][]any{{100, "z"}}},
 			{Query: "SELECT id, label FROM t ORDER BY id", Rows: [][]any{{1, "z"}, {2, "big"}, {3, "unknown"}}},
+		},
+	}
+}
+
+// insertArityScenario mirrors testdata/insert_arity.yaml.
+// INSERT column count mismatches: too few values → 22000, too many or
+// too few with explicit column list → 42601, reordered and subset
+// column lists work. DML tests are auto-skipped; error_code tests
+// included as-is. Drops NOT NULL on PK.
+func insertArityScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "insert_arity",
+		SchemaTemplate: "CREATE TABLE a (a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))",
+		Setup: []string{
+			"INSERT INTO a (a3, a2, a1) VALUES (33, 22, 1)",
+			"INSERT INTO a (a1, a2) VALUES (2, 20)",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped until harness extension).
+			{Query: "INSERT INTO a (a3, a2, a1) VALUES (33, 22, 1)"},
+			// Reordered column list: a1=1, a2=22, a3=33.
+			{Query: "SELECT a1, a2, a3 FROM a WHERE a1 = 1", Rows: [][]any{{1, 22, 33}}},
+			// Subset column list — a3 unset (NULL).
+			{Query: "INSERT INTO a (a1, a2) VALUES (2, 20)"},
+			{Query: "SELECT a1, a2, a3 FROM a WHERE a1 = 2", Rows: [][]any{{2, 20, nil}}},
+			// Too few values, no column list → 22000.
+			{Query: "INSERT INTO a VALUES (4)", ErrorCode: "22000"},
+			// Too many values with explicit column list → 42601.
+			{Query: "INSERT INTO a (a1, a2, a3) VALUES (5, 6, 7, 8, 9)", ErrorCode: "42601"},
+			// Too few values with explicit column list → 42601.
+			{Query: "INSERT INTO a (a1, a2, a3) VALUES (4)", ErrorCode: "42601"},
+		},
+	}
+}
+
+// insertValuesExprScenario mirrors testdata/insert_values_expr.yaml.
+// INSERT INTO t VALUES with expressions: arithmetic, CASE, CAST,
+// COALESCE, and function-call rejection (ABS → 42883). DML tests
+// are auto-skipped; error_code tests included as-is. Drops NOT NULL
+// on PK.
+func insertValuesExprScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "insert_values_expr",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 2 + 3), (2, 10 * 10)",
+			"INSERT INTO t VALUES (3, CASE WHEN 1 < 2 THEN 999 ELSE 0 END)",
+			"INSERT INTO t VALUES (4, CAST('42' AS BIGINT))",
+			"INSERT INTO t VALUES (5, 25 * 2)",
+			"INSERT INTO t VALUES (6, COALESCE(null, null, 77))",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped until harness extension).
+			{Query: "INSERT INTO t VALUES (1, 2 + 3), (2, 10 * 10)"},
+			// Arithmetic in VALUES.
+			{Query: "SELECT id, n FROM t ORDER BY id", Rows: [][]any{{1, 5}, {2, 100}, {3, 999}, {4, 42}, {5, 50}, {6, 77}}},
+			// CASE expression in VALUES.
+			{Query: "INSERT INTO t VALUES (3, CASE WHEN 1 < 2 THEN 999 ELSE 0 END)"},
+			{Query: "SELECT n FROM t WHERE id = 3", Rows: [][]any{{999}}},
+			// CAST in VALUES.
+			{Query: "INSERT INTO t VALUES (4, CAST('42' AS BIGINT))"},
+			{Query: "SELECT n FROM t WHERE id = 4", Rows: [][]any{{42}}},
+			// Arithmetic replacement for ABS (unsupported).
+			{Query: "INSERT INTO t VALUES (5, 25 * 2)"},
+			{Query: "SELECT n FROM t WHERE id = 5", Rows: [][]any{{50}}},
+			// ABS rejected — unsupported function → 42883.
+			{Query: "INSERT INTO t VALUES (50, ABS(-7))", ErrorCode: "42883"},
+			// COALESCE in VALUES.
+			{Query: "INSERT INTO t VALUES (6, COALESCE(null, null, 77))"},
+			{Query: "SELECT n FROM t WHERE id = 6", Rows: [][]any{{77}}},
+		},
+	}
+}
+
+// dmlReturningProbesScenario mirrors testdata/dml_returning_probes.yaml.
+// Probes for DML RETURNING clause (Postgres / Java fdb-relational
+// syntax). DELETE/UPDATE RETURNING silently succeed (RETURNING
+// ignored); INSERT RETURNING is a parse error (42601). DML tests
+// are auto-skipped; error_code tests included as-is. Drops NOT NULL
+// on PK.
+func dmlReturningProbesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "dml_returning_probes",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+			"DELETE FROM t WHERE id = 1",
+			"UPDATE t SET n = 99 WHERE id = 2",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped until harness extension).
+			// DELETE ... RETURNING — silently does the DELETE, no result set.
+			{Query: "DELETE FROM t WHERE id = 1 RETURNING id, n"},
+			// Verify row is gone.
+			{Query: "SELECT id FROM t WHERE id = 1", Rows: [][]any{}},
+			// UPDATE ... RETURNING — silently does the UPDATE, no result set.
+			{Query: "UPDATE t SET n = 99 WHERE id = 2 RETURNING id, n"},
+			// Verify update took effect.
+			{Query: "SELECT n FROM t WHERE id = 2", Rows: [][]any{{99}}},
+			// INSERT ... RETURNING — parser rejects → 42601.
+			{Query: "INSERT INTO t VALUES (4, 40) RETURNING id, n", ErrorCode: "42601"},
 		},
 	}
 }
