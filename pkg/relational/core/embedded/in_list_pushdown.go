@@ -39,7 +39,7 @@ import (
 //   - PK equality pushdown takes precedence: an AND with both
 //     `id = 1` and `id IN (1,2)` would pick equality first (narrower).
 //   - Type-mismatched literals bail to the scan so evalPredicate can
-//     surface 22000, matching the other pushdown paths.
+//     surface 42804, matching the other pushdown paths.
 //
 // Composite-PK form (tryPKCompositeInListFromWhere): `WHERE a = lit AND
 // b IN (v1..vN)` on PK (a, b) — N point scans, each anchored at
@@ -213,7 +213,7 @@ func (c *EmbeddedConnection) tryPKInListFromWhere(
 		}
 		// Type-check every element against the PK column kind. A
 		// single mismatch bails — the scan path's evalPredicate will
-		// surface 22000 correctly. Don't silently drop mismatched
+		// surface 42804 correctly. Don't silently drop mismatched
 		// elements (that would reduce the narrowing without the
 		// post-filter knowing).
 		for _, v := range vals {
@@ -739,7 +739,7 @@ func (c *EmbeddedConnection) trySecondaryIndexInListFromWhere(
 		}
 		// Every list element must be type-compatible with the index
 		// column; a single mismatch bails so the scan's evalPredicate
-		// surfaces 22000 per the cross-type rule.
+		// surfaces 42804 per the cross-type rule.
 		allOk := true
 		for _, v := range vals {
 			if !functions.LiteralMatchesPKKind(v, fd.Kind()) {
