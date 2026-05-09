@@ -31,12 +31,17 @@ import (
 type cascadesGenerator struct {
 	c     *EmbeddedConnection
 	naive *naiveGenerator
+	cache *PlanCache
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
+	if c.planCache == nil {
+		c.planCache = NewPlanCache(256)
+	}
 	return &cascadesGenerator{
 		c:     c,
 		naive: &naiveGenerator{c: c},
+		cache: c.planCache,
 	}
 }
 
@@ -80,6 +85,20 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if md == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"no schema metadata available")
+	}
+
+	// Check plan cache before running the full Cascades pipeline.
+	sqlHash := QueryHash(sql)
+	if g.cache != nil {
+		if cachedPlan, cachedSubs, ok := g.cache.Get(sqlHash); ok {
+			return &cascadesPlan{
+				conn:             g.c,
+				md:               md,
+				physicalPlan:     cachedPlan,
+				explain:          cachedPlan.Explain(),
+				scalarSubqueries: cachedSubs,
+			}, nil
+		}
 	}
 
 	visitor := NewPlanVisitor(md)
@@ -167,6 +186,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			alias: ssq.Alias,
 			plan:  subPlan,
 		})
+	}
+
+	// Cache the planned result for future queries with the same SQL.
+	if g.cache != nil {
+		g.cache.Put(sqlHash, sql, physPlan, scalarSubs)
 	}
 
 	return &cascadesPlan{
