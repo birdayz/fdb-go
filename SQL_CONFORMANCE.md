@@ -67,8 +67,8 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 |---|:---:|:---:|:---:|---|
 | INNER JOIN (explicit + comma) | Y | Y | Y | |
 | CROSS JOIN | Y | Y | Y | |
-| LEFT OUTER JOIN | Y | N | Y | Go missing ImplementOuterJoinRule |
-| RIGHT OUTER JOIN | Y | N | Y | Same gap |
+| LEFT OUTER JOIN | Y | Y | Y | Via NLJ with JoinLeftOuter |
+| RIGHT OUTER JOIN | Y | Y | Y | Rewritten to LEFT OUTER |
 | FULL OUTER JOIN | N | N | Y | |
 | Self-join | Y | Y | Y | |
 | 3+ way join | Y | Y | Y | |
@@ -144,14 +144,14 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | Predicates | Full | Full + byte literals | ~90% |
 | Aggregation | **Partial** (core rules exist, SQL layer gaps) | **Full** (Go extension) | ~85% |
 | Set operations | UNION ALL only | UNION ALL only | ~25% |
-| Joins | Full except FULL OUTER | Missing OUTER JOINs | ~70% |
+| Joins | Full except FULL OUTER | Full except FULL OUTER | ~85% |
 | Subqueries | Partial | Partial (EXISTS works, scalar missing) | ~50% |
 | CTEs | Full + recursive | Full + recursive + DFS ext | ~90% |
 | Ordering | Index-only | Full (in-memory sort ext) | ~80% |
 | Types | Core types | Core types + BYTES | ~60% |
 | Error codes | Full | Full | ~90% |
 
-Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and recursive CTEs. Go's main gaps vs Java are scalar subqueries and OUTER JOINs. Both engines lack string/math functions and DATE/TIMESTAMP types.
+Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and recursive CTEs. Go's main gap vs Java is **scalar subqueries** (needs DecorrelateValuesRule). Both engines lack string/math functions and DATE/TIMESTAMP types.
 
 ## Yamsql Conformance
 
