@@ -68,6 +68,18 @@ func (b *AliasMapBuilder) Put(source, target values.CorrelationIdentifier) bool 
 	return true
 }
 
+// PutAll copies all entries from other into this builder. Each
+// entry is added via Put; conflicts (source or target already
+// mapped) are silently skipped to match Java's Builder.putAll
+// semantics.
+//
+// Ports Java's AliasMap.Builder.putAll.
+func (b *AliasMapBuilder) PutAll(other *AliasMap) {
+	for source, target := range other.forward {
+		b.Put(source, target)
+	}
+}
+
 // Build creates an immutable AliasMap from the builder's state.
 func (b *AliasMapBuilder) Build() *AliasMap {
 	fwd := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(b.forward))

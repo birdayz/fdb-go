@@ -54,9 +54,9 @@ func TestSQLOpenRejectsBadDSN(t *testing.T) {
 
 func TestSQLPingFailsWithoutFDB(t *testing.T) {
 	t.Parallel()
-	// Embedded Connect() tries to open FDB. Without a cluster file,
-	// it must fail with some error (not silently succeed).
-	db, err := sql.Open("fdbsql", "fdbsql:///mydb")
+	// Point at a nonexistent cluster file so this test reliably fails
+	// regardless of whether FDB is actually running on the host.
+	db, err := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/nonexistent/fdb.cluster")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
