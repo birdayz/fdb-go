@@ -107,6 +107,12 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		joinType,
 		leftAlias, rightAlias,
 	)
+	// When the SelectExpression was created via WithSwappedQuantifiers
+	// (ChildrenAsSet permutation), mark the plan so column derivation
+	// can restore the original SQL FROM-clause column ordering.
+	if sel.IsQuantifiersSwapped() {
+		joinPlan.SetSQLColumnOrderReversed(true)
+	}
 
 	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))

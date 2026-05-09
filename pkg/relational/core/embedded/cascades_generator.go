@@ -622,18 +622,29 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	// qualification like "B.A.ID".
 	outerAlias := strings.ToUpper(nlj.GetOuterAlias())
 	innerAlias := strings.ToUpper(nlj.GetInnerAlias())
-	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
-	for _, c := range outerCols {
+
+	// Determine SQL-level first/second based on whether the physical
+	// join direction was swapped by the ChildrenAsSet optimization.
+	// When reversed, inner columns come first in SQL order.
+	firstCols, secondCols := outerCols, innerCols
+	firstAlias, secondAlias := outerAlias, innerAlias
+	if nlj.IsSQLColumnOrderReversed() {
+		firstCols, secondCols = innerCols, outerCols
+		firstAlias, secondAlias = innerAlias, outerAlias
+	}
+
+	cols := make([]executor.ColumnDef, 0, len(firstCols)+len(secondCols))
+	for _, c := range firstCols {
 		qual := c
-		if outerAlias != "" && !strings.Contains(c.Name, ".") {
-			qual.Name = outerAlias + "." + strings.ToUpper(c.Name)
+		if firstAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}
-	for _, c := range innerCols {
+	for _, c := range secondCols {
 		qual := c
-		if innerAlias != "" && !strings.Contains(c.Name, ".") {
-			qual.Name = innerAlias + "." + strings.ToUpper(c.Name)
+		if secondAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}

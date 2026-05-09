@@ -265,6 +265,127 @@ func containsSort(expr expressions.RelationalExpression) bool {
 	return false
 }
 
+// TestE2E_JoinCommutativityExploration verifies that the planner
+// explores both join directions for a SelectExpression with
+// ChildrenAsSet=true and 2 ForEach quantifiers (an INNER join).
+// The NLJ rule should fire twice — once with the original quantifier
+// order (A outer, B inner) and once with the swapped order (B outer,
+// A inner) — yielding 2 distinct physical NLJ members.
+func TestE2E_JoinCommutativityExploration(t *testing.T) {
+	t.Parallel()
+
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanARef := expressions.InitialOf(scanA)
+	scanAQ := expressions.ForEachQuantifier(scanARef)
+
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanBRef := expressions.InitialOf(scanB)
+	scanBQ := expressions.ForEachQuantifier(scanBRef)
+
+	joinPred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "a_id", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, "b_id"),
+	)
+
+	sel := expressions.NewSelectExpressionWithAliases(
+		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		[]expressions.Quantifier{scanAQ, scanBQ},
+		[]predicates.QueryPredicate{joinPred},
+		[]string{"A", "B"},
+	)
+	selRef := expressions.InitialOf(sel)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, EmptyPlanContext())
+	if _, conv := p.Explore(selRef); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// Collect all physical NLJ members — there should be at least 2
+	// (one per join direction).
+	var nljPlans []*plans.RecordQueryNestedLoopJoinPlan
+	for _, m := range selRef.Members() {
+		nlj, ok := m.(*physicalNestedLoopJoinWrapper)
+		if !ok {
+			continue
+		}
+		nljPlans = append(nljPlans, nlj.GetPlan())
+	}
+
+	if len(nljPlans) < 2 {
+		var explains []string
+		for _, m := range selRef.Members() {
+			explains = append(explains, fmt.Sprintf("%T", m))
+		}
+		t.Fatalf("expected at least 2 NLJ members (both join directions), got %d; members: %v",
+			len(nljPlans), explains)
+	}
+
+	// Verify we have both A-outer-B-inner and B-outer-A-inner.
+	foundAB := false
+	foundBA := false
+	for _, nlj := range nljPlans {
+		outerExplain := nlj.GetOuter().Explain()
+		innerExplain := nlj.GetInner().Explain()
+		if outerExplain == "Scan(A)" && innerExplain == "Scan(B)" {
+			foundAB = true
+		}
+		if outerExplain == "Scan(B)" && innerExplain == "Scan(A)" {
+			foundBA = true
+		}
+	}
+
+	if !foundAB {
+		t.Error("missing NLJ with A as outer and B as inner")
+	}
+	if !foundBA {
+		t.Error("missing NLJ with B as outer and A as inner")
+	}
+}
+
+// TestE2E_JoinCommutativitySkippedForLeftJoin verifies that the planner
+// does NOT explore the swapped join direction for LEFT OUTER JOINs,
+// since left join semantics are order-dependent.
+func TestE2E_JoinCommutativitySkippedForLeftJoin(t *testing.T) {
+	t.Parallel()
+
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanARef := expressions.InitialOf(scanA)
+	scanAQ := expressions.ForEachQuantifier(scanARef)
+
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanBRef := expressions.InitialOf(scanB)
+	scanBQ := expressions.ForEachQuantifier(scanBRef)
+
+	sel := expressions.NewSelectExpressionWithJoinType(
+		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		[]expressions.Quantifier{scanAQ, scanBQ},
+		nil,
+		[]string{"A", "B"},
+		expressions.JoinLeftOuter,
+	)
+	selRef := expressions.InitialOf(sel)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, EmptyPlanContext())
+	if _, conv := p.Explore(selRef); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// For LEFT JOIN, only one direction should be explored. All NLJ
+	// plans should have A as outer.
+	for _, m := range selRef.Members() {
+		nlj, ok := m.(*physicalNestedLoopJoinWrapper)
+		if !ok {
+			continue
+		}
+		outerExplain := nlj.GetPlan().GetOuter().Explain()
+		if outerExplain == "Scan(B)" {
+			t.Fatal("LEFT JOIN should not explore B-as-outer direction")
+		}
+	}
+}
+
 // describePlan returns a short diagnostic string for the plan tree.
 func describePlan(expr expressions.RelationalExpression) string {
 	ph, ok := expr.(physicalPlanExpression)

@@ -70,17 +70,52 @@ func FireExpressionRuleWithMemo(rule ExpressionRule, ref *expressions.Reference,
 	matcher := rule.Matcher()
 	var all []expressions.RelationalExpression
 	for _, member := range ref.Members() {
-		matches := matcher.BindMatches(matching.NewBindings(), member)
-		for _, b := range matches {
-			var call *ExpressionRuleCall
-			if memo != nil {
-				call = NewExpressionRuleCallWithMemo(ref, b, ctx, memo)
-			} else {
-				call = NewExpressionRuleCall(ref, b, ctx)
+		all = append(all, fireExprRuleOnMember(rule, matcher, ref, member, ctx, memo)...)
+
+		// ChildrenAsSet permutation: for expressions whose children are
+		// order-independent (SelectExpression with INNER or CROSS joins),
+		// also fire the rule with quantifiers swapped so join rules
+		// explore both outer/inner assignments. The swapped expression is
+		// ephemeral — it is NOT inserted into the memo.
+		//
+		// Only swap when the first two quantifiers are both ForEach
+		// (a real join). Existential quantifiers indicate semi-joins
+		// (EXISTS subqueries) where quantifier ordering is semantic.
+		if sel, ok := member.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
+			qs := sel.GetQuantifiers()
+			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
+				qs[0].Kind() == expressions.QuantifierForEach &&
+				qs[1].Kind() == expressions.QuantifierForEach {
+				swapped := sel.WithSwappedQuantifiers()
+				all = append(all, fireExprRuleOnMember(rule, matcher, ref, swapped, ctx, memo)...)
 			}
-			rule.OnMatch(call)
-			all = append(all, call.Yielded()...)
 		}
 	}
 	return all
+}
+
+// fireExprRuleOnMember runs a single expression rule against a single
+// member, returning yielded expressions. Extracted to avoid duplication
+// between normal and ChildrenAsSet-permuted firing.
+func fireExprRuleOnMember(
+	rule ExpressionRule,
+	matcher matching.BindingMatcher,
+	ref *expressions.Reference,
+	member expressions.RelationalExpression,
+	ctx PlanContext,
+	memo *Memo,
+) []expressions.RelationalExpression {
+	matches := matcher.BindMatches(matching.NewBindings(), member)
+	var out []expressions.RelationalExpression
+	for _, b := range matches {
+		var call *ExpressionRuleCall
+		if memo != nil {
+			call = NewExpressionRuleCallWithMemo(ref, b, ctx, memo)
+		} else {
+			call = NewExpressionRuleCall(ref, b, ctx)
+		}
+		rule.OnMatch(call)
+		out = append(out, call.Yielded()...)
+	}
+	return out
 }
