@@ -68,6 +68,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewNoOpFilterRule(),
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
+		NewPushProjectionBelowJoinRule(),
 		NewPullFilterAboveProjectionRule(),
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
