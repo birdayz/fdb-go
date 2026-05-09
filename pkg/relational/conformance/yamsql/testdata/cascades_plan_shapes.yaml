@@ -1,0 +1,73 @@
+# cascades_plan_shapes.yaml
+#
+# Tests that verify the Cascades planner produces correct results for
+# various plan shapes. These exercise the full pipeline: translation →
+# exploration → planning → execution.
+name: cascades_plan_shapes
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, status STRING, PRIMARY KEY (id))
+  CREATE INDEX idx_customer ON orders (customer_id)
+  CREATE INDEX idx_status ON orders (status)
+setup:
+  - INSERT INTO orders VALUES (1, 100, 50, 'shipped'), (2, 100, 75, 'pending'), (3, 200, 120, 'shipped'), (4, 200, 30, 'cancelled'), (5, 300, 200, 'shipped')
+tests:
+  # PK lookup.
+  - query: SELECT total FROM orders WHERE id = 3
+    rows:
+      - [120]
+  # Index scan with equality.
+  - query: SELECT id, total FROM orders WHERE customer_id = 100 ORDER BY id
+    rows:
+      - [1, 50]
+      - [2, 75]
+  # Index scan with range.
+  - query: SELECT id FROM orders WHERE customer_id > 100 ORDER BY customer_id, id
+    rows:
+      - [3]
+      - [4]
+      - [5]
+  # Aggregate with index-backed GROUP BY.
+  - query: SELECT customer_id, SUM(total) FROM orders GROUP BY customer_id ORDER BY customer_id
+    rows:
+      - [100, 125]
+      - [200, 150]
+      - [300, 200]
+  # COUNT with WHERE filter.
+  - query: SELECT COUNT(*) FROM orders WHERE status = 'shipped'
+    rows:
+      - [3]
+  # CTE with aggregate.
+  - query: |-
+      WITH customer_totals AS (
+        SELECT customer_id, SUM(total) AS total_spend
+        FROM orders GROUP BY customer_id
+      )
+      SELECT customer_id, total_spend FROM customer_totals
+      WHERE total_spend > 130 ORDER BY customer_id
+    rows:
+      - [200, 150]
+      - [300, 200]
+  # EXISTS subquery.
+  - query: |-
+      SELECT id FROM orders o
+      WHERE EXISTS (SELECT 1 FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.id != o.id)
+      ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+  # DISTINCT on non-PK column.
+  - query: SELECT DISTINCT status FROM orders ORDER BY status
+    rows:
+      - ['cancelled']
+      - ['pending']
+      - ['shipped']
+  # ORDER BY with index elimination (customer_id has index).
+  - query: SELECT id, customer_id FROM orders ORDER BY customer_id, id
+    rows:
+      - [1, 100]
+      - [2, 100]
+      - [3, 200]
+      - [4, 200]
+      - [5, 300]
