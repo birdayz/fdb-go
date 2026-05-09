@@ -132,7 +132,7 @@ Physical operator that materializes inner result and sorts in memory. Fallback w
 
 **Ported:** `AliasMap` (bidirectional CorrelationIdentifier mapping, immutable, builder pattern) in `alias_map.go`. `ForwardMap()` bridge to existing `values.RebaseValue()`. 8 unit tests.
 
-**Remaining:** Wire `AliasMap` into `PushRequestedOrderingThroughSortRule` alias translation (currently not needed — Go's ordering parts are pure FieldValues). Extend `values.RebaseValue` to handle remaining Value types (currently handles QuantifiedObjectValue, ArithmeticValue, CastValue, ScalarFunctionValue, RecordConstructorValue, FieldValue, ConstantValue, NullValue, BooleanValue, ParameterValue; missing: PromoteValue). Build `DecorrelateValuesRule` using the AliasMap infrastructure.
+**Remaining:** Wire `AliasMap` into `PushRequestedOrderingThroughSortRule` alias translation (currently not needed — Go's ordering parts are pure FieldValues). `values.RebaseValue` now handles 13 types (QuantifiedObjectValue, ArithmeticValue, CastValue, PromoteValue, ScalarFunctionValue, RecordConstructorValue, NotValue, AggregateValue, FieldValue, ConstantValue, NullValue, BooleanValue, ParameterValue). Remaining types (AndOrValue, LikeOperatorValue, PickValue, etc.) can be added when needed. Build `DecorrelateValuesRule` using the AliasMap infrastructure.
 
 Gates: DecorrelateValuesRule (scalar subqueries), AbstractDataAccessRule, MatchPartition infrastructure.
 

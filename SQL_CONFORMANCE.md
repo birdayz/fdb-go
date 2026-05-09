@@ -77,7 +77,7 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 
 | Feature | Java | Go | ANSI | Notes |
 |---|:---:|:---:|:---:|---|
-| Scalar subquery | Y | N | Y | Needs DecorrelateValuesRule port |
+| Scalar subquery | Y | Y | Y | Uncorrelated scalar subqueries work |
 | EXISTS / NOT EXISTS | Y | Y | Y | Correlated + nested EXISTS working (swingshift-81) |
 | Correlated subquery | P | P | Y | Both have partial support |
 | Derived table (FROM subquery) | Y | Y | Y | Column alias propagation working |
@@ -145,13 +145,13 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | Aggregation | **Partial** (core rules exist, SQL layer gaps) | **Full** (Go extension) | ~85% |
 | Set operations | UNION ALL only | UNION ALL only | ~25% |
 | Joins | Full except FULL OUTER | Full except FULL OUTER | ~85% |
-| Subqueries | Partial | Partial (EXISTS works, scalar missing) | ~50% |
+| Subqueries | Partial | Partial (EXISTS + scalar work, correlated partial) | ~70% |
 | CTEs | Full + recursive | Full + recursive + DFS ext | ~90% |
 | Ordering | Index-only | Full (in-memory sort ext) | ~80% |
 | Types | Core types | Core types + BYTES | ~60% |
 | Error codes | Full | Full | ~90% |
 
-Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and recursive CTEs. Go's main gap vs Java is **scalar subqueries** (needs DecorrelateValuesRule). Both engines lack string/math functions and DATE/TIMESTAMP types.
+Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and recursive CTEs. Go's main gap vs Java is **correlated subqueries** (needs DecorrelateValuesRule for the correlated case). Uncorrelated scalar subqueries and EXISTS work. Both engines lack string/math functions and DATE/TIMESTAMP types.
 
 ## Yamsql Conformance
 

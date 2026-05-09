@@ -193,3 +193,77 @@ func TestRebaseValue_RecordConstructor(t *testing.T) {
 		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
 	}
 }
+
+func TestRebaseValue_NotValue_Rebases(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := &NotValue{Child: &QuantifiedObjectValue{Correlation: oldAlias}}
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	nv, ok := result.(*NotValue)
+	if !ok {
+		t.Fatalf("expected *NotValue, got %T", result)
+	}
+	qov, ok := nv.Child.(*QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected child to be *QuantifiedObjectValue, got %T", nv.Child)
+	}
+	if qov.Correlation != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	}
+}
+
+func TestRebaseValue_NotValue_NoChange(t *testing.T) {
+	t.Parallel()
+	v := &NotValue{Child: &ConstantValue{Value: true}}
+	result := RebaseValue(v, AliasMap{
+		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
+	})
+	if result != v {
+		t.Fatal("NOT with no matching aliases should return same pointer")
+	}
+}
+
+func TestRebaseValue_AggregateValue_Rebases(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := NewAggregateValue(AggSum, &QuantifiedObjectValue{Correlation: oldAlias})
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	agg, ok := result.(*AggregateValue)
+	if !ok {
+		t.Fatalf("expected *AggregateValue, got %T", result)
+	}
+	if agg.Op != AggSum {
+		t.Fatalf("op = %v, want AggSum", agg.Op)
+	}
+	qov, ok := agg.Operand.(*QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected operand to be *QuantifiedObjectValue, got %T", agg.Operand)
+	}
+	if qov.Correlation != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	}
+}
+
+func TestRebaseValue_AggregateValue_NoChange(t *testing.T) {
+	t.Parallel()
+	v := NewAggregateValue(AggSum, &ConstantValue{Value: 42})
+	result := RebaseValue(v, AliasMap{
+		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
+	})
+	if result != v {
+		t.Fatal("aggregate with no matching aliases should return same pointer")
+	}
+}
+
+func TestRebaseValue_AggregateValue_CountStar(t *testing.T) {
+	t.Parallel()
+	v := NewAggregateValue(AggCountStar, nil)
+	result := RebaseValue(v, AliasMap{
+		NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new"),
+	})
+	if result != v {
+		t.Fatal("COUNT(*) (nil operand) should return same pointer")
+	}
+}
