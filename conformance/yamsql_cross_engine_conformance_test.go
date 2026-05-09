@@ -255,6 +255,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		dmlSubqueryScenario(),
 		scalarSubqueryDmlScenario(),
 		updateDmlCteScenario(),
+		correlatedExistsAdvancedScenario(),
 	}
 }
 
@@ -4636,6 +4637,35 @@ func updateDmlCteScenario() *yamsql.Scenario {
 			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
 				{1, 99}, {2, 99}, {3, 30}, {4, 40},
 			}},
+		},
+	}
+}
+
+// correlatedExistsAdvancedScenario mirrors
+// testdata/correlated_exists_advanced.yaml. Advanced correlated EXISTS
+// edge cases — cross-join + EXISTS and NOT EXISTS patterns. Drops NOT
+// NULL on PK columns. First query uses SELECT DISTINCT which may be
+// rejected by Java — included to surface divergences.
+func correlatedExistsAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "correlated_exists_advanced",
+		SchemaTemplate: "CREATE TABLE emp (id BIGINT, name STRING, dept BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE task (tid BIGINT, emp_id BIGINT, prio BIGINT, PRIMARY KEY (tid))",
+		Setup: []string{
+			"INSERT INTO emp VALUES (1, 'Alice', 1), (2, 'Bob', 2), (3, 'Charlie', 1)",
+			"INSERT INTO task VALUES (10, 1, 5), (20, 1, 3), (30, 2, 8)",
+		},
+		Tests: []yamsql.Test{
+			// Cross-join + EXISTS with SELECT DISTINCT.
+			{
+				Query: "SELECT DISTINCT e.name FROM emp AS e, task AS t\nWHERE e.id = t.emp_id\n  AND EXISTS (SELECT 1 FROM task WHERE emp_id = e.id AND prio > 4)\nORDER BY e.name",
+				Rows:  [][]any{{"Alice"}, {"Bob"}},
+			},
+			// NOT EXISTS — employees with no tasks.
+			{
+				Query: "SELECT name FROM emp\nWHERE NOT EXISTS (SELECT 1 FROM task WHERE emp_id = emp.id)\nORDER BY name",
+				Rows:  [][]any{{"Charlie"}},
+			},
 		},
 	}
 }
