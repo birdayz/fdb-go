@@ -56,6 +56,11 @@ func NewValueIndexScanMatchCandidate(
 // CandidateName returns the index name.
 func (c *ValueIndexScanMatchCandidate) CandidateName() string { return c.indexName }
 
+// GetTraversal returns nil — the seed ValueIndexScanMatchCandidate does
+// not yet build an expression tree; traversal-based matching is not yet
+// supported for this candidate type.
+func (c *ValueIndexScanMatchCandidate) GetTraversal() *Traversal { return nil }
+
 // GetColumnNames returns the ordered column-name list (one per index
 // key column, parallel to GetSargableAliases).
 func (c *ValueIndexScanMatchCandidate) GetColumnNames() []string { return c.columnNames }

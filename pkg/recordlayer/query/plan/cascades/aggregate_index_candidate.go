@@ -50,7 +50,11 @@ func NewAggregateIndexMatchCandidate(
 	}
 }
 
-func (c *AggregateIndexMatchCandidate) CandidateName() string    { return c.indexName }
+func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
+
+// GetTraversal returns nil — the seed AggregateIndexMatchCandidate does
+// not yet build an expression tree for traversal-based matching.
+func (c *AggregateIndexMatchCandidate) GetTraversal() *Traversal { return nil }
 func (c *AggregateIndexMatchCandidate) GetColumnNames() []string { return c.groupCols }
 func (c *AggregateIndexMatchCandidate) GetRecordTypes() []string { return c.recordTypes }
 func (c *AggregateIndexMatchCandidate) IsUnique() bool           { return false }

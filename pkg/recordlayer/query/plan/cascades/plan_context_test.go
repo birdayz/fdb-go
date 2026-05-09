@@ -41,6 +41,7 @@ func (s stubMatchCandidate) GetColumnNames() []string                           
 func (s stubMatchCandidate) GetSargableAliases() []values.CorrelationIdentifier { return nil }
 func (s stubMatchCandidate) GetRecordTypes() []string                           { return nil }
 func (s stubMatchCandidate) IsUnique() bool                                     { return false }
+func (s stubMatchCandidate) GetTraversal() *Traversal                           { return nil }
 func (s stubMatchCandidate) ComputeBoundParameterPrefixMap(
 	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
