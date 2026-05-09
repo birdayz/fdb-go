@@ -88,17 +88,9 @@ Ported Java's `CardinalitiesProperty` 1:1. Go now has `Cardinality` (single boun
 
 ---
 
-### D-7: AggregateDataAccessRule — single-aggregate only
+### ~~D-7: AggregateDataAccessRule — multi-aggregate matching~~ — DONE (nightshift-84)
 
-**Java:** Handles multi-aggregate matching via intersection of aggregate indexes.
-
-**Go:** Simplified to single-aggregate matching only.
-
-**Fix:** Port multi-aggregate matching. Requires intersection infrastructure.
-
-**Effort:** ~1 shift.
-
----
+AggregateDataAccessRule now handles multi-aggregate GROUP BY queries by finding one AggregateIndexMatchCandidate per aggregate (all with identical grouping columns) and building a RecordQueryMultiIntersectionOnValuesPlan. Result value combines grouping columns (from first child) + one aggregate per child via RecordConstructorValue.
 
 ---
 
@@ -140,7 +132,7 @@ Java's ImplementationRules match against PlanPartition property sets (ordering, 
 
 ## PRIORITY ORDER FOR REMAINING 1:1 ALIGNMENT
 
-1. **D-7** (multi-aggregate) — M-2 foundation now in place; needs RecordQueryMultiIntersectionOnValuesPlan + AggregateDataAccessRule intersection logic. ~1 shift.
+1. ~~**D-7** (multi-aggregate) — DONE~~
 2. **Scalar subqueries** — biggest user-visible gap. Needs DecorrelateValuesRule + SelectExpression. AliasMap + TranslationMap + MaxMatchMap foundations ready. ~2-3 shifts.
 3. ~~**D-8** (CardinalityProperty split) — DONE~~
 4. ~~**D-11** (ConstantObjectValue promotion) — DONE~~
