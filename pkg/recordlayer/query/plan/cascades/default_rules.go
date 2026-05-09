@@ -56,6 +56,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewDistinctOverSortElimRule(),
 		NewDistinctOverUnionDedupRule(),
 		NewDistinctOverGroupByElimRule(),
+		NewDistinctOnUniqueElimRule(),
 		NewPullFilterAboveDistinctRule(),
 		NewTypeFilterMergeRule(),
 		NewTypeFilterRedundantOverScanRule(),

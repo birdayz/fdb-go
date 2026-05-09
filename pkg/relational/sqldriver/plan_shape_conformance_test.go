@@ -432,12 +432,11 @@ func TestFDB_PlanShapeDistinctOnPK(t *testing.T) {
 	plan := planExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
-	// Currently the planner preserves the Distinct operator even when
-	// selecting only the PK (which is inherently unique). This pins the
-	// current shape; a future optimization could eliminate the Distinct
-	// and this test would need updating.
-	if !strings.Contains(plan, "Distinct") {
-		t.Fatalf("expected Distinct operator in current plan, got: %s", plan)
+	// DistinctOnUniqueElimRule eliminates the Distinct operator when
+	// the projected columns include all PK columns. Selecting only
+	// the PK (which is inherently unique) means DISTINCT is a no-op.
+	if strings.Contains(plan, "Distinct") {
+		t.Fatalf("expected Distinct to be eliminated (PK projected), got: %s", plan)
 	}
 	// Should still have a Scan.
 	if !strings.Contains(plan, "Scan") {
