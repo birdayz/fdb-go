@@ -15,21 +15,28 @@ package embedded
 //
 // The complex aggregate classification (SELECT element parsing, GROUP BY
 // interaction, HAVING harvesting) delegates to classifySelectElements
-// which returns a selectClassification — NOT a selectQuery. The Cascades
-// path never constructs a selectQuery struct directly; it only builds one
-// via the toSelectQuery bridge when the _postBuild catalog-aware upgrade
-// pass requires it.
+// which returns a selectClassification — NOT a selectQuery. The operator
+// tree is built directly by the visit methods. When metadata is available,
+// a selectQuery is built via the toSelectQuery bridge so the existing
+// upgrade functions (which accept *selectQuery) can run. The catalog-
+// aware upgrades (predicate resolution, column validation, Value
+// resolution, subquery planning) are inlined into VisitSimpleTable
+// rather than delegated to the monolithic _postBuild function.
 //
 // The proto/naive generator continues using extractFromSimpleTable (which
 // calls classifySelectElements internally and merges with FROM info).
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
@@ -289,12 +296,15 @@ func (v *PlanVisitor) VisitQueryBody(body antlrgen.IQueryExpressionBodyContext) 
 //  4. ORDER BY     → visitOrderBy  → wrap with sort (ANTLR direct)
 //  5. LIMIT/OFFSET → visitLimit    → wrap with limit (ANTLR direct)
 //  6. Projection   → visitFinalProjection + DISTINCT (ANTLR direct)
+//  7. Catalog-aware upgrades (inline) → predicate resolution, column
+//     validation, Value resolution for projections/aggregates/sort keys,
+//     qualified star expansion, EXISTS/scalar subquery planning.
 //
 // Aggregate classification delegates to classifySelectElements which
-// returns a selectClassification — the Cascades path never constructs a
-// selectQuery struct directly. For the _postBuild catalog-aware upgrade
-// pass, the classification is converted to a selectQuery via the
-// toSelectQuery bridge.
+// returns a selectClassification. When metadata is available, the
+// classification is bridged to a selectQuery for the upgrade functions
+// that consume it — the operator tree itself is built directly by the
+// visit methods.
 func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext) (logical.LogicalOperator, error) {
 	if termCtx == nil {
 		return nil, nil
@@ -378,19 +388,323 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		op = logical.NewDistinct(op)
 	}
 
-	// Catalog-aware upgrades: run the _postBuild pass which handles
-	// predicate resolution, sort key Value resolution, projection Value
-	// resolution, aggregate operand resolution, qualified star expansion,
-	// and all semantic validation (ambiguous columns, undefined columns,
-	// GROUP BY projection validation, etc.). Build a selectQuery via the
-	// toSelectQuery bridge — this is the only place the Cascades path
-	// creates a selectQuery, and only when metadata is available.
-	// The fs.joins carry catalogAwareInnerPlan fields written by
-	// visitFrom, so toSelectQuery picks them up naturally.
-	if v.md != nil {
-		sq := cls.toSelectQuery(fs)
-		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, v.md, v.cteScopes, v.cteBodies)
+	if v.md == nil {
+		return op, nil
 	}
+
+	// --- Catalog-aware upgrades (inlined from _postBuild) ---
+	//
+	// Each upgrade step runs against the selectQuery built from the
+	// classification + FROM source. The selectQuery is a thin bridge
+	// that the upgrade functions consume; the operator tree was already
+	// built by the visit methods above.
+	sq := cls.toSelectQuery(fs)
+
+	// Build the semantic scope once. All identifier resolution goes
+	// through this scope — same architecture as Java's QueryVisitor
+	// holding a SemanticAnalyzer.
+	resolver := buildSelectScope(sq, v.md, v.cteScopes)
+
+	// (1) Expand qualified stars (a.*) in the projection list.
+	needRebuild := false
+	if sq.projQualifier != "" && sq.projCols == nil {
+		expandProjQualifier(sq, v.md)
+		needRebuild = true
+	}
+	if hasAnyQualifiedStar(sq) {
+		expandQualifiedStars(sq, v.md)
+		needRebuild = true
+	}
+	if needRebuild {
+		op = buildLogicalPlanForSelect(sq)
+		if op == nil {
+			return op, nil
+		}
+	}
+
+	// (2) Resolve projection columns through the scope.
+	if resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
+		proj := findProjection(op)
+		for i, col := range sq.projCols {
+			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				if proj != nil {
+					if wv, walkErr := resolver.WalkExpression(sq.projExprs[i]); walkErr == nil && wv != nil {
+						if proj.ProjectedValues == nil {
+							proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+						}
+						if i < len(proj.ProjectedValues) {
+							proj.ProjectedValues[i] = wv
+						}
+					}
+				}
+				continue
+			}
+			if err := resolveColumnName(resolver, col); err != nil {
+				return nil, err
+			}
+			if strings.Contains(col, ".") && proj != nil {
+				if proj.ProjectedValues == nil {
+					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+				}
+				if len(sq.joins) > 0 {
+					if i < len(proj.ProjectedValues) {
+						proj.ProjectedValues[i] = &values.FieldValue{
+							Field: strings.ToUpper(col),
+							Typ:   values.UnknownType,
+						}
+					}
+				} else {
+					var qualifier semantic.Identifier
+					id := semantic.NewUnquoted(col)
+					if dot := strings.IndexByte(col, '.'); dot >= 0 {
+						qualifier = semantic.NewUnquoted(col[:dot])
+						id = semantic.NewUnquoted(col[dot+1:])
+					}
+					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+						if i < len(proj.ProjectedValues) {
+							proj.ProjectedValues[i] = rv
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// (3) Validate ORDER BY columns (ambiguous/undefined, scalar subquery rejection).
+	projAliasSet := make(map[string]bool)
+	if sq.projAliases != nil {
+		for _, a := range sq.projAliases {
+			if a != "" {
+				projAliasSet[strings.ToUpper(a)] = true
+			}
+		}
+	}
+	for _, ac := range sq.aggCols {
+		if ac.outName != "" {
+			projAliasSet[strings.ToUpper(ac.outName)] = true
+		}
+	}
+	for _, ob := range sq.orderBy {
+		if ob.rawExpr != nil {
+			hasSubquery := false
+			walkScalarSubqueries(ob.rawExpr, func(_ antlrgen.IQueryContext) {
+				hasSubquery = true
+			})
+			if hasSubquery {
+				return nil, api.NewError(api.ErrCodeUnsupportedSort,
+					"ORDER BY with scalar subquery is not supported")
+			}
+		}
+	}
+	if resolver != nil {
+		for _, ob := range sq.orderBy {
+			if ob.rawExpr != nil {
+				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
+					var ambigErr *semantic.AmbiguousColumnError
+					if errors.As(walkErr, &ambigErr) {
+						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+							"column reference %q is ambiguous", ob.colName)
+					}
+					var notFoundErr *semantic.ColumnNotFoundError
+					if errors.As(walkErr, &notFoundErr) {
+						if projAliasSet[strings.ToUpper(ob.colName)] {
+							continue
+						}
+						if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
+							continue
+						}
+						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+							"column %q does not exist", ob.colName)
+					}
+				}
+			}
+		}
+	}
+
+	// (4) Validate GROUP BY columns.
+	if resolver != nil {
+		for i, gb := range sq.groupBy {
+			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+				continue
+			}
+			if err := resolveColumnName(resolver, gb); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// (5) Validate aggregate argument columns.
+	if resolver != nil {
+		for _, ac := range sq.aggCols {
+			if ac.aggArg != "" && ac.aggExpr == nil {
+				if err := resolveColumnName(resolver, ac.aggArg); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	// (6) Validate GROUP BY projection constraints (42803).
+	if len(sq.groupBy) > 0 && !sq.countStar {
+		if err := validateGroupByProjection(sq, v.md); err != nil {
+			return nil, err
+		}
+	}
+
+	// (7) Detect overflow numeric literals in projection expressions.
+	if resolver != nil && len(sq.projExprs) > 0 {
+		for _, e := range sq.projExprs {
+			if e == nil {
+				continue
+			}
+			if _, walkErr := resolver.WalkExpressionForProjection(e); walkErr != nil {
+				var overflow *expr.NumericOverflowLiteralError
+				if errors.As(walkErr, &overflow) {
+					return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
+				}
+				var binErr *expr.InvalidBinaryLiteralError
+				if errors.As(walkErr, &binErr) {
+					return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+				}
+			}
+		}
+	}
+
+	// (8) Derived table column-alias rewriting.
+	if sq.derivedQuery != nil {
+		if src, ok := buildDerivedTableSource(v.md, sq.tableName, sq.derivedQuery); ok && src.ColumnAliasMap != nil {
+			rewriteProjectionAliases(op, src.ColumnAliasMap)
+		}
+	}
+
+	// (9) Upgrade JOIN ON predicates.
+	if len(sq.joins) > 0 {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.cteScopes); err != nil {
+			return nil, err
+		}
+	}
+
+	// (10) Upgrade aggregate operands + GROUP BY key values.
+	if len(sq.aggCols) > 0 {
+		upgradeAggregateOperands(op, sq, v.md, v.cteScopes)
+	}
+
+	// (11) Create a unified SubqueryPlanner for EXISTS/scalar subqueries.
+	existsPlanner := &existsSubqueryPlanner{
+		md:          v.md,
+		outerScopes: buildOuterScopeSources(sq, v.md),
+		cteScopes:   v.cteScopes,
+		cteBodies:   v.cteBodies,
+	}
+
+	// (12) Upgrade projection values.
+	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
+		if err := upgradeProjectionValues(op, sq, v.md, v.cteScopes, existsPlanner); err != nil {
+			return nil, err
+		}
+	}
+
+	// (13) Attach scalar subqueries from projections.
+	if len(existsPlanner.scalarSubqueries) > 0 {
+		if proj := findProjection(op); proj != nil {
+			proj.ScalarSubqueries = existsPlanner.scalarSubqueries
+		}
+		existsPlanner.scalarSubqueries = nil
+	}
+
+	// (14) Upgrade HAVING predicate.
+	if sq.havingExpr != nil {
+		upgradeHavingPredicate(op, sq, v.md, v.cteScopes, existsPlanner)
+	}
+
+	// (15) Upgrade sort key values.
+	upgradeSortKeyValues(op, sq, v.md, v.cteScopes)
+
+	// (16) Upgrade WHERE predicate.
+	if sq.whereExpr == nil {
+		return op, nil
+	}
+
+	if resolver != nil {
+		resolver.SetSubqueryPlanner(existsPlanner)
+	}
+
+	var preWalkPred predicates.QueryPredicate
+	if resolver != nil && sq.whereExpr.Expression() != nil {
+		walked, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
+		if walkErr != nil {
+			var ambigErr *semantic.AmbiguousColumnError
+			if errors.As(walkErr, &ambigErr) {
+				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"column reference is ambiguous")
+			}
+			var inListNull *expr.InListNullError
+			if errors.As(walkErr, &inListNull) {
+				return nil, api.NewError(api.ErrCodeCannotConvertType,
+					"IN-list contains NULL literal")
+			}
+			var srcNotFound *semantic.SourceNotFoundError
+			if errors.As(walkErr, &srcNotFound) {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"no FROM source aliased as %s", srcNotFound.Alias.Name())
+			}
+			var inColRef *expr.InColumnRefError
+			if errors.As(walkErr, &inColRef) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					inColRef.Error())
+			}
+			var binErr *expr.InvalidBinaryLiteralError
+			if errors.As(walkErr, &binErr) {
+				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+			}
+			if strings.Contains(walkErr.Error(), "correlated EXISTS:") ||
+				strings.Contains(walkErr.Error(), "nested correlated EXISTS:") {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"nested correlated EXISTS: %v", walkErr)
+			}
+		} else {
+			preWalkPred = walked
+		}
+	}
+
+	hasSubqueries := len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0
+	if hasSubqueries && preWalkPred != nil {
+		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		if len(sq.joins) > 0 && len(existsPlanner.subqueries) == 1 {
+			esq := existsPlanner.subqueries[0]
+			if esq.JoinPredicate != nil {
+				if eliminated := eliminateRedundantCrossJoin(op, sq, pred, esq); eliminated {
+					return op, nil
+				}
+			}
+		}
+		_ = upgradeFirstFilter(op, pred)
+		if len(existsPlanner.subqueries) > 0 {
+			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+		}
+		if len(existsPlanner.scalarSubqueries) > 0 {
+			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+		}
+		return op, nil
+	}
+
+	var pred predicates.QueryPredicate
+	var predOk bool
+	if v.cteScopes != nil && len(sq.joins) == 0 {
+		if src, found := v.cteScopes[strings.ToUpper(sq.tableName)]; found {
+			pred, predOk = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, v.md)
+		}
+	}
+	if !predOk && v.cteScopes != nil && len(sq.joins) > 0 {
+		pred, predOk = buildWherePredicateForJoinsWithCTEScopes(v.md, sq, sq.whereExpr, v.cteScopes)
+	}
+	if !predOk {
+		pred, predOk = buildWherePredicate(v.md, sq, sq.whereExpr)
+	}
+	if !predOk {
+		return op, nil
+	}
+	_ = upgradeFirstFilter(op, pred)
 	return op, nil
 }
 
@@ -400,8 +714,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 // naturally through the visitor instance.
 //
 // Pre-built derived table inner plans are written back to
-// fs.joins[i].catalogAwareInnerPlan so that toSelectQuery carries them
-// into the _postBuild bridge selectQuery.
+// fs.joins[i].catalogAwareInnerPlan so that the selectQuery bridge
+// carries them into the upgrade functions.
 func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fromSource) (logical.LogicalOperator, error) {
 	var op logical.LogicalOperator
 	if fs.derivedQuery != nil {

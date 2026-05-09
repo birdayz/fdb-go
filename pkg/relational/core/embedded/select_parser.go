@@ -491,9 +491,9 @@ type selectClassification struct {
 }
 
 // toSelectQuery builds a selectQuery from the classification and the
-// FROM-derived fields. This is a bridge for _postBuild which still
-// needs a selectQuery for catalog-aware upgrades. The classification
-// fields are shallow-copied (slices share backing arrays).
+// FROM-derived fields. Used by VisitSimpleTable's inlined catalog-aware
+// upgrades and by the proto path. The classification fields are
+// shallow-copied (slices share backing arrays).
 func (cls *selectClassification) toSelectQuery(fs *fromSource) *selectQuery {
 	var whereExpr antlrgen.IWhereExprContext
 	var tableName, tableAlias string
