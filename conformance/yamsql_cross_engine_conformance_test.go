@@ -172,6 +172,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		cteScenario(),
 		unionConstantLiteralScenario(),
 		joinNullKeyScenario(),
+		overflowScenario(),
 		overflowMixedScenario(),
 		greatestLeastScenario(),
 		recursiveCteCountScenario(),
@@ -228,6 +229,11 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		nullInBetweenScenario(),
 		mixedNumericCompareScenario(),
 		notInListScenario(),
+		scalarSubqueryScenario(),
+		unionColumnsScenario(),
+		inListNullScenario(),
+		joinOptimizationProbesScenario(),
+		recursiveCteAdvancedScenario(),
 	}
 }
 
@@ -372,6 +378,42 @@ func greatestLeastScenario() *yamsql.Scenario {
 			{Query: "SELECT GREATEST('apple', 'banana', 'cherry') FROM t", Rows: [][]any{{"cherry"}}},
 			{Query: "SELECT LEAST('apple', 'banana', 'cherry') FROM t", Rows: [][]any{{"apple"}}},
 			{Query: "SELECT GREATEST(1, 'a') FROM t", ErrorCode: "22000"},
+		},
+	}
+}
+
+// overflowScenario mirrors testdata/overflow.yaml — integer overflow
+// checked arithmetic. Most tests are error_code "22003" (overflow on
+// add/sub/mul/div of extremal int64 values, and float literals that
+// overflow to ±Inf). The error_code tests are included for visibility
+// but get skipped by the per-test error_code skip logic. The two
+// non-error SELECT tests exercise the happy paths: MaxInt64 + (-1)
+// and MinInt64 % -1. Drops NOT NULL on PK per fdb-relational
+// restriction.
+func overflowScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "overflow",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 9223372036854775807, 1), (2, -9223372036854775808, 1), (3, 4611686018427387904, 3), (4, -9223372036854775808, -1)",
+		},
+		Tests: []yamsql.Test{
+			// MaxInt64 + 1 → overflow.
+			{Query: "SELECT a + b FROM t WHERE id = 1", ErrorCode: "22003"},
+			// MinInt64 - 1 → overflow.
+			{Query: "SELECT a - b FROM t WHERE id = 2", ErrorCode: "22003"},
+			// (MaxInt64/2 + 1) * 3 → overflow.
+			{Query: "SELECT a * b FROM t WHERE id = 3", ErrorCode: "22003"},
+			// MinInt64 / -1 → overflow (abs(MinInt64) doesn't fit in int64).
+			{Query: "SELECT a / b FROM t WHERE id = 4", ErrorCode: "22003"},
+			// Baseline: in-range op succeeds. MaxInt64 + (-1).
+			{Query: "SELECT a + -1 FROM t WHERE id = 1", Rows: [][]any{{9223372036854775806}}},
+			// MinInt64 % -1 is 0.
+			{Query: "SELECT a % b FROM t WHERE id = 4", Rows: [][]any{{0}}},
+			// Decimal literal that overflows float64 → +Inf.
+			{Query: "SELECT 1e400 FROM t WHERE id = 1", ErrorCode: "22003"},
+			// Negative counterpart — -1e400 overflows to -Inf.
+			{Query: "SELECT -1e400 FROM t WHERE id = 1", ErrorCode: "22003"},
 		},
 	}
 }
@@ -3588,5 +3630,156 @@ func expectScalarEqual(actual, expected any, msgAndArgs ...any) {
 		Expect(actual).To(Equal(e), msgAndArgs...)
 	default:
 		Expect(actual).To(Equal(expected), msgAndArgs...)
+	}
+}
+
+// scalarSubqueryScenario mirrors testdata/scalar_subquery.yaml. Drops
+// NOT NULL on PK (fdb-relational restriction). error_code tests (21000,
+// 42601) are included and skipped by the per-test error_code gate.
+func scalarSubqueryScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "scalar_subquery",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+		},
+		Tests: []yamsql.Test{
+			// Simplest case: scalar subquery in SELECT list, uncorrelated, single row.
+			{Query: "SELECT (SELECT MAX(v) FROM t) FROM t WHERE id = 1", Rows: [][]any{{40}}},
+			// Scalar subquery as a scalar constant in every row of the outer query.
+			{Query: "SELECT id, (SELECT MAX(v) FROM t) FROM t ORDER BY id", Rows: [][]any{{1, 40}, {2, 40}, {3, 40}, {4, 40}}},
+			// Scalar subquery in WHERE predicate.
+			{Query: "SELECT id FROM t WHERE v = (SELECT MAX(v) FROM t)", Rows: [][]any{{4}}},
+			// Scalar subquery in arithmetic.
+			{Query: "SELECT v - (SELECT MIN(v) FROM t) FROM t WHERE id = 4", Rows: [][]any{{30}}},
+			// Zero-row subquery returns NULL (not an error).
+			{Query: "SELECT (SELECT v FROM t WHERE id = 999) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			// >1 row subquery errors 21000 cardinality violation.
+			{Query: "SELECT (SELECT v FROM t) FROM t WHERE id = 1", ErrorCode: "21000"},
+			// >1 column subquery errors 42601 syntax error.
+			{Query: "SELECT (SELECT id, v FROM t WHERE id = 1) FROM t WHERE id = 1", ErrorCode: "42601"},
+			// Scalar subquery with aggregate and WHERE inside.
+			{Query: "SELECT id, v, (SELECT SUM(v) FROM t WHERE id > 2) AS total FROM t WHERE id = 1", Rows: [][]any{{1, 10, 70}}},
+		},
+	}
+}
+
+// joinOptimizationProbesScenario mirrors testdata/join_optimization_probes.yaml.
+// Drops NOT NULL on PK cols (fdb-relational restriction). Converts
+// explicit INNER JOIN ... ON to comma-join + WHERE (fdb-relational
+// rejects fully-qualified column names in JOIN ON clause). The GROUP BY
+// aggregate-through-join test is included as-is — it surfaces the
+// Java limitation.
+func joinOptimizationProbesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "join_optimization_probes",
+		SchemaTemplate: "CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did))" +
+			" CREATE TABLE emp (eid BIGINT, did BIGINT, ename STRING, salary BIGINT, PRIMARY KEY (eid))" +
+			" CREATE INDEX idx_emp_did ON emp (did)",
+		Setup: []string{
+			"INSERT INTO dept VALUES (1, 'eng'), (2, 'sales'), (3, 'hr')",
+			"INSERT INTO emp VALUES (10, 1, 'Alice', 100), (20, 1, 'Bob', 90), (30, 2, 'Charlie', 80), (40, 2, 'Diana', 110), (50, 3, 'Eve', 95)",
+		},
+		Tests: []yamsql.Test{
+			// Single-side filter pushdown: dept filter pushed below join.
+			// Converted from INNER JOIN to comma-join.
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' ORDER BY e.ename", Rows: [][]any{{"Alice"}, {"Bob"}}},
+			// Cross-side predicate stays above join.
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND e.salary > d.did * 50 ORDER BY e.ename", Rows: [][]any{{"Alice"}, {"Bob"}, {"Diana"}, {"Eve"}}},
+			// Both sides filtered.
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' AND e.salary >= 95 ORDER BY e.ename", Rows: [][]any{{"Alice"}}},
+			// ORDER BY through join — should work even with filter pushdown.
+			{Query: "SELECT e.ename, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname != 'hr' ORDER BY e.salary DESC", Rows: [][]any{{"Diana", "sales"}, {"Alice", "eng"}, {"Bob", "eng"}, {"Charlie", "sales"}}},
+			// Self-join with filter.
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b WHERE a.did = b.did AND a.eid < b.eid ORDER BY a.eid, b.eid", Rows: [][]any{{"Alice", "Bob"}, {"Charlie", "Diana"}}},
+			// Aggregate through join — uses GROUP BY (unsupported in
+			// fdb-relational); included as-is to surface the divergence.
+			{Query: "SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e, dept AS d WHERE e.did = d.did GROUP BY d.dname ORDER BY d.dname", Rows: [][]any{{"eng", 2, 100}, {"hr", 1, 95}, {"sales", 2, 110}}},
+		},
+	}
+}
+
+// recursiveCteAdvancedScenario mirrors testdata/recursive_cte_advanced.yaml.
+// Drops NOT NULL on PK (fdb-relational restriction). Tests column alias
+// rename resolution and descendant traversal patterns in WITH RECURSIVE.
+func recursiveCteAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "recursive_cte_advanced",
+		SchemaTemplate: "CREATE TABLE tree (id BIGINT, parent BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO tree VALUES (1, null, 'root'), (2, 1, 'child1'), (3, 1, 'child2'), (4, 2, 'grandchild1'), (5, 3, 'grandchild2')",
+		},
+		Tests: []yamsql.Test{
+			// Recursive CTE with column alias rename (anc(node, up)).
+			{Query: "WITH RECURSIVE anc(node, up) AS (SELECT id, parent FROM tree WHERE id = 5 UNION ALL SELECT t.id, t.parent FROM anc AS a, tree AS t WHERE t.id = a.up) SELECT node FROM anc ORDER BY node", Rows: [][]any{{1}, {3}, {5}}},
+			// Descendant traversal from root.
+			{Query: "WITH RECURSIVE desc_tree AS (SELECT id, parent, label FROM tree WHERE id = 1 UNION ALL SELECT t.id, t.parent, t.label FROM desc_tree AS d, tree AS t WHERE t.parent = d.id) SELECT label FROM desc_tree ORDER BY id", Rows: [][]any{{"root"}, {"child1"}, {"child2"}, {"grandchild1"}, {"grandchild2"}}},
+		},
+	}
+}
+
+// unionColumnsScenario mirrors testdata/union_columns.yaml — positional
+// column binding in UNION ALL, ORDER BY on union results, column-count
+// mismatch errors, plain UNION rejection (0AF00), LIMIT/OFFSET rejection,
+// type-incompatibility errors, and constant-literal sides.
+// Drops NOT NULL on PK columns (fdb-relational restriction). Adds table c
+// for the type-incompatibility test (BIGINT vs STRING).
+func unionColumnsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "union_columns_extended",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE c (id BIGINT, id_str STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+			"INSERT INTO c VALUES (1, 'x'), (2, 'y')",
+		},
+		Tests: []yamsql.Test{
+			// UNION ALL with differently-named columns — positional matching.
+			{Query: "SELECT v FROM a UNION ALL SELECT w FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {100}, {200}}},
+			// Two columns per side, ORDER BY on union result.
+			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY id, v", Rows: [][]any{{1, 10}, {1, 100}, {2, 20}, {2, 200}}},
+			// ORDER BY DESC on union result.
+			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC", Rows: [][]any{{2, 200}, {1, 100}, {2, 20}, {1, 10}}},
+			// ORDER BY on right-side column name fails — result schema is left's names only.
+			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w", ErrorCode: "42703"},
+			// LIMIT/OFFSET on UNION rejected at parse time.
+			{Query: "SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1", ErrorCode: "0AF00"},
+			// Plain UNION (without ALL) rejected.
+			{Query: "SELECT v FROM a UNION SELECT v FROM a ORDER BY v", ErrorCode: "0AF00"},
+			// Column-count mismatch on UNION ALL.
+			{Query: "SELECT id, v FROM a UNION ALL SELECT id FROM b", ErrorCode: "42F64"},
+			// Plain UNION column-count mismatch — UNION rejection fires first.
+			{Query: "SELECT id, v FROM a UNION SELECT id FROM b", ErrorCode: "0AF00"},
+			// UNION ALL with constant literal on one side.
+			{Query: "SELECT v FROM a UNION ALL SELECT 99 FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {99}, {99}}},
+			// Incompatible types across sides (BIGINT vs STRING).
+			{Query: "SELECT v FROM a UNION ALL SELECT id_str FROM c", ErrorCode: "42F65"},
+			// Same types — sanity regression guard.
+			{Query: "SELECT v FROM a UNION ALL SELECT w FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {100}, {200}}},
+		},
+	}
+}
+
+// inListNullScenario mirrors testdata/in_list_null.yaml — Java rejects
+// NULL anywhere in the IN list with "NULL values are not allowed in the
+// IN list" (22000). Conformance principle: doesn't work in Java, doesn't
+// work in Go. Drops NOT NULL on PK (fdb-relational restriction).
+func inListNullScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "in_list_null",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 1), (2, 2), (3, 3)",
+		},
+		Tests: []yamsql.Test{
+			// NULL in IN list rejected.
+			{Query: "SELECT id FROM t WHERE v IN (2, NULL)", ErrorCode: "22000"},
+			// NULL in NOT IN list rejected.
+			{Query: "SELECT id FROM t WHERE v NOT IN (2, NULL)", ErrorCode: "22000"},
+			// Concrete-only list works fine.
+			{Query: "SELECT id FROM t WHERE v IN (1, 3)", Unordered: true, Rows: [][]any{{1}, {3}}},
+		},
 	}
 }
