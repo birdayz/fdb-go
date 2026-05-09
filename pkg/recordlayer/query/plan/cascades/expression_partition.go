@@ -167,15 +167,18 @@ func toPlanPartitionsFallback(ref *expressions.Reference) []*PlanPartition {
 
 func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 	type propKey struct {
-		distinct bool
-		stored   bool
+		distinct    bool
+		stored      bool
+		hasOrdering bool
 	}
 
 	groups := make(map[propKey]*PlanPartition)
 	for expr, props := range pm.All() {
+		ordering := props.GetOrdering()
 		key := propKey{
-			distinct: props.GetBool(properties.PropDistinctRecords),
-			stored:   props.GetBool(properties.PropStoredRecord),
+			distinct:    props.GetBool(properties.PropDistinctRecords),
+			stored:      props.GetBool(properties.PropStoredRecord),
+			hasOrdering: ordering.IsKnown && len(ordering.Keys) > 0,
 		}
 		part, ok := groups[key]
 		if !ok {

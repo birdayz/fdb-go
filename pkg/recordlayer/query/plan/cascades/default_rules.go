@@ -77,7 +77,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSortConstantKeysElimRule(),
 		NewPullFilterAboveSortRule(),
 		NewUnsortedSortElimRule(),
-		NewPushOrderingThroughGroupByRule(),
+		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
 		// PushOrderingThroughProjectionRule REMOVED: moved to PLANNING
 		// phase as PushRequestedOrderingThroughProjectionRule (DefaultImplementationRules).
 		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
@@ -86,7 +87,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		// phase as PushRequestedOrderingThroughDistinctRule (DefaultImplementationRules).
 		// PushOrderingThroughUniqueRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughUniqueRule (DefaultImplementationRules).
-		NewPushOrderingThroughUnionRule(),
+		// PushOrderingThroughUnionRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughUnionRule (DefaultImplementationRules).
 		// PushOrderingThroughDeleteRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughDeleteRule (DefaultImplementationRules).
 		// PushOrderingThroughInsertRule REMOVED: moved to PLANNING phase
@@ -197,6 +199,8 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughUpdateRule(),
 		NewPushRequestedOrderingThroughTempTableInsertRule(),
 		NewPushRequestedOrderingThroughProjectionRule(),
+		NewPushRequestedOrderingThroughGroupByRule(),
+		NewPushRequestedOrderingThroughUnionRule(),
 
 		// --- Java-ported rules (1:1 with fdb-record-layer-core) ---
 		NewImplementSimpleSelectRule(),

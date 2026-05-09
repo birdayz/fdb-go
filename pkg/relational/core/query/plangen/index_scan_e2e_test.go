@@ -1451,7 +1451,8 @@ func TestEndToEnd_SortOverStreamingAggEliminated(t *testing.T) {
 	})
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)

@@ -74,6 +74,16 @@ func (o *RequestedOrdering) IsExhaustive() bool {
 	return o.exhaustive
 }
 
+// Exhaustive returns a copy of this ordering with exhaustive=true. If
+// already exhaustive, returns the receiver unchanged. Ports Java's
+// RequestedOrdering.exhaustive().
+func (o *RequestedOrdering) Exhaustive() *RequestedOrdering {
+	if o.exhaustive {
+		return o
+	}
+	return NewRequestedOrdering(o.parts, o.distinctness, true)
+}
+
 // IsDistinct returns true if the ordering requires distinct records.
 func (o *RequestedOrdering) IsDistinct() bool {
 	return o.distinctness == DistinctnessDistinct
