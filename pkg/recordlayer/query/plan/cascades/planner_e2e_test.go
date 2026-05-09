@@ -153,7 +153,7 @@ func TestE2E_UnionOfTwoScans(t *testing.T) {
 //
 // Rule chain:
 //  1. PrimaryScanRule: yields physicalScanWrapper with PK ordering (ID).
-//  2. PushOrderingThroughFilterRule: pushes Sort below Filter.
+//  2. PushRequestedOrderingThroughFilterRule: pushes ordering constraint through Filter.
 //  3. ImplementSortRule: eliminates Sort because the scan provides ID ordering.
 //
 // Expected result: Filter -> Scan (no sort operator anywhere in the plan).

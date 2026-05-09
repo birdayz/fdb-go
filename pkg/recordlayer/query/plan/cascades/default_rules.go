@@ -79,7 +79,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewUnsortedSortElimRule(),
 		NewPushOrderingThroughGroupByRule(),
 		NewPushOrderingThroughProjectionRule(),
-		NewPushOrderingThroughFilterRule(),
+		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
+		// phase as PushRequestedOrderingThroughFilterRule (DefaultImplementationRules).
 		// PushOrderingThroughDistinctRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughDistinctRule (DefaultImplementationRules).
 		// PushOrderingThroughUniqueRule REMOVED (D-2): moved to PLANNING
@@ -189,6 +190,7 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughSortRule(),
 		NewPushRequestedOrderingThroughDistinctRule(),
 		NewPushRequestedOrderingThroughUniqueRule(),
+		NewPushRequestedOrderingThroughFilterRule(),
 		NewPushRequestedOrderingThroughDeleteRule(),
 		NewPushRequestedOrderingThroughInsertRule(),
 		NewPushRequestedOrderingThroughUpdateRule(),
