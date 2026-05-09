@@ -17530,6 +17530,33 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_DML_02 VALUES (1)"},
 			Query:          "DELETE FROM NoSuchTable WHERE id = 1",
 		},
+
+		// --- swingshift-83-cont: aggregate + CTE probes ---
+
+		{
+			Name:           "agg_min_max_with_filter",
+			SchemaTemplate: "CREATE TABLE T_AGG_04 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG_04 VALUES (1,1,10),(2,1,20),(3,2,30),(4,2,40)"},
+			Query:          "SELECT g, MIN(v), MAX(v) FROM T_AGG_04 WHERE v > 15 GROUP BY g ORDER BY g",
+		},
+		{
+			Name:           "exists_with_aggregate",
+			SchemaTemplate: "CREATE TABLE T_EX_01 (id BIGINT, g BIGINT, PRIMARY KEY (id))\nCREATE TABLE T_EX_02 (id BIGINT, ref_g BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX_01 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX_02 VALUES (1, 10), (2, 10), (3, 20)",
+			},
+			Query: "SELECT g, COUNT(*) FROM T_EX_01 WHERE EXISTS (SELECT 1 FROM T_EX_02 WHERE T_EX_02.ref_g = T_EX_01.g) GROUP BY g ORDER BY g",
+		},
+		{
+			Name:           "left_outer_join_basic",
+			SchemaTemplate: "CREATE TABLE T_LOJ_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))\nCREATE TABLE T_LOJ_02 (id BIGINT, ref BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LOJ_01 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_LOJ_02 VALUES (1, 10, 'alpha'), (2, 20, 'beta')",
+			},
+			Query: "SELECT T_LOJ_01.id, T_LOJ_02.label FROM T_LOJ_01 LEFT OUTER JOIN T_LOJ_02 ON T_LOJ_01.v = T_LOJ_02.ref ORDER BY T_LOJ_01.id",
+		},
 	}
 }
 
