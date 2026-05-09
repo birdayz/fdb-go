@@ -7,7 +7,7 @@ import (
 
 // PushOrderingThroughUnionRule pushes a LogicalSort's ordering into
 // each branch of a LogicalUnionExpression. Each union branch gets
-// its own copy of the sort so downstream rules (SortOverOrderedElim,
+// its own copy of the sort so downstream rules (ImplementSortRule,
 // ImplementInMemorySortRule) can independently satisfy or eliminate
 // the ordering per branch.
 //
