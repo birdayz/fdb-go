@@ -17573,6 +17573,36 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_RCTE_02 VALUES (1, NULL), (2, 1), (3, 1), (4, 2)"},
 			Query:          "WITH RECURSIVE tree AS (SELECT id FROM T_RCTE_02 WHERE parent IS NULL UNION ALL SELECT c.id FROM T_RCTE_02 c, tree t WHERE c.parent = t.id) SELECT id FROM tree ORDER BY id",
 		},
+		{
+			Name:           "join_aggregate_having",
+			SchemaTemplate: "CREATE TABLE T_JAH_P (id BIGINT, cat STRING, PRIMARY KEY (id))\nCREATE TABLE T_JAH_O (id BIGINT, pid BIGINT, qty BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JAH_P VALUES (1, 'A'), (2, 'A'), (3, 'B')",
+				"INSERT INTO T_JAH_O VALUES (1, 1, 2), (2, 1, 3), (3, 2, 1), (4, 3, 5)",
+			},
+			Query: "SELECT p.cat, SUM(o.qty) FROM T_JAH_P p, T_JAH_O o WHERE p.id = o.pid GROUP BY p.cat HAVING SUM(o.qty) > 3 ORDER BY p.cat",
+		},
+		{
+			Name:           "distinct_on_join",
+			SchemaTemplate: "CREATE TABLE T_DOJ_P (id BIGINT, cat STRING, PRIMARY KEY (id))\nCREATE TABLE T_DOJ_O (id BIGINT, pid BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DOJ_P VALUES (1, 'X'), (2, 'X'), (3, 'Y')",
+				"INSERT INTO T_DOJ_O VALUES (1, 1), (2, 2), (3, 3)",
+			},
+			Query: "SELECT DISTINCT p.cat FROM T_DOJ_P p, T_DOJ_O o WHERE p.id = o.pid ORDER BY p.cat",
+		},
+		{
+			Name:           "cte_join_aggregate",
+			SchemaTemplate: "CREATE TABLE T_CJA_01 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CJA_01 VALUES (1,1,10),(2,1,20),(3,2,30)"},
+			Query:          "WITH sums AS (SELECT g, SUM(v) AS total FROM T_CJA_01 GROUP BY g) SELECT a.g, a.total, b.total FROM sums a, sums b WHERE a.g != b.g ORDER BY a.g, b.g",
+		},
+		{
+			Name:           "scalar_subquery_with_aggregate",
+			SchemaTemplate: "CREATE TABLE T_SSA_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SSA_01 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id, v, v - (SELECT AVG(v) FROM T_SSA_01) AS diff FROM T_SSA_01 ORDER BY id",
+		},
 	}
 }
 
