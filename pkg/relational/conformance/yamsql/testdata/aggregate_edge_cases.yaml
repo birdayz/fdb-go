@@ -1,0 +1,52 @@
+# aggregate_edge_cases.yaml
+#
+# Edge cases for aggregate functions that match Java's behavior.
+# Sourced from Java's groupby-tests.yamsql and standard-tests.yamsql.
+name: aggregate_edge_cases
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 2, 50)
+tests:
+  # COUNT(*) with no matching rows → 0 (not NULL).
+  - query: SELECT COUNT(*) FROM t WHERE g = 999
+    rows:
+      - [0]
+  # SUM with no matching rows → NULL.
+  - query: SELECT SUM(v) FROM t WHERE g = 999
+    rows:
+      - [null]
+  # MIN/MAX with no matching rows → NULL.
+  - query: SELECT MIN(v), MAX(v) FROM t WHERE g = 999
+    rows:
+      - [null, null]
+  # AVG with no matching rows → NULL.
+  - query: SELECT AVG(v) FROM t WHERE g = 999
+    rows:
+      - [null]
+  # GROUP BY with no matching rows → empty result.
+  - query: SELECT g, COUNT(*) FROM t WHERE g = 999 GROUP BY g
+    rows: []
+  # Multiple aggregates in one query.
+  - query: SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t GROUP BY g ORDER BY g
+    rows:
+      - [1, 2, 30, 10, 20]
+      - [2, 3, 120, 30, 50]
+  # Aggregate with arithmetic expression.
+  - query: SELECT g, SUM(v * 2) FROM t GROUP BY g ORDER BY g
+    rows:
+      - [1, 60]
+      - [2, 240]
+  # AVG returns DOUBLE (not integer division).
+  - query: SELECT AVG(v) FROM t WHERE g = 1
+    rows:
+      - [15.0]
+  # HAVING with aggregate comparison.
+  - query: SELECT g, SUM(v) FROM t GROUP BY g HAVING SUM(v) > 50 ORDER BY g
+    rows:
+      - [2, 120]
+  # COUNT with GROUP BY alias.
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY g AS grp ORDER BY grp
+    rows:
+      - [1, 2]
+      - [2, 3]
