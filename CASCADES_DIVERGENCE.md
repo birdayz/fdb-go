@@ -165,11 +165,9 @@ Comprehensive audit of all known divergences between Go's Cascades implementatio
 
 **Status:** Theoretical. No planner rule currently rewrites IN-list comparisons to `InOpValue`. Becomes real when such a rule lands.
 
-**Fix:** Route through SQL-equality comparator (`predicates.cmpAny` promoted to values-level helper).
+**Fix:** ~~Route through SQL-equality comparator.~~ **DONE (dayshift-82).** `equalsAny` now promotes mixed int/float pairs to float64 for comparison. 3 new tests.
 
-**Effort:** ~0.5 day.
-
-**File:** `values/value_in.go:96-105`
+**Effort:** 0.5 day (completed).
 
 ---
 
