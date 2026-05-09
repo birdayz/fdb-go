@@ -32,14 +32,19 @@ PlanVisitor walks ANTLR incrementally: parseFromSource + classifySelectElements 
 
 All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-1 infrastructure complete (AliasMap + RebaseValue 13 types + RebasePredicate 7 types). Error codes aligned: 42703/42809/42804. See `CASCADES_DIVERGENCE.md`.
 
-### Remaining Cascades alignment (from CASCADES_DIVERGENCE.md)
+### Remaining internal architecture divergences
 
-1. **Correlated subqueries** — biggest user-visible gap. DecorrelateValuesRule. M-1 foundation ready. ~2-3 shifts.
-2. **D-7** Multi-aggregate index matching — 1 shift (gated on M-2: PartialMatch)
-3. **D-8** CardinalityProperty split — 0.5 shift
-4. **D-11** ConstantObjectValue type promotion — 0.5 shift (not triggered yet)
-5. **D-2** PushOrdering constraint vs structural — 2-3 shifts (major)
-6. **D-5** InComparison architecture — 2-3 shifts (M-1 ready)
+**Go has ZERO user-visible gaps vs Java 4.11.1.0.** Every SQL pattern Java supports, Go supports too. The remaining divergences are all internal planner architecture with no correctness impact (except D-7 which affects optimization quality).
+
+| ID | Divergence | Go approach | Java approach | Criticality | Effort |
+|---|---|---|---|---|---|
+| **D-2** | PushOrdering rules | ExpressionRules (EXPLORE): structural rewrites | ImplementationRules (PLANNING): constraint-push | LOW — same results, Go's memo larger | 2-3 shifts |
+| **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Postgres-inspired: multi-dim, memoized | NONE — intentional (RFC-024) | N/A |
+| **D-5** | InComparison architecture | Union of filter legs per IN-element | SelectExpression + ExplodeExpression | LOW — same results, less elegant | 2-3 shifts |
+| **D-7** | Multi-aggregate matching | Single-aggregate index match only | Multi-aggregate via index intersection | **MEDIUM** — missing optimization | 1 shift |
+| **D-8** | CardinalityProperty | Coupled to Cost struct | Separate class with min/max bounds | NONE — internal modularity | 0.5 shift |
+| **D-11** | ConstantObjectValue promotion | No type promotion on eval | PromoteValue.isPromotionNeeded | NONE — not triggered yet | 0.5 shift |
+| **D-3 gap** | Distinct elimination check | Logical PK column coverage | Physical DistinctRecordsProperty | LOW — misses edge case | 0.5 shift |
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
