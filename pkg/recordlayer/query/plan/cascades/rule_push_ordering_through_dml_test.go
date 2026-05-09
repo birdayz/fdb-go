@@ -4,72 +4,160 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// Delete tests moved to rule_push_requested_ordering_through_delete_test.go
+// Delete tests in rule_push_requested_ordering_through_delete_test.go
 // (PLANNING-phase constraint propagation).
 
 // --- Insert ---
 
-func TestPushOrderingThroughInsert_SortKeysPassThrough(t *testing.T) {
+func TestPushRequestedOrderingThroughInsert_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
-	insQ := expressions.ForEachQuantifier(expressions.InitialOf(ins))
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: true},
+	insRef := expressions.InitialOf(ins)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
 		},
-		insQ,
+		DistinctnessNotDistinct, false,
 	)
-	ref := expressions.InitialOf(sort)
+	Set(cm, insRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
 
-	yielded := FireExpressionRule(NewPushOrderingThroughInsertRule(), ref)
-	if len(yielded) != 1 {
-		t.Fatalf("yielded %d, want 1", len(yielded))
+	rule := NewPushRequestedOrderingThroughInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
+	if len(bindings) != 1 {
+		t.Fatalf("matcher should match InsertExpression, got %d bindings", len(bindings))
 	}
 
-	newIns, ok := yielded[0].(*expressions.InsertExpression)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      insRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	innerRef := ins.GetInner().GetRangesOver()
+	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
 	if !ok {
-		t.Fatalf("expected *InsertExpression, got %T", yielded[0])
+		t.Fatal("constraint not pushed to child Reference")
 	}
-	if newIns.GetTargetRecordType() != "MyRecord" {
-		t.Fatalf("expected target MyRecord, got %s", newIns.GetTargetRecordType())
+	if len(pushed) != 1 {
+		t.Fatalf("expected 1 pushed ordering, got %d", len(pushed))
 	}
-	innerSort, ok := newIns.GetInner().GetRangesOver().Get().(*expressions.LogicalSortExpression)
-	if !ok {
-		t.Fatalf("expected *LogicalSortExpression below Insert, got %T", newIns.GetInner().GetRangesOver().Get())
+	parts := pushed[0].GetParts()
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 ordering part, got %d", len(parts))
 	}
-	if len(innerSort.GetSortKeys()) != 1 {
-		t.Fatalf("expected 1 sort key, got %d", len(innerSort.GetSortKeys()))
-	}
-	if !innerSort.GetSortKeys()[0].Reverse {
-		t.Fatal("expected DESC sort key")
+	fv, ok := parts[0].Value.(*values.FieldValue)
+	if !ok || fv.Field != "id" {
+		t.Fatalf("expected ordering on id, got %v", parts[0].Value)
 	}
 }
 
-func TestPushOrderingThroughInsert_UnsortedDoesNotFire(t *testing.T) {
+func TestPushRequestedOrderingThroughInsert_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
-	insQ := expressions.ForEachQuantifier(expressions.InitialOf(ins))
-	sort := expressions.UnsortedLogicalSortExpression(insQ)
-	ref := expressions.InitialOf(sort)
+	insRef := expressions.InitialOf(ins)
 
-	yielded := FireExpressionRule(NewPushOrderingThroughInsertRule(), ref)
-	if len(yielded) != 0 {
-		t.Fatalf("rule should not fire on unsorted, but yielded %d", len(yielded))
+	cm := NewConstraintMap()
+
+	rule := NewPushRequestedOrderingThroughInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      insRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	innerRef := ins.GetInner().GetRangesOver()
+	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
+	if ok {
+		t.Fatal("constraint should not be pushed when parent has no constraint")
+	}
+}
+
+func TestPushRequestedOrderingThroughInsert_NotConstraintOnlyDoesNotPush(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
+	insRef := expressions.InitialOf(ins)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct, false,
+	)
+	Set(cm, insRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+
+	rule := NewPushRequestedOrderingThroughInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      insRef,
+		Constraints:    cm,
+		constraintOnly: false,
+	}
+	rule.OnMatch(call)
+
+	innerRef := ins.GetInner().GetRangesOver()
+	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
+	if ok {
+		t.Fatal("constraint should not be pushed during implementation pass")
+	}
+}
+
+func TestPushRequestedOrderingThroughInsert_NoYield(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
+	insRef := expressions.InitialOf(ins)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct, false,
+	)
+	Set(cm, insRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+
+	rule := NewPushRequestedOrderingThroughInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      insRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	if len(call.yielded) != 0 {
+		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
 	}
 }
 
 // --- Update ---
 
-func TestPushOrderingThroughUpdate_SortKeysPassThrough(t *testing.T) {
+func TestPushRequestedOrderingThroughUpdate_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -78,110 +166,289 @@ func TestPushOrderingThroughUpdate_SortKeysPassThrough(t *testing.T) {
 		{FieldPath: "name", NewValue: values.LiteralValue("updated")},
 	}
 	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", transforms)
-	updQ := expressions.ForEachQuantifier(expressions.InitialOf(upd))
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
+	updRef := expressions.InitialOf(upd)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderDescending},
 		},
-		updQ,
+		DistinctnessNotDistinct, false,
 	)
-	ref := expressions.InitialOf(sort)
+	Set(cm, updRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
 
-	yielded := FireExpressionRule(NewPushOrderingThroughUpdateRule(), ref)
-	if len(yielded) != 1 {
-		t.Fatalf("yielded %d, want 1", len(yielded))
+	rule := NewPushRequestedOrderingThroughUpdateRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
+	if len(bindings) != 1 {
+		t.Fatalf("matcher should match UpdateExpression, got %d bindings", len(bindings))
 	}
 
-	newUpd, ok := yielded[0].(*expressions.UpdateExpression)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      updRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	innerRef := upd.GetInner().GetRangesOver()
+	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
 	if !ok {
-		t.Fatalf("expected *UpdateExpression, got %T", yielded[0])
+		t.Fatal("constraint not pushed to child Reference")
 	}
-	if newUpd.GetTargetRecordType() != "MyRecord" {
-		t.Fatalf("expected target MyRecord, got %s", newUpd.GetTargetRecordType())
+	if len(pushed) != 1 {
+		t.Fatalf("expected 1 pushed ordering, got %d", len(pushed))
 	}
-	if len(newUpd.GetTransforms()) != 1 {
-		t.Fatalf("expected 1 transform, got %d", len(newUpd.GetTransforms()))
+	parts := pushed[0].GetParts()
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 ordering part, got %d", len(parts))
 	}
-	innerSort, ok := newUpd.GetInner().GetRangesOver().Get().(*expressions.LogicalSortExpression)
-	if !ok {
-		t.Fatalf("expected *LogicalSortExpression below Update, got %T", newUpd.GetInner().GetRangesOver().Get())
+	fv, ok := parts[0].Value.(*values.FieldValue)
+	if !ok || fv.Field != "id" {
+		t.Fatalf("expected ordering on id, got %v", parts[0].Value)
 	}
-	if len(innerSort.GetSortKeys()) != 1 {
-		t.Fatalf("expected 1 sort key, got %d", len(innerSort.GetSortKeys()))
+	if parts[0].SortOrder != RequestedSortOrderDescending {
+		t.Fatalf("expected DESC, got %v", parts[0].SortOrder)
 	}
 }
 
-func TestPushOrderingThroughUpdate_UnsortedDoesNotFire(t *testing.T) {
+func TestPushRequestedOrderingThroughUpdate_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", nil)
-	updQ := expressions.ForEachQuantifier(expressions.InitialOf(upd))
-	sort := expressions.UnsortedLogicalSortExpression(updQ)
-	ref := expressions.InitialOf(sort)
+	updRef := expressions.InitialOf(upd)
 
-	yielded := FireExpressionRule(NewPushOrderingThroughUpdateRule(), ref)
-	if len(yielded) != 0 {
-		t.Fatalf("rule should not fire on unsorted, but yielded %d", len(yielded))
+	cm := NewConstraintMap()
+
+	rule := NewPushRequestedOrderingThroughUpdateRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      updRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	innerRef := upd.GetInner().GetRangesOver()
+	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
+	if ok {
+		t.Fatal("constraint should not be pushed when parent has no constraint")
+	}
+}
+
+func TestPushRequestedOrderingThroughUpdate_NotConstraintOnlyDoesNotPush(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", nil)
+	updRef := expressions.InitialOf(upd)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct, false,
+	)
+	Set(cm, updRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+
+	rule := NewPushRequestedOrderingThroughUpdateRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      updRef,
+		Constraints:    cm,
+		constraintOnly: false,
+	}
+	rule.OnMatch(call)
+
+	innerRef := upd.GetInner().GetRangesOver()
+	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
+	if ok {
+		t.Fatal("constraint should not be pushed during implementation pass")
+	}
+}
+
+func TestPushRequestedOrderingThroughUpdate_NoYield(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", nil)
+	updRef := expressions.InitialOf(upd)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct, false,
+	)
+	Set(cm, updRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+
+	rule := NewPushRequestedOrderingThroughUpdateRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      updRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	if len(call.yielded) != 0 {
+		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
 	}
 }
 
 // --- TempTableInsert ---
 
-func TestPushOrderingThroughTempTableInsert_SortKeysPassThrough(t *testing.T) {
+func TestPushRequestedOrderingThroughTempTableInsert_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	alias := values.NamedCorrelationIdentifier("tt1")
 	tti := expressions.NewTempTableInsertExpression(scanQ, alias, true)
-	ttiQ := expressions.ForEachQuantifier(expressions.InitialOf(tti))
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, Reverse: false},
+	ttiRef := expressions.InitialOf(tti)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
 		},
-		ttiQ,
+		DistinctnessNotDistinct, false,
 	)
-	ref := expressions.InitialOf(sort)
+	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
 
-	yielded := FireExpressionRule(NewPushOrderingThroughTempTableInsertRule(), ref)
-	if len(yielded) != 1 {
-		t.Fatalf("yielded %d, want 1", len(yielded))
+	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
+	if len(bindings) != 1 {
+		t.Fatalf("matcher should match TempTableInsertExpression, got %d bindings", len(bindings))
 	}
 
-	newTTI, ok := yielded[0].(*expressions.TempTableInsertExpression)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      ttiRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	innerRef := tti.GetInner().GetRangesOver()
+	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
 	if !ok {
-		t.Fatalf("expected *TempTableInsertExpression, got %T", yielded[0])
+		t.Fatal("constraint not pushed to child Reference")
 	}
-	if newTTI.GetTempTableAlias() != alias {
-		t.Fatalf("expected alias %v, got %v", alias, newTTI.GetTempTableAlias())
+	if len(pushed) != 1 {
+		t.Fatalf("expected 1 pushed ordering, got %d", len(pushed))
 	}
-	if !newTTI.IsOwning() {
-		t.Fatal("expected owning=true")
+	parts := pushed[0].GetParts()
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 ordering part, got %d", len(parts))
 	}
-	innerSort, ok := newTTI.GetInner().GetRangesOver().Get().(*expressions.LogicalSortExpression)
-	if !ok {
-		t.Fatalf("expected *LogicalSortExpression below TempTableInsert, got %T", newTTI.GetInner().GetRangesOver().Get())
-	}
-	if len(innerSort.GetSortKeys()) != 1 {
-		t.Fatalf("expected 1 sort key, got %d", len(innerSort.GetSortKeys()))
+	fv, ok := parts[0].Value.(*values.FieldValue)
+	if !ok || fv.Field != "col1" {
+		t.Fatalf("expected ordering on col1, got %v", parts[0].Value)
 	}
 }
 
-func TestPushOrderingThroughTempTableInsert_UnsortedDoesNotFire(t *testing.T) {
+func TestPushRequestedOrderingThroughTempTableInsert_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	alias := values.NamedCorrelationIdentifier("tt1")
 	tti := expressions.NewTempTableInsertExpression(scanQ, alias, false)
-	ttiQ := expressions.ForEachQuantifier(expressions.InitialOf(tti))
-	sort := expressions.UnsortedLogicalSortExpression(ttiQ)
-	ref := expressions.InitialOf(sort)
+	ttiRef := expressions.InitialOf(tti)
 
-	yielded := FireExpressionRule(NewPushOrderingThroughTempTableInsertRule(), ref)
-	if len(yielded) != 0 {
-		t.Fatalf("rule should not fire on unsorted, but yielded %d", len(yielded))
+	cm := NewConstraintMap()
+
+	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      ttiRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	innerRef := tti.GetInner().GetRangesOver()
+	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
+	if ok {
+		t.Fatal("constraint should not be pushed when parent has no constraint")
+	}
+}
+
+func TestPushRequestedOrderingThroughTempTableInsert_NotConstraintOnlyDoesNotPush(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	alias := values.NamedCorrelationIdentifier("tt1")
+	tti := expressions.NewTempTableInsertExpression(scanQ, alias, true)
+	ttiRef := expressions.InitialOf(tti)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct, false,
+	)
+	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+
+	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      ttiRef,
+		Constraints:    cm,
+		constraintOnly: false,
+	}
+	rule.OnMatch(call)
+
+	innerRef := tti.GetInner().GetRangesOver()
+	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
+	if ok {
+		t.Fatal("constraint should not be pushed during implementation pass")
+	}
+}
+
+func TestPushRequestedOrderingThroughTempTableInsert_NoYield(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	alias := values.NamedCorrelationIdentifier("tt1")
+	tti := expressions.NewTempTableInsertExpression(scanQ, alias, true)
+	ttiRef := expressions.InitialOf(tti)
+
+	cm := NewConstraintMap()
+	ordering := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct, false,
+	)
+	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*RequestedOrdering{ordering})
+
+	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      ttiRef,
+		Constraints:    cm,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+
+	if len(call.yielded) != 0 {
+		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
 	}
 }

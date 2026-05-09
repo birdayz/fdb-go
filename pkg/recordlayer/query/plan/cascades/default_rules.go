@@ -87,9 +87,12 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushOrderingThroughUnionRule(),
 		// PushOrderingThroughDeleteRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughDeleteRule (DefaultImplementationRules).
-		NewPushOrderingThroughInsertRule(),
-		NewPushOrderingThroughUpdateRule(),
-		NewPushOrderingThroughTempTableInsertRule(),
+		// PushOrderingThroughInsertRule REMOVED: moved to PLANNING phase
+		// as PushRequestedOrderingThroughInsertRule (DefaultImplementationRules).
+		// PushOrderingThroughUpdateRule REMOVED: moved to PLANNING phase
+		// as PushRequestedOrderingThroughUpdateRule (DefaultImplementationRules).
+		// PushOrderingThroughTempTableInsertRule REMOVED: moved to PLANNING
+		// phase as PushRequestedOrderingThroughTempTableInsertRule (DefaultImplementationRules).
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
 		NewInComparisonToExplodeRule(),
@@ -187,6 +190,9 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughDistinctRule(),
 		NewPushRequestedOrderingThroughUniqueRule(),
 		NewPushRequestedOrderingThroughDeleteRule(),
+		NewPushRequestedOrderingThroughInsertRule(),
+		NewPushRequestedOrderingThroughUpdateRule(),
+		NewPushRequestedOrderingThroughTempTableInsertRule(),
 
 		// --- Java-ported rules (1:1 with fdb-record-layer-core) ---
 		NewImplementSimpleSelectRule(),
