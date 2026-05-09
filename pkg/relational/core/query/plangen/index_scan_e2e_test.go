@@ -984,7 +984,7 @@ func TestEndToEnd_StreamingAggDirectFromOrderedIndex(t *testing.T) {
 	}
 
 	// The inner of the streaming agg should be an ordered index scan
-	// (sort eliminated by SortOverOrderedElimRule).
+	// (sort eliminated by ImplementSortRule).
 	inner := plan.GetQuantifiers()
 	if len(inner) != 1 {
 		t.Fatalf("expected 1 child quantifier, got %d", len(inner))

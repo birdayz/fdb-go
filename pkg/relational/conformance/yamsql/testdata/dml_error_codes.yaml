@@ -1,0 +1,34 @@
+# dml_error_codes.yaml
+#
+# Error codes for DML operations aligned with Java behavior.
+name: dml_error_codes
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, name STRING NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'alice'), (2, 20, 'bob')
+tests:
+  # UPDATE SET non-existent column.
+  - query: UPDATE t SET nonexistent = 5 WHERE id = 1
+    error_code: "42703"
+  # INSERT with NULL into NOT NULL column.
+  - query: INSERT INTO t VALUES (3, 30, NULL)
+    error_code: "23502"
+  # DELETE from non-existent table.
+  - query: DELETE FROM nonexistent WHERE id = 1
+    error_code: "42F01"
+  # INSERT duplicate PK.
+  - query: INSERT INTO t VALUES (1, 99, 'dup')
+    error_code: "23505"
+  # UPDATE with type mismatch in SET expression.
+  - query: UPDATE t SET v = 'text' WHERE id = 1
+    error_code: "22000"
+  # Baseline: valid UPDATE works.
+  - query: UPDATE t SET v = 99 WHERE id = 1
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [99]
+  # Baseline: valid DELETE works.
+  - query: DELETE FROM t WHERE id = 2
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [1]

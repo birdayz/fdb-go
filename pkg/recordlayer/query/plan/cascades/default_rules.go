@@ -56,7 +56,9 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewDistinctOverSortElimRule(),
 		NewDistinctOverUnionDedupRule(),
 		NewDistinctOverGroupByElimRule(),
-		NewDistinctOnUniqueElimRule(),
+		// DistinctOnUniqueElimRule REMOVED (D-3): Java's ImplementDistinctRule
+		// is PLANNING-phase only. Distinct elimination now happens exclusively
+		// in ImplementDistinctFinalRule (DefaultImplementationRules).
 		NewPullFilterAboveDistinctRule(),
 		NewTypeFilterMergeRule(),
 		NewTypeFilterRedundantOverScanRule(),
@@ -110,11 +112,10 @@ func DefaultExpressionRules() []ExpressionRule {
 //
 // Compose with: append(DefaultExpressionRules(), BatchAExpressionRules()...)
 //
-// Currently 7 read-side implement rules ported (PrimaryScanRule,
-// ImplementFilterRule, ImplementDistinctRule,
-// ImplementTypeFilterRule, ImplementUnionRule,
-// ImplementIntersectionRule). ImplementSortRule moved to
-// DefaultImplementationRules (PLANNING phase) per Java's RemoveSortRule. Remaining: covering-index +
+// Currently 6 read-side implement rules ported (PrimaryScanRule,
+// ImplementFilterRule, ImplementTypeFilterRule, ImplementUnionRule,
+// ImplementIntersectionRule). ImplementSortRule and ImplementDistinctRule
+// moved to DefaultImplementationRules (PLANNING phase) per Java. Remaining: covering-index +
 // MergeFetchIntoCoveringIndexRule + index-equality / range rules —
 // all gated on MatchCandidate / IndexAccessHint infrastructure
 // (per RFC-022).
@@ -127,7 +128,9 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
 		NewOrderedPrimaryScanRule(),
-		NewImplementDistinctRule(),
+		// ImplementDistinctRule REMOVED (D-3): Java's ImplementDistinctRule
+		// is PLANNING-phase only. Distinct implementation + elimination now
+		// happens exclusively in ImplementDistinctFinalRule (DefaultImplementationRules).
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
 		NewImplementIntersectionRule(),

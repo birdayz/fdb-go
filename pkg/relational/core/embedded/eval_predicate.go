@@ -281,10 +281,9 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	// FALSE for these comparisons → empty result set, the dangerous
 	// kind of bug. Now we error to match Java.
 	if !valuesComparable(left, right) {
-		// Java verbatim: "The operands of a comparison operator are
-		// not compatible." (period included). Cross-engine corpus
-		// `type_mismatch_compare` pins byte-equality.
-		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+		// Java maps SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES →
+		// ErrorCode.DATATYPE_MISMATCH (42804).
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}
 
@@ -380,18 +379,18 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			return triFalse, err
 		}
 		if litVal == nil {
-			// Java verbatim: "NULL values are not allowed in the IN list".
-			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+			// Java: "NULL values are not allowed in the IN list" (42809).
+			return triFalse, api.NewErrorf(api.ErrCodeWrongObjectType,
 				"NULL values are not allowed in the IN list")
 		}
 		values = append(values, litVal)
 	}
 	for _, litVal := range values {
-		// Java alignment: cross-type IN element errors 22000
-		// (CANNOT_CONVERT_TYPE), matching the comparison-operator path.
+		// Java maps type-incompatible comparisons to 42804
+		// (DATATYPE_MISMATCH) via SemanticException translation.
 		if !valuesComparable(fieldVal, litVal) {
-			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"cannot compare %T with %T in IN list", fieldVal, litVal)
+			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
 		}
 		if valuesEqual(fieldVal, litVal) {
 			if in.NOT() != nil {
@@ -525,15 +524,14 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 		return triFalse, err
 	}
 
-	// Cross-type bounds are an error, same as plain comparison (Java's
-	// between.yamsql pins XX000 for this; we use 22000 CANNOT_CONVERT_TYPE
-	// matching the rest of our cross-type rejection surface).
+	// Cross-type bounds are an error. Java's between.yamsql uses 42804
+	// (DATATYPE_MISMATCH) for type-incompatible BETWEEN operands.
 	if fieldVal != nil && lo != nil && !valuesComparable(fieldVal, lo) {
-		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}
 	if fieldVal != nil && hi != nil && !valuesComparable(fieldVal, hi) {
-		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}
 

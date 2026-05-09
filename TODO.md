@@ -26,13 +26,22 @@ PlanVisitor walks ANTLR incrementally: parseFromSource + classifySelectElements 
 
 ### ~~Eliminate sortOnly~~ — **done (swingshift-81)**
 ### ~~Subqueries/EXISTS~~ — **done (swingshift-81)**
-### ~~Yamsql conformance~~ — **98/98 (100%, swingshift-81)**
+### ~~Yamsql conformance~~ — **105/105 (100%, swingshift-83)**
+### ~~Cascades divergence D-3~~ — **done (swingshift-83)**
 
-All three priorities from previous shifts are resolved. sortOnly/hidden/sentinel deleted, correlated EXISTS + nested EXISTS working, recursive CTE UNION DISTINCT working.
+All priorities from previous shifts resolved. D-1 + D-3 done (sort + distinct elimination in PLANNING phase). Error code conformance improved: 42F01 for unknown qualifier, 42703 for undefined column in WHERE. See `CASCADES_DIVERGENCE.md` for full audit.
 
-### Yamsql conformance: 63/111 scenarios fail (~300 individual query failures)
+### Remaining Cascades alignment (from CASCADES_DIVERGENCE.md)
 
-Status after swingshift-77: in-memory sort (RFC-001) eliminated 134 query failures. 178 remain. Grouped by root cause below.
+1. **D-11** ConstantObjectValue type promotion — 0.5 shift
+2. **D-7** Multi-aggregate index matching — 1 shift
+3. **D-8** CardinalityProperty split — 0.5 shift
+4. **D-2** PushOrdering constraint vs structural — 2-3 shifts (major)
+5. **D-5** InComparison architecture — 2-3 shifts (gated on M-1: TranslationMap)
+
+### Yamsql conformance detail (historical — mostly resolved)
+
+Status after swingshift-83: 105/105 scenarios pass (100%). The category breakdown below is from swingshift-77; most items have been resolved. Retained for historical reference.
 
 #### Category 1: Cascades planner can't plan the shape (116 queries)
 

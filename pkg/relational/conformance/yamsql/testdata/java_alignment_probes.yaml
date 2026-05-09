@@ -1,0 +1,115 @@
+# java_alignment_probes.yaml
+#
+# Probes derived from Java's yamsql test suite to verify Go matches
+# Java's behavior. Each test pins a specific Java behavior.
+name: java_alignment_probes
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t2 (id BIGINT NOT NULL, x BIGINT, y STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300), (4, 20, 400), (5, 30, 500)
+  - INSERT INTO t2 VALUES (1, 10, 'alpha'), (2, 20, 'beta'), (3, 30, 'gamma')
+tests:
+  # --- GROUP BY alias resolution (Java groupby-tests.yamsql) ---
+
+  # GROUP BY col1 AS alias, SELECT the alias.
+  - query: SELECT x FROM t1 GROUP BY col1 AS x ORDER BY x
+    rows:
+      - [10]
+      - [20]
+      - [30]
+
+  # GROUP BY alias with aggregate.
+  - query: SELECT x, COUNT(*) FROM t1 GROUP BY col1 AS x ORDER BY x
+    rows:
+      - [10, 2]
+      - [20, 2]
+      - [30, 1]
+
+  # --- HAVING clause (Java groupby-tests.yamsql) ---
+
+  # HAVING with aggregate filter.
+  - query: SELECT col1, COUNT(*) FROM t1 GROUP BY col1 HAVING COUNT(*) > 1 ORDER BY col1
+    rows:
+      - [10, 2]
+      - [20, 2]
+
+  # HAVING with grouped column reference.
+  - query: SELECT col1, MAX(col2) FROM t1 GROUP BY col1 HAVING col1 > 10 ORDER BY col1
+    rows:
+      - [20, 400]
+      - [30, 500]
+
+  # HAVING with both aggregate and grouped column.
+  - query: SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 >= 20 AND SUM(col2) > 400 ORDER BY col1
+    rows:
+      - [20, 700]
+
+  # --- JOIN patterns (Java join-tests.yamsql) ---
+
+  # Basic comma-join with qualified predicates.
+  - query: SELECT t1.col1, t2.y FROM t1, t2 WHERE t1.col1 = t2.x ORDER BY t1.id
+    rows:
+      - [10, 'alpha']
+      - [10, 'alpha']
+      - [20, 'beta']
+      - [20, 'beta']
+      - [30, 'gamma']
+
+  # INNER JOIN with ON clause.
+  - query: SELECT t1.id, t2.y FROM t1 INNER JOIN t2 ON t1.col1 = t2.x WHERE t1.id <= 3 ORDER BY t1.id
+    rows:
+      - [1, 'alpha']
+      - [2, 'alpha']
+      - [3, 'beta']
+
+  # --- Correlated EXISTS (Java subquery-tests.yamsql) ---
+
+  # Non-correlated EXISTS.
+  - query: SELECT id FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.x = 10) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # Correlated EXISTS — only t1 rows whose col1 matches a t2.x.
+  - query: SELECT t1.id FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.x = t1.col1) ORDER BY t1.id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # NOT EXISTS — rows whose col1 has no match in t2.
+  - query: SELECT t1.id FROM t1 WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.x = t1.col1) ORDER BY t1.id
+    rows: []
+
+  # --- Aggregate edge cases ---
+
+  # COUNT(*) on empty result set.
+  - query: SELECT COUNT(*) FROM t1 WHERE id > 999
+    rows:
+      - [0]
+
+  # SUM on empty result set → NULL.
+  - query: SELECT SUM(col2) FROM t1 WHERE id > 999
+    rows:
+      - [null]
+
+  # MIN/MAX on empty result set → NULL.
+  - query: SELECT MIN(col1), MAX(col1) FROM t1 WHERE id > 999
+    rows:
+      - [null, null]
+
+  # --- CTE with aggregate ---
+
+  - query: |-
+      WITH sums AS (SELECT col1, SUM(col2) AS total FROM t1 GROUP BY col1)
+      SELECT col1, total FROM sums ORDER BY col1
+    rows:
+      - [10, 300]
+      - [20, 700]
+      - [30, 500]

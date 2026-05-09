@@ -14223,9 +14223,9 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_MT_02 WHERE n IN ('5', 'ten')",
 			Divergence: &Divergence{
-				Reason:          "Both engines reject mixed-type IN list (string vs BIGINT) with SQLSTATE 22000, but error messages differ: Java uses a verbose type-promotion message, Go says 'cannot compare int64 with string in IN list'.",
+				Reason:          "Both engines reject mixed-type IN list (string vs BIGINT). Go uses 42804 (DATATYPE_MISMATCH) matching Java's SemanticException translation. Error messages may differ.",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "cannot compare int64 with string in IN list",
+				GoErrorContains: "The operands of a comparison operator are not compatible",
 			},
 		},
 		// --- Self-join shapes -----------------------------------------
@@ -17364,6 +17364,171 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_DV_04 VALUES (1, 99)",
 			},
 			Query: "SELECT id, v FROM T_DV_04",
+		},
+
+		// --- swingshift-83: error-code alignment probes ---
+
+		{
+			Name:           "error_unknown_qualifier_select",
+			SchemaTemplate: "CREATE TABLE T_ERR_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_01 VALUES (1, 10)"},
+			Query:          "SELECT x.id FROM T_ERR_01",
+		},
+		{
+			Name:           "error_unknown_qualifier_where",
+			SchemaTemplate: "CREATE TABLE T_ERR_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_02 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_ERR_02 WHERE x.id = 1",
+		},
+		{
+			Name:           "error_undefined_column_where",
+			SchemaTemplate: "CREATE TABLE T_ERR_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_03 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_ERR_03 WHERE nonexistent = 1",
+		},
+		{
+			Name:           "error_undefined_table_from",
+			SchemaTemplate: "CREATE TABLE T_ERR_04 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_04 VALUES (1)"},
+			Query:          "SELECT id FROM NoSuchTable",
+		},
+		{
+			Name:           "error_group_by_violation",
+			SchemaTemplate: "CREATE TABLE T_ERR_05 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_05 VALUES (1, 1, 10), (2, 1, 20)"},
+			Query:          "SELECT id FROM T_ERR_05 GROUP BY g",
+		},
+		{
+			Name:           "error_insert_arity_too_few",
+			SchemaTemplate: "CREATE TABLE T_ERR_06 (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "INSERT INTO T_ERR_06 (id, v, w) VALUES (1)",
+		},
+		{
+			Name:           "error_insert_arity_too_many",
+			SchemaTemplate: "CREATE TABLE T_ERR_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "INSERT INTO T_ERR_07 (id, v) VALUES (1, 2, 3, 4, 5)",
+		},
+		{
+			Name:           "error_duplicate_order_by",
+			SchemaTemplate: "CREATE TABLE T_ERR_08 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERR_08 VALUES (1, 10)"},
+			Query:          "SELECT v FROM T_ERR_08 ORDER BY v, v",
+		},
+		{
+			Name:           "error_ambiguous_column_join",
+			SchemaTemplate: "CREATE TABLE T_ERR_09A (id BIGINT, name STRING, PRIMARY KEY (id))\nCREATE TABLE T_ERR_09B (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ERR_09A VALUES (1, 'a')",
+				"INSERT INTO T_ERR_09B VALUES (1, 'b')",
+			},
+			Query: "SELECT name FROM T_ERR_09A, T_ERR_09B WHERE T_ERR_09A.id = T_ERR_09B.id",
+		},
+
+		// --- swingshift-83: result-set alignment probes ---
+
+		{
+			Name:           "aggregate_count_star_empty",
+			SchemaTemplate: "CREATE TABLE T_AGG_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT COUNT(*) FROM T_AGG_01",
+		},
+		{
+			Name:           "aggregate_sum_empty",
+			SchemaTemplate: "CREATE TABLE T_AGG_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT SUM(v) FROM T_AGG_02",
+		},
+		{
+			Name:           "aggregate_group_by_having",
+			SchemaTemplate: "CREATE TABLE T_AGG_03 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG_03 VALUES (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,2,50)"},
+			Query:          "SELECT g, SUM(v) FROM T_AGG_03 GROUP BY g HAVING SUM(v) > 50 ORDER BY g",
+		},
+		{
+			Name:           "cte_basic_with_aggregate",
+			SchemaTemplate: "CREATE TABLE T_CTE_01 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CTE_01 VALUES (1,1,10),(2,1,20),(3,2,30)"},
+			Query:          "WITH sums AS (SELECT g, SUM(v) AS total FROM T_CTE_01 GROUP BY g) SELECT g, total FROM sums ORDER BY g",
+		},
+		{
+			Name:           "join_self_qualified",
+			SchemaTemplate: "CREATE TABLE T_JOIN_01 (id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_JOIN_01 VALUES (1, NULL, 'root'), (2, 1, 'child1'), (3, 1, 'child2')"},
+			Query:          "SELECT c.name, p.name FROM T_JOIN_01 AS c, T_JOIN_01 AS p WHERE c.parent_id = p.id ORDER BY c.id",
+		},
+		{
+			Name:           "distinct_on_pk",
+			SchemaTemplate: "CREATE TABLE T_DIST_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DIST_01 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT DISTINCT id FROM T_DIST_01 ORDER BY id",
+		},
+		{
+			Name:           "coalesce_null_fallback",
+			SchemaTemplate: "CREATE TABLE T_COAL_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_COAL_01 VALUES (1, 10), (2, NULL), (3, 30)"},
+			Query:          "SELECT id, COALESCE(v, -1) FROM T_COAL_01 ORDER BY id",
+		},
+		{
+			Name:           "case_when_null",
+			SchemaTemplate: "CREATE TABLE T_CASE_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CASE_01 VALUES (1, 10), (2, NULL), (3, 30)"},
+			Query:          "SELECT id, CASE WHEN v IS NULL THEN 'missing' ELSE 'present' END FROM T_CASE_01 ORDER BY id",
+		},
+		{
+			Name:           "between_predicate",
+			SchemaTemplate: "CREATE TABLE T_BTW_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BTW_01 VALUES (1,5),(2,10),(3,15),(4,20),(5,25)"},
+			Query:          "SELECT id FROM T_BTW_01 WHERE v BETWEEN 10 AND 20 ORDER BY id",
+		},
+		{
+			Name:           "error_not_null_violation",
+			SchemaTemplate: "CREATE TABLE T_NN_01 (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NN_01 VALUES (1, 'ok')"},
+			Query:          "INSERT INTO T_NN_01 VALUES (2, NULL)",
+		},
+		{
+			Name:           "error_in_list_null",
+			SchemaTemplate: "CREATE TABLE T_INL_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_INL_01 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_INL_01 WHERE v IN (10, NULL)",
+		},
+
+		// --- swingshift-83: type-mismatch error code probes ---
+
+		{
+			Name:           "error_type_mismatch_where_eq",
+			SchemaTemplate: "CREATE TABLE T_TM_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TM_01 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_TM_01 WHERE v = 'text'",
+		},
+		{
+			Name:           "error_type_mismatch_between",
+			SchemaTemplate: "CREATE TABLE T_TM_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TM_02 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_TM_02 WHERE v BETWEEN 1 AND 'text'",
+		},
+		{
+			Name:           "error_type_mismatch_in_list",
+			SchemaTemplate: "CREATE TABLE T_TM_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TM_03 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_TM_03 WHERE v IN ('text', 'other')",
+		},
+
+		// --- swingshift-83: DML error probes ---
+
+		{
+			Name:           "error_update_nonexistent_col",
+			SchemaTemplate: "CREATE TABLE T_DML_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DML_01 VALUES (1, 10)"},
+			Query:          "UPDATE T_DML_01 SET nonexistent = 5 WHERE id = 1",
+		},
+		{
+			Name:           "error_delete_nonexistent_table",
+			SchemaTemplate: "CREATE TABLE T_DML_02 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DML_02 VALUES (1)"},
+			Query:          "DELETE FROM NoSuchTable WHERE id = 1",
 		},
 	}
 }

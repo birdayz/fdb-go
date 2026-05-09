@@ -88,13 +88,12 @@ tests:
       - [3]
       - [4]
   # Java alignment: BETWEEN with cross-type bounds. Java's between.yamsql
-  # pins XX000 (internal_error) for `col1 BETWEEN 10 AND 'a'`. Go errors
-  # 22000 (CANNOT_CONVERT_TYPE) via the tri-predicate evaluator's type
-  # check — more specific than Java's generic XX000.
+  # (4.11.1.0) uses 42804 (DATATYPE_MISMATCH) for type-incompatible
+  # BETWEEN operands.
   - query: SELECT id FROM t WHERE v BETWEEN 10 AND 'a'
-    error_code: "22000"
+    error_code: "42804"
   - query: SELECT id FROM t WHERE 'a' BETWEEN 10 AND 20
-    error_code: "22000"
+    error_code: "42804"
   # Java alignment (between.yamsql): ORed BETWEEN ranges.
   # v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 selects the extremes.
   - query: SELECT id FROM t WHERE v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 ORDER BY id

@@ -151,14 +151,11 @@ func evalScalarFunctionCallCore(
 			if v == nil {
 				return nil, nil
 			}
-			// Java alignment: cross-type GREATEST/LEAST errors 22000
-			// (CANNOT_CONVERT_TYPE), matching the comparison-operator
-			// path. Pre-fix Go silently picked one via the type-name
-			// string compare in compareValues, yielding semantically
-			// undefined results.
+			// Cross-type GREATEST/LEAST errors 42804 (DATATYPE_MISMATCH),
+			// matching Java's comparison-operator type-mismatch path.
 			if !valuesComparable(v, best) {
-				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"cannot compare %T with %T in %s", v, best, name)
+				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
 			}
 			cmp := functions.CompareValues(v, best)
 			if (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {

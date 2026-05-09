@@ -35,8 +35,7 @@ import (
 // Ports Java's PushRequestedOrderingThroughGroupByRule. Java uses a
 // constraint-push model; Go uses a structural rewrite that achieves
 // the same effect — the sort moves below GroupBy so that
-// SortOverOrderedElimRule can eliminate it if an index provides the
-// ordering.
+// ImplementSortRule can eliminate it if an index provides the ordering.
 type PushOrderingThroughGroupByRule struct {
 	matcher matching.BindingMatcher
 }

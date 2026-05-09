@@ -280,7 +280,7 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 	}
 
 	for _, rule := range p.implementationRules {
-		FireImplementationRule(rule, ref, cm)
+		FireImplementationRuleWithContext(rule, ref, p.ctx, cm)
 	}
 
 	computeRefPlanProperties(ref)

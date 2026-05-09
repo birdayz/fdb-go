@@ -1184,11 +1184,9 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 }
 
 // TestFDB_SelectWhereTypeMismatch verifies that comparing a BIGINT column
-// against a string constant errors with SQLSTATE 22000
-// (CANNOT_CONVERT_TYPE), matching Java's PromoteValue.isPromotionNeeded
-// → SemanticException(INCOMPATIBLE_TYPE) → ErrorCode.CANNOT_CONVERT_TYPE.
-// Pre-nightshift-39 Go silently returned no rows — the dangerous kind
-// of bug. Now errors at execution.
+// against a string constant errors with SQLSTATE 42804
+// (DATATYPE_MISMATCH), matching Java's ExceptionUtil translation of
+// SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES → DATATYPE_MISMATCH.
 func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -1212,8 +1210,8 @@ func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Obj (obj_id, name) VALUES (1, 'a'), (2, 'b')")).Error().NotTo(gomega.HaveOccurred())
 
-	// Compare BIGINT column against a string — must error 22000.
-	// Java aligns: SemanticException(INCOMPATIBLE_TYPE) → CANNOT_CONVERT_TYPE.
+	// Compare BIGINT column against a string — must error 42804.
+	// Java maps COMPARISON_OF_INCOMPATIBLE_TYPES → DATATYPE_MISMATCH.
 	rows, err := db.QueryContext(ctx, "SELECT * FROM Obj WHERE obj_id = 'notanumber'")
 	if err == nil {
 		// Some paths surface the error during row iteration (executor
@@ -1228,7 +1226,7 @@ func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	}
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "expected *api.Error, got %T: %v", err, err)
-	g.Expect(string(apiErr.Code)).To(gomega.Equal("22000"))
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("42804"))
 }
 
 func TestFDB_SelectOrderBy(t *testing.T) {
@@ -7288,10 +7286,10 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 }
 
 // TestFDB_MixedTypeEqualityNoStringCoerce proves that mixed-type equality
-// errors with SQLSTATE 22000 (matching Java's
-// SemanticException(INCOMPATIBLE_TYPE) → CANNOT_CONVERT_TYPE) instead of
-// silently falling through to string coercion. Same-type equality still
-// works, and IN-lists with all-compatible types still match.
+// errors with SQLSTATE 42804 (matching Java's
+// SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES → DATATYPE_MISMATCH)
+// instead of silently falling through to string coercion. Same-type
+// equality still works.
 func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -7321,10 +7319,10 @@ func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 		g.Expect(err).To(gomega.HaveOccurred(), "expected error from %q", query)
 		var apiErr *api.Error
 		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "expected *api.Error, got %T: %v", err, err)
-		g.Expect(string(apiErr.Code)).To(gomega.Equal("22000"))
+		g.Expect(string(apiErr.Code)).To(gomega.Equal("42804"))
 	}
 
-	// Proto path: int column = string literal must error 22000.
+	// Proto path: int column = string literal must error 42804.
 	expectIncompatibleType(`SELECT COUNT(*) FROM T WHERE n = '5'`)
 	expectIncompatibleType(`SELECT COUNT(*) FROM T WHERE s = 5`)
 	// IN-list with mixed types: any incompatible element errors.

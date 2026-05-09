@@ -133,7 +133,12 @@ func TestImplementFilterRule_FiresOnFilterOverDistinct(t *testing.T) {
 
 	scanRef := distinctInner.GetQuantifiers()[0].GetRangesOver()
 	FireExpressionRule(NewPrimaryScanRule(), scanRef)
-	FireExpressionRule(NewImplementDistinctRule(), distinctRef)
+	// Directly create physical distinct wrapper (ImplementDistinctRule
+	// removed in D-3; distinct now happens in PLANNING phase).
+	scanPlan := findPhysicalPlan(scanRef)
+	distPlan := plans.NewRecordQueryDistinctPlan(scanPlan)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(findPhysicalExpr(scanRef)))
+	distinctRef.Insert(NewPhysicalDistinctWrapper(distPlan, innerQ))
 
 	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {

@@ -43,6 +43,51 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 			Left:  newLeft,
 			Right: newRight,
 		}
+	case *CastValue:
+		newChild := RebaseValue(val.Child, aliases)
+		if newChild == val.Child {
+			return v
+		}
+		return &CastValue{Child: newChild, Target: val.Target}
+	case *PromoteValue:
+		newChild := RebaseValue(val.Child, aliases)
+		if newChild == val.Child {
+			return v
+		}
+		return &PromoteValue{Child: newChild, Target: val.Target}
+	case *ScalarFunctionValue:
+		changed := false
+		newArgs := make([]Value, len(val.Args))
+		for i, arg := range val.Args {
+			newArgs[i] = RebaseValue(arg, aliases)
+			if newArgs[i] != arg {
+				changed = true
+			}
+		}
+		if !changed {
+			return v
+		}
+		return &ScalarFunctionValue{
+			FuncName: val.FuncName,
+			Args:     newArgs,
+			Typ:      val.Typ,
+		}
+	case *RecordConstructorValue:
+		changed := false
+		newFields := make([]RecordConstructorField, len(val.Fields))
+		for i, f := range val.Fields {
+			newVal := RebaseValue(f.Value, aliases)
+			newFields[i] = RecordConstructorField{Name: f.Name, Value: newVal}
+			if newVal != f.Value {
+				changed = true
+			}
+		}
+		if !changed {
+			return v
+		}
+		return &RecordConstructorValue{Fields: newFields}
+	case *ParameterValue:
+		return v
 	default:
 		return v
 	}

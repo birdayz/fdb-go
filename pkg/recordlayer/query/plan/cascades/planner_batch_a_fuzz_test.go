@@ -78,7 +78,7 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 // FuzzPlanner_WithIndexCandidates_NoPanic exercises the full planner
 // (Default + BatchA rules) with actual MatchCandidates so that
 // ImplementIndexScanRule, IndexIntersectionRule, OrderedIndexScanRule,
-// and SortOverOrderedElimRule all fire during the same planning run.
+// and ImplementSortRule all fire during the same planning run.
 // Catches panics in the index-rule interaction paths that nil-PlanContext
 // targets can't reach.
 func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {

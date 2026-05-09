@@ -209,3 +209,105 @@ func TestFDB_Errors_UndefinedTable(t *testing.T) {
 		t.Fatalf("error code = %q, want %q (full: %v)", got.Code, api.ErrCodeUndefinedTable, err)
 	}
 }
+
+// TestFDB_Errors_UndefinedColumn probes Java conformance: SELECT
+// col_doesnt_exist FROM t must error with 42703 (undefined column).
+func TestFDB_Errors_UndefinedColumn(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_errs_undef_col", "errs_undef_col",
+		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
+		t.Fatalf("setup INSERT: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		sql  string
+	}{
+		{"select_undef_col", "SELECT nonexistent FROM t"},
+		{"where_undef_col", "SELECT id FROM t WHERE nonexistent = 1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := db.QueryContext(ctx, tc.sql)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.sql)
+			}
+			got := asAPIError(err)
+			if got == nil {
+				t.Fatalf("expected api.Error, got non-API error: %v", err)
+			}
+			t.Logf("SQL: %s → code=%s msg=%s", tc.sql, got.Code, got.Message)
+			if got.Code != api.ErrCodeUndefinedColumn {
+				t.Errorf("error code = %q, want %q", got.Code, api.ErrCodeUndefinedColumn)
+			}
+		})
+	}
+}
+
+// TestFDB_Errors_UnknownQualifier probes Java conformance: SELECT
+// x.col FROM t (where x is not a valid table/alias) must error with
+// 42703 (undefined column), matching Java's SemanticAnalyzer
+// resolveIdentifier which returns UNDEFINED_COLUMN for unresolvable
+// qualified references.
+func TestFDB_Errors_UnknownQualifier(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_errs_qual", "errs_qual",
+		"CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 'hello')"); err != nil {
+		t.Fatalf("setup INSERT: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		sql  string
+	}{
+		{"select_unknown_qual", "SELECT x.id FROM t"},
+		{"where_unknown_qual", "SELECT id FROM t WHERE x.id = 1"},
+		{"order_by_unknown_qual", "SELECT id FROM t ORDER BY x.id"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := db.QueryContext(ctx, tc.sql)
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.sql)
+			}
+			got := asAPIError(err)
+			if got == nil {
+				t.Logf("error is not *api.Error: %v (%T)", err, err)
+				t.Fatalf("expected api.Error with code 42703, got non-API error")
+			}
+			t.Logf("SQL: %s → code=%s msg=%s", tc.sql, got.Code, got.Message)
+			if got.Code != api.ErrCodeUndefinedColumn {
+				t.Errorf("error code = %q, want %q (42703)", got.Code, api.ErrCodeUndefinedColumn)
+			}
+		})
+	}
+}
+
+// TestFDB_Errors_UndefinedTableInJoin verifies that referencing a
+// nonexistent table in a JOIN produces 42F01 (not 0AF00).
+func TestFDB_Errors_UndefinedTableInJoin(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_errs_join_undef", "errs_join_undef",
+		"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
+		t.Fatalf("setup INSERT: %v", err)
+	}
+
+	_, err := db.QueryContext(ctx, "SELECT t.id FROM t, nonexistent WHERE t.id = nonexistent.id")
+	if err == nil {
+		t.Fatal("expected error for nonexistent table in JOIN, got nil")
+	}
+	got := asAPIError(err)
+	if got == nil {
+		t.Fatalf("expected api.Error, got: %v", err)
+	}
+	t.Logf("SQL → code=%s msg=%s", got.Code, got.Message)
+	if got.Code != api.ErrCodeUndefinedTable {
+		t.Errorf("error code = %q, want %q (42F01)", got.Code, api.ErrCodeUndefinedTable)
+	}
+}

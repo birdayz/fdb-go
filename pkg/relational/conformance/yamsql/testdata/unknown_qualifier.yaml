@@ -1,0 +1,37 @@
+# unknown_qualifier.yaml
+#
+# Java's SemanticAnalyzer rejects qualified column references whose
+# qualifier doesn't match any table or alias in scope. For example,
+# SELECT x.id FROM t (where x is not a declared alias) triggers
+# "Unknown reference x" with SQLSTATE 42F01 (undefined table).
+# Go must match this behavior.
+name: unknown_qualifier
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE s (sid BIGINT NOT NULL, label STRING, PRIMARY KEY (sid))
+setup:
+  - INSERT INTO t VALUES (1, 'alpha'), (2, 'beta')
+  - INSERT INTO s VALUES (10, 'x'), (20, 'y')
+tests:
+  # Unknown qualifier in SELECT projection.
+  - query: SELECT x.id FROM t
+    error_code: "42703"
+  # Unknown qualifier in WHERE predicate.
+  - query: SELECT id FROM t WHERE x.id = 1
+    error_code: "42703"
+  # Unknown qualifier in JOIN ON clause.
+  - query: SELECT t.id FROM t, s WHERE x.id = s.sid
+    error_code: "42703"
+  # Unknown qualifier in ORDER BY.
+  - query: SELECT id FROM t ORDER BY x.id
+    error_code: "42703"
+  # Baseline: valid qualified reference works.
+  - query: SELECT t.id FROM t ORDER BY t.id
+    rows:
+      - [1]
+      - [2]
+  # Valid alias works.
+  - query: SELECT a.id FROM t AS a ORDER BY a.id
+    rows:
+      - [1]
+      - [2]

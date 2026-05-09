@@ -41,7 +41,6 @@ func (r *ImplementProjectionFinalRule) OnMatch(call *ImplementationRuleCall) {
 			proj.GetProjectedValues(), proj.GetAliases(), ph.GetRecordQueryPlan())
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
 		call.YieldFinalExpression(newPhysicalProjectionFinalWrapper(projPlan, innerQ))
-		return
 	}
 }
 

@@ -1,0 +1,37 @@
+# join_error_codes.yaml
+#
+# Error code conformance for JOIN operations, aligned with Java's
+# join-tests.yamsql.
+name: join_error_codes
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)
+  - INSERT INTO dept VALUES (10, 'Engineering'), (20, 'Marketing')
+tests:
+  # Ambiguous column in JOIN projection.
+  - query: SELECT name FROM emp, dept WHERE emp.dept_id = dept.id
+    error_code: "42702"
+  # Ambiguous column in JOIN WHERE.
+  - query: SELECT emp.name FROM emp, dept WHERE id = 10
+    error_code: "42702"
+  # Unknown qualifier in JOIN.
+  - query: SELECT emp.name FROM emp, dept WHERE x.id = dept.id
+    error_code: "42703"
+  # Valid: qualified columns work.
+  - query: SELECT emp.name, dept.name FROM emp, dept WHERE emp.dept_id = dept.id ORDER BY emp.id
+    rows:
+      - ['Alice', 'Engineering']
+      - ['Bob', 'Marketing']
+      - ['Carol', 'Engineering']
+  # Valid: aliased join.
+  - query: SELECT e.name, d.name FROM emp AS e, dept AS d WHERE e.dept_id = d.id ORDER BY e.id
+    rows:
+      - ['Alice', 'Engineering']
+      - ['Bob', 'Marketing']
+      - ['Carol', 'Engineering']
+  # Self-join with aliases.
+  - query: SELECT a.name, b.name FROM emp AS a, emp AS b WHERE a.dept_id = b.dept_id AND a.id < b.id ORDER BY a.id, b.id
+    rows:
+      - ['Alice', 'Carol']

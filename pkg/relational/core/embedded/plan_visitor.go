@@ -505,6 +505,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"column reference %q is ambiguous", ob.colName)
 					}
+					var srcNotFound *semantic.SourceNotFoundError
+					if errors.As(walkErr, &srcNotFound) {
+						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+							"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
+					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
 						if projAliasSet[strings.ToUpper(ob.colName)] {
@@ -640,13 +645,18 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			}
 			var inListNull *expr.InListNullError
 			if errors.As(walkErr, &inListNull) {
-				return nil, api.NewError(api.ErrCodeCannotConvertType,
-					"IN-list contains NULL literal")
+				return nil, api.NewError(api.ErrCodeWrongObjectType,
+					"NULL values are not allowed in the IN list")
+			}
+			var colNotFound *semantic.ColumnNotFoundError
+			if errors.As(walkErr, &colNotFound) {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q does not exist", colNotFound.Id.Name())
 			}
 			var srcNotFound *semantic.SourceNotFoundError
 			if errors.As(walkErr, &srcNotFound) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"no FROM source aliased as %s", srcNotFound.Alias.Name())
+					"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
 			}
 			var inColRef *expr.InColumnRefError
 			if errors.As(walkErr, &inColRef) {
