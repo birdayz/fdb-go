@@ -5,19 +5,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// ---------------------------------------------------------------------------
-// Placeholder types — full ports pending. These provide enough surface
-// for MatchInfo consumers to compile and test against; they'll be
-// fleshed out when their own ports land.
-// ---------------------------------------------------------------------------
-
-// PredicateMultiMap maps query predicates to candidate predicate
-// mappings. Placeholder -- full port pending.
-type PredicateMultiMap struct {
-	// Will hold map[QueryPredicate][]PredicateMapping when predicates
-	// are fully ported.
-}
-
 // QueryPlanConstraint captures assumptions under which a match is valid.
 // Placeholder -- full port pending.
 type QueryPlanConstraint struct{}
