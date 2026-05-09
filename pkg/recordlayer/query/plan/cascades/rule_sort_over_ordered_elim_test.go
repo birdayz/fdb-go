@@ -509,3 +509,111 @@ func TestMakeStrictlySorted_Idempotent(t *testing.T) {
 		t.Fatal("double makeStrictlySorted should still be strictlySorted")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end planner tests for strictlySorted
+// ---------------------------------------------------------------------------
+
+// TestPlanner_StrictlySorted_UniqueIndex runs the full Cascades pipeline
+// with a unique index on column A and ORDER BY A ASC. The exploration
+// phase's SortOverOrderedElimRule eliminates the sort before the PLANNING
+// phase runs, so ImplementSortRule's strictlySorted path is NOT reached.
+// The resulting plan is a plain index scan (not strictlySorted).
+// strictlySorted only fires when the sort survives to the PLANNING phase
+// (e.g., complex multi-candidate scenarios).
+func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
+	t.Parallel()
+
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "T$a_unique",
+			columns:     []string{"A"},
+			recordTypes: []string{"T"},
+			unique:      true,
+		},
+	})
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}}},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(sort)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	ph, ok := best.(physicalPlanExpression)
+	if !ok {
+		t.Fatalf("expected physicalPlanExpression, got %T", best)
+	}
+	idxPlan, ok := ph.GetRecordQueryPlan().(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatalf("expected RecordQueryIndexPlan, got %T (%s)",
+			ph.GetRecordQueryPlan(), ph.GetRecordQueryPlan().Explain())
+	}
+	// Sort is eliminated during exploration by SortOverOrderedElimRule,
+	// not during PLANNING by ImplementSortRule. The plan is a plain
+	// index scan without the strictlySorted flag.
+	if idxPlan.IsStrictlySorted() {
+		t.Fatalf("exploration-eliminated sort should not set strictlySorted; plan=%s",
+			ph.GetRecordQueryPlan().Explain())
+	}
+}
+
+// TestPlanner_StrictlySorted_NonUniqueIndex runs the same pipeline as above
+// but with a NON-unique index. The sort should still be eliminated (the
+// index provides the ordering), but the plan must NOT be strictlySorted.
+func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
+	t.Parallel()
+
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "T$a_nonunique",
+			columns:     []string{"A"},
+			recordTypes: []string{"T"},
+			unique:      false,
+		},
+	})
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}}},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(sort)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	ph, ok := best.(physicalPlanExpression)
+	if !ok {
+		t.Fatalf("expected physicalPlanExpression, got %T", best)
+	}
+	idxPlan, ok := ph.GetRecordQueryPlan().(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatalf("expected RecordQueryIndexPlan, got %T (%s)",
+			ph.GetRecordQueryPlan(), ph.GetRecordQueryPlan().Explain())
+	}
+	if idxPlan.IsStrictlySorted() {
+		t.Fatal("non-unique index should NOT produce a strictlySorted plan")
+	}
+}
