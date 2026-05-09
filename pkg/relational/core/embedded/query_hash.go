@@ -1,0 +1,121 @@
+package embedded
+
+import (
+	"hash/fnv"
+	"strings"
+	"unicode"
+)
+
+// QueryHash computes a deterministic hash of a SQL query string
+// for plan cache lookup. Normalizes the SQL before hashing:
+// - Strips single-line comments (-- to end of line)
+// - Strips block comments (/* ... */)
+// - Collapses sequences of whitespace to single spaces
+// - Uppercases all characters (SQL is case-insensitive)
+// - Trims leading/trailing whitespace
+//
+// Two SQL strings that differ only in case, whitespace, or comments
+// will hash to the same key.
+func QueryHash(sql string) uint64 {
+	normalized := normalizeSQL(sql)
+	h := fnv.New64a()
+	h.Write([]byte(normalized))
+	return h.Sum64()
+}
+
+// normalizeSQL strips comments, collapses whitespace, uppercases,
+// and trims.
+func normalizeSQL(sql string) string {
+	sql = stripComments(sql)
+	sql = collapseWhitespace(sql)
+	sql = strings.ToUpper(sql)
+	sql = strings.TrimSpace(sql)
+	return sql
+}
+
+// stripComments removes single-line (--) and block (/* */) comments.
+func stripComments(sql string) string {
+	var b strings.Builder
+	b.Grow(len(sql))
+
+	i := 0
+	for i < len(sql) {
+		// Block comment: /* ... */
+		if i+1 < len(sql) && sql[i] == '/' && sql[i+1] == '*' {
+			i += 2
+			for i+1 < len(sql) {
+				if sql[i] == '*' && sql[i+1] == '/' {
+					i += 2
+					break
+				}
+				i++
+			}
+			// If we ran off the end without finding */, just stop.
+			if i >= len(sql) {
+				break
+			}
+			// Replace the comment with a space so tokens don't merge.
+			b.WriteByte(' ')
+			continue
+		}
+
+		// Single-line comment: -- to end of line
+		if i+1 < len(sql) && sql[i] == '-' && sql[i+1] == '-' {
+			i += 2
+			for i < len(sql) && sql[i] != '\n' {
+				i++
+			}
+			// Replace the comment with a space so tokens don't merge.
+			b.WriteByte(' ')
+			continue
+		}
+
+		// String literal: don't strip comments inside quotes.
+		if sql[i] == '\'' {
+			b.WriteByte(sql[i])
+			i++
+			for i < len(sql) {
+				if sql[i] == '\'' {
+					b.WriteByte(sql[i])
+					i++
+					// Escaped single quote ('')
+					if i < len(sql) && sql[i] == '\'' {
+						b.WriteByte(sql[i])
+						i++
+						continue
+					}
+					break
+				}
+				b.WriteByte(sql[i])
+				i++
+			}
+			continue
+		}
+
+		b.WriteByte(sql[i])
+		i++
+	}
+
+	return b.String()
+}
+
+// collapseWhitespace replaces runs of whitespace with a single space.
+func collapseWhitespace(sql string) string {
+	var b strings.Builder
+	b.Grow(len(sql))
+
+	inSpace := false
+	for _, r := range sql {
+		if unicode.IsSpace(r) {
+			if !inSpace {
+				b.WriteByte(' ')
+				inSpace = true
+			}
+			continue
+		}
+		inSpace = false
+		b.WriteRune(r)
+	}
+
+	return b.String()
+}
