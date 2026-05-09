@@ -461,10 +461,26 @@ func executeDistinct(
 }
 
 func distinctKey(qr QueryResult) string {
-	if m, ok := qr.Datum.(map[string]any); ok {
-		return fmt.Sprintf("%v", m)
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%v", qr.Datum)
 	}
-	return fmt.Sprintf("%v", qr.Datum)
+	// Sort keys for deterministic output — map iteration order is random.
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		sb.WriteString(fmt.Sprintf("%v", m[k]))
+	}
+	return sb.String()
 }
 
 func executeProjection(
@@ -1685,7 +1701,7 @@ func executeRecursiveLevelUnion(
 			break
 		}
 		if level >= maxRecursionDepth {
-			return nil, fmt.Errorf("recursive CTE exceeded maximum recursion depth of %d", maxRecursionDepth)
+			return nil, &RecursiveCTEDepthExceededError{MaxDepth: maxRecursionDepth}
 		}
 
 		scanTable, insertTable = insertTable, scanTable

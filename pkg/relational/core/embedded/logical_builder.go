@@ -437,7 +437,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			}
 			expr := strip(ob.colName)
 			if expr == "" && ob.rawExpr != nil {
-				expr = ob.rawExpr.GetText()
+				expr = canonicalTextOf(ob.rawExpr)
 			}
 			nullsFirst := ob.ascending
 			if ob.nullsFirst != nil {

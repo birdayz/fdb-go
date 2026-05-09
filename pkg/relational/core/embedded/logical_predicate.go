@@ -53,6 +53,17 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+// CorrelatedExistsError is returned when buildCorrelatedExists fails.
+// Detected via errors.As at the caller to propagate as
+// ErrCodeUndefinedColumn for fallback to a richer outer scope.
+type CorrelatedExistsError struct {
+	Message string
+	Cause   error
+}
+
+func (e *CorrelatedExistsError) Error() string { return e.Message }
+func (e *CorrelatedExistsError) Unwrap() error { return e.Cause }
+
 // buildWherePredicateForTable converts a WHERE expression context
 // into a predicates.QueryPredicate using the expr walker, with a
 // single-source scope over the named table. Returns (nil, false) on
@@ -1139,8 +1150,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			// grandparent table), propagate as ErrCodeUndefinedColumn
 			// so the caller's BuildExists can fall back to
 			// buildCorrelatedExists with its richer outer scope.
-			if strings.Contains(walkErr.Error(), "correlated EXISTS:") ||
-				strings.Contains(walkErr.Error(), "nested correlated EXISTS:") {
+			var corrExistsErr *CorrelatedExistsError
+			if errors.As(walkErr, &corrExistsErr) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"nested correlated EXISTS: %v", walkErr)
 			}
@@ -2815,7 +2826,7 @@ func findOrderByForKey(sq *selectQuery, keyExpr string) *orderByClause {
 		ob := &sq.orderBy[i]
 		name := ob.colName
 		if name == "" && ob.rawExpr != nil {
-			name = ob.rawExpr.GetText()
+			name = canonicalTextOf(ob.rawExpr)
 		}
 		if strings.EqualFold(name, keyExpr) {
 			return ob
@@ -3315,15 +3326,15 @@ func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.Co
 
 func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) (logical.LogicalOperator, error) {
 	if q == nil {
-		return nil, fmt.Errorf("correlated EXISTS: nil query")
+		return nil, &CorrelatedExistsError{Message: "correlated EXISTS: nil query"}
 	}
 	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {
-		return nil, fmt.Errorf("correlated EXISTS: unsupported query body shape %T", q.QueryExpressionBody())
+		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: unsupported query body shape %T", q.QueryExpressionBody())}
 	}
 	sq, err := extractFromQueryTerm(body)
 	if err != nil || sq == nil {
-		return nil, fmt.Errorf("correlated EXISTS: %w", err)
+		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: %v", err), Cause: err}
 	}
 
 	innerAlias := sq.tableAlias
@@ -3347,7 +3358,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	innerScope := semantic.NewScope(outerScope)
 	tbl, tblErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
 	if tblErr != nil {
-		return nil, fmt.Errorf("correlated EXISTS: resolve inner table %q: %w", sq.tableName, tblErr)
+		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve inner table %q: %v", sq.tableName, tblErr), Cause: tblErr}
 	}
 	aliasID := semantic.NewUnquoted(innerAlias)
 	_ = innerScope.AddSource(semantic.ScopeSource{
@@ -3377,7 +3388,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 
 	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
 	if walkErr != nil {
-		return nil, fmt.Errorf("correlated EXISTS: walk predicate: %w", walkErr)
+		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: walk predicate: %v", walkErr), Cause: walkErr}
 	}
 
 	// If the nested planner collected EXISTS subqueries, the inner WHERE

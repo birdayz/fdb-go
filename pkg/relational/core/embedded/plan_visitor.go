@@ -1114,8 +1114,9 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			seenOrderCols[key] = true
 			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf})
 		} else {
-			// Expression ORDER BY — use the raw expression text.
-			keys = append(keys, logical.SortKey{Expr: obExpr.Expression().GetText(), Dir: dir, NullsFirst: nf})
+			// Expression ORDER BY — use canonical text to get
+			// proper spacing (GetText concatenates without whitespace).
+			keys = append(keys, logical.SortKey{Expr: canonicalTextOf(obExpr.Expression()), Dir: dir, NullsFirst: nf})
 		}
 	}
 

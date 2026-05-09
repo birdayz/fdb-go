@@ -42,17 +42,13 @@ func NewPlanCache(maxSize int) *PlanCache {
 // Get looks up a cached plan by SQL hash. Returns the plan, scalar
 // subquery bindings, and true on a cache hit; nil, nil, false on miss.
 func (c *PlanCache) Get(sqlHash uint64) (plans.RecordQueryPlan, []scalarSubqueryBinding, bool) {
-	c.mu.RLock()
+	c.mu.Lock()
 	entry, ok := c.entries[sqlHash]
-	c.mu.RUnlock()
-
 	if !ok {
+		c.mu.Unlock()
 		c.misses.Add(1)
 		return nil, nil, false
 	}
-
-	// Promote to most-recently-used under write lock.
-	c.mu.Lock()
 	c.promote(sqlHash)
 	c.mu.Unlock()
 

@@ -2154,9 +2154,26 @@ func TestDistinctKey_NilPrimaryKey(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"A": 1}}
 	key := distinctKey(qr)
-	expected := fmt.Sprintf("%v", qr.Datum)
+	// Deterministic format: sorted keys with key=value separated by |
+	expected := "A=1"
 	if key != expected {
-		t.Fatalf("expected datum string, got %q", key)
+		t.Fatalf("expected %q, got %q", expected, key)
+	}
+}
+
+func TestDistinctKey_Deterministic(t *testing.T) {
+	t.Parallel()
+	// With multiple keys, the output must be sorted and stable regardless
+	// of map iteration order.
+	qr := QueryResult{Datum: map[string]any{"B": 2, "A": 1, "C": 3}}
+	key1 := distinctKey(qr)
+	key2 := distinctKey(qr)
+	if key1 != key2 {
+		t.Fatalf("non-deterministic: %q vs %q", key1, key2)
+	}
+	expected := "A=1|B=2|C=3"
+	if key1 != expected {
+		t.Fatalf("expected %q, got %q", expected, key1)
 	}
 }
 
