@@ -250,6 +250,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		dmlReturningProbesScenario(),
 		dmlWithNullSafeScenario(),
 		scalarSubqueryAdvancedScenario(),
+		insertSelectScenario(),
+		recursiveCteBaseScenario(),
+		dmlSubqueryScenario(),
 	}
 }
 
@@ -4337,6 +4340,222 @@ func scalarSubqueryAdvancedScenario() *yamsql.Scenario {
 			{Query: "SELECT COALESCE((SELECT v FROM t WHERE id = 999), 0) FROM t WHERE id = 1", Rows: [][]any{{0}}},
 			// Subquery in CASE expression branch.
 			{Query: "SELECT CASE WHEN id = 1 THEN (SELECT MAX(v) FROM t) ELSE 0 END FROM t WHERE id = 1", Rows: [][]any{{40}}},
+		},
+	}
+}
+
+// insertSelectScenario mirrors testdata/insert_select.yaml. INSERT INTO
+// ... SELECT copies rows from one table to another, exercises computed
+// columns in the SELECT list, duplicate-PK enforcement, and aggregate
+// output coercion. DML and error_code tests are included (auto-skipped
+// by per-test logic). Drops NOT NULL on PK columns (fdb-relational
+// restriction; PK is implicitly NOT NULL).
+func insertSelectScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "insert_select",
+		SchemaTemplate: "CREATE TABLE src (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE dst (id BIGINT, v BIGINT NOT NULL, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO src VALUES (1, 10), (2, 20), (3, 30)",
+			// Perform the DML chain in setup so verification SELECTs see
+			// the final state. The individual DML steps are also included
+			// as tests (auto-skipped by the non-query gate).
+			"INSERT INTO dst SELECT id, v FROM src",
+			"INSERT INTO dst SELECT id + 100, v * 2 FROM src",
+			"INSERT INTO dst SELECT 1000, 42 FROM src WHERE id = 1",
+			"INSERT INTO dst SELECT id + 2000, v FROM src WHERE id = 2",
+			"INSERT INTO dst SELECT 9001, SUM(v) FROM src",
+			"INSERT INTO dst SELECT 9002, AVG(v) FROM src",
+			"INSERT INTO src VALUES (10, 5)",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped).
+			{Query: "INSERT INTO dst SELECT id, v FROM src"},
+			{Query: "SELECT id, v FROM dst ORDER BY id", Rows: [][]any{
+				{1, 10}, {2, 20}, {3, 30},
+			}},
+			// Duplicate PK on re-copy.
+			{Query: "INSERT INTO dst SELECT id, v FROM src", ErrorCode: "23505"},
+			// After failed bulk copy, dst still has exactly the original rows.
+			{Query: "SELECT COUNT(*) FROM dst", Rows: [][]any{{9}}},
+			// INSERT...SELECT with expression projections.
+			{Query: "INSERT INTO dst SELECT id + 100, v * 2 FROM src"},
+			{Query: "SELECT id, v FROM dst WHERE id > 100 ORDER BY id", Rows: [][]any{
+				{101, 20}, {102, 40}, {103, 60},
+			}},
+			// INSERT...SELECT with constant expression.
+			{Query: "INSERT INTO dst SELECT 1000, 42 FROM src WHERE id = 1"},
+			{Query: "SELECT id, v FROM dst WHERE id = 1000", Rows: [][]any{
+				{1000, 42},
+			}},
+			// INSERT with explicit column list + SELECT expression.
+			{Query: "INSERT INTO dst SELECT id + 2000, v FROM src WHERE id = 2"},
+			{Query: "SELECT id, v FROM dst WHERE id >= 2000 ORDER BY id", Rows: [][]any{
+				{2002, 20},
+			}},
+			// INSERT with aggregate output into a BIGINT column.
+			{Query: "INSERT INTO dst SELECT 9001, SUM(v) FROM src"},
+			{Query: "SELECT id, v FROM dst WHERE id = 9001", Rows: [][]any{
+				{9001, 60},
+			}},
+			// AVG that happens to be a whole number.
+			{Query: "INSERT INTO dst SELECT 9002, AVG(v) FROM src"},
+			{Query: "SELECT id, v FROM dst WHERE id = 9002", Rows: [][]any{
+				{9002, 20},
+			}},
+			// Non-integer float AVG errors cleanly.
+			{Query: "INSERT INTO src VALUES (10, 5)"},
+			{Query: "INSERT INTO dst SELECT 9003, AVG(v) FROM src WHERE id IN (1, 10)", ErrorCode: "22000"},
+		},
+	}
+}
+
+// recursiveCteBaseScenario mirrors testdata/recursive_cte.yaml. WITH
+// RECURSIVE CTEs — semi-naive evaluation, DFS traversal orders,
+// cycle detection with UNION DISTINCT, iteration-cap termination with
+// UNION ALL, column-list renames, arity mismatches, and multi-CTE
+// rejection. All tests from the YAML are included; error_code and DML
+// tests are auto-skipped by the per-test logic.
+// Drops NOT NULL on PK columns (fdb-relational restriction).
+func recursiveCteBaseScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "recursive_cte",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE edge (src BIGINT, dst BIGINT, PRIMARY KEY (src, dst))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, -1), (10, 1), (20, 1), (40, 10), (50, 10), (70, 10), (100, 20), (210, 20), (250, 50)",
+			"INSERT INTO edge VALUES (1, 2), (2, 3), (3, 1)",
+		},
+		Tests: []yamsql.Test{
+			// Ancestors of 250: walk parent links up to root.
+			{Query: "WITH RECURSIVE ancestors AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent) SELECT id FROM ancestors ORDER BY id DESC", Rows: [][]any{
+				{250}, {50}, {10}, {1},
+			}},
+			// Descendants of root: every reachable row.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT id FROM descendants ORDER BY id", Rows: [][]any{
+				{1}, {10}, {20}, {40}, {50}, {70}, {100}, {210}, {250},
+			}},
+			// COUNT on recursive CTE.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT COUNT(*) FROM descendants", Rows: [][]any{
+				{9},
+			}},
+			// Descendants of id=50 — only 50 and 250.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE id = 50 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT id FROM descendants ORDER BY id", Rows: [][]any{
+				{50}, {250},
+			}},
+			// Empty seed → empty result.
+			{Query: "WITH RECURSIVE noseed AS (SELECT id, parent FROM t WHERE id = 99999 UNION ALL SELECT b.id, b.parent FROM noseed AS a, t AS b WHERE b.parent = a.id) SELECT id FROM noseed", Rows: [][]any{}},
+			// RECURSIVE without self-reference → 0A000.
+			{Query: "WITH RECURSIVE nonrec AS (SELECT id FROM t WHERE parent = -1) SELECT id FROM nonrec", ErrorCode: "0A000"},
+			// Column-list rename on recursive CTE.
+			{Query: "WITH RECURSIVE ancestors(node, up) AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.up) SELECT node FROM ancestors ORDER BY node DESC", Rows: [][]any{
+				{250}, {50}, {10}, {1},
+			}},
+			// Arity mismatch between seed and recursive branch → 42F64.
+			{Query: "WITH RECURSIVE ancestors AS (SELECT id FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = 50) SELECT * FROM ancestors", ErrorCode: "42F64"},
+			// TRAVERSAL ORDER pre_order — single chain.
+			{Query: "WITH RECURSIVE ancestors AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent) TRAVERSAL ORDER pre_order SELECT id FROM ancestors", Rows: [][]any{
+				{250}, {50}, {10}, {1},
+			}},
+			// TRAVERSAL ORDER post_order — single chain.
+			{Query: "WITH RECURSIVE ancestors AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent) TRAVERSAL ORDER post_order SELECT id FROM ancestors", Rows: [][]any{
+				{1}, {10}, {50}, {250},
+			}},
+			// DFS pre-order descending from root.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) TRAVERSAL ORDER pre_order SELECT id FROM descendants", Rows: [][]any{
+				{1}, {10}, {40}, {50}, {250}, {70}, {20}, {100}, {210},
+			}},
+			// DFS post-order over the same tree.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) TRAVERSAL ORDER post_order SELECT id FROM descendants", Rows: [][]any{
+				{40}, {250}, {50}, {70}, {10}, {100}, {210}, {20}, {1},
+			}},
+			// DFS on cyclic data with UNION DISTINCT — convergence.
+			{Query: "WITH RECURSIVE reach(n) AS (SELECT src FROM edge WHERE src = 1 UNION SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n) TRAVERSAL ORDER pre_order SELECT n FROM reach ORDER BY n", Rows: [][]any{
+				{1}, {2}, {3},
+			}},
+			// DFS on cyclic data with UNION ALL — bounded by emit cap → 54F01.
+			{Query: "WITH RECURSIVE reach(n) AS (SELECT src FROM edge WHERE src = 1 UNION ALL SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n) TRAVERSAL ORDER pre_order SELECT n FROM reach", ErrorCode: "54F01"},
+			// TRAVERSAL ORDER level_order — accepted (default).
+			{Query: "WITH RECURSIVE ancestors AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent) TRAVERSAL ORDER level_order SELECT id FROM ancestors ORDER BY id DESC", Rows: [][]any{
+				{250}, {50}, {10}, {1},
+			}},
+			// Counter via FROM-less SELECT literal → 0AF00.
+			{Query: "WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5) SELECT n FROM counter ORDER BY n", ErrorCode: "0AF00"},
+			// Cycle + UNION DISTINCT: reachable set terminates via seen-row filter.
+			{Query: "WITH RECURSIVE reach(n) AS (SELECT src FROM edge WHERE src = 1 UNION SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n) SELECT n FROM reach ORDER BY n", Rows: [][]any{
+				{1}, {2}, {3},
+			}},
+			// Cycle + UNION ALL: terminates via iteration cap → 54F01.
+			{Query: "WITH RECURSIVE reach(n) AS (SELECT src FROM edge WHERE src = 1 UNION ALL SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n) SELECT n FROM reach", ErrorCode: "54F01"},
+			// Recursive CTE referenced via alias — COUNT still works.
+			{Query: "WITH RECURSIVE ancestors AS (SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent) SELECT COUNT(*) FROM ancestors", Rows: [][]any{
+				{4},
+			}},
+			// CTE name matches table alias inside body — still rejected (0A000).
+			{Query: "WITH RECURSIVE x AS (SELECT id, parent FROM t AS x WHERE id = 250) SELECT id FROM x", ErrorCode: "0A000"},
+			// Recursive CTE in comma-join (semi-join shape).
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE id = 10 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT t.id FROM t, descendants WHERE t.id = descendants.id ORDER BY t.id", Rows: [][]any{
+				{10}, {40}, {50}, {70}, {250},
+			}},
+			// Qualified projection in single-source CTE body.
+			{Query: "WITH qualified AS (SELECT d.id FROM t AS d WHERE d.parent = -1) SELECT id FROM qualified", Rows: [][]any{
+				{1},
+			}},
+			// Multi-CTE WITH RECURSIVE: non-recursive CTE under RECURSIVE rejected → 0A000.
+			{Query: "WITH RECURSIVE roots AS (SELECT id FROM t WHERE parent = -1), descendants(id, parent) AS (SELECT id, parent FROM t WHERE id IN (SELECT id FROM roots) UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT id FROM descendants ORDER BY id", ErrorCode: "0A000"},
+			// Nested WITH RECURSIVE with downstream non-recursive consumer → 0A000.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id), leaves AS (SELECT id FROM descendants WHERE id NOT IN (SELECT parent FROM t WHERE parent IS NOT NULL)) SELECT id FROM leaves ORDER BY id", ErrorCode: "0A000"},
+			// SUM over recursive CTE.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT SUM(id) FROM descendants", Rows: [][]any{
+				{751},
+			}},
+			// ORDER BY + LIMIT on recursive CTE → 0AF00.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT id FROM descendants ORDER BY id LIMIT 3", ErrorCode: "0AF00"},
+		},
+	}
+}
+
+// dmlSubqueryScenario mirrors testdata/dml_subquery.yaml. UPDATE and
+// DELETE with EXISTS / NOT EXISTS correlated subqueries. DML tests
+// are included (auto-skipped by the non-query gate). DML is staged
+// in Setup so the verification SELECTs see the correct final state.
+// Drops NOT NULL on PK columns (fdb-relational restriction).
+func dmlSubqueryScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "dml_subquery",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE keep_set (k BIGINT, PRIMARY KEY (k))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)",
+			"INSERT INTO keep_set VALUES (2), (4)",
+			// DELETE WHERE EXISTS removes rows whose id is in keep_set (2, 4).
+			"DELETE FROM t WHERE EXISTS (SELECT 1 FROM keep_set WHERE keep_set.k = t.id)",
+			// Re-seed deleted rows and UPDATE the ones in keep_set.
+			"INSERT INTO t VALUES (2, 20), (4, 40)",
+			"UPDATE t SET v = 99 WHERE EXISTS (SELECT 1 FROM keep_set WHERE keep_set.k = t.id)",
+			// DELETE WHERE NOT EXISTS removes rows NOT in keep_set (1, 3, 5).
+			"DELETE FROM t WHERE NOT EXISTS (SELECT 1 FROM keep_set WHERE keep_set.k = t.id)",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped).
+			{Query: "DELETE FROM t WHERE EXISTS (SELECT 1 FROM keep_set WHERE keep_set.k = t.id)"},
+			{Query: "SELECT id FROM t ORDER BY id", Rows: [][]any{
+				{1}, {3}, {5},
+			}},
+			{Query: "INSERT INTO t VALUES (2, 20), (4, 40)"},
+			{Query: "UPDATE t SET v = 99 WHERE EXISTS (SELECT 1 FROM keep_set WHERE keep_set.k = t.id)"},
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{1, 10}, {2, 99}, {3, 30}, {4, 99}, {5, 50},
+			}},
+			{Query: "DELETE FROM t WHERE NOT EXISTS (SELECT 1 FROM keep_set WHERE keep_set.k = t.id)"},
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{2, 99}, {4, 99},
+			}},
+			// Uncorrelated EXISTS — deletes all remaining rows.
+			{Query: "DELETE FROM t WHERE EXISTS (SELECT k FROM keep_set)"},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{
+				{0},
+			}},
 		},
 	}
 }
