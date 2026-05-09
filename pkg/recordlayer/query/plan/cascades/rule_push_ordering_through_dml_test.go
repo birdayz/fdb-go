@@ -7,76 +7,8 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// --- Delete ---
-
-func TestPushOrderingThroughDelete_SortKeysPassThrough(t *testing.T) {
-	t.Parallel()
-
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	del := expressions.NewDeleteExpression(scanQ, "MyRecord")
-	delQ := expressions.ForEachQuantifier(expressions.InitialOf(del))
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
-		},
-		delQ,
-	)
-	ref := expressions.InitialOf(sort)
-
-	yielded := FireExpressionRule(NewPushOrderingThroughDeleteRule(), ref)
-	if len(yielded) != 1 {
-		t.Fatalf("yielded %d, want 1", len(yielded))
-	}
-
-	newDel, ok := yielded[0].(*expressions.DeleteExpression)
-	if !ok {
-		t.Fatalf("expected *DeleteExpression, got %T", yielded[0])
-	}
-	if newDel.GetTargetRecordType() != "MyRecord" {
-		t.Fatalf("expected target MyRecord, got %s", newDel.GetTargetRecordType())
-	}
-	innerSort, ok := newDel.GetInner().GetRangesOver().Get().(*expressions.LogicalSortExpression)
-	if !ok {
-		t.Fatalf("expected *LogicalSortExpression below Delete, got %T", newDel.GetInner().GetRangesOver().Get())
-	}
-	if len(innerSort.GetSortKeys()) != 1 {
-		t.Fatalf("expected 1 sort key, got %d", len(innerSort.GetSortKeys()))
-	}
-}
-
-func TestPushOrderingThroughDelete_UnsortedDoesNotFire(t *testing.T) {
-	t.Parallel()
-
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	del := expressions.NewDeleteExpression(scanQ, "MyRecord")
-	delQ := expressions.ForEachQuantifier(expressions.InitialOf(del))
-	sort := expressions.UnsortedLogicalSortExpression(delQ)
-	ref := expressions.InitialOf(sort)
-
-	yielded := FireExpressionRule(NewPushOrderingThroughDeleteRule(), ref)
-	if len(yielded) != 0 {
-		t.Fatalf("rule should not fire on unsorted, but yielded %d", len(yielded))
-	}
-}
-
-func TestPushOrderingThroughDelete_NonDeleteDoesNotFire(t *testing.T) {
-	t.Parallel()
-
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "x", Typ: values.UnknownType}}},
-		scanQ,
-	)
-	ref := expressions.InitialOf(sort)
-
-	yielded := FireExpressionRule(NewPushOrderingThroughDeleteRule(), ref)
-	if len(yielded) != 0 {
-		t.Fatalf("rule should not fire when inner is not Delete, but yielded %d", len(yielded))
-	}
-}
+// Delete tests moved to rule_push_requested_ordering_through_delete_test.go
+// (PLANNING-phase constraint propagation).
 
 // --- Insert ---
 

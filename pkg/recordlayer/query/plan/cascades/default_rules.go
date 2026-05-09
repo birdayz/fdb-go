@@ -80,10 +80,13 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushOrderingThroughGroupByRule(),
 		NewPushOrderingThroughProjectionRule(),
 		NewPushOrderingThroughFilterRule(),
-		NewPushOrderingThroughDistinctRule(),
-		NewPushOrderingThroughUniqueRule(),
+		// PushOrderingThroughDistinctRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughDistinctRule (DefaultImplementationRules).
+		// PushOrderingThroughUniqueRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughUniqueRule (DefaultImplementationRules).
 		NewPushOrderingThroughUnionRule(),
-		NewPushOrderingThroughDeleteRule(),
+		// PushOrderingThroughDeleteRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughDeleteRule (DefaultImplementationRules).
 		NewPushOrderingThroughInsertRule(),
 		NewPushOrderingThroughUpdateRule(),
 		NewPushOrderingThroughTempTableInsertRule(),
@@ -176,6 +179,15 @@ func DMLImplementationRules() []ExpressionRule {
 // specific rules fire before it for expressions they recognize.
 func DefaultImplementationRules() []ImplementationRule {
 	rules := []ImplementationRule{
+		// --- Constraint-push rules (top-down, PLANNING Phase 1) ---
+		// These fire during constraintOnly=true to propagate ordering
+		// constraints from parent to child References. Ports Java's
+		// PushRequestedOrderingThrough*Rule family.
+		NewPushRequestedOrderingThroughSortRule(),
+		NewPushRequestedOrderingThroughDistinctRule(),
+		NewPushRequestedOrderingThroughUniqueRule(),
+		NewPushRequestedOrderingThroughDeleteRule(),
+
 		// --- Java-ported rules (1:1 with fdb-record-layer-core) ---
 		NewImplementSimpleSelectRule(),
 		NewImplementDistinctUnionRule(),

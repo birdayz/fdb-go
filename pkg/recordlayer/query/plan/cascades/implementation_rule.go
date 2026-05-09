@@ -58,6 +58,13 @@ func (c *ImplementationRuleCall) GetRequestedOrderings() []*RequestedOrdering {
 	return orderings
 }
 
+// IsConstraintOnly returns true when the rule is firing during the
+// top-down constraint-propagation pass (PLANNING Phase 1). Rules that
+// only push constraints should check this and skip implementation work.
+func (c *ImplementationRuleCall) IsConstraintOnly() bool {
+	return c.constraintOnly
+}
+
 // PushConstraint pushes a constraint value to a child Reference.
 func (c *ImplementationRuleCall) PushConstraint(
 	childRef *expressions.Reference,
