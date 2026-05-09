@@ -15,7 +15,7 @@ import (
 //   - ImplementStreamingAggregationRule / ImplementHashAggregationRule
 //   - PushFilterThroughGroupByRule
 //   - DistinctOverGroupByElimRule
-//   - SortOverOrderedElimRule (when streaming agg produces order)
+//   - ImplementSortRule (when streaming agg produces order)
 //
 // and ensure none of them panic or produce inconsistent state.
 func FuzzPlanner_Aggregation_NoPanic(f *testing.F) {

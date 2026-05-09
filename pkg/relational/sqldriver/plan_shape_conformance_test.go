@@ -432,7 +432,7 @@ func TestFDB_PlanShapeDistinctOnPK(t *testing.T) {
 	plan := planExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
-	// DistinctOnUniqueElimRule eliminates the Distinct operator when
+	// ImplementDistinctFinalRule eliminates the Distinct operator when
 	// the projected columns include all PK columns. Selecting only
 	// the PK (which is inherently unique) means DISTINCT is a no-op.
 	if strings.Contains(plan, "Distinct") {

@@ -95,16 +95,24 @@ func (c *ImplementationRuleCall) MemoizeFinalExpression(
 // matching each member and collecting yielded final expressions.
 // Returns the yielded expressions (which were also inserted into
 // ref.FinalMembers).
-// FireImplementationRule runs an ImplementationRule against a Reference.
-// The constraints parameter carries ordering constraints from parent rules.
 func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference, constraints ...*ConstraintMap) []expressions.RelationalExpression {
+	return FireImplementationRuleWithContext(rule, ref, nil, constraints...)
+}
+
+// FireImplementationRuleWithContext is like FireImplementationRule but
+// threads a PlanContext through to the rule call. The planner uses this
+// to provide PK / match-candidate info to rules that need it.
+func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions.Reference, ctx PlanContext, constraints ...*ConstraintMap) []expressions.RelationalExpression {
 	var cm *ConstraintMap
 	if len(constraints) > 0 {
 		cm = constraints[0]
 	}
+	if ctx == nil {
+		ctx = EmptyPlanContext()
+	}
 	var allYielded []expressions.RelationalExpression
 	for _, member := range ref.AllMembers() {
-		allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, member, cm)...)
+		allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, member, ctx, cm)...)
 
 		// ChildrenAsSet permutation: for expressions whose children are
 		// order-independent (SelectExpression with INNER or CROSS joins),
@@ -121,7 +129,7 @@ func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference,
 				qs[0].Kind() == expressions.QuantifierForEach &&
 				qs[1].Kind() == expressions.QuantifierForEach {
 				swapped := sel.WithSwappedQuantifiers()
-				allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, swapped, cm)...)
+				allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, swapped, ctx, cm)...)
 			}
 		}
 	}
@@ -136,6 +144,7 @@ func fireImplRuleOnMember(
 	rule ImplementationRule,
 	ref *expressions.Reference,
 	member expressions.RelationalExpression,
+	ctx PlanContext,
 	cm *ConstraintMap,
 ) []expressions.RelationalExpression {
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
@@ -144,7 +153,7 @@ func fireImplRuleOnMember(
 		call := &ImplementationRuleCall{
 			Bindings:    b,
 			Reference:   ref,
-			Context:     EmptyPlanContext(),
+			Context:     ctx,
 			Constraints: cm,
 		}
 		rule.OnMatch(call)

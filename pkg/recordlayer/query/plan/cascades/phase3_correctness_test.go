@@ -7,6 +7,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // containsPhysical walks ref recursively, returning true the first time
@@ -388,7 +389,8 @@ func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 
 // TestPlanner_DistinctOverScanProducesPhysicalDistinct verifies that
 // a LogicalDistinctExpression over a scan produces a
-// physicalDistinctWrapper.
+// physicalDistinctWrapper via the PLANNING phase
+// (ImplementDistinctFinalRule).
 func TestPlanner_DistinctOverScanProducesPhysicalDistinct(t *testing.T) {
 	t.Parallel()
 
@@ -400,15 +402,50 @@ func TestPlanner_DistinctOverScanProducesPhysicalDistinct(t *testing.T) {
 	ref := expressions.InitialOf(distinct)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	exploreAndVerify(t, ref, rules, nil)
+	p := NewPlanner(rules, nil).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithMaxTasks(10_000)
+	best, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	if best == nil {
+		t.Fatal("expected a plan, got nil")
+	}
+	// The plan should contain a Distinct somewhere in the tree.
+	explained := explainPlan(best)
+	if !containsDistinctInPlan(explained) {
+		t.Fatalf("expected Distinct in plan, got: %s", explained)
+	}
+}
 
-	isPhysicalDistinct := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalDistinctWrapper)
-		return ok
+func containsDistinctInPlan(explained string) bool {
+	return containsSubstring(explained, "Distinct")
+}
+
+func containsSubstring(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
 	}
-	if !containsPhysical(ref, isPhysicalDistinct) {
-		t.Fatal("expected physicalDistinctWrapper in explored members")
+	return false
+}
+
+func explainPlan(expr expressions.RelationalExpression) string {
+	type explainer interface {
+		Explain() string
 	}
+	type planGetter interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	if pg, ok := expr.(planGetter); ok {
+		plan := pg.GetRecordQueryPlan()
+		if e, ok := plan.(explainer); ok {
+			return e.Explain()
+		}
+	}
+	return ""
 }
 
 // TestPlanner_UpdateOverScanProducesPhysicalUpdate verifies that an
