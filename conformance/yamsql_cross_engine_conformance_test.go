@@ -234,6 +234,11 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		inListNullScenario(),
 		joinOptimizationProbesScenario(),
 		recursiveCteAdvancedScenario(),
+		orderByNullsScenario(),
+		orderByDupeColScenario(),
+		compositePKCrossScenario(),
+		uniqueViolationScenario(),
+		notNullViolationScenario(),
 	}
 }
 
@@ -3780,6 +3785,137 @@ func inListNullScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE v NOT IN (2, NULL)", ErrorCode: "22000"},
 			// Concrete-only list works fine.
 			{Query: "SELECT id FROM t WHERE v IN (1, 3)", Unordered: true, Rows: [][]any{{1}, {3}}},
+		},
+	}
+}
+
+// orderByNullsScenario mirrors testdata/order_by_nulls.yaml. Tests
+// NULL ordering: ASC default is NULLS FIRST, DESC default is NULLS LAST
+// (matching Postgres/Oracle/Java). Explicit NULLS LAST on ASC and
+// NULLS FIRST on DESC are Go extensions (in-memory sort) — included for
+// cross-engine probing (Java will error or succeed; either is informative).
+// Drops NOT NULL on PK.
+func orderByNullsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "order_by_nulls",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, NULL), (3, 5), (4, NULL), (5, 20)",
+		},
+		Tests: []yamsql.Test{
+			// ASC default: NULLS FIRST.
+			{Query: "SELECT v FROM t ORDER BY v ASC", Rows: [][]any{{nil}, {nil}, {5}, {10}, {20}}},
+			// DESC default: NULLS LAST.
+			{Query: "SELECT v FROM t ORDER BY v DESC", Rows: [][]any{{20}, {10}, {5}, {nil}, {nil}}},
+			// Explicit NULLS LAST on ASC — Go extension: in-memory sort.
+			{Query: "SELECT v FROM t ORDER BY v ASC NULLS LAST", Rows: [][]any{{5}, {10}, {20}, {nil}, {nil}}},
+			// Explicit NULLS FIRST on DESC — Go extension: in-memory sort.
+			{Query: "SELECT v FROM t ORDER BY v DESC NULLS FIRST", Rows: [][]any{{nil}, {nil}, {20}, {10}, {5}}},
+		},
+	}
+}
+
+// orderByDupeColScenario mirrors testdata/order_by_dupe_col.yaml.
+// Duplicate column in ORDER BY (e.g. ORDER BY b, b) errors 42701 in
+// Java. Multi-column ORDER BY (e.g. ORDER BY b, id) is a Go extension
+// (in-memory sort) — included for cross-engine probing. Drops NOT NULL
+// on PK.
+func orderByDupeColScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "order_by_dupe_col",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			// Duplicate column → 42701.
+			{Query: "SELECT b FROM t ORDER BY b, b", ErrorCode: "42701"},
+			// Multi-column ORDER BY — Go extension: in-memory sort.
+			{Query: "SELECT id, b FROM t ORDER BY b, id", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}}},
+			// Duplicate via positional + name mix (ORDER BY 1, b on
+			// SELECT b → both resolve to column b).
+			{Query: "SELECT b FROM t ORDER BY 1, b", ErrorCode: "42701"},
+			// Multi-column ORDER BY with expression — Go extension: in-memory sort.
+			{Query: "SELECT b FROM t ORDER BY b + 1, b + 1", Rows: [][]any{{10}, {20}, {30}}},
+		},
+	}
+}
+
+// compositePKCrossScenario mirrors testdata/composite_pk.yaml.
+// Composite PRIMARY KEY (col1, col2): distinct rows with same leading
+// PK component, exact composite match, and duplicate composite PK
+// raises 23505. Drops NOT NULL on PK columns (fdb-relational
+// restriction — PK is implicitly NOT NULL).
+func compositePKCrossScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "composite_pk_cross",
+		SchemaTemplate: "CREATE TABLE t (a BIGINT, b BIGINT, label STRING, PRIMARY KEY (a, b))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'alpha'), (1, 20, 'beta'), (2, 10, 'gamma')",
+		},
+		Tests: []yamsql.Test{
+			// Two rows share a=1 but differ in b — both must persist.
+			{Query: "SELECT b, label FROM t WHERE a = 1 ORDER BY b", Rows: [][]any{{10, "alpha"}, {20, "beta"}}},
+			// Exact PK match.
+			{Query: "SELECT label FROM t WHERE a = 2 AND b = 10", Rows: [][]any{{"gamma"}}},
+			// Composite PK duplicate raises 23505.
+			{Query: "INSERT INTO t VALUES (1, 10, 'replacement')", ErrorCode: "23505"},
+			// Original row untouched.
+			{Query: "SELECT label FROM t WHERE a = 1 AND b = 10", Rows: [][]any{{"alpha"}}},
+		},
+	}
+}
+
+// uniqueViolationScenario mirrors testdata/unique_violation.yaml.
+// UNIQUE constraint violations raise SQLSTATE 23505 — covers both
+// PRIMARY KEY conflict and explicit UNIQUE index conflict. Drops NOT
+// NULL on PK column (fdb-relational restriction). Keeps NOT NULL on
+// non-PK columns where the YAML has them.
+func uniqueViolationScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "unique_violation",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING NOT NULL, email STRING, PRIMARY KEY (id))" +
+			" CREATE UNIQUE INDEX t_email ON t (email)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'alice', 'a@x.com'), (2, 'bob', 'b@x.com')",
+		},
+		Tests: []yamsql.Test{
+			// Duplicate PRIMARY KEY — raises 23505.
+			{Query: "INSERT INTO t VALUES (1, 'carol', 'c@x.com')", ErrorCode: "23505"},
+			// Duplicate unique-indexed column on fresh PK — raises 23505.
+			{Query: "INSERT INTO t VALUES (3, 'carol', 'a@x.com')", ErrorCode: "23505"},
+			// Non-conflicting insert succeeds; table now has 3 rows.
+			{Query: "INSERT INTO t VALUES (3, 'carol', 'c@x.com')"},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+			// Original rows are untouched — prove the prior failed INSERT
+			// did not overwrite PK=1.
+			{Query: "SELECT name, email FROM t WHERE id = 1", Rows: [][]any{{"alice", "a@x.com"}}},
+			// UPDATE setting a unique-indexed column to a value another row
+			// already holds raises 23505.
+			{Query: "UPDATE t SET email = 'a@x.com' WHERE id = 2", ErrorCode: "23505"},
+		},
+	}
+}
+
+// notNullViolationScenario mirrors testdata/not_null_violation.yaml.
+// INSERT/UPDATE NULL into a NOT NULL column raises SQLSTATE 23502.
+// Drops NOT NULL on PK column (fdb-relational restriction). Keeps NOT
+// NULL on non-PK column 'name' where the YAML has it.
+func notNullViolationScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "not_null_violation",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING NOT NULL, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'alice')",
+		},
+		Tests: []yamsql.Test{
+			// INSERT NULL into NOT NULL column raises 23502.
+			{Query: "INSERT INTO t VALUES (2, NULL)", ErrorCode: "23502"},
+			// UPDATE to NULL on NOT NULL column raises 23502.
+			{Query: "UPDATE t SET name = NULL WHERE id = 1", ErrorCode: "23502"},
+			// Baseline: the valid row is still intact.
+			{Query: "SELECT id, name FROM t", Rows: [][]any{{1, "alice"}}},
 		},
 	}
 }
