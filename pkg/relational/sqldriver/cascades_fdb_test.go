@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
 )
 
 func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
@@ -2011,4 +2013,207 @@ func countRows(t *testing.T, rows *sql.Rows) int {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	return n
+}
+
+// TestFDB_CascadesSortEliminationViaIndex verifies that the Cascades planner
+// eliminates in-memory sort when a secondary index provides the requested
+// ORDER BY ordering, and falls back to in-memory sort when no matching index
+// exists.
+func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_sortelim_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("sortelim_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_price ON items (price)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert items with various prices.
+	for _, item := range []struct {
+		id       int
+		category string
+		price    int
+	}{
+		{1, "electronics", 500},
+		{2, "books", 50},
+		{3, "clothing", 150},
+		{4, "electronics", 200},
+		{5, "books", 25},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO items VALUES (%d, '%s', %d)", item.id, item.category, item.price)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", item.id, err)
+		}
+	}
+
+	// planExplain retrieves the Cascades physical plan Explain string
+	// via the underlying EmbeddedConnection.
+	planExplain := func(t *testing.T, query string) string {
+		t.Helper()
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("db.Conn: %v", err)
+		}
+		defer conn.Close()
+		var plan string
+		if err := conn.Raw(func(driverConn any) error {
+			ec, ok := driverConn.(*embedded.EmbeddedConnection)
+			if !ok {
+				t.Fatalf("expected *embedded.EmbeddedConnection, got %T", driverConn)
+			}
+			p, err := ec.PlanExplain(ctx, query)
+			if err != nil {
+				return err
+			}
+			plan = p
+			return nil
+		}); err != nil {
+			t.Fatalf("PlanExplain(%q): %v", query, err)
+		}
+		return plan
+	}
+
+	// collectRows scans (id, price) pairs from the query result.
+	type row struct {
+		id    int64
+		price int64
+	}
+	collectRows := func(t *testing.T, query string) []row {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatalf("QueryContext(%q): %v", query, err)
+		}
+		defer rows.Close()
+		var result []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.price); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			result = append(result, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		return result
+	}
+
+	// --- Query 1: ORDER BY price ASC — index scan, no in-memory sort ---
+	t.Run("OrderByPriceASC", func(t *testing.T) {
+		q := "SELECT id, price FROM items ORDER BY price ASC"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected sort elimination via idx_price, but plan has InMemorySort: %s", plan)
+		}
+		if !strings.Contains(plan, "IndexScan") {
+			t.Fatalf("expected IndexScan in plan, got: %s", plan)
+		}
+
+		got := collectRows(t, q)
+		expected := []row{{5, 25}, {2, 50}, {3, 150}, {4, 200}, {1, 500}}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Query 2: WHERE price > 100 ORDER BY price ASC — range scan, no sort ---
+	t.Run("FilteredOrderByPriceASC", func(t *testing.T) {
+		q := "SELECT id, price FROM items WHERE price > 100 ORDER BY price ASC"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected sort elimination via idx_price range scan, but plan has InMemorySort: %s", plan)
+		}
+
+		got := collectRows(t, q)
+		expected := []row{{3, 150}, {4, 200}, {1, 500}}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Query 3: ORDER BY price DESC — reverse index scan, no sort ---
+	t.Run("OrderByPriceDESC", func(t *testing.T) {
+		q := "SELECT id, price FROM items ORDER BY price DESC"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected sort elimination via reverse idx_price, but plan has InMemorySort: %s", plan)
+		}
+		if !strings.Contains(plan, "REVERSE") {
+			t.Fatalf("expected REVERSE index scan in plan, got: %s", plan)
+		}
+
+		got := collectRows(t, q)
+		expected := []row{{1, 500}, {4, 200}, {3, 150}, {2, 50}, {5, 25}}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Query 4: ORDER BY category — no matching index, MUST use in-memory sort ---
+	t.Run("OrderByCategoryNoIndex", func(t *testing.T) {
+		q := "SELECT id, price FROM items ORDER BY category"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected InMemorySort for unindexed column, but plan is: %s", plan)
+		}
+
+		// Verify results are ordered by category (alphabetically):
+		// books (id=2,5), clothing (id=3), electronics (id=1,4).
+		// Within same category, order by PK (id) ascending.
+		got := collectRows(t, q)
+		if len(got) != 5 {
+			t.Fatalf("expected 5 rows, got %d: %+v", len(got), got)
+		}
+		// books: id=2 (price=50), id=5 (price=25)
+		// clothing: id=3 (price=150)
+		// electronics: id=1 (price=500), id=4 (price=200)
+		expectedIDs := []int64{2, 5, 3, 1, 4}
+		for i, wantID := range expectedIDs {
+			if got[i].id != wantID {
+				t.Fatalf("row %d: expected id=%d, got id=%d\nfull: %+v", i, wantID, got[i].id, got)
+			}
+		}
+	})
 }

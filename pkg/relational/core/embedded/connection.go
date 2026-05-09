@@ -425,6 +425,21 @@ func (c *EmbeddedConnection) GetSchema() string { return c.sess.Schema }
 // GetDBPath returns the current database path.
 func (c *EmbeddedConnection) GetDBPath() string { return c.sess.DBPath }
 
+// PlanExplain runs the SQL through the Cascades planner and returns
+// the physical plan's Explain string without executing the query.
+// Useful for testing plan structure (e.g. verifying sort elimination).
+func (c *EmbeddedConnection) PlanExplain(ctx context.Context, sql string) (string, error) {
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return "", err
+	}
+	gen := newCascadesGenerator(c)
+	plan, err := gen.Plan(ctx, sql)
+	if err != nil {
+		return "", err
+	}
+	return plan.Explain(), nil
+}
+
 // execStatement routes a single parsed statement to the right handler.
 func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IStatementContext) (int64, error) {
 	if ddl := stmt.DdlStatement(); ddl != nil {
