@@ -22,7 +22,7 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 // keep this test in sync with both.
 func TestDefaultRules_ExpectedCount(t *testing.T) {
 	t.Parallel()
-	const expected = 44
+	const expected = 50
 	if got := len(DefaultExpressionRules()); got != expected {
 		t.Fatalf("DefaultExpressionRules count = %d, want %d (update CLAUDE.md / TODO.md if intentional)", got, expected)
 	}
