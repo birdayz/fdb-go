@@ -334,6 +334,11 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
 		t.Fatalf("DESC sort should be eliminated by a reverse index scan; got %T", plan)
 	}
+	if w, ok := plan.(*physicalIndexScanWrapper); ok {
+		if !w.plan.IsReverse() {
+			t.Fatal("DESC sort elimination should produce a reverse index scan")
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

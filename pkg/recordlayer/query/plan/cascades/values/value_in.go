@@ -133,7 +133,7 @@ func (*InOpValue) Type() Type { return NullableBoolean }
 //
 // equalsAny performs numeric coercion for mixed int/float
 // comparisons, matching Java's Comparisons.evalComparison(EQUALS).
-// D-10 in CASCADES_DIVERGENCE.md — fixed dayshift-82.
+// See D-10 in CASCADES_DIVERGENCE.md.
 func (v *InOpValue) Evaluate(evalCtx any) any {
 	if v.Probe == nil || v.List == nil {
 		return nil
