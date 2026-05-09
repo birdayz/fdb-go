@@ -11,40 +11,6 @@ import (
 // fleshed out when their own ports land.
 // ---------------------------------------------------------------------------
 
-// MaxMatchMap represents the maximum matching between query and
-// candidate Value subtrees. Placeholder -- full port pending.
-type MaxMatchMap struct {
-	mapping        map[values.Value]values.Value
-	queryValue     values.Value
-	candidateValue values.Value
-}
-
-// NewMaxMatchMap constructs a MaxMatchMap.
-func NewMaxMatchMap(
-	mapping map[values.Value]values.Value,
-	queryValue values.Value,
-	candidateValue values.Value,
-) *MaxMatchMap {
-	m := make(map[values.Value]values.Value, len(mapping))
-	for k, v := range mapping {
-		m[k] = v
-	}
-	return &MaxMatchMap{
-		mapping:        m,
-		queryValue:     queryValue,
-		candidateValue: candidateValue,
-	}
-}
-
-// GetMap returns the value-to-value mapping.
-func (m *MaxMatchMap) GetMap() map[values.Value]values.Value { return m.mapping }
-
-// GetQueryValue returns the root query value.
-func (m *MaxMatchMap) GetQueryValue() values.Value { return m.queryValue }
-
-// GetCandidateValue returns the root candidate value.
-func (m *MaxMatchMap) GetCandidateValue() values.Value { return m.candidateValue }
-
 // PredicateMultiMap maps query predicates to candidate predicate
 // mappings. Placeholder -- full port pending.
 type PredicateMultiMap struct {
