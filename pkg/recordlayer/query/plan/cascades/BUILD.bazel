@@ -4,6 +4,7 @@ go_library(
     name = "cascades",
     srcs = [
         "aggregate_index_candidate.go",
+        "alias_map.go",
         "cross_product.go",
         "default_rules.go",
         "expression_matcher.go",
@@ -157,6 +158,7 @@ go_library(
 go_test(
     name = "cascades_test",
     srcs = [
+        "alias_map_test.go",
         "benchmark_test.go",
         "comparison_simplify_test.go",
         "cost_fuzz_test.go",
