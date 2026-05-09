@@ -2217,3 +2217,187 @@ func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
 		}
 	})
 }
+
+// TestFDB_CascadesStreamingAggFromIndex verifies that the Cascades planner
+// picks StreamingAgg (not HashAgg) when a secondary index provides the
+// GROUP BY ordering, and falls back to HashAgg when no matching index exists.
+func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_streamagg_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("streamagg_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_region ON sales (region)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert test data across several regions.
+	for _, s := range []struct {
+		id     int
+		region string
+		amount int
+	}{
+		{1, "east", 100},
+		{2, "east", 200},
+		{3, "west", 50},
+		{4, "west", 150},
+		{5, "north", 300},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO sales VALUES (%d, '%s', %d)", s.id, s.region, s.amount)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", s.id, err)
+		}
+	}
+
+	// planExplain retrieves the Cascades physical plan Explain string
+	// via the underlying EmbeddedConnection.
+	planExplain := func(t *testing.T, query string) string {
+		t.Helper()
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("db.Conn: %v", err)
+		}
+		defer conn.Close()
+		var plan string
+		if err := conn.Raw(func(driverConn any) error {
+			ec, ok := driverConn.(*embedded.EmbeddedConnection)
+			if !ok {
+				t.Fatalf("expected *embedded.EmbeddedConnection, got %T", driverConn)
+			}
+			p, err := ec.PlanExplain(ctx, query)
+			if err != nil {
+				return err
+			}
+			plan = p
+			return nil
+		}); err != nil {
+			t.Fatalf("PlanExplain(%q): %v", query, err)
+		}
+		return plan
+	}
+
+	// --- Subtest 1: GROUP BY region ORDER BY region -> StreamingAgg over IndexScan ---
+	t.Run("StreamingAggViaIndex", func(t *testing.T) {
+		q := "SELECT region, COUNT(*), SUM(amount) FROM sales GROUP BY region ORDER BY region"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+
+		if !strings.Contains(plan, "StreamingAgg") {
+			t.Fatalf("expected StreamingAgg in plan, got: %s", plan)
+		}
+		if strings.Contains(plan, "HashAgg") {
+			t.Fatalf("expected no HashAgg when index covers GROUP BY, but plan has HashAgg: %s", plan)
+		}
+		if !strings.Contains(plan, "IndexScan") {
+			t.Fatalf("expected IndexScan(idx_region) in plan, got: %s", plan)
+		}
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected no InMemorySort (index provides ordering), but plan has InMemorySort: %s", plan)
+		}
+
+		// Verify query results: grouped + ordered by region ASC.
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+
+		type aggRow struct {
+			region string
+			cnt    int64
+			total  int64
+		}
+		var got []aggRow
+		for rows.Next() {
+			var r aggRow
+			if err := rows.Scan(&r.region, &r.cnt, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+
+		expected := []aggRow{
+			{"east", 2, 300},
+			{"north", 1, 300},
+			{"west", 2, 200},
+		}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d groups, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Subtest 2: GROUP BY amount (no index) -> HashAgg ---
+	t.Run("HashAggNoIndex", func(t *testing.T) {
+		q := "SELECT amount, COUNT(*) FROM sales GROUP BY amount"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+
+		if !strings.Contains(plan, "HashAgg") {
+			t.Fatalf("expected HashAgg for unindexed GROUP BY, got: %s", plan)
+		}
+		if strings.Contains(plan, "StreamingAgg") {
+			t.Fatalf("expected no StreamingAgg (no index on amount), but plan has StreamingAgg: %s", plan)
+		}
+
+		// Verify query results: 5 distinct amounts, each with count 1.
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+
+		type aggRow struct {
+			amount int64
+			cnt    int64
+		}
+		results := make(map[int64]int64)
+		for rows.Next() {
+			var r aggRow
+			if err := rows.Scan(&r.amount, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			results[r.amount] = r.cnt
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+
+		if len(results) != 5 {
+			t.Fatalf("expected 5 distinct amounts, got %d: %v", len(results), results)
+		}
+		for amt, cnt := range results {
+			if cnt != 1 {
+				t.Fatalf("expected COUNT(*)=1 for amount=%d, got %d", amt, cnt)
+			}
+		}
+	})
+}
