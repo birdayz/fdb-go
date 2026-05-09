@@ -329,24 +329,26 @@ func TestEndToEnd_SortElimByIndex(t *testing.T) {
 	})
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	best, _, err2 := p.Plan(ref)
+	if err2 != nil {
+		t.Fatalf("Plan: %v", err2)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil")
 	}
 
-	// The top Reference should contain the index scan directly (sort
-	// eliminated because the index on (status, date) with status=eq
-	// provides date ordering).
-	foundIndexScanAtTop := false
-	for _, m := range ref.Members() {
-		if cascades.IsPhysicalIndexScan(m) {
-			foundIndexScanAtTop = true
-			break
-		}
+	// Sort should be eliminated by ImplementSortRule (PLANNING phase,
+	// matching Java's RemoveSortRule). The extracted plan should be an
+	// index scan, not a sort wrapper.
+	if cascades.IsPhysicalIndexScan(best) {
+		return
 	}
-	if !foundIndexScanAtTop {
-		t.Fatal("sort should be eliminated; index scan should appear at top")
+	if cascades.IsPhysicalFilter(best) {
+		return
 	}
+	t.Fatalf("sort should be eliminated; got %T", best)
 }
 
 // TestEndToEnd_PlanPicksSortElimOverMaterializedSort verifies that
@@ -384,7 +386,8 @@ func TestEndToEnd_PlanPicksSortElimOverMaterializedSort(t *testing.T) {
 	})
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -442,21 +445,19 @@ func TestEndToEnd_SortElimWithPrefixEqAndRangeSuffix(t *testing.T) {
 	})
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-
-	foundIndexScanAtTop := false
-	for _, m := range ref.Members() {
-		if cascades.IsPhysicalIndexScan(m) {
-			foundIndexScanAtTop = true
-			break
-		}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
-	if !foundIndexScanAtTop {
-		t.Fatal("sort should be eliminated; index(status,date) with status=eq AND date>x provides date ordering")
+	if cascades.IsPhysicalIndexScan(plan) || cascades.IsPhysicalFilter(plan) {
+		return
 	}
+	t.Fatalf("sort should be eliminated; got %T", plan)
 }
 
 // TestEndToEnd_SortElimThroughResidualFilter verifies sort elimination
@@ -501,23 +502,19 @@ func TestEndToEnd_SortElimThroughResidualFilter(t *testing.T) {
 	})
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-
-	// Sort should be eliminated — the physicalFilterWrapper wrapping
-	// the index scan preserves DATE ordering.
-	foundPhysicalAtTop := false
-	for _, m := range ref.Members() {
-		if cascades.IsPhysicalIndexScan(m) || cascades.IsPhysicalFilter(m) {
-			foundPhysicalAtTop = true
-			break
-		}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
-	if !foundPhysicalAtTop {
-		t.Fatal("sort should be eliminated through residual filter; physical plan should appear at top")
+	if cascades.IsPhysicalIndexScan(plan) || cascades.IsPhysicalFilter(plan) {
+		return
 	}
+	t.Fatalf("sort should be eliminated through residual filter; got %T", plan)
 }
 
 // TestEndToEnd_InExplodeIndexScan tests the IN-to-explode + index scan

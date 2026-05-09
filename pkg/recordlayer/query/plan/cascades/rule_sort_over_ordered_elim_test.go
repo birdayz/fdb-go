@@ -9,10 +9,10 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
-// TestSortOverOrderedElim_IndexProvidesSortOrder verifies that
-// Sort(col) over an index scan that provides col ordering eliminates
-// the sort.
-func TestSortOverOrderedElim_IndexProvidesSortOrder(t *testing.T) {
+// TestSortElim_IndexProvidesSortOrder verifies that Sort(col) over an
+// index scan that provides col ordering is eliminated during PLANNING
+// by ImplementSortRule (matching Java's RemoveSortRule).
+func TestSortElim_IndexProvidesSortOrder(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -41,9 +41,6 @@ func TestSortOverOrderedElim_IndexProvidesSortOrder(t *testing.T) {
 	)
 	filterRef := expressions.InitialOf(filter)
 
-	// Sort by DATE — this should be satisfiable by the index scan
-	// (index on STATUS, DATE; STATUS is equality-bound → output
-	// ordered by DATE).
 	filterQ := expressions.ForEachQuantifier(filterRef)
 	sort := expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
@@ -52,30 +49,24 @@ func TestSortOverOrderedElim_IndexProvidesSortOrder(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(sortRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	plan, _, err := p.Plan(sortRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-
-	// After exploration, the top Reference should have a member that
-	// is the index scan (sort eliminated) or at least the index scan
-	// should appear without a sort wrapper above it.
-	foundIndexScanAtTop := false
-	for _, m := range sortRef.Members() {
-		if IsPhysicalIndexScan(m) {
-			foundIndexScanAtTop = true
-			break
-		}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
-	if !foundIndexScanAtTop {
-		t.Fatal("sort should be eliminated when index provides the ordering")
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+		t.Fatalf("sort should be eliminated when index provides the ordering; got %T", plan)
 	}
 }
 
-// TestSortOverOrderedElim_MultiKeySortMatchesIndex verifies that
+// TestSortElim_MultiKeySortMatchesIndex verifies that
 // Sort(DATE, AMOUNT) is eliminated when the index on (STATUS, DATE, AMOUNT)
 // with STATUS equality-bound provides (DATE, AMOUNT) ordering.
-func TestSortOverOrderedElim_MultiKeySortMatchesIndex(t *testing.T) {
+func TestSortElim_MultiKeySortMatchesIndex(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -116,27 +107,24 @@ func TestSortOverOrderedElim_MultiKeySortMatchesIndex(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(sortRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	plan, _, err := p.Plan(sortRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-
-	foundIndexScanAtTop := false
-	for _, m := range sortRef.Members() {
-		if IsPhysicalIndexScan(m) {
-			foundIndexScanAtTop = true
-			break
-		}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
-	if !foundIndexScanAtTop {
-		t.Fatal("multi-key sort should be eliminated when index provides the full ordering")
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+		t.Fatalf("multi-key sort should be eliminated; got %T", plan)
 	}
 }
 
-// TestSortOverOrderedElim_PartialSortKeyMatch verifies that Sort(DATE, AMOUNT)
+// TestSortElim_PartialSortKeyMatch verifies that Sort(DATE, AMOUNT)
 // is NOT eliminated when the index only provides (DATE) ordering (prefix
 // of sort keys is not sufficient — need ALL sort keys satisfied).
-func TestSortOverOrderedElim_PartialSortKeyMatch(t *testing.T) {
+func TestSortElim_PartialSortKeyMatch(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -176,25 +164,28 @@ func TestSortOverOrderedElim_PartialSortKeyMatch(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(sortRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	plan, _, err := p.Plan(sortRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
 	// Sort should NOT be eliminated — index provides (DATE) but sort
-	// requires (DATE, AMOUNT).
-	for _, m := range sortRef.Members() {
-		if IsPhysicalIndexScan(m) {
-			t.Fatal("sort should NOT be eliminated when index provides fewer ordering keys than sort requires")
-		}
+	// requires (DATE, AMOUNT). The top-level plan must be an in-memory sort.
+	if IsPhysicalIndexScan(plan) || IsPhysicalFilter(plan) {
+		t.Fatal("sort should NOT be eliminated when index provides fewer ordering keys than sort requires")
 	}
 }
 
-// TestSortOverOrderedElim_RangeScanProvidesSortOrder verifies that
+// TestSortElim_RangeScanProvidesSortOrder verifies that
 // Sort(STATUS) over a range predicate (status > 'a') with index on (STATUS)
 // eliminates the sort — the index scan produces rows in STATUS order even
 // for inequality bounds.
-func TestSortOverOrderedElim_RangeScanProvidesSortOrder(t *testing.T) {
+func TestSortElim_RangeScanProvidesSortOrder(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -232,26 +223,23 @@ func TestSortOverOrderedElim_RangeScanProvidesSortOrder(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(sortRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	plan, _, err := p.Plan(sortRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-
-	foundIndexScanAtTop := false
-	for _, m := range sortRef.Members() {
-		if IsPhysicalIndexScan(m) {
-			foundIndexScanAtTop = true
-			break
-		}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
-	if !foundIndexScanAtTop {
-		t.Fatal("sort should be eliminated when range-bound index scan provides the ordering")
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+		t.Fatalf("sort should be eliminated when range-bound index scan provides the ordering; got %T", plan)
 	}
 }
 
-// TestSortOverOrderedElim_SortKeyNotProvidedByIndex verifies that
+// TestSortElim_SortKeyNotProvidedByIndex verifies that
 // Sort(AMOUNT) is NOT eliminated when the index provides DATE ordering.
-func TestSortOverOrderedElim_SortKeyNotProvidedByIndex(t *testing.T) {
+func TestSortElim_SortKeyNotProvidedByIndex(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -289,25 +277,27 @@ func TestSortOverOrderedElim_SortKeyNotProvidedByIndex(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(sortRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	plan, _, err := p.Plan(sortRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
 	// The sort should NOT be eliminated — the index doesn't provide
-	// AMOUNT ordering. Index scan should NOT appear directly in the
-	// top Reference.
-	for _, m := range sortRef.Members() {
-		if IsPhysicalIndexScan(m) {
-			t.Fatal("sort should NOT be eliminated when index doesn't provide the sort key")
-		}
+	// AMOUNT ordering. The top-level plan must be an in-memory sort.
+	if IsPhysicalIndexScan(plan) || IsPhysicalFilter(plan) {
+		t.Fatal("sort should NOT be eliminated when index doesn't provide the sort key")
 	}
 }
 
-// TestSortOverOrderedElim_DescSortEliminated verifies that a DESC
+// TestSortElim_DescSortEliminated verifies that a DESC
 // sort over an index scan IS eliminated — the planner produces a
 // reverse index scan whose descending ordering matches the sort.
-func TestSortOverOrderedElim_DescSortEliminated(t *testing.T) {
+func TestSortElim_DescSortEliminated(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -332,19 +322,17 @@ func TestSortOverOrderedElim_DescSortEliminated(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(sortRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	plan, _, err := p.Plan(sortRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
-
-	found := false
-	for _, m := range sortRef.Members() {
-		if IsPhysicalIndexScan(m) {
-			found = true
-		}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
-	if !found {
-		t.Fatal("DESC sort should be eliminated by a reverse index scan")
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+		t.Fatalf("DESC sort should be eliminated by a reverse index scan; got %T", plan)
 	}
 }
 
@@ -511,109 +499,171 @@ func TestMakeStrictlySorted_Idempotent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// End-to-end planner tests for strictlySorted
+// End-to-end planner tests for strictlySorted via ImplementSortRule
 // ---------------------------------------------------------------------------
 
-// TestPlanner_StrictlySorted_UniqueIndex runs the full Cascades pipeline
-// with a unique index on column A and ORDER BY A ASC. The exploration
-// phase's SortOverOrderedElimRule eliminates the sort before the PLANNING
-// phase runs, so ImplementSortRule's strictlySorted path is NOT reached.
-// The resulting plan is a plain index scan (not strictlySorted).
-// strictlySorted only fires when the sort survives to the PLANNING phase
-// (e.g., complex multi-candidate scenarios).
+// TestPlanner_StrictlySorted_UniqueIndex verifies that ImplementSortRule
+// marks a plan as strictlySorted when a unique index covers all sort keys.
+//
+// Setup: a LogicalSortExpression(DATE ASC) whose inner Reference contains
+// a single physicalIndexScanWrapper for unique index (STATUS, DATE) with
+// STATUS equality-bound. The inner Reference has pre-computed plan
+// properties so ToPlanPartitions uses the PlanPropertiesMap path
+// (as it would during a real Plan() call).
+//
+// ImplementSortRule sees partition.IsDistinct()=true, all ordering keys
+// covered by sort + equality-bound keys, and yields makeStrictlySorted.
 func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 	t.Parallel()
 
-	ctx := NewPlanContextFromIndexDefs([]IndexDef{
-		&planChoiceIndexDef{
-			name:        "T$a_unique",
-			columns:     []string{"A"},
-			recordTypes: []string{"T"},
-			unique:      true,
-		},
-	})
-
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}}},
-		expressions.ForEachQuantifier(scanRef),
+	a1 := values.UniqueCorrelationIdentifier()
+	a2 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status_date",
+		[]string{"Order"},
+		[]string{"STATUS", "DATE"},
+		[]values.CorrelationIdentifier{a1, a2},
+		values.UnknownType,
+		true, // unique
 	)
-	rootRef := expressions.InitialOf(sort)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx).
-		WithImplementationRules(DefaultImplementationRules())
-	best, _, err := p.Plan(rootRef)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	if best == nil {
-		t.Fatal("Plan returned nil")
+	// Build: Filter(STATUS = 'active') -> Scan(Order)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	// Run ImplementIndexScanRule to produce the physicalIndexScanWrapper.
+	indexRule := NewImplementIndexScanRule()
+	idxResults := FireExpressionRuleWithMemo(indexRule, filterRef, ctx, nil)
+	if len(idxResults) == 0 {
+		t.Fatal("ImplementIndexScanRule should produce an index scan")
 	}
 
-	ph, ok := best.(physicalPlanExpression)
-	if !ok {
-		t.Fatalf("expected physicalPlanExpression, got %T", best)
+	// Build a clean inner Reference with ONLY the index scan wrapper,
+	// then compute plan properties on it (simulating implementBottomUp).
+	var idxWrapper *physicalIndexScanWrapper
+	for _, r := range idxResults {
+		if w, ok := r.(*physicalIndexScanWrapper); ok {
+			idxWrapper = w
+			break
+		}
 	}
-	idxPlan, ok := ph.GetRecordQueryPlan().(*plans.RecordQueryIndexPlan)
-	if !ok {
-		t.Fatalf("expected RecordQueryIndexPlan, got %T (%s)",
-			ph.GetRecordQueryPlan(), ph.GetRecordQueryPlan().Explain())
+	if idxWrapper == nil {
+		t.Fatal("no physicalIndexScanWrapper in ImplementIndexScanRule results")
 	}
-	// Sort is eliminated during exploration by SortOverOrderedElimRule,
-	// not during PLANNING by ImplementSortRule. The plan is a plain
-	// index scan without the strictlySorted flag.
-	if idxPlan.IsStrictlySorted() {
-		t.Fatalf("exploration-eliminated sort should not set strictlySorted; plan=%s",
-			ph.GetRecordQueryPlan().Explain())
+
+	innerRef := expressions.NewFinalReference(
+		[]expressions.RelationalExpression{idxWrapper},
+	)
+	computeRefPlanProperties(innerRef)
+
+	// Build Sort(DATE ASC) over the prepared inner Reference.
+	sortQ := expressions.ForEachQuantifier(innerRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+		sortQ,
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	// Fire ImplementSortRule directly on the sort reference.
+	rule := NewImplementSortRule()
+	yielded := FireImplementationRule(rule, sortRef)
+
+	// Check that at least one yielded expression is strictlySorted.
+	var foundStrictly *plans.RecordQueryIndexPlan
+	for _, e := range yielded {
+		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
+			foundStrictly = w.plan
+		}
+	}
+	if foundStrictly == nil {
+		t.Fatalf("ImplementSortRule should yield a strictlySorted plan for unique index; yielded %d expressions", len(yielded))
 	}
 }
 
-// TestPlanner_StrictlySorted_NonUniqueIndex runs the same pipeline as above
-// but with a NON-unique index. The sort should still be eliminated (the
-// index provides the ordering), but the plan must NOT be strictlySorted.
+// TestPlanner_StrictlySorted_NonUniqueIndex is the negative counterpart:
+// same setup but with a NON-unique index. ImplementSortRule should still
+// yield the plan (sort eliminated), but strictlySorted must be false.
 func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 	t.Parallel()
 
-	ctx := NewPlanContextFromIndexDefs([]IndexDef{
-		&planChoiceIndexDef{
-			name:        "T$a_nonunique",
-			columns:     []string{"A"},
-			recordTypes: []string{"T"},
-			unique:      false,
-		},
-	})
-
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}}},
-		expressions.ForEachQuantifier(scanRef),
+	a1 := values.UniqueCorrelationIdentifier()
+	a2 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status_date",
+		[]string{"Order"},
+		[]string{"STATUS", "DATE"},
+		[]values.CorrelationIdentifier{a1, a2},
+		values.UnknownType,
+		false, // non-unique
 	)
-	rootRef := expressions.InitialOf(sort)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx).
-		WithImplementationRules(DefaultImplementationRules())
-	best, _, err := p.Plan(rootRef)
-	if err != nil {
-		t.Fatalf("Plan: %v", err)
-	}
-	if best == nil {
-		t.Fatal("Plan returned nil")
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	indexRule := NewImplementIndexScanRule()
+	idxResults := FireExpressionRuleWithMemo(indexRule, filterRef, ctx, nil)
+	if len(idxResults) == 0 {
+		t.Fatal("ImplementIndexScanRule should produce an index scan")
 	}
 
-	ph, ok := best.(physicalPlanExpression)
-	if !ok {
-		t.Fatalf("expected physicalPlanExpression, got %T", best)
+	var idxWrapper *physicalIndexScanWrapper
+	for _, r := range idxResults {
+		if w, ok := r.(*physicalIndexScanWrapper); ok {
+			idxWrapper = w
+			break
+		}
 	}
-	idxPlan, ok := ph.GetRecordQueryPlan().(*plans.RecordQueryIndexPlan)
-	if !ok {
-		t.Fatalf("expected RecordQueryIndexPlan, got %T (%s)",
-			ph.GetRecordQueryPlan(), ph.GetRecordQueryPlan().Explain())
+	if idxWrapper == nil {
+		t.Fatal("no physicalIndexScanWrapper in ImplementIndexScanRule results")
 	}
-	if idxPlan.IsStrictlySorted() {
-		t.Fatal("non-unique index should NOT produce a strictlySorted plan")
+
+	innerRef := expressions.NewFinalReference(
+		[]expressions.RelationalExpression{idxWrapper},
+	)
+	computeRefPlanProperties(innerRef)
+
+	sortQ := expressions.ForEachQuantifier(innerRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+		sortQ,
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	rule := NewImplementSortRule()
+	yielded := FireImplementationRule(rule, sortRef)
+
+	// The rule should yield the plan (sort eliminated) but NOT strictlySorted.
+	for _, e := range yielded {
+		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
+			t.Fatalf("non-unique index should NOT produce a strictlySorted plan; got %s", w.plan.Explain())
+		}
+	}
+	// Verify the rule DID yield something (sort was eliminated).
+	if len(yielded) == 0 {
+		t.Fatal("ImplementSortRule should yield at least one expression (sort eliminated)")
 	}
 }
