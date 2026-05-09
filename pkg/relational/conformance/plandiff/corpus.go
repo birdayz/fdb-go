@@ -17494,6 +17494,42 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_INL_01 VALUES (1, 10)"},
 			Query:          "SELECT id FROM T_INL_01 WHERE v IN (10, NULL)",
 		},
+
+		// --- swingshift-83: type-mismatch error code probes ---
+
+		{
+			Name:           "error_type_mismatch_where_eq",
+			SchemaTemplate: "CREATE TABLE T_TM_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TM_01 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_TM_01 WHERE v = 'text'",
+		},
+		{
+			Name:           "error_type_mismatch_between",
+			SchemaTemplate: "CREATE TABLE T_TM_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TM_02 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_TM_02 WHERE v BETWEEN 1 AND 'text'",
+		},
+		{
+			Name:           "error_type_mismatch_in_list",
+			SchemaTemplate: "CREATE TABLE T_TM_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TM_03 VALUES (1, 10)"},
+			Query:          "SELECT id FROM T_TM_03 WHERE v IN ('text', 'other')",
+		},
+
+		// --- swingshift-83: DML error probes ---
+
+		{
+			Name:           "error_update_nonexistent_col",
+			SchemaTemplate: "CREATE TABLE T_DML_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DML_01 VALUES (1, 10)"},
+			Query:          "UPDATE T_DML_01 SET nonexistent = 5 WHERE id = 1",
+		},
+		{
+			Name:           "error_delete_nonexistent_table",
+			SchemaTemplate: "CREATE TABLE T_DML_02 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DML_02 VALUES (1)"},
+			Query:          "DELETE FROM NoSuchTable WHERE id = 1",
+		},
 	}
 }
 
