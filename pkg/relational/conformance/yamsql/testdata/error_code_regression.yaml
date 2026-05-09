@@ -1,0 +1,67 @@
+# error_code_regression.yaml
+#
+# Comprehensive error-code regression test covering all SQLSTATE codes
+# aligned with Java in swingshift-83. Each test pins a specific error
+# code that was verified against Java's ExceptionUtil.translateErrorCode
+# or SemanticAnalyzer.
+name: error_code_regression
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+  CREATE TABLE t2 (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'hello'), (2, 20, 'world')
+  - INSERT INTO t2 VALUES (1, 100), (2, 200)
+tests:
+  # 42F01 — undefined table (FROM clause).
+  - query: SELECT * FROM nonexistent
+    error_code: "42F01"
+  # 42703 — undefined column (SELECT projection).
+  - query: SELECT nonexistent FROM t
+    error_code: "42703"
+  # 42703 — undefined column (WHERE clause).
+  - query: SELECT id FROM t WHERE nonexistent = 1
+    error_code: "42703"
+  # 42703 — unknown qualifier (resolveIdentifier).
+  - query: SELECT x.id FROM t
+    error_code: "42703"
+  # 42702 — ambiguous column (JOIN).
+  - query: SELECT id FROM t, t2 WHERE t.id = t2.id
+    error_code: "42702"
+  # 42803 — GROUP BY violation.
+  - query: SELECT id FROM t GROUP BY n
+    error_code: "42803"
+  # 42701 — duplicate ORDER BY column.
+  - query: SELECT n FROM t ORDER BY n, n
+    error_code: "42701"
+  # 42809 — NULL in IN list.
+  - query: SELECT id FROM t WHERE n IN (10, NULL)
+    error_code: "42809"
+  # 42804 — comparison type mismatch.
+  - query: SELECT id FROM t WHERE n = 'text'
+    error_code: "42804"
+  # 42804 — BETWEEN type mismatch.
+  - query: SELECT id FROM t WHERE n BETWEEN 1 AND 'text'
+    error_code: "42804"
+  # 42804 — IN-list type mismatch.
+  - query: SELECT id FROM t WHERE n IN ('text', 'other')
+    error_code: "42804"
+  # 23502 — NOT NULL violation.
+  - query: INSERT INTO t VALUES (3, 30, NULL)
+    error_code: "23502"
+  # 23505 — PK uniqueness violation.
+  - query: INSERT INTO t VALUES (1, 99, 'dup')
+    error_code: "23505"
+  # 22003 — integer overflow.
+  - query: SELECT 9223372036854775807 + 1 FROM t WHERE id = 1
+    error_code: "22003"
+  # 42883 — undefined function.
+  - query: SELECT UPPER(s) FROM t
+    error_code: "42883"
+  # 0AF00 — LIMIT clause rejected.
+  - query: SELECT id FROM t ORDER BY id LIMIT 1
+    error_code: "0AF00"
+  # Baselines — correct queries still work.
+  - query: SELECT id, n FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
