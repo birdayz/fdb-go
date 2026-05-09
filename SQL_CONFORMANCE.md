@@ -71,16 +71,16 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | RIGHT OUTER JOIN | Y | N | Y | Same gap |
 | FULL OUTER JOIN | N | N | Y | |
 | Self-join | Y | Y | Y | |
-| 3+ way join | Y | P | Y | Go has NLJ merger edge cases |
+| 3+ way join | Y | Y | Y | |
 
 ## Subqueries
 
 | Feature | Java | Go | ANSI | Notes |
 |---|:---:|:---:|:---:|---|
 | Scalar subquery | Y | N | Y | Needs DecorrelateValuesRule port |
-| EXISTS / NOT EXISTS | Y | N | Y | Needs SelectExpression + correlation |
-| Correlated subquery | P | N | Y | Java has partial support |
-| Derived table (FROM subquery) | Y | P | Y | Column alias propagation incomplete |
+| EXISTS / NOT EXISTS | Y | Y | Y | Correlated + nested EXISTS working (swingshift-81) |
+| Correlated subquery | P | P | Y | Both have partial support |
+| Derived table (FROM subquery) | Y | Y | Y | Column alias propagation working |
 
 ## CTEs
 
@@ -89,20 +89,21 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | WITH (basic) | Y | Y | Y | |
 | WITH column rename | Y | Y | Y | |
 | Chained CTEs | Y | Y | Y | |
-| WITH RECURSIVE (level-order) | Y | N | Y | Translator rejects -- infrastructure exists |
-| Recursive pre/post/DFS order | N | N | P | |
+| WITH RECURSIVE (level-order) | Y | Y | Y | RecursiveLevelUnionPlan (swingshift-81) |
+| Recursive DFS order | N | Y | P | Go extension |
+| UNION DISTINCT in recursive CTE | Y | Y | Y | Cycle detection for recursive CTEs |
 
 ## Ordering / Limiting / Distinct
 
 | Feature | Java | Go | ANSI | Notes |
 |---|:---:|:---:|:---:|---|
-| ORDER BY (index-backed) | Y | Y | Y | Sort elimination via RemoveSortRule |
+| ORDER BY (index-backed) | Y | Y | Y | Sort elimination via ImplementSortRule (PLANNING phase, D-1 aligned) |
 | ORDER BY (no index) | N | Ext | Y | Go extension: in-memory sort |
 | ORDER BY aggregate | N | Ext | Y | Go extension |
 | NULLS FIRST / LAST | Y | Y | Y | |
 | LIMIT / OFFSET (clause) | N | N | Y | Both reject at parse time |
-| SELECT DISTINCT | N | Ext | Y | Go extension -- Java rejects all DISTINCT |
-| DISTINCT + ORDER BY | N | Ext | Y | Go extension: ImplementDistinctFinalRule |
+| SELECT DISTINCT | P | Ext | Y | Java rejects most DISTINCT; Go has ImplementDistinctFinalRule (D-3 aligned) |
+| DISTINCT + ORDER BY | N | Ext | Y | Go extension |
 
 ## Schema / Types
 
@@ -114,6 +115,23 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | CREATE TABLE / INDEX | Y | Y | Y | |
 | INFORMATION_SCHEMA | N | Ext | Y | Go extension |
 
+## Error Code Conformance
+
+| Error | SQLSTATE | Java | Go | Notes |
+|---|---|:---:|:---:|---|
+| Unknown table | 42F01 | Y | Y | validateTablesAndColumns + SourceNotFoundError |
+| Unknown column | 42703 | Y | Y | ColumnNotFoundError in WHERE/SELECT/ORDER BY |
+| Ambiguous column | 42702 | Y | Y | JOIN ambiguity detection |
+| Unknown qualifier | 42F01 | Y | Y | SourceNotFoundError → 42F01 (swingshift-83) |
+| GROUP BY violation | 42803 | Y | Y | Non-grouped column in SELECT |
+| Duplicate ORDER BY | 42701 | Y | Y | |
+| UNION column mismatch | 42F64 | Y | Y | |
+| UNION type mismatch | 42F65 | Y | Y | |
+| NOT NULL violation | 23502 | Y | Y | |
+| PK constraint | 23505 | Y | Y | |
+| Integer overflow | 22003 | Y | Y | |
+| Unsupported function | 42883 | Y | Y | |
+
 ## Summary
 
 | Category | Java 4.11.1.0 | Go | ANSI coverage |
@@ -124,37 +142,18 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | Aggregation | **Partial** (core rules exist, SQL layer gaps) | **Full** (Go extension) | ~85% |
 | Set operations | UNION ALL only | UNION ALL only | ~25% |
 | Joins | Full except FULL OUTER | Missing OUTER JOINs | ~70% |
-| Subqueries | Partial | **Missing** | ~30% |
-| CTEs | Full | Basic (no recursive) | ~60% |
+| Subqueries | Partial | Partial (EXISTS works, scalar missing) | ~50% |
+| CTEs | Full + recursive | Full + recursive + DFS ext | ~90% |
 | Ordering | Index-only | Full (in-memory sort ext) | ~80% |
 | Types | Core types | Core types + BYTES | ~60% |
+| Error codes | Full | Full | ~90% |
 
-Go is more capable than Java 4.11.1.0 in aggregation, ordering, and DISTINCT (Go extensions). Go's main gaps vs Java are subqueries and OUTER JOINs. Both engines lack string/math functions and DATE/TIMESTAMP types.
+Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and recursive CTEs. Go's main gaps vs Java are scalar subqueries and OUTER JOINs. Both engines lack string/math functions and DATE/TIMESTAMP types.
 
 ## Yamsql Conformance
 
-98 scenario test suite. Current: **72/98 pass (73%)**, up from 63/98 (64%) at start of dayshift-79.
+105 scenario test suite. Current: **105/105 pass (100%)**.
 
-Remaining 26 failures dominated by: subqueries/EXISTS (~10), OUTER JOIN (~3), recursive CTE (~1), derived table scope (~5), and miscellaneous edge cases (~7).
+## Cascades Divergence Status
 
-## Streaming Executor Gap (Critical for Production)
-
-Java's executor is fully streaming — every `RecordQueryPlan.executePlan()` returns a lazy `RecordCursor` that pulls one row at a time. Composite operators (filter, projection, NLJ, union) compose lazily. `TimeScanLimiter` enforces the FDB 5-second transaction budget.
-
-Go's executor materializes via `CollectAll` in most composite operators, breaking the streaming chain. This works for small tables but is unsafe for production workloads.
-
-| Operator | Java | Go | Fix |
-|---|---|---|---|
-| Filter | Streaming | **Materializes** | Wrap inner cursor with FilterCursor |
-| Projection | Streaming | **Materializes** | Wrap inner cursor with MapCursor |
-| Limit | Streaming | Streaming | Already correct |
-| NLJ outer | Streaming | **Materializes** | Stream outer, re-execute inner per row |
-| NLJ inner | Re-executes | **Materializes** | Re-execute (can't avoid for NLJ) |
-| UNION ALL | Streaming (concat) | **Materializes** | Chain cursors lazily |
-| Streaming Agg | Streaming | Streaming | Already correct (index-backed) |
-| Hash Agg | N/A (Java rejects) | **Materializes** | Go extension — add row limit |
-| In-Memory Sort | N/A (Java rejects) | **Materializes** | Go extension — add row limit |
-| Hash Distinct | N/A (Java rejects) | **Materializes** | Go extension — add row limit |
-| Recursive CTE | Level-by-level | **Materializes** | Add depth + row limits |
-
-Priority: Convert filter/projection/NLJ-outer/UNION to streaming first (biggest impact, no correctness change). Add row limits to materializing Go extensions second.
+See `CASCADES_DIVERGENCE.md` for the full audit. 5 divergences resolved (D-1, D-3, D-9, D-10, D-12). Remaining: D-2 (PushOrdering structural vs constraint, 2-3 shifts), D-4 (cost model, by design), D-5 (InComparison architecture), D-7 (multi-aggregate), D-8 (CardinalityProperty), D-11 (ConstantObjectValue promotion).
