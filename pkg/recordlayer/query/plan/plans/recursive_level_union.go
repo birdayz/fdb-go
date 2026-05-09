@@ -18,6 +18,7 @@ type RecordQueryRecursiveLevelUnionPlan struct {
 	recursiveState       RecordQueryPlan
 	tempTableScanAlias   values.CorrelationIdentifier
 	tempTableInsertAlias values.CorrelationIdentifier
+	distinct             bool // UNION DISTINCT deduplication for cycle detection
 }
 
 func NewRecordQueryRecursiveLevelUnionPlan(
@@ -31,6 +32,23 @@ func NewRecordQueryRecursiveLevelUnionPlan(
 		tempTableInsertAlias: tempTableInsertAlias,
 	}
 }
+
+// NewRecordQueryRecursiveLevelUnionPlanDistinct creates a plan with
+// UNION DISTINCT deduplication.
+func NewRecordQueryRecursiveLevelUnionPlanDistinct(
+	initialState, recursiveState RecordQueryPlan,
+	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
+) *RecordQueryRecursiveLevelUnionPlan {
+	return &RecordQueryRecursiveLevelUnionPlan{
+		initialState:         initialState,
+		recursiveState:       recursiveState,
+		tempTableScanAlias:   tempTableScanAlias,
+		tempTableInsertAlias: tempTableInsertAlias,
+		distinct:             true,
+	}
+}
+
+func (p *RecordQueryRecursiveLevelUnionPlan) IsDistinct() bool { return p.distinct }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) GetInitialState() RecordQueryPlan { return p.initialState }
 func (p *RecordQueryRecursiveLevelUnionPlan) GetRecursiveState() RecordQueryPlan {
@@ -57,7 +75,8 @@ func (p *RecordQueryRecursiveLevelUnionPlan) EqualsWithoutChildren(other RecordQ
 		return false
 	}
 	return p.tempTableScanAlias == o.tempTableScanAlias &&
-		p.tempTableInsertAlias == o.tempTableInsertAlias
+		p.tempTableInsertAlias == o.tempTableInsertAlias &&
+		p.distinct == o.distinct
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) HashCodeWithoutChildren() uint64 {
@@ -66,6 +85,11 @@ func (p *RecordQueryRecursiveLevelUnionPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte(p.tempTableScanAlias.Name()))
 	h.Write([]byte("|"))
 	h.Write([]byte(p.tempTableInsertAlias.Name()))
+	if p.distinct {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
 	return h.Sum64()
 }
 

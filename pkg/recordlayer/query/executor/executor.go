@@ -1639,6 +1639,37 @@ func executeRecursiveLevelUnion(
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive level union initial collect: %w", err)
 	}
+
+	// UNION DISTINCT: track seen rows via a string key to detect
+	// and filter duplicates (cycle detection on cyclic graphs).
+	// Extract canonical column names from the seed datum so the dedup
+	// key only considers CTE-relevant columns (ignoring extra join
+	// columns the recursive branch may carry in its datum).
+	distinct := p.IsDistinct()
+	var seen map[string]struct{}
+	var canonicalCols []string
+	if distinct {
+		seen = make(map[string]struct{}, len(items))
+		if len(items) > 0 {
+			if m, ok := items[0].Datum.(map[string]any); ok {
+				canonicalCols = make([]string, 0, len(m))
+				for k := range m {
+					canonicalCols = append(canonicalCols, k)
+				}
+				sort.Strings(canonicalCols)
+			}
+		}
+		var deduped []QueryResult
+		for _, it := range items {
+			k := queryResultKeyForCols(it, canonicalCols)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			deduped = append(deduped, it)
+		}
+		items = deduped
+	}
 	allResults = append(allResults, items...)
 
 	const maxRecursionDepth = 1000
@@ -1663,6 +1694,25 @@ func executeRecursiveLevelUnion(
 		items, err := CollectAll(ctx, recursiveCursor)
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive collect: %w", err)
+		}
+		if distinct {
+			var newItems []QueryResult
+			for _, it := range items {
+				k := queryResultKeyForCols(it, canonicalCols)
+				if _, dup := seen[k]; dup {
+					continue
+				}
+				seen[k] = struct{}{}
+				newItems = append(newItems, it)
+			}
+			items = newItems
+			// Also replace insertTable contents with only the new
+			// (non-duplicate) rows so the next level's scan sees only
+			// genuinely new rows.
+			insertTable.Clear()
+			for _, it := range items {
+				insertTable.Add(it)
+			}
 		}
 		allResults = append(allResults, items...)
 	}
@@ -1696,11 +1746,36 @@ func executeRecursiveDfsJoin(
 
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
+	var seen map[string]struct{}
+	// For UNION DISTINCT, extract the canonical column names from the
+	// root datum. The dedup key must use only these columns so that
+	// root rows (with 1 column) and recursive rows (which may carry
+	// extra join columns in the datum) produce matching keys.
+	var canonicalCols []string
+	if p.IsDistinct() {
+		seen = make(map[string]struct{}, len(rootRows))
+		if len(rootRows) > 0 {
+			if m, ok := rootRows[0].Datum.(map[string]any); ok {
+				canonicalCols = make([]string, 0, len(m))
+				for k := range m {
+					canonicalCols = append(canonicalCols, k)
+				}
+				sort.Strings(canonicalCols)
+			}
+		}
+	}
 
 	const maxRecursionDepth = 256
 
 	for _, root := range rootRows {
-		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth); err != nil {
+		if seen != nil {
+			k := queryResultKeyForCols(root, canonicalCols)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+		}
+		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth, seen, canonicalCols); err != nil {
 			return nil, err
 		}
 	}
@@ -1718,6 +1793,8 @@ func dfsVisit(
 	props recordlayer.ExecuteProperties,
 	results *[]QueryResult,
 	depth, maxDepth int,
+	seen map[string]struct{},
+	canonicalCols []string,
 ) error {
 	if depth >= maxDepth {
 		return &RecursiveCTEDepthExceededError{MaxDepth: maxDepth}
@@ -1741,7 +1818,14 @@ func dfsVisit(
 	}
 
 	for _, child := range children {
-		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth); err != nil {
+		if seen != nil {
+			k := queryResultKeyForCols(child, canonicalCols)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+		}
+		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth, seen, canonicalCols); err != nil {
 			return err
 		}
 	}
@@ -2104,4 +2188,51 @@ func compareByField(qr QueryResult, field string) any {
 		}
 	}
 	return nil
+}
+
+// queryResultKeyForCols produces a dedup key using only the specified
+// canonical columns. This ensures root rows (which have only seed
+// columns) and recursive rows (which may carry extra join columns)
+// produce matching keys when their CTE-relevant values are equal.
+func queryResultKeyForCols(qr QueryResult, cols []string) string {
+	if len(cols) == 0 {
+		return queryResultKey(qr)
+	}
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%v", qr.Datum)
+	}
+	var sb strings.Builder
+	for i, col := range cols {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		sb.WriteString(fmt.Sprintf("%v", m[col]))
+	}
+	return sb.String()
+}
+
+// queryResultKey produces a stable string key from a QueryResult's datum
+// for UNION DISTINCT deduplication in recursive CTEs. The key is built
+// from VALUES ONLY (sorted by column name for determinism) so rows with
+// different column names but identical values (e.g. seed {SRC:1} and
+// recursive {DST:1}) are correctly identified as duplicates.
+func queryResultKey(qr QueryResult) string {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%v", qr.Datum)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		sb.WriteString(fmt.Sprintf("%v", m[k]))
+	}
+	return sb.String()
 }

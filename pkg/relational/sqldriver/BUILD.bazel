@@ -30,6 +30,7 @@ go_test(
         "embedded_fdb_test.go",
         "group_by_derived_probe_test.go",
         "having_probe_test.go",
+        "rcte_crossjoin_probe_test.go",
         "recursive_cte_rename_probe_test.go",
         "scalar_subquery_cte_test.go",
         "sql_integration_test.go",

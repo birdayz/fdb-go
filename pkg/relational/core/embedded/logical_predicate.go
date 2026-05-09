@@ -2374,7 +2374,7 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 		}
 		return buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
 	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes)
+		return buildLogicalPlanForUnionWithCTECatalog(b, md, cteScopes, false)
 	}
 	return nil, nil
 }
@@ -2383,12 +2383,17 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	setQ *antlrgen.SetQueryContext,
 	md *recordlayer.RecordMetaData,
 	cteScopes map[string]semantic.ScopeSource,
+	allowDistinct bool,
 ) (logical.LogicalOperator, error) {
 	if setQ == nil {
 		return nil, nil
 	}
+	distinct := false
 	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "only UNION ALL is supported")
+		if !allowDistinct {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "only UNION ALL is supported")
+		}
+		distinct = true
 	}
 	left, err := buildLogicalPlanForQueryBodyWithCTECatalog(setQ.GetLeft(), md, cteScopes)
 	if err != nil {
@@ -2442,7 +2447,7 @@ func buildLogicalPlanForUnionWithCTECatalog(
 			return nil, err
 		}
 	}
-	var result logical.LogicalOperator = logical.NewUnion(inputs, false)
+	var result logical.LogicalOperator = logical.NewUnion(inputs, distinct)
 	if len(liftedSortKeys) > 0 {
 		result = logical.NewSort(result, liftedSortKeys)
 	}

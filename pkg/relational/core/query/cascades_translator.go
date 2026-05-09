@@ -591,9 +591,9 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	cteName := strings.ToUpper(c.Name)
 
-	// The body must be a UNION ALL.
+	// The body must be a UNION ALL or UNION DISTINCT.
 	union, ok := c.Body.(*logical.LogicalUnion)
-	if !ok || union.Distinct || len(union.Inputs) < 2 {
+	if !ok || len(union.Inputs) < 2 {
 		return nil
 	}
 
@@ -706,12 +706,22 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	case logical.TraversalPostOrder:
 		strategy = expressions.TraversalPostorder
 	}
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(seedInsertRef),
-		expressions.ForEachQuantifier(recursiveInsertRef),
-		scanAlias, insertAlias,
-		strategy,
-	)
+	var recUnion *expressions.RecursiveUnionExpression
+	if union.Distinct {
+		recUnion = expressions.NewRecursiveUnionExpressionDistinct(
+			expressions.ForEachQuantifier(seedInsertRef),
+			expressions.ForEachQuantifier(recursiveInsertRef),
+			scanAlias, insertAlias,
+			strategy,
+		)
+	} else {
+		recUnion = expressions.NewRecursiveUnionExpression(
+			expressions.ForEachQuantifier(seedInsertRef),
+			expressions.ForEachQuantifier(recursiveInsertRef),
+			scanAlias, insertAlias,
+			strategy,
+		)
+	}
 
 	// Apply CTE column aliases as a rename projection over the
 	// recursive union's output. The temp table internally uses the

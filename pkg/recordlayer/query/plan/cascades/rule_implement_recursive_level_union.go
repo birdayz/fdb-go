@@ -57,11 +57,20 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(
-		initialPlan, recursivePlan,
-		recUnion.GetTempTableScanAlias(),
-		recUnion.GetTempTableInsertAlias(),
-	)
+	var plan *plans.RecordQueryRecursiveLevelUnionPlan
+	if recUnion.IsDistinct() {
+		plan = plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
+			initialPlan, recursivePlan,
+			recUnion.GetTempTableScanAlias(),
+			recUnion.GetTempTableInsertAlias(),
+		)
+	} else {
+		plan = plans.NewRecordQueryRecursiveLevelUnionPlan(
+			initialPlan, recursivePlan,
+			recUnion.GetTempTableScanAlias(),
+			recUnion.GetTempTableInsertAlias(),
+		)
+	}
 
 	initQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialExpr))
 	recQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveExpr))

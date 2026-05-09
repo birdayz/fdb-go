@@ -42,6 +42,12 @@ type PlanVisitor struct {
 	md        *recordlayer.RecordMetaData
 	cteScopes map[string]semantic.ScopeSource
 	cteBodies map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
+
+	// inRecursiveCTEBody is set while building the body of a recursive
+	// CTE so the union builder permits UNION DISTINCT (bare UNION)
+	// which is valid for cycle detection. Outside of recursive CTEs,
+	// UNION DISTINCT is rejected (only UNION ALL is supported).
+	inRecursiveCTEBody bool
 }
 
 // collectSelectNames does a lightweight scan of the SELECT element list
@@ -160,8 +166,17 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 			}
 			// Eagerly build the CTE body plan so scalar subqueries
 			// that reference this CTE can wrap themselves with it.
+			// For recursive CTEs, set inRecursiveCTEBody so the
+			// union builder permits UNION DISTINCT.
 			if inner := nq.Query(); inner != nil {
+				isRecBody := ctesCtx.RECURSIVE() != nil && containsTableRef(inner.QueryExpressionBody(), upper)
+				if isRecBody {
+					v.inRecursiveCTEBody = true
+				}
 				bodyOp, bodyErr := v.VisitQueryBody(inner.QueryExpressionBody())
+				if isRecBody {
+					v.inRecursiveCTEBody = false
+				}
 				if bodyErr == nil && bodyOp != nil {
 					v.cteBodies[upper] = bodyOp
 				}
@@ -193,6 +208,21 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		nq := ctes[i]
 		name := functions.FullIdToName(nq.GetName())
 		upper := strings.ToUpper(name)
+		// Java alignment: fdb-relational's SemanticAnalyzer requires
+		// every CTE under WITH RECURSIVE to actually self-reference.
+		// Non-self-referencing bodies are rejected with "condition is
+		// not met!" (0A000). This check must run before the eagerly-
+		// built body is reused, because the eager builder doesn't
+		// validate recursive semantics.
+		if recursive {
+			if inner := nq.Query(); inner != nil {
+				qeb := inner.QueryExpressionBody()
+				if !containsTableRef(qeb, upper) {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"condition is not met!")
+				}
+			}
+		}
 		// Reuse eagerly-built body plans when available (non-recursive).
 		body := v.cteBodies[upper]
 		if body == nil {
@@ -203,8 +233,12 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 							"recursive CTE requires UNION ALL body")
 					}
+					v.inRecursiveCTEBody = true
 				}
 				body, err = v.VisitQueryBody(inner.QueryExpressionBody())
+				if recursive {
+					v.inRecursiveCTEBody = false
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -882,6 +916,8 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 
 // visitUnion handles UNION ALL queries, threading CTE scopes through
 // both branches. Mirrors buildLogicalPlanForUnionWithCTECatalog.
+// Inside a recursive CTE body, UNION DISTINCT (bare UNION) is also
+// permitted for cycle detection.
 func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.LogicalOperator, error) {
 	if setQ == nil {
 		return nil, nil
@@ -889,5 +925,5 @@ func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.Logica
 	if len(v.cteScopes) == 0 {
 		return buildLogicalPlanForUnionWithCatalog(setQ, v.md)
 	}
-	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.cteScopes)
+	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.cteScopes, v.inRecursiveCTEBody)
 }
