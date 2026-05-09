@@ -26,22 +26,24 @@ PlanVisitor walks ANTLR incrementally: parseFromSource + classifySelectElements 
 
 ### ~~Eliminate sortOnly~~ — **done (swingshift-81)**
 ### ~~Subqueries/EXISTS~~ — **done (swingshift-81)**
-### ~~Yamsql conformance~~ — **105/105 (100%, swingshift-83)**
+### ~~Yamsql conformance~~ — **115/115 (100%, swingshift-83)**
 ### ~~Cascades divergence D-3~~ — **done (swingshift-83)**
+### ~~M-1 AliasMap/RebaseValue/RebasePredicate~~ — **done (swingshift-83)**
 
-All priorities from previous shifts resolved. D-1 + D-3 done (sort + distinct elimination in PLANNING phase). Error code conformance improved: 42F01 for unknown qualifier, 42703 for undefined column in WHERE. See `CASCADES_DIVERGENCE.md` for full audit.
+All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-1 infrastructure complete (AliasMap + RebaseValue 13 types + RebasePredicate 7 types). Error codes aligned: 42703/42809/42804. See `CASCADES_DIVERGENCE.md`.
 
 ### Remaining Cascades alignment (from CASCADES_DIVERGENCE.md)
 
-1. **D-11** ConstantObjectValue type promotion — 0.5 shift
-2. **D-7** Multi-aggregate index matching — 1 shift
+1. **Correlated subqueries** — biggest user-visible gap. DecorrelateValuesRule. M-1 foundation ready. ~2-3 shifts.
+2. **D-7** Multi-aggregate index matching — 1 shift (gated on M-2: PartialMatch)
 3. **D-8** CardinalityProperty split — 0.5 shift
-4. **D-2** PushOrdering constraint vs structural — 2-3 shifts (major)
-5. **D-5** InComparison architecture — 2-3 shifts (gated on M-1: TranslationMap)
+4. **D-11** ConstantObjectValue type promotion — 0.5 shift (not triggered yet)
+5. **D-2** PushOrdering constraint vs structural — 2-3 shifts (major)
+6. **D-5** InComparison architecture — 2-3 shifts (M-1 ready)
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
-Status after swingshift-83: 105/105 scenarios pass (100%). The category breakdown below is from swingshift-77; most items have been resolved. Retained for historical reference.
+Status after swingshift-83: 115/115 scenarios pass (100%). The category breakdown below is from swingshift-77; most items have been resolved. Retained for historical reference.
 
 #### Category 1: Cascades planner can't plan the shape (116 queries)
 
