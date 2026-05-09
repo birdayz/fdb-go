@@ -941,8 +941,8 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 							scanName = strings.ToUpper(scan.Alias)
 						}
 						if qual != scanName {
-							return api.NewErrorf(api.ErrCodeUndefinedTable,
-								"Unknown reference %s", qual)
+							return api.NewErrorf(api.ErrCodeUndefinedColumn,
+								"column reference with qualifier %q cannot be resolved", qual)
 						}
 						upper = upper[dot+1:]
 					}

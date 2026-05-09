@@ -15,16 +15,16 @@ setup:
 tests:
   # Unknown qualifier in SELECT projection.
   - query: SELECT x.id FROM t
-    error_code: "42F01"
+    error_code: "42703"
   # Unknown qualifier in WHERE predicate.
   - query: SELECT id FROM t WHERE x.id = 1
-    error_code: "42F01"
+    error_code: "42703"
   # Unknown qualifier in JOIN ON clause.
   - query: SELECT t.id FROM t, s WHERE x.id = s.sid
-    error_code: "42F01"
+    error_code: "42703"
   # Unknown qualifier in ORDER BY.
   - query: SELECT id FROM t ORDER BY x.id
-    error_code: "42F01"
+    error_code: "42703"
   # Baseline: valid qualified reference works.
   - query: SELECT t.id FROM t ORDER BY t.id
     rows:

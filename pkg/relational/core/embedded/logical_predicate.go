@@ -1318,8 +1318,8 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		}
 		var srcNotFound *semantic.SourceNotFoundError
 		if errors.As(err, &srcNotFound) {
-			return api.NewErrorf(api.ErrCodeUndefinedTable,
-				"Unknown reference %s", srcNotFound.Alias.Name())
+			return api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
 		}
 	}
 	return nil

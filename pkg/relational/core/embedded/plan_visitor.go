@@ -507,8 +507,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					}
 					var srcNotFound *semantic.SourceNotFoundError
 					if errors.As(walkErr, &srcNotFound) {
-						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-							"Unknown reference %s", srcNotFound.Alias.Name())
+						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+							"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
@@ -655,8 +655,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			}
 			var srcNotFound *semantic.SourceNotFoundError
 			if errors.As(walkErr, &srcNotFound) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-					"Unknown reference %s", srcNotFound.Alias.Name())
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
 			}
 			var inColRef *expr.InColumnRefError
 			if errors.As(walkErr, &inColRef) {

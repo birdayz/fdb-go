@@ -248,8 +248,9 @@ func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 
 // TestFDB_Errors_UnknownQualifier probes Java conformance: SELECT
 // x.col FROM t (where x is not a valid table/alias) must error with
-// 42F01 (undefined table), matching Java's SemanticAnalyzer
-// "Unknown reference" validation.
+// 42703 (undefined column), matching Java's SemanticAnalyzer
+// resolveIdentifier which returns UNDEFINED_COLUMN for unresolvable
+// qualified references.
 func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_errs_qual", "errs_qual",
@@ -276,11 +277,11 @@ func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 			got := asAPIError(err)
 			if got == nil {
 				t.Logf("error is not *api.Error: %v (%T)", err, err)
-				t.Fatalf("expected api.Error with code 42F01, got non-API error")
+				t.Fatalf("expected api.Error with code 42703, got non-API error")
 			}
 			t.Logf("SQL: %s → code=%s msg=%s", tc.sql, got.Code, got.Message)
-			if got.Code != api.ErrCodeUndefinedTable {
-				t.Errorf("error code = %q, want %q (42F01)", got.Code, api.ErrCodeUndefinedTable)
+			if got.Code != api.ErrCodeUndefinedColumn {
+				t.Errorf("error code = %q, want %q (42703)", got.Code, api.ErrCodeUndefinedColumn)
 			}
 		})
 	}
