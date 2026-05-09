@@ -387,11 +387,11 @@ func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 	}
 }
 
-// TestPlanner_DistinctOverScanProducesPhysicalDistinct verifies that
-// a LogicalDistinctExpression over a scan produces a
-// physicalDistinctWrapper via the PLANNING phase
-// (ImplementDistinctFinalRule).
-func TestPlanner_DistinctOverScanProducesPhysicalDistinct(t *testing.T) {
+// TestPlanner_DistinctOverScanElided verifies that a
+// LogicalDistinctExpression over a scan is elided via the PLANNING
+// phase (ImplementDistinctFinalRule) because scans already produce
+// distinct records (DistinctRecordsProperty is true for scans).
+func TestPlanner_DistinctOverScanElided(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
@@ -412,10 +412,11 @@ func TestPlanner_DistinctOverScanProducesPhysicalDistinct(t *testing.T) {
 	if best == nil {
 		t.Fatal("expected a plan, got nil")
 	}
-	// The plan should contain a Distinct somewhere in the tree.
+	// Scans produce distinct records, so the Distinct operator should
+	// be elided (no Distinct wrapper in the plan).
 	explained := explainPlan(best)
-	if !containsDistinctInPlan(explained) {
-		t.Fatalf("expected Distinct in plan, got: %s", explained)
+	if containsDistinctInPlan(explained) {
+		t.Fatalf("expected Distinct to be elided for scan, but got: %s", explained)
 	}
 }
 

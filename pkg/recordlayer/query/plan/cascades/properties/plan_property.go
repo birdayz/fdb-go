@@ -14,9 +14,11 @@ var (
 	PropDistinctRecords = &ExpressionProperty{name: "distinctRecords"}
 	PropStoredRecord    = &ExpressionProperty{name: "storedRecord"}
 	PropPrimaryKey      = &ExpressionProperty{name: "primaryKey"}
+	PropCardinalities   = &ExpressionProperty{name: "cardinalities"}
 
 	AllPlanProperties = []*ExpressionProperty{
 		PropOrdering, PropDistinctRecords, PropStoredRecord, PropPrimaryKey,
+		PropCardinalities,
 	}
 )
 
@@ -41,4 +43,15 @@ func (m PropertyMap) GetOrdering() Ordering {
 	}
 	o, _ := v.(Ordering)
 	return o
+}
+
+// GetCardinalities returns the Cardinalities value for
+// PropCardinalities, or UnknownCardinalities() if absent.
+func (m PropertyMap) GetCardinalities() Cardinalities {
+	v, ok := m[PropCardinalities]
+	if !ok {
+		return UnknownCardinalities()
+	}
+	c, _ := v.(Cardinalities)
+	return c
 }

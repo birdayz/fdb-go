@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
@@ -11,10 +12,21 @@ import (
 // LogicalDistinctExpression. Ports Java's ImplementDistinctRule
 // (ImplementationCascadesRule<LogicalDistinctExpression>).
 //
-// When the inner plan already guarantees uniqueness — either via the
-// DistinctRecordsProperty or because the projected columns cover a
-// primary key / unique index — the Distinct operator is elided and
-// inner plans are yielded directly. Otherwise, the inner is wrapped
+// For each physical FinalMember, the rule checks two sources of
+// distinctness information:
+//
+//  1. Physical-level DistinctRecordsProperty — per-member, matching
+//     Java's ImplementDistinctRule 1:1. A scan on a unique index, an
+//     identity-mapping MapPlan, etc. propagate distinctness through
+//     the property system.
+//  2. Logical-level PK/unique-index column coverage — Go extension,
+//     fallback. If the projected columns cover a primary key or unique
+//     index, ALL physical plans are guaranteed distinct (equivalent to
+//     Java's "strictlySorted" path where all partition members get
+//     elided).
+//
+// When either check passes, the Distinct operator is elided and the
+// inner plan is yielded directly. Otherwise, the inner is wrapped
 // with RecordQueryDistinctPlan.
 //
 // This rule subsumes the former DistinctOnUniqueElimRule (which ran
@@ -44,30 +56,36 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Check if the inner logical expression's projected columns cover
-	// a unique key (PK or unique index). This is the column-coverage
-	// check that Java performs via DistinctRecordsProperty on the
-	// physical plan. We check at the logical level because Go's
-	// DistinctRecordsProperty for ProjectionPlan propagates from child
-	// (record-level), while SQL DISTINCT requires value-level uniqueness.
-	innerExpr := innerRef.Get()
-	if call.Context != nil && distinctEliminatedByUniqueKey(innerExpr, call.Context) {
-		for _, m := range innerRef.FinalMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				call.YieldFinalExpression(m)
-			}
-		}
-		return
+	// Logical-level check: if projected columns cover a unique key,
+	// ALL physical plans are guaranteed distinct — matches Java's
+	// "strictlySorted" path where all partition members get elided.
+	allDistinct := false
+	if call.Context != nil {
+		innerExpr := innerRef.Get()
+		allDistinct = distinctEliminatedByUniqueKey(innerExpr, call.Context)
 	}
+
+	pm := GetRefPlanPropertiesMap(innerRef)
 
 	for _, m := range innerRef.FinalMembers() {
 		ph, ok := m.(physicalPlanExpression)
 		if !ok {
 			continue
 		}
-		distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
-		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
-		call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
+
+		isDistinct := allDistinct
+		if !isDistinct && pm != nil {
+			props := pm.GetProperties(m)
+			isDistinct = props.GetBool(properties.PropDistinctRecords)
+		}
+
+		if isDistinct {
+			call.YieldFinalExpression(m)
+		} else {
+			distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
+			innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
+			call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
+		}
 	}
 }
 

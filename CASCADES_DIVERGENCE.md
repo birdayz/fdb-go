@@ -10,11 +10,11 @@ Comprehensive audit of all known divergences between Go's Cascades implementatio
 
 Removed Go-only `SortOverOrderedElimRule` (EXPLORE phase). Sort elimination now happens exclusively in `ImplementSortRule` (PLANNING phase), matching Java's `RemoveSortRule` 1:1. Dead code file `rule_sort_over_ordered_elim.go` deleted.
 
-### ~~D-3: DistinctOnUniqueElimRule — exploration vs physical planning~~ — MOSTLY DONE (swingshift-83)
+### ~~D-3: DistinctOnUniqueElimRule — exploration vs physical planning~~ — DONE
 
 Removed Go-only `DistinctOnUniqueElimRule` (EXPLORE phase) and `ImplementDistinctRule` (BatchA EXPLORE phase). Distinct elimination + implementation now happens exclusively in `ImplementDistinctFinalRule` (PLANNING phase), matching Java's `ImplementDistinctRule` (ImplementationCascadesRule). PlanContext threaded through to PLANNING-phase rules via `FireImplementationRuleWithContext`. Dead code files deleted.
 
-**Remaining gap:** Go's elimination check uses logical-level PK column coverage (walks LogicalProjectionExpression to check projected fields against PK). Java's check uses physical-level `DistinctRecordsProperty` on the plan partition. Go's approach misses cases where a unique-index scan makes DISTINCT redundant without explicit PK column projection. Fixing this requires aligning Go's `computeDistinctRecords` for `RecordQueryProjectionPlan` to distinguish pass-through projections from reshaping ones (matching Java's `RecordQueryMapPlan` logic).
+Physical-level `DistinctRecordsProperty` now checked per FinalMember, matching Java 1:1: `RecordQueryProjectionPlan` returns `false` (projection reshapes output, two different records can project to the same tuple), `RecordQueryMapPlan` propagates child distinctness only for identity mappings (result value is a `QuantifiedObjectValue` whose correlation matches the inner quantifier). Logical-level PK column coverage retained as fallback.
 
 ### ~~D-9: PatternForLikeValue DOTALL mismatch~~ — RETRACTED (dayshift-82)
 
@@ -27,6 +27,14 @@ No divergence exists. Java's `Pattern.compile(rhs)` does NOT use DOTALL. Go's de
 ### ~~D-12: GetEqualityBoundValues semantics~~ — DONE (dayshift-82)
 
 `GetEqualityBoundValues` now uses "any binding fixed" semantics (break on first fixed), matching Java's `Multimaps.filterValues(isFixed)`.
+
+### ~~D-8: CardinalityProperty coupling to Cost~~ — DONE
+
+Ported Java's `CardinalitiesProperty` 1:1. Go now has `Cardinality` (single bound: known int64 or unknown) and `Cardinalities` (min/max pair) types in `properties/cardinality.go`, matching Java's inner classes. Three merge helpers (`IntersectCardinalities`, `UnionCardinalities`, `WeakenCardinalities`) match Java's visitor methods exactly including unknown-handling semantics. `computeCardinalities` in `plan_properties.go` handles all Go plan types with per-type logic matching the Java visitor. The `PropCardinalities` property key is wired into `computeWrapperProperties` alongside existing properties. The old `EstimateCardinality` (Cost-walk on logical expressions) is retained for backward compatibility; the new `Cardinalities` operates on physical plan wrappers.
+
+### ~~D-11: ConstantObjectValue type promotion~~ — DONE
+
+`ConstantObjectValue.Evaluate` now matches Java's `eval()` 1:1: after dereferencing via `ConstantDeref`, applies `promoteConstant` for numeric widening (INT->LONG, INT->FLOAT, INT->DOUBLE, LONG->FLOAT, LONG->DOUBLE, FLOAT->DOUBLE). Relation-typed results pass through without promotion. Mirrors Java's `PromoteValue.isPromotionNeeded` + `resolvePhysicalOperator` chain.
 
 ---
 
@@ -92,30 +100,6 @@ No divergence exists. Java's `Pattern.compile(rhs)` does NOT use DOTALL. Go's de
 
 ---
 
-### D-8: CardinalityProperty coupling to Cost
-
-**Java:** `CardinalitiesProperty` is a separate class with min/max bounds.
-
-**Go:** Cardinality is a field on `Cost`, shared computation.
-
-**Fix:** Split into separate property when needed.
-
-**Effort:** ~0.5 shift.
-
----
-
-### D-11: ConstantObjectValue type promotion
-
-**Java:** `ConstantObjectValue.eval` consults `EvaluationContext.dereferenceConstant` + `PromoteValue.isPromotionNeeded` for type promotion.
-
-**Go:** Looks up via `ConstantDeref` interface but does NOT handle type promotion — value returned as-is.
-
-**Status:** Incomplete. Becomes real when execution routes through ConstantObjectValue with type-mismatched constants.
-
-**Fix:** Wire type promotion through SQL-type coercion.
-
-**Effort:** ~0.5 shift.
-
 ---
 
 ## GO EXTENSIONS (features Go has that Java doesn't)
@@ -154,7 +138,7 @@ Java's ImplementationRules match against PlanPartition property sets (ordering, 
 
 1. **Scalar subqueries** — biggest user-visible gap. Needs DecorrelateValuesRule + SelectExpression. AliasMap (M-1) now ported as foundation. ~2-3 shifts.
 2. **D-7** (multi-aggregate) — 1 shift
-3. **D-8** (CardinalityProperty split) — 0.5 shift
-4. **D-11** (ConstantObjectValue promotion) — 0.5 shift (not triggered yet)
+3. ~~**D-8** (CardinalityProperty split) — DONE~~
+4. ~~**D-11** (ConstantObjectValue promotion) — DONE~~
 5. **D-2** (PushOrdering constraint vs structural) — 2-3 shifts
 6. **D-5** (InComparison architecture) — 2-3 shifts (M-1 foundation now available)

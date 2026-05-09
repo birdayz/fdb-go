@@ -22,9 +22,9 @@ package values
 // CONFORMANCE NOTE: Java's eval consults
 // EvaluationContext.dereferenceConstant + PromoteValue.isPromotionNeeded
 // for type promotion when the runtime constant's type doesn't match
-// the bound result type. The seed Evaluate looks up via a
-// ConstantDeref interface on evalCtx; promotion is NOT handled (the
-// looked-up value is returned as-is). Wired-when-execution-lands.
+// the bound result type. Go's Evaluate matches Java 1:1: dereference
+// the constant, then apply promoteConstant when the runtime type
+// differs from ResultType.
 type ConstantObjectValue struct {
 	Alias      CorrelationIdentifier
 	ConstantID string
@@ -68,16 +68,91 @@ type ConstantDeref interface {
 // capability. Returns nil if evalCtx doesn't implement
 // ConstantDeref or if the binding is missing.
 //
-// Promotion (per Java's eval) is NOT applied — the returned value
-// is the raw bound value. When a planner rule starts capturing
-// constants whose runtime type may differ from the bound
-// ResultType, this Evaluate must route through a promotion helper.
+// Matches Java's ConstantObjectValue.eval: after dereferencing,
+// applies numeric type promotion when the runtime object's type
+// doesn't match the bound ResultType. Relation-typed results are
+// returned as-is (no promotion for structured stream types).
 func (v *ConstantObjectValue) Evaluate(evalCtx any) any {
 	deref, ok := evalCtx.(ConstantDeref)
 	if !ok {
 		return nil
 	}
-	return deref.DereferenceConstant(v.Alias, v.ConstantID)
+	obj := deref.DereferenceConstant(v.Alias, v.ConstantID)
+	if obj == nil {
+		return nil
+	}
+	// Relation types pass through without promotion, matching Java.
+	if IsRelation(v.ResultType) {
+		return obj
+	}
+	return promoteConstant(obj, v.ResultType)
+}
+
+// promoteConstant applies numeric type promotion to obj when its
+// Go runtime type doesn't match the target Type's TypeCode.
+// Mirrors Java's PromoteValue physical operators for primitive
+// numeric widening:
+//
+//	INT → LONG:   int32 → int64
+//	INT → FLOAT:  int32 → float32
+//	INT → DOUBLE: int32 → float64
+//	LONG → FLOAT: int64 → float32
+//	LONG → DOUBLE:int64 → float64
+//	FLOAT → DOUBLE:float32 → float64
+//
+// Returns obj unchanged when no promotion is needed (same type) or
+// the conversion isn't in the promotion map.
+func promoteConstant(obj any, target Type) any {
+	if target == nil {
+		return obj
+	}
+	tc := target.Code()
+
+	switch v := obj.(type) {
+	case int32:
+		switch tc {
+		case TypeCodeLong:
+			return int64(v)
+		case TypeCodeFloat:
+			return float32(v)
+		case TypeCodeDouble:
+			return float64(v)
+		case TypeCodeInt:
+			return obj // already matches
+		}
+	case int64:
+		switch tc {
+		case TypeCodeFloat:
+			return float32(v)
+		case TypeCodeDouble:
+			return float64(v)
+		case TypeCodeLong:
+			return obj // already matches
+		}
+	case int:
+		// Go's int is platform-dependent but treated as int64 (LONG).
+		switch tc {
+		case TypeCodeFloat:
+			return float32(v)
+		case TypeCodeDouble:
+			return float64(v)
+		case TypeCodeLong:
+			return obj // already matches
+		}
+	case float32:
+		switch tc {
+		case TypeCodeDouble:
+			return float64(v)
+		case TypeCodeFloat:
+			return obj // already matches
+		}
+	case float64:
+		if tc == TypeCodeDouble {
+			return obj // already matches
+		}
+	}
+	// No promotion needed or not promotable — return as-is.
+	return obj
 }
 
 // GetCorrelatedTo returns the singleton set containing the

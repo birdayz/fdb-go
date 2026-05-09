@@ -42,9 +42,9 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 | **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Postgres-inspired: multi-dim, memoized | NONE — intentional (RFC-024) | N/A |
 | **D-5** | InComparison architecture | Union of filter legs per IN-element | SelectExpression + ExplodeExpression | LOW — same results, less elegant | 2-3 shifts |
 | **D-7** | Multi-aggregate matching | Single-aggregate index match only | Multi-aggregate via index intersection | **MEDIUM** — missing optimization | 1 shift |
-| **D-8** | CardinalityProperty | Coupled to Cost struct | Separate class with min/max bounds | NONE — internal modularity | 0.5 shift |
-| **D-11** | ConstantObjectValue promotion | No type promotion on eval | PromoteValue.isPromotionNeeded | NONE — not triggered yet | 0.5 shift |
-| **D-3 gap** | Distinct elimination check | Logical PK column coverage | Physical DistinctRecordsProperty | LOW — misses edge case | 0.5 shift |
+| ~~**D-8**~~ | ~~CardinalityProperty~~ | ~~Coupled to Cost struct~~ | ~~Separate class with min/max bounds~~ | ~~DONE~~ | ~~done~~ |
+| ~~**D-11**~~ | ~~ConstantObjectValue promotion~~ | ~~No type promotion on eval~~ | ~~PromoteValue.isPromotionNeeded~~ | ~~DONE~~ | ~~done~~ |
+| ~~**D-3 gap**~~ | ~~Distinct elimination check~~ | ~~Physical DistinctRecordsProperty per FinalMember + logical PK fallback~~ | ~~Physical DistinctRecordsProperty~~ | ~~DONE~~ | ~~done~~ |
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
