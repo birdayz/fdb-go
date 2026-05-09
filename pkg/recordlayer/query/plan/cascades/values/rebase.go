@@ -100,7 +100,7 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 		if newOperand == val.Operand {
 			return v
 		}
-		return &AggregateValue{Op: val.Op, Operand: newOperand}
+		return NewAggregateValue(val.Op, newOperand)
 	case *ParameterValue:
 		return v
 	default:

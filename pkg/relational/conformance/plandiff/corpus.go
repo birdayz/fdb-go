@@ -17531,8 +17531,6 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "DELETE FROM NoSuchTable WHERE id = 1",
 		},
 
-		// --- swingshift-83-cont: aggregate + CTE probes ---
-
 		{
 			Name:           "agg_min_max_with_filter",
 			SchemaTemplate: "CREATE TABLE T_AGG_04 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
