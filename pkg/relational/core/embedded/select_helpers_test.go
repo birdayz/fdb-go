@@ -486,11 +486,13 @@ func TestProjectSystemRows_ProjectSingleColumn(t *testing.T) {
 		},
 	}
 	sq := &selectQuery{
-		tableName:   "TABLES",
-		projCols:    []string{"TABLE_NAME"},
-		projExprs:   []antlrgen.IExpressionContext{nil},
-		projAliases: []string{""},
-		limit:       -1,
+		selectClassification: selectClassification{
+			projCols:    []string{"TABLE_NAME"},
+			projExprs:   []antlrgen.IExpressionContext{nil},
+			projAliases: []string{""},
+		},
+		tableName: "TABLES",
+		limit:     -1,
 	}
 	got, err := projectSystemRows(in, sq)
 	if err != nil {
@@ -515,11 +517,13 @@ func TestProjectSystemRows_ProjectWithAlias(t *testing.T) {
 		rows: [][]driver.Value{{"orders", "TABLE"}},
 	}
 	sq := &selectQuery{
-		tableName:   "TABLES",
-		projCols:    []string{"TABLE_NAME"},
-		projExprs:   []antlrgen.IExpressionContext{nil},
-		projAliases: []string{"tbl"},
-		limit:       -1,
+		selectClassification: selectClassification{
+			projCols:    []string{"TABLE_NAME"},
+			projExprs:   []antlrgen.IExpressionContext{nil},
+			projAliases: []string{"tbl"},
+		},
+		tableName: "TABLES",
+		limit:     -1,
 	}
 	got, err := projectSystemRows(in, sq)
 	if err != nil {
@@ -538,10 +542,12 @@ func TestProjectSystemRows_ColumnNotFound(t *testing.T) {
 		rows: [][]driver.Value{{"orders"}},
 	}
 	sq := &selectQuery{
-		tableName:   "TABLES",
-		projCols:    []string{"NONEXISTENT"},
-		projExprs:   []antlrgen.IExpressionContext{nil},
-		projAliases: []string{""},
+		selectClassification: selectClassification{
+			projCols:    []string{"NONEXISTENT"},
+			projExprs:   []antlrgen.IExpressionContext{nil},
+			projAliases: []string{""},
+		},
+		tableName: "TABLES",
 	}
 	_, err := projectSystemRows(in, sq)
 	if err == nil {
@@ -556,11 +562,13 @@ func TestProjectSystemRows_CaseInsensitiveMatch(t *testing.T) {
 		rows: [][]driver.Value{{"orders"}},
 	}
 	sq := &selectQuery{
-		tableName:   "TABLES",
-		projCols:    []string{"table_name"},
-		projExprs:   []antlrgen.IExpressionContext{nil},
-		projAliases: []string{""},
-		limit:       -1,
+		selectClassification: selectClassification{
+			projCols:    []string{"table_name"},
+			projExprs:   []antlrgen.IExpressionContext{nil},
+			projAliases: []string{""},
+		},
+		tableName: "TABLES",
+		limit:     -1,
 	}
 	got, err := projectSystemRows(in, sq)
 	if err != nil {
@@ -579,8 +587,10 @@ func TestProjectSystemRows_OrderByASC(t *testing.T) {
 		rows: [][]driver.Value{{"charlie"}, {"alice"}, {"bob"}},
 	}
 	sq := &selectQuery{
+		selectClassification: selectClassification{
+			orderBy: []orderByClause{{colName: "NAME", ascending: true}},
+		},
 		tableName: "T",
-		orderBy:   []orderByClause{{colName: "NAME", ascending: true}},
 		limit:     -1,
 	}
 	got, err := projectSystemRows(in, sq)
@@ -603,8 +613,10 @@ func TestProjectSystemRows_OrderByDESC(t *testing.T) {
 		rows: [][]driver.Value{{"charlie"}, {"alice"}, {"bob"}},
 	}
 	sq := &selectQuery{
+		selectClassification: selectClassification{
+			orderBy: []orderByClause{{colName: "NAME", ascending: false}},
+		},
 		tableName: "T",
-		orderBy:   []orderByClause{{colName: "NAME", ascending: false}},
 		limit:     -1,
 	}
 	got, err := projectSystemRows(in, sq)
@@ -704,8 +716,10 @@ func TestProjectSystemRows_OrderByThenLimit(t *testing.T) {
 		rows: [][]driver.Value{{"charlie"}, {"alice"}, {"bob"}, {"dave"}},
 	}
 	sq := &selectQuery{
+		selectClassification: selectClassification{
+			orderBy: []orderByClause{{colName: "NAME", ascending: true}},
+		},
 		tableName: "T",
-		orderBy:   []orderByClause{{colName: "NAME", ascending: true}},
 		limit:     2,
 	}
 	got, err := projectSystemRows(in, sq)
@@ -732,12 +746,14 @@ func TestProjectSystemRows_ProjectionThenOrderBy(t *testing.T) {
 		},
 	}
 	sq := &selectQuery{
-		tableName:   "T",
-		projCols:    []string{"NAME"},
-		projExprs:   []antlrgen.IExpressionContext{nil},
-		projAliases: []string{""},
-		orderBy:     []orderByClause{{colName: "NAME", ascending: true}},
-		limit:       -1,
+		selectClassification: selectClassification{
+			projCols:    []string{"NAME"},
+			projExprs:   []antlrgen.IExpressionContext{nil},
+			projAliases: []string{""},
+			orderBy:     []orderByClause{{colName: "NAME", ascending: true}},
+		},
+		tableName: "T",
+		limit:     -1,
 	}
 	got, err := projectSystemRows(in, sq)
 	if err != nil {

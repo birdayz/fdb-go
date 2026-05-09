@@ -17,8 +17,8 @@ package embedded
 // interaction, HAVING harvesting) delegates to classifySelectElements
 // which returns a selectClassification — NOT a selectQuery. The operator
 // tree is built directly by the visit methods. When metadata is available,
-// a selectQuery is built via the toSelectQuery bridge so the existing
-// upgrade functions (which accept *selectQuery) can run. The catalog-
+// a selectQuery is constructed from the selectClassification (which it
+// embeds) + fromSource so the upgrade functions can run. The catalog-
 // aware upgrades (predicate resolution, column validation, Value
 // resolution, subquery planning) are inlined into VisitSimpleTable
 // rather than delegated to the monolithic _postBuild function.
@@ -394,11 +394,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// --- Catalog-aware upgrades (inlined from _postBuild) ---
 	//
-	// Each upgrade step runs against the selectQuery built from the
-	// classification + FROM source. The selectQuery is a thin bridge
-	// that the upgrade functions consume; the operator tree was already
-	// built by the visit methods above.
-	sq := cls.toSelectQuery(fs)
+	// Build a selectQuery from the classification + FROM source for the
+	// upgrade functions. The operator tree was already built by the
+	// visit methods above; the selectQuery carries parse-tree metadata
+	// that the upgrade functions need for semantic resolution.
+	sq := selectQueryFromClassification(cls, fs)
 
 	// Build the semantic scope once. All identifier resolution goes
 	// through this scope — same architecture as Java's QueryVisitor
@@ -750,8 +750,8 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 
 	// Pre-build derived table inner plans for JOIN sources through the
 	// visitor. Write back to fs.joins[i].catalogAwareInnerPlan so
-	// toSelectQuery carries them into the _postBuild bridge. If
-	// _postBuild triggers a needRebuild (qualified star expansion),
+	// the selectQuery carries them into the upgrade functions. If
+	// upgrades trigger a needRebuild (qualified star expansion),
 	// buildLogicalPlanForSelect can use the already-built inner plan
 	// rather than falling back to the old non-CTE-aware path.
 	for i := range fs.joins {

@@ -48,16 +48,23 @@ func countStarOutName(sq *selectQuery) string {
 
 // selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
-	tableName   string
-	tableAlias  string   // alias or tableName if no alias given
-	projCols    []string // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
-	projAliases []string // parallel to projCols; empty string = no alias (use column name)
-	// projExprs holds computed projection expressions parallel to projCols.
-	// Non-nil entry overrides the plain column lookup for that position.
-	projExprs []antlrgen.IExpressionContext
-	// postAggExprs holds ANTLR expressions for post-aggregation projections
-	// (outExpr entries like SUM(qty)/COUNT(*)). Used by upgradeProjectionValues.
-	postAggExprs []antlrgen.IExpressionContext
+	// selectClassification holds all SELECT-list, GROUP BY, HAVING,
+	// ORDER BY, and aggregate classification fields. Embedded so that
+	// sq.projCols, sq.aggCols, etc. continue to work as before.
+	selectClassification
+
+	tableName  string
+	tableAlias string // alias or tableName if no alias given
+	whereExpr  antlrgen.IWhereExprContext
+	// limit < 0 means no limit.
+	limit int64
+	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
+	offset int64
+	// joins describes JOIN clauses (nil = no joins).
+	joins []joinClause
+	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
+	// When set, tableName holds the alias; the query is materialized at execution time.
+	derivedQuery antlrgen.IQueryContext
 	// projConstFolded is parallel to projExprs (populated lazily by
 	// foldConstantProjections from execSelectQuery). A slot with
 	// present=true means the expression was determined to be row-
@@ -67,63 +74,6 @@ type selectQuery struct {
 	// FieldValue, declined the walker, or weren't constant after
 	// SimplifyValue. Empty slice = pass not run yet.
 	projConstFolded []projectionFold
-	// projQualifier is set when SELECT list is exactly `<qualifier>.*`.
-	// Projection restricts to columns from the source whose alias (or
-	// table name when no alias) equals projQualifier. Empty = SELECT *
-	// (all sources) or explicit column list.
-	projQualifier string
-	// projStarQualifiers is parallel to projCols. When
-	// projStarQualifiers[i] != "" that slot is a `<qualifier>.*` to be
-	// expanded at execution time (e.g. `SELECT a.*, b.label FROM a, b`).
-	// When empty, the slot is a regular named column / expression. Always
-	// empty when projCols == nil (SELECT * or pure qualifier-star use the
-	// legacy projQualifier / nil-projCols paths).
-	projStarQualifiers []string
-	countStar          bool // true when SELECT list is exactly COUNT(*)
-	// countStarAlias holds the optional `AS alias` on a bare COUNT(*)
-	// SELECT. Emitted as the output column name so the derived-table
-	// materializer / UNION arity / etc. see the aliased name instead of
-	// the canonical "COUNT(*)".
-	countStarAlias string
-	distinct       bool // true when SELECT DISTINCT
-	whereExpr      antlrgen.IWhereExprContext
-	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
-	orderBy []orderByClause
-	// limit < 0 means no limit.
-	limit int64
-	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
-	offset int64
-	// groupBy holds GROUP BY column names (nil = no GROUP BY). When an entry
-	// is an expression (e.g. `GROUP BY amt + 1`), groupBy[i] holds the raw
-	// expression text as a synthetic display key and groupByExprs[i] holds
-	// the IExpressionContext evaluated per row to derive the group key value.
-	groupBy []string
-	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
-	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
-	groupByExprs []antlrgen.IExpressionContext
-	// groupByAliases maps UPPERCASE `GROUP BY col AS alias` alias names to
-	// their index in groupBy. Used at parse time to resolve SELECT-list
-	// references to a GROUP BY alias (`SELECT x FROM t GROUP BY col1 AS x`)
-	// — the SELECT-list column gets rewritten to the underlying group-by
-	// name with the alias preserved as the output column name. Nil = no
-	// aliased GROUP BY entries.
-	groupByAliases map[string]int
-	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
-	// Non-nil only when groupBy is non-empty.
-	aggCols []aggSelectCol
-	// havingExpr is the HAVING clause expression (nil = no HAVING).
-	havingExpr antlrgen.IExpressionContext
-	// joins describes JOIN clauses (nil = no joins).
-	joins []joinClause
-	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
-	// When set, tableName holds the alias; the query is materialized at execution time.
-	derivedQuery antlrgen.IQueryContext
-	// postSortStripProj is the visible-only projection to emit after Sort
-	// (strips sort-only columns). Populated when hasSortOnly is true in the
-	// aggregate path; the projection is deferred so Sort can reference the
-	// sort-only columns before they are stripped.
-	postSortStripProj    []string
-	postSortStripAliases []string
 }
 
 // joinClause describes a single JOIN part in a SELECT query.
@@ -461,25 +411,44 @@ func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery,
 // (tableName, tableAlias, joins, derivedQuery, whereExpr) and the
 // execution-only fields (projConstFolded, limit, offset).
 //
-// PlanVisitor uses selectClassification directly for operator building
-// (the Cascades path never constructs a selectQuery). The proto path
-// continues using extractFromSimpleTable which calls
-// classifySelectElements internally and merges the result with FROM.
+// Embedded by selectQuery so the classification fields are promoted —
+// code that reads sq.projCols, sq.aggCols, etc. works unchanged.
+// PlanVisitor constructs a selectQuery directly from a
+// selectClassification + fromSource without any bridge method.
 type selectClassification struct {
-	projCols           []string
-	projAliases        []string
+	projCols    []string // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
+	projAliases []string // parallel to projCols; empty string = no alias (use column name)
+	// projExprs holds computed projection expressions parallel to projCols.
+	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs          []antlrgen.IExpressionContext
 	projStarQualifiers []string
-	projQualifier      string
-	countStar          bool
-	countStarAlias     string
-	aggCols            []aggSelectCol
-	distinct           bool
-	orderBy            []orderByClause
-	groupBy            []string
-	groupByExprs       []antlrgen.IExpressionContext
-	groupByAliases     map[string]int
-	havingExpr         antlrgen.IExpressionContext
+	// projQualifier is set when SELECT list is exactly `<qualifier>.*`.
+	// Projection restricts to columns from the source whose alias (or
+	// table name when no alias) equals projQualifier. Empty = SELECT *
+	// (all sources) or explicit column list.
+	projQualifier  string
+	countStar      bool // true when SELECT list is exactly COUNT(*)
+	countStarAlias string
+	aggCols        []aggSelectCol
+	distinct       bool // true when SELECT DISTINCT
+	orderBy        []orderByClause
+	// groupBy holds GROUP BY column names (nil = no GROUP BY). When an entry
+	// is an expression (e.g. `GROUP BY amt + 1`), groupBy[i] holds the raw
+	// expression text as a synthetic display key and groupByExprs[i] holds
+	// the IExpressionContext evaluated per row to derive the group key value.
+	groupBy []string
+	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
+	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
+	groupByExprs []antlrgen.IExpressionContext
+	// groupByAliases maps UPPERCASE `GROUP BY col AS alias` alias names to
+	// their index in groupBy. Used at parse time to resolve SELECT-list
+	// references to a GROUP BY alias (`SELECT x FROM t GROUP BY col1 AS x`)
+	// — the SELECT-list column gets rewritten to the underlying group-by
+	// name with the alias preserved as the output column name. Nil = no
+	// aliased GROUP BY entries.
+	groupByAliases map[string]int
+	// havingExpr is the HAVING clause expression (nil = no HAVING).
+	havingExpr antlrgen.IExpressionContext
 	// postAggExprs is populated by the visitor's visitSelectGroupBy when
 	// post-aggregation computed projections are emitted.
 	postAggExprs []antlrgen.IExpressionContext
@@ -490,47 +459,22 @@ type selectClassification struct {
 	postSortStripAliases []string
 }
 
-// toSelectQuery builds a selectQuery from the classification and the
-// FROM-derived fields. Used by VisitSimpleTable's inlined catalog-aware
-// upgrades and by the proto path. The classification fields are
-// shallow-copied (slices share backing arrays).
-func (cls *selectClassification) toSelectQuery(fs *fromSource) *selectQuery {
-	var whereExpr antlrgen.IWhereExprContext
-	var tableName, tableAlias string
-	var joins []joinClause
-	var derivedQuery antlrgen.IQueryContext
-	if fs != nil {
-		tableName = fs.tableName
-		tableAlias = fs.tableAlias
-		joins = fs.joins
-		derivedQuery = fs.derivedQuery
-		whereExpr = fs.whereExpr
-	}
-	return &selectQuery{
-		tableName:            tableName,
-		tableAlias:           tableAlias,
-		joins:                joins,
-		derivedQuery:         derivedQuery,
-		whereExpr:            whereExpr,
-		projCols:             cls.projCols,
-		projAliases:          cls.projAliases,
-		projExprs:            cls.projExprs,
-		projStarQualifiers:   cls.projStarQualifiers,
-		projQualifier:        cls.projQualifier,
-		countStar:            cls.countStar,
-		countStarAlias:       cls.countStarAlias,
-		aggCols:              cls.aggCols,
-		distinct:             cls.distinct,
-		orderBy:              cls.orderBy,
-		groupBy:              cls.groupBy,
-		groupByExprs:         cls.groupByExprs,
-		groupByAliases:       cls.groupByAliases,
-		havingExpr:           cls.havingExpr,
-		postAggExprs:         cls.postAggExprs,
-		postSortStripProj:    cls.postSortStripProj,
-		postSortStripAliases: cls.postSortStripAliases,
+// selectQueryFromClassification builds a selectQuery from the
+// classification and the FROM-derived fields. The classification is
+// embedded by value (slices share backing arrays).
+func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *selectQuery {
+	sq := &selectQuery{
+		selectClassification: *cls,
 		limit:                -1,
 	}
+	if fs != nil {
+		sq.tableName = fs.tableName
+		sq.tableAlias = fs.tableAlias
+		sq.joins = fs.joins
+		sq.derivedQuery = fs.derivedQuery
+		sq.whereExpr = fs.whereExpr
+	}
+	return sq
 }
 
 // classifySelectElements walks the SELECT, GROUP BY, HAVING, ORDER BY,
@@ -1397,7 +1341,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		return nil, err
 	}
 
-	return cls.toSelectQuery(fs), nil
+	return selectQueryFromClassification(cls, fs), nil
 }
 
 // exprReferencesColumn reports whether the expression tree contains any

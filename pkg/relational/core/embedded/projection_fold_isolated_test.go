@@ -92,9 +92,9 @@ func TestFoldConstantProjectionsWith_NilDeps_NoOp(t *testing.T) {
 		folder   *fakeFolder
 	}{
 		{"nil sq", nil, &fakeResolver{}, &fakeFolder{}},
-		{"empty projExprs", &selectQuery{projExprs: nil}, &fakeResolver{}, &fakeFolder{}},
-		{"nil resolver", &selectQuery{projExprs: []antlrgen.IExpressionContext{newStubExpr()}}, nil, &fakeFolder{}},
-		{"nil folder", &selectQuery{projExprs: []antlrgen.IExpressionContext{newStubExpr()}}, &fakeResolver{}, nil},
+		{"empty projExprs", &selectQuery{selectClassification: selectClassification{projExprs: nil}}, &fakeResolver{}, &fakeFolder{}},
+		{"nil resolver", &selectQuery{selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{newStubExpr()}}}, nil, &fakeFolder{}},
+		{"nil folder", &selectQuery{selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{newStubExpr()}}}, &fakeResolver{}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,7 +147,7 @@ func TestFoldConstantProjectionsWith_HappyPath(t *testing.T) {
 			ok bool
 		}{v1: {v: int64(42), ok: true}},
 	}
-	sq := &selectQuery{projExprs: []antlrgen.IExpressionContext{expr1}}
+	sq := &selectQuery{selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{expr1}}}
 	foldConstantProjectionsWith(sq, resolver, folder)
 	if len(sq.projConstFolded) != 1 {
 		t.Fatalf("projConstFolded len: got %d, want 1", len(sq.projConstFolded))
@@ -186,7 +186,7 @@ func TestFoldConstantProjectionsWith_ResolverError_SkipsSlot(t *testing.T) {
 			ok bool
 		}{v2: {v: int64(2), ok: true}},
 	}
-	sq := &selectQuery{projExprs: []antlrgen.IExpressionContext{expr1, expr2}}
+	sq := &selectQuery{selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{expr1, expr2}}}
 	foldConstantProjectionsWith(sq, resolver, folder)
 	if sq.projConstFolded[0].present {
 		t.Fatalf("slot 0: should be unset (resolver errored)")
@@ -218,7 +218,7 @@ func TestFoldConstantProjectionsWith_FolderDecline_SkipsSlot(t *testing.T) {
 			ok bool
 		}{v1: {ok: false}}, // folder declines (e.g. it's a FieldValue)
 	}
-	sq := &selectQuery{projExprs: []antlrgen.IExpressionContext{expr1}}
+	sq := &selectQuery{selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{expr1}}}
 	foldConstantProjectionsWith(sq, resolver, folder)
 	if sq.projConstFolded[0].present {
 		t.Fatalf("slot 0: should be unset (folder declined)")
@@ -243,7 +243,7 @@ func TestFoldConstantProjectionsWith_NilSlotSkipped(t *testing.T) {
 			ok bool
 		}{v1: {v: int64(1), ok: true}},
 	}
-	sq := &selectQuery{projExprs: []antlrgen.IExpressionContext{nil, expr1, nil}}
+	sq := &selectQuery{selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{nil, expr1, nil}}}
 	foldConstantProjectionsWith(sq, resolver, folder)
 	if sq.projConstFolded[0].present {
 		t.Fatalf("slot 0 (nil projExpr): should be unset")
@@ -272,7 +272,7 @@ func TestFoldConstantProjectionsWith_AlreadyFolded_Preserved(t *testing.T) {
 	resolver := &fakeResolver{} // empty — would return (nil, nil) on a call
 	folder := &fakeFolder{}
 	sq := &selectQuery{
-		projExprs: []antlrgen.IExpressionContext{expr1},
+		selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{expr1}},
 		projConstFolded: []projectionFold{
 			{value: "pre-existing", present: true},
 		},
@@ -310,7 +310,7 @@ func TestFoldConstantProjectionsWith_GrowsCacheSlice(t *testing.T) {
 		}{v2: {v: int64(99), ok: true}},
 	}
 	sq := &selectQuery{
-		projExprs: []antlrgen.IExpressionContext{expr1, expr2},
+		selectClassification: selectClassification{projExprs: []antlrgen.IExpressionContext{expr1, expr2}},
 		projConstFolded: []projectionFold{
 			{value: "existing", present: true}, // only slot 0 pre-set
 		},

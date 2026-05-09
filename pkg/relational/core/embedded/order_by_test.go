@@ -373,15 +373,15 @@ func TestAllOrderByEquated(t *testing.T) {
 func TestBuildOrderByAliases(t *testing.T) {
 	t.Parallel()
 	// No aliases at all.
-	sq := &selectQuery{projCols: []string{"id", "v"}}
+	sq := &selectQuery{selectClassification: selectClassification{projCols: []string{"id", "v"}}}
 	if got := buildOrderByAliases(sq); got != nil {
 		t.Fatalf("no aliases: expected nil, got %v", got)
 	}
 	// Some aliases.
-	sq = &selectQuery{
+	sq = &selectQuery{selectClassification: selectClassification{
 		projCols:    []string{"id", "v"},
 		projAliases: []string{"", "value"},
-	}
+	}}
 	got := buildOrderByAliases(sq)
 	if got["VALUE"] != "v" {
 		t.Fatalf("expected VALUE→v mapping, got %v", got)
