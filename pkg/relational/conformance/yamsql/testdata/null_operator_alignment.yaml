@@ -1,0 +1,43 @@
+# null_operator_alignment.yaml
+#
+# NULL operator tests aligned with Java's null-operator-tests.yamsql.
+# Tests nested derived tables with IS NULL / IS NOT NULL.
+name: null_operator_alignment
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 100), (2, 20, 200), (3, NULL, 300)
+tests:
+  # IS NULL on a NOT NULL PK column → empty result.
+  - query: SELECT * FROM (SELECT * FROM t1 WHERE id IS NULL) AS x
+    rows: []
+  # IS NOT NULL on a NOT NULL PK column → all rows.
+  - query: SELECT COUNT(*) FROM (SELECT * FROM t1 WHERE id IS NOT NULL) AS x
+    rows:
+      - [3]
+  # IS NULL on a nullable column → rows where col1 IS NULL.
+  - query: SELECT id FROM t1 WHERE col1 IS NULL ORDER BY id
+    rows:
+      - [3]
+  # IS NOT NULL on a nullable column → rows where col1 IS NOT NULL.
+  - query: SELECT id FROM t1 WHERE col1 IS NOT NULL ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  # COALESCE with NULL → fallback value.
+  - query: SELECT id, COALESCE(col1, -1) FROM t1 ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, -1]
+  # CASE WHEN col IS NULL.
+  - query: SELECT id, CASE WHEN col1 IS NULL THEN 'missing' ELSE 'present' END FROM t1 ORDER BY id
+    rows:
+      - [1, 'present']
+      - [2, 'present']
+      - [3, 'missing']
+  # Nested derived table — Java's pattern from null-operator-tests.yamsql.
+  - query: SELECT id FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE col1 IS NOT NULL) AS y ORDER BY id
+    rows:
+      - [1]
+      - [2]
