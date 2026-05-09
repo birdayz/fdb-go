@@ -80,6 +80,13 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// A reverse scan reverses ALL PK columns. If the sort covers only a
+	// prefix of the PK (e.g. ORDER BY a DESC on PK (a,b)), reverse scan
+	// produces (a DESC, b DESC) — wrong for uncovered suffix columns.
+	if reverse && len(sortKeys) < len(pkCols) {
+		return
+	}
+
 	plan := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), reverse)
 	pkVals := make([]values.Value, len(pkCols))
 	for i, col := range pkCols {

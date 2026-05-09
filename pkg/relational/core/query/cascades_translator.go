@@ -114,10 +114,6 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	innerRef := t.translateRef(f.Input)
-	if innerRef == nil {
-		return nil
-	}
 	if f.Predicate == nil && f.PredicateText != "" {
 		return nil
 	}
@@ -142,6 +138,23 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// quantifiers. The ExistsPredicate in the predicate tree references
 	// the existential alias; the planner's ImplementSimpleSelectRule
 	// handles the existential quantifier via FirstOrDefaultPlan.
+	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
+		// When the filter's input is a join, flatten into a single
+		// SelectExpression with ForEach(left), ForEach(right), and
+		// Existential(exists_scan). This avoids nesting one
+		// SelectExpression (the join) inside another (the EXISTS filter),
+		// which causes the Cascades planner to diverge. The NLJ rule
+		// handles the 2+1 quantifier shape directly.
+		if join, ok := f.Input.(*logical.LogicalJoin); ok {
+			return t.translateJoinWithExists(join, f)
+		}
+	}
+
+	innerRef := t.translateRef(f.Input)
+	if innerRef == nil {
+		return nil
+	}
+
 	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
 		outerQ := expressions.ForEachQuantifier(innerRef)
 		quantifiers := []expressions.Quantifier{outerQ}
@@ -331,6 +344,12 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if a.Having != "" && a.HavingPredicate == nil {
 		return nil
 	}
+	for _, ssq := range a.HavingScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
 	innerRef := t.translateRef(a.Input)
 	if innerRef == nil {
 		return nil
@@ -498,6 +517,103 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	)
 }
 
+// translateJoinWithExists builds a flat SelectExpression from a LogicalJoin
+// + LogicalFilter that carries EXISTS subqueries. Instead of nesting one
+// SelectExpression (the join) inside another (the EXISTS filter), this
+// method produces a single SelectExpression with ForEach(left),
+// ForEach(right), and Existential quantifiers. The combined predicate
+// covers both the join ON and the filter WHERE. The NLJ rule's
+// implementJoinWithExistential path handles this 2+1 pattern.
+func (t *cascadesTranslator) translateJoinWithExists(
+	j *logical.LogicalJoin,
+	f *logical.LogicalFilter,
+) expressions.RelationalExpression {
+	left := j.Left
+	right := j.Right
+	kind := j.Kind
+	if kind == logical.JoinRight {
+		left, right = right, left
+		kind = logical.JoinLeft
+	}
+
+	// Collect scalar subquery plans from the filter.
+	for _, ssq := range f.ScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
+
+	// Flatten join + EXISTS into a single SelectExpression
+	// with ForEach(left), ForEach(right), and Existential quantifiers.
+	leftRef := t.translateRef(left)
+	if leftRef == nil {
+		return nil
+	}
+	rightRef := t.translateRef(right)
+	if rightRef == nil {
+		return nil
+	}
+
+	leftQ := expressions.ForEachQuantifier(leftRef)
+	rightQ := expressions.ForEachQuantifier(rightRef)
+	quantifiers := []expressions.Quantifier{leftQ, rightQ}
+
+	// Combine join ON predicates + filter WHERE predicates. Flatten
+	// any top-level AND so the NLJ rule can split join predicates
+	// from EXISTS predicates at the individual predicate level.
+	var allPreds []predicates.QueryPredicate
+	if j.OnPredicate != nil {
+		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
+			allPreds = append(allPreds, qp)
+		}
+	}
+	if f.Predicate != nil {
+		if and, ok := f.Predicate.(*predicates.AndPredicate); ok {
+			allPreds = append(allPreds, and.SubPredicates...)
+		} else {
+			allPreds = append(allPreds, f.Predicate)
+		}
+	}
+
+	// Add EXISTS subqueries as existential quantifiers.
+	for _, esq := range f.ExistsSubqueries {
+		subRef := t.translateRef(esq.Plan)
+		if subRef == nil {
+			return nil
+		}
+		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+		quantifiers = append(quantifiers, existQ)
+		if esq.JoinPredicate != nil {
+			allPreds = append(allPreds, esq.JoinPredicate)
+		}
+	}
+
+	leftAlias := sourceAlias(left)
+	rightAlias := sourceAlias(right)
+	sourceAliases := []string{leftAlias, rightAlias}
+	for _, esq := range f.ExistsSubqueries {
+		sourceAliases = append(sourceAliases, sourceAlias(esq.Plan))
+	}
+
+	var joinType expressions.JoinType
+	switch kind {
+	case logical.JoinLeft:
+		joinType = expressions.JoinLeftOuter
+	default:
+		joinType = expressions.JoinInner
+	}
+
+	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
+	return expressions.NewSelectExpressionWithJoinType(
+		resultValue,
+		quantifiers,
+		allPreds,
+		sourceAliases,
+		joinType,
+	)
+}
+
 func sourceAlias(op logical.LogicalOperator) string {
 	for cur := op; cur != nil; {
 		switch o := cur.(type) {
@@ -508,6 +624,13 @@ func sourceAlias(op logical.LogicalOperator) string {
 			return strings.ToUpper(o.Table)
 		case *logical.LogicalJoin:
 			return sourceAlias(o.Right)
+		case *logical.LogicalCTE:
+			// CTE-wrapped derived tables: the CTE name IS the
+			// derived-table alias. Return it directly so the NLJ
+			// executor qualifies merged-row keys under the alias
+			// the user specified (e.g. "sq1"), not the underlying
+			// table name buried inside the CTE body.
+			return strings.ToUpper(o.Name)
 		default:
 			ch := cur.Children()
 			if len(ch) == 1 {
@@ -578,9 +701,9 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	cteName := strings.ToUpper(c.Name)
 
-	// The body must be a UNION ALL.
+	// The body must be a UNION ALL or UNION DISTINCT.
 	union, ok := c.Body.(*logical.LogicalUnion)
-	if !ok || union.Distinct || len(union.Inputs) < 2 {
+	if !ok || len(union.Inputs) < 2 {
 		return nil
 	}
 
@@ -638,6 +761,13 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// like "B.ID" instead of the seed's unqualified "ID". Without this
 	// normalization, the outer query (and DFS recursion) can't find the
 	// expected columns, yielding NULL for every row.
+	//
+	// The temp table MUST use the seed's original column names (not the
+	// CTE column aliases). The semantic analyzer's ColumnAliasMap
+	// reverse-maps aliased references (e.g. `a.up`) back to the
+	// original column names (e.g. `A.PARENT`) in the WHERE predicate's
+	// FieldValues. So the temp table datum keys must be the originals
+	// for the recursive branch's join predicates to match.
 	seedCols := extractOuterProjectionColumns(seedBranches[0])
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(seedCols) > 0 && len(recCols) > 0 && len(seedCols) == len(recCols) {
@@ -686,16 +816,62 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	case logical.TraversalPostOrder:
 		strategy = expressions.TraversalPostorder
 	}
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(seedInsertRef),
-		expressions.ForEachQuantifier(recursiveInsertRef),
-		scanAlias, insertAlias,
-		strategy,
-	)
+	var recUnion *expressions.RecursiveUnionExpression
+	if union.Distinct {
+		recUnion = expressions.NewRecursiveUnionExpressionDistinct(
+			expressions.ForEachQuantifier(seedInsertRef),
+			expressions.ForEachQuantifier(recursiveInsertRef),
+			scanAlias, insertAlias,
+			strategy,
+		)
+	} else {
+		recUnion = expressions.NewRecursiveUnionExpression(
+			expressions.ForEachQuantifier(seedInsertRef),
+			expressions.ForEachQuantifier(recursiveInsertRef),
+			scanAlias, insertAlias,
+			strategy,
+		)
+	}
 
-	// Register the RecursiveUnionExpression so that the Main query's
+	// Apply CTE column aliases as a rename projection over the
+	// recursive union's output. The temp table internally uses the
+	// seed's original column names (ID, PARENT) because the semantic
+	// analyzer's ColumnAliasMap reverse-maps aliased references
+	// (`a.up` → `A.PARENT`) in the recursive branch's predicates.
+	// The rename only applies to the outward-facing datum so the
+	// main query can reference the aliased names (NODE, UP).
+	var cteResult expressions.RelationalExpression = recUnion
+	if len(c.ColumnAliases) > 0 && len(seedCols) > 0 && len(seedCols) == len(c.ColumnAliases) {
+		needsRename := false
+		for i := range seedCols {
+			if !strings.EqualFold(seedCols[i], c.ColumnAliases[i]) {
+				needsRename = true
+				break
+			}
+		}
+		if needsRename {
+			renameVals := make([]values.Value, len(seedCols))
+			for i, sc := range seedCols {
+				renameVals[i] = &values.FieldValue{
+					Field: strings.ToUpper(sc),
+					Typ:   values.UnknownType,
+				}
+			}
+			renameAliases := make([]string, len(c.ColumnAliases))
+			for i, a := range c.ColumnAliases {
+				renameAliases[i] = strings.ToUpper(a)
+			}
+			cteResult = expressions.NewLogicalProjectionExpressionWithAliases(
+				renameVals,
+				renameAliases,
+				expressions.ForEachQuantifier(expressions.InitialOf(recUnion)),
+			)
+		}
+	}
+
+	// Register the (possibly-renamed) result so that the Main query's
 	// scan of the CTE name resolves to it.
-	t.cteExprScope[cteName] = recUnion
+	t.cteExprScope[cteName] = cteResult
 	result := t.translateOp(c.Main)
 	delete(t.cteExprScope, cteName)
 	return result

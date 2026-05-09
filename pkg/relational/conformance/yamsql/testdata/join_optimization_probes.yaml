@@ -1,0 +1,75 @@
+name: join_optimization_probes
+schema_template: |
+  CREATE TABLE dept (did BIGINT NOT NULL, dname STRING, PRIMARY KEY (did))
+  CREATE TABLE emp (eid BIGINT NOT NULL, did BIGINT, ename STRING, salary BIGINT, PRIMARY KEY (eid))
+  CREATE INDEX idx_emp_did ON emp (did)
+setup:
+  - INSERT INTO dept VALUES (1, 'eng'), (2, 'sales'), (3, 'hr')
+  - INSERT INTO emp VALUES
+      (10, 1, 'Alice', 100), (20, 1, 'Bob', 90),
+      (30, 2, 'Charlie', 80), (40, 2, 'Diana', 110),
+      (50, 3, 'Eve', 95)
+tests:
+  # Single-side filter pushdown: dept filter pushed below join
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname = 'eng'
+      ORDER BY e.ename
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Cross-side predicate stays above join
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE e.salary > d.did * 50
+      ORDER BY e.ename
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Diana']
+      - ['Eve']
+
+  # Both sides filtered
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname = 'eng' AND e.salary >= 95
+      ORDER BY e.ename
+    rows:
+      - ['Alice']
+
+  # ORDER BY through join — should work even with filter pushdown
+  - query: |-
+      SELECT e.ename, d.dname FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname != 'hr'
+      ORDER BY e.salary DESC
+    rows:
+      - ['Diana', 'sales']
+      - ['Alice', 'eng']
+      - ['Bob', 'eng']
+      - ['Charlie', 'sales']
+
+  # Self-join with filter
+  - query: |-
+      SELECT a.ename, b.ename FROM emp AS a
+      INNER JOIN emp AS b ON a.did = b.did
+      WHERE a.eid < b.eid
+      ORDER BY a.eid, b.eid
+    rows:
+      - ['Alice', 'Bob']
+      - ['Charlie', 'Diana']
+
+  # Aggregate through join
+  - query: |-
+      SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      GROUP BY d.dname
+      ORDER BY d.dname
+    rows:
+      - ['eng', 2, 100]
+      - ['hr', 1, 95]
+      - ['sales', 2, 110]

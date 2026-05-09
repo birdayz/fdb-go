@@ -808,11 +808,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				groupOrder = append(groupOrder, "")
 			}
 
-			// Build output cols — visible (non-hidden, non-sortOnly) entries
-			// first, then sortOnly columns (harvested from ORDER BY) so the
-			// post-aggregation sort can find them via colIdx. Hidden entries
-			// (harvested from HAVING) drop out entirely. Caller strips the
-			// trailing sortOnly columns after the sort.
+			// Build output cols — visible entries first, then non-visible
+			// columns (harvested from ORDER BY / HAVING) so the post-
+			// aggregation sort can find them via colIdx. Caller strips the
+			// trailing non-visible columns after the sort.
 			groupColIdx := map[string]int{}
 			for i, col := range sq.groupBy {
 				groupColIdx[col] = i
@@ -829,12 +828,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			emitIdx := make([]int, 0, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
-				if !ac.hidden && !ac.sortOnly {
+				if ac.visible {
 					emitIdx = append(emitIdx, i)
 				}
 			}
 			for i, ac := range sq.aggCols {
-				if !ac.hidden && ac.sortOnly {
+				if !ac.visible {
 					emitIdx = append(emitIdx, i)
 				}
 			}
@@ -1363,11 +1362,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	if sq.limit >= 0 && int64(len(data)) > sq.limit {
 		data = data[:sq.limit]
 	}
-	// Drop trailing sort-only aggregate columns now that the sort
-	// has consumed them. No-op when the query had no ORDER BY
-	// references to hidden aggregates.
+	// Drop trailing non-visible aggregate columns now that the sort
+	// has consumed them. No-op when the query had no ORDER BY /
+	// HAVING references to non-SELECT-list aggregates.
 	if len(sq.aggCols) > 0 {
-		cols, data = stripAggregateSortOnly(sq, cols, data)
+		cols, data = stripAggregateNonVisible(sq, cols, data)
 	}
 
 	return &staticRows{cols: cols, colTypes: colTypes, rows: data}, nil

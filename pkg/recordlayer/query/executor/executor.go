@@ -29,6 +29,27 @@ import (
 
 type innerPlanAccessor interface{ GetInner() plans.RecordQueryPlan }
 
+type RecursiveCTEDepthExceededError struct {
+	MaxDepth int
+}
+
+func (e *RecursiveCTEDepthExceededError) Error() string {
+	return fmt.Sprintf("recursive CTE exceeded maximum depth of %d", e.MaxDepth)
+}
+
+// AggregateTypeMismatchError is returned when MIN or MAX is applied to
+// a non-numeric column. Java's fdb-relational rejects this with
+// "VerifyException: unable to encapsulate aggregate operation due to
+// type mismatch(es)" — the function registry only installs numeric
+// MIN/MAX overloads.
+type AggregateTypeMismatchError struct {
+	Message string
+}
+
+func (e *AggregateTypeMismatchError) Error() string {
+	return e.Message
+}
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -440,10 +461,26 @@ func executeDistinct(
 }
 
 func distinctKey(qr QueryResult) string {
-	if m, ok := qr.Datum.(map[string]any); ok {
-		return fmt.Sprintf("%v", m)
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%v", qr.Datum)
 	}
-	return fmt.Sprintf("%v", qr.Datum)
+	// Sort keys for deterministic output — map iteration order is random.
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		sb.WriteString(k)
+		sb.WriteByte('=')
+		sb.WriteString(fmt.Sprintf("%v", m[k]))
+	}
+	return sb.String()
 }
 
 func executeProjection(
@@ -587,6 +624,11 @@ func executeUnion(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
+	var md *recordlayer.RecordMetaData
+	if store != nil {
+		md = store.GetRecordMetaData()
+	}
+
 	var all []QueryResult
 	var firstBranchKeys []string
 	for branchIdx, inner := range inners {
@@ -599,7 +641,7 @@ func executeUnion(
 			return nil, err
 		}
 		if branchIdx == 0 {
-			firstBranchKeys = planColumnNames(inner)
+			firstBranchKeys = planColumnNamesWithMD(inner, md)
 			if firstBranchKeys == nil && len(items) > 0 {
 				if m, ok := items[0].Datum.(map[string]any); ok {
 					firstBranchKeys = mapKeysOrdered(m)
@@ -607,7 +649,7 @@ func executeUnion(
 			}
 		}
 		if branchIdx > 0 && len(firstBranchKeys) > 0 {
-			srcKeys := planColumnNames(inner)
+			srcKeys := planColumnNamesWithMD(inner, md)
 			if srcKeys == nil && len(items) > 0 {
 				if m, ok := items[0].Datum.(map[string]any); ok {
 					srcKeys = mapKeysOrdered(m)
@@ -634,6 +676,10 @@ func mapKeysOrdered(m map[string]any) []string {
 }
 
 func planColumnNames(p plans.RecordQueryPlan) []string {
+	return planColumnNamesWithMD(p, nil)
+}
+
+func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
 	for {
 		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
 			projs := proj.GetProjections()
@@ -651,9 +697,30 @@ func planColumnNames(p plans.RecordQueryPlan) []string {
 		if ip, ok := p.(innerPlanAccessor); ok {
 			p = ip.GetInner()
 		} else {
-			return nil
+			break
 		}
 	}
+	if rt, ok := p.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
+		names := make([]string, len(rt.Fields))
+		for i, f := range rt.Fields {
+			names[i] = strings.ToUpper(f.Name)
+		}
+		return names
+	}
+	if md != nil {
+		if scan, ok := p.(*plans.RecordQueryScanPlan); ok && len(scan.GetRecordTypes()) == 1 {
+			rt := md.GetRecordType(scan.GetRecordTypes()[0])
+			if rt != nil && rt.Descriptor != nil {
+				fields := rt.Descriptor.Fields()
+				names := make([]string, fields.Len())
+				for i := 0; i < fields.Len(); i++ {
+					names[i] = strings.ToUpper(string(fields.Get(i).Name()))
+				}
+				return names
+			}
+		}
+	}
+	return nil
 }
 
 func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
@@ -803,6 +870,7 @@ func executeNestedLoopJoin(
 	var results []QueryResult
 
 	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
+		outerAlias := p.GetOuterAlias()
 		if len(preds) == 0 {
 			for _, outerRow := range outerRows {
 				innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
@@ -816,6 +884,9 @@ func executeNestedLoopJoin(
 				}
 				hasRow := innerResult.HasNext() && innerResult.GetValue().Datum != nil
 				if (joinType == plans.JoinExists && hasRow) || (joinType == plans.JoinNotExists && !hasRow) {
+					if outerAlias != "" {
+						outerRow = qualifyOuterRow(outerRow, outerAlias)
+					}
 					results = append(results, outerRow)
 				}
 			}
@@ -831,13 +902,16 @@ func executeNestedLoopJoin(
 			for _, outerRow := range outerRows {
 				matched := false
 				for _, innerRow := range innerRows {
-					combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
+					combined := mergeRows(outerRow, innerRow, outerAlias, p.GetInnerAlias())
 					if passesJoinPredicates(combined, preds, evalCtx) {
 						matched = true
 						break
 					}
 				}
 				if (joinType == plans.JoinExists && matched) || (joinType == plans.JoinNotExists && !matched) {
+					if outerAlias != "" {
+						outerRow = qualifyOuterRow(outerRow, outerAlias)
+					}
 					results = append(results, outerRow)
 				}
 			}
@@ -905,11 +979,25 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 		if strings.Contains(k, ".") {
 			continue
 		}
+		// When the outer row is already a merged NLJ result, it may
+		// contain both bare keys (e.g. "NAME") and qualified keys
+		// (e.g. "EMP.NAME", "DEPT.NAME") from a previous join level.
+		// The bare key holds the value from whichever side wrote last
+		// (non-deterministic between outer/inner of the prior NLJ).
+		// Re-qualifying this bare key under outerQual/outerType would
+		// overwrite the correctly-qualified key that already exists.
+		// Only set the qualified form when it isn't already present.
 		if outerQual != "" {
-			merged[outerQual+"."+strings.ToUpper(k)] = v
+			qualKey := outerQual + "." + strings.ToUpper(k)
+			if _, exists := outerMap[qualKey]; !exists {
+				merged[qualKey] = v
+			}
 		}
 		if outerAlias != "" && outerType != "" && outerAlias != outerType {
-			merged[outerType+"."+strings.ToUpper(k)] = v
+			qualKey := outerType + "." + strings.ToUpper(k)
+			if _, exists := outerMap[qualKey]; !exists {
+				merged[qualKey] = v
+			}
 		}
 	}
 	for k, v := range innerMap {
@@ -923,7 +1011,10 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 			merged[innerQual+"."+strings.ToUpper(k)] = v
 		}
 		if innerAlias != "" && innerType != "" && innerAlias != innerType {
-			merged[innerType+"."+strings.ToUpper(k)] = v
+			qualKey := innerType + "." + strings.ToUpper(k)
+			if _, exists := merged[qualKey]; !exists {
+				merged[qualKey] = v
+			}
 		}
 	}
 	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
@@ -1071,6 +1162,11 @@ func executeAggregation(
 				gs.allInt[i] = false
 			}
 
+			if !isNumeric(val) {
+				return nil, &AggregateTypeMismatchError{
+					Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
+				}
+			}
 			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
 				gs.mins[i] = val
 			}
@@ -1104,7 +1200,19 @@ func executeAggregation(
 		gs := groups[gk]
 		result := make(map[string]any)
 		for i, k := range groupingKeys {
-			result[aggKeyName(k)] = gs.keyVals[i]
+			name := aggKeyName(k)
+			result[name] = gs.keyVals[i]
+			// Expression group keys (e.g. ArithmeticValue for `amt / 100`)
+			// produce an ExplainValue with outer parentheses: "(AMT / 100)".
+			// Projections above the aggregate reference the key by the raw
+			// SQL text (no outer parens): "AMT / 100". Store under both
+			// forms so lookups from either naming convention succeed.
+			if len(name) >= 2 && name[0] == '(' && name[len(name)-1] == ')' {
+				stripped := name[1 : len(name)-1]
+				if _, exists := result[stripped]; !exists {
+					result[stripped] = gs.keyVals[i]
+				}
+			}
 		}
 		for i, agg := range aggregates {
 			name := aggResultName(agg)
@@ -1554,6 +1662,37 @@ func executeRecursiveLevelUnion(
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive level union initial collect: %w", err)
 	}
+
+	// UNION DISTINCT: track seen rows via a string key to detect
+	// and filter duplicates (cycle detection on cyclic graphs).
+	// Extract canonical column names from the seed datum so the dedup
+	// key only considers CTE-relevant columns (ignoring extra join
+	// columns the recursive branch may carry in its datum).
+	distinct := p.IsDistinct()
+	var seen map[string]struct{}
+	var canonicalCols []string
+	if distinct {
+		seen = make(map[string]struct{}, len(items))
+		if len(items) > 0 {
+			if m, ok := items[0].Datum.(map[string]any); ok {
+				canonicalCols = make([]string, 0, len(m))
+				for k := range m {
+					canonicalCols = append(canonicalCols, k)
+				}
+				sort.Strings(canonicalCols)
+			}
+		}
+		var deduped []QueryResult
+		for _, it := range items {
+			k := queryResultKeyForCols(it, canonicalCols)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			deduped = append(deduped, it)
+		}
+		items = deduped
+	}
 	allResults = append(allResults, items...)
 
 	const maxRecursionDepth = 1000
@@ -1562,7 +1701,7 @@ func executeRecursiveLevelUnion(
 			break
 		}
 		if level >= maxRecursionDepth {
-			return nil, fmt.Errorf("recursive CTE exceeded maximum recursion depth of %d", maxRecursionDepth)
+			return nil, &RecursiveCTEDepthExceededError{MaxDepth: maxRecursionDepth}
 		}
 
 		scanTable, insertTable = insertTable, scanTable
@@ -1578,6 +1717,25 @@ func executeRecursiveLevelUnion(
 		items, err := CollectAll(ctx, recursiveCursor)
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive collect: %w", err)
+		}
+		if distinct {
+			var newItems []QueryResult
+			for _, it := range items {
+				k := queryResultKeyForCols(it, canonicalCols)
+				if _, dup := seen[k]; dup {
+					continue
+				}
+				seen[k] = struct{}{}
+				newItems = append(newItems, it)
+			}
+			items = newItems
+			// Also replace insertTable contents with only the new
+			// (non-duplicate) rows so the next level's scan sees only
+			// genuinely new rows.
+			insertTable.Clear()
+			for _, it := range items {
+				insertTable.Add(it)
+			}
 		}
 		allResults = append(allResults, items...)
 	}
@@ -1611,11 +1769,36 @@ func executeRecursiveDfsJoin(
 
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
+	var seen map[string]struct{}
+	// For UNION DISTINCT, extract the canonical column names from the
+	// root datum. The dedup key must use only these columns so that
+	// root rows (with 1 column) and recursive rows (which may carry
+	// extra join columns in the datum) produce matching keys.
+	var canonicalCols []string
+	if p.IsDistinct() {
+		seen = make(map[string]struct{}, len(rootRows))
+		if len(rootRows) > 0 {
+			if m, ok := rootRows[0].Datum.(map[string]any); ok {
+				canonicalCols = make([]string, 0, len(m))
+				for k := range m {
+					canonicalCols = append(canonicalCols, k)
+				}
+				sort.Strings(canonicalCols)
+			}
+		}
+	}
 
 	const maxRecursionDepth = 256
 
 	for _, root := range rootRows {
-		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth); err != nil {
+		if seen != nil {
+			k := queryResultKeyForCols(root, canonicalCols)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+		}
+		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth, seen, canonicalCols); err != nil {
 			return nil, err
 		}
 	}
@@ -1633,9 +1816,11 @@ func dfsVisit(
 	props recordlayer.ExecuteProperties,
 	results *[]QueryResult,
 	depth, maxDepth int,
+	seen map[string]struct{},
+	canonicalCols []string,
 ) error {
 	if depth >= maxDepth {
-		return fmt.Errorf("recursive CTE exceeded maximum depth of %d", maxDepth)
+		return &RecursiveCTEDepthExceededError{MaxDepth: maxDepth}
 	}
 
 	if preorder {
@@ -1656,7 +1841,14 @@ func dfsVisit(
 	}
 
 	for _, child := range children {
-		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth); err != nil {
+		if seen != nil {
+			k := queryResultKeyForCols(child, canonicalCols)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+		}
+		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth, seen, canonicalCols); err != nil {
 			return err
 		}
 	}
@@ -1770,6 +1962,11 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 // Each key references a field in the datum map; direction is
 // ascending by default.
 func sortByKeys(items []QueryResult, keys []string, directions []bool) {
+	// PK tiebreaker direction matches the last explicit sort key.
+	pkDesc := false
+	if len(directions) > 0 {
+		pkDesc = directions[len(directions)-1]
+	}
 	sort.SliceStable(items, func(i, j int) bool {
 		for k, key := range keys {
 			vi := fieldFromDatum(items[i].Datum, key)
@@ -1784,8 +1981,41 @@ func sortByKeys(items []QueryResult, keys []string, directions []bool) {
 			}
 			return cmp < 0
 		}
+		// All explicit sort keys equal — break ties by PK.
+		if items[i].PrimaryKey != nil && items[j].PrimaryKey != nil {
+			cmp := comparePKTuples(items[i].PrimaryKey, items[j].PrimaryKey)
+			if cmp != 0 {
+				if pkDesc {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
 		return false
 	})
+}
+
+// comparePKTuples compares two primary key tuples using their packed
+// byte representation, which preserves FDB tuple ordering. Returns
+// -1, 0, or 1.
+func comparePKTuples(a, b tuple.Tuple) int {
+	ap := a.Pack()
+	bp := b.Pack()
+	for i := 0; i < len(ap) && i < len(bp); i++ {
+		if ap[i] < bp[i] {
+			return -1
+		}
+		if ap[i] > bp[i] {
+			return 1
+		}
+	}
+	if len(ap) < len(bp) {
+		return -1
+	}
+	if len(ap) > len(bp) {
+		return 1
+	}
+	return 0
 }
 
 func projectionColumnName(v values.Value) string {
@@ -1908,6 +2138,15 @@ func executeInMemorySort(
 	}
 
 	keys := p.GetSortKeys()
+	// Determine the PK tiebreaker direction: match the last explicit
+	// sort key's direction. When all explicit sort keys compare equal,
+	// Java orders by PK in the same direction as the outermost sort
+	// column (reverse scan on a composite index emits PKs in
+	// descending order within each tied group).
+	pkDesc := false
+	if len(keys) > 0 {
+		pkDesc = keys[len(keys)-1].Desc
+	}
 	sort.SliceStable(results, func(i, j int) bool {
 		for _, k := range keys {
 			var ci, cj any
@@ -1938,6 +2177,17 @@ func executeInMemorySort(
 			}
 			return cmp < 0
 		}
+		// All explicit sort keys are equal — break ties by primary
+		// key so the output matches Java's index-scan ordering.
+		if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
+			cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
+			if cmp != 0 {
+				if pkDesc {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
 		return false
 	})
 
@@ -1961,4 +2211,51 @@ func compareByField(qr QueryResult, field string) any {
 		}
 	}
 	return nil
+}
+
+// queryResultKeyForCols produces a dedup key using only the specified
+// canonical columns. This ensures root rows (which have only seed
+// columns) and recursive rows (which may carry extra join columns)
+// produce matching keys when their CTE-relevant values are equal.
+func queryResultKeyForCols(qr QueryResult, cols []string) string {
+	if len(cols) == 0 {
+		return queryResultKey(qr)
+	}
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%v", qr.Datum)
+	}
+	var sb strings.Builder
+	for i, col := range cols {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		sb.WriteString(fmt.Sprintf("%v", m[col]))
+	}
+	return sb.String()
+}
+
+// queryResultKey produces a stable string key from a QueryResult's datum
+// for UNION DISTINCT deduplication in recursive CTEs. The key is built
+// from VALUES ONLY (sorted by column name for determinism) so rows with
+// different column names but identical values (e.g. seed {SRC:1} and
+// recursive {DST:1}) are correctly identified as duplicates.
+func queryResultKey(qr QueryResult) string {
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("%v", qr.Datum)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		sb.WriteString(fmt.Sprintf("%v", m[k]))
+	}
+	return sb.String()
 }

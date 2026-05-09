@@ -1,0 +1,31 @@
+# correlated_exists_advanced.yaml
+#
+# Advanced correlated EXISTS edge cases — regression guards for the fix
+# that wired correlated EXISTS through cross-join and nested contexts.
+# The basic correlated_subquery_probes file covers single-source EXISTS
+# and NOT EXISTS; this file targets the cross-join + EXISTS and nested
+# NOT EXISTS patterns that were broken before the fix.
+name: correlated_exists_advanced
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept BIGINT, PRIMARY KEY (id))
+  CREATE TABLE task (tid BIGINT NOT NULL, emp_id BIGINT, prio BIGINT, PRIMARY KEY (tid))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 1), (2, 'Bob', 2), (3, 'Charlie', 1)
+  - INSERT INTO task VALUES (10, 1, 5), (20, 1, 3), (30, 2, 8)
+tests:
+  # Cross-join + EXISTS
+  - query: |-
+      SELECT DISTINCT e.name FROM emp AS e, task AS t
+      WHERE e.id = t.emp_id
+        AND EXISTS (SELECT 1 FROM task WHERE emp_id = e.id AND prio > 4)
+      ORDER BY e.name
+    rows:
+      - ['Alice']
+      - ['Bob']
+  # NOT EXISTS
+  - query: |-
+      SELECT name FROM emp
+      WHERE NOT EXISTS (SELECT 1 FROM task WHERE emp_id = emp.id)
+      ORDER BY name
+    rows:
+      - ['Charlie']

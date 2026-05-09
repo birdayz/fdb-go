@@ -68,10 +68,18 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// populated.
 	priorCorrelation := recUnion.GetTempTableScanAlias()
 
-	plan := plans.NewRecordQueryRecursiveDfsJoinPlan(
-		initialPlan, recursivePlan,
-		priorCorrelation, strategy,
-	)
+	var plan *plans.RecordQueryRecursiveDfsJoinPlan
+	if recUnion.IsDistinct() {
+		plan = plans.NewRecordQueryRecursiveDfsJoinPlanDistinct(
+			initialPlan, recursivePlan,
+			priorCorrelation, strategy,
+		)
+	} else {
+		plan = plans.NewRecordQueryRecursiveDfsJoinPlan(
+			initialPlan, recursivePlan,
+			priorCorrelation, strategy,
+		)
+	}
 
 	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialExpr))
 	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveExpr))

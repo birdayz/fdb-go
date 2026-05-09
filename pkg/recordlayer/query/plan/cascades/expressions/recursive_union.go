@@ -40,6 +40,7 @@ type RecursiveUnionExpression struct {
 	tempTableScanAlias   values.CorrelationIdentifier
 	tempTableInsertAlias values.CorrelationIdentifier
 	traversalStrategy    TraversalStrategy
+	distinct             bool // UNION DISTINCT (bare UNION) for cycle detection
 }
 
 func NewRecursiveUnionExpression(
@@ -55,6 +56,25 @@ func NewRecursiveUnionExpression(
 		traversalStrategy:    strategy,
 	}
 }
+
+// NewRecursiveUnionExpressionDistinct creates a RecursiveUnionExpression
+// with UNION DISTINCT semantics (deduplication for cycle detection).
+func NewRecursiveUnionExpressionDistinct(
+	initialState, recursiveState Quantifier,
+	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
+	strategy TraversalStrategy,
+) *RecursiveUnionExpression {
+	return &RecursiveUnionExpression{
+		initialState:         initialState,
+		recursiveState:       recursiveState,
+		tempTableScanAlias:   tempTableScanAlias,
+		tempTableInsertAlias: tempTableInsertAlias,
+		traversalStrategy:    strategy,
+		distinct:             true,
+	}
+}
+
+func (e *RecursiveUnionExpression) IsDistinct() bool { return e.distinct }
 
 func (e *RecursiveUnionExpression) GetInitialState() Quantifier {
 	return e.initialState
@@ -113,7 +133,7 @@ func (e *RecursiveUnionExpression) EqualsWithoutChildren(other RelationalExpress
 	if !ok {
 		return false
 	}
-	if e.traversalStrategy != o.traversalStrategy {
+	if e.traversalStrategy != o.traversalStrategy || e.distinct != o.distinct {
 		return false
 	}
 	scanMatch := e.tempTableScanAlias == o.tempTableScanAlias
@@ -139,6 +159,11 @@ func (e *RecursiveUnionExpression) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte(e.tempTableInsertAlias.Name()))
 	h.Write([]byte{0})
 	h.Write([]byte{byte(e.traversalStrategy)})
+	if e.distinct {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
 	return h.Sum64()
 }
 
@@ -149,6 +174,7 @@ func (e *RecursiveUnionExpression) WithQuantifiers(quantifiers []Quantifier) Rel
 		tempTableScanAlias:   e.tempTableScanAlias,
 		tempTableInsertAlias: e.tempTableInsertAlias,
 		traversalStrategy:    e.traversalStrategy,
+		distinct:             e.distinct,
 	}
 }
 

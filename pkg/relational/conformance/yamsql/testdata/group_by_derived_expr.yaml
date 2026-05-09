@@ -1,0 +1,40 @@
+# group_by_derived_expr.yaml
+#
+# GROUP BY expressions through derived tables — regression guards for
+# the scope-walker fix that resolves computed projection expressions
+# through derived-table boundaries. Before the fix, expressions like
+# `x.a + 5` on a group-by column from a derived table failed to resolve
+# through the scope chain, producing 42703 or incorrect NULL results.
+name: group_by_derived_expr
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 1), (2, 10, 2), (3, 20, 3), (4, 20, 4), (5, 30, 5)
+tests:
+  # Expression on group-by column through derived table
+  - query: SELECT x.a + 5 FROM (SELECT a FROM t) AS x GROUP BY x.a ORDER BY 1
+    rows:
+      - [15]
+      - [25]
+      - [35]
+  # Multiple expressions on group-by columns
+  - query: SELECT x.a * x.a FROM (SELECT a, b FROM t) AS x GROUP BY x.a ORDER BY 1
+    rows:
+      - [100]
+      - [400]
+      - [900]
+  # Group by expression value (not column) from derived table
+  - query: SELECT COUNT(*) FROM (SELECT a FROM t) AS x GROUP BY x.a
+    unordered: true
+    rows:
+      - [2]
+      - [2]
+      - [1]
+  # Mixed aggregate + expression on group column
+  - query: |-
+      SELECT x.a + 1, SUM(x.b) FROM (SELECT a, b FROM t) AS x
+      GROUP BY x.a ORDER BY 1
+    rows:
+      - [11, 3]
+      - [21, 7]
+      - [31, 5]

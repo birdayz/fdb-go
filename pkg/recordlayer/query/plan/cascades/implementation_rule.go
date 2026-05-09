@@ -104,20 +104,54 @@ func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference,
 	}
 	var allYielded []expressions.RelationalExpression
 	for _, member := range ref.AllMembers() {
-		bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
-		for _, b := range bindings {
-			call := &ImplementationRuleCall{
-				Bindings:    b,
-				Reference:   ref,
-				Context:     EmptyPlanContext(),
-				Constraints: cm,
+		allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, member, cm)...)
+
+		// ChildrenAsSet permutation: for expressions whose children are
+		// order-independent (SelectExpression with INNER or CROSS joins),
+		// also fire the rule with quantifiers swapped so implementation
+		// rules explore both outer/inner assignments. The swapped
+		// expression is ephemeral — it is NOT inserted into the memo.
+		//
+		// Only swap when the first two quantifiers are both ForEach
+		// (a real join). Existential quantifiers indicate semi-joins
+		// (EXISTS subqueries) where quantifier ordering is semantic.
+		if sel, ok := member.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
+			qs := sel.GetQuantifiers()
+			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
+				qs[0].Kind() == expressions.QuantifierForEach &&
+				qs[1].Kind() == expressions.QuantifierForEach {
+				swapped := sel.WithSwappedQuantifiers()
+				allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, swapped, cm)...)
 			}
-			rule.OnMatch(call)
-			for _, y := range call.yielded {
-				ref.InsertFinal(y)
-			}
-			allYielded = append(allYielded, call.yielded...)
 		}
 	}
 	return allYielded
+}
+
+// fireImplRuleOnMember runs a single implementation rule against a single
+// member, inserting yielded expressions into ref.FinalMembers and returning
+// them. Extracted to avoid duplication between normal and
+// ChildrenAsSet-permuted firing.
+func fireImplRuleOnMember(
+	rule ImplementationRule,
+	ref *expressions.Reference,
+	member expressions.RelationalExpression,
+	cm *ConstraintMap,
+) []expressions.RelationalExpression {
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
+	var yielded []expressions.RelationalExpression
+	for _, b := range bindings {
+		call := &ImplementationRuleCall{
+			Bindings:    b,
+			Reference:   ref,
+			Context:     EmptyPlanContext(),
+			Constraints: cm,
+		}
+		rule.OnMatch(call)
+		for _, y := range call.yielded {
+			ref.InsertFinal(y)
+		}
+		yielded = append(yielded, call.yielded...)
+	}
+	return yielded
 }

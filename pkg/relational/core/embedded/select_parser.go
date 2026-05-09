@@ -2,7 +2,6 @@ package embedded
 
 import (
 	"database/sql/driver"
-	"fmt"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -49,16 +48,23 @@ func countStarOutName(sq *selectQuery) string {
 
 // selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
-	tableName   string
-	tableAlias  string   // alias or tableName if no alias given
-	projCols    []string // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
-	projAliases []string // parallel to projCols; empty string = no alias (use column name)
-	// projExprs holds computed projection expressions parallel to projCols.
-	// Non-nil entry overrides the plain column lookup for that position.
-	projExprs []antlrgen.IExpressionContext
-	// postAggExprs holds ANTLR expressions for post-aggregation projections
-	// (outExpr entries like SUM(qty)/COUNT(*)). Used by upgradeProjectionValues.
-	postAggExprs []antlrgen.IExpressionContext
+	// selectClassification holds all SELECT-list, GROUP BY, HAVING,
+	// ORDER BY, and aggregate classification fields. Embedded so that
+	// sq.projCols, sq.aggCols, etc. continue to work as before.
+	selectClassification
+
+	tableName  string
+	tableAlias string // alias or tableName if no alias given
+	whereExpr  antlrgen.IWhereExprContext
+	// limit < 0 means no limit.
+	limit int64
+	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
+	offset int64
+	// joins describes JOIN clauses (nil = no joins).
+	joins []joinClause
+	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
+	// When set, tableName holds the alias; the query is materialized at execution time.
+	derivedQuery antlrgen.IQueryContext
 	// projConstFolded is parallel to projExprs (populated lazily by
 	// foldConstantProjections from execSelectQuery). A slot with
 	// present=true means the expression was determined to be row-
@@ -68,57 +74,6 @@ type selectQuery struct {
 	// FieldValue, declined the walker, or weren't constant after
 	// SimplifyValue. Empty slice = pass not run yet.
 	projConstFolded []projectionFold
-	// projQualifier is set when SELECT list is exactly `<qualifier>.*`.
-	// Projection restricts to columns from the source whose alias (or
-	// table name when no alias) equals projQualifier. Empty = SELECT *
-	// (all sources) or explicit column list.
-	projQualifier string
-	// projStarQualifiers is parallel to projCols. When
-	// projStarQualifiers[i] != "" that slot is a `<qualifier>.*` to be
-	// expanded at execution time (e.g. `SELECT a.*, b.label FROM a, b`).
-	// When empty, the slot is a regular named column / expression. Always
-	// empty when projCols == nil (SELECT * or pure qualifier-star use the
-	// legacy projQualifier / nil-projCols paths).
-	projStarQualifiers []string
-	countStar          bool // true when SELECT list is exactly COUNT(*)
-	// countStarAlias holds the optional `AS alias` on a bare COUNT(*)
-	// SELECT. Emitted as the output column name so the derived-table
-	// materializer / UNION arity / etc. see the aliased name instead of
-	// the canonical "COUNT(*)".
-	countStarAlias string
-	distinct       bool // true when SELECT DISTINCT
-	whereExpr      antlrgen.IWhereExprContext
-	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
-	orderBy []orderByClause
-	// limit < 0 means no limit.
-	limit int64
-	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
-	offset int64
-	// groupBy holds GROUP BY column names (nil = no GROUP BY). When an entry
-	// is an expression (e.g. `GROUP BY amt + 1`), groupBy[i] holds the raw
-	// expression text as a synthetic display key and groupByExprs[i] holds
-	// the IExpressionContext evaluated per row to derive the group key value.
-	groupBy []string
-	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
-	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
-	groupByExprs []antlrgen.IExpressionContext
-	// groupByAliases maps UPPERCASE `GROUP BY col AS alias` alias names to
-	// their index in groupBy. Used at parse time to resolve SELECT-list
-	// references to a GROUP BY alias (`SELECT x FROM t GROUP BY col1 AS x`)
-	// — the SELECT-list column gets rewritten to the underlying group-by
-	// name with the alias preserved as the output column name. Nil = no
-	// aliased GROUP BY entries.
-	groupByAliases map[string]int
-	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
-	// Non-nil only when groupBy is non-empty.
-	aggCols []aggSelectCol
-	// havingExpr is the HAVING clause expression (nil = no HAVING).
-	havingExpr antlrgen.IExpressionContext
-	// joins describes JOIN clauses (nil = no joins).
-	joins []joinClause
-	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
-	// When set, tableName holds the alias; the query is materialized at execution time.
-	derivedQuery antlrgen.IQueryContext
 }
 
 // joinClause describes a single JOIN part in a SELECT query.
@@ -195,8 +150,8 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
 type aggSelectCol struct {
 	outName string // output column name
-	// Exactly one of groupCol / aggFunc / outExpr is set (hidden entries
-	// always have aggFunc set).
+	// Exactly one of groupCol / aggFunc / outExpr is set (non-visible entries
+	// harvested from HAVING/ORDER BY always have aggFunc set).
 	groupCol string // plain group-by column reference
 	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
 	aggArg   string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
@@ -205,19 +160,11 @@ type aggSelectCol struct {
 	// nil for bare-column args and for COUNT(*).
 	aggExpr     antlrgen.IExpressionContext
 	aggDistinct bool // true when COUNT(DISTINCT col)
-	// hidden aggregates contribute to group accumulation and HAVING evaluation
-	// but are excluded from the projected output and the sort. Used for
-	// aggregates harvested from HAVING that aren't also in the SELECT list,
-	// so `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0` returns one column
-	// (grp) while still running the SUM.
-	hidden bool
-	// sortOnly aggregates are harvested from ORDER BY and appended to the
-	// emit data so the sort can find them via colIdx. They're stripped from
-	// the user-visible output after the sort runs. Combined with hidden:
-	//   visible row column = !hidden && !sortOnly.
-	//   sort-accessible column = !hidden.
-	//   accumulated column = always.
-	sortOnly bool
+	// visible is true when the aggregate appears in the user's SELECT list.
+	// Non-visible entries are harvested from HAVING or ORDER BY — they
+	// contribute to accumulation/evaluation but are excluded from (or
+	// stripped after) the projected output.
+	visible bool
 	// outExpr is a post-aggregation expression that references aggregate
 	// outputs and/or group-by columns. Evaluated at emit time against a
 	// rowMap that already contains all aggCols values. Used for SELECT-list
@@ -457,7 +404,86 @@ func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery,
 	return extractFromSimpleTable(simpleTable)
 }
 
-func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQuery, error) {
+// selectClassification holds the classified SELECT-list elements,
+// GROUP BY keys, HAVING expression, ORDER BY clauses, and all the
+// reclassification/harvest results. It contains everything
+// extractFromSimpleTable produces EXCEPT the FROM-derived fields
+// (tableName, tableAlias, joins, derivedQuery, whereExpr) and the
+// execution-only fields (projConstFolded, limit, offset).
+//
+// Embedded by selectQuery so the classification fields are promoted —
+// code that reads sq.projCols, sq.aggCols, etc. works unchanged.
+// PlanVisitor constructs a selectQuery directly from a
+// selectClassification + fromSource without any bridge method.
+type selectClassification struct {
+	projCols    []string // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
+	projAliases []string // parallel to projCols; empty string = no alias (use column name)
+	// projExprs holds computed projection expressions parallel to projCols.
+	// Non-nil entry overrides the plain column lookup for that position.
+	projExprs          []antlrgen.IExpressionContext
+	projStarQualifiers []string
+	// projQualifier is set when SELECT list is exactly `<qualifier>.*`.
+	// Projection restricts to columns from the source whose alias (or
+	// table name when no alias) equals projQualifier. Empty = SELECT *
+	// (all sources) or explicit column list.
+	projQualifier  string
+	countStar      bool // true when SELECT list is exactly COUNT(*)
+	countStarAlias string
+	aggCols        []aggSelectCol
+	distinct       bool // true when SELECT DISTINCT
+	orderBy        []orderByClause
+	// groupBy holds GROUP BY column names (nil = no GROUP BY). When an entry
+	// is an expression (e.g. `GROUP BY amt + 1`), groupBy[i] holds the raw
+	// expression text as a synthetic display key and groupByExprs[i] holds
+	// the IExpressionContext evaluated per row to derive the group key value.
+	groupBy []string
+	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
+	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
+	groupByExprs []antlrgen.IExpressionContext
+	// groupByAliases maps UPPERCASE `GROUP BY col AS alias` alias names to
+	// their index in groupBy. Used at parse time to resolve SELECT-list
+	// references to a GROUP BY alias (`SELECT x FROM t GROUP BY col1 AS x`)
+	// — the SELECT-list column gets rewritten to the underlying group-by
+	// name with the alias preserved as the output column name. Nil = no
+	// aliased GROUP BY entries.
+	groupByAliases map[string]int
+	// havingExpr is the HAVING clause expression (nil = no HAVING).
+	havingExpr antlrgen.IExpressionContext
+	// postAggExprs is populated by the visitor's visitSelectGroupBy when
+	// post-aggregation computed projections are emitted.
+	postAggExprs []antlrgen.IExpressionContext
+	// postSortStripProj / postSortStripAliases are populated by the
+	// visitor's visitSelectGroupBy when non-visible aggregate columns
+	// need stripping after the Sort operator.
+	postSortStripProj    []string
+	postSortStripAliases []string
+}
+
+// selectQueryFromClassification builds a selectQuery from the
+// classification and the FROM-derived fields. The classification is
+// embedded by value (slices share backing arrays).
+func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *selectQuery {
+	sq := &selectQuery{
+		selectClassification: *cls,
+		limit:                -1,
+	}
+	if fs != nil {
+		sq.tableName = fs.tableName
+		sq.tableAlias = fs.tableAlias
+		sq.joins = fs.joins
+		sq.derivedQuery = fs.derivedQuery
+		sq.whereExpr = fs.whereExpr
+	}
+	return sq
+}
+
+// classifySelectElements walks the SELECT, GROUP BY, HAVING, ORDER BY,
+// and LIMIT clauses of a SimpleTableContext and returns a
+// selectClassification. This is the pure parse-tree classification
+// logic extracted from extractFromSimpleTable — it does NOT parse the
+// FROM clause. Both extractFromSimpleTable (proto path) and
+// PlanVisitor.VisitSimpleTable (Cascades path) delegate here.
+func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectClassification, error) {
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
@@ -510,7 +536,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
 					}
 				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct})
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, visible: true})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -542,8 +568,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						// the trailing SELECT element based on what the
 						// expression references:
 						//   - wraps aggregates → harvest any novel inner
-						//     aggregates (add as hidden accumulators) and
-						//     route the expression itself to outExpr.
+						//     aggregates (add as non-visible accumulators)
+						//     and route the expression itself to outExpr.
 						//   - constant-only (no columns) → outExpr so it's
 						//     emitted once per group like SUM does.
 						//   - bare column or column-only expression →
@@ -559,9 +585,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 							// Harvest aggregates that aren't already
 							// accumulated. `SELECT SUM(a), SUM(b)+1`:
 							// SUM(a) is already in aggCols (bare), SUM(b)
-							// is novel — must be added as hidden so the
-							// rowMap at emit time has SUM(b) available for
-							// outExpr evaluation. Dedup by outName.
+							// is novel — must be added as non-visible so
+							// the rowMap at emit time has SUM(b) available
+							// for outExpr evaluation. Dedup by outName.
 							existingNames := make(map[string]struct{}, len(aggCols))
 							for _, ac := range aggCols {
 								existingNames[ac.outName] = struct{}{}
@@ -570,13 +596,13 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 								if _, seen := existingNames[h.outName]; seen {
 									continue
 								}
-								h.hidden = true
+								// h.visible stays false — inner aggregate not in user's SELECT list.
 								aggCols = append(aggCols, h)
 								existingNames[h.outName] = struct{}{}
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						case expr != nil && !exprReferencesColumn(expr):
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						case expr != nil:
 							// Expression references columns but contains no
 							// aggregates. Java permits this when the columns
@@ -589,9 +615,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 							// the rowMap lookup errors at emit time with
 							// "column not in row" — close to SQL standard's
 							// 42803 grouping_error.
-							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr, visible: true})
 						default:
-							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName, visible: true})
 						}
 					} else {
 						projCols = append(projCols, colName)
@@ -611,7 +637,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// top level, so they land in projExprs with projCols[i] holding
 		// the expression text. Promote each such slot to an aggSelectCol
 		// with an outExpr (evaluated post-aggregation against the rowMap),
-		// harvest the referenced aggregates as hidden accumulators, and
+		// harvest the referenced aggregates as non-visible accumulators, and
 		// drop the slot from projCols. Has to happen before the plain-col
 		// reclassification below so those slots aren't treated as
 		// group-by references.
@@ -654,14 +680,14 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						continue
 					}
 					existing[h.outName] = struct{}{}
-					h.hidden = true
+					// h.visible stays false — inner aggregate not in user's SELECT list.
 					promoted = append(promoted, h)
 				}
 				outName := projAliases[i]
 				if outName == "" {
 					outName = col
 				}
-				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i]})
+				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i], visible: true})
 			}
 			if len(promoted) > 0 {
 				projCols = newProjCols
@@ -704,7 +730,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				switch {
 				case slotExpr != nil && !exprReferencesColumn(slotExpr):
-					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 				case slotExpr != nil:
 					// Expression on group-by columns (no aggregates, no
 					// constants-only). Java permits this when all referenced
@@ -712,9 +738,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					// post-aggregation against the rowMap holding group-by
 					// values. Symmetric with the in-SELECT-loop case at the
 					// mixed-agg classification site above.
-					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, groupCol: c}
+					extra[i] = aggSelectCol{outName: out, groupCol: c, visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -725,213 +751,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
-	fromClause := simpleTable.FromClause()
-	if fromClause == nil {
-		// FROM-less SELECT: fdb-relational 4.11.1.0's QueryVisitor's
-		// visitSimpleTable asserts simpleTableContext.fromClause() is
-		// non-null with `Assert.notNullUnchecked(... ErrorCode.
-		// UNSUPPORTED_QUERY, "query is not supported")`. The check
-		// fires universally — including FROM-less SELECTs inside CTE
-		// base cases (every SimpleTable visit hits the gate, no CTE-
-		// context bypass). Match byte-equal. Standalone constant
-		// projection like `SELECT 1+1` and CTE bases like
-		// `WITH base AS (SELECT 1 AS n) ...` both reject.
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"query is not supported")
-	}
-
-	sources := fromClause.TableSources()
-	if sources == nil || len(sources.AllTableSource()) == 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"FROM clause missing table source")
-	}
-	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported table source %T", sources.AllTableSource()[0])
-	}
-	// Additional comma-separated sources become implicit cross joins; the
-	// WHERE clause supplies any join predicate.
-	var extraCrossJoins []joinClause
-	for _, extra := range sources.AllTableSource()[1:] {
-		eb, isBase := extra.(*antlrgen.TableSourceBaseContext)
-		if !isBase {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"unsupported extra table source %T", extra)
-		}
-		// Bare-source joins are not supported on extras (grammar quirk).
-		if len(eb.AllJoinPart()) > 0 {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-				"JOIN clauses on comma-separated FROM sources are not supported")
-		}
-		switch item := eb.TableSourceItem().(type) {
-		case *antlrgen.AtomTableItemContext:
-			uids := item.TableName().FullId().AllUid()
-			parts := make([]string, len(uids))
-			for i, u := range uids {
-				parts[i] = functions.StripIdentifierQuotes(u.GetText())
-			}
-			tblName := strings.Join(parts, ".")
-			alias := tblName
-			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
-			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
-			}
-			extraCrossJoins = append(extraCrossJoins, joinClause{
-				tableName: tblName,
-				joinType:  "INNER",
-				alias:     alias,
-				onExpr:    nil,
-			})
-		case *antlrgen.SubqueryTableItemContext:
-			alias := ""
-			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
-			}
-			if alias == "" {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					"derived table in FROM must have an alias")
-			}
-			extraCrossJoins = append(extraCrossJoins, joinClause{
-				tableName:    alias,
-				joinType:     "INNER",
-				alias:        alias,
-				onExpr:       nil,
-				derivedQuery: item.Query(),
-			})
-		default:
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"FROM: comma-separated sources must be plain table names, got %T",
-				eb.TableSourceItem())
-		}
-	}
-	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
-	// a plain atom table. Build a common `sq` in either case so the
-	// post-construction pipeline (ORDER BY / LIMIT / GROUP BY / HAVING /
-	// GR1 validation) applies uniformly — pre-swingshift-41 the derived
-	// branch returned early, dropping all of those.
-	var sq *selectQuery
-	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
-		alias := ""
-		if subItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
-		}
-		if alias == "" {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
-		}
-		// Derived-table-on-the-right + comma-joined remains a separate
-		// gap (the extra-source parser still rejects SubqueryTableItem at
-		// line ~3757; see derived_table_renamed.yaml's 0A000 pin). For the
-		// left-derived case, thread extraCrossJoins so `(sub) AS x, b, c`
-		// runs the comma-joined real tables on the right.
-		sq = &selectQuery{
-			tableName:          alias,
-			tableAlias:         alias,
-			joins:              extraCrossJoins,
-			projCols:           projCols,
-			projAliases:        projAliases,
-			projExprs:          projExprs,
-			projStarQualifiers: projStarQualifiers,
-			projQualifier:      projQualifier,
-			countStar:          countStar,
-			countStarAlias:     countStarAlias,
-			aggCols:            aggCols,
-			distinct:           simpleTable.DISTINCT() != nil,
-			whereExpr:          fromClause.WhereExpr(),
-			limit:              -1,
-			derivedQuery:       subItem.Query(),
-		}
-	} else {
-		atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"unsupported table source item %T; only plain table names are supported",
-				srcBase.TableSourceItem())
-		}
-		// Build table name from uid segments, stripping identifier quotes.
-		// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
-		uids := atomItem.TableName().FullId().AllUid()
-		parts := make([]string, len(uids))
-		for i, u := range uids {
-			parts[i] = functions.StripIdentifierQuotes(u.GetText())
-		}
-		// Only use Uid() as alias when AS is explicit. Without AS, the parser may
-		// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
-		// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
-		// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
-		// InnerJoinContext to a LEFT/RIGHT join.
-		leftAlias := ""
-		promotedJoinType := ""
-		// Grammar is `tableName (AS? alias=uid)?` — AS optional.
-		// Pick up implicit aliases via GetAlias() (was previously
-		// gated on AS being present, which lost `FROM Order o` etc).
-		// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
-		// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
-		// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
-		// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
-		// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
-		// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
-		// literal alias.
-		if atomItem.GetAlias() != nil {
-			aliasRaw := atomItem.GetAlias().GetText()
-			aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
-			// Structural quote-detection: post-case-fold,
-			// `aliasRaw != aliasTxt` is also true whenever the
-			// raw alias has any lowercase character (the helper
-			// upper-cases unquoted text). Use a structural check
-			// so a lowercased alias `from a hello` doesn't get
-			// classified as quoted.
-			isQuoted := len(aliasRaw) >= 2 &&
-				((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
-					(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
-			if atomItem.AS() == nil && !isQuoted {
-				up := strings.ToUpper(aliasTxt)
-				if up == "LEFT" || up == "RIGHT" {
-					promotedJoinType = up
-				} else {
-					leftAlias = aliasTxt
-				}
-			} else {
-				leftAlias = aliasTxt
-			}
-		}
-		if leftAlias == "" {
-			leftAlias = strings.Join(parts, ".")
-		}
-
-		// Parse JOIN clauses.
-		var joins []joinClause
-		for _, jp := range srcBase.AllJoinPart() {
-			jc, jErr := extractJoinClause(jp)
-			if jErr != nil {
-				return nil, jErr
-			}
-			joins = append(joins, jc)
-		}
-		// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-		if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
-			joins[0].joinType = promotedJoinType
-		}
-		// Implicit cross joins from comma-separated FROM sources run last; the
-		// WHERE predicate decides which combinations survive.
-		joins = append(joins, extraCrossJoins...)
-
-		sq = &selectQuery{
-			tableName:          strings.Join(parts, "."),
-			tableAlias:         leftAlias,
-			joins:              joins,
-			projCols:           projCols,
-			projAliases:        projAliases,
-			projExprs:          projExprs,
-			projStarQualifiers: projStarQualifiers,
-			projQualifier:      projQualifier,
-			countStar:          countStar,
-			countStarAlias:     countStarAlias,
-			aggCols:            aggCols,
-			distinct:           simpleTable.DISTINCT() != nil,
-			whereExpr:          fromClause.WhereExpr(),
-			limit:              -1,
-		}
+	cls := &selectClassification{
+		projCols:           projCols,
+		projAliases:        projAliases,
+		projExprs:          projExprs,
+		projStarQualifiers: projStarQualifiers,
+		projQualifier:      projQualifier,
+		countStar:          countStar,
+		countStarAlias:     countStarAlias,
+		aggCols:            aggCols,
+		distinct:           simpleTable.DISTINCT() != nil,
 	}
 
 	// Parse ORDER BY clause.
@@ -976,7 +805,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						"duplicate column %q in ORDER BY", posName)
 				}
 				seenOrderCols[key] = true
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,
@@ -996,9 +825,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						"duplicate column %q in ORDER BY", colName)
 				}
 				seenOrderCols[key] = true
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
+				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 			} else {
-				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
+				cls.orderBy = append(cls.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}
 		}
 	}
@@ -1065,18 +894,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				seenAliases[aliasKey] = true
 			}
-			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
+			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, cls.aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
 			if isPos {
-				sq.groupBy = append(sq.groupBy, posName)
-				sq.groupByExprs = append(sq.groupByExprs, nil)
+				cls.groupBy = append(cls.groupBy, posName)
+				cls.groupByExprs = append(cls.groupByExprs, nil)
 				if aliasName != "" {
-					if sq.groupByAliases == nil {
-						sq.groupByAliases = make(map[string]int)
+					if cls.groupByAliases == nil {
+						cls.groupByAliases = make(map[string]int)
 					}
-					sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+					cls.groupByAliases[strings.ToUpper(aliasName)] = len(cls.groupBy) - 1
 				}
 				continue
 			}
@@ -1098,26 +927,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					if i >= len(selectExprsSnapshot) || selectExprsSnapshot[i] == nil {
 						break
 					}
-					sq.groupBy = append(sq.groupBy, canonicalTextOf(selectExprsSnapshot[i]))
-					sq.groupByExprs = append(sq.groupByExprs, selectExprsSnapshot[i])
+					cls.groupBy = append(cls.groupBy, canonicalTextOf(selectExprsSnapshot[i]))
+					cls.groupByExprs = append(cls.groupByExprs, selectExprsSnapshot[i])
 					redirected = true
 					break
 				}
 				if !redirected {
-					sq.groupBy = append(sq.groupBy, colName)
-					sq.groupByExprs = append(sq.groupByExprs, nil)
+					cls.groupBy = append(cls.groupBy, colName)
+					cls.groupByExprs = append(cls.groupByExprs, nil)
 				}
 			} else {
 				// Synthesize a display name from the expression text; the
 				// value used for grouping comes from evaluating the expr.
-				sq.groupBy = append(sq.groupBy, canonicalTextOf(item.Expression()))
-				sq.groupByExprs = append(sq.groupByExprs, item.Expression())
+				cls.groupBy = append(cls.groupBy, canonicalTextOf(item.Expression()))
+				cls.groupByExprs = append(cls.groupByExprs, item.Expression())
 			}
 			if aliasName != "" {
-				if sq.groupByAliases == nil {
-					sq.groupByAliases = make(map[string]int)
+				if cls.groupByAliases == nil {
+					cls.groupByAliases = make(map[string]int)
 				}
-				sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+				cls.groupByAliases[strings.ToUpper(aliasName)] = len(cls.groupBy) - 1
 			}
 		}
 
@@ -1129,20 +958,20 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// group-by items (groupByExprs[i] == nil) are handled;
 		// expression group keys keep their synthetic display name.
 		aliasResolves := func(name string) (underlying string, outName string, ok bool) {
-			idx, aliased := sq.groupByAliases[strings.ToUpper(name)]
+			idx, aliased := cls.groupByAliases[strings.ToUpper(name)]
 			if !aliased {
 				return "", "", false
 			}
-			if idx < len(sq.groupByExprs) && sq.groupByExprs[idx] != nil {
+			if idx < len(cls.groupByExprs) && cls.groupByExprs[idx] != nil {
 				return "", "", false
 			}
-			return sq.groupBy[idx], name, true
+			return cls.groupBy[idx], name, true
 		}
-		for i := range sq.projCols {
-			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+		for i := range cls.projCols {
+			if i < len(cls.projExprs) && cls.projExprs[i] != nil {
 				continue
 			}
-			col := sq.projCols[i]
+			col := cls.projCols[i]
 			if col == "" {
 				continue
 			}
@@ -1150,15 +979,15 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if !ok {
 				continue
 			}
-			if i >= len(sq.projAliases) {
+			if i >= len(cls.projAliases) {
 				padded := make([]string, i+1)
-				copy(padded, sq.projAliases)
-				sq.projAliases = padded
+				copy(padded, cls.projAliases)
+				cls.projAliases = padded
 			}
-			if sq.projAliases[i] == "" {
-				sq.projAliases[i] = outName
+			if cls.projAliases[i] == "" {
+				cls.projAliases[i] = outName
 			}
-			sq.projCols[i] = underlying
+			cls.projCols[i] = underlying
 		}
 		// Also rewrite aggCols entries: when the SELECT list mixes
 		// plain-col refs with aggregates, bare columns are classified
@@ -1166,8 +995,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// Also rewrite aggregate arguments — `MAX(z)` where z is a
 		// GROUP BY alias needs the arg resolved to the underlying col
 		// before per-row evaluation.
-		for i := range sq.aggCols {
-			ac := &sq.aggCols[i]
+		for i := range cls.aggCols {
+			ac := &cls.aggCols[i]
 			if ac.outExpr != nil {
 				continue
 			}
@@ -1188,6 +1017,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 			}
 		}
+		// Rewrite ORDER BY entries that reference a GROUP BY alias
+		// (`ORDER BY z` where `GROUP BY x.col1 AS z`) to the underlying
+		// column. Without this the Cascades sort key references a field
+		// name that doesn't exist in the aggregate output schema.
+		for i := range cls.orderBy {
+			ob := &cls.orderBy[i]
+			if ob.expr != nil || ob.colName == "" {
+				continue
+			}
+			if underlying, _, ok := aliasResolves(ob.colName); ok {
+				ob.colName = underlying
+			}
+		}
 	}
 
 	// SQL §7.10 General Rule 1 / Java alignment: when GROUP BY is present,
@@ -1195,7 +1037,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// an aggregate. Both SELECT * and SELECT qualifier.* with GROUP BY
 	// error 42803 because the star expansion includes all source columns,
 	// which generally aren't all in GROUP BY.
-	if len(sq.groupBy) > 0 && len(projCols) == 0 && !countStar && len(sq.aggCols) == 0 {
+	if len(cls.groupBy) > 0 && len(projCols) == 0 && !countStar && len(cls.aggCols) == 0 {
 		// projCols == nil + projQualifier == "" → SELECT *
 		// projCols == nil + projQualifier != "" → SELECT qualifier.*
 		// Either way, the star expands to ungrouped columns. Java 42803.
@@ -1212,7 +1054,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// reclassify projCols into aggCols entries (groupCol for bare
 	// columns, outExpr for expressions) so the aggregate pipeline
 	// activates and emits one row per distinct group.
-	if len(sq.groupBy) > 0 && len(sq.aggCols) == 0 && len(projCols) > 0 {
+	if len(cls.groupBy) > 0 && len(cls.aggCols) == 0 && len(projCols) > 0 {
 		for _, q := range projStarQualifiers {
 			if q != "" {
 				// Java errors 42803 (grouping error) for `SELECT a.* ...
@@ -1241,16 +1083,20 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				// Constant or column-referencing expression — both route
 				// to outExpr and are evaluated post-aggregation against
 				// the rowMap (which carries group-by column values).
-				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr, visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, groupCol: c}
+				extra[i] = aggSelectCol{outName: out, groupCol: c, visible: true}
 			}
 		}
-		sq.aggCols = extra
+		cls.aggCols = extra
 		projCols = nil
 		projAliases = nil
 		projExprs = nil
 		projStarQualifiers = nil
+		cls.projCols = nil
+		cls.projAliases = nil
+		cls.projExprs = nil
+		cls.projStarQualifiers = nil
 	}
 
 	// SQL §7.10 GR1: when a SELECT list contains aggregates, every
@@ -1260,21 +1106,21 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Java's groupby-tests.yamsql 42803 pattern extended to the
 	// no-GROUP-BY-at-all variant.
 	//
-	// The SELECT loop at line 3352 silently reclassifies a bare-column
-	// element as `aggSelectCol{groupCol: ...}` when aggregates are in
-	// the list — checking projCols alone misses those. Walk sq.aggCols
-	// for entries that are neither aggregates nor outExprs (bare group
-	// column references) and for outExprs that reference columns:
-	// both are GR1 violations when there's no GROUP BY.
-	hasAggregates := sq.countStar
-	for _, ac := range sq.aggCols {
+	// The SELECT loop silently reclassifies a bare-column element as
+	// `aggSelectCol{groupCol: ...}` when aggregates are in the list —
+	// checking projCols alone misses those. Walk cls.aggCols for entries
+	// that are neither aggregates nor outExprs (bare group column
+	// references) and for outExprs that reference columns: both are GR1
+	// violations when there's no GROUP BY.
+	hasAggregates := cls.countStar
+	for _, ac := range cls.aggCols {
 		if ac.aggFunc != "" {
 			hasAggregates = true
 			break
 		}
 	}
-	if hasAggregates && len(sq.groupBy) == 0 {
-		for _, ac := range sq.aggCols {
+	if hasAggregates && len(cls.groupBy) == 0 {
+		for _, ac := range cls.aggCols {
 			if ac.aggFunc != "" {
 				continue // aggregate — fine
 			}
@@ -1305,7 +1151,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Parse HAVING clause (only meaningful with GROUP BY).
 	havingCtx := simpleTable.HavingClause()
 	if havingCtx != nil {
-		sq.havingExpr = havingCtx.GetHavingExpr()
+		cls.havingExpr = havingCtx.GetHavingExpr()
 	}
 
 	// Redirect aggCols groupCol entries that came from a SELECT-list
@@ -1313,10 +1159,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// expression text, so the proto path's groupExprByName check fires
 	// and skips the FD lookup. Walks selectExprsSnapshot to find the
 	// original projExpr for each groupCol entry; matches against
-	// sq.groupBy[] by GetText. Idempotent — runs once after both
+	// cls.groupBy[] by GetText. Idempotent — runs once after both
 	// SELECT-list reclassification (if any) and GROUP BY parsing.
-	if len(sq.aggCols) > 0 && len(sq.groupBy) > 0 && len(selectExprsSnapshot) > 0 {
-		for ai, ac := range sq.aggCols {
+	if len(cls.aggCols) > 0 && len(cls.groupBy) > 0 && len(selectExprsSnapshot) > 0 {
+		for ai, ac := range cls.aggCols {
 			if ac.groupCol == "" {
 				continue
 			}
@@ -1335,9 +1181,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				continue
 			}
 			projText := canonicalTextOf(origExpr)
-			for gi, gn := range sq.groupBy {
-				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
-					sq.aggCols[ai].groupCol = gn
+			for gi, gn := range cls.groupBy {
+				if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && projText == gn {
+					cls.aggCols[ai].groupCol = gn
 					break
 				}
 			}
@@ -1356,16 +1202,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// time — and the underlying column ('amt') is not in the rowMap
 	// because GROUP BY summarized the rows. Symmetric with the alias
 	// redirect just above.
-	if len(sq.aggCols) > 0 && len(sq.groupBy) > 0 {
-		for ai, ac := range sq.aggCols {
+	if len(cls.aggCols) > 0 && len(cls.groupBy) > 0 {
+		for ai, ac := range cls.aggCols {
 			if ac.outExpr == nil || ac.aggFunc != "" {
 				continue
 			}
 			outExprText := canonicalTextOf(ac.outExpr)
-			for gi, gn := range sq.groupBy {
-				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && outExprText == gn {
-					sq.aggCols[ai].outExpr = nil
-					sq.aggCols[ai].groupCol = gn
+			for gi, gn := range cls.groupBy {
+				if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && outExprText == gn {
+					cls.aggCols[ai].outExpr = nil
+					cls.aggCols[ai].groupCol = gn
 					break
 				}
 			}
@@ -1377,106 +1223,74 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// alias (if any) propagates so `SELECT COUNT(*) AS n FROM t GROUP BY g`
 	// emits the column as `n`. Also set projCols so the downstream projection
 	// narrows the aggregate output (keys+aggs) to just the COUNT column.
-	if sq.countStar && len(sq.groupBy) > 0 {
-		sq.countStar = false
+	if cls.countStar && len(cls.groupBy) > 0 {
+		cls.countStar = false
 		outName := "COUNT(*)"
-		if sq.countStarAlias != "" {
-			outName = sq.countStarAlias
+		if cls.countStarAlias != "" {
+			outName = cls.countStarAlias
 		}
-		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT"})
-		sq.projCols = []string{outName}
-		sq.projAliases = []string{""}
-		sq.projExprs = []antlrgen.IExpressionContext{nil}
-		sq.projStarQualifiers = []string{""}
+		cls.aggCols = append(cls.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT", visible: true})
+		cls.projCols = []string{outName}
+		cls.projAliases = []string{""}
+		cls.projExprs = []antlrgen.IExpressionContext{nil}
+		cls.projStarQualifiers = []string{""}
 	}
 
 	// Harvest aggregates referenced in HAVING and ORDER BY that aren't
 	// already in aggCols. Otherwise queries like
 	//   SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0
 	//   SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) DESC
-	// have aggCols == nil → the executor never runs the aggregate pipeline
-	// → GROUP BY is silently ignored. The HAVING / ORDER BY resolver already
+	// have aggCols == nil -> the executor never runs the aggregate pipeline
+	// -> GROUP BY is silently ignored. The HAVING / ORDER BY resolver already
 	// looks up aggregates by their reconstructed output name ("COUNT(*)",
 	// "SUM(v)"), so matching aggCols entries make the evaluation round-trip.
 	// If projCols still holds plain columns at this point, reclassify them
 	// as group-by references in aggCols (mirror of the SELECT-list-aggregate
 	// path's existing reclassification).
-	type harvestSource struct {
-		expr     antlrgen.IExpressionContext
-		sortOnly bool // true when the source is ORDER BY (sort-visible); false for HAVING (hidden)
+	var harvestExprs []antlrgen.IExpressionContext
+	if cls.havingExpr != nil {
+		harvestExprs = append(harvestExprs, cls.havingExpr)
 	}
-	var harvestSources []harvestSource
-	if sq.havingExpr != nil {
-		harvestSources = append(harvestSources, harvestSource{expr: sq.havingExpr, sortOnly: false})
-	}
-	for _, ob := range sq.orderBy {
+	for _, ob := range cls.orderBy {
 		if ob.rawExpr != nil {
-			harvestSources = append(harvestSources, harvestSource{expr: ob.rawExpr, sortOnly: true})
+			harvestExprs = append(harvestExprs, ob.rawExpr)
 		}
 	}
-	if len(harvestSources) > 0 {
-		existing := make(map[string]struct{}, len(sq.aggCols))
-		for _, ac := range sq.aggCols {
+	if len(harvestExprs) > 0 {
+		existing := make(map[string]struct{}, len(cls.aggCols))
+		for _, ac := range cls.aggCols {
 			existing[ac.outName] = struct{}{}
 		}
 		var newAggs []aggSelectCol
-		for _, src := range harvestSources {
-			for _, ac := range harvestAggregates(src.expr) {
+		for _, hexpr := range harvestExprs {
+			for _, ac := range harvestAggregates(hexpr) {
 				if _, ok := existing[ac.outName]; ok {
-					// Already accumulated. If we now see this aggregate from
-					// an ORDER BY source and the existing entry is hidden
-					// (HAVING-only), upgrade to sortOnly so the sort can
-					// find it via colIdx. sortOnly subsumes hidden — both
-					// HAVING (via rowMap) and ORDER BY (via colIdx) are
-					// satisfied, and the column gets stripped post-sort.
-					// Walk both already-attached sq.aggCols and the
-					// pending newAggs since HAVING harvest runs first.
-					if src.sortOnly {
-						for k := range sq.aggCols {
-							if sq.aggCols[k].outName == ac.outName && sq.aggCols[k].hidden {
-								sq.aggCols[k].hidden = false
-								sq.aggCols[k].sortOnly = true
-							}
-						}
-						for k := range newAggs {
-							if newAggs[k].outName == ac.outName && newAggs[k].hidden {
-								newAggs[k].hidden = false
-								newAggs[k].sortOnly = true
-							}
-						}
-					}
 					continue
 				}
 				existing[ac.outName] = struct{}{}
-				if src.sortOnly {
-					ac.sortOnly = true
-				} else {
-					ac.hidden = true
-				}
+				// ac.visible stays false — not in user's SELECT list.
 				newAggs = append(newAggs, ac)
 			}
 		}
 		// ORDER BY items that wrap aggregates in an expression (e.g.
-		// `ORDER BY SUM(v) * 2`) get their own sortOnly outExpr aggCols
-		// entry. The proto sort path can then look up the entry via
-		// colIdx[sentinel] and find a per-group value evaluated from the
-		// wrapping expression. Inner aggregates were harvested as hidden
-		// above so the rowMap at outExpr eval time has them available.
-		for obIdx, ob := range sq.orderBy {
+		// `ORDER BY SUM(v) * 2`) get their own non-visible outExpr
+		// aggCols entry. The proto sort path can then look up the entry
+		// via colIdx and find a per-group value evaluated from the
+		// wrapping expression. Inner aggregates were harvested above so
+		// the rowMap at outExpr eval time has them available. Clear
+		// colName so the Value-based sort resolver picks up rawExpr.
+		for obIdx, ob := range cls.orderBy {
 			if ob.expr == nil || len(harvestAggregates(ob.expr)) == 0 {
 				continue
 			}
-			sentinel := fmt.Sprintf("__orderby_aggexpr_%d__", obIdx)
 			newAggs = append(newAggs, aggSelectCol{
-				outName:  sentinel,
-				outExpr:  ob.expr,
-				sortOnly: true,
+				outExpr: ob.expr,
 			})
-			sq.orderBy[obIdx].colName = sentinel
-			sq.orderBy[obIdx].expr = nil
+			cls.orderBy[obIdx].colName = ""
+			cls.orderBy[obIdx].expr = nil
 		}
 		if len(newAggs) > 0 {
-			if len(sq.aggCols) == 0 && len(projCols) > 0 {
+			if len(cls.aggCols) == 0 && len(projCols) > 0 {
 				// No SELECT-list aggregates yet; demote the plain projCols
 				// to group-by references so the aggregate pipeline knows
 				// how to surface them in each output row. When the projExpr
@@ -1484,7 +1298,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				// AS bucket ... GROUP BY v/10`), point groupCol at the
 				// matching groupBy[] string so the proto path's
 				// groupExprByName check fires and skips the FD lookup.
-				prepended := make([]aggSelectCol, 0, len(projCols)+len(sq.aggCols))
+				prepended := make([]aggSelectCol, 0, len(projCols)+len(cls.aggCols))
 				for i, c := range projCols {
 					out := projAliases[i]
 					if out == "" {
@@ -1493,26 +1307,41 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					gc := c
 					if i < len(projExprs) && projExprs[i] != nil {
 						projText := canonicalTextOf(projExprs[i])
-						for gi, gn := range sq.groupBy {
-							if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
+						for gi, gn := range cls.groupBy {
+							if gi < len(cls.groupByExprs) && cls.groupByExprs[gi] != nil && projText == gn {
 								gc = gn
 								break
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc})
+					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc, visible: true})
 				}
-				sq.aggCols = append(prepended, sq.aggCols...)
-				sq.projCols = nil
-				sq.projAliases = nil
-				sq.projExprs = nil
-				sq.projStarQualifiers = nil
+				cls.aggCols = append(prepended, cls.aggCols...)
+				cls.projCols = nil
+				cls.projAliases = nil
+				cls.projExprs = nil
+				cls.projStarQualifiers = nil
 			}
-			sq.aggCols = append(sq.aggCols, newAggs...)
+			cls.aggCols = append(cls.aggCols, newAggs...)
 		}
 	}
 
-	return sq, nil
+	return cls, nil
+}
+
+func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQuery, error) {
+	cls, err := classifySelectElements(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse FROM clause via the shared parseFromSource helper.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+
+	return selectQueryFromClassification(cls, fs), nil
 }
 
 // exprReferencesColumn reports whether the expression tree contains any
@@ -1645,6 +1474,207 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 		aggExpr:     argExpr,
 		aggDistinct: isDistinct,
 	}, true
+}
+
+// fromSource holds the parsed FROM-clause metadata: table name, alias,
+// derived-query reference, JOIN clauses, and WHERE expression. Extracted
+// from ANTLR by parseFromSource so both extractFromSimpleTable (which
+// needs it for selectQuery assembly) and PlanVisitor.visitFrom (which
+// builds the operator tree directly from ANTLR) share a single parsing
+// path.
+type fromSource struct {
+	tableName    string
+	tableAlias   string
+	derivedQuery antlrgen.IQueryContext
+	joins        []joinClause
+	whereExpr    antlrgen.IWhereExprContext
+}
+
+// parseFromSource walks the FROM clause of a SimpleTableContext and
+// returns the parsed source metadata. Returns an error for unsupported
+// shapes (missing FROM, CROSS JOIN on extras, etc.). This is the
+// single source of truth for FROM parsing — both extractFromSimpleTable
+// and PlanVisitor.visitFrom delegate here.
+func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, error) {
+	fromClause := simpleTable.FromClause()
+	if fromClause == nil {
+		// FROM-less SELECT: fdb-relational 4.11.1.0's QueryVisitor's
+		// visitSimpleTable asserts simpleTableContext.fromClause() is
+		// non-null with `Assert.notNullUnchecked(... ErrorCode.
+		// UNSUPPORTED_QUERY, "query is not supported")`. The check
+		// fires universally — including FROM-less SELECTs inside CTE
+		// base cases (every SimpleTable visit hits the gate, no CTE-
+		// context bypass). Match byte-equal. Standalone constant
+		// projection like `SELECT 1+1` and CTE bases like
+		// `WITH base AS (SELECT 1 AS n) ...` both reject.
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"query is not supported")
+	}
+
+	sources := fromClause.TableSources()
+	if sources == nil || len(sources.AllTableSource()) == 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"FROM clause missing table source")
+	}
+	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source %T", sources.AllTableSource()[0])
+	}
+	// Additional comma-separated sources become implicit cross joins; the
+	// WHERE clause supplies any join predicate.
+	var extraCrossJoins []joinClause
+	for _, extra := range sources.AllTableSource()[1:] {
+		eb, isBase := extra.(*antlrgen.TableSourceBaseContext)
+		if !isBase {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported extra table source %T", extra)
+		}
+		// Bare-source joins are not supported on extras (grammar quirk).
+		if len(eb.AllJoinPart()) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"JOIN clauses on comma-separated FROM sources are not supported")
+		}
+		switch item := eb.TableSourceItem().(type) {
+		case *antlrgen.AtomTableItemContext:
+			uids := item.TableName().FullId().AllUid()
+			parts := make([]string, len(uids))
+			for i, u := range uids {
+				parts[i] = functions.StripIdentifierQuotes(u.GetText())
+			}
+			tblName := strings.Join(parts, ".")
+			alias := tblName
+			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName: tblName,
+				joinType:  "INNER",
+				alias:     alias,
+				onExpr:    nil,
+			})
+		case *antlrgen.SubqueryTableItemContext:
+			alias := ""
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			if alias == "" {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"derived table in FROM must have an alias")
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName:    alias,
+				joinType:     "INNER",
+				alias:        alias,
+				onExpr:       nil,
+				derivedQuery: item.Query(),
+			})
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"FROM: comma-separated sources must be plain table names, got %T",
+				eb.TableSourceItem())
+		}
+	}
+	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
+	// a plain atom table.
+	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
+		alias := ""
+		if subItem.GetAlias() != nil {
+			alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
+		}
+		if alias == "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
+		}
+		return &fromSource{
+			tableName:    alias,
+			tableAlias:   alias,
+			joins:        extraCrossJoins,
+			whereExpr:    fromClause.WhereExpr(),
+			derivedQuery: subItem.Query(),
+		}, nil
+	}
+
+	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source item %T; only plain table names are supported",
+			srcBase.TableSourceItem())
+	}
+	// Build table name from uid segments, stripping identifier quotes.
+	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
+	uids := atomItem.TableName().FullId().AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+	}
+	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
+	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
+	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
+	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
+	// InnerJoinContext to a LEFT/RIGHT join.
+	leftAlias := ""
+	promotedJoinType := ""
+	// Grammar is `tableName (AS? alias=uid)?` — AS optional.
+	// Pick up implicit aliases via GetAlias() (was previously
+	// gated on AS being present, which lost `FROM Order o` etc).
+	// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
+	// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
+	// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
+	// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
+	// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
+	// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
+	// literal alias.
+	if atomItem.GetAlias() != nil {
+		aliasRaw := atomItem.GetAlias().GetText()
+		aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
+		// Structural quote-detection: post-case-fold,
+		// `aliasRaw != aliasTxt` is also true whenever the
+		// raw alias has any lowercase character (the helper
+		// upper-cases unquoted text). Use a structural check
+		// so a lowercased alias `from a hello` doesn't get
+		// classified as quoted.
+		isQuoted := len(aliasRaw) >= 2 &&
+			((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
+				(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
+		if atomItem.AS() == nil && !isQuoted {
+			up := strings.ToUpper(aliasTxt)
+			if up == "LEFT" || up == "RIGHT" {
+				promotedJoinType = up
+			} else {
+				leftAlias = aliasTxt
+			}
+		} else {
+			leftAlias = aliasTxt
+		}
+	}
+	if leftAlias == "" {
+		leftAlias = strings.Join(parts, ".")
+	}
+
+	// Parse JOIN clauses.
+	var joins []joinClause
+	for _, jp := range srcBase.AllJoinPart() {
+		jc, jErr := extractJoinClause(jp)
+		if jErr != nil {
+			return nil, jErr
+		}
+		joins = append(joins, jc)
+	}
+	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
+	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
+		joins[0].joinType = promotedJoinType
+	}
+	// Implicit cross joins from comma-separated FROM sources run last; the
+	// WHERE predicate decides which combinations survive.
+	joins = append(joins, extraCrossJoins...)
+
+	return &fromSource{
+		tableName:  strings.Join(parts, "."),
+		tableAlias: leftAlias,
+		joins:      joins,
+		whereExpr:  fromClause.WhereExpr(),
+	}, nil
 }
 
 // extractJoinClause parses a single JOIN part (INNER JOIN, LEFT JOIN, etc.) from

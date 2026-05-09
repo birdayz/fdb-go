@@ -51,6 +51,12 @@ type SelectExpression struct {
 	queryPredicates []predicates.QueryPredicate
 	sourceAliases   []string
 	joinType        JoinType // default JoinInner (zero value)
+	// quantifiersSwapped is true when this expression was created by
+	// WithSwappedQuantifiers, meaning the physical join direction is
+	// reversed relative to the SQL FROM-clause order. Used by the NLJ
+	// rule to mark the plan so column derivation can restore the
+	// original SQL column ordering.
+	quantifiersSwapped bool
 }
 
 // NewSelectExpression builds a SELECT. quantifiers and predicates are
@@ -105,6 +111,12 @@ func NewSelectExpressionWithJoinType(resultValue values.Value, quantifiers []Qua
 // GetJoinType returns the join type (INNER, LEFT OUTER, CROSS).
 // Default (zero value) is JoinInner.
 func (e *SelectExpression) GetJoinType() JoinType { return e.joinType }
+
+// IsQuantifiersSwapped reports whether this expression's quantifiers
+// were swapped relative to the SQL FROM-clause order. Used by the NLJ
+// rule to mark the physical plan so column derivation can restore the
+// original SQL column ordering.
+func (e *SelectExpression) IsQuantifiersSwapped() bool { return e.quantifiersSwapped }
 
 // GetSourceAliases returns the SQL-level table aliases, parallel to
 // quantifiers. May be nil or shorter than quantifiers if aliases
@@ -198,6 +210,38 @@ func (e *SelectExpression) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte{0})
 	}
 	return h.Sum64()
+}
+
+// WithSwappedQuantifiers returns a shallow copy of this SelectExpression
+// with the first two quantifiers (and their corresponding source aliases)
+// in reversed order. Used by the planner to explore both join directions
+// for ChildrenAsSet expressions. Returns the receiver unchanged if there
+// are fewer than 2 quantifiers.
+func (e *SelectExpression) WithSwappedQuantifiers() *SelectExpression {
+	if len(e.quantifiers) < 2 {
+		return e
+	}
+	swapped := make([]Quantifier, len(e.quantifiers))
+	copy(swapped, e.quantifiers)
+	swapped[0], swapped[1] = swapped[1], swapped[0]
+
+	var swappedAliases []string
+	if len(e.sourceAliases) >= 2 {
+		swappedAliases = make([]string, len(e.sourceAliases))
+		copy(swappedAliases, e.sourceAliases)
+		swappedAliases[0], swappedAliases[1] = swappedAliases[1], swappedAliases[0]
+	} else {
+		swappedAliases = e.sourceAliases
+	}
+
+	return &SelectExpression{
+		resultValue:        e.resultValue,
+		quantifiers:        swapped,
+		queryPredicates:    e.queryPredicates,
+		sourceAliases:      swappedAliases,
+		joinType:           e.joinType,
+		quantifiersSwapped: !e.quantifiersSwapped, // toggle: swap of swap = original
+	}
 }
 
 func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {

@@ -6,42 +6,29 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ---
 
-## *** DO NEXT BEFORE EVERYTHING ELSE ***
+## Java-alignment refactors (structural divergences that cause cascading bugs)
 
-### ~~Eliminate sortOnly~~ — **effectively bypassed (dayshift-79)**
+### 1. ~~Merge buildLogicalPlanForSelect / buildOuterPlanOnDerived~~ — **done (swingshift-81)**
 
-The Cascades path (ImplementInMemorySortRule + ImplementDistinctFinalRule) handles all ORDER BY cases without sortOnly. The sortOnly code in the proto path is dead code for Cascades queries. The specific bugs (column leak, sort key resolution, post-sort projection) are all fixed through the Cascades path. Full removal of sortOnly is cleanup, not blocking.
+Merged into `buildSelectShell(op, sq, stripPrefix)`. buildOuterPlanOnDerived is now 6 lines.
 
-**Current priority: subqueries/EXISTS** (~11 scenarios blocked). Port DecorrelateValuesRule + SelectExpression + correlation binding infrastructure.
+### 2. ~~Eliminate sortOnly/hidden aggSelectCol flags~~ — **done (swingshift-81)**
 
-### ~~Eliminate sortOnly~~ (original text, kept for reference)
+Replaced `sortOnly bool` + `hidden bool` with `visible bool`. Deleted `__orderby_aggexpr_N__` sentinels. ORDER BY aggregate expressions resolve through the Value-based sort path. See RFC-002 for the full RequestedOrdering port plan (Phases 3-4-6 are optimization, not correctness — push ordering constraints through operators for sort elimination via index ordering).
 
-Go's `sortOnly` flag on `aggSelectCol` is a hack. Java doesn't have it. Java carries ORDER BY as a `RequestedOrdering` constraint on the `SelectExpression` — the planner uses it to satisfy ordering through index scans or reject the query. Go's in-memory sort extension needs the aggregate computed for sorting but not projected, which created the `sortOnly` workaround.
+### 3. ~~Eliminate two-phase selectQuery → buildLogicalPlan split~~ — **done (swingshift-81)**
 
-**The sortOnly approach causes cascading bugs:**
-- sortOnly aggregates leak to output (extra columns)
-- Post-sort projection to strip them regresses other queries (HAVING-harvested hidden aggregates get incorrectly stripped)
-- Sort key Value resolution doesn't fire for sortOnly expressions
-- `ORDER BY SUM(v) * 2` fails because the sort key text `SUM(V)*2` isn't in the row
+PlanVisitor walks ANTLR incrementally: parseFromSource + classifySelectElements + per-step operator building. The Cascades path never creates a selectQuery. extractFromSimpleTable is now a 10-line wrapper for the proto path only. Remaining: _postBuild still uses a selectQuery bridge (toSelectQuery) for catalog-aware upgrades — inlining those into the visitor is future optimization.
 
-**Java's architecture (port this):**
-1. `visitOrderByClauseForSelect` resolves ORDER BY against SELECT expressions (line 270 QueryVisitor.java)
-2. `OrderByExpression.pullUp` rewrites ORDER BY through GROUP BY (line 271-273)
-3. `generateSelect` builds ONE SelectExpression with both projections AND `RequestedOrdering` (line 290)
-4. The planner satisfies ordering through index ordering or fails — no sortOnly, no extra columns
+---
 
-**Go port steps:**
-1. Remove `sortOnly` flag from `aggSelectCol`
-2. Carry ORDER BY as `RequestedOrdering` on the logical plan (already partially ported in `cascades/ordering.go`)
-3. In-memory sort reads the `RequestedOrdering`, evaluates sort key Values per-row
-4. No post-sort projection needed — ORDER BY isn't in the aggregate output
+## *** CURRENT PRIORITIES ***
 
-**Key Java files:**
-- `fdb-relational-core/.../query/visitors/QueryVisitor.java` lines 259-290 — ORDER BY + GROUP BY integration
-- `fdb-relational-core/.../query/visitors/ExpressionVisitor.java` lines 188-205 — ORDER BY expression visiting
-- `fdb-record-layer-core/.../plan/cascades/RequestedOrdering.java` — ordering constraint propagation
+### ~~Eliminate sortOnly~~ — **done (swingshift-81)**
+### ~~Subqueries/EXISTS~~ — **done (swingshift-81)**
+### ~~Yamsql conformance~~ — **98/98 (100%, swingshift-81)**
 
-**Blocks:** `having` scenario (3/23 failing), any query with `ORDER BY aggregate_expression` where the expression isn't in SELECT
+All three priorities from previous shifts are resolved. sortOnly/hidden/sentinel deleted, correlated EXISTS + nested EXISTS working, recursive CTE UNION DISTINCT working.
 
 ### Yamsql conformance: 63/111 scenarios fail (~300 individual query failures)
 
@@ -260,8 +247,8 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [ ] **#28** Date-part Go-only cleanup (deferred from Phase 1) — keep / remove decision now that Java alignment is feasible. Gate: #27. (~0.5 shift)
 - [ ] **#29** D1 DDL action types — `CreateTableAction` / `CreateIndexAction` / `DropTableAction` / `DropIndexAction` / `SetStoreStateAction`. Gate: #27. (~2 shifts)
 - [ ] **#30** D3 Online indexer integration via DDL — CREATE INDEX triggers background build. Gate: #29. (~1 shift)
-- [ ] **#31** B8 plan-cache-key diff — RFC-024 Go-internal cache key. Gate: #11, #21. Gates #32. (~1-2 shifts) — **swingshift-70 progress:** PlanHash function (FNV-64a, depth-first, deterministic). Remaining: integrate with query parser to compute hash from SQL text + plan tree, cache lookup/store API.
-- [ ] **#32** D4 Plan cache (Phase 7) — `RelationalPlanCache` 3-tier + TTL + async eviction. Gate: #31. (~3 shifts)
+- [x] **#31** B8 plan-cache-key diff — **done (swingshift-81)**. QueryHash (normalized SQL → FNV-64a) + LRU PlanCache (256 entries) on EmbeddedConnection. DDL invalidation.
+- [x] **#32** D4 Plan cache — **done (swingshift-81)**. Integrated into cascades_generator. Cache hit skips full Cascades pipeline. 10 unit tests.
 - [ ] **#33** D5 driver adapter gaps — `Stmt` / `Rows` column-type / `Tx` / custom scanner-valuer (Struct / Array / Versionstamp / Continuation). Gate: #22. (~2 shifts)
 
 ## Phase 6 — Cross-language verification + perf
@@ -292,7 +279,7 @@ Concrete Go-Java divergences surfaced by subagent audit. Ordered by impact.
 
 ### MEDIUM — feature completeness gaps
 
-- [ ] **#72** Ordering: `pullUp`/`pushDown`/`translateCorrelations` — **partially landed dayshift-72**. Simple FieldValue→FieldValue mapping via PullUp/PushDown on RichOrdering. Full Value.pullUp/pushDown (arbitrary value hierarchies, correlation translation) deferred — requires porting Value.pullUp/pushDown methods.
+- [x] **#72** Ordering: `pullUp`/`pushDown`/`translateCorrelations` — **completed swingshift-81**. PullUpValue/PushDownValue in values package handles RecordConstructorValue, QuantifiedObjectValue, exact match. PullUpThroughValue/PushDownThroughValue on RichOrdering and RequestedOrdering. 27 tests.
 - [x] **#73** Ordering: SetOperationsOrdering semantics — **covered by existing Go design**. Go's RichOrdering already stores multiple fixed bindings per key with union/intersection combiners (combineBindingsForUnion/combineBindingsForIntersection). No separate subclass needed — Go's flat design is functionally equivalent.
 - [x] **#74** DistinctUnionRule: `removeCommonEqualityBoundParts` — **landed dayshift-72**. Strips equality-bound ordering keys common across all union legs before merge.
 - [x] **#75** InJoinRule: `isSupportedExplodeValue()` validation — **landed dayshift-72**. Validates explode collection values are ConstantValue, QuantifiedObjectValue, or constant-evaluable. Applied to both InJoinRule and InUnionRule.

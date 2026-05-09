@@ -106,6 +106,11 @@ type EmbeddedConnection struct {
 	// descriptor name. nil outside a proto scan — outerScopeFromMsg
 	// falls back to msg's descriptor name.
 	currentSourceAliases map[string]bool
+
+	// planCache caches Cascades physical plans keyed by normalized SQL
+	// hash. Per-connection (and therefore per-schema), invalidated on
+	// DDL. Lazily initialized on first query.
+	planCache *PlanCache
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
@@ -177,6 +182,14 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
 	c.sess.InvalidateSchema(dbPath, schemaName)
+}
+
+// invalidatePlanCache clears all cached query plans. Called after any
+// DDL statement that may change table/index metadata.
+func (c *EmbeddedConnection) invalidatePlanCache() {
+	if c.planCache != nil {
+		c.planCache.Invalidate()
+	}
 }
 
 // cachedMetaData returns the RecordMetaData for the connection's
@@ -401,6 +414,7 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	// against the next statement's tree anyway).
 	c.scalarSubqueryCache = nil
 	c.sess.ResetSchemaCache()
+	c.invalidatePlanCache()
 	return nil
 }
 
@@ -425,19 +439,42 @@ func (c *EmbeddedConnection) GetSchema() string { return c.sess.Schema }
 // GetDBPath returns the current database path.
 func (c *EmbeddedConnection) GetDBPath() string { return c.sess.DBPath }
 
+// PlanExplain runs the SQL through the Cascades planner and returns
+// the physical plan's Explain string without executing the query.
+// Useful for testing plan structure (e.g. verifying sort elimination).
+func (c *EmbeddedConnection) PlanExplain(ctx context.Context, sql string) (string, error) {
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return "", err
+	}
+	gen := newCascadesGenerator(c)
+	plan, err := gen.Plan(ctx, sql)
+	if err != nil {
+		return "", err
+	}
+	return plan.Explain(), nil
+}
+
 // execStatement routes a single parsed statement to the right handler.
 func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IStatementContext) (int64, error) {
 	if ddl := stmt.DdlStatement(); ddl != nil {
 		create := ddl.CreateStatement()
 		drop := ddl.DropStatement()
+		var n int64
+		var err error
 		switch {
 		case create != nil:
-			return c.execCreate(ctx, create)
+			n, err = c.execCreate(ctx, create)
 		case drop != nil:
-			return c.execDrop(ctx, drop)
+			n, err = c.execDrop(ctx, drop)
 		default:
 			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DDL statement")
 		}
+		if err == nil {
+			// DDL changes schema metadata — invalidate cached query plans
+			// so subsequent queries are re-planned against the new schema.
+			c.invalidatePlanCache()
+		}
+		return n, err
 	}
 	if dml := stmt.DmlStatement(); dml != nil {
 		if ins := dml.InsertStatement(); ins != nil {

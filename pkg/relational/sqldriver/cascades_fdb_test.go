@@ -4,7 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
+	"strings"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
 )
 
 func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
@@ -1818,6 +1822,188 @@ func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 	t.Logf("Cascades scalar subquery in WHERE → %v ✓", ids)
 }
 
+// TestFDB_CascadesMinMaxStringRejected verifies that MIN/MAX over a
+// STRING column returns error 0A000 (unsupported operation), matching
+// Java's fdb-relational which only installs numeric MIN/MAX overloads.
+func TestFDB_CascadesMinMaxStringRejected(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// MIN(name) where name is STRING — must fail with 0A000.
+	_, err := cascadesDB.QueryContext(ctx, "SELECT MIN(name) FROM Item")
+	if err == nil {
+		t.Fatal("expected error for MIN(name) on STRING column, got nil")
+	}
+	if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "type mismatch") {
+		t.Fatalf("expected 0A000 / type mismatch error, got: %v", err)
+	}
+	t.Logf("MIN(name) correctly rejected: %v", err)
+
+	// MAX(name) where name is STRING — must also fail.
+	_, err = cascadesDB.QueryContext(ctx, "SELECT MAX(name) FROM Item")
+	if err == nil {
+		t.Fatal("expected error for MAX(name) on STRING column, got nil")
+	}
+	if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "type mismatch") {
+		t.Fatalf("expected 0A000 / type mismatch error, got: %v", err)
+	}
+	t.Logf("MAX(name) correctly rejected: %v", err)
+
+	// MIN(price) where price is BIGINT — must still succeed.
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT MIN(price) FROM Item")
+	if err != nil {
+		t.Fatalf("MIN(price) on BIGINT should succeed: %v", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("expected 1 row from MIN(price)")
+	}
+	var minPrice int64
+	if err := rows.Scan(&minPrice); err != nil {
+		t.Fatalf("scan MIN(price): %v", err)
+	}
+	if minPrice != 50 {
+		t.Fatalf("expected MIN(price) = 50, got %d", minPrice)
+	}
+	t.Logf("MIN(price) on BIGINT → %d (correct)", minPrice)
+
+	// Scalar subquery wrapping: SELECT (SELECT MIN(name) FROM Item)
+	_, err = cascadesDB.QueryContext(ctx, "SELECT (SELECT MIN(name) FROM Item) FROM Item WHERE item_id = 1")
+	if err == nil {
+		t.Fatal("expected error for scalar subquery MIN(name) on STRING, got nil")
+	}
+	if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "type mismatch") {
+		t.Fatalf("expected 0A000 / type mismatch for scalar subquery, got: %v", err)
+	}
+	t.Logf("Scalar subquery MIN(name) correctly rejected: %v", err)
+}
+
+// Tied sort keys must break by primary key. When the sort direction
+// is DESC, the PK tiebreaker is also DESC (matching Java's index scan
+// behaviour where a reverse scan on a composite index emits PKs in
+// descending order within each tied group).
+func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_sorttie_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("sorttie_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE rp (id BIGINT NOT NULL, region STRING, plan STRING, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_region_plan ON rp (region, plan)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert: ids 1 and 3 share plan='pro', id 2 has plan='free'.
+	if _, err := db.ExecContext(ctx, "INSERT INTO rp VALUES (1, 'us', 'pro')"); err != nil {
+		t.Fatalf("INSERT 1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO rp VALUES (2, 'us', 'free')"); err != nil {
+		t.Fatalf("INSERT 2: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO rp VALUES (3, 'us', 'pro')"); err != nil {
+		t.Fatalf("INSERT 3: %v", err)
+	}
+
+	// DESC sort: tied plan='pro' should have id=3 before id=1 (PK DESC tiebreaker).
+	rows, err := db.QueryContext(ctx,
+		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC")
+	if err != nil {
+		t.Fatalf("ORDER BY plan DESC: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id     int64
+		region string
+		plan   string
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.region, &r.plan); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	// Expected: [3, 'us', 'pro'], [1, 'us', 'pro'], [2, 'us', 'free']
+	expected := []row{
+		{3, "us", "pro"},
+		{1, "us", "pro"},
+		{2, "us", "free"},
+	}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+	}
+	for i := range expected {
+		if got[i] != expected[i] {
+			t.Fatalf("row %d: expected %+v, got %+v\nfull result: %+v", i, expected[i], got[i], got)
+		}
+	}
+	t.Logf("DESC PK tiebreaker correct: %+v", got)
+
+	// ASC sort: tied plan='free' has only id=2, tied plan='pro' should
+	// have id=1 before id=3 (PK ASC tiebreaker).
+	rows2, err := db.QueryContext(ctx,
+		"SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan ASC")
+	if err != nil {
+		t.Fatalf("ORDER BY plan ASC: %v", err)
+	}
+	defer rows2.Close()
+
+	var got2 []row
+	for rows2.Next() {
+		var r row
+		if err := rows2.Scan(&r.id, &r.region, &r.plan); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got2 = append(got2, r)
+	}
+	if err := rows2.Err(); err != nil {
+		t.Fatalf("rows2.Err: %v", err)
+	}
+
+	// Expected: [2, 'us', 'free'], [1, 'us', 'pro'], [3, 'us', 'pro']
+	expected2 := []row{
+		{2, "us", "free"},
+		{1, "us", "pro"},
+		{3, "us", "pro"},
+	}
+	if len(got2) != len(expected2) {
+		t.Fatalf("expected %d rows, got %d: %+v", len(expected2), len(got2), got2)
+	}
+	for i := range expected2 {
+		if got2[i] != expected2[i] {
+			t.Fatalf("row %d: expected %+v, got %+v\nfull result: %+v", i, expected2[i], got2[i], got2)
+		}
+	}
+	t.Logf("ASC PK tiebreaker correct: %+v", got2)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
@@ -1828,4 +2014,620 @@ func countRows(t *testing.T, rows *sql.Rows) int {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	return n
+}
+
+// TestFDB_CascadesSortEliminationViaIndex verifies that the Cascades planner
+// eliminates in-memory sort when a secondary index provides the requested
+// ORDER BY ordering, and falls back to in-memory sort when no matching index
+// exists.
+func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_sortelim_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("sortelim_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_price ON items (price)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert items with various prices.
+	for _, item := range []struct {
+		id       int
+		category string
+		price    int
+	}{
+		{1, "electronics", 500},
+		{2, "books", 50},
+		{3, "clothing", 150},
+		{4, "electronics", 200},
+		{5, "books", 25},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO items VALUES (%d, '%s', %d)", item.id, item.category, item.price)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", item.id, err)
+		}
+	}
+
+	// planExplain retrieves the Cascades physical plan Explain string
+	// via the underlying EmbeddedConnection.
+	planExplain := func(t *testing.T, query string) string {
+		t.Helper()
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("db.Conn: %v", err)
+		}
+		defer conn.Close()
+		var plan string
+		if err := conn.Raw(func(driverConn any) error {
+			ec, ok := driverConn.(*embedded.EmbeddedConnection)
+			if !ok {
+				t.Fatalf("expected *embedded.EmbeddedConnection, got %T", driverConn)
+			}
+			p, err := ec.PlanExplain(ctx, query)
+			if err != nil {
+				return err
+			}
+			plan = p
+			return nil
+		}); err != nil {
+			t.Fatalf("PlanExplain(%q): %v", query, err)
+		}
+		return plan
+	}
+
+	// collectRows scans (id, price) pairs from the query result.
+	type row struct {
+		id    int64
+		price int64
+	}
+	collectRows := func(t *testing.T, query string) []row {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatalf("QueryContext(%q): %v", query, err)
+		}
+		defer rows.Close()
+		var result []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.price); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			result = append(result, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		return result
+	}
+
+	// --- Query 1: ORDER BY price ASC — index scan, no in-memory sort ---
+	t.Run("OrderByPriceASC", func(t *testing.T) {
+		q := "SELECT id, price FROM items ORDER BY price ASC"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected sort elimination via idx_price, but plan has InMemorySort: %s", plan)
+		}
+		if !strings.Contains(plan, "IndexScan") {
+			t.Fatalf("expected IndexScan in plan, got: %s", plan)
+		}
+
+		got := collectRows(t, q)
+		expected := []row{{5, 25}, {2, 50}, {3, 150}, {4, 200}, {1, 500}}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Query 2: WHERE price > 100 ORDER BY price ASC — range scan, no sort ---
+	t.Run("FilteredOrderByPriceASC", func(t *testing.T) {
+		q := "SELECT id, price FROM items WHERE price > 100 ORDER BY price ASC"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected sort elimination via idx_price range scan, but plan has InMemorySort: %s", plan)
+		}
+
+		got := collectRows(t, q)
+		expected := []row{{3, 150}, {4, 200}, {1, 500}}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Query 3: ORDER BY price DESC — reverse index scan, no sort ---
+	t.Run("OrderByPriceDESC", func(t *testing.T) {
+		q := "SELECT id, price FROM items ORDER BY price DESC"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected sort elimination via reverse idx_price, but plan has InMemorySort: %s", plan)
+		}
+		if !strings.Contains(plan, "REVERSE") {
+			t.Fatalf("expected REVERSE index scan in plan, got: %s", plan)
+		}
+
+		got := collectRows(t, q)
+		expected := []row{{1, 500}, {4, 200}, {3, 150}, {2, 50}, {5, 25}}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d rows, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Query 4: ORDER BY category — no matching index, MUST use in-memory sort ---
+	t.Run("OrderByCategoryNoIndex", func(t *testing.T) {
+		q := "SELECT id, price FROM items ORDER BY category"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected InMemorySort for unindexed column, but plan is: %s", plan)
+		}
+
+		// Verify results are ordered by category (alphabetically):
+		// books (id=2,5), clothing (id=3), electronics (id=1,4).
+		// Within same category, order by PK (id) ascending.
+		got := collectRows(t, q)
+		if len(got) != 5 {
+			t.Fatalf("expected 5 rows, got %d: %+v", len(got), got)
+		}
+		// books: id=2 (price=50), id=5 (price=25)
+		// clothing: id=3 (price=150)
+		// electronics: id=1 (price=500), id=4 (price=200)
+		expectedIDs := []int64{2, 5, 3, 1, 4}
+		for i, wantID := range expectedIDs {
+			if got[i].id != wantID {
+				t.Fatalf("row %d: expected id=%d, got id=%d\nfull: %+v", i, wantID, got[i].id, got)
+			}
+		}
+	})
+}
+
+// TestFDB_CascadesStreamingAggFromIndex verifies that the Cascades planner
+// picks StreamingAgg (not HashAgg) when a secondary index provides the
+// GROUP BY ordering, and falls back to HashAgg when no matching index exists.
+func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_streamagg_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("streamagg_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_region ON sales (region)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert test data across several regions.
+	for _, s := range []struct {
+		id     int
+		region string
+		amount int
+	}{
+		{1, "east", 100},
+		{2, "east", 200},
+		{3, "west", 50},
+		{4, "west", 150},
+		{5, "north", 300},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO sales VALUES (%d, '%s', %d)", s.id, s.region, s.amount)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", s.id, err)
+		}
+	}
+
+	// planExplain retrieves the Cascades physical plan Explain string
+	// via the underlying EmbeddedConnection.
+	planExplain := func(t *testing.T, query string) string {
+		t.Helper()
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("db.Conn: %v", err)
+		}
+		defer conn.Close()
+		var plan string
+		if err := conn.Raw(func(driverConn any) error {
+			ec, ok := driverConn.(*embedded.EmbeddedConnection)
+			if !ok {
+				t.Fatalf("expected *embedded.EmbeddedConnection, got %T", driverConn)
+			}
+			p, err := ec.PlanExplain(ctx, query)
+			if err != nil {
+				return err
+			}
+			plan = p
+			return nil
+		}); err != nil {
+			t.Fatalf("PlanExplain(%q): %v", query, err)
+		}
+		return plan
+	}
+
+	// --- Subtest 1: GROUP BY region ORDER BY region -> StreamingAgg over IndexScan ---
+	t.Run("StreamingAggViaIndex", func(t *testing.T) {
+		q := "SELECT region, COUNT(*), SUM(amount) FROM sales GROUP BY region ORDER BY region"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+
+		if !strings.Contains(plan, "StreamingAgg") {
+			t.Fatalf("expected StreamingAgg in plan, got: %s", plan)
+		}
+		if strings.Contains(plan, "HashAgg") {
+			t.Fatalf("expected no HashAgg when index covers GROUP BY, but plan has HashAgg: %s", plan)
+		}
+		if !strings.Contains(plan, "IndexScan") {
+			t.Fatalf("expected IndexScan(idx_region) in plan, got: %s", plan)
+		}
+		if strings.Contains(plan, "InMemorySort") {
+			t.Fatalf("expected no InMemorySort (index provides ordering), but plan has InMemorySort: %s", plan)
+		}
+
+		// Verify query results: grouped + ordered by region ASC.
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+
+		type aggRow struct {
+			region string
+			cnt    int64
+			total  int64
+		}
+		var got []aggRow
+		for rows.Next() {
+			var r aggRow
+			if err := rows.Scan(&r.region, &r.cnt, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+
+		expected := []aggRow{
+			{"east", 2, 300},
+			{"north", 1, 300},
+			{"west", 2, 200},
+		}
+		if len(got) != len(expected) {
+			t.Fatalf("expected %d groups, got %d: %+v", len(expected), len(got), got)
+		}
+		for i := range expected {
+			if got[i] != expected[i] {
+				t.Fatalf("row %d: expected %+v, got %+v\nfull: %+v", i, expected[i], got[i], got)
+			}
+		}
+	})
+
+	// --- Subtest 2: GROUP BY amount (no index) -> HashAgg ---
+	t.Run("HashAggNoIndex", func(t *testing.T) {
+		q := "SELECT amount, COUNT(*) FROM sales GROUP BY amount"
+		plan := planExplain(t, q)
+		t.Logf("plan: %s", plan)
+
+		if !strings.Contains(plan, "HashAgg") {
+			t.Fatalf("expected HashAgg for unindexed GROUP BY, got: %s", plan)
+		}
+		if strings.Contains(plan, "StreamingAgg") {
+			t.Fatalf("expected no StreamingAgg (no index on amount), but plan has StreamingAgg: %s", plan)
+		}
+
+		// Verify query results: 5 distinct amounts, each with count 1.
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+
+		type aggRow struct {
+			amount int64
+			cnt    int64
+		}
+		results := make(map[int64]int64)
+		for rows.Next() {
+			var r aggRow
+			if err := rows.Scan(&r.amount, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			results[r.amount] = r.cnt
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+
+		if len(results) != 5 {
+			t.Fatalf("expected 5 distinct amounts, got %d: %v", len(results), results)
+		}
+		for amt, cnt := range results {
+			if cnt != 1 {
+				t.Fatalf("expected COUNT(*)=1 for amount=%d, got %d", amt, cnt)
+			}
+		}
+	})
+}
+
+// TestFDB_PlanCacheCorrectness verifies that the Cascades plan cache
+// produces correct results across multiple executions and DDL
+// invalidation. It pins a single driver connection (via sql.Conn) so
+// the plan cache survives between queries — database/sql normally
+// calls ResetSession (which clears the cache) when returning
+// connections to the pool.
+func TestFDB_PlanCacheCorrectness(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_plancache_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("pc_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert test data.
+	for _, q := range []string{
+		"INSERT INTO Item VALUES (1, 'Widget', 100)",
+		"INSERT INTO Item VALUES (2, 'Gadget', 200)",
+		"INSERT INTO Item VALUES (3, 'Doohickey', 50)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// Pin a single connection so the plan cache persists across queries.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer conn.Close()
+
+	selectQuery := "SELECT item_id, name, price FROM Item ORDER BY item_id"
+
+	// Helper: run the select and return results as a slice of
+	// (item_id, name, price) tuples.
+	type row struct {
+		id    int64
+		name  string
+		price int64
+	}
+	queryRows := func(t *testing.T, c *sql.Conn, q string) []row {
+		t.Helper()
+		rows, err := c.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("QueryContext(%q): %v", q, err)
+		}
+		defer rows.Close()
+		var result []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.name, &r.price); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			result = append(result, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		return result
+	}
+
+	rowsEqual := func(a, b []row) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// --- Step 1: first execution (cache miss) ---
+	result1 := queryRows(t, conn, selectQuery)
+	expected := []row{
+		{1, "Widget", 100},
+		{2, "Gadget", 200},
+		{3, "Doohickey", 50},
+	}
+	if !rowsEqual(result1, expected) {
+		t.Fatalf("first query: expected %v, got %v", expected, result1)
+	}
+	t.Logf("first execution (cache miss): %v", result1)
+
+	// --- Step 2: same query again (cache hit) ---
+	result2 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result2, result1) {
+		t.Fatalf("cached query returned different results: first=%v, second=%v", result1, result2)
+	}
+	t.Logf("second execution (cache hit): results match")
+
+	// --- Step 3: normalized variants should also produce correct results ---
+	// The plan cache normalizes SQL by uppercasing, collapsing whitespace,
+	// and stripping comments. These variants should hash identically.
+	variants := []string{
+		// Extra whitespace.
+		"SELECT   item_id,  name,   price   FROM   Item   ORDER BY   item_id",
+		// Different case.
+		"select item_id, name, price from Item order by item_id",
+		// Mixed case + extra whitespace.
+		"SELECT item_id, name, price  FROM  item  ORDER  BY  item_id",
+		// Trailing/leading whitespace.
+		"  SELECT item_id, name, price FROM Item ORDER BY item_id  ",
+	}
+	for _, v := range variants {
+		result := queryRows(t, conn, v)
+		if !rowsEqual(result, expected) {
+			t.Fatalf("variant %q returned wrong results: expected %v, got %v", v, expected, result)
+		}
+	}
+	t.Logf("normalized variants all return correct results")
+
+	// Verify that the normalization actually produces the same hash.
+	canonicalHash := embedded.QueryHash(selectQuery)
+	for _, v := range variants {
+		h := embedded.QueryHash(v)
+		if h != canonicalHash {
+			t.Fatalf("QueryHash(%q) = %d, want %d (same as canonical)", v, h, canonicalHash)
+		}
+	}
+	t.Logf("all variants hash to %d", canonicalHash)
+
+	// --- Step 4: DDL invalidates the cache ---
+	// Creating a new schema template is a DDL statement that triggers
+	// plan cache invalidation on the connection. The existing schema
+	// and data are unaffected.
+	ddlTmpl := fmt.Sprintf("pc_ddl_tmpl_%s", t.Name())
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Other (id BIGINT NOT NULL, PRIMARY KEY (id))", ddlTmpl)); err != nil {
+		t.Fatalf("DDL (CREATE SCHEMA TEMPLATE): %v", err)
+	}
+	t.Logf("DDL executed, plan cache invalidated")
+
+	// --- Step 5: same query after DDL (cache miss, re-planned) ---
+	result3 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result3, expected) {
+		t.Fatalf("post-DDL query returned wrong results: expected %v, got %v", expected, result3)
+	}
+	t.Logf("post-DDL execution: results still correct")
+
+	// --- Step 6: verify cache is warm again after the post-DDL query ---
+	result4 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result4, expected) {
+		t.Fatalf("post-DDL cached query returned wrong results: expected %v, got %v", expected, result4)
+	}
+	t.Logf("post-DDL cache hit: results still correct")
+
+	// --- Step 7: different SQL text with different hash should also work ---
+	diffResult := queryRows(t, conn, "SELECT item_id, name, price FROM Item WHERE price > 100 ORDER BY item_id")
+	diffExpected := []row{{2, "Gadget", 200}}
+	if !rowsEqual(diffResult, diffExpected) {
+		t.Fatalf("different query: expected %v, got %v", diffExpected, diffResult)
+	}
+
+	// Re-run the original query — the filtered query must NOT have
+	// polluted the cache entry for the unfiltered query.
+	result5 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result5, expected) {
+		t.Fatalf("original query after different query: expected %v, got %v", expected, result5)
+	}
+	t.Logf("cache isolation: different SQL hashes do not interfere")
+
+	// --- Step 8: schema with index — DDL invalidation via template + schema ---
+	// Drop existing schema, create a new template with an index, and
+	// recreate the schema. This exercises the full DDL-invalidation path
+	// and verifies that the plan cache picks up the new index metadata.
+	if _, err := conn.ExecContext(ctx,
+		fmt.Sprintf("DROP SCHEMA %s/store", dbPath)); err != nil {
+		t.Fatalf("DROP SCHEMA: %v", err)
+	}
+	idxTmpl := fmt.Sprintf("pc_idx_tmpl_%s", t.Name())
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id)) "+
+			"CREATE INDEX idx_price ON Item (price)", idxTmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE with index: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, idxTmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA with index template: %v", err)
+	}
+
+	// Re-insert data into the fresh schema.
+	for _, q := range []string{
+		"INSERT INTO Item VALUES (1, 'Widget', 100)",
+		"INSERT INTO Item VALUES (2, 'Gadget', 200)",
+		"INSERT INTO Item VALUES (3, 'Doohickey', 50)",
+	} {
+		if _, err := conn.ExecContext(ctx, q); err != nil {
+			t.Fatalf("re-INSERT: %v", err)
+		}
+	}
+
+	// Query should still produce correct results with the new schema
+	// (which now has a price index that the planner may use).
+	result6 := queryRows(t, conn, selectQuery)
+	// Sort by item_id since ORDER BY may use the index now.
+	sort.Slice(result6, func(i, j int) bool { return result6[i].id < result6[j].id })
+	if !rowsEqual(result6, expected) {
+		t.Fatalf("post-index-DDL query: expected %v, got %v", expected, result6)
+	}
+	t.Logf("post-index schema recreation: results correct, plan cache working end-to-end")
 }

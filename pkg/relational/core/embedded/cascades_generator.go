@@ -19,6 +19,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
@@ -31,12 +32,17 @@ import (
 type cascadesGenerator struct {
 	c     *EmbeddedConnection
 	naive *naiveGenerator
+	cache *PlanCache
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
+	if c.planCache == nil {
+		c.planCache = NewPlanCache(256)
+	}
 	return &cascadesGenerator{
 		c:     c,
 		naive: &naiveGenerator{c: c},
+		cache: c.planCache,
 	}
 }
 
@@ -82,7 +88,22 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"no schema metadata available")
 	}
 
-	logicalOp, buildErr := buildLogicalPlanForQueryWithCatalog(q, md)
+	// Check plan cache before running the full Cascades pipeline.
+	sqlHash := QueryHash(sql)
+	if g.cache != nil {
+		if cachedPlan, cachedSubs, ok := g.cache.Get(sqlHash); ok {
+			return &cascadesPlan{
+				conn:             g.c,
+				md:               md,
+				physicalPlan:     cachedPlan,
+				explain:          cachedPlan.Explain(),
+				scalarSubqueries: cachedSubs,
+			}, nil
+		}
+	}
+
+	visitor := NewPlanVisitor(md)
+	logicalOp, buildErr := visitor.VisitQuery(q)
 	if buildErr != nil {
 		return nil, buildErr
 	}
@@ -166,6 +187,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			alias: ssq.Alias,
 			plan:  subPlan,
 		})
+	}
+
+	// Cache the planned result for future queries with the same SQL.
+	if g.cache != nil {
+		g.cache.Put(sqlHash, sql, physPlan, scalarSubs)
 	}
 
 	return &cascadesPlan{
@@ -309,6 +335,14 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			if errors.As(execErr, &typeMismatch) {
 				return nil, api.NewError(api.ErrCodeCannotConvertType, typeMismatch.Error())
 			}
+			var depthExceeded *executor.RecursiveCTEDepthExceededError
+			if errors.As(execErr, &depthExceeded) {
+				return nil, api.NewError(api.ErrCodeExecutionLimitReached, depthExceeded.Error())
+			}
+			var aggTypeMismatch *executor.AggregateTypeMismatchError
+			if errors.As(execErr, &aggTypeMismatch) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
+			}
 			return nil, execErr
 		}
 
@@ -318,8 +352,9 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return nil, nil
 	})
 	if txErr != nil {
-		if strings.Contains(txErr.Error(), "cannot aggregate non-numeric") {
-			return query.Result{}, api.NewError(api.ErrCodeInvalidParameter, txErr.Error())
+		var aggTypeMismatch *executor.AggregateTypeMismatchError
+		if errors.As(txErr, &aggTypeMismatch) {
+			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
 		}
 		return query.Result{}, txErr
 	}
@@ -511,7 +546,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if i < len(aliases) && aliases[i] != "" {
 			label = strings.ToUpper(aliases[i])
 		}
-		typeName := aggregateTypeName(name, desc)
+		typeName := valueTypeName(v, desc)
 		if typeName == "" && desc != nil {
 			typeName = protoFieldTypeName(desc, name)
 		}
@@ -575,9 +610,42 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	if outerCols == nil && innerCols == nil {
 		return nil
 	}
-	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
-	cols = append(cols, outerCols...)
-	cols = append(cols, innerCols...)
+	// When outer and inner share column names (e.g. SELECT * FROM a, b
+	// where both have "id"), the merged row map's bare keys hold the
+	// inner side's values (last-write-wins in mergeRows). To read the
+	// correct values for each side, qualify bare column names with the
+	// join alias so the ResultSet reads "A.ID" / "B.ID" from the map
+	// instead of both hitting the bare "ID" key. Already-qualified
+	// columns (from a nested NLJ) are left as-is to avoid double-
+	// qualification like "B.A.ID".
+	outerAlias := strings.ToUpper(nlj.GetOuterAlias())
+	innerAlias := strings.ToUpper(nlj.GetInnerAlias())
+
+	// Determine SQL-level first/second based on whether the physical
+	// join direction was swapped by the ChildrenAsSet optimization.
+	// When reversed, inner columns come first in SQL order.
+	firstCols, secondCols := outerCols, innerCols
+	firstAlias, secondAlias := outerAlias, innerAlias
+	if nlj.IsSQLColumnOrderReversed() {
+		firstCols, secondCols = innerCols, outerCols
+		firstAlias, secondAlias = innerAlias, outerAlias
+	}
+
+	cols := make([]executor.ColumnDef, 0, len(firstCols)+len(secondCols))
+	for _, c := range firstCols {
+		qual := c
+		if firstAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
+	for _, c := range secondCols {
+		qual := c
+		if secondAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
 	return cols
 }
 
@@ -653,26 +721,31 @@ func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageD
 	}
 }
 
-func aggregateTypeName(name string, desc protoreflect.MessageDescriptor) string {
-	upper := strings.ToUpper(strings.TrimSpace(name))
-	if strings.HasPrefix(upper, "COUNT(") {
+// valueTypeName resolves the SQL type name for a Value. For
+// AggregateValue nodes, it inspects the typed Op field instead of
+// string-parsing the ExplainValue output. For plain field references,
+// it falls through and returns "".
+func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
+	av, ok := v.(*values.AggregateValue)
+	if !ok {
+		return ""
+	}
+	switch av.Op {
+	case values.AggCount, values.AggCountStar:
 		return "BIGINT"
-	}
-	if strings.HasPrefix(upper, "AVG(") {
+	case values.AggAvg:
 		return "DOUBLE"
-	}
-	if strings.HasPrefix(upper, "SUM(") || strings.HasPrefix(upper, "MIN(") || strings.HasPrefix(upper, "MAX(") {
-		lparen := strings.Index(upper, "(")
-		rparen := strings.LastIndex(upper, ")")
-		if lparen >= 0 && rparen > lparen && desc != nil {
-			operand := strings.TrimSpace(upper[lparen+1 : rparen])
-			if t := protoFieldTypeName(desc, operand); t != "UNKNOWN" {
+	case values.AggSum, values.AggMin, values.AggMax:
+		if av.Operand != nil && desc != nil {
+			operandName := values.ExplainValue(av.Operand)
+			if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
 				return t
 			}
 		}
 		return "BIGINT"
+	default:
+		return "UNKNOWN"
 	}
-	return ""
 }
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
@@ -943,16 +1016,20 @@ func findLogicalScan(op logical.LogicalOperator) *logical.LogicalScan {
 }
 
 // referencesInformationSchema walks the ANTLR parse tree and returns
-// true if any table name contains "INFORMATION_SCHEMA". Uses typed
-// parse tree nodes — no string matching on raw SQL text.
+// true if any table name references the INFORMATION_SCHEMA. Walks
+// typed FullId → Uid nodes — no GetText on the table name.
 func referencesInformationSchema(ctx antlr.Tree) bool {
 	if ctx == nil {
 		return false
 	}
 	if atom, ok := ctx.(*antlrgen.AtomTableItemContext); ok {
 		if tn := atom.TableName(); tn != nil {
-			if strings.Contains(strings.ToUpper(tn.GetText()), "INFORMATION_SCHEMA") {
-				return true
+			if fid := tn.FullId(); fid != nil {
+				for _, uid := range fid.AllUid() {
+					if strings.EqualFold(functions.StripIdentifierQuotes(uid.GetText()), "INFORMATION_SCHEMA") {
+						return true
+					}
+				}
 			}
 		}
 	}

@@ -14,8 +14,8 @@ import (
 // row slice — the shared representation the JOIN, CTE, and filtered-
 // scan paths emit. aggregateMapRows applies GROUP BY + aggregate
 // function evaluation + HAVING + an optional trailing
-// stripAggregateSortOnly pass that drops columns injected purely for
-// ORDER BY.
+// stripAggregateNonVisible pass that drops columns injected purely for
+// ORDER BY / HAVING.
 //
 // Doesn't run the scan itself; execSelectQueryFull / execSelectJoin /
 // execSelectFromCTE each feed this function with their already-
@@ -412,20 +412,19 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		}
 	}
 	// emitIdx lists the aggCols positions that appear in cols/data:
-	// visible columns first, then sortOnly columns (harvested from
-	// ORDER BY) so the sort can find them via colIdx. Hidden entries
-	// (harvested from HAVING) contribute to accumulation and HAVING
-	// evaluation but drop out entirely. Caller strips data rows to
-	// the first `visibleCount` columns after the sort runs.
+	// visible columns first, then non-visible columns (harvested from
+	// ORDER BY / HAVING) so the sort can find them via colIdx. Caller
+	// strips data rows to the first `visibleCount` columns after the
+	// sort runs.
 	emitIdx := make([]int, 0, len(sq.aggCols))
 	for i, ac := range sq.aggCols {
-		if !ac.hidden && !ac.sortOnly {
+		if ac.visible {
 			emitIdx = append(emitIdx, i)
 		}
 	}
 	visibleCount := len(emitIdx)
 	for i, ac := range sq.aggCols {
-		if !ac.hidden && ac.sortOnly {
+		if !ac.visible {
 			emitIdx = append(emitIdx, i)
 		}
 	}
@@ -444,7 +443,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		}
 		colTypes[out] = t
 	}
-	_ = visibleCount // surfaced via stripAggregateSortOnly()
+	_ = visibleCount // surfaced via stripAggregateNonVisible()
 	for _, key := range groupOrder {
 		gs := groups[key]
 		fullVals := make([]driver.Value, len(sq.aggCols))
@@ -557,33 +556,33 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	return cols, colTypes, data, nil
 }
 
-// stripAggregateSortOnly removes trailing sort-only columns added by
-// aggregateMapRows / the proto aggregate emit when ORDER BY referenced
-// aggregates not in the SELECT list. Counts visible (non-hidden,
-// non-sortOnly) entries in sq.aggCols; the emit appends sortOnly
-// columns AFTER the visible ones, so truncating each row to that
-// length restores the user's requested output shape.
+// stripAggregateNonVisible removes trailing non-visible columns added
+// by aggregateMapRows / the proto aggregate emit when ORDER BY or
+// HAVING referenced aggregates not in the SELECT list. Counts visible
+// entries in sq.aggCols; the emit appends non-visible columns AFTER
+// the visible ones, so truncating each row to that length restores the
+// user's requested output shape.
 //
-// No-op when sq.aggCols has no sortOnly entries (the common case) and
-// when the countStar fast path is in play (sq.aggCols is empty —
-// nothing to strip; cols already correct).
-func stripAggregateSortOnly(sq *selectQuery, cols []string, data [][]driver.Value) ([]string, [][]driver.Value) {
+// No-op when every aggCol is visible (the common case) and when the
+// countStar fast path is in play (sq.aggCols is empty — nothing to
+// strip; cols already correct).
+func stripAggregateNonVisible(sq *selectQuery, cols []string, data [][]driver.Value) ([]string, [][]driver.Value) {
 	if len(sq.aggCols) == 0 {
 		return cols, data
 	}
-	hasSortOnly := false
+	hasNonVisible := false
 	for _, ac := range sq.aggCols {
-		if ac.sortOnly {
-			hasSortOnly = true
+		if !ac.visible {
+			hasNonVisible = true
 			break
 		}
 	}
-	if !hasSortOnly {
+	if !hasNonVisible {
 		return cols, data
 	}
 	visibleCount := 0
 	for _, ac := range sq.aggCols {
-		if !ac.hidden && !ac.sortOnly {
+		if ac.visible {
 			visibleCount++
 		}
 	}

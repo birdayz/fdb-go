@@ -1,0 +1,1244 @@
+package embedded
+
+// PlanVisitor walks ANTLR parse tree nodes and builds a
+// logical.LogicalOperator tree for the Cascades planner path.
+//
+// Architecture: Java's QueryVisitor.visitSimpleTable builds the plan in
+// this order: FROM -> WHERE -> GROUP BY + SELECT + HAVING -> ORDER BY ->
+// LIMIT -> DISTINCT. Each step takes the current operator and wraps it.
+//
+// PlanVisitor mirrors this incremental wrapping: visitFrom builds the
+// scan/join subtree, visitWhere wraps it with a filter, visitSelectGroupBy
+// wraps it with aggregate/projection, visitOrderBy wraps it with sort,
+// visitLimit wraps it with limit, and visitFinalProjection wraps it with
+// the non-aggregate projection and DISTINCT.
+//
+// The complex aggregate classification (SELECT element parsing, GROUP BY
+// interaction, HAVING harvesting) delegates to classifySelectElements
+// which returns a selectClassification — NOT a selectQuery. The operator
+// tree is built directly by the visit methods. When metadata is available,
+// a selectQuery is constructed from the selectClassification (which it
+// embeds) + fromSource so the upgrade functions can run. The catalog-
+// aware upgrades (predicate resolution, column validation, Value
+// resolution, subquery planning) are inlined into VisitSimpleTable
+// rather than delegated to the monolithic _postBuild function.
+//
+// The proto/naive generator continues using extractFromSimpleTable (which
+// calls classifySelectElements internally and merges with FROM info).
+
+import (
+	"errors"
+	"strings"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
+)
+
+// PlanVisitor builds LogicalOperator trees from ANTLR parse nodes.
+// It holds the metadata needed for catalog-aware resolution (predicate
+// upgrade, column validation, sort-key resolution) and any CTE column
+// schemas accumulated from WITH clause processing.
+type PlanVisitor struct {
+	md        *recordlayer.RecordMetaData
+	cteScopes map[string]semantic.ScopeSource
+	cteBodies map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
+
+	// inRecursiveCTEBody is set while building the body of a recursive
+	// CTE so the union builder permits UNION DISTINCT (bare UNION)
+	// which is valid for cycle detection. Outside of recursive CTEs,
+	// UNION DISTINCT is rejected (only UNION ALL is supported).
+	inRecursiveCTEBody bool
+}
+
+// collectSelectNames does a lightweight scan of the SELECT element list
+// to extract output column names and aliases. It does NOT perform
+// aggregate classification — it simply returns the surface-level name
+// for each SELECT element position, used by ORDER BY positional
+// reference resolution.
+//
+// For COUNT(*) or aggregate functions, it returns the canonical
+// reconstructed name (e.g. "COUNT(*)", "SUM(v)"). For plain columns,
+// it returns the column name. For computed expressions, it returns
+// either the alias or the canonical expression text. SELECT * and
+// SELECT qualifier.* return nil (positional refs are invalid).
+func collectSelectNames(simpleTable *antlrgen.SimpleTableContext) (cols []string, aliases []string) {
+	selElems := simpleTable.SelectElements()
+	if selElems == nil {
+		return nil, nil
+	}
+	elems := selElems.AllSelectElement()
+	for _, elem := range elems {
+		switch e := elem.(type) {
+		case *antlrgen.SelectStarElementContext:
+			// SELECT * — positional refs invalid (no named columns)
+			return nil, nil
+		case *antlrgen.SelectQualifierStarElementContext:
+			if len(elems) == 1 {
+				// sole qualifier.* — no positional refs
+				return nil, nil
+			}
+			// mixed: placeholder slot
+			cols = append(cols, "")
+			aliases = append(aliases, "")
+		case *antlrgen.SelectExpressionElementContext:
+			alias := ""
+			if e.Uid() != nil {
+				alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+			}
+			// Try plain column name first.
+			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
+			if nameErr != nil {
+				// Computed expression: use alias if present, else
+				// canonical expression text.
+				if alias != "" {
+					cols = append(cols, alias)
+				} else {
+					cols = append(cols, canonicalTextOf(e.Expression()))
+				}
+				aliases = append(aliases, alias)
+			} else {
+				cols = append(cols, colName)
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	return cols, aliases
+}
+
+// NewPlanVisitor creates a PlanVisitor with the given metadata.
+// md may be nil; all catalog-aware upgrades degrade to text fallback.
+func NewPlanVisitor(md *recordlayer.RecordMetaData) *PlanVisitor {
+	return &PlanVisitor{md: md}
+}
+
+// VisitQuery is the top-level entry point. It handles WITH (CTE)
+// wrapping and then delegates to VisitQueryBody for the main query.
+//
+// Mirrors buildLogicalPlanForQueryWithCatalog: pre-scans CTE
+// definitions to extract column schemas, then recursively builds the
+// main query body with CTE scopes in context.
+func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOperator, error) {
+	if q == nil {
+		return nil, nil
+	}
+	if v.md == nil {
+		return buildLogicalPlanForQuery(q), nil
+	}
+
+	ctesCtx := q.Ctes()
+
+	// Pre-scan CTE definitions to extract column schemas and eagerly
+	// build CTE body plans. Process in declaration order so CTE B can
+	// reference CTE A's derived schema. The eager body plans are needed
+	// so scalar subqueries that reference outer CTEs can build
+	// self-contained logical plans (wrapped with LogicalCTE).
+	if ctesCtx != nil {
+		if v.cteScopes == nil {
+			v.cteScopes = make(map[string]semantic.ScopeSource)
+		}
+		if v.cteBodies == nil {
+			v.cteBodies = make(map[string]logical.LogicalOperator)
+		}
+		for _, nq := range ctesCtx.AllNamedQuery() {
+			name := functions.FullIdToName(nq.GetName())
+			upper := strings.ToUpper(name)
+			if _, exists := v.cteScopes[upper]; exists {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
+			if src, ok := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); ok {
+				// Apply CTE column aliases: WITH c1(x, y) AS (...)
+				if colAliases := nq.GetColumnAliases(); colAliases != nil {
+					if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
+						aliases := aliasList.AllFullId()
+						if nAliases := len(aliases); nAliases > 0 && src.Table != nil {
+							nCols := len(src.Table.Columns())
+							if nAliases != nCols {
+								return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+									"cte query has %d column(s), however %d aliases defined",
+									nCols, nAliases)
+							}
+						}
+					}
+					src = applyCTEColumnAliases(src, colAliases)
+				}
+				v.cteScopes[upper] = src
+			}
+			// Eagerly build the CTE body plan so scalar subqueries
+			// that reference this CTE can wrap themselves with it.
+			// For recursive CTEs, set inRecursiveCTEBody so the
+			// union builder permits UNION DISTINCT.
+			if inner := nq.Query(); inner != nil {
+				isRecBody := ctesCtx.RECURSIVE() != nil && containsTableRef(inner.QueryExpressionBody(), upper)
+				if isRecBody {
+					v.inRecursiveCTEBody = true
+				}
+				bodyOp, bodyErr := v.VisitQueryBody(inner.QueryExpressionBody())
+				if isRecBody {
+					v.inRecursiveCTEBody = false
+				}
+				if bodyErr == nil && bodyOp != nil {
+					v.cteBodies[upper] = bodyOp
+				}
+			}
+		}
+	}
+
+	main, err := v.VisitQueryBody(q.QueryExpressionBody())
+	if err != nil {
+		return nil, err
+	}
+	if main == nil {
+		return nil, nil
+	}
+	if ctesCtx == nil {
+		return main, nil
+	}
+	recursive := ctesCtx.RECURSIVE() != nil
+	traversalOrder := logical.TraversalLevelOrder
+	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		if toc.PRE_ORDER() != nil {
+			traversalOrder = logical.TraversalPreOrder
+		} else if toc.POST_ORDER() != nil {
+			traversalOrder = logical.TraversalPostOrder
+		}
+	}
+	ctes := ctesCtx.AllNamedQuery()
+	for i := len(ctes) - 1; i >= 0; i-- {
+		nq := ctes[i]
+		name := functions.FullIdToName(nq.GetName())
+		upper := strings.ToUpper(name)
+		// Java alignment: fdb-relational's SemanticAnalyzer requires
+		// every CTE under WITH RECURSIVE to actually self-reference.
+		// Non-self-referencing bodies are rejected with "condition is
+		// not met!" (0A000). This check must run before the eagerly-
+		// built body is reused, because the eager builder doesn't
+		// validate recursive semantics.
+		if recursive {
+			if inner := nq.Query(); inner != nil {
+				qeb := inner.QueryExpressionBody()
+				if !containsTableRef(qeb, upper) {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"condition is not met!")
+				}
+			}
+		}
+		// Reuse eagerly-built body plans when available (non-recursive).
+		body := v.cteBodies[upper]
+		if body == nil {
+			if inner := nq.Query(); inner != nil {
+				if recursive {
+					qeb := inner.QueryExpressionBody()
+					if _, isSet := qeb.(*antlrgen.SetQueryContext); !isSet {
+						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+							"recursive CTE requires UNION ALL body")
+					}
+					v.inRecursiveCTEBody = true
+				}
+				body, err = v.VisitQueryBody(inner.QueryExpressionBody())
+				if recursive {
+					v.inRecursiveCTEBody = false
+				}
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if body == nil {
+			return nil, nil
+		}
+		cte := logical.NewCTE(name, body, main, recursive)
+		cte.TraversalOrder = traversalOrder
+		if colAliases := nq.GetColumnAliases(); colAliases != nil {
+			if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
+				aliases := aliasList.AllFullId()
+				names := make([]string, len(aliases))
+				for j, fid := range aliases {
+					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+				}
+				cte.ColumnAliases = names
+			}
+		}
+		main = cte
+	}
+	return main, nil
+}
+
+// VisitQueryBody dispatches simple SELECT vs UNION, threading
+// metadata and CTE scopes through both arms.
+func (v *PlanVisitor) VisitQueryBody(body antlrgen.IQueryExpressionBodyContext) (logical.LogicalOperator, error) {
+	if body == nil {
+		return nil, nil
+	}
+	switch b := body.(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		return v.VisitSimpleTable(b)
+	case *antlrgen.SetQueryContext:
+		return v.visitUnion(b)
+	}
+	return nil, nil
+}
+
+// VisitSimpleTable is the main SELECT visitor. It walks the ANTLR tree
+// incrementally, building the LogicalOperator tree step by step in the
+// same order as Java's QueryVisitor.visitSimpleTable:
+//
+//  1. FROM clause  → visitFrom     → scan/derived/join operator
+//  2. WHERE clause → visitWhere    → wrap with filter
+//  3. SELECT+GROUP BY+HAVING → visitSelectGroupBy → wrap with aggregate
+//  4. ORDER BY     → visitOrderBy  → wrap with sort (ANTLR direct)
+//  5. LIMIT/OFFSET → visitLimit    → wrap with limit (ANTLR direct)
+//  6. Projection   → visitFinalProjection + DISTINCT (ANTLR direct)
+//  7. Catalog-aware upgrades (inline) → predicate resolution, column
+//     validation, Value resolution for projections/aggregates/sort keys,
+//     qualified star expansion, EXISTS/scalar subquery planning.
+//
+// Aggregate classification delegates to classifySelectElements which
+// returns a selectClassification. When metadata is available, the
+// classification is bridged to a selectQuery for the upgrade functions
+// that consume it — the operator tree itself is built directly by the
+// visit methods.
+func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext) (logical.LogicalOperator, error) {
+	if termCtx == nil {
+		return nil, nil
+	}
+	simpleTable, ok := termCtx.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return nil, nil
+	}
+
+	// Step 1: FROM → parse the source first. Java's QueryVisitor
+	// rejects FROM-less SELECTs before any function dispatch, so
+	// parseFromSource must run before classification/validation.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+
+	// Classify SELECT elements, GROUP BY, HAVING, ORDER BY. This is
+	// the pure parse-tree classification — no FROM, no selectQuery.
+	cls, err := classifySelectElements(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate unsupported functions before building the plan.
+	for _, expr := range cls.projExprs {
+		if fn := findUnsupportedFunctionInParseTree(expr); fn != "" {
+			return nil, api.NewError(api.ErrCodeUndefinedFunction,
+				"Unsupported operator "+fn)
+		}
+	}
+
+	// Validate qualified star sources against FROM.
+	if err := validateQualifiedStarSourcesFromClassification(cls, fs, v.md); err != nil {
+		return nil, err
+	}
+
+	op, err := v.visitFrom(simpleTable, fs)
+	if err != nil {
+		return nil, err
+	}
+	if op == nil {
+		return nil, nil
+	}
+
+	// Step 2: WHERE → wrap with filter directly from ANTLR.
+	op = v.visitWhere(op, simpleTable)
+
+	// Step 3: SELECT + GROUP BY + HAVING → aggregate classification
+	// and operator building.
+	op, stripPrefix := v.visitSelectGroupBy(op, cls, fs)
+
+	// Collect SELECT column names and aliases from ANTLR for ORDER BY
+	// positional reference resolution. This is a lightweight scan —
+	// aggregate classification stays in the selectClassification.
+	selectCols, selectAliases := collectSelectNames(simpleTable)
+
+	// Step 4: ORDER BY → wrap with sort directly from ANTLR. Reads
+	// simpleTable.OrderByClause() and resolves positional references
+	// against the SELECT column list.
+	hasAggregate := cls.countStar || len(cls.aggCols) > 0
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, cls.groupBy, cls.groupByAliases)
+
+	// Post-sort strip projection: when hasSortOnly is true in the
+	// aggregate path, the visible-only projection is deferred past
+	// Sort so sort-key columns remain accessible.
+	if len(cls.postSortStripProj) > 0 {
+		op = logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
+	}
+
+	// Step 5: LIMIT/OFFSET → wrap with limit directly from ANTLR.
+	// classifySelectElements rejects LIMIT/OFFSET for this codebase
+	// (Java's AstNormalizer does the same), so this is always a no-op.
+	op = v.visitLimit(op, simpleTable)
+
+	// Step 6: Projection (non-aggregate) + DISTINCT → directly from
+	// ANTLR. Only builds a projection for non-aggregate queries;
+	// aggregate queries have their projection handled in visitSelectGroupBy.
+	op = v.visitFinalProjection(op, simpleTable, hasAggregate, stripPrefix)
+	if simpleTable.DISTINCT() != nil {
+		op = logical.NewDistinct(op)
+	}
+
+	if v.md == nil {
+		return op, nil
+	}
+
+	// --- Catalog-aware upgrades (inlined from _postBuild) ---
+	//
+	// Build a selectQuery from the classification + FROM source for the
+	// upgrade functions. The operator tree was already built by the
+	// visit methods above; the selectQuery carries parse-tree metadata
+	// that the upgrade functions need for semantic resolution.
+	sq := selectQueryFromClassification(cls, fs)
+
+	// Build the semantic scope once. All identifier resolution goes
+	// through this scope — same architecture as Java's QueryVisitor
+	// holding a SemanticAnalyzer.
+	resolver := buildSelectScope(sq, v.md, v.cteScopes)
+
+	// (1) Expand qualified stars (a.*) in the projection list.
+	needRebuild := false
+	if sq.projQualifier != "" && sq.projCols == nil {
+		expandProjQualifier(sq, v.md)
+		needRebuild = true
+	}
+	if hasAnyQualifiedStar(sq) {
+		expandQualifiedStars(sq, v.md)
+		needRebuild = true
+	}
+	if needRebuild {
+		op = buildLogicalPlanForSelect(sq)
+		if op == nil {
+			return op, nil
+		}
+	}
+
+	// (2) Resolve projection columns through the scope.
+	if resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
+		proj := findProjection(op)
+		for i, col := range sq.projCols {
+			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				if proj != nil {
+					if wv, walkErr := resolver.WalkExpression(sq.projExprs[i]); walkErr == nil && wv != nil {
+						if proj.ProjectedValues == nil {
+							proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+						}
+						if i < len(proj.ProjectedValues) {
+							proj.ProjectedValues[i] = wv
+						}
+					}
+				}
+				continue
+			}
+			if err := resolveColumnName(resolver, col); err != nil {
+				return nil, err
+			}
+			if strings.Contains(col, ".") && proj != nil {
+				if proj.ProjectedValues == nil {
+					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+				}
+				if len(sq.joins) > 0 {
+					if i < len(proj.ProjectedValues) {
+						proj.ProjectedValues[i] = &values.FieldValue{
+							Field: strings.ToUpper(col),
+							Typ:   values.UnknownType,
+						}
+					}
+				} else {
+					var qualifier semantic.Identifier
+					id := semantic.NewUnquoted(col)
+					if dot := strings.IndexByte(col, '.'); dot >= 0 {
+						qualifier = semantic.NewUnquoted(col[:dot])
+						id = semantic.NewUnquoted(col[dot+1:])
+					}
+					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+						if i < len(proj.ProjectedValues) {
+							proj.ProjectedValues[i] = rv
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// (3) Validate ORDER BY columns (ambiguous/undefined, scalar subquery rejection).
+	projAliasSet := make(map[string]bool)
+	if sq.projAliases != nil {
+		for _, a := range sq.projAliases {
+			if a != "" {
+				projAliasSet[strings.ToUpper(a)] = true
+			}
+		}
+	}
+	for _, ac := range sq.aggCols {
+		if ac.outName != "" {
+			projAliasSet[strings.ToUpper(ac.outName)] = true
+		}
+	}
+	for _, ob := range sq.orderBy {
+		if ob.rawExpr != nil {
+			hasSubquery := false
+			walkScalarSubqueries(ob.rawExpr, func(_ antlrgen.IQueryContext) {
+				hasSubquery = true
+			})
+			if hasSubquery {
+				return nil, api.NewError(api.ErrCodeUnsupportedSort,
+					"ORDER BY with scalar subquery is not supported")
+			}
+		}
+	}
+	if resolver != nil {
+		for _, ob := range sq.orderBy {
+			if ob.rawExpr != nil {
+				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
+					var ambigErr *semantic.AmbiguousColumnError
+					if errors.As(walkErr, &ambigErr) {
+						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+							"column reference %q is ambiguous", ob.colName)
+					}
+					var notFoundErr *semantic.ColumnNotFoundError
+					if errors.As(walkErr, &notFoundErr) {
+						if projAliasSet[strings.ToUpper(ob.colName)] {
+							continue
+						}
+						if ob.colName != "" && resolveColumnName(resolver, ob.colName) == nil {
+							continue
+						}
+						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+							"column %q does not exist", ob.colName)
+					}
+				}
+			}
+		}
+	}
+
+	// (4) Validate GROUP BY columns.
+	if resolver != nil {
+		for i, gb := range sq.groupBy {
+			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+				continue
+			}
+			if err := resolveColumnName(resolver, gb); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// (5) Validate aggregate argument columns.
+	if resolver != nil {
+		for _, ac := range sq.aggCols {
+			if ac.aggArg != "" && ac.aggExpr == nil {
+				if err := resolveColumnName(resolver, ac.aggArg); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	// (6) Validate GROUP BY projection constraints (42803).
+	if len(sq.groupBy) > 0 && !sq.countStar {
+		if err := validateGroupByProjection(sq, v.md); err != nil {
+			return nil, err
+		}
+	}
+
+	// (7) Detect overflow numeric literals in projection expressions.
+	if resolver != nil && len(sq.projExprs) > 0 {
+		for _, e := range sq.projExprs {
+			if e == nil {
+				continue
+			}
+			if _, walkErr := resolver.WalkExpressionForProjection(e); walkErr != nil {
+				var overflow *expr.NumericOverflowLiteralError
+				if errors.As(walkErr, &overflow) {
+					return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
+				}
+				var binErr *expr.InvalidBinaryLiteralError
+				if errors.As(walkErr, &binErr) {
+					return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+				}
+			}
+		}
+	}
+
+	// (8) Derived table column-alias rewriting.
+	if sq.derivedQuery != nil {
+		if src, ok := buildDerivedTableSource(v.md, sq.tableName, sq.derivedQuery); ok && src.ColumnAliasMap != nil {
+			rewriteProjectionAliases(op, src.ColumnAliasMap)
+		}
+	}
+
+	// (9) Upgrade JOIN ON predicates.
+	if len(sq.joins) > 0 {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.cteScopes); err != nil {
+			return nil, err
+		}
+	}
+
+	// (10) Upgrade aggregate operands + GROUP BY key values.
+	if len(sq.aggCols) > 0 {
+		upgradeAggregateOperands(op, sq, v.md, v.cteScopes)
+	}
+
+	// (11) Create a unified SubqueryPlanner for EXISTS/scalar subqueries.
+	existsPlanner := &existsSubqueryPlanner{
+		md:          v.md,
+		outerScopes: buildOuterScopeSources(sq, v.md),
+		cteScopes:   v.cteScopes,
+		cteBodies:   v.cteBodies,
+	}
+
+	// (12) Upgrade projection values.
+	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
+		if err := upgradeProjectionValues(op, sq, v.md, v.cteScopes, existsPlanner); err != nil {
+			return nil, err
+		}
+	}
+
+	// (13) Attach scalar subqueries from projections.
+	if len(existsPlanner.scalarSubqueries) > 0 {
+		if proj := findProjection(op); proj != nil {
+			proj.ScalarSubqueries = existsPlanner.scalarSubqueries
+		}
+		existsPlanner.scalarSubqueries = nil
+	}
+
+	// (14) Upgrade HAVING predicate.
+	if sq.havingExpr != nil {
+		upgradeHavingPredicate(op, sq, v.md, v.cteScopes, existsPlanner)
+	}
+
+	// (15) Upgrade sort key values.
+	upgradeSortKeyValues(op, sq, v.md, v.cteScopes)
+
+	// (16) Upgrade WHERE predicate.
+	if sq.whereExpr == nil {
+		return op, nil
+	}
+
+	if resolver != nil {
+		resolver.SetSubqueryPlanner(existsPlanner)
+	}
+
+	var preWalkPred predicates.QueryPredicate
+	if resolver != nil && sq.whereExpr.Expression() != nil {
+		walked, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
+		if walkErr != nil {
+			var ambigErr *semantic.AmbiguousColumnError
+			if errors.As(walkErr, &ambigErr) {
+				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"column reference is ambiguous")
+			}
+			var inListNull *expr.InListNullError
+			if errors.As(walkErr, &inListNull) {
+				return nil, api.NewError(api.ErrCodeCannotConvertType,
+					"IN-list contains NULL literal")
+			}
+			var srcNotFound *semantic.SourceNotFoundError
+			if errors.As(walkErr, &srcNotFound) {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"no FROM source aliased as %s", srcNotFound.Alias.Name())
+			}
+			var inColRef *expr.InColumnRefError
+			if errors.As(walkErr, &inColRef) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					inColRef.Error())
+			}
+			var binErr *expr.InvalidBinaryLiteralError
+			if errors.As(walkErr, &binErr) {
+				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+			}
+			var corrExistsErr *CorrelatedExistsError
+			if errors.As(walkErr, &corrExistsErr) {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"nested correlated EXISTS: %v", walkErr)
+			}
+		} else {
+			preWalkPred = walked
+		}
+	}
+
+	hasSubqueries := len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0
+	if hasSubqueries && preWalkPred != nil {
+		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		if len(sq.joins) > 0 && len(existsPlanner.subqueries) == 1 {
+			esq := existsPlanner.subqueries[0]
+			if esq.JoinPredicate != nil {
+				if eliminated := eliminateRedundantCrossJoin(op, sq, pred, esq); eliminated {
+					return op, nil
+				}
+			}
+		}
+		_ = upgradeFirstFilter(op, pred)
+		if len(existsPlanner.subqueries) > 0 {
+			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+		}
+		if len(existsPlanner.scalarSubqueries) > 0 {
+			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+		}
+		return op, nil
+	}
+
+	var pred predicates.QueryPredicate
+	var predOk bool
+	if v.cteScopes != nil && len(sq.joins) == 0 {
+		if src, found := v.cteScopes[strings.ToUpper(sq.tableName)]; found {
+			pred, predOk = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, v.md)
+		}
+	}
+	if !predOk && v.cteScopes != nil && len(sq.joins) > 0 {
+		pred, predOk = buildWherePredicateForJoinsWithCTEScopes(v.md, sq, sq.whereExpr, v.cteScopes)
+	}
+	if !predOk {
+		pred, predOk = buildWherePredicate(v.md, sq, sq.whereExpr)
+	}
+	if !predOk {
+		return op, nil
+	}
+	_ = upgradeFirstFilter(op, pred)
+	return op, nil
+}
+
+// visitFrom builds the FROM-source subtree from the pre-parsed
+// fromSource. For derived tables (subquery in FROM), it recursively
+// calls v.VisitQueryBody to build the inner plan — CTE scopes flow
+// naturally through the visitor instance.
+//
+// Pre-built derived table inner plans are written back to
+// fs.joins[i].catalogAwareInnerPlan so that the selectQuery bridge
+// carries them into the upgrade functions.
+func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fromSource) (logical.LogicalOperator, error) {
+	var op logical.LogicalOperator
+	if fs.derivedQuery != nil {
+		// Derived table: recursively build inner plan via the visitor.
+		// CTE scopes flow naturally through the visitor instance, and
+		// inner plans get catalog-aware upgrades.
+		innerOp, innerErr := v.VisitQueryBody(fs.derivedQuery.QueryExpressionBody())
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		if innerOp == nil {
+			return nil, nil
+		}
+		// For derived tables without joins, the _postBuild needRebuild
+		// path (qualified star expansion) calls buildLogicalPlanForSelect(sq)
+		// which re-builds the whole tree. That function uses
+		// buildOuterPlanOnDerived for derived tables — it falls back to
+		// extractFromSimpleTable for the inner plan, losing the visitor's
+		// recursive CTE-scope-aware build. Short-circuit: when _postBuild
+		// detects a derived table with no joins, it returns directly via
+		// buildOuterPlanOnDerived(sq, innerOp). So the needRebuild path
+		// only fires for the non-derived case. Safe.
+		if len(fs.joins) > 0 {
+			op = logical.NewCTE(fs.tableName, innerOp,
+				logical.NewScan(fs.tableName, ""), false)
+		} else {
+			op = innerOp
+		}
+	} else {
+		op = logical.NewScan(fs.tableName, fs.tableAlias)
+	}
+
+	// Pre-build derived table inner plans for JOIN sources through the
+	// visitor. Write back to fs.joins[i].catalogAwareInnerPlan so
+	// the selectQuery carries them into the upgrade functions. If
+	// upgrades trigger a needRebuild (qualified star expansion),
+	// buildLogicalPlanForSelect can use the already-built inner plan
+	// rather than falling back to the old non-CTE-aware path.
+	for i := range fs.joins {
+		fj := &fs.joins[i]
+		if fj.derivedQuery == nil {
+			continue
+		}
+		innerOp, innerErr := v.VisitQueryBody(fj.derivedQuery.QueryExpressionBody())
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		if innerOp != nil {
+			fj.catalogAwareInnerPlan = innerOp
+		}
+	}
+
+	// JOINs chain left-to-right from the primary scan. Each join wraps
+	// the current op as Left and scans the joined table as Right.
+	for _, j := range fs.joins {
+		var right logical.LogicalOperator
+		if j.catalogAwareInnerPlan != nil {
+			// Use the pre-built inner plan from the visitor.
+			if j.alias != "" {
+				right = logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
+					logical.NewScan(j.alias, ""), false)
+			} else {
+				right = j.catalogAwareInnerPlan
+			}
+		} else if j.derivedQuery != nil {
+			// Fallback: derived table without a pre-built inner plan
+			// (shouldn't happen, but defensive).
+			innerRight, innerErr := v.VisitQueryBody(j.derivedQuery.QueryExpressionBody())
+			if innerErr != nil {
+				return nil, innerErr
+			}
+			if innerRight == nil {
+				return nil, nil
+			}
+			if j.alias != "" {
+				right = logical.NewCTE(j.alias, innerRight,
+					logical.NewScan(j.alias, ""), false)
+			} else {
+				right = innerRight
+			}
+		} else {
+			right = logical.NewScan(j.tableName, j.alias)
+		}
+		var kind logical.JoinKind
+		switch j.joinType {
+		case "LEFT":
+			kind = logical.JoinLeft
+		case "RIGHT":
+			kind = logical.JoinRight
+		default:
+			kind = logical.JoinInner
+		}
+		onText := ""
+		if j.onExpr != nil {
+			onText = canonicalTextOf(j.onExpr)
+		}
+		op = logical.NewJoin(op, right, kind, onText)
+	}
+
+	return op, nil
+}
+
+// visitWhere wraps the current operator with a LogicalFilter when the
+// FROM clause contains a WHERE expression. Reads the WHERE directly from
+// the ANTLR parse tree rather than from selectQuery.whereExpr.
+func (v *PlanVisitor) visitWhere(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
+	fromClause := simpleTable.FromClause()
+	if fromClause == nil {
+		return op
+	}
+	whereExpr := fromClause.WhereExpr()
+	if whereExpr == nil {
+		return op
+	}
+	return logical.NewFilter(op, canonicalTextOf(whereExpr))
+}
+
+// visitSelectGroupBy builds the aggregate/GROUP BY/HAVING shell around
+// the current operator using the selectClassification from
+// classifySelectElements.
+//
+// Returns the wrapped operator and a stripPrefix (non-empty for derived
+// table queries where column names need prefix stripping).
+func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *selectClassification, fs *fromSource) (logical.LogicalOperator, string) {
+	if cls == nil {
+		return op, ""
+	}
+
+	// Determine strip prefix for derived tables.
+	stripPrefix := ""
+	if fs != nil && fs.derivedQuery != nil {
+		stripPrefix = strings.ToUpper(fs.tableName) + "."
+	}
+
+	strip := func(s string) string {
+		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+			return s[len(stripPrefix):]
+		}
+		return s
+	}
+
+	// Three aggregate shapes collapse here:
+	//   - Bare COUNT(*): no group keys, single COUNT(*) aggregate.
+	//   - GROUP BY without aggregates: just the group keys.
+	//   - Mixed: aggCols carries both group-col and agg-function entries.
+	if !cls.countStar && len(cls.aggCols) == 0 && len(cls.groupBy) == 0 {
+		return op, stripPrefix
+	}
+
+	var aggs, aggAliases []string
+	keys := make([]string, len(cls.groupBy))
+	for i, k := range cls.groupBy {
+		keys[i] = strip(k)
+	}
+	if cls.countStar {
+		aggs = []string{"COUNT(*)"}
+		aggAliases = []string{cls.countStarAlias}
+	} else {
+		for _, ac := range cls.aggCols {
+			if ac.aggFunc != "" {
+				arg := ac.aggArg
+				if arg == "" && ac.aggExpr != nil {
+					arg = canonicalTextOf(ac.aggExpr)
+				}
+				if arg == "" {
+					arg = "*"
+				}
+				arg = strip(arg)
+				distinctPfx := ""
+				if ac.aggDistinct {
+					distinctPfx = "DISTINCT "
+				}
+				aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+				aggAliases = append(aggAliases, ac.outName)
+			}
+		}
+	}
+	having := ""
+	if cls.havingExpr != nil {
+		having = canonicalTextOf(cls.havingExpr)
+	}
+	op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
+
+	// Post-aggregation projection for mixed SELECT lists that contain
+	// both aggregates and computed expressions / constants.
+	hasOutExpr := false
+	for _, ac := range cls.aggCols {
+		if ac.outExpr != nil && ac.aggFunc == "" && ac.visible {
+			hasOutExpr = true
+			break
+		}
+	}
+	if hasOutExpr {
+		var allProj []string
+		var allAntlr []antlrgen.IExpressionContext
+		for _, ac := range cls.aggCols {
+			if !ac.visible {
+				continue
+			}
+			if ac.outExpr != nil && ac.aggFunc == "" {
+				allProj = append(allProj, canonicalTextOf(ac.outExpr))
+				allAntlr = append(allAntlr, ac.outExpr)
+			} else if ac.aggFunc != "" {
+				arg := ac.aggArg
+				if arg == "" && ac.aggExpr != nil {
+					arg = canonicalTextOf(ac.aggExpr)
+				}
+				if arg == "" {
+					arg = "*"
+				}
+				arg = strip(arg)
+				allProj = append(allProj, ac.aggFunc+"("+arg+")")
+				allAntlr = append(allAntlr, nil)
+			} else if ac.groupCol != "" {
+				allProj = append(allProj, strip(ac.groupCol))
+				allAntlr = append(allAntlr, nil)
+			}
+		}
+		if len(allProj) > 0 {
+			proj := logical.NewProject(op, allProj, nil)
+			computed := make([]bool, len(allProj))
+			for i, e := range allAntlr {
+				computed[i] = e != nil
+			}
+			proj.IsComputed = computed
+			op = proj
+			cls.postAggExprs = allAntlr
+		}
+	} else if len(keys) > 0 {
+		hasNonVisible := false
+		for _, ac := range cls.aggCols {
+			if !ac.visible {
+				hasNonVisible = true
+				break
+			}
+		}
+		var visibleProj []string
+		var visibleAliases []string
+		for _, ac := range cls.aggCols {
+			if !ac.visible {
+				continue
+			}
+			if ac.aggFunc != "" {
+				arg := ac.aggArg
+				if arg == "" && ac.aggExpr != nil {
+					arg = canonicalTextOf(ac.aggExpr)
+				}
+				if arg == "" {
+					arg = "*"
+				}
+				arg = strip(arg)
+				canonical := ac.aggFunc + "(" + arg + ")"
+				visibleProj = append(visibleProj, canonical)
+				alias := ""
+				if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
+					alias = ac.outName
+				}
+				visibleAliases = append(visibleAliases, alias)
+			} else if ac.groupCol != "" {
+				visibleProj = append(visibleProj, strip(ac.groupCol))
+				alias := ""
+				if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+					alias = ac.outName
+				}
+				visibleAliases = append(visibleAliases, alias)
+			}
+		}
+		totalOutput := len(keys) + len(aggs)
+		hasAggAlias := false
+		for i, a := range visibleAliases {
+			if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
+				hasAggAlias = true
+				break
+			}
+		}
+		needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
+		if needsStrip {
+			if hasNonVisible {
+				cls.postSortStripProj = visibleProj
+				cls.postSortStripAliases = visibleAliases
+			} else {
+				op = logical.NewProject(op, visibleProj, visibleAliases)
+			}
+		}
+	}
+
+	return op, stripPrefix
+}
+
+// visitOrderBy builds the LogicalSort operator by reading ORDER BY
+// expressions directly from the ANTLR parse tree. Handles positional
+// references (ORDER BY 1), plain column names, aggregate function
+// references, expression ORDER BY, direction (ASC/DESC), NULLS
+// FIRST/LAST, and duplicate detection.
+//
+// selectCols/selectAliases are the pre-aggregate-classification
+// column names from the SELECT list, used for positional reference
+// resolution. aggCols is the aggregate classification from
+// classifySelectElements, used as a fallback when the SELECT list
+// was reclassified (projCols nil, aggCols non-nil).
+func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, selectCols, selectAliases []string, aggCols []aggSelectCol, stripPrefix string, groupBy []string, groupByAliases map[string]int) logical.LogicalOperator {
+	orderByCtx := simpleTable.OrderByClause()
+	if orderByCtx == nil {
+		return op
+	}
+
+	strip := func(s string) string {
+		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+			return s[len(stripPrefix):]
+		}
+		return s
+	}
+
+	// resolveGroupByAlias rewrites a GROUP BY alias to the underlying
+	// column name. Returns the resolved name and true when the alias
+	// matched; otherwise returns the original name and false.
+	resolveGroupByAlias := func(name string) (string, bool) {
+		if groupByAliases == nil {
+			return name, false
+		}
+		idx, ok := groupByAliases[strings.ToUpper(name)]
+		if !ok || idx >= len(groupBy) {
+			return name, false
+		}
+		return groupBy[idx], true
+	}
+
+	obExprs := orderByCtx.AllOrderByExpression()
+	if len(obExprs) == 0 {
+		return op
+	}
+
+	// Java errors 42701 (COLUMN_ALREADY_EXISTS) on `ORDER BY b, b`
+	// with the same column repeated. Stricter than Postgres, but
+	// matching Java's behavior for 100% alignment.
+	seenOrderCols := make(map[string]bool)
+	keys := make([]logical.SortKey, 0, len(obExprs))
+
+	for _, obExpr := range obExprs {
+		ascending := true
+		var nullsFirst *bool
+		if oc := obExpr.OrderClause(); oc != nil {
+			if oc.DESC() != nil {
+				ascending = false
+			}
+			if oc.NULLS() != nil {
+				f := oc.FIRST() != nil
+				nullsFirst = &f
+			}
+		}
+
+		dir := logical.SortAsc
+		if !ascending {
+			dir = logical.SortDesc
+		}
+		nf := ascending // default: ASC → NULLS FIRST, DESC → NULLS LAST
+		if nullsFirst != nil {
+			nf = *nullsFirst
+		}
+
+		// Handle positional references `ORDER BY N`.
+		posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, aggCols)
+		if posErr != nil {
+			// Error during positional resolution — this was already
+			// validated by classifySelectElements, so this shouldn't
+			// happen. Build what we have so far.
+			break
+		}
+		if isPos {
+			key := strings.ToUpper(posName)
+			if seenOrderCols[key] {
+				// Duplicate — classifySelectElements already errors on
+				// this, so we'll never reach here in practice. Skip to
+				// match the validated behavior.
+				continue
+			}
+			seenOrderCols[key] = true
+			keys = append(keys, logical.SortKey{Expr: strip(posName), Dir: dir, NullsFirst: nf})
+			continue
+		}
+
+		// Prefer plain column / aggregate lookup.
+		colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
+		if nameErr == nil {
+			// Resolve GROUP BY alias (`ORDER BY z` where `GROUP BY
+			// x.col1 AS z`) to the underlying column before building
+			// the sort key, so the Cascades planner sees a field that
+			// actually exists in the aggregate output schema.
+			if resolved, ok := resolveGroupByAlias(colName); ok {
+				colName = resolved
+			}
+			key := strings.ToUpper(colName)
+			if seenOrderCols[key] {
+				continue
+			}
+			seenOrderCols[key] = true
+			keys = append(keys, logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf})
+		} else {
+			// Expression ORDER BY — use canonical text to get
+			// proper spacing (GetText concatenates without whitespace).
+			keys = append(keys, logical.SortKey{Expr: canonicalTextOf(obExpr.Expression()), Dir: dir, NullsFirst: nf})
+		}
+	}
+
+	if len(keys) == 0 {
+		return op
+	}
+	return logical.NewSort(op, keys)
+}
+
+// visitLimit checks the ANTLR parse tree for a LIMIT clause. For this
+// codebase, LIMIT/OFFSET are rejected at parse time by
+// classifySelectElements (matching Java's AstNormalizer), so the LIMIT
+// clause is never present when this method runs — it was already
+// rejected before the visitor pipeline starts.
+func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
+	// classifySelectElements rejects LIMIT/OFFSET before we get here,
+	// so simpleTable.LimitClause() is always nil in practice. This
+	// guard is purely defensive future-proofing.
+	if simpleTable.LimitClause() != nil {
+		// When LIMIT support is added, parse the clause here and build
+		// logical.NewLimit(op, limit, offset).
+		return op
+	}
+	return op
+}
+
+// visitFinalProjection builds the non-aggregate projection by reading
+// SELECT elements directly from the ANTLR parse tree. Aggregate
+// queries have their projection handled in visitSelectGroupBy; this
+// only fires when hasAggregate is false.
+//
+// SELECT * (projCols nil) and SELECT qualifier.* (sole qualifier-star)
+// skip the projection node — the downstream scan delivers all columns.
+// Mixed qualifier-star + named columns are handled as regular slots.
+func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, hasAggregate bool, stripPrefix string) logical.LogicalOperator {
+	if hasAggregate {
+		return op
+	}
+
+	selElems := simpleTable.SelectElements()
+	if selElems == nil {
+		return op
+	}
+
+	strip := func(s string) string {
+		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+			return s[len(stripPrefix):]
+		}
+		return s
+	}
+
+	elems := selElems.AllSelectElement()
+	if len(elems) == 0 {
+		return op
+	}
+
+	// Check for SELECT * or sole SELECT qualifier.* — no projection.
+	if len(elems) == 1 {
+		switch elems[0].(type) {
+		case *antlrgen.SelectStarElementContext:
+			return op
+		case *antlrgen.SelectQualifierStarElementContext:
+			return op
+		}
+	}
+
+	var projs []string
+	var aliases []string
+	var computed []bool
+
+	for _, elem := range elems {
+		switch e := elem.(type) {
+		case *antlrgen.SelectStarElementContext:
+			// Mixed * with other elements — already rejected by
+			// classifySelectElements. Defensive no-op.
+			return op
+		case *antlrgen.SelectQualifierStarElementContext:
+			// Mixed qualifier.* slot — placeholder. The downstream
+			// execution expands it.
+			projs = append(projs, "")
+			aliases = append(aliases, "")
+			computed = append(computed, false)
+		case *antlrgen.SelectExpressionElementContext:
+			alias := ""
+			if e.Uid() != nil {
+				alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+			}
+			// Try plain column name first.
+			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
+			if nameErr != nil {
+				// Computed expression: use the raw expression text.
+				exprText := canonicalTextOf(e.Expression())
+				projs = append(projs, exprText)
+				aliases = append(aliases, alias)
+				computed = append(computed, true)
+			} else {
+				projs = append(projs, strip(colName))
+				aliases = append(aliases, alias)
+				computed = append(computed, false)
+			}
+		}
+	}
+
+	if len(projs) == 0 {
+		return op
+	}
+
+	proj := logical.NewProject(op, projs, aliases)
+	proj.IsComputed = computed
+	return proj
+}
+
+// visitUnion handles UNION ALL queries, threading CTE scopes through
+// both branches. Mirrors buildLogicalPlanForUnionWithCTECatalog.
+// Inside a recursive CTE body, UNION DISTINCT (bare UNION) is also
+// permitted for cycle detection.
+func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.LogicalOperator, error) {
+	if setQ == nil {
+		return nil, nil
+	}
+	if len(v.cteScopes) == 0 {
+		return buildLogicalPlanForUnionWithCatalog(setQ, v.md)
+	}
+	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.cteScopes, v.inRecursiveCTEBody)
+}

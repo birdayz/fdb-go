@@ -37,6 +37,7 @@ type RecordQueryRecursiveDfsJoinPlan struct {
 	child             RecordQueryPlan
 	priorCorrelation  values.CorrelationIdentifier
 	traversalStrategy DfsTraversalStrategy
+	distinct          bool // UNION DISTINCT deduplication for cycle detection
 }
 
 func NewRecordQueryRecursiveDfsJoinPlan(
@@ -51,6 +52,24 @@ func NewRecordQueryRecursiveDfsJoinPlan(
 		traversalStrategy: strategy,
 	}
 }
+
+// NewRecordQueryRecursiveDfsJoinPlanDistinct creates a DFS plan with
+// UNION DISTINCT deduplication.
+func NewRecordQueryRecursiveDfsJoinPlanDistinct(
+	root, child RecordQueryPlan,
+	priorCorrelation values.CorrelationIdentifier,
+	strategy DfsTraversalStrategy,
+) *RecordQueryRecursiveDfsJoinPlan {
+	return &RecordQueryRecursiveDfsJoinPlan{
+		root:              root,
+		child:             child,
+		priorCorrelation:  priorCorrelation,
+		traversalStrategy: strategy,
+		distinct:          true,
+	}
+}
+
+func (p *RecordQueryRecursiveDfsJoinPlan) IsDistinct() bool { return p.distinct }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) GetRoot() RecordQueryPlan  { return p.root }
 func (p *RecordQueryRecursiveDfsJoinPlan) GetChild() RecordQueryPlan { return p.child }
@@ -74,7 +93,7 @@ func (p *RecordQueryRecursiveDfsJoinPlan) EqualsWithoutChildren(other RecordQuer
 	if !ok {
 		return false
 	}
-	return p.priorCorrelation == o.priorCorrelation && p.traversalStrategy == o.traversalStrategy
+	return p.priorCorrelation == o.priorCorrelation && p.traversalStrategy == o.traversalStrategy && p.distinct == o.distinct
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) HashCodeWithoutChildren() uint64 {
@@ -82,6 +101,11 @@ func (p *RecordQueryRecursiveDfsJoinPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte("recursivedfs|"))
 	h.Write([]byte(p.priorCorrelation.Name()))
 	h.Write([]byte{byte(p.traversalStrategy)})
+	if p.distinct {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
 	return h.Sum64()
 }
 

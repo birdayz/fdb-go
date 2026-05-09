@@ -505,14 +505,25 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 	return NewRichOrderingWithDeps(bm, keys, deps, outer.distinct || inner.distinct)
 }
 
-// PullUp translates this ordering through a value mapping. For each
-// ordering key, if the mapping contains a replacement, the key is
-// renamed. Bindings are preserved. Keys not in the mapping are dropped.
+// PullUp translates this ordering through a string-keyed value mapping.
+// For each ordering key, if the mapping contains a replacement (keyed
+// by ExplainValue string), the key is renamed. Bindings are preserved.
+// Keys not in the mapping are dropped.
 //
-// Simplified port of Java's Ordering.pullUp — handles the common case
-// of FieldValue→FieldValue renaming through projections. The full
-// Java version uses Value.pullUp() which handles arbitrary value
-// hierarchies and correlation translation.
+// This is the simpler of two pull-up paths:
+//   - PullUp(mapping): string-keyed FieldValue-to-FieldValue renaming.
+//     Used by projection rules and callers that build an explicit
+//     rename map.
+//   - PullUpThroughValue(resultValue, alias): full Value-tree-aware
+//     pull-up via values.PullUpValue. Handles RecordConstructorValue
+//     decomposition and passthrough (QOV/ObjectValue) semantics.
+//     Used by callers that have a result-value structure rather than
+//     a flat rename map.
+//
+// Both paths produce correct results for their use cases. Callers
+// should prefer PullUpThroughValue when the result value is available,
+// as it handles nested value structures (e.g. record constructors)
+// that a flat string map cannot represent.
 func (o *RichOrdering) PullUp(mapping map[string]values.Value) *RichOrdering {
 	if o == nil {
 		return nil
@@ -536,6 +547,66 @@ func (o *RichOrdering) PullUp(mapping map[string]values.Value) *RichOrdering {
 // back through a reverse mapping.
 func (o *RichOrdering) PushDown(mapping map[string]values.Value) *RichOrdering {
 	return o.PullUp(mapping)
+}
+
+// PullUpThroughValue translates this ordering through a result value.
+// For each ordering key, uses Value.PullUpValue to compute the
+// pulled-up key. Bindings are preserved. Keys that cannot be pulled
+// up are dropped.
+//
+// Ports Java's Ordering.pullUp(Value, EvaluationContext, AliasMap,
+// Set<CorrelationIdentifier>) using the direct algorithmic pullUp
+// from values.PullUpValue.
+func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values.CorrelationIdentifier) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+
+	pulledUpMap := values.PullUpValues(o.keys, resultValue, alias)
+	if len(pulledUpMap) == 0 {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+
+	newBM := make(map[values.Value][]OrderingBinding, len(pulledUpMap))
+	var newKeys []values.Value
+	for _, key := range o.keys {
+		if pulledUp, ok := pulledUpMap[key]; ok {
+			newBM[pulledUp] = o.bindingMap[key]
+			newKeys = append(newKeys, pulledUp)
+		}
+	}
+	if len(newKeys) == 0 {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+	return NewRichOrdering(newBM, newKeys, o.distinct)
+}
+
+// PushDownThroughValue translates this ordering's keys from output
+// space back to input space through a result value. For each ordering
+// key, uses Value.PushDownValue to compute the pushed-down key.
+// Bindings are preserved. Keys that cannot be pushed down are dropped.
+//
+// Ports Java's Ordering.pushDown(Value, EvaluationContext, AliasMap,
+// Set<CorrelationIdentifier>).
+func (o *RichOrdering) PushDownThroughValue(resultValue values.Value, upperAlias values.CorrelationIdentifier) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+
+	pushed := values.PushDownValues(o.keys, resultValue, upperAlias)
+
+	newBM := make(map[values.Value][]OrderingBinding, len(o.bindingMap))
+	var newKeys []values.Value
+	for i, key := range o.keys {
+		if pushed[i] != nil {
+			newBM[pushed[i]] = o.bindingMap[key]
+			newKeys = append(newKeys, pushed[i])
+		}
+	}
+	if len(newKeys) == 0 {
+		return NewRichOrdering(nil, nil, o.distinct)
+	}
+	return NewRichOrdering(newBM, newKeys, o.distinct)
 }
 
 // CreateUnionOrdering creates a RichOrdering from a single provided

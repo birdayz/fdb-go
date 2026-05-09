@@ -149,7 +149,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		for i, col := range sq.projCols {
 			expr := col
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				expr = strings.TrimSpace(sq.projExprs[i].GetText())
+				expr = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 			}
 			rows[i] = expr
 			if sq.projAliases != nil && i < len(sq.projAliases) {
@@ -161,26 +161,40 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 
 	// Build the FROM-source subtree. Either a plain table scan or a
 	// derived table (subquery in FROM). For derived tables we
-	// recursively build the inner logical plan and wrap it in a
-	// LogicalScan stand-in carrying the alias as the "table name" —
-	// there's no dedicated LogicalDerived operator in the seed, so
-	// the inner plan surfaces as-is with the alias lost at the
-	// logical level. (A follow-up can add LogicalSubquery if rules
-	// need to distinguish.)
+	// recursively build the inner logical plan and wrap it as a CTE
+	// so that the user-supplied alias (e.g. "sq1") is preserved in
+	// the logical tree. The CTE wrapper ensures that sourceAlias
+	// (used by the NLJ rule to set outerAlias/innerAlias on the
+	// physical plan) returns the derived-table alias rather than the
+	// underlying table name. Without this, column qualification in
+	// mergeRows uses the wrong qualifier and projections like
+	// "sq1.x" resolve to NULL.
 	var op logical.LogicalOperator
 	if sq.derivedQuery != nil {
+		var innerOp logical.LogicalOperator
 		body := sq.derivedQuery.QueryExpressionBody()
 		if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
 			if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
 				if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-					op = buildLogicalPlanForSelect(inner)
+					innerOp = buildLogicalPlanForSelect(inner)
 				}
 			}
 		}
-		if op == nil {
+		if innerOp == nil {
 			// Derived query is out of the inner builder's scope — bail
 			// rather than emit a misleading partial tree.
 			return nil
+		}
+		// Wrap as CTE so the alias surfaces in the logical tree.
+		// When there are no joins the outer operators (filter, sort,
+		// project) can reference the inner plan directly — the CTE
+		// wrapper would add an unnecessary indirection and change
+		// datum key layout. Only wrap when joins are present.
+		if len(sq.joins) > 0 {
+			op = logical.NewCTE(sq.tableName, innerOp,
+				logical.NewScan(sq.tableName, ""), false)
+		} else {
+			op = innerOp
 		}
 	} else {
 		op = logical.NewScan(sq.tableName, sq.tableAlias)
@@ -193,18 +207,34 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	for _, j := range sq.joins {
 		var right logical.LogicalOperator
 		if j.catalogAwareInnerPlan != nil {
-			right = j.catalogAwareInnerPlan
+			// catalogAwareInnerPlan is the inner plan built through the
+			// catalog-aware path. Wrap it in a CTE so the join alias
+			// is preserved (same logic as the primary source above).
+			if j.alias != "" {
+				right = logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
+					logical.NewScan(j.alias, ""), false)
+			} else {
+				right = j.catalogAwareInnerPlan
+			}
 		} else if j.derivedQuery != nil {
+			var innerRight logical.LogicalOperator
 			body := j.derivedQuery.QueryExpressionBody()
 			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
 				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
 					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-						right = buildLogicalPlanForSelect(inner)
+						innerRight = buildLogicalPlanForSelect(inner)
 					}
 				}
 			}
-			if right == nil {
+			if innerRight == nil {
 				return nil
+			}
+			// Wrap as CTE so the alias surfaces in sourceAlias.
+			if j.alias != "" {
+				right = logical.NewCTE(j.alias, innerRight,
+					logical.NewScan(j.alias, ""), false)
+			} else {
+				right = innerRight
 			}
 		} else {
 			right = logical.NewScan(j.tableName, j.alias)
@@ -231,6 +261,22 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
 	}
 
+	return buildSelectShell(op, sq, "")
+}
+
+// buildSelectShell builds the Aggregate/Sort/Limit/Projection/Distinct
+// shell on top of an already-built FROM source. Shared between
+// buildLogicalPlanForSelect (plain tables) and the derived-table path.
+// stripPrefix, when non-empty, is removed from column names (derived
+// table qualifier like "X.").
+func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix string) logical.LogicalOperator {
+	strip := func(s string) string {
+		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+			return s[len(stripPrefix):]
+		}
+		return s
+	}
+
 	// Aggregate / GROUP BY. Three shapes collapse here:
 	//   - Bare COUNT(*): no group keys, single COUNT(*) aggregate.
 	//   - GROUP BY without aggregates: just the group keys.
@@ -238,7 +284,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		var aggs, aggAliases []string
-		keys := append([]string{}, sq.groupBy...)
+		keys := make([]string, len(sq.groupBy))
+		for i, k := range sq.groupBy {
+			keys[i] = strip(k)
+		}
 		if sq.countStar {
 			aggs = []string{"COUNT(*)"}
 			aggAliases = []string{sq.countStarAlias}
@@ -252,6 +301,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
+					arg = strip(arg)
 					distinctPfx := ""
 					if ac.aggDistinct {
 						distinctPfx = "DISTINCT "
@@ -275,7 +325,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		// the outExpr-only projection would drop the aggregate columns.
 		hasOutExpr := false
 		for _, ac := range sq.aggCols {
-			if ac.outExpr != nil && ac.aggFunc == "" && !ac.sortOnly && !ac.hidden {
+			if ac.outExpr != nil && ac.aggFunc == "" && ac.visible {
 				hasOutExpr = true
 				break
 			}
@@ -284,11 +334,11 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			var allProj []string
 			var allAntlr []antlrgen.IExpressionContext
 			for _, ac := range sq.aggCols {
-				if ac.sortOnly || ac.hidden {
+				if !ac.visible {
 					continue
 				}
 				if ac.outExpr != nil && ac.aggFunc == "" {
-					allProj = append(allProj, strings.TrimSpace(ac.outExpr.GetText()))
+					allProj = append(allProj, strings.TrimSpace(canonicalTextOf(ac.outExpr)))
 					allAntlr = append(allAntlr, ac.outExpr)
 				} else if ac.aggFunc != "" {
 					arg := ac.aggArg
@@ -298,10 +348,11 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
+					arg = strip(arg)
 					allProj = append(allProj, ac.aggFunc+"("+arg+")")
 					allAntlr = append(allAntlr, nil)
 				} else if ac.groupCol != "" {
-					allProj = append(allProj, ac.groupCol)
+					allProj = append(allProj, strip(ac.groupCol))
 					allAntlr = append(allAntlr, nil)
 				}
 			}
@@ -319,17 +370,17 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 				sq.postAggExprs = allAntlr
 			}
 		} else if len(keys) > 0 {
-			hasSortOnly := false
+			hasNonVisible := false
 			for _, ac := range sq.aggCols {
-				if ac.sortOnly {
-					hasSortOnly = true
+				if !ac.visible {
+					hasNonVisible = true
 					break
 				}
 			}
 			var visibleProj []string
 			var visibleAliases []string
 			for _, ac := range sq.aggCols {
-				if ac.sortOnly || ac.hidden {
+				if !ac.visible {
 					continue
 				}
 				if ac.aggFunc != "" {
@@ -340,6 +391,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					if arg == "" {
 						arg = "*"
 					}
+					arg = strip(arg)
 					canonical := ac.aggFunc + "(" + arg + ")"
 					visibleProj = append(visibleProj, canonical)
 					alias := ""
@@ -348,7 +400,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 					}
 					visibleAliases = append(visibleAliases, alias)
 				} else if ac.groupCol != "" {
-					visibleProj = append(visibleProj, ac.groupCol)
+					visibleProj = append(visibleProj, strip(ac.groupCol))
 					alias := ""
 					if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
 						alias = ac.outName
@@ -359,16 +411,19 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			totalOutput := len(keys) + len(aggs)
 			hasAggAlias := false
 			for i, a := range visibleAliases {
-				if a != "" && i < len(visibleProj) {
-					upper := strings.ToUpper(visibleProj[i])
-					if strings.Contains(upper, "(") {
-						hasAggAlias = true
-						break
-					}
+				if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
+					hasAggAlias = true
+					break
 				}
 			}
-			if !hasSortOnly && (len(visibleProj) < totalOutput || hasAggAlias) {
-				op = logical.NewProject(op, visibleProj, visibleAliases)
+			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
+			if needsStrip {
+				if hasNonVisible {
+					sq.postSortStripProj = visibleProj
+					sq.postSortStripAliases = visibleAliases
+				} else {
+					op = logical.NewProject(op, visibleProj, visibleAliases)
+				}
 			}
 		}
 	}
@@ -380,9 +435,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			if !ob.ascending {
 				dir = logical.SortDesc
 			}
-			expr := ob.colName
+			expr := strip(ob.colName)
 			if expr == "" && ob.rawExpr != nil {
-				expr = ob.rawExpr.GetText()
+				expr = canonicalTextOf(ob.rawExpr)
 			}
 			nullsFirst := ob.ascending
 			if ob.nullsFirst != nil {
@@ -391,6 +446,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			keys = append(keys, logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst})
 		}
 		op = logical.NewSort(op, keys)
+	}
+
+	if len(sq.postSortStripProj) > 0 {
+		op = logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
 	}
 
 	// LIMIT: sq.limit < 0 means "no limit". Offset alone (LIMIT -1
@@ -407,9 +466,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
 		for i, col := range sq.projCols {
-			projs[i] = col
+			projs[i] = strip(col)
 			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				projs[i] = strings.TrimSpace(sq.projExprs[i].GetText())
+				projs[i] = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
 				computed[i] = true
 			}
 			if sq.projAliases != nil && i < len(sq.projAliases) {
@@ -550,7 +609,7 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		}
 		sets = append(sets, logical.Assignment{
 			Column: col,
-			Expr:   strings.TrimSpace(el.Expression().GetText()),
+			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)

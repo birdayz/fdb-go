@@ -705,3 +705,263 @@ func TestRichOrdering_PullUp_NoMatch(t *testing.T) {
 		t.Fatalf("expected 0 keys when no mapping matches, got %d", len(pulled.GetKeys()))
 	}
 }
+
+func TestRichOrdering_PullUpThroughValue_RecordConstructor(t *testing.T) {
+	t.Parallel()
+	// Ordering: keys [FV("x"), FV("y")], x ASC, y DESC
+	keyX := fieldVal("x")
+	keyY := fieldVal("y")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyX: {SortedBinding(ProvidedSortOrderAscending)},
+			keyY: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{keyX, keyY}, false,
+	)
+
+	alias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
+	)
+
+	pulled := o.PullUpThroughValue(resultValue, alias)
+
+	if len(pulled.GetKeys()) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(pulled.GetKeys()))
+	}
+	if values.ExplainValue(pulled.GetKeys()[0]) != "a" {
+		t.Fatalf("expected first key 'a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
+	}
+	if values.ExplainValue(pulled.GetKeys()[1]) != "b" {
+		t.Fatalf("expected second key 'b', got %q", values.ExplainValue(pulled.GetKeys()[1]))
+	}
+}
+
+func TestRichOrdering_PullUpThroughValue_PartialMatch(t *testing.T) {
+	t.Parallel()
+	// Only some keys match the result value.
+	keyX := fieldVal("x")
+	keyZ := fieldVal("z")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyX: {SortedBinding(ProvidedSortOrderAscending)},
+			keyZ: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{keyX, keyZ}, false,
+	)
+
+	alias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+	)
+
+	pulled := o.PullUpThroughValue(resultValue, alias)
+
+	if len(pulled.GetKeys()) != 1 {
+		t.Fatalf("expected 1 key (z dropped), got %d", len(pulled.GetKeys()))
+	}
+	if values.ExplainValue(pulled.GetKeys()[0]) != "a" {
+		t.Fatalf("expected key 'a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
+	}
+}
+
+func TestRichOrdering_PullUpThroughValue_PreservesBindings(t *testing.T) {
+	t.Parallel()
+	keyX := fieldVal("x")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyX: {FixedBinding(nil)},
+		},
+		[]values.Value{keyX}, true,
+	)
+
+	alias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "renamed", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+	)
+
+	pulled := o.PullUpThroughValue(resultValue, alias)
+	if !pulled.IsDistinct() {
+		t.Fatal("expected distinct flag preserved")
+	}
+	bindings := pulled.GetBindingMap()[pulled.GetKeys()[0]]
+	if len(bindings) != 1 || !bindings[0].IsFixed() {
+		t.Fatal("expected fixed binding preserved")
+	}
+}
+
+func TestRichOrdering_PushDownThroughValue_RecordConstructor(t *testing.T) {
+	t.Parallel()
+	// Ordering in output space: keys [FV("a"), FV("b")], a ASC, b DESC
+	keyA := fieldVal("a")
+	keyB := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyA: {SortedBinding(ProvidedSortOrderAscending)},
+			keyB: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{keyA, keyB}, false,
+	)
+
+	upperAlias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
+	)
+
+	pushed := o.PushDownThroughValue(resultValue, upperAlias)
+
+	if len(pushed.GetKeys()) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(pushed.GetKeys()))
+	}
+	if values.ExplainValue(pushed.GetKeys()[0]) != "x" {
+		t.Fatalf("expected first key 'x', got %q", values.ExplainValue(pushed.GetKeys()[0]))
+	}
+	if values.ExplainValue(pushed.GetKeys()[1]) != "y" {
+		t.Fatalf("expected second key 'y', got %q", values.ExplainValue(pushed.GetKeys()[1]))
+	}
+}
+
+func TestRichOrdering_PullUpPushDown_RoundTrip(t *testing.T) {
+	t.Parallel()
+	keyX := fieldVal("x")
+	keyY := fieldVal("y")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			keyX: {SortedBinding(ProvidedSortOrderAscending)},
+			keyY: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{keyX, keyY}, false,
+	)
+
+	alias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
+	)
+
+	// PullUp: x→a, y→b
+	pulled := o.PullUpThroughValue(resultValue, alias)
+	// PushDown back: a→x, b→y
+	restored := pulled.PushDownThroughValue(resultValue, alias)
+
+	if len(restored.GetKeys()) != 2 {
+		t.Fatalf("expected 2 keys after round-trip, got %d", len(restored.GetKeys()))
+	}
+	if values.ExplainValue(restored.GetKeys()[0]) != "x" {
+		t.Fatalf("expected key 'x', got %q", values.ExplainValue(restored.GetKeys()[0]))
+	}
+	if values.ExplainValue(restored.GetKeys()[1]) != "y" {
+		t.Fatalf("expected key 'y', got %q", values.ExplainValue(restored.GetKeys()[1]))
+	}
+}
+
+func TestRichOrdering_PullUpThroughValue_NilOrdering(t *testing.T) {
+	t.Parallel()
+	var o *RichOrdering
+	alias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+	)
+	if o.PullUpThroughValue(resultValue, alias) != nil {
+		t.Fatal("expected nil for nil ordering")
+	}
+}
+
+func TestRequestedOrdering_PushDownThroughValue(t *testing.T) {
+	t.Parallel()
+	req := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldVal("a"), SortOrder: RequestedSortOrderAscending},
+			{Value: fieldVal("b"), SortOrder: RequestedSortOrderDescending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	upperAlias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
+	)
+
+	pushed := req.PushDownThroughValue(resultValue, upperAlias)
+
+	parts := pushed.GetParts()
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	if values.ExplainValue(parts[0].Value) != "x" {
+		t.Fatalf("expected first value 'x', got %q", values.ExplainValue(parts[0].Value))
+	}
+	if parts[0].SortOrder != RequestedSortOrderAscending {
+		t.Fatalf("expected ascending, got %v", parts[0].SortOrder)
+	}
+	if values.ExplainValue(parts[1].Value) != "y" {
+		t.Fatalf("expected second value 'y', got %q", values.ExplainValue(parts[1].Value))
+	}
+	if parts[1].SortOrder != RequestedSortOrderDescending {
+		t.Fatalf("expected descending, got %v", parts[1].SortOrder)
+	}
+}
+
+func TestRequestedOrdering_PushDownThroughValue_Preserve(t *testing.T) {
+	t.Parallel()
+	req := PreserveOrdering()
+	alias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+	)
+	pushed := req.PushDownThroughValue(resultValue, alias)
+	if !pushed.IsPreserve() {
+		t.Fatal("expected preserve ordering for preserve input")
+	}
+}
+
+func TestRequestedOrdering_PushDownThroughValue_PartialDrop(t *testing.T) {
+	t.Parallel()
+	req := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldVal("a"), SortOrder: RequestedSortOrderAscending},
+			{Value: fieldVal("z"), SortOrder: RequestedSortOrderDescending}, // not in result
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	upperAlias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+	)
+
+	pushed := req.PushDownThroughValue(resultValue, upperAlias)
+	parts := pushed.GetParts()
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part (z dropped), got %d", len(parts))
+	}
+	if values.ExplainValue(parts[0].Value) != "x" {
+		t.Fatalf("expected value 'x', got %q", values.ExplainValue(parts[0].Value))
+	}
+}
+
+func TestRequestedOrdering_PushDownThroughValue_AllDropped(t *testing.T) {
+	t.Parallel()
+	req := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldVal("z"), SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	upperAlias := values.NamedCorrelationIdentifier("q1")
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+	)
+
+	pushed := req.PushDownThroughValue(resultValue, upperAlias)
+	if !pushed.IsPreserve() {
+		t.Fatal("expected preserve ordering when all parts are dropped")
+	}
+}

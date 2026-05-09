@@ -26,6 +26,11 @@ type RecordQueryNestedLoopJoinPlan struct {
 	joinType   JoinType
 	outerAlias string
 	innerAlias string
+	// sqlColumnOrderReversed is true when the physical outer/inner
+	// assignment was swapped relative to the SQL FROM-clause order.
+	// When true, SELECT * should emit inner columns before outer
+	// columns to match SQL semantics.
+	sqlColumnOrderReversed bool
 }
 
 // JoinType distinguishes inner vs outer vs cross joins.
@@ -89,6 +94,17 @@ func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan { return p.in
 func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType     { return p.joinType }
 func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string     { return p.outerAlias }
 func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string     { return p.innerAlias }
+
+// IsSQLColumnOrderReversed reports whether the physical outer/inner
+// assignment was swapped relative to the SQL FROM-clause order.
+func (p *RecordQueryNestedLoopJoinPlan) IsSQLColumnOrderReversed() bool {
+	return p.sqlColumnOrderReversed
+}
+
+// SetSQLColumnOrderReversed marks the plan as having reversed column order.
+func (p *RecordQueryNestedLoopJoinPlan) SetSQLColumnOrderReversed(v bool) {
+	p.sqlColumnOrderReversed = v
+}
 
 func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredicate {
 	return p.predicates

@@ -625,11 +625,11 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		if sq.limit >= 0 && int(sq.limit) < len(data) {
 			data = data[:sq.limit]
 		}
-		// Drop trailing sort-only aggregate columns now that the sort
-		// has consumed them. No-op when the query had no ORDER BY
-		// references to hidden aggregates.
+		// Drop trailing non-visible aggregate columns now that the sort
+		// has consumed them. No-op when the query had no ORDER BY /
+		// HAVING references to non-SELECT-list aggregates.
 		if isAggregate {
-			cols, data = stripAggregateSortOnly(sq, cols, data)
+			cols, data = stripAggregateNonVisible(sq, cols, data)
 		}
 
 		return nil, nil

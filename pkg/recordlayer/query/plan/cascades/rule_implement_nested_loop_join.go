@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"strings"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -37,6 +39,17 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 
 	quants := sel.GetQuantifiers()
+
+	// 3 quantifiers: 2 ForEach + 1 Existential = join with EXISTS filter.
+	// Build the inner join first, then wrap with the EXISTS semi-join.
+	if len(quants) == 3 &&
+		quants[0].Kind() == expressions.QuantifierForEach &&
+		quants[1].Kind() == expressions.QuantifierForEach &&
+		quants[2].Kind() == expressions.QuantifierExistential {
+		r.implementJoinWithExistential(call, sel, quants)
+		return
+	}
+
 	if len(quants) != 2 {
 		return
 	}
@@ -94,6 +107,12 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		joinType,
 		leftAlias, rightAlias,
 	)
+	// When the SelectExpression was created via WithSwappedQuantifiers
+	// (ChildrenAsSet permutation), mark the plan so column derivation
+	// can restore the original SQL FROM-clause column ordering.
+	if sel.IsQuantifiersSwapped() {
+		joinPlan.SetSQLColumnOrderReversed(true)
+	}
 
 	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
@@ -215,6 +234,157 @@ func flattenAndPredicates(preds []predicates.QueryPredicate) []predicates.QueryP
 		}
 	}
 	return preds
+}
+
+// implementJoinWithExistential handles a flat SelectExpression with
+// ForEach(left), ForEach(right), Existential(exists_scan). This shape
+// comes from a cross-join + WHERE EXISTS filter. The method builds a
+// two-level NLJ: an inner join for left × right, then an outer EXISTS
+// semi-join wrapping the join result with the existential inner.
+func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	quants []expressions.Quantifier,
+) {
+	leftRef := quants[0].GetRangesOver()
+	rightRef := quants[1].GetRangesOver()
+	existRef := quants[2].GetRangesOver()
+	if leftRef == nil || rightRef == nil || existRef == nil {
+		return
+	}
+
+	leftPlan := findPhysicalPlan(leftRef)
+	rightPlan := findPhysicalPlan(rightRef)
+	existPlan := findPhysicalPlan(existRef)
+	if leftPlan == nil || rightPlan == nil || existPlan == nil {
+		return
+	}
+
+	leftExpr := findPhysicalExpr(leftRef)
+	rightExpr := findPhysicalExpr(rightRef)
+	existExpr := findPhysicalExpr(existRef)
+	if leftExpr == nil || rightExpr == nil || existExpr == nil {
+		return
+	}
+
+	aliases := sel.GetSourceAliases()
+	var leftAlias, rightAlias, existAlias string
+	if len(aliases) >= 1 {
+		leftAlias = aliases[0]
+	}
+	if len(aliases) >= 2 {
+		rightAlias = aliases[1]
+	}
+	if len(aliases) >= 3 {
+		existAlias = aliases[2]
+	}
+
+	// Split predicates into join predicates (for the inner NLJ) and
+	// EXISTS-related predicates (for the outer NLJ). EXISTS predicates
+	// reference the existential alias and belong on the outer level.
+	allPreds := flattenAndPredicates(sel.GetPredicates())
+	var joinPreds, existPreds []predicates.QueryPredicate
+	negated := false
+	for _, p := range allPreds {
+		if _, ok := p.(*predicates.ExistsPredicate); ok {
+			// Pure EXISTS predicate — belongs on the outer level.
+			continue
+		}
+		if not, ok := p.(*predicates.NotPredicate); ok {
+			ch := not.Children()
+			if len(ch) == 1 {
+				if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
+					negated = true
+					continue
+				}
+			}
+		}
+		// Heuristic: predicates with field references from the existential
+		// source belong on the outer (EXISTS) level. All others are join
+		// predicates. This is a simplification — a full implementation
+		// would check which quantifiers each predicate references.
+		if predicateReferencesAlias(p, existAlias) {
+			existPreds = append(existPreds, p)
+		} else {
+			joinPreds = append(joinPreds, p)
+		}
+	}
+
+	// Map join type.
+	var joinType plans.JoinType
+	switch sel.GetJoinType() {
+	case expressions.JoinLeftOuter:
+		joinType = plans.JoinLeftOuter
+	default:
+		joinType = plans.JoinInner
+	}
+
+	// Step 1: build inner join (left × right).
+	innerJoinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
+		leftPlan, rightPlan,
+		joinPreds,
+		joinType,
+		leftAlias, rightAlias,
+	)
+
+	// Step 2: build EXISTS semi-join on top.
+	existJoinType := plans.JoinExists
+	if negated {
+		existJoinType = plans.JoinNotExists
+	}
+
+	// Use raw existPlan when there are correlated predicates; FOD when
+	// uncorrelated (same logic as implementExistentialSelect).
+	var nljExistInner plans.RecordQueryPlan
+	if len(existPreds) > 0 {
+		nljExistInner = existPlan
+	} else {
+		nljExistInner = plans.NewRecordQueryFirstOrDefaultPlan(
+			existPlan, values.NewNullValue(values.UnknownType))
+	}
+
+	outerJoinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
+		innerJoinPlan, nljExistInner,
+		existPreds,
+		existJoinType,
+		"", existAlias,
+	)
+
+	// Build quantifiers for the physical wrapper. The wrapper needs
+	// exactly 2 quantifiers. Use left + right as a representative
+	// pair for the memoized expression structure.
+	leftMemoRef := call.MemoizeExpression(leftExpr)
+	rightMemoRef := call.MemoizeExpression(rightExpr)
+
+	// The outerJoinPlan is the full physical plan (inner join + EXISTS
+	// semi-join). The wrapper quantifiers are for Cascades bookkeeping.
+	call.Yield(newPhysicalNestedLoopJoinWrapper(
+		outerJoinPlan,
+		expressions.ForEachQuantifier(leftMemoRef),
+		expressions.ForEachQuantifier(rightMemoRef),
+	))
+}
+
+// predicateReferencesAlias checks whether a predicate tree contains
+// a FieldValue whose field name starts with the given alias prefix
+// (case-insensitive). Used to classify predicates as belonging to the
+// join level or the EXISTS level.
+//
+// Uses walkPredicateFieldValues (shared with PushFilterBelowJoinRule)
+// to recursively visit ALL FieldValues in the predicate's value trees,
+// regardless of nesting depth or value type.
+func predicateReferencesAlias(p predicates.QueryPredicate, alias string) bool {
+	if alias == "" {
+		return false
+	}
+	prefix := strings.ToUpper(alias) + "."
+	found := false
+	walkPredicateFieldValues(p, func(fv *values.FieldValue) {
+		if strings.HasPrefix(strings.ToUpper(fv.Field), prefix) {
+			found = true
+		}
+	})
+	return found
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)
