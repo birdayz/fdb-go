@@ -995,6 +995,22 @@ func TestRichOrdering_GetEqualityBoundValues(t *testing.T) {
 	}
 }
 
+func TestRichOrdering_GetEqualityBoundValues_MixedBindings(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding(nil), SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	eq := o.GetEqualityBoundValues()
+	if _, ok := eq[a]; !ok {
+		t.Fatal("a should be equality-bound (has at least one fixed binding, matching Java's filterValues(isFixed))")
+	}
+}
+
 func TestRichOrdering_GetEqualityBoundValues_Empty(t *testing.T) {
 	t.Parallel()
 	o := EmptyOrdering()

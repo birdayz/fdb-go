@@ -120,16 +120,18 @@ func (o *RichOrdering) IsDistinct() bool {
 	return o.distinct
 }
 
-// GetEqualityBoundValues returns the set of values whose bindings are
-// all fixed (equality-bound). Java's version uses filterValues(isFixed)
-// which keeps values with ANY fixed binding; ours requires ALL bindings
-// fixed. In practice index scans produce single-binding entries so the
-// difference is moot.
+// GetEqualityBoundValues returns the set of values that have at least
+// one fixed (equality-bound) binding. Matches Java's
+// Ordering.getEqualityBoundValues() which uses
+// Multimaps.filterValues(Binding::isFixed).keySet().
 func (o *RichOrdering) GetEqualityBoundValues() map[values.Value]struct{} {
 	result := make(map[values.Value]struct{})
 	for v, bindings := range o.bindingMap {
-		if AreAllBindingsFixed(bindings) {
-			result[v] = struct{}{}
+		for _, b := range bindings {
+			if b.IsFixed() {
+				result[v] = struct{}{}
+				break
+			}
 		}
 	}
 	return result
