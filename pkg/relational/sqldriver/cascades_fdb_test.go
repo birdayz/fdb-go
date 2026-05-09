@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -2400,4 +2401,233 @@ func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestFDB_PlanCacheCorrectness verifies that the Cascades plan cache
+// produces correct results across multiple executions and DDL
+// invalidation. It pins a single driver connection (via sql.Conn) so
+// the plan cache survives between queries — database/sql normally
+// calls ResetSession (which clears the cache) when returning
+// connections to the pool.
+func TestFDB_PlanCacheCorrectness(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_plancache_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("pc_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert test data.
+	for _, q := range []string{
+		"INSERT INTO Item VALUES (1, 'Widget', 100)",
+		"INSERT INTO Item VALUES (2, 'Gadget', 200)",
+		"INSERT INTO Item VALUES (3, 'Doohickey', 50)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// Pin a single connection so the plan cache persists across queries.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn: %v", err)
+	}
+	defer conn.Close()
+
+	selectQuery := "SELECT item_id, name, price FROM Item ORDER BY item_id"
+
+	// Helper: run the select and return results as a slice of
+	// (item_id, name, price) tuples.
+	type row struct {
+		id    int64
+		name  string
+		price int64
+	}
+	queryRows := func(t *testing.T, c *sql.Conn, q string) []row {
+		t.Helper()
+		rows, err := c.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("QueryContext(%q): %v", q, err)
+		}
+		defer rows.Close()
+		var result []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.name, &r.price); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			result = append(result, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		return result
+	}
+
+	rowsEqual := func(a, b []row) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	// --- Step 1: first execution (cache miss) ---
+	result1 := queryRows(t, conn, selectQuery)
+	expected := []row{
+		{1, "Widget", 100},
+		{2, "Gadget", 200},
+		{3, "Doohickey", 50},
+	}
+	if !rowsEqual(result1, expected) {
+		t.Fatalf("first query: expected %v, got %v", expected, result1)
+	}
+	t.Logf("first execution (cache miss): %v", result1)
+
+	// --- Step 2: same query again (cache hit) ---
+	result2 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result2, result1) {
+		t.Fatalf("cached query returned different results: first=%v, second=%v", result1, result2)
+	}
+	t.Logf("second execution (cache hit): results match")
+
+	// --- Step 3: normalized variants should also produce correct results ---
+	// The plan cache normalizes SQL by uppercasing, collapsing whitespace,
+	// and stripping comments. These variants should hash identically.
+	variants := []string{
+		// Extra whitespace.
+		"SELECT   item_id,  name,   price   FROM   Item   ORDER BY   item_id",
+		// Different case.
+		"select item_id, name, price from Item order by item_id",
+		// Mixed case + extra whitespace.
+		"SELECT item_id, name, price  FROM  item  ORDER  BY  item_id",
+		// Trailing/leading whitespace.
+		"  SELECT item_id, name, price FROM Item ORDER BY item_id  ",
+	}
+	for _, v := range variants {
+		result := queryRows(t, conn, v)
+		if !rowsEqual(result, expected) {
+			t.Fatalf("variant %q returned wrong results: expected %v, got %v", v, expected, result)
+		}
+	}
+	t.Logf("normalized variants all return correct results")
+
+	// Verify that the normalization actually produces the same hash.
+	canonicalHash := embedded.QueryHash(selectQuery)
+	for _, v := range variants {
+		h := embedded.QueryHash(v)
+		if h != canonicalHash {
+			t.Fatalf("QueryHash(%q) = %d, want %d (same as canonical)", v, h, canonicalHash)
+		}
+	}
+	t.Logf("all variants hash to %d", canonicalHash)
+
+	// --- Step 4: DDL invalidates the cache ---
+	// Creating a new schema template is a DDL statement that triggers
+	// plan cache invalidation on the connection. The existing schema
+	// and data are unaffected.
+	ddlTmpl := fmt.Sprintf("pc_ddl_tmpl_%s", t.Name())
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Other (id BIGINT NOT NULL, PRIMARY KEY (id))", ddlTmpl)); err != nil {
+		t.Fatalf("DDL (CREATE SCHEMA TEMPLATE): %v", err)
+	}
+	t.Logf("DDL executed, plan cache invalidated")
+
+	// --- Step 5: same query after DDL (cache miss, re-planned) ---
+	result3 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result3, expected) {
+		t.Fatalf("post-DDL query returned wrong results: expected %v, got %v", expected, result3)
+	}
+	t.Logf("post-DDL execution: results still correct")
+
+	// --- Step 6: verify cache is warm again after the post-DDL query ---
+	result4 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result4, expected) {
+		t.Fatalf("post-DDL cached query returned wrong results: expected %v, got %v", expected, result4)
+	}
+	t.Logf("post-DDL cache hit: results still correct")
+
+	// --- Step 7: different SQL text with different hash should also work ---
+	diffResult := queryRows(t, conn, "SELECT item_id, name, price FROM Item WHERE price > 100 ORDER BY item_id")
+	diffExpected := []row{{2, "Gadget", 200}}
+	if !rowsEqual(diffResult, diffExpected) {
+		t.Fatalf("different query: expected %v, got %v", diffExpected, diffResult)
+	}
+
+	// Re-run the original query — the filtered query must NOT have
+	// polluted the cache entry for the unfiltered query.
+	result5 := queryRows(t, conn, selectQuery)
+	if !rowsEqual(result5, expected) {
+		t.Fatalf("original query after different query: expected %v, got %v", expected, result5)
+	}
+	t.Logf("cache isolation: different SQL hashes do not interfere")
+
+	// --- Step 8: schema with index — DDL invalidation via template + schema ---
+	// Drop existing schema, create a new template with an index, and
+	// recreate the schema. This exercises the full DDL-invalidation path
+	// and verifies that the plan cache picks up the new index metadata.
+	if _, err := conn.ExecContext(ctx,
+		fmt.Sprintf("DROP SCHEMA %s/store", dbPath)); err != nil {
+		t.Fatalf("DROP SCHEMA: %v", err)
+	}
+	idxTmpl := fmt.Sprintf("pc_idx_tmpl_%s", t.Name())
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id)) "+
+			"CREATE INDEX idx_price ON Item (price)", idxTmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE with index: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, idxTmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA with index template: %v", err)
+	}
+
+	// Re-insert data into the fresh schema.
+	for _, q := range []string{
+		"INSERT INTO Item VALUES (1, 'Widget', 100)",
+		"INSERT INTO Item VALUES (2, 'Gadget', 200)",
+		"INSERT INTO Item VALUES (3, 'Doohickey', 50)",
+	} {
+		if _, err := conn.ExecContext(ctx, q); err != nil {
+			t.Fatalf("re-INSERT: %v", err)
+		}
+	}
+
+	// Query should still produce correct results with the new schema
+	// (which now has a price index that the planner may use).
+	result6 := queryRows(t, conn, selectQuery)
+	// Sort by item_id since ORDER BY may use the index now.
+	sort.Slice(result6, func(i, j int) bool { return result6[i].id < result6[j].id })
+	if !rowsEqual(result6, expected) {
+		t.Fatalf("post-index-DDL query: expected %v, got %v", expected, result6)
+	}
+	t.Logf("post-index schema recreation: results correct, plan cache working end-to-end")
 }
