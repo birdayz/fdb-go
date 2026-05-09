@@ -14223,9 +14223,9 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_MT_02 WHERE n IN ('5', 'ten')",
 			Divergence: &Divergence{
-				Reason:          "Both engines reject mixed-type IN list (string vs BIGINT) with SQLSTATE 22000, but error messages differ: Java uses a verbose type-promotion message, Go says 'cannot compare int64 with string in IN list'.",
+				Reason:          "Both engines reject mixed-type IN list (string vs BIGINT). Go uses 42804 (DATATYPE_MISMATCH) matching Java's SemanticException translation. Error messages may differ.",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "cannot compare int64 with string in IN list",
+				GoErrorContains: "The operands of a comparison operator are not compatible",
 			},
 		},
 		// --- Self-join shapes -----------------------------------------
