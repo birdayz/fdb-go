@@ -253,6 +253,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		insertSelectScenario(),
 		recursiveCteBaseScenario(),
 		dmlSubqueryScenario(),
+		scalarSubqueryDmlScenario(),
+		updateDmlCteScenario(),
 	}
 }
 
@@ -4555,6 +4557,84 @@ func dmlSubqueryScenario() *yamsql.Scenario {
 			{Query: "DELETE FROM t WHERE EXISTS (SELECT k FROM keep_set)"},
 			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{
 				{0},
+			}},
+		},
+	}
+}
+
+// scalarSubqueryDmlScenario mirrors testdata/scalar_subquery_dml.yaml.
+// Scalar subquery on the RHS of UPDATE SET, in DELETE WHERE (as a value
+// to compare against), and arithmetic with subquery on RHS. DML tests
+// are included (auto-skipped by the non-query gate). DML is staged in
+// Setup so the verification SELECTs see the correct final state.
+// Drops NOT NULL on PK columns (fdb-relational restriction).
+func scalarSubqueryDmlScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "scalar_subquery_dml",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE config (k STRING, n BIGINT, PRIMARY KEY (k))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			"INSERT INTO config VALUES ('threshold', 25), ('multiplier', 100)",
+			// UPDATE SET col = (SELECT scalar) — set every row's v to
+			// the scalar subquery result.
+			"UPDATE t SET v = (SELECT n FROM config WHERE k = 'multiplier')",
+			// Reset.
+			"UPDATE t SET v = id * 10",
+			// DELETE WHERE col > scalar subquery — delete rows above
+			// threshold. threshold=25, so v>25 (id=3,4) are deleted.
+			"DELETE FROM t WHERE v > (SELECT n FROM config WHERE k = 'threshold')",
+			// UPDATE arithmetic with subquery on RHS.
+			"UPDATE t SET v = v + (SELECT n FROM config WHERE k = 'threshold')",
+		},
+		Tests: []yamsql.Test{
+			// DML tests (auto-skipped).
+			{Query: "UPDATE t SET v = (SELECT n FROM config WHERE k = 'multiplier')"},
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{1, 100}, {2, 100}, {3, 100}, {4, 100},
+			}},
+			{Query: "UPDATE t SET v = id * 10"},
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{1, 10}, {2, 20}, {3, 30}, {4, 40},
+			}},
+			{Query: "DELETE FROM t WHERE v > (SELECT n FROM config WHERE k = 'threshold')"},
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{1, 10}, {2, 20},
+			}},
+			{Query: "UPDATE t SET v = v + (SELECT n FROM config WHERE k = 'threshold')"},
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{1, 35}, {2, 45},
+			}},
+		},
+	}
+}
+
+// updateDmlCteScenario mirrors testdata/update_dml_cte.yaml.
+// UPDATE with WITH clause and UPDATE/DELETE using CTE in WHERE.
+// Two queries are rejected with error_code "42601" (syntax_error);
+// the working form uses EXISTS correlated subquery. DML tests and
+// error_code tests are included (auto-skipped by their respective
+// gates). DML is staged in Setup so the verification SELECT sees the
+// correct final state. Drops NOT NULL on PK (fdb-relational restriction).
+func updateDmlCteScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "update_dml_cte",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40)",
+			// Working form: UPDATE WHERE EXISTS correlated subquery.
+			"UPDATE t SET v = 99 WHERE EXISTS (SELECT 1 FROM t AS sub WHERE sub.id = t.id AND sub.g = 1)",
+		},
+		Tests: []yamsql.Test{
+			// UPDATE WHERE col IN (CTE-derived values) — rejected.
+			{Query: "WITH high_ids AS (SELECT id FROM t WHERE v >= 30)\nUPDATE t SET v = 0 WHERE id IN (SELECT id FROM high_ids)", ErrorCode: "42601"},
+			// WITH before UPDATE — grammar may not accept this form.
+			{Query: "UPDATE t SET v = 99 WHERE id IN (WITH x AS (SELECT id FROM t WHERE g=1) SELECT id FROM x)", ErrorCode: "42601"},
+			// Working form: UPDATE WHERE EXISTS correlated subquery (auto-skipped DML).
+			{Query: "UPDATE t SET v = 99 WHERE EXISTS (SELECT 1 FROM t AS sub WHERE sub.id = t.id AND sub.g = 1)"},
+			// Verification of final state.
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{1, 99}, {2, 99}, {3, 30}, {4, 40},
 			}},
 		},
 	}
