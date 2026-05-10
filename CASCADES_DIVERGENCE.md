@@ -94,28 +94,30 @@ Physical operator that materializes inner result and sorts in memory. Fallback w
 
 ## MISSING JAVA INFRASTRUCTURE (not yet ported)
 
-### M-1: TranslationMap — PARTIALLY PORTED (swingshift-83)
+### M-1: TranslationMap — COMPLETE (swingshift-86)
 
-**Ported:** `AliasMap` (bidirectional CorrelationIdentifier mapping, immutable, builder pattern) in `alias_map.go`. `ForwardMap()` bridge to existing `values.RebaseValue()`. 8 unit tests.
+**Ported:** `AliasMap` (bidirectional CorrelationIdentifier mapping, immutable, builder pattern) in `alias_map.go`. `ForwardMap()` bridge to `values.RebaseValue()`. 8 unit tests.
 
-**Remaining:** Wire `AliasMap` into `PushRequestedOrderingThroughSortRule` alias translation (currently not needed — Go's ordering parts are pure FieldValues). `values.RebaseValue` now handles 13 types (QuantifiedObjectValue, ArithmeticValue, CastValue, PromoteValue, ScalarFunctionValue, RecordConstructorValue, NotValue, AggregateValue, FieldValue, ConstantValue, NullValue, BooleanValue, ParameterValue). Remaining types (AndOrValue, LikeOperatorValue, PickValue, etc.) can be added when needed. Build `DecorrelateValuesRule` using the AliasMap infrastructure.
+`values.RebaseValue` is now generic (swingshift-86): leaf values with correlation aliases (QuantifiedObjectValue, QuantifiedRecordValue, ExistsValue, ScalarSubqueryValue, ObjectValue, UnmatchedAggregateValue, ConstantObjectValue) remap directly; all non-leaf values recurse children and reconstruct via `WithChildren()`. Covers all ~37 Value types automatically.
 
-Gates: DecorrelateValuesRule (scalar subqueries), AbstractDataAccessRule, MatchPartition infrastructure.
+`values.ValuesStructurallyEqual` rewritten (swingshift-86) to use `EqualsWithoutChildren` + recursive `Children()` comparison — matches Java's `semanticEquals` pattern exactly. `EqualsWithoutChildren` has exhaustive dispatch for all 37 types (no reflect fallback). `GetCorrelatedToOfValue` handles all 7 correlation-bearing leaf types.
 
-### M-2: MatchPartition / PartialMatch / Compensation — MOSTLY PORTED (dayshift-85)
+### M-2: MatchPartition / PartialMatch / Compensation — COMPLETE (swingshift-86)
 
 Foundation types complete: TranslationMap, BiMap (structural equality), GroupByMappings, MatchedOrderingPart, MatchInfo (Regular + Adjusted + Builder), Compensation (No/Impossible/ForMatch), PartialMatchImpl, MatchPartition, SingleMatchedAccess, MaxMatchMap (with TranslateQueryValueMaybe/PullUpMaybe/AdjustMaybe), Traversal (candidate tree walker), Value.Replace tree substitution.
 
 Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchIntermediateRule (composing child matches), AdjustMatches (absorbing candidate-side expressions). All three fire during EXPLORE via MatchingRules(). SelectMergeRule normalizes nested Select/Filter combinations.
 
-**dayshift-85 progress:**
-- PredicateCompensationMap: real identity-keyed map (was entry-count stub). Methods: Entries, ApplyCompensations, Amend.
-- PredicateCompensationFunc: extended with Amend + ApplyCompensationForPredicate. OfPredicateCompensation factory wraps predicates with alias-rebase translation.
-- ResultCompensationFunction: extended with Amend + ApplyCompensationForResult. ResultCompensationOfValue factory.
-- ForMatchCompensation: Apply (wraps expression with residual filters) + Intersect (combines compensations for index intersections).
-- QueryPlanConstraint: ported from placeholder to full type (wraps QueryPredicate, IsTautology/IsConstrained).
+**Compensation infrastructure — fully ported (swingshift-86):**
+- Compensation.Intersect: full Java algorithm — recursive child intersection, GroupByMappings merge (union matched, filter unmatched), predicate map intersection (keep common, amend), quantifier set operations (union matched, intersect unmatched), impossibility validation. 9 tests.
+- Compensation.Union: full Java algorithm — merge predicate maps, multi-ForEach impossibility check, recursive child union. 7 tests.
+- UnmatchedAggregateValue: new non-evaluable marker Value for unmatched aggregates during index matching.
+- Real Amend implementations: PredicateCompensationFunc.Amend and ResultCompensationFunction.Amend now call replaceUnmatchedAggregateValues (ports Java's replaceNewlyMatchedValues). IsImpossible computed at construction via predicateContainsUncompensatableValues / valueContainsUnmatchedAggregates.
+- ApplyCompensationForPredicate/Result: uses translateValueCorrelations (full TranslationMap function application), not just alias rebasing.
+- PredicateCompensationMap.Get: identity-keyed lookup for intersection algorithm.
+- replacePredicateValues: ports Java's QueryPredicate.replaceValuesMaybe.
 
-**Complete.** Full recursive MaxMatchMap.compute ported (dayshift-85): incrementalValueMatcher with lazy candidate tracking, cross-product children enumeration, memoization, branch-and-bound pruning via maxDepthBound. Only the Simplification variant-expansion step (MaxMatchMapSimplificationRuleSet) is deferred — it generates algebraically equivalent rewrites and requires a separate rule engine.
+**Remaining:** MaxMatchMap Simplification variant-expansion (MaxMatchMapSimplificationRuleSet) — generates algebraically equivalent rewrites and requires a separate rule engine. Deferred.
 
 ### M-3: PushReferencedFields rules — DONE (dayshift-85)
 
@@ -130,8 +132,10 @@ Go has full PlanPartition infrastructure: ToPlanPartitions, RollUpPlanPartitions
 ## PRIORITY ORDER FOR REMAINING 1:1 ALIGNMENT
 
 1. ~~**D-7** (multi-aggregate) — DONE~~
-2. **Scalar subqueries** — biggest user-visible gap. DecorrelateValuesRule landed (dayshift-85). Remaining: wire into SQL translator for `(SELECT MAX(v) FROM t)` patterns, correlated subquery infrastructure. ~1-2 shifts.
+2. **Scalar subqueries** — Go-only extension (Java's grammar has no `subqueryExpressionAtom`). DecorrelateValuesRule landed (dayshift-85) for other values-box patterns. Scalar subquery translation is a Go extension, clearly separated.
 3. ~~**D-8** (CardinalityProperty split) — DONE~~
 4. ~~**D-11** (ConstantObjectValue promotion) — DONE~~
 5. ~~**D-2** (PushOrdering constraint vs structural) — DONE~~
 6. ~~**D-5** (InComparison architecture) — DONE~~
+7. **6 unported ImplementationCascadesRules** — MergeFetchIntoCoveringIndexRule, PushDistinctBelowFilterRule, PushDistinctThroughFetchRule, PushFilterThroughFetchRule, PushMapThroughFetchRule, PushSetOperationThroughFetchRule. All require RecordQueryFetchFromPartialRecordPlan (covering index fetch plan type) which Go doesn't have. ~9-15 shifts total.
+8. **MaxMatchMap Simplification** — variant-expansion step generating algebraically equivalent value rewrites. Requires separate simplification rule engine. Deferred.

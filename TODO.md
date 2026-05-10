@@ -28,9 +28,9 @@ PlanVisitor walks ANTLR incrementally: parseFromSource + classifySelectElements 
 ### ~~Subqueries/EXISTS~~ — **done (swingshift-81)**
 ### ~~Yamsql conformance~~ — **115/115 (100%, swingshift-83)**
 ### ~~Cascades divergence D-3~~ — **done (swingshift-83)**
-### ~~M-1 AliasMap/RebaseValue/RebasePredicate~~ — **done (swingshift-83)**
+### ~~M-1 AliasMap/RebaseValue/RebasePredicate~~ — **done (swingshift-83, extended swingshift-86)**
 
-All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-1 infrastructure complete (AliasMap + RebaseValue 13 types + RebasePredicate 7 types). Error codes aligned: 42703/42809/42804. See `CASCADES_DIVERGENCE.md`.
+All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-1 infrastructure complete. RebaseValue now generic (all ~37 types via Children/WithChildren). ValuesStructurallyEqual rewritten via EqualsWithoutChildren (exhaustive 37-type dispatch, no reflect fallback). GetCorrelatedToOfValue handles all 7 correlation-bearing leaf types. See `CASCADES_DIVERGENCE.md`.
 
 ### Remaining internal architecture divergences
 
