@@ -286,3 +286,56 @@ func TestSelectMergeRule_AliasRebase(t *testing.T) {
 			qov.Correlation.Name(), scanQ.GetAlias().Name())
 	}
 }
+
+func TestSelectMergeRule_MultiQuantifierChild(t *testing.T) {
+	t.Parallel()
+
+	// Child Select with 2 quantifiers: Select([q1, q2], childPreds, childResult)
+	scan1 := &expressions.FullUnorderedScanExpression{}
+	scan1Ref := expressions.InitialOf(scan1)
+	scan1Q := expressions.ForEachQuantifier(scan1Ref)
+
+	scan2 := &expressions.FullUnorderedScanExpression{}
+	scan2Ref := expressions.InitialOf(scan2)
+	scan2Q := expressions.ForEachQuantifier(scan2Ref)
+
+	childResult := values.NewQuantifiedObjectValue(scan1Q.GetAlias())
+	childSel := expressions.NewSelectExpression(
+		childResult,
+		[]expressions.Quantifier{scan1Q, scan2Q},
+		nil,
+	)
+	childRef := expressions.InitialOf(childSel)
+	childQ := expressions.ForEachQuantifier(childRef)
+
+	// Outer: result references childQ's alias (which is the multi-quant child).
+	outerResult := values.NewQuantifiedObjectValue(childQ.GetAlias())
+	outerSel := expressions.NewSelectExpression(
+		outerResult,
+		[]expressions.Quantifier{childQ},
+		nil,
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewSelectMergeRule(), outerRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yielded, got %d", len(yielded))
+	}
+
+	merged := yielded[0].(*expressions.SelectExpression)
+	// Should have 2 quantifiers (from child), not 1.
+	if len(merged.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(merged.GetQuantifiers()))
+	}
+	// The result value should be the child's result value (QOV of scan1Q),
+	// NOT a dangling reference to childQ's alias.
+	rv := merged.GetResultValue()
+	qov, ok := rv.(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected *QuantifiedObjectValue, got %T", rv)
+	}
+	if qov.Correlation != scan1Q.GetAlias() {
+		t.Errorf("result value alias = %s, want %s (child's inner scan alias)",
+			qov.Correlation.Name(), scan1Q.GetAlias().Name())
+	}
+}

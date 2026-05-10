@@ -23,10 +23,10 @@ func NewPlanPartition(
 ) *PlanPartition {
 	p := &PlanPartition{
 		partitionProps: partitionProps,
-		exprProps:      exprProps,
+		exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap, len(exprProps)),
 	}
-	for e := range exprProps {
-		p.orderedExprs = append(p.orderedExprs, e)
+	for e, props := range exprProps {
+		p.addExpression(e, props)
 	}
 	return p
 }
@@ -173,7 +173,9 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 	}
 
 	groups := make(map[propKey]*PlanPartition)
-	for expr, props := range pm.All() {
+	var order []propKey // preserve first-seen order
+	for _, expr := range pm.Expressions() {
+		props := pm.GetProperties(expr)
 		ordering := props.GetOrdering()
 		key := propKey{
 			distinct:    props.GetBool(properties.PropDistinctRecords),
@@ -193,13 +195,14 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 				exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
 			}
 			groups[key] = part
+			order = append(order, key)
 		}
 		part.addExpression(expr, props)
 	}
 
-	result := make([]*PlanPartition, 0, len(groups))
-	for _, part := range groups {
-		result = append(result, part)
+	result := make([]*PlanPartition, 0, len(order))
+	for _, key := range order {
+		result = append(result, groups[key])
 	}
 	return result
 }

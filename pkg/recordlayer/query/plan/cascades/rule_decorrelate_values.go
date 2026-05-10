@@ -118,7 +118,6 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	// Build TranslationMap: each values box alias → its result value.
 	tmBuilder := NewTranslationMapBuilder()
 	valuesBoxIdxSet := map[int]bool{}
-	aliasMap := values.AliasMap{}
 
 	for _, vb := range valuesBoxes {
 		valuesBoxIdxSet[vb.idx] = true
@@ -145,13 +144,13 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	// the constant result values.
 	newResultValue := sel.GetResultValue()
 	if newResultValue != nil {
-		newResultValue = translateValueCorrelations(newResultValue, tm, aliasMap)
+		newResultValue = translateValueCorrelations(newResultValue, tm, nil)
 	}
 
 	// Translate predicates.
 	newPredicates := make([]predicates.QueryPredicate, len(sel.GetPredicates()))
 	for i, p := range sel.GetPredicates() {
-		newPredicates[i] = translatePredicateCorrelations(p, tm, aliasMap)
+		newPredicates[i] = translatePredicateCorrelations(p, tm, nil)
 	}
 
 	// Rebuild source aliases.

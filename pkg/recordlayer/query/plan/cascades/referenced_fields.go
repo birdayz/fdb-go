@@ -79,16 +79,6 @@ func (r *ReferencedFields) Union(other *ReferencedFields) *ReferencedFields {
 	return &ReferencedFields{fields: merged}
 }
 
-// FieldValuesFromPredicates extracts FieldValue names from a list of
-// predicates by walking their Value trees.
-func FieldValuesFromPredicates(preds []interface{ Explain() string }) *ReferencedFields {
-	fields := map[string]struct{}{}
-	for _, p := range preds {
-		collectFieldValuesFromPredicate(p, fields)
-	}
-	return &ReferencedFields{fields: fields}
-}
-
 // FieldValuesFromValue extracts FieldValue names from a Value tree.
 func FieldValuesFromValue(v values.Value) *ReferencedFields {
 	fields := map[string]struct{}{}
@@ -105,22 +95,5 @@ func collectFieldNamesFromValue(v values.Value, out map[string]struct{}) {
 	}
 	for _, child := range v.Children() {
 		collectFieldNamesFromValue(child, out)
-	}
-}
-
-func collectFieldValuesFromPredicate(p any, out map[string]struct{}) {
-	if p == nil {
-		return
-	}
-	type hasChildren interface{ Children() []any }
-	type hasValue interface{ GetValues() []values.Value }
-
-	switch pred := p.(type) {
-	case interface{ GetOperand() values.Value }:
-		collectFieldNamesFromValue(pred.GetOperand(), out)
-	case hasValue:
-		for _, v := range pred.GetValues() {
-			collectFieldNamesFromValue(v, out)
-		}
 	}
 }

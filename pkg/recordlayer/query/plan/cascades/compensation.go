@@ -496,6 +496,10 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		return c
 	}
 
+	// TODO: port Java's full predicate map intersection (keep only
+	// predicates present in both maps). Until then, return the
+	// receiver as a conservative approximation — this may apply
+	// extra filtering but won't miss required predicates.
 	return c
 }
 

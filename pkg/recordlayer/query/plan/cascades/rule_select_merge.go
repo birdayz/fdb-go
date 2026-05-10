@@ -101,9 +101,10 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Build alias rebase map: for each merged quantifier, map the
-	// parent's alias to the child's inner alias(es).
+	// Build alias rebase map (single-quantifier children) and
+	// TranslationMap (multi-quantifier children).
 	aliasMap := values.AliasMap{}
+	tmBuilder := NewTranslationMapBuilder()
 	mergedIdxSet := map[int]bool{}
 	for _, t := range targets {
 		mergedIdxSet[t.idx] = true
@@ -130,33 +131,45 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 
 		childQs := target.childExpr.GetQuantifiers()
 
-		// For LogicalFilterExpression with exactly one quantifier: the
-		// parent's alias maps to the child's inner quantifier alias.
-		// For SelectExpression with one quantifier: same mapping.
-		// For multi-quantifier children: use a TranslationMap with
-		// value substitution (the child's result value replaces QOV
-		// of the parent alias).
 		if len(childQs) == 1 {
 			aliasMap[q.GetAlias()] = childQs[0].GetAlias()
+		} else if len(childQs) > 1 {
+			// Multi-quantifier child (e.g., Select with 2+ sources):
+			// the parent's alias must be replaced with the child's
+			// result value via TranslationMap.
+			childResultValue := target.childExpr.GetResultValue()
+			capturedResult := childResultValue
+			parentAlias := q.GetAlias()
+			tmBuilder.When(parentAlias).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
+				return capturedResult
+			})
 		}
 
 		newQuantifiers = append(newQuantifiers, childQs...)
 		pulledPredicates = append(pulledPredicates, target.child.GetPredicates()...)
 	}
 
-	// Rebase the parent's result value and predicates using the alias map.
+	// Rebase the parent's result value and predicates.
 	newResultValue := sel.GetResultValue()
 	if len(aliasMap) > 0 {
 		newResultValue = values.RebaseValue(newResultValue, aliasMap)
 	}
+	// Apply TranslationMap for multi-quantifier children.
+	tm := tmBuilder.Build()
+	if !tm.DefinesOnlyIdentities() {
+		newResultValue = translateValueCorrelations(newResultValue, tm, nil)
+	}
 
 	newPredicates := make([]predicates.QueryPredicate, 0, len(sel.GetPredicates())+len(pulledPredicates))
 	for _, p := range sel.GetPredicates() {
+		rp := p
 		if len(aliasMap) > 0 {
-			newPredicates = append(newPredicates, predicates.RebasePredicate(p, aliasMap))
-		} else {
-			newPredicates = append(newPredicates, p)
+			rp = predicates.RebasePredicate(rp, aliasMap)
 		}
+		if !tm.DefinesOnlyIdentities() {
+			rp = translatePredicateCorrelations(rp, tm, nil)
+		}
+		newPredicates = append(newPredicates, rp)
 	}
 	newPredicates = append(newPredicates, pulledPredicates...)
 

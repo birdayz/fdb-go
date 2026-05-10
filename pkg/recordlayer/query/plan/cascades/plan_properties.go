@@ -11,6 +11,7 @@ import (
 // wrapper expression in a Reference's final members.
 type PlanPropertiesMap struct {
 	props map[expressions.RelationalExpression]properties.PropertyMap
+	order []expressions.RelationalExpression // insertion order
 }
 
 // NewPlanPropertiesMap creates a new empty properties map.
@@ -22,6 +23,9 @@ func NewPlanPropertiesMap() *PlanPropertiesMap {
 
 // Add computes and stores properties for the given physical wrapper.
 func (m *PlanPropertiesMap) Add(w physicalPlanExpression) {
+	if _, exists := m.props[w]; !exists {
+		m.order = append(m.order, w)
+	}
 	m.props[w] = computeWrapperProperties(w)
 }
 
@@ -30,16 +34,13 @@ func (m *PlanPropertiesMap) GetProperties(expr expressions.RelationalExpression)
 	return m.props[expr]
 }
 
-// Expressions returns all wrapper expressions in this map.
+// Expressions returns all wrapper expressions in insertion order.
 func (m *PlanPropertiesMap) Expressions() []expressions.RelationalExpression {
-	result := make([]expressions.RelationalExpression, 0, len(m.props))
-	for e := range m.props {
-		result = append(result, e)
-	}
-	return result
+	return m.order
 }
 
-// All returns the full underlying map.
+// All returns the full underlying map. Callers that need deterministic
+// iteration should use Expressions() and GetProperties() instead.
 func (m *PlanPropertiesMap) All() map[expressions.RelationalExpression]properties.PropertyMap {
 	return m.props
 }
