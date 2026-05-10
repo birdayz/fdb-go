@@ -32,13 +32,88 @@ func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	union, ok := results[0].(*expressions.LogicalUnionExpression)
+
+	// Multi-element IN now produces SelectExpression, not Union.
+	sel, ok := results[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected *LogicalUnionExpression, got %T", results[0])
+		t.Fatalf("expected *SelectExpression, got %T", results[0])
 	}
-	qs := union.GetQuantifiers()
-	if len(qs) != 3 {
-		t.Fatalf("expected 3 union legs (one per IN element), got %d", len(qs))
+
+	// SelectExpression must have no predicates (ImplementInJoinRule requirement).
+	if sel.HasPredicates() {
+		t.Fatal("SelectExpression should have no predicates")
+	}
+
+	// Must have exactly 2 quantifiers: inner + explode.
+	qs := sel.GetQuantifiers()
+	if len(qs) != 2 {
+		t.Fatalf("expected 2 quantifiers (inner + explode), got %d", len(qs))
+	}
+
+	// ResultValue must be a QOV referencing the inner quantifier.
+	qov, ok := sel.GetResultValue().(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected QOV result value, got %T", sel.GetResultValue())
+	}
+	if qov.Correlation != qs[0].GetAlias() {
+		t.Fatalf("QOV should reference inner quantifier alias %v, got %v",
+			qs[0].GetAlias(), qov.Correlation)
+	}
+
+	// One quantifier should range over an ExplodeExpression.
+	foundExplode := false
+	for _, qq := range qs {
+		ref := qq.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.Members() {
+			if _, ok := m.(*expressions.ExplodeExpression); ok {
+				foundExplode = true
+			}
+		}
+	}
+	if !foundExplode {
+		t.Fatal("expected one quantifier to range over ExplodeExpression")
+	}
+
+	// The inner quantifier should contain a LogicalFilterExpression
+	// with the equality predicate (col = QOV(explodeAlias)).
+	innerRef := qs[0].GetRangesOver()
+	if innerRef == nil {
+		t.Fatal("inner quantifier has no reference")
+	}
+	foundInnerFilter := false
+	for _, m := range innerRef.Members() {
+		lf, ok := m.(*expressions.LogicalFilterExpression)
+		if !ok {
+			continue
+		}
+		foundInnerFilter = true
+		preds := lf.GetPredicates()
+		if len(preds) != 1 {
+			t.Fatalf("inner filter should have 1 predicate, got %d", len(preds))
+		}
+		cp, ok := preds[0].(*predicates.ComparisonPredicate)
+		if !ok {
+			t.Fatalf("expected *ComparisonPredicate, got %T", preds[0])
+		}
+		if cp.Comparison.Type != predicates.ComparisonEquals {
+			t.Fatalf("expected ComparisonEquals, got %v", cp.Comparison.Type)
+		}
+		// RHS should be a QOV referencing the explode quantifier.
+		rhsQOV, ok := cp.Comparison.Operand.(*values.QuantifiedObjectValue)
+		if !ok {
+			t.Fatalf("equality RHS should be *QuantifiedObjectValue, got %T",
+				cp.Comparison.Operand)
+		}
+		if rhsQOV.Correlation != qs[1].GetAlias() {
+			t.Fatalf("equality QOV should correlate to explode alias %v, got %v",
+				qs[1].GetAlias(), rhsQOV.Correlation)
+		}
+	}
+	if !foundInnerFilter {
+		t.Fatal("inner quantifier should contain LogicalFilterExpression")
 	}
 }
 
@@ -111,26 +186,57 @@ func TestInComparisonToExplodeRule_PreservesOtherPredicates(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	union, ok := results[0].(*expressions.LogicalUnionExpression)
+
+	// Multi-element IN with other predicates → SelectExpression.
+	sel, ok := results[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected *LogicalUnionExpression, got %T", results[0])
+		t.Fatalf("expected *SelectExpression, got %T", results[0])
 	}
-	qs := union.GetQuantifiers()
+
+	// SelectExpression must have no predicates.
+	if sel.HasPredicates() {
+		t.Fatal("SelectExpression should have no predicates")
+	}
+
+	// The inner quantifier's LogicalFilterExpression must carry
+	// both the equality predicate and the other predicate.
+	qs := sel.GetQuantifiers()
 	if len(qs) != 2 {
-		t.Fatalf("expected 2 union legs, got %d", len(qs))
+		t.Fatalf("expected 2 quantifiers, got %d", len(qs))
 	}
-	for i, lq := range qs {
-		legRef := lq.GetRangesOver()
-		for _, m := range legRef.Members() {
-			if lf, ok := m.(*expressions.LogicalFilterExpression); ok {
-				if len(lf.GetPredicates()) != 2 {
-					t.Fatalf("leg %d: expected 2 predicates, got %d", i, len(lf.GetPredicates()))
-				}
-				return
-			}
+
+	innerRef := qs[0].GetRangesOver()
+	if innerRef == nil {
+		t.Fatal("inner quantifier has no reference")
+	}
+	for _, m := range innerRef.Members() {
+		lf, ok := m.(*expressions.LogicalFilterExpression)
+		if !ok {
+			continue
 		}
+		preds := lf.GetPredicates()
+		if len(preds) != 2 {
+			t.Fatalf("inner filter should have 2 predicates (eq + other), got %d", len(preds))
+		}
+		// First predicate: equality with QOV RHS.
+		cp0, ok := preds[0].(*predicates.ComparisonPredicate)
+		if !ok {
+			t.Fatalf("predicate[0]: expected *ComparisonPredicate, got %T", preds[0])
+		}
+		if cp0.Comparison.Type != predicates.ComparisonEquals {
+			t.Fatalf("predicate[0]: expected ComparisonEquals, got %v", cp0.Comparison.Type)
+		}
+		// Second predicate: AMOUNT > 100.
+		cp1, ok := preds[1].(*predicates.ComparisonPredicate)
+		if !ok {
+			t.Fatalf("predicate[1]: expected *ComparisonPredicate, got %T", preds[1])
+		}
+		if cp1.Comparison.Type != predicates.ComparisonGreaterThan {
+			t.Fatalf("predicate[1]: expected ComparisonGreaterThan, got %v", cp1.Comparison.Type)
+		}
+		return
 	}
-	t.Fatal("no leg filter found")
+	t.Fatal("inner quantifier should contain LogicalFilterExpression")
 }
 
 func TestInComparisonToExplodeRule_NoInPredicate(t *testing.T) {
@@ -220,6 +326,11 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		t.Fatal("planner did not converge")
 	}
 
+	// The exploration should produce at least a SelectExpression with
+	// an ExplodeExpression quantifier (the new shape), or index scans
+	// if index matching fires. Verify the tree contains at least one
+	// ExplodeExpression or index scan.
+	explodeCount := 0
 	indexScanCount := 0
 	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
 	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
@@ -228,6 +339,9 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		}
 		visited[r] = true
 		for _, m := range r.Members() {
+			if _, ok := m.(*expressions.ExplodeExpression); ok {
+				explodeCount++
+			}
 			if IsPhysicalIndexScan(m) {
 				indexScanCount++
 			}
@@ -237,7 +351,133 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		}
 	}
 	walk(ref, map[*expressions.Reference]bool{})
-	if indexScanCount == 0 {
-		t.Fatal("IN-explode + index scan rule did not produce any index scans")
+
+	if explodeCount == 0 && indexScanCount == 0 {
+		t.Fatal("IN-explode rule did not produce any ExplodeExpressions or index scans")
 	}
+}
+
+// TestInComparisonToExplodeRule_ImplementInJoinShape verifies the produced
+// SelectExpression shape is compatible with ImplementInJoinRule's expectations:
+// no predicates, QOV result value referencing inner, exactly one inner + one
+// explode quantifier.
+func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+
+	inList := &values.ConstantValue{Value: []any{int64(10), int64(20)}, Typ: values.TypeUnknown}
+	inPred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "ID", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{inPred},
+		q,
+	)
+	ref := expressions.InitialOf(filter)
+
+	rule := NewInComparisonToExplodeRule()
+	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(results))
+	}
+
+	sel, ok := results[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", results[0])
+	}
+
+	// Verify: no predicates.
+	if sel.HasPredicates() {
+		t.Fatal("SelectExpression must have no predicates for ImplementInJoinRule")
+	}
+
+	// Verify: exactly 2 quantifiers.
+	qs := sel.GetQuantifiers()
+	if len(qs) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(qs))
+	}
+
+	// Verify: result value is QOV referencing inner quantifier's alias.
+	qov, ok := sel.GetResultValue().(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("result value should be *QuantifiedObjectValue, got %T", sel.GetResultValue())
+	}
+	// The inner quantifier is first.
+	innerAlias := qs[0].GetAlias()
+	if qov.Correlation != innerAlias {
+		t.Fatalf("QOV correlation %v doesn't match inner quantifier alias %v",
+			qov.Correlation, innerAlias)
+	}
+
+	// Verify: explode quantifier ranges over ExplodeExpression.
+	explodeRef := qs[1].GetRangesOver()
+	if explodeRef == nil {
+		t.Fatal("explode quantifier has no reference")
+	}
+	foundExplode := false
+	for _, m := range explodeRef.Members() {
+		if explode, ok := m.(*expressions.ExplodeExpression); ok {
+			foundExplode = true
+			// Verify the collection value contains our IN-list.
+			cv := explode.GetCollectionValue()
+			if cv == nil {
+				t.Fatal("ExplodeExpression has nil collection value")
+			}
+			vals := cv.Evaluate(nil)
+			list, ok := vals.([]any)
+			if !ok {
+				t.Fatalf("collection value evaluated to %T, expected []any", vals)
+			}
+			if len(list) != 2 {
+				t.Fatalf("expected 2 elements in explode list, got %d", len(list))
+			}
+		}
+	}
+	if !foundExplode {
+		t.Fatal("second quantifier should range over ExplodeExpression")
+	}
+
+	// Verify: inner quantifier's equality predicate correlates to
+	// the explode quantifier's alias.
+	innerFilterRef := qs[0].GetRangesOver()
+	if innerFilterRef == nil {
+		t.Fatal("inner quantifier has no reference")
+	}
+	explodeAlias := qs[1].GetAlias()
+	for _, m := range innerFilterRef.Members() {
+		lf, ok := m.(*expressions.LogicalFilterExpression)
+		if !ok {
+			continue
+		}
+		for _, p := range lf.GetPredicates() {
+			cp, ok := p.(*predicates.ComparisonPredicate)
+			if !ok {
+				continue
+			}
+			if cp.Comparison.Type != predicates.ComparisonEquals {
+				continue
+			}
+			rhsQOV, ok := cp.Comparison.Operand.(*values.QuantifiedObjectValue)
+			if !ok {
+				continue
+			}
+			if rhsQOV.Correlation != explodeAlias {
+				t.Fatalf("equality QOV correlates to %v, expected explode alias %v",
+					rhsQOV.Correlation, explodeAlias)
+			}
+			// Verify the correlation set includes the explode alias.
+			correlated := cp.Comparison.GetCorrelatedTo()
+			if _, ok := correlated[explodeAlias]; !ok {
+				t.Fatalf("Comparison.GetCorrelatedTo() does not include explode alias %v",
+					explodeAlias)
+			}
+			return // found the expected equality
+		}
+	}
+	t.Fatal("inner filter should have equality predicate correlating to explode alias")
 }

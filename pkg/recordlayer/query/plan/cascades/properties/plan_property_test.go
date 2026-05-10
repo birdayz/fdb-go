@@ -106,6 +106,7 @@ func TestAllPlanProperties_Completeness(t *testing.T) {
 		PropDistinctRecords: false,
 		PropStoredRecord:    false,
 		PropPrimaryKey:      false,
+		PropCardinalities:   false,
 	}
 	if len(AllPlanProperties) != len(expected) {
 		t.Fatalf("AllPlanProperties has %d entries, want %d", len(AllPlanProperties), len(expected))

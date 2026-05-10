@@ -73,6 +73,16 @@ type MatchCandidate interface {
 	// index name, or "primary" for the PK scan).
 	CandidateName() string
 
+	// GetTraversal returns the Traversal of this candidate's expression
+	// tree, used by matching rules (MatchLeafRule, MatchIntermediateRule)
+	// to walk the candidate structure. The traversal must be stable once
+	// computed. Returns nil if the candidate has no expression tree
+	// (seed-minimal candidates that don't yet support traversal-based
+	// matching).
+	//
+	// Ports Java's MatchCandidate.getTraversal().
+	GetTraversal() *Traversal
+
 	// GetColumnNames returns the ordered column-name list (one per
 	// index key column, parallel to GetSargableAliases). Used by rules
 	// to match ComparisonPredicate field references against the index's

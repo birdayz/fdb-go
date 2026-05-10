@@ -194,6 +194,20 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 		return nil, tasks, ErrPlannerCapHit
 	}
 
+	// MATCHING phase: after EXPLORE converges, adjust partial matches
+	// by absorbing candidate-side-only expressions (AdjustMatchRule).
+	// No-op when no PartialMatches were created during EXPLORE.
+	AdjustMatches(rootRef)
+
+	// DATA ACCESS phase: convert PartialMatches into index scan
+	// expressions. Runs after matching so all PartialMatches are
+	// available, before PLANNING so implementation rules see them.
+	// Ports Java's WithPrimaryKeyDataAccessRule / dataAccessForMatchPartition
+	// pipeline — walks the expression DAG bottom-up and, for every
+	// Reference that carries PartialMatches, generates scan plan
+	// expressions via DataAccessForMatchPartition.
+	p.generateDataAccess(rootRef)
+
 	// PLANNING phase: fire implementation rules bottom-up to finalize
 	// exploratory expressions into final members.
 	if len(p.implementationRules) > 0 {
@@ -284,6 +298,71 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 	}
 
 	computeRefPlanProperties(ref)
+}
+
+// generateDataAccess walks the expression DAG bottom-up and generates
+// data access expressions (index scans) from PartialMatches. For each
+// Reference that carries PartialMatches, it calls
+// DataAccessForMatchPartition to convert the matches into scan plan
+// expressions and inserts them into the Reference.
+//
+// This is the Go equivalent of Java's WithPrimaryKeyDataAccessRule
+// which extends CascadesRule<MatchPartition>. Rather than modelling
+// MatchPartition as a rule trigger, we run this as an explicit phase
+// between AdjustMatches and PLANNING — architecturally equivalent but
+// simpler since Go doesn't need the Java rule-dispatch infrastructure.
+func (p *Planner) generateDataAccess(rootRef *expressions.Reference) {
+	visited := map[*expressions.Reference]bool{}
+	p.generateDataAccessRecursive(rootRef, visited)
+}
+
+// generateDataAccessRecursive recurses children first (bottom-up),
+// then generates data access expressions for the current Reference.
+func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+
+	// Recurse children first so leaf scans are processed before
+	// parent operators that depend on them.
+	for _, m := range ref.AllMembers() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.generateDataAccessRecursive(childRef, visited)
+			}
+		}
+	}
+
+	// Collect all MatchCandidates that have PartialMatches on this ref.
+	candidates := GetPartialMatchCandidatesTyped(ref)
+	if len(candidates) == 0 {
+		return
+	}
+
+	for _, candidate := range candidates {
+		matches := GetPartialMatchesForCandidate(ref, candidate)
+		if len(matches) == 0 {
+			continue
+		}
+
+		// Generate data access expressions. No requested orderings in
+		// the seed — the full implementation propagates ordering
+		// constraints from parent operators. No intersector — the seed
+		// does single-scan only.
+		exprs := DataAccessForMatchPartition(
+			nil, // requestedOrderings
+			matches,
+			p.ctx,
+			nil, // intersector (single-scan only)
+		)
+
+		// Insert generated expressions into the Reference so the
+		// PLANNING phase's implementation rules can see them.
+		for _, expr := range exprs {
+			ref.Insert(expr)
+		}
+	}
 }
 
 // Explore drives the task-stack until convergence (no rule yields a

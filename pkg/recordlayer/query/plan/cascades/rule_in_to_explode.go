@@ -4,6 +4,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // InComparisonToExplodeRule rewrites a LogicalFilterExpression whose
@@ -14,22 +15,25 @@ import (
 //	Filter([col IN (v1), ...other...], inner)
 //	  →  Filter([col = v1, ...other...], inner)
 //
-// Multi-element IN → union of equality filters:
+// Multi-element IN → SelectExpression with ExplodeExpression:
 //
 //	Filter([col IN (v1, v2, v3), ...other...], inner)
-//	  →  Union(
-//	       Filter([col = v1, ...other...], inner),
-//	       Filter([col = v2, ...other...], inner),
-//	       Filter([col = v3, ...other...], inner),
+//	  →  SelectExpression(
+//	       resultValue = QOV(innerAlias),
+//	       quantifiers = [
+//	         ForEach(Filter([col = QOV(explodeAlias), ...other...], inner)),
+//	         ForEach(Explode([v1, v2, v3])),
+//	       ],
+//	       predicates = [],
 //	     )
 //
-// NOTE: Java's InComparisonToExplodeRule creates a SelectExpression
-// with a ForEach quantifier over ExplodeExpression, then
-// AbstractDataAccessRule resolves predicates against index candidates.
-// Go doesn't yet have AbstractDataAccessRule for SelectExpression
-// predicates, so multi-element IN uses the Union approach which allows
-// each filter leg to independently match indexes. The Java
-// architecture should be ported as a follow-up.
+// Mirrors Java's InComparisonToExplodeRule. The ImplementInJoinRule
+// (PLANNING phase) handles this SelectExpression shape and produces
+// InJoinPlan or InUnionPlan. The inner LogicalFilterExpression's
+// equality predicate (col = QOV(explodeAlias)) is matched by the
+// index-matching infrastructure, which creates an index scan with
+// the column equality-bound to the explode alias. ImplementInJoinRule
+// detects this correlation via the inner plan's RichOrdering.
 //
 // Guards:
 //   - At least one ComparisonIn predicate.
@@ -50,6 +54,23 @@ func (r *InComparisonToExplodeRule) Matcher() matching.BindingMatcher { return r
 
 func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	f := matching.Get[*expressions.LogicalFilterExpression](call.Bindings, r.matcher)
+
+	// Idempotency guard: if this Reference already contains a
+	// SelectExpression with an ExplodeExpression quantifier, the
+	// multi-element IN has already been transformed. Skip to prevent
+	// infinite memo growth from fresh-alias SelectExpressions.
+	for _, m := range call.Reference.Members() {
+		if sel, ok := m.(*expressions.SelectExpression); ok {
+			for _, q := range sel.GetQuantifiers() {
+				if ref := q.GetRangesOver(); ref != nil {
+					if getExplodeExpression(ref) != nil {
+						return
+					}
+				}
+			}
+		}
+	}
+
 	preds := f.GetPredicates()
 
 	inIdx := -1
@@ -99,24 +120,47 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Multi-element IN → union of equality filters.
-	legs := make([]expressions.Quantifier, 0, len(list))
-	for _, elem := range list {
-		eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, elem)
-		eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
-
-		legPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
-		legPreds = append(legPreds, eqPred)
-		legPreds = append(legPreds, otherPreds...)
-
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
-		legFilter := expressions.NewLogicalFilterExpression(legPreds, innerQ)
-		legRef := call.MemoizeExpression(legFilter)
-		legs = append(legs, expressions.ForEachQuantifier(legRef))
+	// Multi-element IN → SelectExpression with ExplodeExpression.
+	//
+	// 1. Create ExplodeExpression wrapping the IN-list as a
+	//    ConstantValue with ArrayType so ExplodeExpression.GetResultValue
+	//    infers the correct element type.
+	explodeValue := &values.ConstantValue{
+		Value: list,
+		Typ:   values.NewArrayType(false, values.UnknownType),
 	}
+	explodeExpr := expressions.NewExplodeExpression(explodeValue)
+	explodeRef := call.MemoizeExpression(explodeExpr)
+	explodeQ := expressions.ForEachQuantifier(explodeRef)
 
-	union := expressions.NewLogicalUnionExpression(legs)
-	call.Yield(union)
+	// 2. Build the inner LogicalFilterExpression with the equality
+	//    predicate (col = QOV(explodeAlias)) plus any other predicates.
+	//    The equality RHS is a QuantifiedObjectValue referencing the
+	//    explode quantifier — this correlation flows through the
+	//    SelectExpression's CanCorrelate=true into the inner expression.
+	explodedQOV := values.NewQuantifiedObjectValue(explodeQ.GetAlias())
+	eqCmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: explodedQOV}
+	eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
+
+	innerPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
+	innerPreds = append(innerPreds, eqPred)
+	innerPreds = append(innerPreds, otherPreds...)
+
+	innerScanQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
+	innerFilter := expressions.NewLogicalFilterExpression(innerPreds, innerScanQ)
+	innerFilterRef := call.MemoizeExpression(innerFilter)
+	innerFilterQ := expressions.ForEachQuantifier(innerFilterRef)
+
+	// 3. Build a predicate-free SelectExpression with the inner and
+	//    explode quantifiers. The resultValue is QOV(innerAlias) — the
+	//    shape ImplementInJoinRule expects.
+	resultValue := values.NewQuantifiedObjectValue(innerFilterQ.GetAlias())
+	selectExpr := expressions.NewSelectExpression(
+		resultValue,
+		[]expressions.Quantifier{innerFilterQ, explodeQ},
+		nil, // no predicates — ImplementInJoinRule requires this
+	)
+	call.Yield(selectExpr)
 }
 
 var _ ExpressionRule = (*InComparisonToExplodeRule)(nil)

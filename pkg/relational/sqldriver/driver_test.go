@@ -276,9 +276,10 @@ func TestDriverRegistration(t *testing.T) {
 func TestDriverOpenLegacy(t *testing.T) {
 	t.Parallel()
 	// driver.Driver.Open delegates to OpenConnector(name) + Connect.
-	// Without FDB, Connect fails with an FDB initialization error.
+	// Use a nonexistent cluster file so Connect reliably fails
+	// regardless of whether FDB is running on the host.
 	d := &Driver{}
-	_, err := d.Open("fdbsql:///mydb")
+	_, err := d.Open("fdbsql:///mydb?cluster_file=/nonexistent/fdb.cluster")
 	if err == nil {
 		t.Fatal("expected Open to fail (no FDB available)")
 	}
@@ -321,14 +322,14 @@ func TestDriverOpenConnector_BadDSN(t *testing.T) {
 func TestDriverOpenConnector_GoodDSN(t *testing.T) {
 	t.Parallel()
 	d := &Driver{}
-	c, err := d.OpenConnector("fdbsql:///mydb")
+	c, err := d.OpenConnector("fdbsql:///mydb?cluster_file=/nonexistent/fdb.cluster")
 	if err != nil {
 		t.Fatalf("OpenConnector: %v", err)
 	}
 	if _, ok := c.(driver.Connector); !ok {
 		t.Fatal("returned value is not driver.Connector")
 	}
-	// Without FDB cluster, Connect fails at initialization.
+	// Nonexistent cluster file → Connect must fail at initialization.
 	_, err = c.Connect(context.Background())
 	if err == nil {
 		t.Fatal("Connect should fail (no FDB available)")

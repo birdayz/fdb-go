@@ -11,9 +11,9 @@ import (
 func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 	t.Parallel()
 	rules := DefaultImplementationRules()
-	// 9 Java-ported + 1 DistinctFinal + 1 Go extension (ImplementInMemorySortRule)
-	if len(rules) != 11 {
-		t.Fatalf("expected 11 implementation rules, got %d", len(rules))
+	// 11 constraint-push + 9 Java-ported + 1 DistinctFinal + 1 Go extension (ImplementInMemorySortRule)
+	if len(rules) != 22 {
+		t.Fatalf("expected 22 implementation rules, got %d", len(rules))
 	}
 }
 

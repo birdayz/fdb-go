@@ -38,13 +38,13 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 
 | ID | Divergence | Go approach | Java approach | Criticality | Effort |
 |---|---|---|---|---|---|
-| **D-2** | PushOrdering rules | ExpressionRules (EXPLORE): structural rewrites | ImplementationRules (PLANNING): constraint-push | LOW — same results, Go's memo larger | 2-3 shifts |
+| ~~**D-2**~~ | ~~PushOrdering rules~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~DONE~~ | ~~done~~ |
 | **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Postgres-inspired: multi-dim, memoized | NONE — intentional (RFC-024) | N/A |
-| **D-5** | InComparison architecture | Union of filter legs per IN-element | SelectExpression + ExplodeExpression | LOW — same results, less elegant | 2-3 shifts |
-| **D-7** | Multi-aggregate matching | Single-aggregate index match only | Multi-aggregate via index intersection | **MEDIUM** — missing optimization | 1 shift |
-| **D-8** | CardinalityProperty | Coupled to Cost struct | Separate class with min/max bounds | NONE — internal modularity | 0.5 shift |
-| **D-11** | ConstantObjectValue promotion | No type promotion on eval | PromoteValue.isPromotionNeeded | NONE — not triggered yet | 0.5 shift |
-| **D-3 gap** | Distinct elimination check | Logical PK column coverage | Physical DistinctRecordsProperty | LOW — misses edge case | 0.5 shift |
+| ~~**D-5**~~ | ~~InComparison architecture~~ | ~~SelectExpression + ExplodeExpression~~ | ~~SelectExpression + ExplodeExpression~~ | ~~DONE~~ | ~~done~~ |
+| ~~**D-7**~~ | ~~Multi-aggregate matching~~ | ~~Multi-aggregate via index intersection~~ | ~~Multi-aggregate via index intersection~~ | ~~DONE~~ | ~~done~~ |
+| ~~**D-8**~~ | ~~CardinalityProperty~~ | ~~Coupled to Cost struct~~ | ~~Separate class with min/max bounds~~ | ~~DONE~~ | ~~done~~ |
+| ~~**D-11**~~ | ~~ConstantObjectValue promotion~~ | ~~No type promotion on eval~~ | ~~PromoteValue.isPromotionNeeded~~ | ~~DONE~~ | ~~done~~ |
+| ~~**D-3 gap**~~ | ~~Distinct elimination check~~ | ~~Physical DistinctRecordsProperty per FinalMember + logical PK fallback~~ | ~~Physical DistinctRecordsProperty~~ | ~~DONE~~ | ~~done~~ |
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
@@ -274,6 +274,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [ ] **#36** Catalog wire format reverse direction (Go writes → Java reads). (~1 shift)
 - [ ] **#37** E2 ANTLR parser DoS hardening — coordinate Go-side fix with upstream. Gate: upstream ticket. (~0.5 shift)
 - [x] **#38** CI test report drops `//pkg/relational/...` results — **landed swingshift-64**. Root cause: `.bazelrc:18` global `--build_event_json_file=.bazel-bep.jsonl` was getting overwritten by the second `bazelisk test` invocation (race-detector subset, no relational tests). Fix: race step now writes to `.bazel-bep.race.jsonl` (overrides the global flag); `cmd/test-report` accepts multiple positional BEP file args and concatenates target lists; CI workflow passes both BEPs to the report generator. Single-arg default unchanged for local use.
+- [ ] **#99** Schema-qualified table names (`schema.table`) — Java's grammar parses `fullId` as `uid (DOT uid)*` and `IdentifierVisitor.visitFullId` splits into qualifier + name. `SemanticAnalyzer.tableExists` / `getTable` accept the qualifier if it matches the current schema's name (line 196: `metadataCatalog.getName().equals(qualifier)`), reject otherwise. Go's parser/translator doesn't handle the dotted form at all. Port: parse `schema.table` in table references, validate qualifier matches current schema, strip it before table lookup. No cross-schema access (Java doesn't have it either). (~0.5 shift)
 - [ ] **#39** Go-only GROUP BY clause — **broader than initially scoped**: empirical re-probe via subagent batch (swingshift-64) found Java rejects ALL GROUP BY forms, not just the non-projected form. Even canonical `SELECT g, COUNT(*) FROM t GROUP BY g` (grouping column IS in projection) triggers `UnableToPlanException: Cascades planner could not plan query`. Cascades 4.11.1.0 has no GROUP BY rule at all. Aligning Go would require rejecting all GROUP BY clauses at parse time with byte-equal "Cascades planner could not plan query"; ~10-20 yamsql files use GROUP BY and would need wholesale rewrite (often there's no clean rewrite — GROUP BY is the test's focus). Recommend leave as Go-only-correctness for now; revisit when Java adds GROUP BY support upstream. (~2 shifts if pursued)
 _(Items #40-#64 moved to Phase 1.5 above. #41 and #40 were originally Phase 6 surface-divergence finds; recategorized so future shifts stop importing-by-numeric-order.)_
 

@@ -77,16 +77,26 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSortConstantKeysElimRule(),
 		NewPullFilterAboveSortRule(),
 		NewUnsortedSortElimRule(),
-		NewPushOrderingThroughGroupByRule(),
-		NewPushOrderingThroughProjectionRule(),
-		NewPushOrderingThroughFilterRule(),
-		NewPushOrderingThroughDistinctRule(),
-		NewPushOrderingThroughUniqueRule(),
-		NewPushOrderingThroughUnionRule(),
-		NewPushOrderingThroughDeleteRule(),
-		NewPushOrderingThroughInsertRule(),
-		NewPushOrderingThroughUpdateRule(),
-		NewPushOrderingThroughTempTableInsertRule(),
+		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
+		// PushOrderingThroughProjectionRule REMOVED: moved to PLANNING
+		// phase as PushRequestedOrderingThroughProjectionRule (DefaultImplementationRules).
+		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
+		// phase as PushRequestedOrderingThroughFilterRule (DefaultImplementationRules).
+		// PushOrderingThroughDistinctRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughDistinctRule (DefaultImplementationRules).
+		// PushOrderingThroughUniqueRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughUniqueRule (DefaultImplementationRules).
+		// PushOrderingThroughUnionRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughUnionRule (DefaultImplementationRules).
+		// PushOrderingThroughDeleteRule REMOVED (D-2): moved to PLANNING
+		// phase as PushRequestedOrderingThroughDeleteRule (DefaultImplementationRules).
+		// PushOrderingThroughInsertRule REMOVED: moved to PLANNING phase
+		// as PushRequestedOrderingThroughInsertRule (DefaultImplementationRules).
+		// PushOrderingThroughUpdateRule REMOVED: moved to PLANNING phase
+		// as PushRequestedOrderingThroughUpdateRule (DefaultImplementationRules).
+		// PushOrderingThroughTempTableInsertRule REMOVED: moved to PLANNING
+		// phase as PushRequestedOrderingThroughTempTableInsertRule (DefaultImplementationRules).
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
 		NewInComparisonToExplodeRule(),
@@ -176,6 +186,22 @@ func DMLImplementationRules() []ExpressionRule {
 // specific rules fire before it for expressions they recognize.
 func DefaultImplementationRules() []ImplementationRule {
 	rules := []ImplementationRule{
+		// --- Constraint-push rules (top-down, PLANNING Phase 1) ---
+		// These fire during constraintOnly=true to propagate ordering
+		// constraints from parent to child References. Ports Java's
+		// PushRequestedOrderingThrough*Rule family.
+		NewPushRequestedOrderingThroughSortRule(),
+		NewPushRequestedOrderingThroughDistinctRule(),
+		NewPushRequestedOrderingThroughUniqueRule(),
+		NewPushRequestedOrderingThroughFilterRule(),
+		NewPushRequestedOrderingThroughDeleteRule(),
+		NewPushRequestedOrderingThroughInsertRule(),
+		NewPushRequestedOrderingThroughUpdateRule(),
+		NewPushRequestedOrderingThroughTempTableInsertRule(),
+		NewPushRequestedOrderingThroughProjectionRule(),
+		NewPushRequestedOrderingThroughGroupByRule(),
+		NewPushRequestedOrderingThroughUnionRule(),
+
 		// --- Java-ported rules (1:1 with fdb-record-layer-core) ---
 		NewImplementSimpleSelectRule(),
 		NewImplementDistinctUnionRule(),
@@ -202,6 +228,25 @@ func GoExtensionImplementationRules() []ImplementationRule {
 	}
 }
 
+// MatchingRules returns the matching rules that seed the partial-match
+// infrastructure. These fire during the EXPLORE phase alongside
+// expression rules but serve a different purpose: they establish
+// PartialMatch instances between the query graph and MatchCandidate
+// traversals, which are then consumed by implementation rules to
+// produce index-scan plans.
+//
+// Mirrors Java's PlanningRuleSet.MATCHING_RULES:
+//   - MatchLeafRule: seeds leaf-to-leaf matches
+//   - MatchIntermediateRule: composes child matches into parent matches
+//
+// Compose with: append(DefaultExpressionRules(), MatchingRules()...)
+func MatchingRules() []ExpressionRule {
+	return []ExpressionRule{
+		NewMatchLeafRule(),
+		NewMatchIntermediateRule(),
+	}
+}
+
 // init registers the default rules in the rule registry under their
 // concrete-type names ("FilterMergeRule", etc.) — discoverable via
 // LookupRule / RegisteredRuleNames for diagnostic output.
@@ -211,6 +256,7 @@ func GoExtensionImplementationRules() []ImplementationRule {
 func init() {
 	registerDefaultRules()
 	registerBatchARules()
+	registerMatchingRules()
 }
 
 func registerDefaultRules() {
@@ -230,6 +276,16 @@ func registerDefaultRules() {
 
 func registerBatchARules() {
 	for _, r := range BatchAExpressionRules() {
+		name := shortTypeName(r)
+		if LookupRule(name) != nil {
+			continue
+		}
+		RegisterRule(name, r)
+	}
+}
+
+func registerMatchingRules() {
+	for _, r := range MatchingRules() {
 		name := shortTypeName(r)
 		if LookupRule(name) != nil {
 			continue

@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"sync"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -24,6 +26,9 @@ type AggregateIndexMatchCandidate struct {
 	aggFunction expressions.AggregateFunction
 	aggColumn   string
 	aliases     []values.CorrelationIdentifier
+
+	traversalOnce sync.Once
+	traversal     *Traversal
 }
 
 // NewAggregateIndexMatchCandidate creates a candidate for an aggregate
@@ -50,7 +55,18 @@ func NewAggregateIndexMatchCandidate(
 	}
 }
 
-func (c *AggregateIndexMatchCandidate) CandidateName() string    { return c.indexName }
+func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
+
+// GetTraversal returns the Traversal of this candidate's expression
+// tree, built lazily on first access via ExpandValueIndex (using the
+// grouping columns as the index columns). The traversal is stable once
+// computed (sync.Once).
+func (c *AggregateIndexMatchCandidate) GetTraversal() *Traversal {
+	c.traversalOnce.Do(func() {
+		c.traversal = ExpandValueIndex(c)
+	})
+	return c.traversal
+}
 func (c *AggregateIndexMatchCandidate) GetColumnNames() []string { return c.groupCols }
 func (c *AggregateIndexMatchCandidate) GetRecordTypes() []string { return c.recordTypes }
 func (c *AggregateIndexMatchCandidate) IsUnique() bool           { return false }
@@ -123,6 +139,41 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 		return false
 	}
 	opFV, ok := aggs[0].Operand.(*values.FieldValue)
+	if !ok {
+		return false
+	}
+	return eqFold(opFV.Field, c.aggColumn)
+}
+
+// MatchesSingleAggregateOf reports whether this candidate's grouping
+// keys match gb's grouping keys AND this candidate covers the aggregate
+// at index aggIndex in gb's aggregate list. Used by the multi-aggregate
+// intersection path: each candidate covers one aggregate while all
+// share the same grouping columns.
+func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.GroupByExpression, aggIndex int) bool {
+	keys := gb.GetGroupingKeys()
+	if len(keys) != len(c.groupCols) {
+		return false
+	}
+	for i, k := range keys {
+		fv, ok := k.(*values.FieldValue)
+		if !ok {
+			return false
+		}
+		if !eqFold(fv.Field, c.groupCols[i]) {
+			return false
+		}
+	}
+
+	aggs := gb.GetAggregates()
+	if aggIndex < 0 || aggIndex >= len(aggs) {
+		return false
+	}
+	agg := aggs[aggIndex]
+	if agg.Function != c.aggFunction {
+		return false
+	}
+	opFV, ok := agg.Operand.(*values.FieldValue)
 	if !ok {
 		return false
 	}

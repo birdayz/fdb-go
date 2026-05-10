@@ -333,8 +333,9 @@ func TestPlanner_MemoDeduplicatesEquivalentScans(t *testing.T) {
 	}
 }
 
-// TestInExplode_DuplicateElements verifies that IN(1,1,2) produces 3
-// legs (no dedup — that's the executor's job via DISTINCT if needed).
+// TestInExplode_DuplicateElements verifies that IN(1,1,2) produces a
+// SelectExpression with an ExplodeExpression containing all 3 elements
+// (no dedup — that's the executor's job via DISTINCT if needed).
 func TestInExplode_DuplicateElements(t *testing.T) {
 	t.Parallel()
 
@@ -359,10 +360,38 @@ func TestInExplode_DuplicateElements(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	union := results[0].(*expressions.LogicalUnionExpression)
-	if len(union.GetQuantifiers()) != 3 {
-		t.Fatalf("expected 3 legs (no dedup), got %d", len(union.GetQuantifiers()))
+	sel, ok := results[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", results[0])
 	}
+
+	// Verify the ExplodeExpression carries all 3 elements (no dedup).
+	qs := sel.GetQuantifiers()
+	if len(qs) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(qs))
+	}
+	// Find the explode quantifier.
+	for _, qq := range qs {
+		ref := qq.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.Members() {
+			if explode, ok := m.(*expressions.ExplodeExpression); ok {
+				cv := explode.GetCollectionValue()
+				vals := cv.Evaluate(nil)
+				list, ok := vals.([]any)
+				if !ok {
+					t.Fatalf("collection value is %T, expected []any", vals)
+				}
+				if len(list) != 3 {
+					t.Fatalf("expected 3 elements in explode list (no dedup), got %d", len(list))
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("no ExplodeExpression found in SelectExpression quantifiers")
 }
 
 // TestIndexScan_ThreeColumnPrefix tests a 3-column index with all
