@@ -457,6 +457,121 @@ func TestPlanner_MemoPopulatedAfterExplore(t *testing.T) {
 	}
 }
 
+// TestPlanner_GenerateDataAccess_InsertsScans verifies that the data
+// access phase runs between AdjustMatches and PLANNING and converts
+// PartialMatches into scanPlanExpressions inserted into the Reference.
+func TestPlanner_GenerateDataAccess_InsertsScans(t *testing.T) {
+	t.Parallel()
+
+	// Build a simple scan expression with a Reference.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+
+	// Create a test PartialMatch with a known plan.
+	plan := &testPlan{name: "data_access_scan"}
+	pm := makeDataAccessTestPartialMatch("idx_test", 2, plan)
+
+	// Register the PartialMatch on the Reference for its candidate.
+	AddPartialMatchForCandidate(ref, pm.GetMatchCandidate(), pm)
+
+	// Before Plan, the Reference should have only the original scan member.
+	if got := len(ref.Members()); got != 1 {
+		t.Fatalf("before Plan: expected 1 member, got %d", got)
+	}
+
+	// Run the full pipeline. The data access phase should insert a
+	// scanPlanExpression into the Reference.
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	_, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	// After Plan, the Reference should have at least 2 members:
+	// the original scan + the data-access-generated scanPlanExpression.
+	members := ref.Members()
+	if len(members) < 2 {
+		t.Fatalf("after Plan: expected >= 2 members (original + data access scan), got %d", len(members))
+	}
+
+	// Find the scanPlanExpression among the members.
+	var found *scanPlanExpression
+	for _, m := range members {
+		if spe, ok := m.(*scanPlanExpression); ok {
+			found = spe
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("data access phase did not insert a scanPlanExpression into the Reference")
+	}
+	if found.plan != plan {
+		t.Fatalf("scanPlanExpression wraps wrong plan: got %v, want %v", found.plan, plan)
+	}
+}
+
+// TestPlanner_GenerateDataAccess_NoMatchesIsNoOp verifies that the
+// data access phase is a no-op when no PartialMatches exist.
+func TestPlanner_GenerateDataAccess_NoMatchesIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	_, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	// No PartialMatches registered — data access phase should be a
+	// no-op; only the original scan member should be present.
+	if got := len(ref.Members()); got != 1 {
+		t.Fatalf("expected 1 member (no data access generation), got %d", got)
+	}
+}
+
+// TestPlanner_GenerateDataAccess_BottomUp verifies that the data
+// access phase processes child References before parent References
+// (bottom-up order).
+func TestPlanner_GenerateDataAccess_BottomUp(t *testing.T) {
+	t.Parallel()
+
+	// Build Filter(Scan) — two References.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "x", Typ: values.TypeBool})
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	// Register a PartialMatch on the inner (scan) Reference only.
+	childPlan := &testPlan{name: "child_scan"}
+	pm := makeDataAccessTestPartialMatch("child_idx", 1, childPlan)
+	AddPartialMatchForCandidate(scanRef, pm.GetMatchCandidate(), pm)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	_, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	// The inner Reference should have a scanPlanExpression (data access
+	// phase processed it bottom-up, before the parent).
+	var found bool
+	for _, m := range scanRef.Members() {
+		if _, ok := m.(*scanPlanExpression); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("data access phase did not insert scanPlanExpression into inner (scan) Reference")
+	}
+}
+
 func TestPlanner_MemoSharesSubExpressions(t *testing.T) {
 	t.Parallel()
 	// Build a tree where the PullFilterAboveSort and PushFilterThroughSort
