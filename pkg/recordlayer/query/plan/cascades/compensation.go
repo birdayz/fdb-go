@@ -601,7 +601,13 @@ func (c *ForMatchCompensation) String() string {
 // (physical plan) identifiers. Compensated predicates are translated
 // through this map before injection.
 //
-// Ports Java's Compensation.ForMatch.apply.
+// Ports Java's Compensation.ForMatch.apply (then-branch: no pulled-up
+// quantifiers). The else-branch (multi-join compensation with unmatched
+// ForEach quantifiers pulled up into a new SelectExpression) is not yet
+// ported — it requires GraphExpansion.buildSimpleSelectOverQuantifier
+// and is needed only when an index covers one leg of a multi-table join
+// but not the others. Current Go (single-table queries) always takes
+// the then-branch.
 func (c *ForMatchCompensation) Apply(
 	expr expressions.RelationalExpression,
 	translationMap TranslationMap,

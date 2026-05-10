@@ -154,7 +154,10 @@ func tryPushPredicate(
 		}
 		return predicates.NewNot(child), true
 	default:
-		// Unknown predicate type without values — pushable as-is.
+		// Non-value-bearing predicates (ExistsPredicate, Placeholder) are
+		// pushable as-is. They're self-contained (own quantifier scope)
+		// and don't reference the filter's inner alias. Matches Java's
+		// "if not PredicateWithValue, return leafPredicate unchanged."
 		return pred, true
 	}
 }
