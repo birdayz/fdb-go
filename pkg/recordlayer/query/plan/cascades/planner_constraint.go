@@ -16,6 +16,12 @@ type PlannerConstraint[T any] struct {
 // RequestedOrderingConstraintKey is the constraint key for requested orderings.
 var RequestedOrderingConstraintKey = &PlannerConstraint[[]*RequestedOrdering]{name: "requestedOrdering"}
 
+// ReferencedFieldsConstraintKey is the constraint key for referenced
+// fields. Pushed top-down by PushReferencedFieldsThrough* rules to
+// inform downstream operators which columns/fields are actually needed.
+// Ports Java's ReferencedFieldsConstraint.REFERENCED_FIELDS.
+var ReferencedFieldsConstraintKey = &PlannerConstraint[*ReferencedFields]{name: "referencedFields"}
+
 // ConstraintMap holds constraints per Reference. Rules read constraints
 // from the map and push new constraints for child References.
 type ConstraintMap struct {
