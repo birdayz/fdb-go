@@ -319,6 +319,38 @@ func (b *AdjustedBuilder) SetMaxMatchMap(m *MaxMatchMap) *AdjustedBuilder {
 	return b
 }
 
+// AdjustGroupByMappings pulls up the GroupByMappings through a
+// candidate expression. For each matched grouping/aggregate value
+// pair, pulls up the candidate-side value through the candidate
+// expression's result value.
+//
+// Ports Java's MatchInfo.adjustGroupByMappings.
+func AdjustGroupByMappings(
+	gbm *GroupByMappings,
+	candidateAlias values.CorrelationIdentifier,
+	candidateResultValue values.Value,
+) *GroupByMappings {
+	adjustedGroupings := adjustMatchedValueMap(gbm.MatchedGroupingsMap(), candidateAlias, candidateResultValue)
+	adjustedAggregates := adjustMatchedValueMap(gbm.MatchedAggregatesMap(), candidateAlias, candidateResultValue)
+	return NewGroupByMappings(adjustedGroupings, adjustedAggregates, gbm.UnmatchedAggregatesMap())
+}
+
+func adjustMatchedValueMap(
+	matchedMap *BiMap[values.Value, values.Value],
+	candidateAlias values.CorrelationIdentifier,
+	candidateResultValue values.Value,
+) *BiMap[values.Value, values.Value] {
+	result := NewValueBiMap()
+	matchedMap.Range(func(queryValue, candidateValue values.Value) bool {
+		pulledUp := values.PullUpValue(candidateValue, candidateResultValue, candidateAlias)
+		if pulledUp != nil {
+			result.Put(queryValue, pulledUp)
+		}
+		return true
+	})
+	return result
+}
+
 // GetGroupByMappings returns the builder's current group-by mappings.
 func (b *AdjustedBuilder) GetGroupByMappings() *GroupByMappings {
 	return b.groupByMappings
