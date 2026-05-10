@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -53,6 +54,11 @@ func (c *QueryPlanConstraint) GetPredicate() predicates.QueryPredicate {
 type PartialMatch interface {
 	GetMatchCandidate() MatchCandidate
 	GetMatchInfo() MatchInfo
+	GetBoundAliasMap() *AliasMap
+	GetQueryRef() *expressions.Reference
+	GetQueryExpression() expressions.RelationalExpression
+	GetCandidateRef() *expressions.Reference
+	GetRegularMatchInfo() *RegularMatchInfo
 }
 
 // ---------------------------------------------------------------------------

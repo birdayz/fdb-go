@@ -103,8 +103,15 @@ type testPartialMatch struct {
 	matchInfo MatchInfo
 }
 
-func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate { return pm.candidate }
-func (pm *testPartialMatch) GetMatchInfo() MatchInfo           { return pm.matchInfo }
+func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate                    { return pm.candidate }
+func (pm *testPartialMatch) GetMatchInfo() MatchInfo                              { return pm.matchInfo }
+func (pm *testPartialMatch) GetBoundAliasMap() *AliasMap                          { return EmptyAliasMap() }
+func (pm *testPartialMatch) GetQueryRef() *expressions.Reference                  { return nil }
+func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpression { return nil }
+func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference              { return nil }
+func (pm *testPartialMatch) GetRegularMatchInfo() *RegularMatchInfo {
+	return pm.matchInfo.GetRegularMatchInfo()
+}
 
 var _ PartialMatch = (*testPartialMatch)(nil)
 
