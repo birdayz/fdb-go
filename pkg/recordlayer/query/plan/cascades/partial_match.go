@@ -109,6 +109,11 @@ func (p *PartialMatchImpl) GetBoundParameterPrefixMap() map[values.CorrelationId
 // candidate side. The rangedOverAliases are the candidate-side
 // quantifier aliases (targets in the binding alias map).
 // Ports Java's PartialMatch.pullUp(candidateAlias).
+// PullUp creates the PullUp for this match from the MaxMatchMap's
+// candidate value and the binding alias map's target aliases.
+// Java's PartialMatch.pullUp delegates to nestPullUp which walks
+// through the candidate expression hierarchy; the flat construction
+// is equivalent for non-adjusted matches (the common case).
 func (p *PartialMatchImpl) PullUp(candidateAlias values.CorrelationIdentifier) *PullUp {
 	mi := p.GetRegularMatchInfo()
 	mmm := mi.GetMaxMatchMap()
