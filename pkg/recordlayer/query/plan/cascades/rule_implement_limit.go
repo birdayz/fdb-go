@@ -10,6 +10,9 @@ import (
 // RecordQueryLimitPlan. LIMIT/OFFSET is a pure pass-through that caps
 // the row count — it applies to whatever physical plan the inner
 // produces.
+//
+// Go-only extension: Java doesn't support LIMIT in SQL; it uses
+// ExecuteProperties.setReturnedRowLimit() at the JDBC layer.
 type ImplementLimitRule struct {
 	matcher matching.BindingMatcher
 }

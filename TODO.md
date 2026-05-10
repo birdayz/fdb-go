@@ -6,6 +6,23 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ---
 
+## Cascades — remaining Java alignment
+
+### Actionable (no blocking dependencies)
+
+- [x] **C-1** SelectExpression.compensate — full predicate compensation computation. Ported (swingshift-86): CompensateCompleteMatch now iterates predicates, looks up PredicateMultiMap mappings, computes per-predicate compensation functions, and builds the real PredicateCompensationMap. Enables residual predicate filters after index scans.
+- [x] **C-2** MaxMatchMap ValueEquivalence parameter — ported (swingshift-86). Added ComputeMaxMatchMapWithEquivalence and PullUpValueMaybeWithEquivalence that thread ValueEquivalence through the matching algorithm. findMatchingReachableCandidate now consults ValueEquivalence as fallback when structural equality fails.
+- [x] **C-3** PullUp.Visitor (MatchPullUp, PullUpVisitor) — ported (swingshift-86). ForMatch + visitForPullUp type-switch (LogicalTypeFilterExpression → inner quantifier value; default → result value). NestPullUp walks adjusted match infos to build chained PullUp levels.
+- [x] **C-4** Pareto filtering in MaximumCoverageMatches — ported (swingshift-86). findContainingAccess prunes dominated matches: if match A from candidate C has strictly more bound sargable aliases that contain all of match B's aliases, B is eliminated.
+- [x] **C-5** FieldValue child value — ported (swingshift-86). Added optional `Child Value` field to FieldValue. nil Child = legacy flat behavior (backward-compatible). With Child set, FieldValue participates in correlation tracking (Children() returns the child, WalkValue/GetCorrelatedToOfValue discover its alias). NewFieldValue(child, field, typ) constructor for the full model; NewFlatFieldValue for legacy. Unblocks C-6 fetch rules' value translation.
+
+### Blocked on larger infrastructure
+
+- [x] **C-6** 6 unported ImplementationCascadesRules — MergeFetchIntoCoveringIndexRule, PushDistinctBelowFilterRule, PushDistinctThroughFetchRule, PushFilterThroughFetchRule, PushMapThroughFetchRule, PushSetOperationThroughFetchRule. Rules ported (swingshift-86). RecordQueryFetchFromPartialRecordPlan + TranslateValueFunction + physicalFetchFromPartialRecordWrapper + 7 rules registered. Full value-translation effectiveness gated on C-5 (FieldValue child value). Executor integration (runtime fetch) is a separate follow-up.
+- [x] **C-7** generateDataAccess phase ordering — restructured (swingshift-86). Data access generation now runs inside the PLANNING phase between constraint propagation (Pass 1) and bottom-up implementation (Pass 3). Reads requestedOrderings from ConstraintMap. Matches Java's architecture where data access rules fire with ordering constraints available.
+
+---
+
 ## Java-alignment refactors (structural divergences that cause cascading bugs)
 
 ### 1. ~~Merge buildLogicalPlanForSelect / buildOuterPlanOnDerived~~ — **done (swingshift-81)**
@@ -28,9 +45,9 @@ PlanVisitor walks ANTLR incrementally: parseFromSource + classifySelectElements 
 ### ~~Subqueries/EXISTS~~ — **done (swingshift-81)**
 ### ~~Yamsql conformance~~ — **115/115 (100%, swingshift-83)**
 ### ~~Cascades divergence D-3~~ — **done (swingshift-83)**
-### ~~M-1 AliasMap/RebaseValue/RebasePredicate~~ — **done (swingshift-83)**
+### ~~M-1 AliasMap/RebaseValue/RebasePredicate~~ — **done (swingshift-83, extended swingshift-86)**
 
-All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-1 infrastructure complete (AliasMap + RebaseValue 13 types + RebasePredicate 7 types). Error codes aligned: 42703/42809/42804. See `CASCADES_DIVERGENCE.md`.
+All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-1 infrastructure complete. RebaseValue now generic (all ~37 types via Children/WithChildren). ValuesStructurallyEqual rewritten via EqualsWithoutChildren (exhaustive 37-type dispatch, no reflect fallback). GetCorrelatedToOfValue handles all 7 correlation-bearing leaf types. See `CASCADES_DIVERGENCE.md`.
 
 ### Remaining internal architecture divergences
 

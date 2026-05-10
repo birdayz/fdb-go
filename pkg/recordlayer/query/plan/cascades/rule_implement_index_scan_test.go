@@ -6,7 +6,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 func TestImplementIndexScanRule_SingleEquality(t *testing.T) {
@@ -288,9 +287,9 @@ func TestImplementIndexScanRule_InequalityPrefix(t *testing.T) {
 		t.Fatalf("expected *physicalFilterWrapper (AMOUNT residual), got %T", results[0])
 	}
 	inner := fw.GetPlan().GetInner()
-	idxPlan, ok := inner.(*plans.RecordQueryIndexPlan)
-	if !ok {
-		t.Fatalf("inner should be *RecordQueryIndexPlan, got %T", inner)
+	idxPlan := extractIndexPlan(inner)
+	if idxPlan == nil {
+		t.Fatalf("inner should contain a *RecordQueryIndexPlan, got %T", inner)
 	}
 	comps := idxPlan.GetScanComparisons()
 	if !comps[0].IsInequality() {

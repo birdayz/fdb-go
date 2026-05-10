@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"strings"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -432,6 +434,7 @@ func matchFilterAgainstSelect(
 		nil,                    // rollUpToGroupingValues
 		nil,                    // additionalPlanConstraint
 	)
+	mi.SetChildPartialMatch(queryQs[0].GetAlias(), childMatch)
 
 	pm := NewPartialMatch(
 		boundAliasMap,
@@ -445,16 +448,30 @@ func matchFilterAgainstSelect(
 }
 
 // valuesMatchColumn checks if two values reference the same column.
-// Uses structural comparison via ExplainValue: for FieldValues this
-// is the field name (case-sensitive, matching the Go convention that
-// column names are normalised to a single canonical casing at SQL
-// identifier resolution time). For complex values (arithmetic,
-// casts, etc.) ExplainValue renders the full expression tree.
+// Uses structural comparison via ValuesStructurallyEqual: for
+// FieldValues this compares field names (case-sensitive, matching the
+// Go convention that column names are normalised to a single canonical
+// casing at SQL identifier resolution time). For complex values
+// (arithmetic, casts, etc.) it recursively compares the value tree.
 func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false
 	}
-	return values.ExplainValue(queryValue) == values.ExplainValue(placeholderValue)
+	// Fast path: structural equality (same field name, same child structure).
+	if values.ValuesStructurallyEqual(queryValue, placeholderValue) {
+		return true
+	}
+	// Cross-alias match: compare field names ignoring child QOV aliases.
+	// This handles the case where the query has a flat FieldValue
+	// ("COL") and the candidate has a child-bearing FieldValue
+	// (QOV(alias)."COL") — or both have children with different aliases.
+	// Mirrors Java's semanticEquals with alias equivalence map.
+	qFV, qOk := queryValue.(*values.FieldValue)
+	pFV, pOk := placeholderValue.(*values.FieldValue)
+	if qOk && pOk {
+		return strings.EqualFold(qFV.Field, pFV.Field)
+	}
+	return false
 }
 
 var _ ExpressionRule = (*MatchIntermediateRule)(nil)

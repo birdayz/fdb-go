@@ -1,7 +1,7 @@
 package cascades
 
 import (
-	"fmt"
+	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -20,9 +20,8 @@ import (
 //
 // Ports Java's com.apple.foundationdb.record.query.plan.cascades.Compensation.
 //
-// Methods that depend on types not yet ported (apply, applyFinal,
-// intersect, union) are omitted and will be added when their
-// dependencies land.
+// ForMatchCompensation implements Intersect, Union, and Apply.
+// applyFinal requires memoizer infrastructure (not yet ported).
 type Compensation interface {
 	// IsNeeded reports whether this compensation must be applied.
 	// Returns false only for NoCompensation.
@@ -93,6 +92,116 @@ var (
 	ImpossibleCompensation Compensation = impossibleCompensation{}
 )
 
+// CompensatedResult bundles the results of computing result
+// compensation for a partial match. Ports Java's
+// Compensation.CompensatedResult.
+type CompensatedResult struct {
+	Impossible           bool
+	ResultCompensationFn *ResultCompensationFunction
+	GroupByMappings      *GroupByMappings
+}
+
+// ComputeResultCompensation computes the result compensation for the
+// top operation's partial match. Ports Java's
+// Compensation.computeResultCompensation.
+func ComputeResultCompensation(pm PartialMatch, rootOfMatchPullUp *PullUp) *CompensatedResult {
+	matchInfo := pm.GetMatchInfo()
+
+	if rootOfMatchPullUp == nil {
+		return &CompensatedResult{
+			Impossible:           false,
+			ResultCompensationFn: NoResultCompensation(),
+			GroupByMappings:      EmptyGroupByMappings(),
+		}
+	}
+
+	mmm := matchInfo.GetRegularMatchInfo().GetMaxMatchMap()
+	if mmm == nil {
+		return nil
+	}
+	pulledUp := rootOfMatchPullUp.PullUpValueMaybe(mmm.GetQueryValue())
+	if pulledUp == nil {
+		return nil
+	}
+
+	var rcf *ResultCompensationFunction
+	if qov, ok := pulledUp.(*values.QuantifiedObjectValue); ok && qov.Correlation == rootOfMatchPullUp.GetCandidateAlias() {
+		rcf = NoResultCompensation()
+	} else {
+		rcf = ResultCompensationOfValue(pulledUp)
+	}
+
+	return &CompensatedResult{
+		Impossible:           rcf.IsImpossible(),
+		ResultCompensationFn: rcf,
+		GroupByMappings:      EmptyGroupByMappings(),
+	}
+}
+
+// IntersectCompensations folds a slice of Compensations via the
+// intersection monoid. The identity element is ImpossibleCompensation.
+// Ports Java's `compensations.stream().reduce(impossibleCompensation, Compensation::intersect)`.
+func IntersectCompensations(compensations []Compensation) Compensation {
+	result := ImpossibleCompensation
+	for _, c := range compensations {
+		result = intersectTwo(result, c)
+	}
+	return result
+}
+
+// UnionCompensations folds a slice of Compensations via union.
+// The identity element is NoCompensation.
+func UnionCompensations(compensations []Compensation) Compensation {
+	result := Compensation(NoCompensation)
+	for _, c := range compensations {
+		result = unionTwo(result, c)
+	}
+	return result
+}
+
+// intersectTwo dispatches intersection between any two Compensation
+// values, handling the monoid identities.
+func intersectTwo(a, b Compensation) Compensation {
+	// ImpossibleCompensation is the identity: impossible ∩ X = X
+	if _, ok := a.(impossibleCompensation); ok {
+		return b
+	}
+	if _, ok := b.(impossibleCompensation); ok {
+		return a
+	}
+	// NoCompensation is the absorbing element: none ∩ X = none
+	if !a.IsNeeded() || !b.IsNeeded() {
+		return NoCompensation
+	}
+	// Both are ForMatchCompensation — delegate to the full algorithm.
+	aFM, aOk := a.(*ForMatchCompensation)
+	bFM, bOk := b.(*ForMatchCompensation)
+	if aOk && bOk {
+		return aFM.Intersect(bFM)
+	}
+	// Fallback: can't intersect non-ForMatch compensations.
+	return ImpossibleCompensation
+}
+
+// unionTwo dispatches union between any two Compensation values.
+func unionTwo(a, b Compensation) Compensation {
+	if !a.IsNeeded() && !b.IsNeeded() {
+		return NoCompensation
+	}
+	if !a.IsNeeded() {
+		return b
+	}
+	if !b.IsNeeded() {
+		return a
+	}
+	aFM, aOk := a.(*ForMatchCompensation)
+	bFM, bOk := b.(*ForMatchCompensation)
+	if aOk && bOk {
+		return aFM.Union(bFM)
+	}
+	return ImpossibleCompensation
+}
+
 // ---------------------------------------------------------------------------
 // Placeholder types for ForMatch dependencies
 // ---------------------------------------------------------------------------
@@ -138,6 +247,21 @@ func StubPredicateCompensationMap(n int) *PredicateCompensationMap {
 		vals[i] = NoPredicateCompensationNeeded()
 	}
 	return &PredicateCompensationMap{keys: keys, values: vals}
+}
+
+// Get returns the compensation function for the given predicate key
+// using identity (pointer) comparison. Returns nil if not found.
+// Mirrors Java's LinkedIdentityMap.get().
+func (m *PredicateCompensationMap) Get(key predicates.QueryPredicate) PredicateCompensationFunc {
+	if m == nil {
+		return nil
+	}
+	for i, k := range m.keys {
+		if k == key { // pointer identity
+			return m.values[i]
+		}
+	}
+	return nil
 }
 
 // IsEmpty reports whether the map has no entries.
@@ -219,7 +343,29 @@ func NewResultCompensationFunction(needed bool) *ResultCompensationFunction {
 // a result Value. When applied, it translates the value through the
 // translation map. Ports Java's ResultCompensationFunction.ofValue.
 func ResultCompensationOfValue(v values.Value) *ResultCompensationFunction {
-	return &ResultCompensationFunction{needed: true, resultVal: v}
+	return &ResultCompensationFunction{
+		needed:     true,
+		impossible: valueContainsUnmatchedAggregates(v),
+		resultVal:  v,
+	}
+}
+
+// valueContainsUnmatchedAggregates reports whether a Value tree
+// contains any UnmatchedAggregateValue nodes. Ports Java's
+// ResultCompensationFunction.valueContainsUnmatchedValues.
+func valueContainsUnmatchedAggregates(v values.Value) bool {
+	if v == nil {
+		return false
+	}
+	found := false
+	values.WalkValue(v, func(node values.Value) bool {
+		if _, ok := node.(*values.UnmatchedAggregateValue); ok {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
 }
 
 // NewImpossibleResultCompensation creates a ResultCompensationFunction
@@ -242,13 +388,18 @@ func (f *ResultCompensationFunction) IsImpossible() bool {
 // aggregate value mappings. Ports Java's
 // ResultCompensationFunction.amend.
 func (f *ResultCompensationFunction) Amend(
-	_ *BiMap[values.CorrelationIdentifier, values.Value],
-	_ map[values.Value]values.Value,
+	unmatchedAggregateMap *BiMap[values.CorrelationIdentifier, values.Value],
+	amendedMatchedAggregateMap map[values.Value]values.Value,
 ) *ResultCompensationFunction {
 	if f == nil || !f.needed {
 		return f
 	}
-	return f
+	if f.resultVal == nil {
+		return f
+	}
+	amended := replaceUnmatchedAggregateValues(
+		unmatchedAggregateMap, amendedMatchedAggregateMap, f.resultVal)
+	return ResultCompensationOfValue(amended)
 }
 
 // ApplyCompensationForResult applies this compensation by translating
@@ -262,10 +413,7 @@ func (f *ResultCompensationFunction) ApplyCompensationForResult(tm TranslationMa
 	if tm == nil || tm.DefinesOnlyIdentities() {
 		return f.resultVal
 	}
-	if am, ok := tm.GetAliasMap(); ok {
-		return values.RebaseValue(f.resultVal, am.ForwardMap())
-	}
-	return f.resultVal
+	return translateValueCorrelations(f.resultVal, tm)
 }
 
 // ---------------------------------------------------------------------------
@@ -289,9 +437,9 @@ type ForMatchCompensation struct {
 	resultCompensationFn     *ResultCompensationFunction
 	groupByMappings          *GroupByMappings
 
-	// Lazily computed set of unmatched ForEach quantifiers.
+	// Lazily computed set of unmatched ForEach quantifiers (thread-safe).
 	unmatchedForEachQuantifiers []expressions.Quantifier
-	forEachComputed             bool
+	forEachOnce                 sync.Once
 }
 
 // NewForMatchCompensation constructs a ForMatchCompensation.
@@ -393,7 +541,7 @@ func (c *ForMatchCompensation) GetUnmatchedQuantifiers() []expressions.Quantifie
 // Mirrors Java's ForMatch.computeUnmatchedForEachQuantifiers() with
 // Suppliers.memoize.
 func (c *ForMatchCompensation) GetUnmatchedForEachQuantifiers() []expressions.Quantifier {
-	if !c.forEachComputed {
+	c.forEachOnce.Do(func() {
 		var result []expressions.Quantifier
 		for _, q := range c.unmatchedQuantifiers {
 			if q.Kind() == expressions.QuantifierForEach {
@@ -401,8 +549,7 @@ func (c *ForMatchCompensation) GetUnmatchedForEachQuantifiers() []expressions.Qu
 			}
 		}
 		c.unmatchedForEachQuantifiers = result
-		c.forEachComputed = true
-	}
+	})
 	return c.unmatchedForEachQuantifiers
 }
 
@@ -430,6 +577,18 @@ func (c *ForMatchCompensation) GetGroupByMappings() *GroupByMappings {
 	return c.groupByMappings
 }
 
+// GetMatchedForEachAlias returns the single ForEach quantifier alias
+// among the matched quantifiers. Java uses this as the target for the
+// matchedToRealizedTranslationMap. Ports Java's getMatchedForEachAlias.
+func (c *ForMatchCompensation) GetMatchedForEachAlias() values.CorrelationIdentifier {
+	for _, q := range c.matchedQuantifiers {
+		if q.Kind() == expressions.QuantifierForEach {
+			return q.GetAlias()
+		}
+	}
+	return values.CorrelationIdentifier{}
+}
+
 // String returns a human-readable representation of this compensation.
 // Mirrors Java's ForMatch.toString().
 func (c *ForMatchCompensation) String() string {
@@ -454,7 +613,9 @@ func (c *ForMatchCompensation) String() string {
 // (physical plan) identifiers. Compensated predicates are translated
 // through this map before injection.
 //
-// Ports Java's Compensation.ForMatch.apply.
+// Ports Java's Compensation.ForMatch.apply — full implementation
+// including the else-branch (multi-join compensation with unmatched
+// ForEach quantifiers pulled up into a new SelectExpression).
 func (c *ForMatchCompensation) Apply(
 	expr expressions.RelationalExpression,
 	translationMap TranslationMap,
@@ -466,12 +627,111 @@ func (c *ForMatchCompensation) Apply(
 	}
 
 	compensatedPreds := c.predicateCompensationMap.ApplyCompensations(translationMap)
-	if len(compensatedPreds) == 0 {
+
+	// Collect correlations referenced by compensated predicates.
+	compensatedCorrelations := make(map[values.CorrelationIdentifier]struct{})
+	for _, pred := range compensatedPreds {
+		for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
+			compensatedCorrelations[alias] = struct{}{}
+		}
+	}
+
+	// Determine which quantifiers must be "pulled up" (re-introduced
+	// into the compensation expression).
+	var toBePulledUp []expressions.Quantifier
+
+	// Matched existential quantifiers referenced by compensation
+	// predicates must be pulled up (partial EXISTS match).
+	for _, q := range c.matchedQuantifiers {
+		if q.Kind() == expressions.QuantifierExistential {
+			if _, referenced := compensatedCorrelations[q.GetAlias()]; referenced {
+				toBePulledUp = append(toBePulledUp, q)
+			}
+		}
+	}
+
+	// Unmatched ForEach quantifiers affect cardinality — must be
+	// retained. Unmatched existential quantifiers are pulled up only
+	// if referenced by compensation predicates.
+	for _, q := range c.unmatchedQuantifiers {
+		if q.Kind() == expressions.QuantifierForEach {
+			toBePulledUp = append(toBePulledUp, q)
+		} else if q.Kind() == expressions.QuantifierExistential {
+			if _, referenced := compensatedCorrelations[q.GetAlias()]; referenced {
+				toBePulledUp = append(toBePulledUp, q)
+			}
+		}
+	}
+
+	if len(compensatedPreds) == 0 && len(toBePulledUp) == 0 {
 		return expr
 	}
 
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
-	return expressions.NewLogicalFilterExpression(compensatedPreds, innerQ)
+	// Create the base quantifier over the compensated expression.
+	newBaseQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+
+	if len(toBePulledUp) == 0 {
+		// Then-branch: simple filter, no join needed.
+		return expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ)
+	}
+
+	// Else-branch: build a SelectExpression that joins the base scan
+	// with the pulled-up quantifiers and applies compensation predicates.
+	builder := NewGraphExpansionBuilder()
+	builder.AddQuantifier(newBaseQ)
+	for _, q := range toBePulledUp {
+		builder.AddQuantifier(q)
+	}
+	for _, pred := range compensatedPreds {
+		builder.AddPredicate(pred)
+	}
+	expansion := builder.Build()
+	sealed := expansion.Seal()
+	return sealed.BuildSelectWithResultValue(newBaseQ.GetFlowedObjectValue())
+}
+
+// ApplyFinal applies the result (shape) compensation by wrapping the
+// expression in a SelectExpression with the translated result value.
+// Returns the original expression if no result compensation is needed.
+//
+// Ports Java's Compensation.WithSelectCompensation.applyFinal which
+// uses GraphExpansion.builder().addQuantifier(base).build()
+// .buildSelectWithResultValue(resultValue).
+func (c *ForMatchCompensation) ApplyFinal(
+	expr expressions.RelationalExpression,
+	translationMap TranslationMap,
+) expressions.RelationalExpression {
+	if !c.resultCompensationFn.IsNeeded() {
+		return expr
+	}
+	resultVal := c.resultCompensationFn.ApplyCompensationForResult(translationMap)
+	if resultVal == nil {
+		return expr
+	}
+	newBaseQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+	builder := NewGraphExpansionBuilder()
+	builder.AddQuantifier(newBaseQ)
+	expansion := builder.Build()
+	sealed := expansion.Seal()
+	return sealed.BuildSelectWithResultValue(resultVal)
+}
+
+// ApplyAllNeeded applies both filter compensation (Apply) and result
+// compensation (ApplyFinal) as needed. This is the primary entry point
+// for applying compensation to a plan expression.
+//
+// Ports Java's Compensation.applyAllNeededCompensations.
+func (c *ForMatchCompensation) ApplyAllNeeded(
+	expr expressions.RelationalExpression,
+	translationMap TranslationMap,
+) expressions.RelationalExpression {
+	if c.IsNeededForFiltering() {
+		expr = c.Apply(expr, translationMap)
+	}
+	if c.IsFinalNeeded() {
+		expr = c.ApplyFinal(expr, translationMap)
+	}
+	return expr
 }
 
 // Intersect combines this compensation with another by keeping only
@@ -479,16 +739,15 @@ func (c *ForMatchCompensation) Apply(
 // intersections). Returns ImpossibleCompensation if the intersection
 // is infeasible.
 //
-// Ports Java's Compensation.WithSelectCompensation.intersect (seed).
+// Ports Java's Compensation.WithSelectCompensation.intersect.
 func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensation {
+	// Phase 1: Handle edge cases.
 	if c.IsImpossible() || other.IsImpossible() {
 		return ImpossibleCompensation
 	}
-
 	if !c.IsNeeded() && !other.IsNeeded() {
 		return NoCompensation
 	}
-
 	if !c.IsNeeded() {
 		return other
 	}
@@ -496,11 +755,297 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		return c
 	}
 
-	// TODO: port Java's full predicate map intersection (keep only
-	// predicates present in both maps). Until then, return the
-	// receiver as a conservative approximation — this may apply
-	// extra filtering but won't miss required predicates.
-	return c
+	// Phase 2: Intersect child compensations.
+	// Java: childCompensation.intersect(other.getChildCompensation())
+	// Uses interface dispatch. In Go, ForMatchCompensation.Intersect
+	// handles the impossible check; for non-ForMatch types, use
+	// intersectTwo which handles the monoid identities.
+	var intersectedChild Compensation
+	if childFM, ok := c.childCompensation.(*ForMatchCompensation); ok {
+		if otherChildFM, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
+			intersectedChild = childFM.Intersect(otherChildFM)
+		} else {
+			intersectedChild = intersectTwo(c.childCompensation, other.childCompensation)
+		}
+	} else {
+		intersectedChild = intersectTwo(c.childCompensation, other.childCompensation)
+	}
+	if intersectedChild.IsImpossible() || !intersectedChild.CanBeDeferred() {
+		return ImpossibleCompensation
+	}
+
+	// Phase 3: Merge GroupByMappings.
+	// Matched groupings: union of both sides.
+	newMatchedGroupings := c.groupByMappings.MatchedGroupingsMap().Copy()
+	other.groupByMappings.MatchedGroupingsMap().Range(func(k, v values.Value) bool {
+		if _, ok := newMatchedGroupings.Get(k); !ok {
+			newMatchedGroupings.Put(k, v)
+		}
+		return true
+	})
+
+	// Matched aggregates: union of both sides.
+	newMatchedAggregates := c.groupByMappings.MatchedAggregatesMap().Copy()
+	other.groupByMappings.MatchedAggregatesMap().Range(func(k, v values.Value) bool {
+		if _, ok := newMatchedAggregates.Get(k); !ok {
+			newMatchedAggregates.Put(k, v)
+		}
+		return true
+	})
+
+	// Unmatched aggregates: filter out those that are now matched.
+	newUnmatchedAggregates := NewCorrValueBiMap()
+	unmatchedAggMap := c.groupByMappings.UnmatchedAggregatesMap()
+	unmatchedAggMap.Range(func(k values.CorrelationIdentifier, v values.Value) bool {
+		if _, matched := newMatchedAggregates.Get(v); !matched {
+			newUnmatchedAggregates.Put(k, v)
+		}
+		return true
+	})
+	other.groupByMappings.UnmatchedAggregatesMap().Range(func(k values.CorrelationIdentifier, v values.Value) bool {
+		if _, matched := newMatchedAggregates.Get(v); !matched {
+			if _, alreadyIn := unmatchedAggMap.GetInverse(v); !alreadyIn {
+				newUnmatchedAggregates.Put(k, v)
+			}
+		}
+		return true
+	})
+	newGroupByMappings := NewGroupByMappings(newMatchedGroupings, newMatchedAggregates, newUnmatchedAggregates)
+
+	// Phase 4: Result compensation.
+	// Build the amended matched-aggregates map for Amend calls.
+	amendedMatchedAggMap := make(map[values.Value]values.Value)
+	newMatchedAggregates.Range(func(k, v values.Value) bool {
+		amendedMatchedAggMap[k] = v
+		return true
+	})
+
+	isImpossible := false
+	var newResultFn *ResultCompensationFunction
+	rcf := c.resultCompensationFn
+	otherRcf := other.resultCompensationFn
+	if !rcf.IsNeeded() && !otherRcf.IsNeeded() {
+		newResultFn = NoResultCompensation()
+	} else {
+		if !rcf.IsNeeded() || !otherRcf.IsNeeded() {
+			// Java: Verify.verify(both needed). Invariant violation —
+			// return impossible instead of panicking.
+			return ImpossibleCompensation
+		}
+		newResultFn = rcf.Amend(unmatchedAggMap, amendedMatchedAggMap)
+		isImpossible = isImpossible || newResultFn.IsImpossible()
+	}
+
+	// Phase 5: Predicate map intersection — keep only predicates in BOTH maps.
+	otherPredMap := other.predicateCompensationMap
+	var combinedKeys []predicates.QueryPredicate
+	var combinedVals []PredicateCompensationFunc
+	predKeys, predVals := c.predicateCompensationMap.Entries()
+	for i, key := range predKeys {
+		otherFn := otherPredMap.Get(key)
+		if otherFn != nil {
+			newFn := predVals[i].Amend(unmatchedAggMap, amendedMatchedAggMap)
+			combinedKeys = append(combinedKeys, key)
+			combinedVals = append(combinedVals, newFn)
+			isImpossible = isImpossible || newFn.IsImpossible()
+		}
+	}
+	combinedPredMap := NewPredicateCompensationMap(combinedKeys, combinedVals)
+
+	// Phase 6: Early returns.
+	if !intersectedChild.IsNeededForFiltering() && !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return NoCompensation
+	}
+	if !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return intersectedChild
+	}
+
+	// Phase 7: Quantifier intersection.
+	// matchedQuantifiers = union of both sides.
+	matchedSet := make(map[values.CorrelationIdentifier]expressions.Quantifier)
+	for _, q := range c.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	for _, q := range other.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	intersectedMatched := make([]expressions.Quantifier, 0, len(matchedSet))
+	for _, q := range matchedSet {
+		intersectedMatched = append(intersectedMatched, q)
+	}
+
+	// unmatchedQuantifiers = intersection of both sides.
+	otherUnmatchedSet := make(map[values.CorrelationIdentifier]struct{})
+	for _, q := range other.unmatchedQuantifiers {
+		otherUnmatchedSet[q.GetAlias()] = struct{}{}
+	}
+	var intersectedUnmatched []expressions.Quantifier
+	unmatchedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for _, q := range c.unmatchedQuantifiers {
+		if _, ok := otherUnmatchedSet[q.GetAlias()]; ok {
+			intersectedUnmatched = append(intersectedUnmatched, q)
+			unmatchedAliases[q.GetAlias()] = struct{}{}
+		}
+	}
+
+	// Check if any combined predicate references an unmatched quantifier.
+	if !isImpossible {
+		for _, key := range combinedKeys {
+			correlated := predicates.GetCorrelatedToOfPredicate(key)
+			for alias := range correlated {
+				if _, unmatched := unmatchedAliases[alias]; unmatched {
+					isImpossible = true
+					break
+				}
+			}
+			if isImpossible {
+				break
+			}
+		}
+	}
+
+	// Phase 8: Build derived compensation.
+	// Java: Preconditions.checkArgument(compensatedAliases.equals(other.compensatedAliases))
+	// Merge both sides (defensive — Java asserts identity).
+	mergedAliases := make(map[values.CorrelationIdentifier]struct{}, len(c.compensatedAliases))
+	for k, v := range c.compensatedAliases {
+		mergedAliases[k] = v
+	}
+	for k, v := range other.compensatedAliases {
+		mergedAliases[k] = v
+	}
+	return DerivedCompensation(
+		intersectedChild,
+		isImpossible,
+		combinedPredMap,
+		intersectedMatched,
+		intersectedUnmatched,
+		mergedAliases,
+		newResultFn,
+		newGroupByMappings,
+	)
+}
+
+// Union combines this compensation with another by merging predicate
+// maps from both sides. Used when multiple partial matches combine
+// their compensations (e.g. union of data access matches).
+//
+// Ports Java's Compensation.WithSelectCompensation.union.
+func (c *ForMatchCompensation) Union(other *ForMatchCompensation) Compensation {
+	if c.IsImpossible() || other.IsImpossible() {
+		return ImpossibleCompensation
+	}
+	if !c.IsNeeded() && !other.IsNeeded() {
+		return NoCompensation
+	}
+	if !c.IsNeeded() {
+		return other
+	}
+	if !other.IsNeeded() {
+		return c
+	}
+
+	// Check: union of matched quantifiers must have at most one ForEach.
+	matchedSet := make(map[values.CorrelationIdentifier]expressions.Quantifier)
+	for _, q := range c.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	for _, q := range other.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	forEachCount := 0
+	var unionedMatched []expressions.Quantifier
+	for _, q := range matchedSet {
+		unionedMatched = append(unionedMatched, q)
+		if q.Kind() == expressions.QuantifierForEach {
+			forEachCount++
+		}
+	}
+	if forEachCount > 1 {
+		return ImpossibleCompensation
+	}
+
+	// If either side has unmatched ForEach quantifiers, union is impossible.
+	if len(c.GetUnmatchedForEachQuantifiers()) > 0 || len(other.GetUnmatchedForEachQuantifiers()) > 0 {
+		return ImpossibleCompensation
+	}
+
+	// Union child compensations.
+	var unionedChild Compensation
+	if childFM, ok := c.childCompensation.(*ForMatchCompensation); ok {
+		if otherChildFM, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
+			unionedChild = childFM.Union(otherChildFM)
+		} else {
+			unionedChild = unionTwo(c.childCompensation, other.childCompensation)
+		}
+	} else {
+		unionedChild = unionTwo(c.childCompensation, other.childCompensation)
+	}
+	if unionedChild.IsImpossible() || !unionedChild.CanBeDeferred() {
+		return ImpossibleCompensation
+	}
+
+	// Result compensation: pick one side (same shape guaranteed).
+	var newResultFn *ResultCompensationFunction
+	rcf := c.resultCompensationFn
+	otherRcf := other.resultCompensationFn
+	if !rcf.IsNeeded() && !otherRcf.IsNeeded() {
+		newResultFn = NoResultCompensation()
+	} else {
+		newResultFn = rcf
+	}
+
+	// Predicate map union: merge both sides. Java throws on duplicates;
+	// Go uses identity (pointer) comparison so duplicates shouldn't happen
+	// unless the same predicate pointer appears in both maps.
+	var combinedKeys []predicates.QueryPredicate
+	var combinedVals []PredicateCompensationFunc
+
+	predKeys, predVals := c.predicateCompensationMap.Entries()
+	combinedKeys = append(combinedKeys, predKeys...)
+	combinedVals = append(combinedVals, predVals...)
+
+	otherKeys, otherVals := other.predicateCompensationMap.Entries()
+	existingSet := make(map[predicates.QueryPredicate]struct{})
+	for _, k := range predKeys {
+		existingSet[k] = struct{}{}
+	}
+	for i, k := range otherKeys {
+		if _, dup := existingSet[k]; dup {
+			return ImpossibleCompensation
+		}
+		combinedKeys = append(combinedKeys, k)
+		combinedVals = append(combinedVals, otherVals[i])
+	}
+	combinedPredMap := NewPredicateCompensationMap(combinedKeys, combinedVals)
+
+	// Early returns.
+	if !unionedChild.IsNeededForFiltering() && !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return NoCompensation
+	}
+	if !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return unionedChild
+	}
+
+	// Merge compensated aliases.
+	mergedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for k, v := range c.compensatedAliases {
+		mergedAliases[k] = v
+	}
+	for k, v := range other.compensatedAliases {
+		mergedAliases[k] = v
+	}
+
+	return DerivedCompensation(
+		unionedChild,
+		false,
+		combinedPredMap,
+		unionedMatched,
+		nil, // unmatched is empty in union
+		mergedAliases,
+		newResultFn,
+		EmptyGroupByMappings(),
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -545,13 +1090,16 @@ func DerivedCompensation(
 	resultCompensationFn *ResultCompensationFunction,
 	groupByMappings *GroupByMappings,
 ) *ForMatchCompensation {
-	// Verify preconditions (mirrors Java's Verify.verify in derived()).
+	// Java uses Verify.verify here (crashes on violation). Go returns
+	// an impossible compensation instead of panicking — matches the
+	// "never panic in library code" principle while preserving the
+	// invariant semantics (an impossible compensation is never applied).
 	if !impossible &&
 		len(unmatchedQuantifiers) == 0 &&
 		predicateCompensationMap.IsEmpty() &&
 		!resultCompensationFn.IsNeeded() &&
 		!parent.IsNeededForFiltering() {
-		panic(fmt.Sprintf("DerivedCompensation: at least one of impossible, unmatched quantifiers, predicate compensation, result compensation, or child filtering must be needed"))
+		impossible = true
 	}
 
 	return NewForMatchCompensation(

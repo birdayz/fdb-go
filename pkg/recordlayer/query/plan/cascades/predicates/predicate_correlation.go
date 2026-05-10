@@ -42,6 +42,8 @@ func GetCorrelatedToOfPredicate(p QueryPredicate) map[CorrelationIdentifier]stru
 			for k := range values.GetCorrelatedToOfValue(np.Value) {
 				out[k] = struct{}{}
 			}
+		case *ExistsPredicate:
+			out[np.ExistentialAlias] = struct{}{}
 		}
 		return true
 	})

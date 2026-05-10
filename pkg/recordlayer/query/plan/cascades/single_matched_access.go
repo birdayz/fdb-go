@@ -104,16 +104,25 @@ func (s *SingleMatchedAccess) GetPulledUpGroupByMappingsForOrdering() *GroupByMa
 }
 
 // computePulledUpGroupByMappings computes the pulled-up group-by
-// mappings from the partial match's match info.
-//
-// Java calls matchInfo.adjustGroupByMappings(Quantifier.current(),
-// partialMatch.getCandidateRef().get()) which pulls up candidate-side
-// values through the candidate's result value. The full pull-up depends
-// on Value.pullUp which is not yet ported; we return the raw
-// GroupByMappings from MatchInfo directly. This is correct for
-// non-aggregate indexes where no adjustment is needed.
+// mappings by adjusting the match info's GroupByMappings through the
+// candidate's result value. Ports Java's
+// matchInfo.adjustGroupByMappings(Quantifier.current(),
+// partialMatch.getCandidateRef().get()).
 func (s *SingleMatchedAccess) computePulledUpGroupByMappings() *GroupByMappings {
-	return s.partialMatch.GetMatchInfo().GetGroupByMappings()
+	gbm := s.partialMatch.GetMatchInfo().GetGroupByMappings()
+	candidateRef := s.partialMatch.GetCandidateRef()
+	if candidateRef == nil {
+		return gbm
+	}
+	candidateExpr := candidateRef.Get()
+	if candidateExpr == nil {
+		return gbm
+	}
+	resultValue := candidateExpr.GetResultValue()
+	if resultValue == nil {
+		return gbm
+	}
+	return AdjustGroupByMappings(gbm, s.candidateTopAlias, resultValue)
 }
 
 // String returns a human-readable representation mirroring Java's

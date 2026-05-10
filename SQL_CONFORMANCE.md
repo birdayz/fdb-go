@@ -77,7 +77,7 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 
 | Feature | Java | Go | ANSI | Notes |
 |---|:---:|:---:|:---:|---|
-| Scalar subquery | Y | Y | Y | Uncorrelated scalar subqueries work |
+| Scalar subquery | N | Ext | Y | Go extension — Java grammar has no `subqueryExpressionAtom` |
 | EXISTS / NOT EXISTS | Y | Y | Y | Correlated + nested EXISTS working (swingshift-81) |
 | Correlated subquery | P | P | Y | Correlated EXISTS works; correlated scalar rejected by both |
 | Derived table (FROM subquery) | Y | Y | Y | Column alias propagation working |

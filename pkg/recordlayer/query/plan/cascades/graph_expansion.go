@@ -109,7 +109,7 @@ func (g *GraphExpansion) GetPlaceholders() []*predicates.Placeholder { return g.
 //  1. Group by ParameterAlias — placeholders with the same alias are
 //     collapsed (ranges merged).
 //  2. Among the unique-by-alias placeholders, identify those whose
-//     Values are semantically equal (by ExplainValue text). Replace
+//     Values are semantically equal (by structural comparison). Replace
 //     all duplicates-by-value with the first representative.
 //
 // The resulting SealedGraphExpansion carries deduplicated predicates,
@@ -268,16 +268,10 @@ func (g *GraphExpansion) Seal() *SealedGraphExpansion {
 	}
 }
 
-// semanticValueEquals compares two Values by their ExplainValue text,
+// semanticValueEquals compares two Values structurally,
 // matching Java's Value.semanticEquals with an empty AliasMap.
 func semanticValueEquals(a, b values.Value) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return values.ExplainValue(a) == values.ExplainValue(b)
+	return values.ValuesStructurallyEqual(a, b)
 }
 
 // --- SealedGraphExpansion --------------------------------------------

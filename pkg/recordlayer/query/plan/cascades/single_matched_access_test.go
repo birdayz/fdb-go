@@ -94,11 +94,11 @@ func TestSingleMatchedAccess_LazyGroupByMappings(t *testing.T) {
 
 	// First call computes it.
 	got1 := sma.GetPulledUpGroupByMappingsForOrdering()
-	if got1 != gbm {
-		t.Fatalf("GetPulledUpGroupByMappingsForOrdering: got %p, want %p", got1, gbm)
+	if got1 == nil {
+		t.Fatal("GetPulledUpGroupByMappingsForOrdering returned nil")
 	}
 
-	// Second call returns the same cached value.
+	// Second call returns the same cached value (pointer identity).
 	got2 := sma.GetPulledUpGroupByMappingsForOrdering()
 	if got2 != got1 {
 		t.Fatalf("GetPulledUpGroupByMappingsForOrdering not cached: %p != %p", got2, got1)

@@ -1,6 +1,6 @@
 package values
 
-import "reflect"
+import "fmt"
 
 // MapFieldValues recursively walks a Value tree and applies transform to
 // every FieldValue encountered at any depth. Non-FieldValue leaf nodes
@@ -139,106 +139,20 @@ func ValuesStructurallyEqual(a, b Value) bool {
 	if a == nil || b == nil {
 		return false
 	}
-
-	switch av := a.(type) {
-	case *FieldValue:
-		bv, ok := b.(*FieldValue)
-		return ok && av.Field == bv.Field
-	case *ConstantValue:
-		bv, ok := b.(*ConstantValue)
-		if !ok {
-			return false
-		}
-		return constantValuesEqual(av.Value, bv.Value)
-	case *NullValue:
-		_, ok := b.(*NullValue)
-		return ok
-	case *BooleanValue:
-		bv, ok := b.(*BooleanValue)
-		if !ok {
-			return false
-		}
-		if av.Value == nil && bv.Value == nil {
-			return true
-		}
-		if av.Value == nil || bv.Value == nil {
-			return false
-		}
-		return *av.Value == *bv.Value
-	case *ParameterValue:
-		bv, ok := b.(*ParameterValue)
-		if !ok {
-			return false
-		}
-		return av.Ordinal == bv.Ordinal && av.ParamName == bv.ParamName
-	case *QuantifiedObjectValue:
-		bv, ok := b.(*QuantifiedObjectValue)
-		return ok && av.Correlation == bv.Correlation
-	case *ObjectValue:
-		bv, ok := b.(*ObjectValue)
-		return ok && av.Alias == bv.Alias
-	case *ArithmeticValue:
-		bv, ok := b.(*ArithmeticValue)
-		if !ok || av.Op != bv.Op {
-			return false
-		}
-		return ValuesStructurallyEqual(av.Left, bv.Left) &&
-			ValuesStructurallyEqual(av.Right, bv.Right)
-	case *CastValue:
-		bv, ok := b.(*CastValue)
-		if !ok {
-			return false
-		}
-		return typesEqual(av.Target, bv.Target) &&
-			ValuesStructurallyEqual(av.Child, bv.Child)
-	case *PromoteValue:
-		bv, ok := b.(*PromoteValue)
-		if !ok {
-			return false
-		}
-		return typesEqual(av.Target, bv.Target) &&
-			ValuesStructurallyEqual(av.Child, bv.Child)
-	case *ScalarFunctionValue:
-		bv, ok := b.(*ScalarFunctionValue)
-		if !ok || av.FuncName != bv.FuncName || len(av.Args) != len(bv.Args) {
-			return false
-		}
-		for i := range av.Args {
-			if !ValuesStructurallyEqual(av.Args[i], bv.Args[i]) {
-				return false
-			}
-		}
-		return true
-	case *AggregateValue:
-		bv, ok := b.(*AggregateValue)
-		if !ok || av.Op != bv.Op {
-			return false
-		}
-		return ValuesStructurallyEqual(av.Operand, bv.Operand)
-	case *RecordConstructorValue:
-		bv, ok := b.(*RecordConstructorValue)
-		if !ok || len(av.Fields) != len(bv.Fields) {
-			return false
-		}
-		for i := range av.Fields {
-			if av.Fields[i].Name != bv.Fields[i].Name {
-				return false
-			}
-			if !ValuesStructurallyEqual(av.Fields[i].Value, bv.Fields[i].Value) {
-				return false
-			}
-		}
-		return true
-	case *NotValue:
-		bv, ok := b.(*NotValue)
-		return ok && ValuesStructurallyEqual(av.Child, bv.Child)
-	default:
-		// For types not explicitly handled, fall back to ExplainValue
-		// comparison. Preserves prior behavior for rarely-encountered
-		// types while the common types above get proper structural
-		// equality.
-		return ExplainValue(a) == ExplainValue(b)
+	if !EqualsWithoutChildren(a, b) {
+		return false
 	}
+	ac := a.Children()
+	bc := b.Children()
+	if len(ac) != len(bc) {
+		return false
+	}
+	for i := range ac {
+		if !ValuesStructurallyEqual(ac[i], bc[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // constantValuesEqual compares two any values for equality, handling
@@ -386,9 +300,136 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *AndOrValue:
 		bv, ok := b.(*AndOrValue)
 		return ok && av.Op == bv.Op
+	case *ExistsValue:
+		bv, ok := b.(*ExistsValue)
+		return ok && av.Alias == bv.Alias
+	case *ScalarSubqueryValue:
+		bv, ok := b.(*ScalarSubqueryValue)
+		return ok && av.Alias == bv.Alias
+	case *ThrowsValue:
+		bv, ok := b.(*ThrowsValue)
+		return ok && typesEqual(av.ResultType, bv.ResultType)
+	case *IndexOnlyAggregateValue:
+		bv, ok := b.(*IndexOnlyAggregateValue)
+		return ok && av.Op == bv.Op
+	case *IndexEntryObjectValue:
+		bv, ok := b.(*IndexEntryObjectValue)
+		if !ok || len(av.OrdinalPath) != len(bv.OrdinalPath) {
+			return false
+		}
+		for i := range av.OrdinalPath {
+			if av.OrdinalPath[i] != bv.OrdinalPath[i] {
+				return false
+			}
+		}
+		return true
+	case *ToOrderedBytesValue:
+		bv, ok := b.(*ToOrderedBytesValue)
+		return ok && av.Direction == bv.Direction
+	case *FromOrderedBytesValue:
+		bv, ok := b.(*FromOrderedBytesValue)
+		return ok && av.Direction == bv.Direction && typesEqual(av.TargetType, bv.TargetType)
+	case *EvaluatesToValue:
+		bv, ok := b.(*EvaluatesToValue)
+		return ok && av.Eval == bv.Eval
+	case *OfTypeValue:
+		bv, ok := b.(*OfTypeValue)
+		return ok && typesEqual(av.ExpectedType, bv.ExpectedType)
+	case *DistanceValue:
+		bv, ok := b.(*DistanceValue)
+		return ok && av.Operator == bv.Operator
+	case *ConstantObjectValue:
+		bv, ok := b.(*ConstantObjectValue)
+		return ok && av.ConstantID == bv.ConstantID
+	case *UdfValue:
+		bv, ok := b.(*UdfValue)
+		return ok && av.FunctionName == bv.FunctionName
+	case *QueriedValue:
+		bv, ok := b.(*QueriedValue)
+		if !ok || len(av.RecordTypes) != len(bv.RecordTypes) {
+			return false
+		}
+		for i := range av.RecordTypes {
+			if av.RecordTypes[i] != bv.RecordTypes[i] {
+				return false
+			}
+		}
+		return true
+	case *IndexedValue:
+		bv, ok := b.(*IndexedValue)
+		return ok && typesEqual(av.ResultType, bv.ResultType)
+
+	// Types with no non-child attributes — type equality is sufficient.
+	case *CollateValue:
+		_, ok := b.(*CollateValue)
+		return ok
+	case *LikeOperatorValue:
+		_, ok := b.(*LikeOperatorValue)
+		return ok
+	case *InOpValue:
+		_, ok := b.(*InOpValue)
+		return ok
+	case *PickValue:
+		_, ok := b.(*PickValue)
+		return ok
+	case *CardinalityValue:
+		_, ok := b.(*CardinalityValue)
+		return ok
+	case *ArrayDistinctValue:
+		_, ok := b.(*ArrayDistinctValue)
+		return ok
+	case *ArrayConstructorValue:
+		_, ok := b.(*ArrayConstructorValue)
+		return ok
+	case *DerivedValue:
+		_, ok := b.(*DerivedValue)
+		return ok
+	case *FirstOrDefaultValue:
+		_, ok := b.(*FirstOrDefaultValue)
+		return ok
+	case *FirstOrDefaultStreamingValue:
+		_, ok := b.(*FirstOrDefaultStreamingValue)
+		return ok
+	case *ConditionSelectorValue:
+		_, ok := b.(*ConditionSelectorValue)
+		return ok
+	case *PatternForLikeValue:
+		_, ok := b.(*PatternForLikeValue)
+		return ok
+	case *SubscriptValue:
+		_, ok := b.(*SubscriptValue)
+		return ok
+	case *RangeValue:
+		_, ok := b.(*RangeValue)
+		return ok
+	case *EmptyValue:
+		_, ok := b.(*EmptyValue)
+		return ok
+	case *IncarnationValue:
+		_, ok := b.(*IncarnationValue)
+		return ok
+	case *RecordTypeValue:
+		_, ok := b.(*RecordTypeValue)
+		return ok
+	case *VersionValue:
+		_, ok := b.(*VersionValue)
+		return ok
+	case *DistanceRowNumberValue:
+		_, ok := b.(*DistanceRowNumberValue)
+		return ok
+	case *RowNumberValue:
+		_, ok := b.(*RowNumberValue)
+		return ok
+	case *RowNumberHighOrderValue:
+		_, ok := b.(*RowNumberHighOrderValue)
+		return ok
+	case *RankValue:
+		_, ok := b.(*RankValue)
+		return ok
+	case *UnmatchedAggregateValue:
+		bv, ok := b.(*UnmatchedAggregateValue)
+		return ok && av.UnmatchedID == bv.UnmatchedID
 	default:
-		// Fallback: same concrete type means same "without children".
-		// reflect.TypeOf is correct here — we only care about the Go type.
-		return reflect.TypeOf(a) == reflect.TypeOf(b)
+		panic(fmt.Sprintf("EqualsWithoutChildren: unhandled Value type %T", a))
 	}
 }

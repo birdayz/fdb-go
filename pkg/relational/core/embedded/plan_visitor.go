@@ -903,6 +903,8 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			}
 		}
 	}
+	// Go extension: Java's fdb-relational 4.11.1.0 does not support HAVING;
+	// its AstNormalizer rejects it with UNSUPPORTED_QUERY.
 	having := ""
 	if cls.havingExpr != nil {
 		having = canonicalTextOf(cls.havingExpr)

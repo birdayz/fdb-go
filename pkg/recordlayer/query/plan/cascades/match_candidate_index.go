@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -119,9 +120,16 @@ func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	return prefix
 }
 
-// ToScanPlan converts the matched prefix into a RecordQueryIndexPlan.
-// The scan comparisons list mirrors the sargable aliases in order;
-// unmatched suffix columns get empty (universe) ranges.
+// ToScanPlan converts the matched prefix into a physical plan. The
+// plan is wrapped in a FetchFromPartialRecordPlan with a
+// TranslateValueFunction that can translate FieldValues referencing
+// covered index columns. This enables push-through rules (C-6) to
+// push filters/maps below the fetch when they reference covered
+// columns.
+//
+// Matches Java's ScanWithFetchMatchCandidate architecture where every
+// index scan is wrapped in a Fetch that carries the translation
+// function.
 func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
@@ -134,13 +142,60 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 			comps[i] = predicates.EmptyComparisonRange()
 		}
 	}
-	return plans.NewRecordQueryIndexPlan(
+	indexPlan := plans.NewRecordQueryIndexPlan(
 		c.indexName,
 		comps,
 		c.recordTypes,
 		c.flowedType,
 		reverse,
 	)
+
+	// Build the TranslateValueFunction for this index: translates
+	// FieldValues whose field name matches a covered index column.
+	translateFn := c.buildTranslateValueFunction()
+
+	return plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexPlan,
+		translateFn,
+		c.flowedType,
+		plans.FetchIndexRecordsPrimaryKey,
+	)
+}
+
+// buildTranslateValueFunction creates a TranslateValueFunction that
+// can translate values from the full-record domain to the index-entry
+// domain. A FieldValue is translatable if its field name matches one
+// of the index's column names (case-insensitive).
+//
+// Ports the conceptual equivalent of Java's
+// ScanWithFetchMatchCandidate.createTranslateValueFunction.
+func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
+	coveredColumns := make(map[string]struct{}, len(c.columnNames))
+	for _, col := range c.columnNames {
+		coveredColumns[strings.ToUpper(col)] = struct{}{}
+	}
+
+	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
+		switch v := value.(type) {
+		case *values.FieldValue:
+			if _, covered := coveredColumns[strings.ToUpper(v.Field)]; covered {
+				return values.NewFieldValue(
+					values.NewQuantifiedObjectValue(targetAlias),
+					v.Field, v.Typ,
+				), true
+			}
+			return nil, false
+		case *values.QuantifiedObjectValue:
+			if v.Correlation == sourceAlias {
+				return values.NewQuantifiedObjectValue(targetAlias), true
+			}
+			return value, true
+		case *values.ConstantValue:
+			return value, true
+		default:
+			return nil, false
+		}
+	}
 }
 
 var _ MatchCandidate = (*ValueIndexScanMatchCandidate)(nil)

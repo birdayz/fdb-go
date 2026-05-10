@@ -7,14 +7,23 @@ type AliasMap map[CorrelationIdentifier]CorrelationIdentifier
 
 // RebaseValue replaces correlation references in a value tree
 // according to the alias map. Returns the original value if no
-// references match. Handles QuantifiedObjectValue, FieldValue, and
-// recursively processes composite values.
+// references match.
 //
-// Ports Java's Value.rebase(AliasMap).
+// Leaf values with correlation aliases (QuantifiedObjectValue,
+// QuantifiedRecordValue, ExistsValue, ScalarSubqueryValue,
+// ObjectValue) have their alias remapped directly. All other
+// non-leaf values recursively rebase children and reconstruct
+// via WithChildren — no per-type wiring needed.
+//
+// Ports Java's Value.rebase(AliasMap): leaf values override
+// rebaseLeaf(); non-leaf values use the default rebase() which
+// recurses children and calls withChildren().
 func RebaseValue(v Value, aliases AliasMap) Value {
 	if v == nil || len(aliases) == 0 {
 		return v
 	}
+
+	// Handle leaf values with correlation aliases first.
 	switch val := v.(type) {
 	case *QuantifiedObjectValue:
 		if newAlias, ok := aliases[val.Correlation]; ok {
@@ -24,86 +33,60 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 			}
 		}
 		return v
-	case *FieldValue:
-		return v
-	case *ConstantValue:
-		return v
-	case *NullValue:
-		return v
-	case *BooleanValue:
-		return v
-	case *ArithmeticValue:
-		newLeft := RebaseValue(val.Left, aliases)
-		newRight := RebaseValue(val.Right, aliases)
-		if newLeft == val.Left && newRight == val.Right {
-			return v
-		}
-		return &ArithmeticValue{
-			Op:    val.Op,
-			Left:  newLeft,
-			Right: newRight,
-		}
-	case *CastValue:
-		newChild := RebaseValue(val.Child, aliases)
-		if newChild == val.Child {
-			return v
-		}
-		return &CastValue{Child: newChild, Target: val.Target}
-	case *PromoteValue:
-		newChild := RebaseValue(val.Child, aliases)
-		if newChild == val.Child {
-			return v
-		}
-		return &PromoteValue{Child: newChild, Target: val.Target}
-	case *ScalarFunctionValue:
-		changed := false
-		newArgs := make([]Value, len(val.Args))
-		for i, arg := range val.Args {
-			newArgs[i] = RebaseValue(arg, aliases)
-			if newArgs[i] != arg {
-				changed = true
+	case *QuantifiedRecordValue:
+		if newAlias, ok := aliases[val.Alias]; ok {
+			return &QuantifiedRecordValue{
+				Alias:      newAlias,
+				ResultType: val.ResultType,
 			}
 		}
-		if !changed {
-			return v
-		}
-		return &ScalarFunctionValue{
-			FuncName: val.FuncName,
-			Args:     newArgs,
-			Typ:      val.Typ,
-		}
-	case *RecordConstructorValue:
-		changed := false
-		newFields := make([]RecordConstructorField, len(val.Fields))
-		for i, f := range val.Fields {
-			newVal := RebaseValue(f.Value, aliases)
-			newFields[i] = RecordConstructorField{Name: f.Name, Value: newVal}
-			if newVal != f.Value {
-				changed = true
-			}
-		}
-		if !changed {
-			return v
-		}
-		return &RecordConstructorValue{Fields: newFields}
-	case *NotValue:
-		newChild := RebaseValue(val.Child, aliases)
-		if newChild == val.Child {
-			return v
-		}
-		return &NotValue{Child: newChild}
-	case *AggregateValue:
-		if val.Operand == nil {
-			return v
-		}
-		newOperand := RebaseValue(val.Operand, aliases)
-		if newOperand == val.Operand {
-			return v
-		}
-		return NewAggregateValue(val.Op, newOperand)
-	case *ParameterValue:
 		return v
-	default:
+	case *ExistsValue:
+		if newAlias, ok := aliases[val.Alias]; ok {
+			return &ExistsValue{Alias: newAlias}
+		}
+		return v
+	case *ScalarSubqueryValue:
+		if newAlias, ok := aliases[val.Alias]; ok {
+			return &ScalarSubqueryValue{Alias: newAlias}
+		}
+		return v
+	case *ObjectValue:
+		if newAlias, ok := aliases[val.Alias]; ok {
+			return &ObjectValue{Alias: newAlias, ResultType: val.ResultType}
+		}
+		return v
+	case *UnmatchedAggregateValue:
+		if newAlias, ok := aliases[val.UnmatchedID]; ok {
+			return &UnmatchedAggregateValue{UnmatchedID: newAlias}
+		}
+		return v
+	case *ConstantObjectValue:
+		if newAlias, ok := aliases[val.Alias]; ok {
+			return &ConstantObjectValue{Alias: newAlias, ConstantID: val.ConstantID, ResultType: val.ResultType}
+		}
 		return v
 	}
+
+	// For all other leaf values (FieldValue, ConstantValue, NullValue,
+	// BooleanValue, ParameterValue, etc.), no rebase needed.
+	children := v.Children()
+	if len(children) == 0 {
+		return v
+	}
+
+	// Recursively rebase children.
+	changed := false
+	newChildren := make([]Value, len(children))
+	for i, child := range children {
+		newChildren[i] = RebaseValue(child, aliases)
+		if newChildren[i] != child {
+			changed = true
+		}
+	}
+	if !changed {
+		return v
+	}
+
+	return WithChildren(v, newChildren)
 }

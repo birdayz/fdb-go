@@ -88,13 +88,14 @@ func (k MappingKey) GetMappingKind() MappingKind {
 type PredicateCompensation func(
 	partialMatch PartialMatch,
 	boundParameterPrefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	pullUp *PullUp,
 ) PredicateCompensationFunc
 
 // DefaultPredicateCompensation returns a PredicateCompensation that
 // always yields no compensation needed. This is the default used by
 // Java's PredicateMapping.Builder.
 func DefaultPredicateCompensation() PredicateCompensation {
-	return func(_ PartialMatch, _ map[values.CorrelationIdentifier]*predicates.ComparisonRange) PredicateCompensationFunc {
+	return func(_ PartialMatch, _ map[values.CorrelationIdentifier]*predicates.ComparisonRange, _ *PullUp) PredicateCompensationFunc {
 		return NoPredicateCompensationNeeded()
 	}
 }
@@ -161,24 +162,28 @@ func (impossiblePredicateCompensationFunc) ApplyCompensationForPredicate(Transla
 type predicateCompensationOfPredicate struct {
 	predicate            predicates.QueryPredicate
 	shouldSimplifyValues bool
+	impossible           bool
 }
 
 func (f *predicateCompensationOfPredicate) IsNeeded() bool     { return true }
-func (f *predicateCompensationOfPredicate) IsImpossible() bool { return false }
+func (f *predicateCompensationOfPredicate) IsImpossible() bool { return f.impossible }
 
-func (f *predicateCompensationOfPredicate) Amend(_ *BiMap[values.CorrelationIdentifier, values.Value], _ map[values.Value]values.Value) PredicateCompensationFunc {
-	return f
+func (f *predicateCompensationOfPredicate) Amend(
+	unmatchedAggregateMap *BiMap[values.CorrelationIdentifier, values.Value],
+	amendedMatchedAggregateMap map[values.Value]values.Value,
+) PredicateCompensationFunc {
+	amended := replacePredicateValues(f.predicate, func(v values.Value) values.Value {
+		return replaceUnmatchedAggregateValues(unmatchedAggregateMap, amendedMatchedAggregateMap, v)
+	})
+	return OfPredicateCompensation(amended, true)
 }
 
 func (f *predicateCompensationOfPredicate) ApplyCompensationForPredicate(tm TranslationMap) []predicates.QueryPredicate {
 	if tm == nil || tm.DefinesOnlyIdentities() {
 		return []predicates.QueryPredicate{f.predicate}
 	}
-	if am, ok := tm.GetAliasMap(); ok {
-		rebased := predicates.RebasePredicate(f.predicate, am.ForwardMap())
-		return []predicates.QueryPredicate{rebased}
-	}
-	return []predicates.QueryPredicate{f.predicate}
+	translated := translatePredicateCorrelations(f.predicate, tm)
+	return []predicates.QueryPredicate{translated}
 }
 
 // OfPredicateCompensation creates a PredicateCompensationFunc that
@@ -190,6 +195,7 @@ func OfPredicateCompensation(pred predicates.QueryPredicate, shouldSimplifyValue
 	return &predicateCompensationOfPredicate{
 		predicate:            pred,
 		shouldSimplifyValues: shouldSimplifyValues,
+		impossible:           predicateContainsUncompensatableValues(pred),
 	}
 }
 
@@ -739,13 +745,12 @@ func predicateMappingsEquivalent(a, b *PredicateMapping) bool {
 	if (a.constraint == nil) != (b.constraint == nil) {
 		return false
 	}
-	// Compare candidate predicates by Explain() — a rough semantic check.
 	cp1 := a.GetCandidatePredicate()
 	cp2 := b.GetCandidatePredicate()
 	if cp1 == nil || cp2 == nil {
 		return cp1 == cp2
 	}
-	return cp1.Explain() == cp2.Explain()
+	return predicates.StructurallyEqual(cp1, cp2)
 }
 
 // Build constructs the PredicateMap. Panics if there are conflicts or
@@ -774,4 +779,162 @@ func (b *PredicateMapBuilder) BuildMaybe() *PredicateMap {
 	return &PredicateMap{
 		PredicateMultiMap: *b.buildUnchecked(),
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Amend helpers — ports Java's replaceNewlyMatchedValues and checks
+// ---------------------------------------------------------------------------
+
+// replaceUnmatchedAggregateValues walks a Value tree and replaces
+// UnmatchedAggregateValue markers with the corresponding matched
+// aggregate value. Ports Java's
+// PredicateMultiMap.replaceNewlyMatchedValues.
+func replaceUnmatchedAggregateValues(
+	unmatchedAggregateMap *BiMap[values.CorrelationIdentifier, values.Value],
+	amendedMatchedAggregateMap map[values.Value]values.Value,
+	rootValue values.Value,
+) values.Value {
+	if rootValue == nil {
+		return nil
+	}
+	return values.Replace(rootValue, func(v values.Value) values.Value {
+		uav, ok := v.(*values.UnmatchedAggregateValue)
+		if !ok {
+			return v
+		}
+		queryValue, found := unmatchedAggregateMap.Get(uav.UnmatchedID)
+		if !found {
+			return v
+		}
+		if translated, ok := amendedMatchedAggregateMap[queryValue]; ok {
+			return translated
+		}
+		return v
+	})
+}
+
+// replacePredicateValues applies a Value replacement function to all
+// Value trees embedded in a predicate. Ports Java's
+// QueryPredicate.replaceValuesMaybe.
+func replacePredicateValues(p predicates.QueryPredicate, fn func(values.Value) values.Value) predicates.QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	switch pred := p.(type) {
+	case *predicates.ComparisonPredicate:
+		newOperand := values.Replace(pred.Operand, fn)
+		newCompOperand := values.Replace(pred.Comparison.Operand, fn)
+		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
+			return p
+		}
+		return &predicates.ComparisonPredicate{
+			Operand: newOperand,
+			Comparison: predicates.Comparison{
+				Type:    pred.Comparison.Type,
+				Operand: newCompOperand,
+				Escape:  pred.Comparison.Escape,
+			},
+		}
+	case *predicates.ValuePredicate:
+		newVal := values.Replace(pred.Value, fn)
+		if newVal == pred.Value {
+			return p
+		}
+		return predicates.NewValuePredicate(newVal)
+	case *predicates.AndPredicate:
+		changed := false
+		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			newSubs[i] = replacePredicateValues(s, fn)
+			if newSubs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return predicates.NewAnd(newSubs...)
+	case *predicates.OrPredicate:
+		changed := false
+		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			newSubs[i] = replacePredicateValues(s, fn)
+			if newSubs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return predicates.NewOr(newSubs...)
+	case *predicates.NotPredicate:
+		newChild := replacePredicateValues(pred.Child, fn)
+		if newChild == pred.Child {
+			return p
+		}
+		return predicates.NewNot(newChild)
+	case *predicates.Placeholder:
+		newVal := values.Replace(pred.Value, fn)
+		if newVal == pred.Value {
+			return p
+		}
+		return &predicates.Placeholder{
+			ParameterAlias: pred.ParameterAlias,
+			Value:          newVal,
+			CompRange:      pred.CompRange,
+		}
+	default:
+		return p
+	}
+}
+
+// predicateContainsUncompensatableValues reports whether a predicate
+// contains UnmatchedAggregateValue or IndexOnlyValue markers in its
+// value trees. Ports Java's predicateContainsUncompensatableValues.
+func predicateContainsUncompensatableValues(p predicates.QueryPredicate) bool {
+	found := false
+	predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
+		if found {
+			return false
+		}
+		switch pred := node.(type) {
+		case *predicates.ComparisonPredicate:
+			if valueContainsUncompensatable(pred.Operand) {
+				found = true
+				return false
+			}
+			if pred.Comparison.Operand != nil && valueContainsUncompensatable(pred.Comparison.Operand) {
+				found = true
+				return false
+			}
+		case *predicates.ValuePredicate:
+			if valueContainsUncompensatable(pred.Value) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// valueContainsUncompensatable reports whether a Value tree contains
+// UnmatchedAggregateValue or IndexOnlyAggregateValue markers.
+func valueContainsUncompensatable(v values.Value) bool {
+	found := false
+	values.WalkValue(v, func(node values.Value) bool {
+		if found {
+			return false
+		}
+		switch node.(type) {
+		case *values.UnmatchedAggregateValue:
+			found = true
+			return false
+		case *values.IndexOnlyAggregateValue:
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }

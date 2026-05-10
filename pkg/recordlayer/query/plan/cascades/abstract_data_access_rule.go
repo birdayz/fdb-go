@@ -23,9 +23,9 @@ import (
 //   - createScansForMatches
 //   - dataAccessForMatchPartition
 //
-// The seed implementations are architecturally correct but omit the
-// complex Pareto filtering, full compensation computation, and detailed
-// ordering satisfaction checking -- those are refinement work.
+// Compensation and ordering satisfaction are fully wired (swingshift-86).
+// Remaining: Pareto filtering in MaximumCoverageMatches (no containment
+// pruning yet — every match is kept, which is conservative/correct).
 
 // IntersectorFunc is the function type for computing intersections of
 // multiple data accesses. Concrete rules provide their own intersection
@@ -40,8 +40,8 @@ type IntersectorFunc func(
 // by coverage (descending bound predicate count). For each
 // PartialMatch:
 //   - assigns a unique candidateTopAlias
-//   - computes compensation (seed: NoCompensation)
-//   - computes satisfying orderings (seed: all orderings satisfy)
+//   - computes compensation via CompensateCompleteMatch
+//   - computes satisfying orderings via SatisfiesAnyRequestedOrderings
 //   - creates a forward-scan SingleMatchedAccess with empty translation
 //
 // Returns the accesses sorted by coverage (highest first).
@@ -60,25 +60,26 @@ func PrepareMatchesAndCompensations(
 	for _, pm := range partialMatches {
 		candidateTopAlias := values.UniqueCorrelationIdentifier()
 
-		// Seed: no compensation -- full compensation computation
-		// (compensateCompleteMatch, prepareForUnification) requires
-		// infrastructure not yet wired. Architecturally correct because
-		// NoCompensation means "the scan fully covers the match",
-		// which is the optimistic assumption the Pareto filter will
-		// refine later.
-		comp := NoCompensation
+		var comp Compensation
+		if pmi, ok := pm.(*PartialMatchImpl); ok {
+			comp = pmi.CompensateCompleteMatch(nil, candidateTopAlias)
+		} else {
+			comp = NoCompensation
+		}
 
-		// Seed: all requested orderings are satisfied. The full
-		// satisfiesAnyRequestedOrderings logic checks ordering parts
-		// against matched ordering parts; deferred to refinement.
-		satisfying := make([]*RequestedOrdering, len(requestedOrderings))
-		copy(satisfying, requestedOrderings)
+		satisfying, scanDir := SatisfiesAnyRequestedOrderings(pm, requestedOrderings)
+		if satisfying == nil && len(requestedOrderings) > 0 {
+			// Requested orderings exist but the match satisfies none —
+			// skip this match. Ports Java's `if (satisfyingOrderingsPairOptional.isEmpty()) continue;`
+			continue
+		}
+		reverseScan := scanDir != nil && *scanDir == ScanDirectionReverse
 
 		access := NewSingleMatchedAccess(
 			pm,
 			comp,
 			candidateTopAlias,
-			false, // forward scan
+			reverseScan,
 			EmptyTranslationMap(),
 			satisfying,
 		)
@@ -86,13 +87,10 @@ func PrepareMatchesAndCompensations(
 	}
 
 	// Sort by bound predicate count descending (maximum coverage first).
-	// In the seed, we use the number of matched ordering parts as a proxy
-	// for "bound predicate count" since getBoundPlaceholders is not yet
-	// on the PartialMatch interface. This preserves the Java sort
-	// contract's intent: higher-coverage matches first.
+	// Ports Java's sort by getBoundPlaceholders().size().
 	sort.SliceStable(result, func(i, j int) bool {
-		iCount := len(result[i].GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts())
-		jCount := len(result[j].GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts())
+		iCount := boundPredicateCount(result[i].GetPartialMatch())
+		jCount := boundPredicateCount(result[j].GetPartialMatch())
 		return iCount > jCount
 	})
 
@@ -100,12 +98,13 @@ func PrepareMatchesAndCompensations(
 }
 
 // MaximumCoverageMatches eliminates PartialMatches whose coverage is
-// entirely contained in other matches, then wraps survivors in
-// Vectored with ascending position indices.
+// entirely contained in other matches from the same MatchCandidate,
+// then wraps survivors in Vectored with ascending position indices.
 //
-// Seed: no Pareto filtering -- every match is kept. Refinement will
-// add the findContainingAccess logic that prunes dominated matches
-// within the same MatchCandidate.
+// The Pareto filtering logic (findContainingAccess) prunes dominated
+// matches: if match A from candidate C binds {x, y, z} and match B
+// from the same candidate C binds {x, y}, then B is dominated by A
+// (A covers everything B covers plus more) and B is pruned.
 //
 // Ports Java's AbstractDataAccessRule.maximumCoverageMatches.
 func MaximumCoverageMatches(
@@ -118,12 +117,66 @@ func MaximumCoverageMatches(
 		return nil
 	}
 
-	// Seed: wrap every access -- no containment pruning.
-	result := make([]Vectored[*SingleMatchedAccess], len(accesses))
-	for i, access := range accesses {
-		result[i] = NewVectored(access, i)
+	var result []Vectored[*SingleMatchedAccess]
+	idx := 0
+	for i := range accesses {
+		if !findContainingAccess(accesses, accesses[i]) {
+			result = append(result, NewVectored(accesses[i], idx))
+			idx++
+		}
 	}
 	return result
+}
+
+// findContainingAccess checks whether `probe` is dominated by another
+// access from the same MatchCandidate in the list. A probe is
+// dominated if another match from the same candidate has strictly more
+// bound sargable aliases that include all of the probe's.
+//
+// Ports Java's AbstractDataAccessRule.findContainingAccess.
+func findContainingAccess(accesses []*SingleMatchedAccess, probe *SingleMatchedAccess) bool {
+	probeMatch := probe.partialMatch
+	probePMI, ok := probeMatch.(*PartialMatchImpl)
+	if !ok {
+		return false
+	}
+	probeBoundAliases := probePMI.GetBoundSargableAliases()
+
+	for _, access := range accesses {
+		if access == probe {
+			continue
+		}
+		// Same MatchCandidate?
+		if access.partialMatch.GetMatchCandidate() != probeMatch.GetMatchCandidate() {
+			continue
+		}
+		accessPMI, ok := access.partialMatch.(*PartialMatchImpl)
+		if !ok {
+			continue
+		}
+		accessBoundAliases := accessPMI.GetBoundSargableAliases()
+
+		// If probe has more or equal bindings, it can't be contained by this one.
+		if len(probeBoundAliases) >= len(accessBoundAliases) {
+			continue
+		}
+
+		// Check if access's bindings contain all of probe's.
+		if containsAll(accessBoundAliases, probeBoundAliases) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAll reports whether `super` contains all keys in `sub`.
+func containsAll(super, sub map[values.CorrelationIdentifier]struct{}) bool {
+	for k := range sub {
+		if _, ok := super[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // CreateScansForMatches converts each SingleMatchedAccess into a
@@ -207,12 +260,21 @@ func DataAccessForMatchPartition(
 			continue
 		}
 
-		// Wrap the scan plan as a RelationalExpression. In the full
-		// implementation this would go through
-		// applyCompensationForSingleDataAccessMaybe which applies the
-		// compensation chain. For the seed, we wrap the plan directly
-		// since compensation is NoCompensation.
-		expr := &scanPlanExpression{plan: plan}
+		// Determine if the index is covering: no result compensation
+		// needed means all output fields are available from the index.
+		isCovering := !comp.IsFinalNeeded()
+		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering)
+
+		if comp.IsNeeded() {
+			if fmc, ok := comp.(*ForMatchCompensation); ok {
+				// Java passes TranslationMap.ofAliases(candidateTopAlias, realizedAlias)
+				// to rebase compensated predicates from the candidate's alias to the
+				// physical plan's alias. With flat FieldValues (no correlation), the
+				// empty map is correct. When C-5 full FieldValue wiring lands, this
+				// needs a real map: candidateTopAlias → quantifier alias of expr.
+				expr = fmc.ApplyAllNeeded(expr, EmptyTranslationMap())
+			}
+		}
 		resultExprs = append(resultExprs, expr)
 	}
 
@@ -228,6 +290,43 @@ func DataAccessForMatchPartition(
 	return resultExprs
 }
 
+// wrapScanPlan converts a RecordQueryPlan from the data access pipeline
+// into the properly-typed RelationalExpression wrapper.
+func wrapScanPlan(plan plans.RecordQueryPlan) expressions.RelationalExpression {
+	return wrapScanPlanWithCoverage(plan, false)
+}
+
+// wrapScanPlanWithCoverage converts a RecordQueryPlan into the
+// properly-typed RelationalExpression wrapper with coverage info.
+//
+// When isCovering=true AND the plan is a FetchFromPartialRecordPlan
+// wrapping an IndexPlan, the fetch is eliminated and the index scan
+// is marked as covering. This matches Java's path where
+// CoveringIndexPlan (no Fetch needed) is produced when the index
+// covers all output fields.
+//
+// When isCovering=false, the Fetch wrapper is preserved so push-through
+// rules can optimize it (push filters below, eliminate via PushMap).
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool) expressions.RelationalExpression {
+	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
+			if isCovering {
+				// Index covers all needed columns — no fetch needed.
+				return &physicalIndexScanWrapper{plan: innerIdx, covering: true}
+			}
+			// Non-covering: preserve the fetch wrapper.
+			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx}
+			idxRef := expressions.NewFinalReference([]expressions.RelationalExpression{idxWrapper})
+			fetchQ := expressions.ForEachQuantifier(idxRef)
+			return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		}
+	}
+	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
+		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering}
+	}
+	return &scanPlanExpression{plan: plan}
+}
+
 // ---------------------------------------------------------------------------
 // scanPlanExpression — wraps a RecordQueryPlan as a RelationalExpression
 // ---------------------------------------------------------------------------
@@ -237,10 +336,10 @@ func DataAccessForMatchPartition(
 // to yield scan plans as expressions into the memo.
 //
 // This mirrors the role of Java's physicalPlanExpression wrappers but is
-// deliberately minimal for the seed -- the full wrapper hierarchy
-// (physicalIndexScanWrapper etc.) exists in physical_wrapper.go and
-// handles the real planner flow. This type is used only by the abstract
-// data access utilities when they need to return expressions.
+// minimal — the full wrapper hierarchy (physicalIndexScanWrapper etc.)
+// exists in physical_wrapper.go and handles the real planner flow. This
+// type is used only by the abstract data access utilities when they need
+// to return expressions.
 type scanPlanExpression struct {
 	plan plans.RecordQueryPlan
 }
@@ -282,3 +381,133 @@ func (s *scanPlanExpression) GetRecordQueryPlan() plans.RecordQueryPlan {
 
 // compile-time check
 var _ expressions.RelationalExpression = (*scanPlanExpression)(nil)
+
+// ---------------------------------------------------------------------------
+// Ordering satisfaction
+// ---------------------------------------------------------------------------
+
+// boundPredicateCount returns the number of bound sargable aliases
+// for a PartialMatch. For PartialMatchImpl, uses GetBoundSargableAliases;
+// for test stubs, falls back to matched ordering parts count.
+func boundPredicateCount(pm PartialMatch) int {
+	if pmi, ok := pm.(*PartialMatchImpl); ok {
+		return len(pmi.GetBoundSargableAliases())
+	}
+	return len(pm.GetMatchInfo().GetMatchedOrderingParts())
+}
+
+// SatisfiesRequestedOrdering checks if a PartialMatch's matched
+// ordering parts satisfy a RequestedOrdering. Returns the scan
+// direction needed, or nil if the ordering is not satisfied.
+//
+// Ports Java's AbstractDataAccessRule.satisfiesRequestedOrdering.
+func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDirection {
+	if ro.IsPreserve() {
+		both := ScanDirectionBoth
+		return &both
+	}
+
+	resolved := ScanDirectionBoth
+	mi := pm.GetMatchInfo()
+	orderingParts := mi.GetMatchedOrderingParts()
+
+	equalityBound := make(map[string]struct{})
+	for _, op := range orderingParts {
+		if op.GetComparisonRange().IsEquality() {
+			equalityBound[values.ExplainValue(op.GetValue())] = struct{}{}
+		}
+	}
+
+	opIdx := 0
+	for _, reqPart := range ro.GetParts() {
+		reqValue := reqPart.Value
+		reqKey := values.ExplainValue(reqValue)
+
+		if _, eq := equalityBound[reqKey]; eq {
+			continue
+		}
+
+		found := false
+		for opIdx < len(orderingParts) {
+			op := orderingParts[opIdx]
+			opIdx++
+			if op.GetComparisonRange().IsEquality() {
+				continue
+			}
+
+			opKey := values.ExplainValue(op.GetValue())
+			if reqKey == opKey {
+				reqSort := reqPart.SortOrder
+				if reqSort != RequestedSortOrderAny {
+					matchedSort := op.GetMatchedSortOrder()
+					reqDesc := reqSort == RequestedSortOrderDescending
+					if matchedSort.IsAnyDescending() == reqDesc {
+						if resolved == ScanDirectionBoth {
+							resolved = ScanDirectionForward
+						} else if resolved != ScanDirectionForward {
+							return nil
+						}
+					} else {
+						if resolved == ScanDirectionBoth {
+							resolved = ScanDirectionReverse
+						} else if resolved != ScanDirectionReverse {
+							return nil
+						}
+					}
+				}
+				found = true
+				break
+			}
+			return nil
+		}
+		if !found {
+			return nil
+		}
+	}
+
+	return &resolved
+}
+
+// SatisfiesAnyRequestedOrderings filters requestedOrderings to those
+// satisfied by the partial match. Returns the satisfied orderings and
+// the scan direction, or nil if none are satisfied.
+//
+// Ports Java's AbstractDataAccessRule.satisfiesAnyRequestedOrderings.
+func SatisfiesAnyRequestedOrderings(
+	pm PartialMatch,
+	requestedOrderings []*RequestedOrdering,
+) ([]*RequestedOrdering, *ScanDirection) {
+	seenForward := false
+	seenReverse := false
+	var satisfying []*RequestedOrdering
+
+	for _, ro := range requestedOrderings {
+		dir := SatisfiesRequestedOrdering(pm, ro)
+		if dir != nil {
+			satisfying = append(satisfying, ro)
+			switch *dir {
+			case ScanDirectionForward:
+				seenForward = true
+			case ScanDirectionReverse:
+				seenReverse = true
+			case ScanDirectionBoth:
+				seenForward = true
+				seenReverse = true
+			}
+		}
+	}
+
+	if !seenForward && !seenReverse {
+		return nil, nil
+	}
+
+	var resolved ScanDirection
+	if seenForward && seenReverse {
+		resolved = ScanDirectionBoth
+	} else if seenForward {
+		resolved = ScanDirectionForward
+	} else {
+		resolved = ScanDirectionReverse
+	}
+	return satisfying, &resolved
+}

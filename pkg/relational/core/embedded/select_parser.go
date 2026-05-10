@@ -1236,6 +1236,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		cls.projStarQualifiers = []string{""}
 	}
 
+	// Go extension: Java's fdb-relational 4.11.1.0 does not support ORDER BY on
+	// aggregate expressions (e.g. ORDER BY SUM(v)); its planner never reaches this path.
+	//
 	// Harvest aggregates referenced in HAVING and ORDER BY that aren't
 	// already in aggCols. Otherwise queries like
 	//   SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0

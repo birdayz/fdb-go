@@ -53,6 +53,20 @@ func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
 			return NewExistsPredicate(newAlias)
 		}
 		return p
+	case *Placeholder:
+		newAlias := pred.ParameterAlias
+		if mapped, ok := aliases[newAlias]; ok {
+			newAlias = mapped
+		}
+		newVal := values.RebaseValue(pred.Value, aliases)
+		if newAlias == pred.ParameterAlias && newVal == pred.Value {
+			return p
+		}
+		return &Placeholder{
+			ParameterAlias: newAlias,
+			Value:          newVal,
+			CompRange:      pred.CompRange,
+		}
 	case *ConstantPredicate:
 		return p
 	default:

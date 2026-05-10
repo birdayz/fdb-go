@@ -199,20 +199,11 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// No-op when no PartialMatches were created during EXPLORE.
 	AdjustMatches(rootRef)
 
-	// DATA ACCESS phase: convert PartialMatches into index scan
-	// expressions. Runs after matching so all PartialMatches are
-	// available, before PLANNING so implementation rules see them.
-	// Ports Java's WithPrimaryKeyDataAccessRule / dataAccessForMatchPartition
-	// pipeline — walks the expression DAG bottom-up and, for every
-	// Reference that carries PartialMatches, generates scan plan
-	// expressions via DataAccessForMatchPartition.
-	p.generateDataAccess(rootRef)
-
-	// PLANNING phase: fire implementation rules bottom-up to finalize
-	// exploratory expressions into final members.
-	if len(p.implementationRules) > 0 {
-		p.runPlanningPhase(rootRef)
-	}
+	// PLANNING phase: constraint propagation → data access → implementation.
+	// Data access generation is integrated into the PLANNING phase
+	// (after constraint propagation, before implementation) so it has
+	// access to ordering constraints — matching Java's architecture.
+	p.runPlanningPhase(rootRef)
 
 	// Use the selector path so extraction reuses the OPTIMIZE-stamped
 	// best member per Reference (avoids re-computing CostLess that
@@ -235,17 +226,32 @@ func (e plannerErr) Error() string { return string(e) }
 // runPlanningPhase fires implementation rules bottom-up on every
 // Reference in the Memo. Leaf References first, then parents.
 // Each rule produces final members via InsertFinal.
+//
+// Phase sequence (matches Java's CascadesPlanner):
+//  1. Top-down constraint propagation (ordering constraints)
+//  2. Data access generation (uses propagated ordering constraints)
+//  3. Bottom-up implementation (children before parents)
 func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 	cm := NewConstraintMap()
 
 	// Pass 1: top-down constraint propagation. Rules that push
 	// ordering constraints (e.g., DistinctUnionRule) fire here so
 	// child References receive constraints before implementation.
-	p.propagateConstraints(rootRef, make(map[*expressions.Reference]bool), cm)
+	if len(p.implementationRules) > 0 {
+		p.propagateConstraints(rootRef, make(map[*expressions.Reference]bool), cm)
+	}
 
-	// Pass 2: bottom-up implementation. Children are implemented
+	// Pass 2: data access generation. Runs after constraint
+	// propagation so requestedOrderings are available. Ports Java's
+	// architecture where data access rules fire during the PLANNING
+	// phase with ordering constraints.
+	p.generateDataAccessWithConstraints(rootRef, cm)
+
+	// Pass 3: bottom-up implementation. Children are implemented
 	// first (with constraints from Pass 1 available), then parents.
-	p.implementBottomUp(rootRef, make(map[*expressions.Reference]bool), cm)
+	if len(p.implementationRules) > 0 {
+		p.implementBottomUp(rootRef, make(map[*expressions.Reference]bool), cm)
+	}
 }
 
 func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
@@ -300,25 +306,25 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 	computeRefPlanProperties(ref)
 }
 
-// generateDataAccess walks the expression DAG bottom-up and generates
-// data access expressions (index scans) from PartialMatches. For each
-// Reference that carries PartialMatches, it calls
-// DataAccessForMatchPartition to convert the matches into scan plan
-// expressions and inserts them into the Reference.
+// generateDataAccessWithConstraints walks the expression DAG bottom-up
+// and generates data access expressions (index scans) from
+// PartialMatches. Uses ordering constraints from the ConstraintMap
+// (propagated during Pass 1) to inform scan direction selection.
 //
 // This is the Go equivalent of Java's WithPrimaryKeyDataAccessRule
 // which extends CascadesRule<MatchPartition>. Rather than modelling
-// MatchPartition as a rule trigger, we run this as an explicit phase
-// between AdjustMatches and PLANNING — architecturally equivalent but
-// simpler since Go doesn't need the Java rule-dispatch infrastructure.
-func (p *Planner) generateDataAccess(rootRef *expressions.Reference) {
+// MatchPartition as a rule trigger, we run this as an explicit pass
+// within the PLANNING phase — architecturally equivalent since Java's
+// data access rules fire during the same phase as constraint
+// propagation.
+func (p *Planner) generateDataAccessWithConstraints(rootRef *expressions.Reference, cm *ConstraintMap) {
 	visited := map[*expressions.Reference]bool{}
-	p.generateDataAccessRecursive(rootRef, visited)
+	p.generateDataAccessRecursive(rootRef, visited, cm)
 }
 
 // generateDataAccessRecursive recurses children first (bottom-up),
 // then generates data access expressions for the current Reference.
-func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
 	if ref == nil || visited[ref] {
 		return
 	}
@@ -329,7 +335,7 @@ func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visite
 	for _, m := range ref.AllMembers() {
 		for _, q := range m.GetQuantifiers() {
 			if childRef := q.GetRangesOver(); childRef != nil {
-				p.generateDataAccessRecursive(childRef, visited)
+				p.generateDataAccessRecursive(childRef, visited, cm)
 			}
 		}
 	}
@@ -340,25 +346,29 @@ func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visite
 		return
 	}
 
+	// Read ordering constraints propagated during Pass 1.
+	var requestedOrderings []*RequestedOrdering
+	if cm != nil {
+		if orderings, ok := Get(cm, ref, RequestedOrderingConstraintKey); ok {
+			requestedOrderings = orderings
+		}
+	}
+
 	for _, candidate := range candidates {
 		matches := GetPartialMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
 			continue
 		}
 
-		// Generate data access expressions. No requested orderings in
-		// the seed — the full implementation propagates ordering
-		// constraints from parent operators. No intersector — the seed
-		// does single-scan only.
 		exprs := DataAccessForMatchPartition(
-			nil, // requestedOrderings
+			requestedOrderings,
 			matches,
 			p.ctx,
 			nil, // intersector (single-scan only)
 		)
 
-		// Insert generated expressions into the Reference so the
-		// PLANNING phase's implementation rules can see them.
+		// Insert generated expressions into the Reference so Pass 3
+		// (bottom-up implementation) can see them.
 		for _, expr := range exprs {
 			ref.Insert(expr)
 		}

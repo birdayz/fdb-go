@@ -103,8 +103,15 @@ type testPartialMatch struct {
 	matchInfo MatchInfo
 }
 
-func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate { return pm.candidate }
-func (pm *testPartialMatch) GetMatchInfo() MatchInfo           { return pm.matchInfo }
+func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate                    { return pm.candidate }
+func (pm *testPartialMatch) GetMatchInfo() MatchInfo                              { return pm.matchInfo }
+func (pm *testPartialMatch) GetBoundAliasMap() *AliasMap                          { return EmptyAliasMap() }
+func (pm *testPartialMatch) GetQueryRef() *expressions.Reference                  { return nil }
+func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpression { return nil }
+func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference              { return nil }
+func (pm *testPartialMatch) GetRegularMatchInfo() *RegularMatchInfo {
+	return pm.matchInfo.GetRegularMatchInfo()
+}
 
 var _ PartialMatch = (*testPartialMatch)(nil)
 
@@ -186,17 +193,18 @@ func TestPrepareMatchesAndCompensations_ThreeMatches(t *testing.T) {
 		seen[alias] = true
 	}
 
-	// Verify compensation is NoCompensation for seed.
+	// testPartialMatch stubs don't implement PartialMatchImpl, so
+	// CompensateCompleteMatch falls back to NoCompensation.
 	for _, a := range accesses {
 		if a.GetCompensation() != NoCompensation {
-			t.Fatal("seed should use NoCompensation")
+			t.Fatal("test stubs should yield NoCompensation")
 		}
 	}
 
 	// Verify forward scan direction.
 	for _, a := range accesses {
 		if a.IsReverseScanOrder() {
-			t.Fatal("seed should use forward scan")
+			t.Fatal("test stubs should use forward scan")
 		}
 	}
 }
@@ -245,7 +253,7 @@ func TestMaximumCoverageMatches_WrapsWithPositions(t *testing.T) {
 	)
 
 	if len(matches) != 3 {
-		t.Fatalf("expected 3 vectored matches (seed keeps all), got %d", len(matches))
+		t.Fatalf("expected 3 vectored matches (no Pareto filtering), got %d", len(matches))
 	}
 
 	// Verify positions are 0, 1, 2 (assigned after sorting by coverage).
@@ -456,6 +464,237 @@ func TestDataAccessForMatchPartition_IntersectorNoViable(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Tests: scanPlanExpression
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Tests: SatisfiesRequestedOrdering / SatisfiesAnyRequestedOrderings
+// ---------------------------------------------------------------------------
+
+// makeOrderingTestPartialMatch builds a testPartialMatch with explicit
+// MatchedOrderingPart entries so callers control field names, sort
+// orders, and comparison ranges.
+func makeOrderingTestPartialMatch(parts []*MatchedOrderingPart) *testPartialMatch {
+	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange, len(parts))
+	for _, p := range parts {
+		paramBindings[p.GetParameterId()] = p.GetComparisonRange()
+	}
+	return &testPartialMatch{
+		candidate: &dataAccessTestCandidate{
+			name:        "ordering_test",
+			recordTypes: []string{"TestRecord"},
+			fixedPlan:   &testPlan{name: "ordering_scan"},
+		},
+		matchInfo: &testMatchInfo{
+			orderingParts: parts,
+			paramBindings: paramBindings,
+		},
+	}
+}
+
+func TestSatisfiesRequestedOrdering_Preserve(t *testing.T) {
+	t.Parallel()
+
+	pm := makeOrderingTestPartialMatch(nil)
+	dir := SatisfiesRequestedOrdering(pm, PreserveOrdering())
+	if dir == nil {
+		t.Fatal("PreserveOrdering should always be satisfied")
+	}
+	if *dir != ScanDirectionBoth {
+		t.Fatalf("expected ScanDirectionBoth, got %d", *dir)
+	}
+}
+
+func TestSatisfiesRequestedOrdering_SingleAscending(t *testing.T) {
+	t.Parallel()
+
+	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+
+	parts := []*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			fieldA,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	}
+	pm := makeOrderingTestPartialMatch(parts)
+
+	ro := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldA, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	dir := SatisfiesRequestedOrdering(pm, ro)
+	if dir == nil {
+		t.Fatal("ascending request with ascending match should be satisfied")
+	}
+	if *dir != ScanDirectionForward {
+		t.Fatalf("expected ScanDirectionForward, got %d", *dir)
+	}
+}
+
+func TestSatisfiesRequestedOrdering_ReverseNeeded(t *testing.T) {
+	t.Parallel()
+
+	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+
+	parts := []*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			fieldA,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderDescending,
+		),
+	}
+	pm := makeOrderingTestPartialMatch(parts)
+
+	// Request ascending, but matched is descending → reverse scan.
+	ro := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldA, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	dir := SatisfiesRequestedOrdering(pm, ro)
+	if dir == nil {
+		t.Fatal("ascending request with descending match should be satisfied via reverse")
+	}
+	if *dir != ScanDirectionReverse {
+		t.Fatalf("expected ScanDirectionReverse, got %d", *dir)
+	}
+}
+
+func TestSatisfiesRequestedOrdering_EqualitySkip(t *testing.T) {
+	t.Parallel()
+
+	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+
+	// First matched part is equality-bound (should be skipped).
+	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))
+	eqRange := predicates.EmptyComparisonRange()
+	merged := eqRange.Merge(&eqComp)
+	if !merged.Ok {
+		t.Fatal("failed to create equality comparison range")
+	}
+
+	parts := []*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			fieldA,
+			merged.Range,
+			MatchedSortOrderAscending,
+		),
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			fieldB,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	}
+	pm := makeOrderingTestPartialMatch(parts)
+
+	// Request ordering on b only — a is equality-bound so it is
+	// skipped during satisfaction.
+	ro := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldB, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	dir := SatisfiesRequestedOrdering(pm, ro)
+	if dir == nil {
+		t.Fatal("equality-bound prefix should be skipped, b should satisfy")
+	}
+	if *dir != ScanDirectionForward {
+		t.Fatalf("expected ScanDirectionForward, got %d", *dir)
+	}
+}
+
+func TestSatisfiesRequestedOrdering_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+
+	parts := []*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			fieldA,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	}
+	pm := makeOrderingTestPartialMatch(parts)
+
+	// Request ordering on field "b", which is not in the matched parts.
+	ro := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldB, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	dir := SatisfiesRequestedOrdering(pm, ro)
+	if dir != nil {
+		t.Fatal("ordering on unmatched field should return nil")
+	}
+}
+
+func TestSatisfiesAnyRequestedOrderings_MixedResults(t *testing.T) {
+	t.Parallel()
+
+	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+
+	parts := []*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			fieldA,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	}
+	pm := makeOrderingTestPartialMatch(parts)
+
+	// First ordering: ascending on "a" — should be satisfied (forward).
+	roGood := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldA, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+	// Second ordering: ascending on "b" — should NOT be satisfied.
+	roBad := NewRequestedOrdering(
+		[]RequestedOrderingPart{
+			{Value: fieldB, SortOrder: RequestedSortOrderAscending},
+		},
+		DistinctnessNotDistinct,
+		false,
+	)
+
+	satisfied, dir := SatisfiesAnyRequestedOrderings(pm, []*RequestedOrdering{roGood, roBad})
+	if dir == nil {
+		t.Fatal("at least one ordering should be satisfied")
+	}
+	if *dir != ScanDirectionForward {
+		t.Fatalf("expected ScanDirectionForward, got %d", *dir)
+	}
+	if len(satisfied) != 1 {
+		t.Fatalf("expected 1 satisfied ordering, got %d", len(satisfied))
+	}
+	if satisfied[0] != roGood {
+		t.Fatal("the satisfied ordering should be roGood")
+	}
+}
 
 func TestScanPlanExpression_GetRecordQueryPlan(t *testing.T) {
 	t.Parallel()

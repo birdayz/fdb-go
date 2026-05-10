@@ -5,7 +5,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // OrderedIndexScanRule matches a LogicalSort over a FullUnorderedScan
@@ -103,8 +102,8 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 		scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
-		idxPlan, ok := scanPlan.(*plans.RecordQueryIndexPlan)
-		if !ok {
+		idxPlan := extractIndexPlan(scanPlan)
+		if idxPlan == nil {
 			continue
 		}
 

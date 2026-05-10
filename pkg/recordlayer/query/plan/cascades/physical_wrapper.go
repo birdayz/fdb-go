@@ -342,6 +342,7 @@ type physicalIndexScanWrapper struct {
 	plan        *plans.RecordQueryIndexPlan
 	columnNames []string // index column names for ordering property
 	unique      bool
+	covering    bool // true when the index provides all needed columns (MergeFetch can eliminate the fetch)
 }
 
 func (w *physicalIndexScanWrapper) GetPlan() *plans.RecordQueryIndexPlan      { return w.plan }

@@ -40,7 +40,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) EqualsWithoutChildren(other RecordQueryP
 	if !ok {
 		return false
 	}
-	return values.ExplainValue(p.defaultValue) == values.ExplainValue(o.defaultValue)
+	return values.ValuesStructurallyEqual(p.defaultValue, o.defaultValue)
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) HashCodeWithoutChildren() uint64 {

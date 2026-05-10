@@ -187,5 +187,5 @@ func comparisonsEqualValue(a, b *Comparison) bool {
 	if a.Type != b.Type {
 		return false
 	}
-	return values.ExplainValue(a.Operand) == values.ExplainValue(b.Operand)
+	return values.ValuesStructurallyEqual(a.Operand, b.Operand)
 }

@@ -8,6 +8,9 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+// Go extension: Java's fdb-relational 4.11.1.0 rejects SELECT DISTINCT for most
+// query shapes; Go supports it broadly via this rule and the hash-distinct executor.
+//
 // ImplementDistinctFinalRule is the PLANNING-phase rule for
 // LogicalDistinctExpression. Ports Java's ImplementDistinctRule
 // (ImplementationCascadesRule<LogicalDistinctExpression>).

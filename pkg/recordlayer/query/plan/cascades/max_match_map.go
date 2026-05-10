@@ -169,6 +169,22 @@ func ComputeMaxMatchMap(
 	candidateValue values.Value,
 	rangedOverAliases map[values.CorrelationIdentifier]struct{},
 ) *MaxMatchMap {
+	return ComputeMaxMatchMapWithEquivalence(queryValue, candidateValue, rangedOverAliases, nil)
+}
+
+// ComputeMaxMatchMapWithEquivalence is like ComputeMaxMatchMap but
+// accepts an optional ValueEquivalence for cross-alias matching. When
+// structural equality fails, the ValueEquivalence is consulted to
+// determine whether two values should be considered equal.
+//
+// Ports Java's MaxMatchMap.compute(queryValue, candidateValue,
+// rangedOverAliases, valueEquivalence).
+func ComputeMaxMatchMapWithEquivalence(
+	queryValue values.Value,
+	candidateValue values.Value,
+	rangedOverAliases map[values.CorrelationIdentifier]struct{},
+	valueEquivalence ValueEquivalence,
+) *MaxMatchMap {
 	if rangedOverAliases == nil {
 		rangedOverAliases = map[values.CorrelationIdentifier]struct{}{}
 	}
@@ -192,9 +208,14 @@ func ComputeMaxMatchMap(
 	// Run the recursive matching algorithm.
 	matchers := make([]*incrementalValueMatcher, 0, 8)
 	memoMap := make(map[values.Value]map[values.Value]matchResult) // identity-keyed in Go via pointer
+	var veArgs []ValueEquivalence
+	if valueEquivalence != nil {
+		veArgs = []ValueEquivalence{valueEquivalence}
+	}
 	resultsMap := recurseQueryResultValue(
 		queryValue, candidateValue, rangedOverAliases,
 		-1, matchers, math.MaxInt32, memoMap,
+		veArgs...,
 	)
 
 	// Pick the result with the minimum maxDepth.
@@ -299,6 +320,7 @@ func recurseQueryResultValue(
 	parentMatchers []*incrementalValueMatcher,
 	maxDepthBound int,
 	memoMap map[values.Value]map[values.Value]matchResult,
+	valueEquivalence ...ValueEquivalence,
 ) map[values.Value]matchResult {
 	if maxDepthBound == 0 {
 		return map[values.Value]matchResult{currentQueryValue: notMatched()}
@@ -368,11 +390,16 @@ func recurseQueryResultValue(
 		return allResults
 	}
 
+	var ve ValueEquivalence
+	if len(valueEquivalence) > 0 {
+		ve = valueEquivalence[0]
+	}
+
 	children := currentQueryValue.Children()
 	if len(children) == 0 {
 		// Leaf value: compute directly.
 		result := computeForCurrent(maxDepthBound, currentQueryValue, candidateValue,
-			rangedOverAliases, nil)
+			rangedOverAliases, nil, ve)
 		putResult(currentQueryValue, result)
 	} else {
 		// Try direct match if no parents are matching but current level
@@ -380,8 +407,8 @@ func recurseQueryResultValue(
 		// (no need to descend further).
 		directMatchFound := false
 		if !anyParentsMatching && isCurrentMatching {
-			if matched, candidateMatch := findMatchingReachableCandidate(
-				currentQueryValue, candidateValue); matched {
+			if matched, candidateMatch := findMatchingReachableCandidateWithEquivalence(
+				currentQueryValue, candidateValue, ve); matched {
 				vm := map[string]maxMatchEntry{
 					values.ExplainValue(currentQueryValue): {
 						queryValue:     currentQueryValue,
@@ -417,6 +444,7 @@ func recurseQueryResultValue(
 				childResultMap := recurseQueryResultValue(
 					child, candidateValue, rangedOverAliases,
 					i, localMatchers, childrenMaxDepthBound, memoMap,
+					valueEquivalence...,
 				)
 				entries := make([]childResultEntry, 0, len(childResultMap))
 				for v, r := range childResultMap {
@@ -451,9 +479,26 @@ func recurseQueryResultValue(
 				copy(childEntries, combo)
 
 				result := computeForCurrent(maxDepthBound, resultQueryValue,
-					candidateValue, rangedOverAliases, childEntries)
+					candidateValue, rangedOverAliases, childEntries, ve)
 				putResult(resultQueryValue, result)
 			})
+		}
+	}
+
+	// Try to expand the current query value into a more matchable shape
+	// and recurse with the expanded version. Ports Java's
+	// MaxMatchMapSimplificationRuleSet (ExpandRecordRule +
+	// ExpandFusedFieldValueRule).
+	if anyParentsMatching || bestMaxDepth > 0 {
+		for _, expanded := range expandValueForMatching(currentQueryValue) {
+			expandedResults := recurseQueryResultValue(
+				expanded, candidateValue, rangedOverAliases,
+				descendOrdinal, parentMatchers, maxDepthBound, memoMap,
+				valueEquivalence...,
+			)
+			for v, r := range expandedResults {
+				putResult(v, r)
+			}
 		}
 	}
 
@@ -513,10 +558,11 @@ func computeForCurrent(
 	candidateValue values.Value,
 	rangedOverAliases map[values.CorrelationIdentifier]struct{},
 	childEntries []childResultEntry,
+	ve ValueEquivalence,
 ) matchResult {
 	// Try direct match at this level first.
-	if matched, candidateMatch := findMatchingReachableCandidate(
-		resultQueryValue, candidateValue); matched {
+	if matched, candidateMatch := findMatchingReachableCandidateWithEquivalence(
+		resultQueryValue, candidateValue, ve); matched {
 		vm := map[string]maxMatchEntry{
 			values.ExplainValue(resultQueryValue): {
 				queryValue:     resultQueryValue,
@@ -588,24 +634,31 @@ func computeForCurrent(
 
 // findMatchingReachableCandidate walks the candidate tree (only descending
 // into RecordConstructorValue for reachability) and checks if any
-// reachable subtree is structurally equal to queryValue.
+// reachable subtree is structurally equal to queryValue, or equal via
+// the ValueEquivalence (if provided).
 //
 // Returns (true, candidateValue) on match, (false, nil) otherwise.
 //
-// Ports Java's MaxMatchMap.findMatchingReachableCandidateValue (minus
-// the ValueEquivalence and unmatchedHandler extension points).
+// Ports Java's MaxMatchMap.findMatchingReachableCandidateValue.
 func findMatchingReachableCandidate(
 	queryValue values.Value,
 	candidateRoot values.Value,
+) (bool, values.Value) {
+	return findMatchingReachableCandidateWithEquivalence(queryValue, candidateRoot, nil)
+}
+
+func findMatchingReachableCandidateWithEquivalence(
+	queryValue values.Value,
+	candidateRoot values.Value,
+	ve ValueEquivalence,
 ) (bool, values.Value) {
 	var found bool
 	var match values.Value
 
 	walkReachable(candidateRoot, func(cv values.Value) {
 		if found {
-			return // already found, skip
+			return
 		}
-		// At root: QuantifiedRecordValue always matches.
 		if cv == candidateRoot {
 			if _, ok := queryValue.(*values.QuantifiedRecordValue); ok {
 				found = true
@@ -613,13 +666,25 @@ func findMatchingReachableCandidate(
 				return
 			}
 		}
-		if values.ValuesStructurallyEqual(queryValue, cv) {
+		if valuesEqualWithEquivalence(queryValue, cv, ve) {
 			found = true
 			match = cv
 		}
 	})
 
 	return found, match
+}
+
+// valuesEqualWithEquivalence checks structural equality first, then
+// consults the ValueEquivalence if provided.
+func valuesEqualWithEquivalence(a, b values.Value, ve ValueEquivalence) bool {
+	if values.ValuesStructurallyEqual(a, b) {
+		return true
+	}
+	if ve == nil {
+		return false
+	}
+	return ve.IsDefinedEqual(a, b).Value
 }
 
 // ---------------------------------------------------------------------------
@@ -789,4 +854,68 @@ func (m *MaxMatchMap) AdjustMaybe(
 
 	result := ComputeMaxMatchMap(translated, upperCandidateResultValue, rangedOverAliases)
 	return result, true
+}
+
+// ---------------------------------------------------------------------------
+// Value expansion for matching (MaxMatchMapSimplificationRuleSet)
+// ---------------------------------------------------------------------------
+
+// expandValueForMatching generates alternative representations of a
+// Value that are more matchable against candidate value trees. Ports
+// Java's MaxMatchMapSimplificationRuleSet (ExpandRecordRule +
+// ExpandFusedFieldValueRule).
+func expandValueForMatching(v values.Value) []values.Value {
+	var results []values.Value
+
+	// ExpandRecordRule: if v has a Record result type and is NOT already
+	// a RecordConstructorValue, expand it to
+	// RCV(FV(v, field0), FV(v, field1), ...).
+	if _, isRCV := v.(*values.RecordConstructorValue); !isRCV {
+		if expanded := expandRecordValue(v); expanded != nil {
+			results = append(results, expanded)
+		}
+	}
+
+	// ExpandFusedFieldValueRule: if v is a FieldValue with a multi-step
+	// path (e.g. "a.b.c"), split the last step:
+	// FV(v, "a.b.c") → FV(FV(v, "a.b"), "c").
+	// Go's FieldValue uses a single string Field, not a path list,
+	// so this rule doesn't apply to Go's current FieldValue model.
+	// (Java's FieldValue has a FieldPath with multiple accessors.)
+
+	return results
+}
+
+// expandRecordValue expands a non-RCV value with Record type into a
+// RecordConstructorValue with FieldValue children. Ports Java's
+// ExpandRecordRule.onMatch.
+//
+// Java's FieldValue has a child value (base) + FieldPath, so the
+// expansion produces FV(v, "field_i") for each field. Go's FieldValue
+// is a flat field name with no child, so the expansion produces bare
+// FV("field_i"). This is correct for structural matching (the
+// candidate RCV also has bare FV children) but loses the base-value
+// reference. When Go's FieldValue gains a child value (tracking
+// Java's FieldValue architecture), this expansion should use it.
+func expandRecordValue(v values.Value) values.Value {
+	typ := v.Type()
+	if typ == nil {
+		return nil
+	}
+	rt, ok := typ.(*values.RecordType)
+	if !ok {
+		return nil
+	}
+	if len(rt.Fields) == 0 {
+		return nil
+	}
+
+	fields := make([]values.RecordConstructorField, len(rt.Fields))
+	for i, f := range rt.Fields {
+		fields[i] = values.RecordConstructorField{
+			Name:  f.Name,
+			Value: &values.FieldValue{Field: f.Name, Typ: f.FieldType},
+		}
+	}
+	return &values.RecordConstructorValue{Fields: fields}
 }

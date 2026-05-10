@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -53,6 +54,11 @@ func (c *QueryPlanConstraint) GetPredicate() predicates.QueryPredicate {
 type PartialMatch interface {
 	GetMatchCandidate() MatchCandidate
 	GetMatchInfo() MatchInfo
+	GetBoundAliasMap() *AliasMap
+	GetQueryRef() *expressions.Reference
+	GetQueryExpression() expressions.RelationalExpression
+	GetCandidateRef() *expressions.Reference
+	GetRegularMatchInfo() *RegularMatchInfo
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +125,7 @@ type RegularMatchInfo struct {
 	groupByMappings          *GroupByMappings
 	rollUpToGroupingValues   []values.Value // nil when not applicable
 	additionalPlanConstraint *QueryPlanConstraint
+	childPartialMatchMap     map[values.CorrelationIdentifier]PartialMatch
 }
 
 // NewRegularMatchInfo constructs a RegularMatchInfo. All collection
@@ -204,6 +211,25 @@ func (r *RegularMatchInfo) GetAdditionalPlanConstraint() *QueryPlanConstraint {
 }
 
 // IsAdjusted returns false -- RegularMatchInfo is not adjusted.
+// GetChildPartialMatchMaybe returns the child PartialMatch for the
+// given quantifier alias, or nil if no child match exists for that
+// alias. Ports Java's RegularMatchInfo.getChildPartialMatchMaybe.
+func (r *RegularMatchInfo) GetChildPartialMatchMaybe(alias values.CorrelationIdentifier) PartialMatch {
+	if r.childPartialMatchMap == nil {
+		return nil
+	}
+	return r.childPartialMatchMap[alias]
+}
+
+// SetChildPartialMatch sets the child PartialMatch for a quantifier
+// alias. Called by MatchIntermediateRule when building composite matches.
+func (r *RegularMatchInfo) SetChildPartialMatch(alias values.CorrelationIdentifier, pm PartialMatch) {
+	if r.childPartialMatchMap == nil {
+		r.childPartialMatchMap = make(map[values.CorrelationIdentifier]PartialMatch)
+	}
+	r.childPartialMatchMap[alias] = pm
+}
+
 func (r *RegularMatchInfo) IsAdjusted() bool { return false }
 
 // IsRegular returns true -- RegularMatchInfo is a regular match.
@@ -311,6 +337,38 @@ func (b *AdjustedBuilder) GetMaxMatchMap() *MaxMatchMap {
 func (b *AdjustedBuilder) SetMaxMatchMap(m *MaxMatchMap) *AdjustedBuilder {
 	b.maxMatchMap = m
 	return b
+}
+
+// AdjustGroupByMappings pulls up the GroupByMappings through a
+// candidate expression. For each matched grouping/aggregate value
+// pair, pulls up the candidate-side value through the candidate
+// expression's result value.
+//
+// Ports Java's MatchInfo.adjustGroupByMappings.
+func AdjustGroupByMappings(
+	gbm *GroupByMappings,
+	candidateAlias values.CorrelationIdentifier,
+	candidateResultValue values.Value,
+) *GroupByMappings {
+	adjustedGroupings := adjustMatchedValueMap(gbm.MatchedGroupingsMap(), candidateAlias, candidateResultValue)
+	adjustedAggregates := adjustMatchedValueMap(gbm.MatchedAggregatesMap(), candidateAlias, candidateResultValue)
+	return NewGroupByMappings(adjustedGroupings, adjustedAggregates, gbm.UnmatchedAggregatesMap())
+}
+
+func adjustMatchedValueMap(
+	matchedMap *BiMap[values.Value, values.Value],
+	candidateAlias values.CorrelationIdentifier,
+	candidateResultValue values.Value,
+) *BiMap[values.Value, values.Value] {
+	result := NewValueBiMap()
+	matchedMap.Range(func(queryValue, candidateValue values.Value) bool {
+		pulledUp := values.PullUpValue(candidateValue, candidateResultValue, candidateAlias)
+		if pulledUp != nil {
+			result.Put(queryValue, pulledUp)
+		}
+		return true
+	})
+	return result
 }
 
 // GetGroupByMappings returns the builder's current group-by mappings.
