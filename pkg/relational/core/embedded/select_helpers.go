@@ -261,7 +261,6 @@ func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc
 	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
 	switch name {
 	case "COALESCE", "GREATEST", "LEAST":
-		// Result type = MaximumType of all arguments. Walk each arg.
 		args := fc.FunctionArgs()
 		if args == nil {
 			return ""
@@ -279,6 +278,10 @@ func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc
 			}
 		}
 		return resultType
+	case "YEAR", "MONTH", "DAY", "DAYOFMONTH",
+		"HOUR", "MINUTE", "SECOND",
+		"DAYOFWEEK", "DAYOFYEAR":
+		return "BIGINT"
 	}
 	return ""
 }
