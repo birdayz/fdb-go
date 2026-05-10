@@ -346,3 +346,73 @@ func TestAllAttributesExcept_ExcludeTwo(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterPlanPartitions(t *testing.T) {
+	t.Parallel()
+
+	p1 := &PlanPartition{
+		partitionProps: properties.PropertyMap{
+			properties.PropDistinctRecords: true,
+			properties.PropStoredRecord:    false,
+		},
+		exprProps: make(map[expressions.RelationalExpression]properties.PropertyMap),
+	}
+	p2 := &PlanPartition{
+		partitionProps: properties.PropertyMap{
+			properties.PropDistinctRecords: false,
+			properties.PropStoredRecord:    true,
+		},
+		exprProps: make(map[expressions.RelationalExpression]properties.PropertyMap),
+	}
+	p3 := &PlanPartition{
+		partitionProps: properties.PropertyMap{
+			properties.PropDistinctRecords: true,
+			properties.PropStoredRecord:    true,
+		},
+		exprProps: make(map[expressions.RelationalExpression]properties.PropertyMap),
+	}
+
+	all := []*PlanPartition{p1, p2, p3}
+
+	distinct := WhereDistinct(all)
+	if len(distinct) != 2 {
+		t.Fatalf("expected 2 distinct partitions, got %d", len(distinct))
+	}
+
+	stored := WhereStored(all)
+	if len(stored) != 2 {
+		t.Fatalf("expected 2 stored partitions, got %d", len(stored))
+	}
+
+	custom := FilterPlanPartitions(all, func(p *PlanPartition) bool {
+		return p.IsDistinct() && p.IsStoredRecord()
+	})
+	if len(custom) != 1 {
+		t.Fatalf("expected 1 distinct+stored partition, got %d", len(custom))
+	}
+
+	empty := FilterPlanPartitions(nil, func(p *PlanPartition) bool { return true })
+	if len(empty) != 0 {
+		t.Fatalf("filtering nil should return empty, got %d", len(empty))
+	}
+}
+
+func TestSelectMinCostPartition_Empty(t *testing.T) {
+	t.Parallel()
+	result := SelectMinCostPartition(nil)
+	if result != nil {
+		t.Fatal("expected nil for empty partitions")
+	}
+}
+
+func TestSelectMinCostPartition_Single(t *testing.T) {
+	t.Parallel()
+	p := &PlanPartition{
+		partitionProps: properties.PropertyMap{},
+		exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
+	}
+	result := SelectMinCostPartition([]*PlanPartition{p})
+	if result != p {
+		t.Fatal("single partition should be returned")
+	}
+}
