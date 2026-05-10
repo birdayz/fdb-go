@@ -157,7 +157,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// Apply TranslationMap for multi-quantifier children.
 	tm := tmBuilder.Build()
 	if !tm.DefinesOnlyIdentities() {
-		newResultValue = translateValueCorrelations(newResultValue, tm, nil)
+		newResultValue = translateValueCorrelations(newResultValue, tm)
 	}
 
 	newPredicates := make([]predicates.QueryPredicate, 0, len(sel.GetPredicates())+len(pulledPredicates))
@@ -167,7 +167,7 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			rp = predicates.RebasePredicate(rp, aliasMap)
 		}
 		if !tm.DefinesOnlyIdentities() {
-			rp = translatePredicateCorrelations(rp, tm, nil)
+			rp = translatePredicateCorrelations(rp, tm)
 		}
 		newPredicates = append(newPredicates, rp)
 	}

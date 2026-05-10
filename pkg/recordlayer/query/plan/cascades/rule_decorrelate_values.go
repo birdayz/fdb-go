@@ -144,13 +144,13 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	// the constant result values.
 	newResultValue := sel.GetResultValue()
 	if newResultValue != nil {
-		newResultValue = translateValueCorrelations(newResultValue, tm, nil)
+		newResultValue = translateValueCorrelations(newResultValue, tm)
 	}
 
 	// Translate predicates.
 	newPredicates := make([]predicates.QueryPredicate, len(sel.GetPredicates()))
 	for i, p := range sel.GetPredicates() {
-		newPredicates[i] = translatePredicateCorrelations(p, tm, nil)
+		newPredicates[i] = translatePredicateCorrelations(p, tm)
 	}
 
 	// Rebuild source aliases.
@@ -179,7 +179,7 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 // translateValueCorrelations applies the TranslationMap to a Value
 // tree by replacing QuantifiedObjectValue leaves whose correlation is
 // mapped in the TranslationMap.
-func translateValueCorrelations(v values.Value, tm TranslationMap, _ values.AliasMap) values.Value {
+func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value {
 	if v == nil {
 		return nil
 	}
@@ -202,14 +202,14 @@ func translateValueCorrelations(v values.Value, tm TranslationMap, _ values.Alia
 
 // translatePredicateCorrelations applies the TranslationMap to a
 // predicate by walking its Value trees and replacing mapped aliases.
-func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationMap, aliasMap values.AliasMap) predicates.QueryPredicate {
+func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationMap) predicates.QueryPredicate {
 	if p == nil {
 		return nil
 	}
 	switch pred := p.(type) {
 	case *predicates.ComparisonPredicate:
-		newOperand := translateValueCorrelations(pred.Operand, tm, aliasMap)
-		newCompOperand := translateValueCorrelations(pred.Comparison.Operand, tm, aliasMap)
+		newOperand := translateValueCorrelations(pred.Operand, tm)
+		newCompOperand := translateValueCorrelations(pred.Comparison.Operand, tm)
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
@@ -222,7 +222,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 			},
 		}
 	case *predicates.ValuePredicate:
-		newVal := translateValueCorrelations(pred.Value, tm, aliasMap)
+		newVal := translateValueCorrelations(pred.Value, tm)
 		if newVal == pred.Value {
 			return p
 		}
@@ -231,7 +231,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		changed := false
 		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			newSubs[i] = translatePredicateCorrelations(s, tm, aliasMap)
+			newSubs[i] = translatePredicateCorrelations(s, tm)
 			if newSubs[i] != s {
 				changed = true
 			}
@@ -244,7 +244,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		changed := false
 		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			newSubs[i] = translatePredicateCorrelations(s, tm, aliasMap)
+			newSubs[i] = translatePredicateCorrelations(s, tm)
 			if newSubs[i] != s {
 				changed = true
 			}
@@ -254,7 +254,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		}
 		return predicates.NewOr(newSubs...)
 	case *predicates.NotPredicate:
-		newChild := translatePredicateCorrelations(pred.Child, tm, aliasMap)
+		newChild := translatePredicateCorrelations(pred.Child, tm)
 		if newChild == pred.Child {
 			return p
 		}
