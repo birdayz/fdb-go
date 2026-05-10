@@ -46,6 +46,44 @@ func TrueWithConstraint(c *QueryPlanConstraint) ConstrainedBoolean {
 	return ConstrainedBoolean{Value: true, Constraint: c}
 }
 
+// IsTrue reports whether the boolean value is true (regardless of
+// constraint). Ports Java's ConstrainedBoolean.isTrue().
+func (cb ConstrainedBoolean) IsTrue() bool { return cb.Value }
+
+// IsFalse reports whether the boolean value is false. Ports Java's
+// ConstrainedBoolean.isFalse().
+func (cb ConstrainedBoolean) IsFalse() bool { return !cb.Value }
+
+// ComposeWithOther composes this ConstrainedBoolean with another via
+// AND semantics: if either is false, the result is false. If both are
+// true, constraints are merged. Ports Java's
+// ConstrainedBoolean.composeWithOther().
+func (cb ConstrainedBoolean) ComposeWithOther(other ConstrainedBoolean) ConstrainedBoolean {
+	if cb.IsFalse() {
+		return FalseValue()
+	}
+	if other.IsFalse() {
+		return FalseValue()
+	}
+	if cb.Constraint == nil {
+		return other
+	}
+	if other.Constraint == nil {
+		return cb
+	}
+	return TrueWithConstraint(cb.Constraint)
+}
+
+// Filter returns false if the ConstrainedBoolean is false; otherwise
+// returns the result of evaluating the predicate fn. Ports Java's
+// ConstrainedBoolean.filter().
+func (cb ConstrainedBoolean) Filter(fn func() ConstrainedBoolean) ConstrainedBoolean {
+	if cb.IsFalse() {
+		return FalseValue()
+	}
+	return cb.ComposeWithOther(fn())
+}
+
 // emptyValueEquivalence is the baseline: all comparisons return false.
 type emptyValueEquivalence struct{}
 
