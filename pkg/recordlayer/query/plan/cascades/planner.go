@@ -346,10 +346,12 @@ func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visite
 			continue
 		}
 
-		// Generate data access expressions. No requested orderings in
-		// the seed — the full implementation propagates ordering
-		// constraints from parent operators. No intersector — the seed
-		// does single-scan only.
+		// Generate data access expressions. No requested orderings
+		// passed — ordering constraints are propagated during the
+		// PLANNING phase which runs after this. Java's data access
+		// rules have access to orderings from the constraint pass;
+		// aligning this requires restructuring the phase ordering.
+		// No intersector — single-scan only for now.
 		exprs := DataAccessForMatchPartition(
 			nil, // requestedOrderings
 			matches,
