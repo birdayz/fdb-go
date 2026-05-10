@@ -577,6 +577,18 @@ func (c *ForMatchCompensation) GetGroupByMappings() *GroupByMappings {
 	return c.groupByMappings
 }
 
+// GetMatchedForEachAlias returns the single ForEach quantifier alias
+// among the matched quantifiers. Java uses this as the target for the
+// matchedToRealizedTranslationMap. Ports Java's getMatchedForEachAlias.
+func (c *ForMatchCompensation) GetMatchedForEachAlias() values.CorrelationIdentifier {
+	for _, q := range c.matchedQuantifiers {
+		if q.Kind() == expressions.QuantifierForEach {
+			return q.GetAlias()
+		}
+	}
+	return values.CorrelationIdentifier{}
+}
+
 // String returns a human-readable representation of this compensation.
 // Mirrors Java's ForMatch.toString().
 func (c *ForMatchCompensation) String() string {
@@ -679,10 +691,12 @@ func (c *ForMatchCompensation) Apply(
 }
 
 // ApplyFinal applies the result (shape) compensation by wrapping the
-// expression in a map that reshapes the output. Returns the original
-// expression if no result compensation is needed.
+// expression in a SelectExpression with the translated result value.
+// Returns the original expression if no result compensation is needed.
 //
-// Ports Java's Compensation.WithSelectCompensation.applyFinal.
+// Ports Java's Compensation.WithSelectCompensation.applyFinal which
+// uses GraphExpansion.builder().addQuantifier(base).build()
+// .buildSelectWithResultValue(resultValue).
 func (c *ForMatchCompensation) ApplyFinal(
 	expr expressions.RelationalExpression,
 	translationMap TranslationMap,
@@ -694,8 +708,12 @@ func (c *ForMatchCompensation) ApplyFinal(
 	if resultVal == nil {
 		return expr
 	}
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
-	return expressions.NewLogicalProjectionExpression([]values.Value{resultVal}, innerQ)
+	newBaseQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+	builder := NewGraphExpansionBuilder()
+	builder.AddQuantifier(newBaseQ)
+	expansion := builder.Build()
+	sealed := expansion.Seal()
+	return sealed.BuildSelectWithResultValue(resultVal)
 }
 
 // ApplyAllNeeded applies both filter compensation (Apply) and result
