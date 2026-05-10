@@ -252,6 +252,66 @@ func TestGetCorrelatedToOfValue_BooleanValue(t *testing.T) {
 	}
 }
 
+func TestGetCorrelatedToOfValue_ExistsValue(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("exists_q")
+	v := &ExistsValue{Alias: alias}
+	got := GetCorrelatedToOfValue(v)
+	if _, ok := got[alias]; !ok {
+		t.Fatal("ExistsValue alias not in correlation set")
+	}
+}
+
+func TestGetCorrelatedToOfValue_ScalarSubqueryValue(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("ssq")
+	v := &ScalarSubqueryValue{Alias: alias}
+	got := GetCorrelatedToOfValue(v)
+	if _, ok := got[alias]; !ok {
+		t.Fatal("ScalarSubqueryValue alias not in correlation set")
+	}
+}
+
+func TestGetCorrelatedToOfValue_UnmatchedAggregateValue(t *testing.T) {
+	t.Parallel()
+	id := NamedCorrelationIdentifier("unmatched_1")
+	v := NewUnmatchedAggregateValue(id)
+	got := GetCorrelatedToOfValue(v)
+	if _, ok := got[id]; !ok {
+		t.Fatal("UnmatchedAggregateValue ID not in correlation set")
+	}
+}
+
+func TestGetCorrelatedToOfValue_QuantifiedRecordValue(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("qrv")
+	v := &QuantifiedRecordValue{Alias: alias}
+	got := GetCorrelatedToOfValue(v)
+	if _, ok := got[alias]; !ok {
+		t.Fatal("QuantifiedRecordValue alias not in correlation set")
+	}
+}
+
+func TestGetCorrelatedToOfValue_ObjectValue(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("obj")
+	v := &ObjectValue{Alias: alias}
+	got := GetCorrelatedToOfValue(v)
+	if _, ok := got[alias]; !ok {
+		t.Fatal("ObjectValue alias not in correlation set")
+	}
+}
+
+func TestGetCorrelatedToOfValue_ConstantObjectValue(t *testing.T) {
+	t.Parallel()
+	alias := NamedCorrelationIdentifier("const_obj")
+	v := &ConstantObjectValue{Alias: alias, ConstantID: "test"}
+	got := GetCorrelatedToOfValue(v)
+	if _, ok := got[alias]; !ok {
+		t.Fatal("ConstantObjectValue alias not in correlation set")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Benchmarks
 // ---------------------------------------------------------------------------
