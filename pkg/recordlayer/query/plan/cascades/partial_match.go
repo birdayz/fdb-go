@@ -125,9 +125,10 @@ func (p *PartialMatchImpl) PullUp(candidateAlias values.CorrelationIdentifier) *
 
 // CompensateCompleteMatch computes compensation for a complete match.
 // Computes child compensation (union of matched quantifier compensations),
-// result compensation via PullUp, and combines them.
+// predicate compensation (residual filters), and result compensation.
+//
 // Ports Java's PartialMatch.compensateCompleteMatch +
-// SelectExpression.compensate (simplified).
+// SelectExpression.compensate (full predicate compensation computation).
 func (p *PartialMatchImpl) CompensateCompleteMatch(
 	unificationPullUp *PullUp,
 	candidateTopAlias values.CorrelationIdentifier,
@@ -137,11 +138,13 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 		return ImpossibleCompensation
 	}
 
-	// Compute child compensation: union of compensations from matched
-	// ForEach quantifiers' child partial matches.
 	mi := p.GetRegularMatchInfo()
+	quantifiers := p.queryExpression.GetQuantifiers()
+
+	// Phase 1: Compute child compensation — union of compensations from
+	// matched ForEach quantifiers' child partial matches.
 	var childCompensations []Compensation
-	for _, q := range p.queryExpression.GetQuantifiers() {
+	for _, q := range quantifiers {
 		if q.Kind() != expressions.QuantifierForEach {
 			continue
 		}
@@ -161,25 +164,110 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 		return ImpossibleCompensation
 	}
 
-	// Compute result compensation via PullUp.
+	// Phase 2: Predicate compensation — iterate over query predicates,
+	// look up their mappings in the predicate map, and compute per-
+	// predicate compensation functions.
+	predicateMap := mi.GetPredicateMap()
+	unmatchedQs := p.GetUnmatchedQuantifiers()
+	unmatchedAliases := make(map[values.CorrelationIdentifier]struct{}, len(unmatchedQs))
+	for _, q := range unmatchedQs {
+		unmatchedAliases[q.GetAlias()] = struct{}{}
+	}
+
+	boundPrefixMap := p.GetBoundParameterPrefixMap()
+	isAnyCompensationFunctionImpossible := false
+	isAnyCompensationFunctionNeeded := false
+
+	var predCompKeys []predicates.QueryPredicate
+	var predCompVals []PredicateCompensationFunc
+
+	if sel, ok := p.queryExpression.(*expressions.SelectExpression); ok {
+		for _, pred := range sel.GetPredicates() {
+			mappings := predicateMap.Get(pred)
+			if len(mappings) == 0 {
+				continue
+			}
+
+			// If the predicate references an unmatched quantifier,
+			// compensation is impossible.
+			predCorrelated := predicates.GetCorrelatedToOfPredicate(pred)
+			for alias := range predCorrelated {
+				if _, unmatched := unmatchedAliases[alias]; unmatched {
+					isAnyCompensationFunctionImpossible = true
+				}
+			}
+
+			// Iterate over mappings: use first non-empty compensation.
+			// If any mapping says "not needed", skip this predicate entirely.
+			var compensationFunction PredicateCompensationFunc
+			isCompensationFunctionNeeded := true
+			isCompensationFunctionImpossible := true
+
+			for _, mapping := range mappings {
+				predComp := mapping.GetPredicateCompensation()
+				compFn := predComp(p, boundPrefixMap)
+				if !compFn.IsNeeded() {
+					isCompensationFunctionNeeded = false
+					break
+				}
+				if compensationFunction == nil {
+					compensationFunction = compFn
+				}
+				if !compFn.IsImpossible() {
+					isCompensationFunctionImpossible = false
+				}
+			}
+
+			if isCompensationFunctionNeeded && compensationFunction != nil {
+				isAnyCompensationFunctionNeeded = true
+				if isCompensationFunctionImpossible {
+					isAnyCompensationFunctionImpossible = true
+				}
+				predCompKeys = append(predCompKeys, pred)
+				predCompVals = append(predCompVals, compensationFunction)
+			}
+		}
+	}
+
+	predicateCompensationMap := NewPredicateCompensationMap(predCompKeys, predCompVals)
+
+	// Phase 3: Result compensation via PullUp.
 	cr := ComputeResultCompensation(p, pullUp)
 	if cr == nil {
 		return ImpossibleCompensation
 	}
+	isAnyCompensationFunctionImpossible = isAnyCompensationFunctionImpossible || cr.Impossible
 
-	unmatchedQs := p.GetUnmatchedQuantifiers()
+	// Phase 4: Determine whether compensation is needed at all.
 	matchedQs := p.GetMatchedQuantifiers()
 
-	if !childCompensation.IsNeededForFiltering() &&
-		!cr.ResultCompensationFn.IsNeeded() &&
-		len(unmatchedQs) == 0 {
+	isCompensationNeeded := childCompensation.IsNeeded() ||
+		len(unmatchedQs) > 0 ||
+		isAnyCompensationFunctionNeeded ||
+		cr.ResultCompensationFn.IsNeeded()
+
+	if !isCompensationNeeded {
 		return NoCompensation
 	}
 
+	// Phase 5: Multi-quantifier guard — if compensation is needed and
+	// more than one ForEach quantifier is matched (has a child partial
+	// match), compensation is impossible (requires cross-reference
+	// value translation not yet supported).
+	forEachMatchedCount := 0
+	for _, q := range quantifiers {
+		if q.Kind() == expressions.QuantifierForEach && mi.GetChildPartialMatchMaybe(q.GetAlias()) != nil {
+			forEachMatchedCount++
+		}
+	}
+	if forEachMatchedCount > 1 {
+		return ImpossibleCompensation
+	}
+
 	return NewForMatchCompensation(
-		cr.Impossible,
+		isAnyCompensationFunctionImpossible,
 		childCompensation,
-		EmptyPredicateCompensationMap(),
+		predicateCompensationMap,
 		matchedQs,
 		unmatchedQs,
 		p.GetCompensatedAliases(),
