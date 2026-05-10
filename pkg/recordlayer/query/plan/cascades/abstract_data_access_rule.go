@@ -207,13 +207,13 @@ func DataAccessForMatchPartition(
 			continue
 		}
 
-		// Wrap the scan plan as a RelationalExpression. The full
-		// implementation would go through
-		// applyCompensationForSingleDataAccessMaybe to apply residual
-		// filter compensation. Currently wraps directly — compensation
-		// application at the plan level needs Compensation.Apply
-		// integration with physical plan wrappers.
-		expr := &scanPlanExpression{plan: plan}
+		var expr expressions.RelationalExpression = &scanPlanExpression{plan: plan}
+
+		if comp.IsNeeded() {
+			if fmc, ok := comp.(*ForMatchCompensation); ok {
+				expr = fmc.Apply(expr, EmptyTranslationMap())
+			}
+		}
 		resultExprs = append(resultExprs, expr)
 	}
 
