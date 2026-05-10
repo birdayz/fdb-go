@@ -168,6 +168,7 @@ go_library(
         "translation_map.go",
         "traversal.go",
         "value_equivalence.go",
+        "value_semantic_equals.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades",
     visibility = ["//visibility:public"],
