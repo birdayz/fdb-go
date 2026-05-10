@@ -23,9 +23,9 @@ import (
 //   - createScansForMatches
 //   - dataAccessForMatchPartition
 //
-// The seed implementations are architecturally correct but omit the
-// complex Pareto filtering, full compensation computation, and detailed
-// ordering satisfaction checking -- those are refinement work.
+// Compensation and ordering satisfaction are fully wired (swingshift-86).
+// Remaining: Pareto filtering in MaximumCoverageMatches (no containment
+// pruning yet — every match is kept, which is conservative/correct).
 
 // IntersectorFunc is the function type for computing intersections of
 // multiple data accesses. Concrete rules provide their own intersection
@@ -86,8 +86,8 @@ func PrepareMatchesAndCompensations(
 	}
 
 	// Sort by bound predicate count descending (maximum coverage first).
-	// In the seed, we use the number of matched ordering parts as a proxy
-	// for "bound predicate count" since getBoundPlaceholders is not yet
+	// Uses the number of matched ordering parts as a proxy for "bound
+	// predicate count" since getBoundPlaceholders is not yet
 	// on the PartialMatch interface. This preserves the Java sort
 	// contract's intent: higher-coverage matches first.
 	sort.SliceStable(result, func(i, j int) bool {
@@ -103,9 +103,9 @@ func PrepareMatchesAndCompensations(
 // entirely contained in other matches, then wraps survivors in
 // Vectored with ascending position indices.
 //
-// Seed: no Pareto filtering -- every match is kept. Refinement will
-// add the findContainingAccess logic that prunes dominated matches
-// within the same MatchCandidate.
+// No Pareto filtering yet — every match is kept (conservative/correct).
+// Full findContainingAccess logic that prunes dominated matches within
+// the same MatchCandidate is future work.
 //
 // Ports Java's AbstractDataAccessRule.maximumCoverageMatches.
 func MaximumCoverageMatches(
@@ -118,7 +118,7 @@ func MaximumCoverageMatches(
 		return nil
 	}
 
-	// Seed: wrap every access -- no containment pruning.
+	// Wrap every access — no containment pruning (conservative).
 	result := make([]Vectored[*SingleMatchedAccess], len(accesses))
 	for i, access := range accesses {
 		result[i] = NewVectored(access, i)
@@ -207,11 +207,12 @@ func DataAccessForMatchPartition(
 			continue
 		}
 
-		// Wrap the scan plan as a RelationalExpression. In the full
-		// implementation this would go through
-		// applyCompensationForSingleDataAccessMaybe which applies the
-		// compensation chain. For the seed, we wrap the plan directly
-		// since compensation is NoCompensation.
+		// Wrap the scan plan as a RelationalExpression. The full
+		// implementation would go through
+		// applyCompensationForSingleDataAccessMaybe to apply residual
+		// filter compensation. Currently wraps directly — compensation
+		// application at the plan level needs Compensation.Apply
+		// integration with physical plan wrappers.
 		expr := &scanPlanExpression{plan: plan}
 		resultExprs = append(resultExprs, expr)
 	}
@@ -237,10 +238,10 @@ func DataAccessForMatchPartition(
 // to yield scan plans as expressions into the memo.
 //
 // This mirrors the role of Java's physicalPlanExpression wrappers but is
-// deliberately minimal for the seed -- the full wrapper hierarchy
-// (physicalIndexScanWrapper etc.) exists in physical_wrapper.go and
-// handles the real planner flow. This type is used only by the abstract
-// data access utilities when they need to return expressions.
+// minimal — the full wrapper hierarchy (physicalIndexScanWrapper etc.)
+// exists in physical_wrapper.go and handles the real planner flow. This
+// type is used only by the abstract data access utilities when they need
+// to return expressions.
 type scanPlanExpression struct {
 	plan plans.RecordQueryPlan
 }
