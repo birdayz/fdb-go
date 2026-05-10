@@ -8093,3 +8093,95 @@ func TestFDB_DateTimestampCast(t *testing.T) {
 		t.Error("CAST AS DATE returned empty")
 	}
 }
+
+func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dateparts")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dateparts")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE dateparts_tmpl "+
+			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, d DATE, PRIMARY KEY(id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dateparts/s1 WITH TEMPLATE dateparts_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dateparts?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO Events VALUES (1, '2024-07-04 15:30:45', '2024-07-04')")
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// YEAR/MONTH/DAY on stored TIMESTAMP column.
+	var year, month, day int64
+	err = db.QueryRowContext(ctx, "SELECT YEAR(ts), MONTH(ts), DAY(ts) FROM Events WHERE id = 1").Scan(&year, &month, &day)
+	if err != nil {
+		t.Fatalf("YEAR/MONTH/DAY on ts column: %v", err)
+	}
+	if year != 2024 {
+		t.Errorf("YEAR(ts) = %d, want 2024", year)
+	}
+	if month != 7 {
+		t.Errorf("MONTH(ts) = %d, want 7", month)
+	}
+	if day != 4 {
+		t.Errorf("DAY(ts) = %d, want 4", day)
+	}
+
+	// HOUR/MINUTE/SECOND on stored TIMESTAMP column.
+	var hour, minute, second int64
+	err = db.QueryRowContext(ctx, "SELECT HOUR(ts), MINUTE(ts), SECOND(ts) FROM Events WHERE id = 1").Scan(&hour, &minute, &second)
+	if err != nil {
+		t.Fatalf("HOUR/MINUTE/SECOND on ts column: %v", err)
+	}
+	if hour != 15 {
+		t.Errorf("HOUR(ts) = %d, want 15", hour)
+	}
+	if minute != 30 {
+		t.Errorf("MINUTE(ts) = %d, want 30", minute)
+	}
+	if second != 45 {
+		t.Errorf("SECOND(ts) = %d, want 45", second)
+	}
+
+	// YEAR/MONTH/DAY on stored DATE column.
+	err = db.QueryRowContext(ctx, "SELECT YEAR(d), MONTH(d), DAY(d) FROM Events WHERE id = 1").Scan(&year, &month, &day)
+	if err != nil {
+		t.Fatalf("YEAR/MONTH/DAY on date column: %v", err)
+	}
+	if year != 2024 {
+		t.Errorf("YEAR(d) = %d, want 2024", year)
+	}
+	if month != 7 {
+		t.Errorf("MONTH(d) = %d, want 7", month)
+	}
+	if day != 4 {
+		t.Errorf("DAY(d) = %d, want 4", day)
+	}
+
+	// YEAR on CURRENT_TIMESTAMP (returns time.Time, not string).
+	err = db.QueryRowContext(ctx, "SELECT YEAR(CURRENT_TIMESTAMP) FROM Events WHERE id = 1").Scan(&year)
+	if err != nil {
+		t.Fatalf("YEAR(CURRENT_TIMESTAMP): %v", err)
+	}
+	if year < 2024 || year > 2100 {
+		t.Errorf("YEAR(CURRENT_TIMESTAMP) = %d, want reasonable year", year)
+	}
+}
