@@ -1,5 +1,7 @@
 package values
 
+import "reflect"
+
 // MapFieldValues recursively walks a Value tree and applies transform to
 // every FieldValue encountered at any depth. Non-FieldValue leaf nodes
 // are returned unchanged. Composite nodes are rebuilt with transformed
@@ -290,4 +292,103 @@ func typesEqual(a, b Type) bool {
 		return false
 	}
 	return a.Code() == b.Code() && a.IsNullable() == b.IsNullable()
+}
+
+// EqualsWithoutChildren checks whether two Values are the same type
+// with the same non-child attributes, WITHOUT recursing into children.
+// This is the Go equivalent of Java's Value.equalsWithoutChildren().
+//
+// For leaf values (no children) this is equivalent to
+// ValuesStructurallyEqual. For composite values it checks the type
+// and any type-specific attributes (operator, field names, etc.) but
+// does NOT compare children.
+//
+// Returns true if a and b have the same concrete type and the same
+// non-child attributes (e.g. same ArithmeticOp, same field names in
+// RecordConstructorValue, same CastValue target type, etc.).
+func EqualsWithoutChildren(a, b Value) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
+	switch av := a.(type) {
+	case *FieldValue:
+		bv, ok := b.(*FieldValue)
+		return ok && av.Field == bv.Field
+	case *ConstantValue:
+		bv, ok := b.(*ConstantValue)
+		if !ok {
+			return false
+		}
+		return constantValuesEqual(av.Value, bv.Value)
+	case *NullValue:
+		_, ok := b.(*NullValue)
+		return ok
+	case *BooleanValue:
+		bv, ok := b.(*BooleanValue)
+		if !ok {
+			return false
+		}
+		if av.Value == nil && bv.Value == nil {
+			return true
+		}
+		if av.Value == nil || bv.Value == nil {
+			return false
+		}
+		return *av.Value == *bv.Value
+	case *ParameterValue:
+		bv, ok := b.(*ParameterValue)
+		if !ok {
+			return false
+		}
+		return av.Ordinal == bv.Ordinal && av.ParamName == bv.ParamName
+	case *QuantifiedObjectValue:
+		bv, ok := b.(*QuantifiedObjectValue)
+		return ok && av.Correlation == bv.Correlation
+	case *QuantifiedRecordValue:
+		bv, ok := b.(*QuantifiedRecordValue)
+		return ok && av.Alias == bv.Alias
+	case *ObjectValue:
+		bv, ok := b.(*ObjectValue)
+		return ok && av.Alias == bv.Alias
+	case *ArithmeticValue:
+		bv, ok := b.(*ArithmeticValue)
+		return ok && av.Op == bv.Op
+	case *CastValue:
+		bv, ok := b.(*CastValue)
+		return ok && typesEqual(av.Target, bv.Target)
+	case *PromoteValue:
+		bv, ok := b.(*PromoteValue)
+		return ok && typesEqual(av.Target, bv.Target)
+	case *ScalarFunctionValue:
+		bv, ok := b.(*ScalarFunctionValue)
+		return ok && av.FuncName == bv.FuncName && len(av.Args) == len(bv.Args)
+	case *AggregateValue:
+		bv, ok := b.(*AggregateValue)
+		return ok && av.Op == bv.Op
+	case *RecordConstructorValue:
+		bv, ok := b.(*RecordConstructorValue)
+		if !ok || len(av.Fields) != len(bv.Fields) {
+			return false
+		}
+		for i := range av.Fields {
+			if av.Fields[i].Name != bv.Fields[i].Name {
+				return false
+			}
+		}
+		return true
+	case *NotValue:
+		_, ok := b.(*NotValue)
+		return ok
+	case *AndOrValue:
+		bv, ok := b.(*AndOrValue)
+		return ok && av.Op == bv.Op
+	default:
+		// Fallback: same concrete type means same "without children".
+		// reflect.TypeOf is correct here — we only care about the Go type.
+		return reflect.TypeOf(a) == reflect.TypeOf(b)
+	}
 }
