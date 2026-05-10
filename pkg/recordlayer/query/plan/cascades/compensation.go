@@ -140,6 +140,21 @@ func StubPredicateCompensationMap(n int) *PredicateCompensationMap {
 	return &PredicateCompensationMap{keys: keys, values: vals}
 }
 
+// Get returns the compensation function for the given predicate key
+// using identity (pointer) comparison. Returns nil if not found.
+// Mirrors Java's LinkedIdentityMap.get().
+func (m *PredicateCompensationMap) Get(key predicates.QueryPredicate) PredicateCompensationFunc {
+	if m == nil {
+		return nil
+	}
+	for i, k := range m.keys {
+		if k == key { // pointer identity
+			return m.values[i]
+		}
+	}
+	return nil
+}
+
 // IsEmpty reports whether the map has no entries.
 func (m *PredicateCompensationMap) IsEmpty() bool {
 	return m == nil || len(m.keys) == 0
@@ -479,16 +494,15 @@ func (c *ForMatchCompensation) Apply(
 // intersections). Returns ImpossibleCompensation if the intersection
 // is infeasible.
 //
-// Ports Java's Compensation.WithSelectCompensation.intersect (seed).
+// Ports Java's Compensation.WithSelectCompensation.intersect.
 func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensation {
+	// Phase 1: Handle edge cases.
 	if c.IsImpossible() || other.IsImpossible() {
 		return ImpossibleCompensation
 	}
-
 	if !c.IsNeeded() && !other.IsNeeded() {
 		return NoCompensation
 	}
-
 	if !c.IsNeeded() {
 		return other
 	}
@@ -496,11 +510,158 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		return c
 	}
 
-	// TODO: port Java's full predicate map intersection (keep only
-	// predicates present in both maps). Until then, return the
-	// receiver as a conservative approximation — this may apply
-	// extra filtering but won't miss required predicates.
-	return c
+	// Phase 2: Intersect child compensations.
+	childComp := c.childCompensation
+	var intersectedChild Compensation
+	if childForMatch, ok := childComp.(*ForMatchCompensation); ok {
+		if otherChild, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
+			intersectedChild = childForMatch.Intersect(otherChild)
+		} else {
+			intersectedChild = childComp
+		}
+	} else {
+		intersectedChild = childComp
+	}
+	if intersectedChild.IsImpossible() || !intersectedChild.CanBeDeferred() {
+		return ImpossibleCompensation
+	}
+
+	// Phase 3: Merge GroupByMappings.
+	// Matched groupings: union of both sides.
+	newMatchedGroupings := c.groupByMappings.MatchedGroupingsMap().Copy()
+	other.groupByMappings.MatchedGroupingsMap().Range(func(k, v values.Value) bool {
+		if _, ok := newMatchedGroupings.Get(k); !ok {
+			newMatchedGroupings.Put(k, v)
+		}
+		return true
+	})
+
+	// Matched aggregates: union of both sides.
+	newMatchedAggregates := c.groupByMappings.MatchedAggregatesMap().Copy()
+	other.groupByMappings.MatchedAggregatesMap().Range(func(k, v values.Value) bool {
+		if _, ok := newMatchedAggregates.Get(k); !ok {
+			newMatchedAggregates.Put(k, v)
+		}
+		return true
+	})
+
+	// Unmatched aggregates: filter out those that are now matched.
+	newUnmatchedAggregates := NewCorrValueBiMap()
+	unmatchedAggMap := c.groupByMappings.UnmatchedAggregatesMap()
+	unmatchedAggMap.Range(func(k values.CorrelationIdentifier, v values.Value) bool {
+		if _, matched := newMatchedAggregates.Get(v); !matched {
+			newUnmatchedAggregates.Put(k, v)
+		}
+		return true
+	})
+	other.groupByMappings.UnmatchedAggregatesMap().Range(func(k values.CorrelationIdentifier, v values.Value) bool {
+		if _, matched := newMatchedAggregates.Get(v); !matched {
+			if _, alreadyIn := unmatchedAggMap.GetInverse(v); !alreadyIn {
+				newUnmatchedAggregates.Put(k, v)
+			}
+		}
+		return true
+	})
+	newGroupByMappings := NewGroupByMappings(newMatchedGroupings, newMatchedAggregates, newUnmatchedAggregates)
+
+	// Phase 4: Result compensation.
+	// Build the amended matched-aggregates map for Amend calls.
+	amendedMatchedAggMap := make(map[values.Value]values.Value)
+	newMatchedAggregates.Range(func(k, v values.Value) bool {
+		amendedMatchedAggMap[k] = v
+		return true
+	})
+
+	isImpossible := false
+	var newResultFn *ResultCompensationFunction
+	rcf := c.resultCompensationFn
+	otherRcf := other.resultCompensationFn
+	if !rcf.IsNeeded() && !otherRcf.IsNeeded() {
+		newResultFn = NoResultCompensation()
+	} else {
+		newResultFn = rcf.Amend(unmatchedAggMap, amendedMatchedAggMap)
+		isImpossible = isImpossible || newResultFn.IsImpossible()
+	}
+
+	// Phase 5: Predicate map intersection — keep only predicates in BOTH maps.
+	otherPredMap := other.predicateCompensationMap
+	var combinedKeys []predicates.QueryPredicate
+	var combinedVals []PredicateCompensationFunc
+	predKeys, predVals := c.predicateCompensationMap.Entries()
+	for i, key := range predKeys {
+		otherFn := otherPredMap.Get(key)
+		if otherFn != nil {
+			newFn := predVals[i].Amend(unmatchedAggMap, amendedMatchedAggMap)
+			combinedKeys = append(combinedKeys, key)
+			combinedVals = append(combinedVals, newFn)
+			isImpossible = isImpossible || newFn.IsImpossible()
+		}
+	}
+	combinedPredMap := NewPredicateCompensationMap(combinedKeys, combinedVals)
+
+	// Phase 6: Early returns.
+	if !intersectedChild.IsNeededForFiltering() && !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return NoCompensation
+	}
+	if !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return intersectedChild
+	}
+
+	// Phase 7: Quantifier intersection.
+	// matchedQuantifiers = union of both sides.
+	matchedSet := make(map[values.CorrelationIdentifier]expressions.Quantifier)
+	for _, q := range c.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	for _, q := range other.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	intersectedMatched := make([]expressions.Quantifier, 0, len(matchedSet))
+	for _, q := range matchedSet {
+		intersectedMatched = append(intersectedMatched, q)
+	}
+
+	// unmatchedQuantifiers = intersection of both sides.
+	otherUnmatchedSet := make(map[values.CorrelationIdentifier]struct{})
+	for _, q := range other.unmatchedQuantifiers {
+		otherUnmatchedSet[q.GetAlias()] = struct{}{}
+	}
+	var intersectedUnmatched []expressions.Quantifier
+	unmatchedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for _, q := range c.unmatchedQuantifiers {
+		if _, ok := otherUnmatchedSet[q.GetAlias()]; ok {
+			intersectedUnmatched = append(intersectedUnmatched, q)
+			unmatchedAliases[q.GetAlias()] = struct{}{}
+		}
+	}
+
+	// Check if any combined predicate references an unmatched quantifier.
+	if !isImpossible {
+		for _, key := range combinedKeys {
+			correlated := predicates.GetCorrelatedToOfPredicate(key)
+			for alias := range correlated {
+				if _, unmatched := unmatchedAliases[alias]; unmatched {
+					isImpossible = true
+					break
+				}
+			}
+			if isImpossible {
+				break
+			}
+		}
+	}
+
+	// Phase 8: Build derived compensation.
+	return DerivedCompensation(
+		intersectedChild,
+		isImpossible,
+		combinedPredMap,
+		intersectedMatched,
+		intersectedUnmatched,
+		c.compensatedAliases, // both sides should be identical
+		newResultFn,
+		newGroupByMappings,
+	)
 }
 
 // ---------------------------------------------------------------------------
