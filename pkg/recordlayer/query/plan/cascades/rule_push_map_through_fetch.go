@@ -56,12 +56,14 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	fetchPlan := fetchW.plan
 	resultValue := mapW.plan.GetResultValue()
 
-	// Try to push the result value through the fetch.
+	// Try to push the result value through the fetch. Uses recursive
+	// decomposition so composite values (RecordConstructorValue, etc.)
+	// are translated leaf-by-leaf matching Java's mapMaybe approach.
 	oldAlias := mapW.innerQuant.GetAlias()
 	newInnerAlias := values.UniqueCorrelationIdentifier()
 
-	pushedResultValue, ok := fetchPlan.PushValue(resultValue, oldAlias, newInnerAlias)
-	if !ok {
+	pushedResultValue := tryTranslateValue(fetchPlan, oldAlias, newInnerAlias, resultValue)
+	if pushedResultValue == nil {
 		return
 	}
 

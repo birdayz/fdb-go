@@ -313,6 +313,8 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	t.Parallel()
 
+	mapAlias := values.UniqueCorrelationIdentifier()
+
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
@@ -327,9 +329,10 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
 	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
 
-	resultVal := &values.FieldValue{Field: "x", Typ: values.TypeInt}
+	// Use a correlated FieldValue so translation is actually attempted.
+	resultVal := values.NewFieldValue(values.NewQuantifiedObjectValue(mapAlias), "x", values.TypeInt)
 	mapPlan := plans.NewRecordQueryMapPlan(nil, resultVal)
-	mapQ := expressions.ForEachQuantifier(fetchRef)
+	mapQ := expressions.NamedForEachQuantifier(mapAlias, fetchRef)
 	mapWrapper := NewPhysicalMapWrapper(mapPlan, mapQ)
 
 	ref := expressions.NewFinalReference([]expressions.RelationalExpression{mapWrapper})
