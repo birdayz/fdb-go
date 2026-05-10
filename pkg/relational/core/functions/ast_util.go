@@ -3,6 +3,7 @@ package functions
 import (
 	"strings"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
@@ -29,4 +30,34 @@ func FullIdToName(fid antlrgen.IFullIdContext) string {
 		parts[i] = StripIdentifierQuotes(u.GetText())
 	}
 	return strings.Join(parts, ".")
+}
+
+// ResolveQualifiedTableName validates and strips a schema qualifier
+// from a dotted table name. Ports Java's SemanticAnalyzer.tableExists
+// qualifier validation (lines 189-207):
+//
+//   - No dot → returns the name as-is.
+//   - One dot (schema.table) → validates qualifier matches schemaName
+//     (case-insensitive), returns just the table name.
+//   - Two+ dots → error (Java returns INTERNAL_ERROR).
+//
+// schemaName is the current schema context (e.g., from session).
+// Returns (tableName, errCode, errMsg). errCode is "" on success.
+func ResolveQualifiedTableName(dottedName, schemaName string) (string, error) {
+	dot := strings.IndexByte(dottedName, '.')
+	if dot < 0 {
+		return dottedName, nil
+	}
+	qualifier := dottedName[:dot]
+	rest := dottedName[dot+1:]
+
+	if strings.IndexByte(rest, '.') >= 0 {
+		return "", api.NewErrorf(api.ErrCodeInternalError,
+			"multi-part qualified table name %q not supported", dottedName)
+	}
+	if !strings.EqualFold(qualifier, schemaName) {
+		return "", api.NewErrorf(api.ErrCodeUndefinedDatabase,
+			"Unknown database %s", qualifier)
+	}
+	return rest, nil
 }

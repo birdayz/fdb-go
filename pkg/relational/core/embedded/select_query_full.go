@@ -131,10 +131,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			return nil, expandErr
 		}
 
+		resolvedTable, resolveErr := functions.ResolveQualifiedTableName(sq.tableName, c.sess.Schema)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		sq.tableName = resolvedTable
 		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {
-			// Java verbatim: "Unknown table NAME" (uppercased).
-			// Cross-engine corpus `undefined_table` pins byte-equality.
 			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
 				"Unknown table %s", strings.ToUpper(sq.tableName))
 		}
