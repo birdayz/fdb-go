@@ -92,3 +92,39 @@ func TestExpandRecordValue_AlreadyRCV(t *testing.T) {
 		t.Fatal("should not expand an already-RCV value")
 	}
 }
+
+func TestMaxMatchMap_ExpansionHelpsMatching(t *testing.T) {
+	t.Parallel()
+	// Query: qov(q) with RecordType{A, B}
+	// Candidate: rcv(fv("A"), fv("B"))
+	// Without expansion: qov(q) doesn't structurally match rcv(...)
+	// With expansion: qov(q) → rcv(fv("A"), fv("B")) which matches field-by-field
+
+	rt := values.NewRecordType("", true, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableString, Ordinal: 1},
+	})
+	query := &values.QuantifiedObjectValue{
+		Correlation: values.NamedCorrelationIdentifier("q"),
+		Typ:         rt,
+	}
+	candidate := &values.RecordConstructorValue{Fields: []values.RecordConstructorField{
+		{Name: "A", Value: &values.FieldValue{Field: "A", Typ: values.NullableLong}},
+		{Name: "B", Value: &values.FieldValue{Field: "B", Typ: values.NullableString}},
+	}}
+
+	mmm := ComputeMaxMatchMap(query, candidate, nil)
+	if len(mmm.mapping) == 0 {
+		t.Fatal("expansion should have enabled field-level matching")
+	}
+	// Verify individual field matches exist.
+	for _, entry := range mmm.mapping {
+		fv, ok := entry.queryValue.(*values.FieldValue)
+		if !ok {
+			continue
+		}
+		if fv.Field != "A" && fv.Field != "B" {
+			t.Fatalf("unexpected matched field: %s", fv.Field)
+		}
+	}
+}
