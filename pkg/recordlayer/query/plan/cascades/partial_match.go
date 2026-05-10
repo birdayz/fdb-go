@@ -106,16 +106,19 @@ func (p *PartialMatchImpl) GetBoundParameterPrefixMap() map[values.CorrelationId
 }
 
 // PullUp computes the PullUp chain for this partial match from the
-// candidate side. Ports Java's PartialMatch.pullUp(candidateAlias).
+// candidate side. The rangedOverAliases are the candidate-side
+// quantifier aliases (targets in the binding alias map).
+// Ports Java's PartialMatch.pullUp(candidateAlias).
 func (p *PartialMatchImpl) PullUp(candidateAlias values.CorrelationIdentifier) *PullUp {
 	mi := p.GetRegularMatchInfo()
 	mmm := mi.GetMaxMatchMap()
 	if mmm == nil {
 		return nil
 	}
+	bam := mi.GetBindingAliasMap()
 	rangedOver := make(map[values.CorrelationIdentifier]struct{})
-	for _, alias := range mi.GetBindingAliasMap().Sources() {
-		rangedOver[alias] = struct{}{}
+	for _, src := range bam.Sources() {
+		rangedOver[bam.GetTarget(src)] = struct{}{}
 	}
 	return NewPullUp(nil, candidateAlias, mmm.GetCandidateValue(), rangedOver)
 }

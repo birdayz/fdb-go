@@ -174,3 +174,46 @@ func TestMatchPartition_Empty(t *testing.T) {
 		t.Fatalf("empty partition: len=%d, want 0", len(got))
 	}
 }
+
+func TestPartialMatch_CompensateCompleteMatch_SimpleMatch(t *testing.T) {
+	t.Parallel()
+	// The candidateAlias (output scope) must differ from the
+	// rangedOverAliases (inner candidate scope) — the PullUp translates
+	// inner-scope values to the output scope.
+	innerAlias := values.NamedCorrelationIdentifier("inner")
+	outputAlias := values.NamedCorrelationIdentifier("output")
+	innerQOV := values.NewQuantifiedObjectValue(innerAlias)
+
+	mmm := NewMaxMatchMap(
+		map[values.Value]values.Value{innerQOV: innerQOV},
+		innerQOV,
+		innerQOV,
+	)
+	mi := NewRegularMatchInfo(
+		nil,
+		AliasMapOfAliases(innerAlias, innerAlias),
+		nil,
+		nil,
+		mmm,
+		EmptyGroupByMappings(),
+		nil,
+		nil,
+	)
+	candidate := stubMatchCandidate{name: "idx_test"}
+	queryRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+	)
+	candidateRef := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+	)
+	pm := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, queryRef.Get(), candidateRef, mi)
+
+	comp := pm.CompensateCompleteMatch(nil, outputAlias)
+
+	if comp.IsImpossible() {
+		t.Fatal("compensation should not be impossible")
+	}
+	if comp.IsNeeded() {
+		t.Fatal("simple passthrough match should not need compensation")
+	}
+}
