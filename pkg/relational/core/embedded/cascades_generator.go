@@ -937,6 +937,20 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 		}
 		ins.Table = resolved
 	}
+	if del, ok := op.(*logical.LogicalDelete); ok {
+		resolved, err := functions.ResolveQualifiedTableName(del.Target, schemaName)
+		if err != nil {
+			return err
+		}
+		del.Target = resolved
+	}
+	if upd, ok := op.(*logical.LogicalUpdate); ok {
+		resolved, err := functions.ResolveQualifiedTableName(upd.Target, schemaName)
+		if err != nil {
+			return err
+		}
+		upd.Target = resolved
+	}
 	for _, ch := range op.Children() {
 		if err := resolveQualifiedTableNames(ch, schemaName); err != nil {
 			return err

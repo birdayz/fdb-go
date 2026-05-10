@@ -179,13 +179,9 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 // translateValueCorrelations applies the TranslationMap to a Value
 // tree by replacing QuantifiedObjectValue leaves whose correlation is
 // mapped in the TranslationMap.
-func translateValueCorrelations(v values.Value, tm TranslationMap, aliasMap values.AliasMap) values.Value {
+func translateValueCorrelations(v values.Value, tm TranslationMap, _ values.AliasMap) values.Value {
 	if v == nil {
 		return nil
-	}
-	// Try alias-based rebase first.
-	if len(aliasMap) > 0 {
-		v = values.RebaseValue(v, aliasMap)
 	}
 	// Replace QOV leaves that reference translated aliases.
 	return values.Replace(v, func(val values.Value) values.Value {
