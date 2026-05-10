@@ -93,6 +93,70 @@ var (
 	ImpossibleCompensation Compensation = impossibleCompensation{}
 )
 
+// IntersectCompensations folds a slice of Compensations via the
+// intersection monoid. The identity element is ImpossibleCompensation.
+// Ports Java's `compensations.stream().reduce(impossibleCompensation, Compensation::intersect)`.
+func IntersectCompensations(compensations []Compensation) Compensation {
+	result := ImpossibleCompensation
+	for _, c := range compensations {
+		result = intersectTwo(result, c)
+	}
+	return result
+}
+
+// UnionCompensations folds a slice of Compensations via union.
+// The identity element is NoCompensation.
+func UnionCompensations(compensations []Compensation) Compensation {
+	result := Compensation(NoCompensation)
+	for _, c := range compensations {
+		result = unionTwo(result, c)
+	}
+	return result
+}
+
+// intersectTwo dispatches intersection between any two Compensation
+// values, handling the monoid identities.
+func intersectTwo(a, b Compensation) Compensation {
+	// ImpossibleCompensation is the identity: impossible ∩ X = X
+	if _, ok := a.(impossibleCompensation); ok {
+		return b
+	}
+	if _, ok := b.(impossibleCompensation); ok {
+		return a
+	}
+	// NoCompensation is the absorbing element: none ∩ X = none
+	if !a.IsNeeded() || !b.IsNeeded() {
+		return NoCompensation
+	}
+	// Both are ForMatchCompensation — delegate to the full algorithm.
+	aFM, aOk := a.(*ForMatchCompensation)
+	bFM, bOk := b.(*ForMatchCompensation)
+	if aOk && bOk {
+		return aFM.Intersect(bFM)
+	}
+	// Fallback: can't intersect non-ForMatch compensations.
+	return ImpossibleCompensation
+}
+
+// unionTwo dispatches union between any two Compensation values.
+func unionTwo(a, b Compensation) Compensation {
+	if !a.IsNeeded() && !b.IsNeeded() {
+		return NoCompensation
+	}
+	if !a.IsNeeded() {
+		return b
+	}
+	if !b.IsNeeded() {
+		return a
+	}
+	aFM, aOk := a.(*ForMatchCompensation)
+	bFM, bOk := b.(*ForMatchCompensation)
+	if aOk && bOk {
+		return aFM.Union(bFM)
+	}
+	return ImpossibleCompensation
+}
+
 // ---------------------------------------------------------------------------
 // Placeholder types for ForMatch dependencies
 // ---------------------------------------------------------------------------
