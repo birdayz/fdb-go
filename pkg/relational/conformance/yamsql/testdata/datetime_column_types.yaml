@@ -1,0 +1,111 @@
+# datetime_column_types.yaml
+#
+# Go extension: DATE and TIMESTAMP column types. Java 4.11.1.0 has no
+# temporal column types. These are SQL-standard types that Go implements
+# as a Go-only extension (stored as ISO 8601 STRING in proto).
+#
+# Tests: DDL (column type acceptance), INSERT (string literals), SELECT
+# (round-trip), comparisons (WHERE), CAST (between types), date-part
+# extraction (YEAR/MONTH/DAY on stored columns).
+name: datetime_column_types
+schema_template: |
+  CREATE TABLE Events (id BIGINT NOT NULL, d DATE, ts TIMESTAMP, PRIMARY KEY (id))
+setup:
+  - INSERT INTO Events VALUES (1, '2024-03-15', '2024-03-15 10:30:00')
+  - INSERT INTO Events VALUES (2, '2024-06-20', '2024-06-20 14:45:30')
+  - INSERT INTO Events VALUES (3, '2024-01-01', '2024-01-01 00:00:00')
+tests:
+  # ---------------------------------------------------------------
+  # Round-trip: stored values come back correctly.
+  # ---------------------------------------------------------------
+  - query: SELECT d FROM Events WHERE id = 1
+    rows:
+      - ['2024-03-15']
+  - query: SELECT ts FROM Events WHERE id = 1
+    rows:
+      - ['2024-03-15 10:30:00']
+  - query: SELECT d FROM Events WHERE id = 3
+    rows:
+      - ['2024-01-01']
+
+  # ---------------------------------------------------------------
+  # WHERE comparisons on DATE column (string lexicographic).
+  # ---------------------------------------------------------------
+  - query: SELECT COUNT(*) FROM Events WHERE d > '2024-02-01'
+    rows:
+      - [2]
+  - query: SELECT COUNT(*) FROM Events WHERE d = '2024-01-01'
+    rows:
+      - [1]
+  - query: SELECT COUNT(*) FROM Events WHERE d >= '2024-03-15'
+    rows:
+      - [2]
+
+  # ---------------------------------------------------------------
+  # WHERE comparisons on TIMESTAMP column.
+  # ---------------------------------------------------------------
+  - query: SELECT COUNT(*) FROM Events WHERE ts > '2024-03-15 10:00:00'
+    rows:
+      - [2]
+  - query: SELECT COUNT(*) FROM Events WHERE ts < '2024-06-01 00:00:00'
+    rows:
+      - [2]
+
+  # ---------------------------------------------------------------
+  # CAST AS DATE (truncates timestamp to date-only).
+  # ---------------------------------------------------------------
+  - query: SELECT CAST('2024-07-04 15:30:00' AS DATE) FROM Events WHERE id = 1
+    rows:
+      - ['2024-07-04']
+  - query: SELECT CAST('2024-12-25' AS DATE) FROM Events WHERE id = 1
+    rows:
+      - ['2024-12-25']
+
+  # ---------------------------------------------------------------
+  # CAST AS TIMESTAMP.
+  # ---------------------------------------------------------------
+  - query: SELECT CAST('2024-07-04 12:00:00' AS TIMESTAMP) FROM Events WHERE id = 1
+    rows:
+      - ['2024-07-04 12:00:00']
+  - query: SELECT CAST('2024-01-01' AS TIMESTAMP) FROM Events WHERE id = 1
+    rows:
+      - ['2024-01-01 00:00:00']
+
+  # ---------------------------------------------------------------
+  # Date-part extraction on stored DATE column.
+  # ---------------------------------------------------------------
+  - query: SELECT YEAR(d) FROM Events WHERE id = 1
+    rows:
+      - [2024]
+  - query: SELECT MONTH(d) FROM Events WHERE id = 2
+    rows:
+      - [6]
+  - query: SELECT DAY(d) FROM Events WHERE id = 3
+    rows:
+      - [1]
+
+  # ---------------------------------------------------------------
+  # Date-part extraction on stored TIMESTAMP column.
+  # ---------------------------------------------------------------
+  - query: SELECT YEAR(ts) FROM Events WHERE id = 1
+    rows:
+      - [2024]
+  - query: SELECT HOUR(ts) FROM Events WHERE id = 1
+    rows:
+      - [10]
+  - query: SELECT MINUTE(ts) FROM Events WHERE id = 1
+    rows:
+      - [30]
+  - query: SELECT SECOND(ts) FROM Events WHERE id = 2
+    rows:
+      - [30]
+
+  # ---------------------------------------------------------------
+  # NULL handling: NULL DATE/TIMESTAMP columns.
+  # ---------------------------------------------------------------
+  - query: SELECT d IS NULL FROM Events WHERE id = 1
+    rows:
+      - [false]
+  - query: SELECT YEAR(CAST(NULL AS TIMESTAMP)) IS NULL FROM Events WHERE id = 1
+    rows:
+      - [true]
