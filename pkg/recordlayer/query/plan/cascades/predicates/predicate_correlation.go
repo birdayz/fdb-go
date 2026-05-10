@@ -37,6 +37,11 @@ func GetCorrelatedToOfPredicate(p QueryPredicate) map[CorrelationIdentifier]stru
 			for k := range values.GetCorrelatedToOfValue(np.Comparison.Operand) {
 				out[k] = struct{}{}
 			}
+		case *Placeholder:
+			out[np.ParameterAlias] = struct{}{}
+			for k := range values.GetCorrelatedToOfValue(np.Value) {
+				out[k] = struct{}{}
+			}
 		}
 		return true
 	})
