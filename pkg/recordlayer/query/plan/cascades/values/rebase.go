@@ -61,6 +61,11 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 			return &UnmatchedAggregateValue{UnmatchedID: newAlias}
 		}
 		return v
+	case *ConstantObjectValue:
+		if newAlias, ok := aliases[val.Alias]; ok {
+			return &ConstantObjectValue{Alias: newAlias, ConstantID: val.ConstantID, ResultType: val.ResultType}
+		}
+		return v
 	}
 
 	// For all other leaf values (FieldValue, ConstantValue, NullValue,

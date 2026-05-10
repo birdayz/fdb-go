@@ -3,7 +3,8 @@ package values
 // GetCorrelatedToOfValue walks v + its descendants and returns the
 // union of every correlation-bearing leaf Value's alias. Handles
 // QuantifiedObjectValue, QuantifiedRecordValue, ExistsValue,
-// ScalarSubqueryValue, ObjectValue, and UnmatchedAggregateValue.
+// ScalarSubqueryValue, ObjectValue, UnmatchedAggregateValue, and
+// ConstantObjectValue.
 //
 // Returns nil for nil input. Returns a non-nil empty map for trees
 // with no correlations.
@@ -28,6 +29,8 @@ func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 			out[q.Alias] = struct{}{}
 		case *UnmatchedAggregateValue:
 			out[q.UnmatchedID] = struct{}{}
+		case *ConstantObjectValue:
+			out[q.Alias] = struct{}{}
 		}
 		return true
 	})
