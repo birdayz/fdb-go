@@ -124,7 +124,10 @@ func (p *PartialMatchImpl) PullUp(candidateAlias values.CorrelationIdentifier) *
 }
 
 // CompensateCompleteMatch computes compensation for a complete match.
-// Ports Java's PartialMatch.compensateCompleteMatch.
+// Computes child compensation (union of matched quantifier compensations),
+// result compensation via PullUp, and combines them.
+// Ports Java's PartialMatch.compensateCompleteMatch +
+// SelectExpression.compensate (simplified).
 func (p *PartialMatchImpl) CompensateCompleteMatch(
 	unificationPullUp *PullUp,
 	candidateTopAlias values.CorrelationIdentifier,
@@ -134,26 +137,52 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 		return ImpossibleCompensation
 	}
 
+	// Compute child compensation: union of compensations from matched
+	// ForEach quantifiers' child partial matches.
+	mi := p.GetRegularMatchInfo()
+	var childCompensations []Compensation
+	for _, q := range p.queryExpression.GetQuantifiers() {
+		if q.Kind() != expressions.QuantifierForEach {
+			continue
+		}
+		childPM := mi.GetChildPartialMatchMaybe(q.GetAlias())
+		if childPM == nil {
+			continue
+		}
+		if childPMI, ok := childPM.(*PartialMatchImpl); ok {
+			bam := mi.GetBindingAliasMap()
+			childAlias := bam.GetTarget(q.GetAlias())
+			childComp := childPMI.CompensateCompleteMatch(nil, childAlias)
+			childCompensations = append(childCompensations, childComp)
+		}
+	}
+	childCompensation := UnionCompensations(childCompensations)
+	if childCompensation.IsImpossible() || !childCompensation.CanBeDeferred() {
+		return ImpossibleCompensation
+	}
+
+	// Compute result compensation via PullUp.
 	cr := ComputeResultCompensation(p, pullUp)
 	if cr == nil {
 		return ImpossibleCompensation
 	}
 
-	if cr.Impossible {
-		return ImpossibleCompensation
-	}
+	unmatchedQs := p.GetUnmatchedQuantifiers()
+	matchedQs := p.GetMatchedQuantifiers()
 
-	if !cr.ResultCompensationFn.IsNeeded() {
+	if !childCompensation.IsNeededForFiltering() &&
+		!cr.ResultCompensationFn.IsNeeded() &&
+		len(unmatchedQs) == 0 {
 		return NoCompensation
 	}
 
 	return NewForMatchCompensation(
 		cr.Impossible,
-		NoCompensation,
+		childCompensation,
 		EmptyPredicateCompensationMap(),
-		nil,
-		nil,
-		map[values.CorrelationIdentifier]struct{}{candidateTopAlias: {}},
+		matchedQs,
+		unmatchedQs,
+		p.GetCompensatedAliases(),
 		cr.ResultCompensationFn,
 		cr.GroupByMappings,
 	)
