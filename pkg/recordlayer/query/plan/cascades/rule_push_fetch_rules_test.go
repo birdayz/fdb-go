@@ -399,3 +399,84 @@ func TestPushUnionThroughFetch_DoesNotFire_OnlyOneChildHasFetch(t *testing.T) {
 		t.Fatalf("expected 0 yielded (not all children are fetches), got %d", len(yielded))
 	}
 }
+
+// TestFieldValueChild_CorrelationTracking verifies that a FieldValue
+// with a child (QuantifiedObjectValue) properly participates in
+// correlation tracking — GetCorrelatedToOfValue discovers the child's
+// quantifier alias.
+func TestFieldValueChild_CorrelationTracking(t *testing.T) {
+	t.Parallel()
+
+	alias := values.UniqueCorrelationIdentifier()
+	child := values.NewQuantifiedObjectValue(alias)
+	fv := values.NewFieldValue(child, "name", values.TypeString)
+
+	correlated := values.GetCorrelatedToOfValue(fv)
+	if _, ok := correlated[alias]; !ok {
+		t.Fatalf("FieldValue with child should be correlated to alias %v", alias)
+	}
+}
+
+// TestFieldValueChild_PushFilterDecision verifies end-to-end: a
+// predicate with FieldValue(child=QOV(alias)) is correctly identified
+// as correlated to the filter's inner alias, enabling proper push/
+// residual classification in PushFilterThroughFetchRule.
+func TestFieldValueChild_PushFilterDecision(t *testing.T) {
+	t.Parallel()
+
+	filterAlias := values.UniqueCorrelationIdentifier()
+
+	indexPlan := plans.NewRecordQueryIndexPlan(
+		"idx_a", nil, []string{"T"}, values.UnknownType, false,
+	)
+	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+
+	// TranslateValueFunction that succeeds for FieldValues with field "x"
+	// but fails for field "y". Simulates an index covering column "x"
+	// but not "y".
+	translateFn := func(v values.Value, _, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
+		if fv, ok := v.(*values.FieldValue); ok {
+			if fv.Field == "x" {
+				return values.NewFieldValue(
+					values.NewQuantifiedObjectValue(targetAlias), "x", values.TypeInt,
+				), true
+			}
+		}
+		return nil, false
+	}
+	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+	)
+	fetchQ := expressions.ForEachQuantifier(indexRef)
+	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+
+	// Predicates using FieldValue WITH child — correlated to filterAlias.
+	pushablePred := predicates.NewComparisonPredicate(
+		values.NewFieldValue(values.NewQuantifiedObjectValue(filterAlias), "x", values.TypeInt),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+	residualPred := predicates.NewComparisonPredicate(
+		values.NewFieldValue(values.NewQuantifiedObjectValue(filterAlias), "y", values.TypeInt),
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(2)),
+	)
+
+	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pushablePred, residualPred})
+	filterQ := expressions.NamedForEachQuantifier(filterAlias, fetchRef)
+	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
+
+	ref := expressions.NewFinalReference([]expressions.RelationalExpression{filterWrapper})
+
+	rule := NewPushFilterThroughFetchRule()
+	yielded := FireImplementationRule(rule, ref)
+
+	// Should yield 1: Filter(y, Fetch(Filter(x, index)))
+	if len(yielded) != 1 {
+		t.Fatalf("expected 1 yielded (partial push), got %d", len(yielded))
+	}
+	// Top should be a residual filter (not a fetch directly).
+	if !IsPhysicalPredicatesFilter(yielded[0]) {
+		t.Fatalf("expected residual filter on top, got %T", yielded[0])
+	}
+}
