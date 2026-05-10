@@ -322,9 +322,9 @@ func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContex
 	case ctx.CURRENT_DATE() != nil:
 		return values.NewScalarFunctionValue("CURRENT_DATE", values.NullableDate), nil
 	case ctx.CURRENT_TIME() != nil:
-		return values.NewScalarFunctionValue("CURRENT_TIME", values.NullableString), nil
+		return values.NewScalarFunctionValue("CURRENT_TIME", values.NullableTimestamp), nil
 	case ctx.LOCALTIME() != nil:
-		return values.NewScalarFunctionValue("LOCALTIME", values.NullableString), nil
+		return values.NewScalarFunctionValue("LOCALTIME", values.NullableTimestamp), nil
 	case ctx.CURRENT_USER() != nil:
 		return &values.ConstantValue{Value: "", Typ: values.NullableString}, nil
 	default:
