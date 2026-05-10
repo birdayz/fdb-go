@@ -3,6 +3,8 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // MatchIntermediateRule is the Cascades rule that matches non-leaf
@@ -177,17 +179,53 @@ func matchIntermediateWithCandidate(
 	candidateRef *expressions.Reference,
 	candidateExpr expressions.RelationalExpression,
 ) {
+	// Structural equality path: same expression type, same quantifier
+	// count, structurally equal (ignoring children).
+	if matchIntermediateStructural(call, queryExpr, candidate, candidateRef, candidateExpr) {
+		return
+	}
+
+	// Subsumption path: LogicalFilterExpression subsumed by
+	// SelectExpression. The query filters rows from a scan via
+	// ComparisonPredicates; the candidate models the same scan via a
+	// SelectExpression with Placeholder predicates. The query
+	// predicates bind to the candidate's Placeholders, producing
+	// parameter bindings (sargable ranges) that the index scan uses.
+	//
+	// This is the Go equivalent of Java's match-then-subsumedBy path
+	// where SelectExpression.subsumedBy handles predicate-to-
+	// Placeholder mapping. Go doesn't yet have a SelectMergeRule to
+	// normalise LogicalFilter into Select before matching, so we
+	// handle the subsumption inline.
+	if qf, ok := queryExpr.(*expressions.LogicalFilterExpression); ok {
+		if cs, ok := candidateExpr.(*expressions.SelectExpression); ok {
+			matchFilterAgainstSelect(call, qf, cs, candidate, candidateRef)
+		}
+	}
+}
+
+// matchIntermediateStructural handles the original same-type
+// structural equality matching. Returns true if a PartialMatch was
+// created (or at least the structural check passed enough to
+// suppress further subsumption attempts).
+func matchIntermediateStructural(
+	call *ExpressionRuleCall,
+	queryExpr expressions.RelationalExpression,
+	candidate MatchCandidate,
+	candidateRef *expressions.Reference,
+	candidateExpr expressions.RelationalExpression,
+) bool {
 	queryQs := queryExpr.GetQuantifiers()
 	candidateQs := candidateExpr.GetQuantifiers()
 
 	if len(queryQs) != len(candidateQs) {
-		return
+		return false
 	}
 
 	// Structural equality check at this level (ignoring children).
 	exprAliasMap := expressions.EmptyAliasMap()
 	if !queryExpr.EqualsWithoutChildren(candidateExpr, exprAliasMap) {
-		return
+		return false
 	}
 
 	// Build the alias map from quantifier bindings and verify that
@@ -215,7 +253,7 @@ func matchIntermediateWithCandidate(
 			}
 		}
 		if !found {
-			return
+			return false
 		}
 
 		// Map the query quantifier's alias to the candidate
@@ -246,6 +284,176 @@ func matchIntermediateWithCandidate(
 		mi,
 	)
 	AddPartialMatchForCandidate(call.Reference, candidate, pm)
+	return true
+}
+
+// matchFilterAgainstSelect handles the subsumption case where a
+// query LogicalFilterExpression is matched against a candidate
+// SelectExpression with Placeholder predicates. This is the core
+// of index matching: query predicates (ComparisonPredicates) bind
+// to candidate Placeholders, producing parameter bindings
+// (ComparisonRanges) that the physical index scan uses.
+//
+// Algorithm:
+//  1. Both expressions must have exactly one quantifier (single-
+//     source filter/select). The query's inner quantifier ranges
+//     over the scan; the candidate's ForEach quantifier ranges over
+//     the candidate scan. A child PartialMatch must link them.
+//  2. For each candidate Placeholder, find a query
+//     ComparisonPredicate whose operand references the same column.
+//     If found, merge the comparison into a ComparisonRange and
+//     record the binding. If not found, leave the Placeholder
+//     unbound (empty range — the index column is unconstrained).
+//  3. Build a PredicateMap recording which query predicate maps to
+//     which candidate predicate. Build parameter bindings from the
+//     ComparisonRanges.
+//  4. Create a PartialMatch with the parameter bindings and
+//     predicate map.
+//
+// Mirrors the predicate-mapping logic inside Java's
+// SelectExpression.subsumedBy, narrowed to the Filter-vs-Select
+// case that Go encounters before SelectMergeRule normalisation.
+func matchFilterAgainstSelect(
+	call *ExpressionRuleCall,
+	queryFilter *expressions.LogicalFilterExpression,
+	candidateSelect *expressions.SelectExpression,
+	candidate MatchCandidate,
+	candidateRef *expressions.Reference,
+) {
+	// Step 1: Match quantifiers. Both sides must have exactly one.
+	queryQs := queryFilter.GetQuantifiers()
+	candidateQs := candidateSelect.GetQuantifiers()
+	if len(queryQs) != 1 || len(candidateQs) != 1 {
+		return
+	}
+
+	// Verify a child PartialMatch exists linking the two scan
+	// references.
+	queryChildRef := queryQs[0].GetRangesOver()
+	candidateChildRef := candidateQs[0].GetRangesOver()
+
+	var childMatch *PartialMatchImpl
+	for _, pm := range GetPartialMatchesForCandidate(queryChildRef, candidate) {
+		if pmi, ok := pm.(*PartialMatchImpl); ok {
+			if pmi.GetCandidateRef() == candidateChildRef {
+				childMatch = pmi
+				break
+			}
+		}
+	}
+	if childMatch == nil {
+		return
+	}
+
+	// Step 2: Match predicates. Try to bind each candidate
+	// Placeholder with a query ComparisonPredicate.
+	candidatePreds := candidateSelect.GetPredicates()
+	queryPreds := queryFilter.GetPredicates()
+
+	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+	predicateMapBuilder := NewPredicateMapBuilder()
+	boundCount := 0
+
+	for _, candPred := range candidatePreds {
+		ph, ok := candPred.(*predicates.Placeholder)
+		if !ok {
+			// Non-Placeholder candidate predicates (e.g. constant
+			// tautologies) are ignored for the seed — they don't
+			// constrain the match.
+			continue
+		}
+
+		matched := false
+		for _, queryPred := range queryPreds {
+			cp, ok := queryPred.(*predicates.ComparisonPredicate)
+			if !ok {
+				continue
+			}
+
+			// Check if the ComparisonPredicate's operand references
+			// the same column as the Placeholder's value. Comparison
+			// is structural via ExplainValue (field name for
+			// FieldValue, full expression tree for complex values).
+			if !valuesMatchColumn(cp.Operand, ph.GetValue()) {
+				continue
+			}
+
+			// Merge the comparison into a ComparisonRange.
+			mr := predicates.EmptyComparisonRange().Merge(&cp.Comparison)
+			if !mr.Ok {
+				continue
+			}
+
+			paramBindings[ph.GetParameterAlias()] = mr.Range
+			matched = true
+			boundCount++
+
+			// Record the predicate mapping.
+			mapping := RegularMappingBuilder(cp, cp, ph).
+				SetSargable(ph.GetParameterAlias(), mr.Range).
+				Build()
+			predicateMapBuilder.Put(cp, mapping)
+			break
+		}
+
+		if !matched {
+			// Unbound Placeholder — index column is unconstrained.
+			paramBindings[ph.GetParameterAlias()] = predicates.EmptyComparisonRange()
+		}
+	}
+
+	// Step 3: Build alias map incorporating child aliases +
+	// quantifier mapping.
+	aliasBuilder := NewAliasMapBuilder()
+	aliasBuilder.PutAll(childMatch.GetBoundAliasMap())
+	aliasBuilder.Put(queryQs[0].GetAlias(), candidateQs[0].GetAlias())
+	boundAliasMap := aliasBuilder.Build()
+
+	// Build the predicate map. BuildMaybe returns nil on conflicts
+	// (shouldn't happen in the single-source seed). A nil result
+	// with bound predicates means we hit a mapping conflict — bail.
+	var predMultiMap *PredicateMultiMap
+	if boundCount > 0 {
+		predMap := predicateMapBuilder.BuildMaybe()
+		if predMap == nil {
+			return
+		}
+		predMultiMap = &predMap.PredicateMultiMap
+	}
+
+	mi := NewRegularMatchInfo(
+		paramBindings,          // parameterBindingMap
+		boundAliasMap,          // bindingAliasMap
+		predMultiMap,           // predicateMap
+		nil,                    // matchedOrderingParts
+		nil,                    // maxMatchMap
+		EmptyGroupByMappings(), // groupByMappings
+		nil,                    // rollUpToGroupingValues
+		nil,                    // additionalPlanConstraint
+	)
+
+	pm := NewPartialMatch(
+		boundAliasMap,
+		candidate,
+		call.Reference,
+		queryFilter,
+		candidateRef,
+		mi,
+	)
+	AddPartialMatchForCandidate(call.Reference, candidate, pm)
+}
+
+// valuesMatchColumn checks if two values reference the same column.
+// Uses structural comparison via ExplainValue: for FieldValues this
+// is the field name (case-sensitive, matching the Go convention that
+// column names are normalised to a single canonical casing at SQL
+// identifier resolution time). For complex values (arithmetic,
+// casts, etc.) ExplainValue renders the full expression tree.
+func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
+	if queryValue == nil || placeholderValue == nil {
+		return false
+	}
+	return values.ExplainValue(queryValue) == values.ExplainValue(placeholderValue)
 }
 
 var _ ExpressionRule = (*MatchIntermediateRule)(nil)

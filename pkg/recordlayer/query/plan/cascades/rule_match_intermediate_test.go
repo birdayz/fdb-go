@@ -282,6 +282,377 @@ func TestMatchIntermediateRule_LeafSkipped(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Filter-vs-Select subsumption tests: predicate-to-Placeholder binding
+// ---------------------------------------------------------------------------
+
+// TestMatchIntermediate_FilterSubsumedBySelect_SinglePredicate verifies
+// the core subsumption path: a query LogicalFilterExpression with one
+// ComparisonPredicate (col0 = 5) matches a candidate SelectExpression
+// with one Placeholder (col0). The PartialMatch should carry a
+// parameter binding with an equality ComparisonRange.
+func TestMatchIntermediate_FilterSubsumedBySelect_SinglePredicate(t *testing.T) {
+	t.Parallel()
+
+	// --- Query side: Filter([col0 = 5], Scan("T")) ---
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	// --- Candidate side: Select(qov, [ForEach(Scan("T"))], [Placeholder(a0, col0)]) ---
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+
+	alias0 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	traversal := NewTraversal(candidateSelectRef)
+
+	mc := &testMatchCandidate{name: "idx_col0", traversal: traversal}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	// Seed leaf match on scan.
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+	if len(GetPartialMatchesForCandidate(queryScanRef, mc)) == 0 {
+		t.Fatal("leaf PartialMatch not seeded on queryScanRef")
+	}
+
+	// Run intermediate rule on the filter.
+	intermediateRule := NewMatchIntermediateRule()
+	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+
+	// Verify a PartialMatch was created on the filter ref.
+	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
+	if len(pms) == 0 {
+		t.Fatal("expected at least one PartialMatch from filter-vs-select subsumption, got 0")
+	}
+
+	pmi := pms[0].(*PartialMatchImpl)
+
+	// Verify candidateRef points to the candidate select ref.
+	if pmi.GetCandidateRef() != candidateSelectRef {
+		t.Fatal("PartialMatch candidateRef does not match candidateSelectRef")
+	}
+
+	// Verify the alias map contains the quantifier mapping.
+	am := pmi.GetBoundAliasMap()
+	if am == nil || am.IsEmpty() {
+		t.Fatal("expected non-empty alias map")
+	}
+
+	// Verify parameter bindings.
+	rmi := pmi.GetRegularMatchInfo()
+	if rmi == nil {
+		t.Fatal("expected non-nil RegularMatchInfo")
+	}
+	pbm := rmi.GetParameterBindingMap()
+	cr, ok := pbm[alias0]
+	if !ok {
+		t.Fatalf("expected parameter binding for alias %v, got none", alias0)
+	}
+	if !cr.IsEquality() {
+		t.Fatalf("expected equality ComparisonRange for col0 = 5, got range type %v", cr.GetRangeType())
+	}
+}
+
+// TestMatchIntermediate_FilterSubsumedBySelect_MultiplePredicates
+// verifies that a query with two ComparisonPredicates (col0 = 5 AND
+// col1 > 10) correctly binds both candidate Placeholders.
+func TestMatchIntermediate_FilterSubsumedBySelect_MultiplePredicates(t *testing.T) {
+	t.Parallel()
+
+	// --- Query: Filter([col0 = 5, col1 > 10], Scan("T")) ---
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col1"},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	// --- Candidate: Select(qov, [ForEach(Scan("T"))], [Placeholder(a0, col0), Placeholder(a1, col1)]) ---
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+
+	alias0 := values.UniqueCorrelationIdentifier()
+	alias1 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	ph1 := predicates.NewPlaceholder(alias1, &values.FieldValue{Field: "col1"})
+
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0, ph1},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	traversal := NewTraversal(candidateSelectRef)
+
+	mc := &testMatchCandidate{name: "idx_col0_col1", traversal: traversal}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	// Seed leaf match.
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+
+	// Run intermediate rule.
+	intermediateRule := NewMatchIntermediateRule()
+	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+
+	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
+	if len(pms) == 0 {
+		t.Fatal("expected PartialMatch from multi-predicate subsumption, got 0")
+	}
+
+	rmi := pms[0].(*PartialMatchImpl).GetRegularMatchInfo()
+	pbm := rmi.GetParameterBindingMap()
+
+	// Verify alias0 binding: equality.
+	cr0, ok := pbm[alias0]
+	if !ok {
+		t.Fatalf("expected parameter binding for alias %v (col0)", alias0)
+	}
+	if !cr0.IsEquality() {
+		t.Fatalf("col0: expected equality range, got %v", cr0.GetRangeType())
+	}
+
+	// Verify alias1 binding: inequality.
+	cr1, ok := pbm[alias1]
+	if !ok {
+		t.Fatalf("expected parameter binding for alias %v (col1)", alias1)
+	}
+	if !cr1.IsInequality() {
+		t.Fatalf("col1: expected inequality range, got %v", cr1.GetRangeType())
+	}
+}
+
+// TestMatchIntermediate_FilterSubsumedBySelect_UnmatchedPlaceholder
+// verifies that a candidate Placeholder for a column not filtered by
+// the query gets an empty (unconstrained) ComparisonRange binding.
+func TestMatchIntermediate_FilterSubsumedBySelect_UnmatchedPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	// Query: Filter([col0 = 5], Scan("T"))
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	// Candidate: Select(..., [Placeholder(a0, col0), Placeholder(a2, col2)])
+	// col2 is NOT in the query predicates.
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+
+	alias0 := values.UniqueCorrelationIdentifier()
+	alias2 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+	ph2 := predicates.NewPlaceholder(alias2, &values.FieldValue{Field: "col2"})
+
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0, ph2},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	traversal := NewTraversal(candidateSelectRef)
+
+	mc := &testMatchCandidate{name: "idx_col0_col2", traversal: traversal}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+
+	intermediateRule := NewMatchIntermediateRule()
+	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+
+	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
+	if len(pms) == 0 {
+		t.Fatal("expected PartialMatch even with unmatched Placeholder, got 0")
+	}
+
+	rmi := pms[0].(*PartialMatchImpl).GetRegularMatchInfo()
+	pbm := rmi.GetParameterBindingMap()
+
+	// alias0 should be bound (equality).
+	cr0, ok := pbm[alias0]
+	if !ok {
+		t.Fatal("expected parameter binding for alias0 (col0)")
+	}
+	if !cr0.IsEquality() {
+		t.Fatalf("col0: expected equality range, got %v", cr0.GetRangeType())
+	}
+
+	// alias2 should be unbound (empty range).
+	cr2, ok := pbm[alias2]
+	if !ok {
+		t.Fatal("expected parameter binding for alias2 (col2) — even if empty")
+	}
+	if !cr2.IsEmpty() {
+		t.Fatalf("col2: expected empty (unconstrained) range, got %v", cr2.GetRangeType())
+	}
+}
+
+// TestMatchIntermediate_FilterSubsumedBySelect_NoColumnMatch verifies
+// that when a query filters on col_x but the candidate's only
+// Placeholder is for col0, the subsumption still succeeds (the
+// Placeholder is unbound) — the scan-level match still exists, and
+// the index can be used with a full scan + residual filter.
+func TestMatchIntermediate_FilterSubsumedBySelect_NoColumnMatch(t *testing.T) {
+	t.Parallel()
+
+	// Query: Filter([col_x = 42], Scan("T"))
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col_x"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	// Candidate: Select(..., [Placeholder(a0, col0)])
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+
+	alias0 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	traversal := NewTraversal(candidateSelectRef)
+
+	mc := &testMatchCandidate{name: "idx_col0", traversal: traversal}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	leafRule := NewMatchLeafRule()
+	FireExpressionRuleWithMemo(leafRule, queryScanRef, ctx, nil)
+
+	intermediateRule := NewMatchIntermediateRule()
+	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+
+	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
+	if len(pms) == 0 {
+		t.Fatal("expected PartialMatch even when no column matches — Placeholder stays unbound")
+	}
+
+	rmi := pms[0].(*PartialMatchImpl).GetRegularMatchInfo()
+	pbm := rmi.GetParameterBindingMap()
+
+	// The Placeholder for col0 is unbound — empty range.
+	cr0, ok := pbm[alias0]
+	if !ok {
+		t.Fatal("expected parameter binding for alias0 (col0) — even if empty")
+	}
+	if !cr0.IsEmpty() {
+		t.Fatalf("col0: expected empty range (no column match), got %v", cr0.GetRangeType())
+	}
+}
+
+// TestMatchIntermediate_FilterSubsumedBySelect_NoChildMatch verifies
+// that the filter-vs-select subsumption requires a child PartialMatch
+// on the scan. Without seeding a leaf match, no intermediate match
+// should be created.
+func TestMatchIntermediate_FilterSubsumedBySelect_NoChildMatch(t *testing.T) {
+	t.Parallel()
+
+	// Query: Filter([col0 = 5], Scan("T"))
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanQ := expressions.ForEachQuantifier(queryScanRef)
+
+	queryFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "col0"},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5)),
+			),
+		},
+		queryScanQ,
+	)
+	queryFilterRef := expressions.InitialOf(queryFilter)
+
+	// Candidate: Select(..., [Placeholder(a0, col0)])
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+
+	alias0 := values.UniqueCorrelationIdentifier()
+	ph0 := predicates.NewPlaceholder(alias0, &values.FieldValue{Field: "col0"})
+
+	candidateSelect := expressions.NewSelectExpression(
+		values.NewRecordConstructorValue(),
+		[]expressions.Quantifier{candidateScanQ},
+		[]predicates.QueryPredicate{ph0},
+	)
+	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	traversal := NewTraversal(candidateSelectRef)
+
+	mc := &testMatchCandidate{name: "idx_col0", traversal: traversal}
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{mc}}
+
+	// Do NOT seed the leaf match.
+
+	intermediateRule := NewMatchIntermediateRule()
+	FireExpressionRuleWithMemo(intermediateRule, queryFilterRef, ctx, nil)
+
+	pms := GetPartialMatchesForCandidate(queryFilterRef, mc)
+	if len(pms) != 0 {
+		t.Fatalf("expected 0 PartialMatches without child scan match, got %d", len(pms))
+	}
+}
+
 // TestMatchIntermediateRule_PartialMatchFields verifies the detailed
 // fields of the PartialMatch created by the intermediate rule.
 func TestMatchIntermediateRule_PartialMatchFields(t *testing.T) {
