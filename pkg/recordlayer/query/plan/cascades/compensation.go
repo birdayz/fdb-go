@@ -101,6 +101,43 @@ type CompensatedResult struct {
 	GroupByMappings      *GroupByMappings
 }
 
+// ComputeResultCompensation computes the result compensation for the
+// top operation's partial match. Ports Java's
+// Compensation.computeResultCompensation.
+func ComputeResultCompensation(pm PartialMatch, rootOfMatchPullUp *PullUp) *CompensatedResult {
+	matchInfo := pm.GetMatchInfo()
+
+	if rootOfMatchPullUp == nil {
+		return &CompensatedResult{
+			Impossible:           false,
+			ResultCompensationFn: NoResultCompensation(),
+			GroupByMappings:      EmptyGroupByMappings(),
+		}
+	}
+
+	mmm := matchInfo.GetRegularMatchInfo().GetMaxMatchMap()
+	if mmm == nil {
+		return nil
+	}
+	pulledUp := rootOfMatchPullUp.PullUpValueMaybe(mmm.GetQueryValue())
+	if pulledUp == nil {
+		return nil
+	}
+
+	var rcf *ResultCompensationFunction
+	if qov, ok := pulledUp.(*values.QuantifiedObjectValue); ok && qov.Correlation == rootOfMatchPullUp.GetCandidateAlias() {
+		rcf = NoResultCompensation()
+	} else {
+		rcf = ResultCompensationOfValue(pulledUp)
+	}
+
+	return &CompensatedResult{
+		Impossible:           rcf.IsImpossible(),
+		ResultCompensationFn: rcf,
+		GroupByMappings:      EmptyGroupByMappings(),
+	}
+}
+
 // IntersectCompensations folds a slice of Compensations via the
 // intersection monoid. The identity element is ImpossibleCompensation.
 // Ports Java's `compensations.stream().reduce(impossibleCompensation, Compensation::intersect)`.
