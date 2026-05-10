@@ -151,3 +151,96 @@ func execOrFail(b *testing.B, db *sql.DB, ctx context.Context, sql string) {
 		b.Fatalf("exec %q: %v", sql, err)
 	}
 }
+
+// BenchmarkFDB_TimestampInsert measures INSERT throughput into a table with a
+// TIMESTAMP column and a secondary index on that column.
+func BenchmarkFDB_TimestampInsert(b *testing.B) {
+	if clusterFilePath == "" {
+		b.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	seq := benchSeq.Add(1)
+	dbPath := fmt.Sprintf("/bench_ts_ins_%d", seq)
+	tmpl := fmt.Sprintf("bench_ts_insert_tmpl_%d", seq)
+
+	setup := openBenchDB(b, dbPath)
+	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, label STRING, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_events_ts ON Events (ts)", tmpl))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ts := fmt.Sprintf("2025-01-01 00:00:%02d", i%60)
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Events VALUES (%d, '%s', 'evt_%d')", i+1, ts, i+1))
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkFDB_TimestampRangeScan measures SELECT COUNT(*) with a TIMESTAMP
+// range predicate on a pre-populated table with a secondary index on the
+// timestamp column.
+func BenchmarkFDB_TimestampRangeScan(b *testing.B) {
+	if clusterFilePath == "" {
+		b.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	seq := benchSeq.Add(1)
+	dbPath := fmt.Sprintf("/bench_ts_range_%d", seq)
+	tmpl := fmt.Sprintf("bench_ts_range_tmpl_%d", seq)
+
+	setup := openBenchDB(b, dbPath)
+	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, label STRING, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_events_ts ON Events (ts)", tmpl))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Pre-populate with 100 rows.
+	for i := int64(1); i <= 100; i++ {
+		ts := fmt.Sprintf("2025-06-%02d 12:00:00", (i%28)+1)
+		execOrFail(b, db, ctx,
+			fmt.Sprintf("INSERT INTO Events VALUES (%d, '%s', 'evt_%d')", i, ts, i))
+	}
+
+	query := "SELECT COUNT(*) FROM Events WHERE ts > '2025-06-14 00:00:00'"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+		for rows.Next() {
+			var cnt int64
+			if err := rows.Scan(&cnt); err != nil {
+				b.Fatalf("scan: %v", err)
+			}
+		}
+		rows.Close()
+	}
+}
