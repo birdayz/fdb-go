@@ -744,13 +744,12 @@ func predicateMappingsEquivalent(a, b *PredicateMapping) bool {
 	if (a.constraint == nil) != (b.constraint == nil) {
 		return false
 	}
-	// Compare candidate predicates by Explain() — a rough semantic check.
 	cp1 := a.GetCandidatePredicate()
 	cp2 := b.GetCandidatePredicate()
 	if cp1 == nil || cp2 == nil {
 		return cp1 == cp2
 	}
-	return cp1.Explain() == cp2.Explain()
+	return predicates.StructurallyEqual(cp1, cp2)
 }
 
 // Build constructs the PredicateMap. Panics if there are conflicts or

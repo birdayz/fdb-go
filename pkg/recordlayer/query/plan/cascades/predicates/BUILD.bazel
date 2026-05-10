@@ -12,6 +12,7 @@ go_library(
         "predicates.go",
         "rebase.go",
         "simplifier_predicate_values.go",
+        "structural_equal.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates",
     visibility = ["//visibility:public"],
