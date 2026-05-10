@@ -343,6 +343,7 @@ go_test(
         "translation_map_test.go",
         "traversal_test.go",
         "value_equivalence_test.go",
+        "value_semantic_equals_test.go",
         "wrap_physical_plan_test.go",
     ],
     data = glob(["testdata/**"]),

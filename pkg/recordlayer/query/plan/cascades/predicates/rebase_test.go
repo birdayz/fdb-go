@@ -167,3 +167,46 @@ func TestRebasePredicate_Nil(t *testing.T) {
 		t.Fatal("nil predicate should return nil")
 	}
 }
+
+func TestRebasePredicate_Placeholder(t *testing.T) {
+	t.Parallel()
+	oldAlias := values.NamedCorrelationIdentifier("param_old")
+	newAlias := values.NamedCorrelationIdentifier("param_new")
+	oldValAlias := values.NamedCorrelationIdentifier("q_old")
+	newValAlias := values.NamedCorrelationIdentifier("q_new")
+	p := &Placeholder{
+		ParameterAlias: oldAlias,
+		Value:          &values.QuantifiedObjectValue{Correlation: oldValAlias},
+		CompRange:      EmptyComparisonRange(),
+	}
+	result := RebasePredicate(p, values.AliasMap{oldAlias: newAlias, oldValAlias: newValAlias})
+	ph, ok := result.(*Placeholder)
+	if !ok {
+		t.Fatalf("expected *Placeholder, got %T", result)
+	}
+	if ph.ParameterAlias != newAlias {
+		t.Fatalf("expected ParameterAlias %v, got %v", newAlias, ph.ParameterAlias)
+	}
+	qov, ok := ph.Value.(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected QOV value, got %T", ph.Value)
+	}
+	if qov.Correlation != newValAlias {
+		t.Fatalf("expected value correlation %v, got %v", newValAlias, qov.Correlation)
+	}
+}
+
+func TestRebasePredicate_PlaceholderNoChange(t *testing.T) {
+	t.Parallel()
+	p := &Placeholder{
+		ParameterAlias: values.NamedCorrelationIdentifier("param"),
+		Value:          &values.FieldValue{Field: "X"},
+		CompRange:      EmptyComparisonRange(),
+	}
+	result := RebasePredicate(p, values.AliasMap{
+		values.NamedCorrelationIdentifier("other"): values.NamedCorrelationIdentifier("new"),
+	})
+	if result != p {
+		t.Fatal("placeholder with no matching aliases should return same pointer")
+	}
+}
