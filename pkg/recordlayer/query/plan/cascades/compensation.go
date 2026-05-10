@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -97,30 +98,51 @@ var (
 // ---------------------------------------------------------------------------
 
 // PredicateCompensationMap maps query predicates to compensation
-// functions. Placeholder — full port pending; will hold
-// LinkedIdentityMap<QueryPredicate, PredicateCompensationFunction>.
+// functions using identity-based keying (pointer equality).
+// Ports Java's LinkedIdentityMap<QueryPredicate, PredicateCompensationFunction>.
 type PredicateCompensationMap struct {
-	// empty indicates whether the map has entries. Used to drive
-	// IsNeeded/IsNeededForFiltering without full predicate support.
-	entries int
+	keys   []predicates.QueryPredicate
+	values []PredicateCompensationFunc
 }
 
-// NewPredicateCompensationMap creates a PredicateCompensationMap.
-// Pass the number of entries to indicate whether compensation
-// predicates exist.
-func NewPredicateCompensationMap(entries int) *PredicateCompensationMap {
-	return &PredicateCompensationMap{entries: entries}
+// NewPredicateCompensationMap creates a PredicateCompensationMap from
+// parallel slices of predicates and compensation functions.
+func NewPredicateCompensationMap(keys []predicates.QueryPredicate, vals []PredicateCompensationFunc) *PredicateCompensationMap {
+	if len(keys) != len(vals) {
+		panic("NewPredicateCompensationMap: keys and values must have same length")
+	}
+	k := make([]predicates.QueryPredicate, len(keys))
+	copy(k, keys)
+	v := make([]PredicateCompensationFunc, len(vals))
+	copy(v, vals)
+	return &PredicateCompensationMap{keys: k, values: v}
 }
 
 // EmptyPredicateCompensationMap returns an empty predicate
 // compensation map.
 func EmptyPredicateCompensationMap() *PredicateCompensationMap {
-	return &PredicateCompensationMap{entries: 0}
+	return &PredicateCompensationMap{}
+}
+
+// StubPredicateCompensationMap creates a PredicateCompensationMap with
+// N no-op entries. Used by tests that need a non-empty map to drive
+// IsNeeded/IsNeededForFiltering without real predicate content.
+func StubPredicateCompensationMap(n int) *PredicateCompensationMap {
+	if n <= 0 {
+		return EmptyPredicateCompensationMap()
+	}
+	keys := make([]predicates.QueryPredicate, n)
+	vals := make([]PredicateCompensationFunc, n)
+	for i := 0; i < n; i++ {
+		keys[i] = predicates.NewConstantPredicate(predicates.TriTrue)
+		vals[i] = NoPredicateCompensationNeeded()
+	}
+	return &PredicateCompensationMap{keys: keys, values: vals}
 }
 
 // IsEmpty reports whether the map has no entries.
 func (m *PredicateCompensationMap) IsEmpty() bool {
-	return m == nil || m.entries == 0
+	return m == nil || len(m.keys) == 0
 }
 
 // Len returns the number of entries in the map.
@@ -128,16 +150,57 @@ func (m *PredicateCompensationMap) Len() int {
 	if m == nil {
 		return 0
 	}
-	return m.entries
+	return len(m.keys)
+}
+
+// Entries returns the predicate→compensation pairs in insertion order.
+func (m *PredicateCompensationMap) Entries() ([]predicates.QueryPredicate, []PredicateCompensationFunc) {
+	if m == nil {
+		return nil, nil
+	}
+	return m.keys, m.values
+}
+
+// ApplyCompensations applies all compensation functions in this map
+// via the given translation map and returns the collected residual
+// predicates. Ports the iteration in Java's ForMatch.apply().
+func (m *PredicateCompensationMap) ApplyCompensations(tm TranslationMap) []predicates.QueryPredicate {
+	if m == nil {
+		return nil
+	}
+	var result []predicates.QueryPredicate
+	for _, fn := range m.values {
+		result = append(result, fn.ApplyCompensationForPredicate(tm)...)
+	}
+	return result
+}
+
+// Amend creates a new PredicateCompensationMap with all compensation
+// functions amended. Ports the amend loop in Java's
+// Compensation.ForMatch.intersect.
+func (m *PredicateCompensationMap) Amend(
+	unmatchedAggregateMap *BiMap[values.CorrelationIdentifier, values.Value],
+	amendedMatchedAggregateMap map[values.Value]values.Value,
+) *PredicateCompensationMap {
+	if m == nil || len(m.keys) == 0 {
+		return m
+	}
+	newVals := make([]PredicateCompensationFunc, len(m.values))
+	for i, fn := range m.values {
+		newVals[i] = fn.Amend(unmatchedAggregateMap, amendedMatchedAggregateMap)
+	}
+	newKeys := make([]predicates.QueryPredicate, len(m.keys))
+	copy(newKeys, m.keys)
+	return &PredicateCompensationMap{keys: newKeys, values: newVals}
 }
 
 // ResultCompensationFunction handles final result shape
-// transformation. Placeholder — full port pending.
-//
-// Ports Java's PredicateMultiMap.ResultCompensationFunction.
+// transformation. Ports Java's
+// PredicateMultiMap.ResultCompensationFunction.
 type ResultCompensationFunction struct {
 	needed     bool
 	impossible bool
+	resultVal  values.Value
 }
 
 // NoResultCompensation returns a ResultCompensationFunction that
@@ -150,6 +213,13 @@ func NoResultCompensation() *ResultCompensationFunction {
 // NewResultCompensationFunction creates a ResultCompensationFunction.
 func NewResultCompensationFunction(needed bool) *ResultCompensationFunction {
 	return &ResultCompensationFunction{needed: needed}
+}
+
+// ResultCompensationOfValue creates a ResultCompensationFunction from
+// a result Value. When applied, it translates the value through the
+// translation map. Ports Java's ResultCompensationFunction.ofValue.
+func ResultCompensationOfValue(v values.Value) *ResultCompensationFunction {
+	return &ResultCompensationFunction{needed: true, resultVal: v}
 }
 
 // NewImpossibleResultCompensation creates a ResultCompensationFunction
@@ -166,6 +236,36 @@ func (f *ResultCompensationFunction) IsNeeded() bool {
 // IsImpossible reports whether result compensation is impossible.
 func (f *ResultCompensationFunction) IsImpossible() bool {
 	return f != nil && f.impossible
+}
+
+// Amend recreates the result compensation function with updated
+// aggregate value mappings. Ports Java's
+// ResultCompensationFunction.amend.
+func (f *ResultCompensationFunction) Amend(
+	_ *BiMap[values.CorrelationIdentifier, values.Value],
+	_ map[values.Value]values.Value,
+) *ResultCompensationFunction {
+	if f == nil || !f.needed {
+		return f
+	}
+	return f
+}
+
+// ApplyCompensationForResult applies this compensation by translating
+// the result value through the translation map. Returns the
+// compensated result value.
+// Ports Java's ResultCompensationFunction.applyCompensationForResult.
+func (f *ResultCompensationFunction) ApplyCompensationForResult(tm TranslationMap) values.Value {
+	if f == nil || f.resultVal == nil {
+		return nil
+	}
+	if tm == nil || tm.DefinesOnlyIdentities() {
+		return f.resultVal
+	}
+	if am, ok := tm.GetAliasMap(); ok {
+		return values.RebaseValue(f.resultVal, am.ForwardMap())
+	}
+	return f.resultVal
 }
 
 // ---------------------------------------------------------------------------

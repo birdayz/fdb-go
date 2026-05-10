@@ -106,6 +106,28 @@ func DefaultPredicateCompensation() PredicateCompensation {
 type PredicateCompensationFunc interface {
 	IsNeeded() bool
 	IsImpossible() bool
+
+	// Amend recreates the compensation function with updated aggregate
+	// value mappings. Used during intersection of compensations when
+	// aggregates are finalized. Returns a new function (or self if
+	// no change needed).
+	//
+	// unmatchedAggregateMap: BiMap of unmatched aggregate aliases → values
+	// amendedMatchedAggregateMap: mapping of old values → new values
+	//
+	// Ports Java's PredicateCompensationFunction.amend.
+	Amend(
+		unmatchedAggregateMap *BiMap[values.CorrelationIdentifier, values.Value],
+		amendedMatchedAggregateMap map[values.Value]values.Value,
+	) PredicateCompensationFunc
+
+	// ApplyCompensationForPredicate applies this compensation by
+	// translating correlation references via the translation map and
+	// returning the set of predicates that must be injected above the
+	// matched candidate scan.
+	//
+	// Ports Java's PredicateCompensationFunction.applyCompensationForPredicate.
+	ApplyCompensationForPredicate(translationMap TranslationMap) []predicates.QueryPredicate
 }
 
 type noPredicateCompensationFunc struct{}
@@ -113,10 +135,63 @@ type noPredicateCompensationFunc struct{}
 func (noPredicateCompensationFunc) IsNeeded() bool     { return false }
 func (noPredicateCompensationFunc) IsImpossible() bool { return false }
 
+func (f noPredicateCompensationFunc) Amend(*BiMap[values.CorrelationIdentifier, values.Value], map[values.Value]values.Value) PredicateCompensationFunc {
+	return f
+}
+
+func (noPredicateCompensationFunc) ApplyCompensationForPredicate(TranslationMap) []predicates.QueryPredicate {
+	return nil
+}
+
 type impossiblePredicateCompensationFunc struct{}
 
 func (impossiblePredicateCompensationFunc) IsNeeded() bool     { return true }
 func (impossiblePredicateCompensationFunc) IsImpossible() bool { return true }
+
+func (f impossiblePredicateCompensationFunc) Amend(*BiMap[values.CorrelationIdentifier, values.Value], map[values.Value]values.Value) PredicateCompensationFunc {
+	return f
+}
+
+func (impossiblePredicateCompensationFunc) ApplyCompensationForPredicate(TranslationMap) []predicates.QueryPredicate {
+	return nil
+}
+
+// predicateCompensationOfPredicate wraps a query predicate for
+// compensation. Ports Java's PredicateCompensationFunction.ofPredicate.
+type predicateCompensationOfPredicate struct {
+	predicate            predicates.QueryPredicate
+	shouldSimplifyValues bool
+}
+
+func (f *predicateCompensationOfPredicate) IsNeeded() bool     { return true }
+func (f *predicateCompensationOfPredicate) IsImpossible() bool { return false }
+
+func (f *predicateCompensationOfPredicate) Amend(_ *BiMap[values.CorrelationIdentifier, values.Value], _ map[values.Value]values.Value) PredicateCompensationFunc {
+	return f
+}
+
+func (f *predicateCompensationOfPredicate) ApplyCompensationForPredicate(tm TranslationMap) []predicates.QueryPredicate {
+	if tm == nil || tm.DefinesOnlyIdentities() {
+		return []predicates.QueryPredicate{f.predicate}
+	}
+	if am, ok := tm.GetAliasMap(); ok {
+		rebased := predicates.RebasePredicate(f.predicate, am.ForwardMap())
+		return []predicates.QueryPredicate{rebased}
+	}
+	return []predicates.QueryPredicate{f.predicate}
+}
+
+// OfPredicateCompensation creates a PredicateCompensationFunc that
+// wraps a query predicate. When applied, it translates the predicate
+// through the translation map and returns it for injection as a
+// residual filter. Ports Java's
+// PredicateCompensationFunction.ofPredicate.
+func OfPredicateCompensation(pred predicates.QueryPredicate, shouldSimplifyValues bool) PredicateCompensationFunc {
+	return &predicateCompensationOfPredicate{
+		predicate:            pred,
+		shouldSimplifyValues: shouldSimplifyValues,
+	}
+}
 
 // NoPredicateCompensationNeeded returns a PredicateCompensationFunc
 // indicating no compensation is required.

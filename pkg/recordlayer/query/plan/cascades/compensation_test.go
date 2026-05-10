@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -64,7 +65,7 @@ func TestForMatchCompensation_Construction(t *testing.T) {
 		q1.GetAlias(): {},
 	}
 
-	predMap := NewPredicateCompensationMap(1)
+	predMap := StubPredicateCompensationMap(1)
 	resultFn := NewResultCompensationFunction(true)
 	gbm := EmptyGroupByMappings()
 
@@ -111,7 +112,7 @@ func TestForMatchCompensation_IsNeeded_WithPredicates(t *testing.T) {
 	c := NewForMatchCompensation(
 		false,
 		NoCompensation,
-		NewPredicateCompensationMap(1),
+		StubPredicateCompensationMap(1),
 		nil,
 		nil,
 		nil,
@@ -129,7 +130,7 @@ func TestForMatchCompensation_IsNeeded_ChildNeeded(t *testing.T) {
 	child := NewForMatchCompensation(
 		false,
 		NoCompensation,
-		NewPredicateCompensationMap(1),
+		StubPredicateCompensationMap(1),
 		nil,
 		nil,
 		nil,
@@ -331,7 +332,7 @@ func TestForMatchCompensation_IsNeededForFiltering(t *testing.T) {
 	c2 := NewForMatchCompensation(
 		false,
 		NoCompensation,
-		NewPredicateCompensationMap(2),
+		StubPredicateCompensationMap(2),
 		nil,
 		nil,
 		nil,
@@ -419,7 +420,7 @@ func TestForMatchCompensation_String(t *testing.T) {
 	c := NewForMatchCompensation(
 		false,
 		NoCompensation,
-		NewPredicateCompensationMap(1),
+		StubPredicateCompensationMap(1),
 		nil,
 		nil,
 		nil,
@@ -434,7 +435,7 @@ func TestForMatchCompensation_String(t *testing.T) {
 	c2 := NewForMatchCompensation(
 		true,
 		NoCompensation,
-		NewPredicateCompensationMap(1),
+		StubPredicateCompensationMap(1),
 		nil,
 		nil,
 		nil,
@@ -471,7 +472,7 @@ func TestForMatchCompensation_Derived(t *testing.T) {
 	parent := NewForMatchCompensation(
 		false,
 		NoCompensation,
-		NewPredicateCompensationMap(1),
+		StubPredicateCompensationMap(1),
 		[]expressions.Quantifier{q1},
 		nil,
 		nil,
@@ -481,7 +482,7 @@ func TestForMatchCompensation_Derived(t *testing.T) {
 
 	derived := parent.Derived(
 		false,
-		NewPredicateCompensationMap(2),
+		StubPredicateCompensationMap(2),
 		[]expressions.Quantifier{q2},
 		nil,
 		nil,
@@ -529,7 +530,7 @@ func TestDerivedCompensation_FromNoCompensation(t *testing.T) {
 	derived := DerivedCompensation(
 		NoCompensation,
 		false,
-		NewPredicateCompensationMap(1),
+		StubPredicateCompensationMap(1),
 		[]expressions.Quantifier{q},
 		nil,
 		nil,
@@ -602,7 +603,7 @@ func TestPredicateCompensationMap(t *testing.T) {
 		t.Fatalf("expected 0, got %d", empty.Len())
 	}
 
-	withEntries := NewPredicateCompensationMap(3)
+	withEntries := StubPredicateCompensationMap(3)
 	if withEntries.IsEmpty() {
 		t.Fatal("map with 3 entries should not be empty")
 	}
@@ -678,4 +679,247 @@ func TestCompensationInterfaceSatisfaction(t *testing.T) {
 	)
 	// Verify it satisfies Compensation — the assignment above is the check.
 	_ = c
+}
+
+// --- New PredicateCompensationFunc tests ---
+
+func TestPredicateCompensationFunc_NoCompensation(t *testing.T) {
+	t.Parallel()
+	f := NoPredicateCompensationNeeded()
+	if f.IsNeeded() {
+		t.Fatal("should not be needed")
+	}
+	if f.IsImpossible() {
+		t.Fatal("should not be impossible")
+	}
+	amended := f.Amend(nil, nil)
+	if amended.IsNeeded() {
+		t.Fatal("amended should not be needed")
+	}
+	preds := f.ApplyCompensationForPredicate(nil)
+	if len(preds) != 0 {
+		t.Fatalf("expected 0 predicates, got %d", len(preds))
+	}
+}
+
+func TestPredicateCompensationFunc_Impossible(t *testing.T) {
+	t.Parallel()
+	f := ImpossiblePredicateCompensation()
+	if !f.IsNeeded() {
+		t.Fatal("should be needed")
+	}
+	if !f.IsImpossible() {
+		t.Fatal("should be impossible")
+	}
+	amended := f.Amend(nil, nil)
+	if !amended.IsImpossible() {
+		t.Fatal("amended should still be impossible")
+	}
+	preds := f.ApplyCompensationForPredicate(nil)
+	if len(preds) != 0 {
+		t.Fatalf("expected 0 predicates from impossible, got %d", len(preds))
+	}
+}
+
+func TestOfPredicateCompensation_Identity(t *testing.T) {
+	t.Parallel()
+	pred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "X"},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(5)},
+		},
+	}
+	f := OfPredicateCompensation(pred, false)
+	if !f.IsNeeded() {
+		t.Fatal("should be needed")
+	}
+	if f.IsImpossible() {
+		t.Fatal("should not be impossible")
+	}
+
+	// Apply with nil translation → returns original predicate.
+	preds := f.ApplyCompensationForPredicate(nil)
+	if len(preds) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(preds))
+	}
+	if preds[0] != pred {
+		t.Fatal("expected same predicate instance")
+	}
+}
+
+func TestOfPredicateCompensation_WithAliasRebase(t *testing.T) {
+	t.Parallel()
+	srcAlias := values.NamedCorrelationIdentifier("src")
+	tgtAlias := values.NamedCorrelationIdentifier("tgt")
+
+	pred := &predicates.ComparisonPredicate{
+		Operand: values.NewQuantifiedObjectValue(srcAlias),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(10)},
+		},
+	}
+	f := OfPredicateCompensation(pred, false)
+
+	tm := TranslationMapOfAliases(srcAlias, tgtAlias)
+	preds := f.ApplyCompensationForPredicate(tm)
+	if len(preds) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(preds))
+	}
+	// The rebased predicate should reference tgtAlias.
+	cp, ok := preds[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", preds[0])
+	}
+	qov, ok := cp.Operand.(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected *QuantifiedObjectValue, got %T", cp.Operand)
+	}
+	if qov.Correlation != tgtAlias {
+		t.Errorf("operand alias = %s, want %s", qov.Correlation.Name(), tgtAlias.Name())
+	}
+}
+
+func TestOfPredicateCompensation_Amend(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	f := OfPredicateCompensation(pred, false)
+	amended := f.Amend(nil, nil)
+	if !amended.IsNeeded() {
+		t.Fatal("amended should still be needed")
+	}
+	if amended.IsImpossible() {
+		t.Fatal("amended should not be impossible")
+	}
+}
+
+// --- PredicateCompensationMap tests ---
+
+func TestPredicateCompensationMap_RealEntries(t *testing.T) {
+	t.Parallel()
+	p1 := predicates.NewConstantPredicate(predicates.TriTrue)
+	p2 := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "Y"},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(3)},
+		},
+	}
+	f1 := NoPredicateCompensationNeeded()
+	f2 := OfPredicateCompensation(p2, false)
+
+	m := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{p1, p2},
+		[]PredicateCompensationFunc{f1, f2},
+	)
+	if m.IsEmpty() {
+		t.Fatal("should not be empty")
+	}
+	if m.Len() != 2 {
+		t.Fatalf("expected 2, got %d", m.Len())
+	}
+
+	keys, vals := m.Entries()
+	if len(keys) != 2 || len(vals) != 2 {
+		t.Fatalf("entries: keys=%d vals=%d", len(keys), len(vals))
+	}
+}
+
+func TestPredicateCompensationMap_ApplyCompensations(t *testing.T) {
+	t.Parallel()
+	pred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "Z"},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(7)},
+		},
+	}
+	m := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{pred},
+		[]PredicateCompensationFunc{OfPredicateCompensation(pred, false)},
+	)
+
+	results := m.ApplyCompensations(nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 compensation predicate, got %d", len(results))
+	}
+}
+
+func TestPredicateCompensationMap_Amend(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	m := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{pred},
+		[]PredicateCompensationFunc{OfPredicateCompensation(pred, false)},
+	)
+	amended := m.Amend(nil, nil)
+	if amended.Len() != 1 {
+		t.Fatalf("amended should have 1 entry, got %d", amended.Len())
+	}
+}
+
+func TestPredicateCompensationMap_NilSafe(t *testing.T) {
+	t.Parallel()
+	var m *PredicateCompensationMap
+	if !m.IsEmpty() {
+		t.Fatal("nil map should be empty")
+	}
+	if m.Len() != 0 {
+		t.Fatal("nil map Len should be 0")
+	}
+	results := m.ApplyCompensations(nil)
+	if len(results) != 0 {
+		t.Fatalf("nil map should return 0 compensations, got %d", len(results))
+	}
+	amended := m.Amend(nil, nil)
+	if amended != m {
+		t.Fatal("nil amend should return same nil")
+	}
+}
+
+// --- ResultCompensationFunction tests ---
+
+func TestResultCompensation_OfValue(t *testing.T) {
+	t.Parallel()
+	v := &values.FieldValue{Field: "COL"}
+	f := ResultCompensationOfValue(v)
+	if !f.IsNeeded() {
+		t.Fatal("should be needed")
+	}
+	if f.IsImpossible() {
+		t.Fatal("should not be impossible")
+	}
+	result := f.ApplyCompensationForResult(nil)
+	if result != v {
+		t.Fatal("expected same value with nil translation")
+	}
+}
+
+func TestResultCompensation_ApplyWithRebase(t *testing.T) {
+	t.Parallel()
+	srcAlias := values.NamedCorrelationIdentifier("src")
+	tgtAlias := values.NamedCorrelationIdentifier("tgt")
+
+	v := values.NewQuantifiedObjectValue(srcAlias)
+	f := ResultCompensationOfValue(v)
+
+	tm := TranslationMapOfAliases(srcAlias, tgtAlias)
+	result := f.ApplyCompensationForResult(tm)
+	qov, ok := result.(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected *QuantifiedObjectValue, got %T", result)
+	}
+	if qov.Correlation != tgtAlias {
+		t.Errorf("correlation = %s, want %s", qov.Correlation.Name(), tgtAlias.Name())
+	}
+}
+
+func TestResultCompensation_NilApply(t *testing.T) {
+	t.Parallel()
+	f := NoResultCompensation()
+	result := f.ApplyCompensationForResult(nil)
+	if result != nil {
+		t.Fatal("no compensation should return nil value")
+	}
 }
