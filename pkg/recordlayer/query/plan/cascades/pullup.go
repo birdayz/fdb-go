@@ -1,6 +1,9 @@
 package cascades
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+)
 
 // PullUp tracks how values are translated as matching walks up through
 // expression boundaries. Each PullUp level represents one candidate
@@ -87,4 +90,106 @@ func ForUnification(
 	rangedOverAliases map[values.CorrelationIdentifier]struct{},
 ) *PullUp {
 	return NewPullUp(nil, candidateAlias, pullThroughValue, rangedOverAliases)
+}
+
+// ForMatch creates a PullUp for the match case by visiting the
+// candidate expression to determine the pull-through value and
+// ranged-over aliases.
+//
+// Ports Java's PullUp.forMatch + PullUpVisitor.visit.
+func ForMatch(
+	parent *PullUp,
+	candidateAlias values.CorrelationIdentifier,
+	candidateExpression expressions.RelationalExpression,
+) *PullUp {
+	pullThroughValue, rangedOverAliases := visitForPullUp(candidateExpression)
+	return NewPullUp(parent, candidateAlias, pullThroughValue, rangedOverAliases)
+}
+
+// visitForPullUp implements the PullUpVisitor logic: extracts the
+// pull-through value and ranged-over aliases from a candidate
+// expression. Special-cases LogicalTypeFilterExpression (uses inner
+// quantifier's alias as the pull-through); all others use the
+// expression's result value.
+//
+// Ports Java's PullUpVisitor.visitLogicalTypeFilterExpression +
+// visitDefault.
+func visitForPullUp(expr expressions.RelationalExpression) (values.Value, map[values.CorrelationIdentifier]struct{}) {
+	rangedOver := quantifierAliases(expr.GetQuantifiers())
+
+	switch e := expr.(type) {
+	case *expressions.LogicalTypeFilterExpression:
+		inner := e.GetInner()
+		pullThrough := inner.GetFlowedObjectValue()
+		return pullThrough, rangedOver
+	default:
+		return expr.GetResultValue(), rangedOver
+	}
+}
+
+// quantifierAliases collects the aliases from a slice of Quantifiers.
+func quantifierAliases(qs []expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{}, len(qs))
+	for _, q := range qs {
+		result[q.GetAlias()] = struct{}{}
+	}
+	return result
+}
+
+// NestPullUp walks through the candidate reference chain to build a
+// nested PullUp chain. For each level, it visits the candidate
+// expression to determine the pull-through value. If the match info is
+// adjusted (wrapping another), it descends through the adjustment chain.
+//
+// Returns (rootOfMatchPullUp, currentPullUp). rootOfMatchPullUp is the
+// first MatchPullUp level created (the topmost match-specific pullup).
+//
+// Ports Java's PartialMatch.nestPullUp.
+func NestPullUp(
+	pm PartialMatch,
+	pullUp *PullUp,
+	candidateAlias values.CorrelationIdentifier,
+) (rootOfMatchPullUp *PullUp, currentPullUp *PullUp) {
+	currentPullUp = pullUp
+	currentCandidateRef := pm.GetCandidateRef()
+	currentMatchInfo := pm.GetMatchInfo()
+	currentCandidateAlias := candidateAlias
+
+	for {
+		if currentCandidateRef == nil {
+			break
+		}
+		members := currentCandidateRef.AllMembers()
+		if len(members) == 0 {
+			break
+		}
+		candidateExpr := members[0]
+
+		currentPullUp = ForMatch(currentPullUp, currentCandidateAlias, candidateExpr)
+		if rootOfMatchPullUp == nil {
+			rootOfMatchPullUp = currentPullUp
+		}
+
+		if !currentMatchInfo.IsAdjusted() {
+			break
+		}
+
+		qs := candidateExpr.GetQuantifiers()
+		if len(qs) != 1 {
+			break
+		}
+		currentCandidateAlias = qs[0].GetAlias()
+		currentCandidateRef = qs[0].GetRangesOver()
+
+		if adj, ok := currentMatchInfo.(*AdjustedMatchInfo); ok {
+			currentMatchInfo = adj.GetUnderlying()
+		} else {
+			break
+		}
+	}
+
+	if rootOfMatchPullUp == nil {
+		rootOfMatchPullUp = currentPullUp
+	}
+	return rootOfMatchPullUp, currentPullUp
 }
