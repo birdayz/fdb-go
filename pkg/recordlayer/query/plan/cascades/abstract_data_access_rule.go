@@ -68,9 +68,10 @@ func PrepareMatchesAndCompensations(
 		}
 
 		satisfying, scanDir := SatisfiesAnyRequestedOrderings(pm, requestedOrderings)
-		if satisfying == nil {
-			satisfying = make([]*RequestedOrdering, len(requestedOrderings))
-			copy(satisfying, requestedOrderings)
+		if satisfying == nil && len(requestedOrderings) > 0 {
+			// Requested orderings exist but the match satisfies none —
+			// skip this match. Ports Java's `if (satisfyingOrderingsPairOptional.isEmpty()) continue;`
+			continue
 		}
 		reverseScan := scanDir != nil && *scanDir == ScanDirectionReverse
 

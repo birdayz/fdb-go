@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -171,13 +172,13 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
 	coveredColumns := make(map[string]struct{}, len(c.columnNames))
 	for _, col := range c.columnNames {
-		coveredColumns[col] = struct{}{}
+		coveredColumns[strings.ToUpper(col)] = struct{}{}
 	}
 
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		switch v := value.(type) {
 		case *values.FieldValue:
-			if _, covered := coveredColumns[v.Field]; covered {
+			if _, covered := coveredColumns[strings.ToUpper(v.Field)]; covered {
 				return values.NewFieldValue(
 					values.NewQuantifiedObjectValue(targetAlias),
 					v.Field, v.Typ,

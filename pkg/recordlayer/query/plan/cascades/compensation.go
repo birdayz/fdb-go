@@ -750,6 +750,9 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 	if !rcf.IsNeeded() && !otherRcf.IsNeeded() {
 		newResultFn = NoResultCompensation()
 	} else {
+		if !rcf.IsNeeded() || !otherRcf.IsNeeded() {
+			panic("Compensation.Intersect: both sides must have result compensation or neither")
+		}
 		newResultFn = rcf.Amend(unmatchedAggMap, amendedMatchedAggMap)
 		isImpossible = isImpossible || newResultFn.IsImpossible()
 	}

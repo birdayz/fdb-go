@@ -208,9 +208,14 @@ func ComputeMaxMatchMapWithEquivalence(
 	// Run the recursive matching algorithm.
 	matchers := make([]*incrementalValueMatcher, 0, 8)
 	memoMap := make(map[values.Value]map[values.Value]matchResult) // identity-keyed in Go via pointer
+	var veArgs []ValueEquivalence
+	if valueEquivalence != nil {
+		veArgs = []ValueEquivalence{valueEquivalence}
+	}
 	resultsMap := recurseQueryResultValue(
 		queryValue, candidateValue, rangedOverAliases,
 		-1, matchers, math.MaxInt32, memoMap,
+		veArgs...,
 	)
 
 	// Pick the result with the minimum maxDepth.
@@ -315,6 +320,7 @@ func recurseQueryResultValue(
 	parentMatchers []*incrementalValueMatcher,
 	maxDepthBound int,
 	memoMap map[values.Value]map[values.Value]matchResult,
+	valueEquivalence ...ValueEquivalence,
 ) map[values.Value]matchResult {
 	if maxDepthBound == 0 {
 		return map[values.Value]matchResult{currentQueryValue: notMatched()}
@@ -384,11 +390,16 @@ func recurseQueryResultValue(
 		return allResults
 	}
 
+	var ve ValueEquivalence
+	if len(valueEquivalence) > 0 {
+		ve = valueEquivalence[0]
+	}
+
 	children := currentQueryValue.Children()
 	if len(children) == 0 {
 		// Leaf value: compute directly.
 		result := computeForCurrent(maxDepthBound, currentQueryValue, candidateValue,
-			rangedOverAliases, nil)
+			rangedOverAliases, nil, ve)
 		putResult(currentQueryValue, result)
 	} else {
 		// Try direct match if no parents are matching but current level
@@ -396,8 +407,8 @@ func recurseQueryResultValue(
 		// (no need to descend further).
 		directMatchFound := false
 		if !anyParentsMatching && isCurrentMatching {
-			if matched, candidateMatch := findMatchingReachableCandidate(
-				currentQueryValue, candidateValue); matched {
+			if matched, candidateMatch := findMatchingReachableCandidateWithEquivalence(
+				currentQueryValue, candidateValue, ve); matched {
 				vm := map[string]maxMatchEntry{
 					values.ExplainValue(currentQueryValue): {
 						queryValue:     currentQueryValue,
@@ -433,6 +444,7 @@ func recurseQueryResultValue(
 				childResultMap := recurseQueryResultValue(
 					child, candidateValue, rangedOverAliases,
 					i, localMatchers, childrenMaxDepthBound, memoMap,
+					valueEquivalence...,
 				)
 				entries := make([]childResultEntry, 0, len(childResultMap))
 				for v, r := range childResultMap {
@@ -467,7 +479,7 @@ func recurseQueryResultValue(
 				copy(childEntries, combo)
 
 				result := computeForCurrent(maxDepthBound, resultQueryValue,
-					candidateValue, rangedOverAliases, childEntries)
+					candidateValue, rangedOverAliases, childEntries, ve)
 				putResult(resultQueryValue, result)
 			})
 		}
@@ -482,6 +494,7 @@ func recurseQueryResultValue(
 			expandedResults := recurseQueryResultValue(
 				expanded, candidateValue, rangedOverAliases,
 				descendOrdinal, parentMatchers, maxDepthBound, memoMap,
+				valueEquivalence...,
 			)
 			for v, r := range expandedResults {
 				putResult(v, r)
@@ -545,10 +558,11 @@ func computeForCurrent(
 	candidateValue values.Value,
 	rangedOverAliases map[values.CorrelationIdentifier]struct{},
 	childEntries []childResultEntry,
+	ve ValueEquivalence,
 ) matchResult {
 	// Try direct match at this level first.
-	if matched, candidateMatch := findMatchingReachableCandidate(
-		resultQueryValue, candidateValue); matched {
+	if matched, candidateMatch := findMatchingReachableCandidateWithEquivalence(
+		resultQueryValue, candidateValue, ve); matched {
 		vm := map[string]maxMatchEntry{
 			values.ExplainValue(resultQueryValue): {
 				queryValue:     resultQueryValue,
