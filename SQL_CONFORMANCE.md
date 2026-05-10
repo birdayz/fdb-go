@@ -113,6 +113,7 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | BYTES | Y | Y | -- | FDB-specific, not ANSI |
 | DATE / TIMESTAMP / TIME | N | N | Y | Phase 5 TODO |
 | CREATE TABLE / INDEX | Y | Y | Y | |
+| Schema-qualified names (schema.table) | Y | Y | Y | Qualifier validated against current schema |
 | INFORMATION_SCHEMA | N | Ext | Y | Go extension |
 
 ## Error Code Conformance
