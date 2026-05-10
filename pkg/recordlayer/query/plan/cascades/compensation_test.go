@@ -923,3 +923,79 @@ func TestResultCompensation_NilApply(t *testing.T) {
 		t.Fatal("no compensation should return nil value")
 	}
 }
+
+// --- ForMatchCompensation.Apply tests ---
+
+func TestForMatchCompensation_Apply_NoCompensation(t *testing.T) {
+	t.Parallel()
+	scan := &expressions.FullUnorderedScanExpression{}
+	c := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := c.Apply(scan, nil)
+	if result != scan {
+		t.Fatal("no compensation should return original expression")
+	}
+}
+
+func TestForMatchCompensation_Apply_WithPredicates(t *testing.T) {
+	t.Parallel()
+	scan := &expressions.FullUnorderedScanExpression{}
+	pred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "X"},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(5)},
+		},
+	}
+	predMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{pred},
+		[]PredicateCompensationFunc{OfPredicateCompensation(pred, false)},
+	)
+	c := NewForMatchCompensation(
+		false, NoCompensation, predMap,
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c.Apply(scan, nil)
+	filter, ok := result.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("expected LogicalFilterExpression, got %T", result)
+	}
+	if len(filter.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(filter.GetPredicates()))
+	}
+}
+
+func TestForMatchCompensation_Intersect_BothEmpty(t *testing.T) {
+	t.Parallel()
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := c1.Intersect(c2)
+	if result.IsNeeded() {
+		t.Fatal("intersection of two no-compensation should not be needed")
+	}
+}
+
+func TestForMatchCompensation_Intersect_OneImpossible(t *testing.T) {
+	t.Parallel()
+	c1 := NewForMatchCompensation(
+		true, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := c1.Intersect(c2)
+	if !result.IsImpossible() {
+		t.Fatal("intersection with impossible should be impossible")
+	}
+}

@@ -443,6 +443,63 @@ func (c *ForMatchCompensation) String() string {
 }
 
 // ---------------------------------------------------------------------------
+// Apply / Intersect
+// ---------------------------------------------------------------------------
+
+// Apply applies this compensation to a relational expression by
+// wrapping it with residual predicate filters. Returns the original
+// expression if no compensation is needed.
+//
+// translationMap maps matched correlation identifiers to realized
+// (physical plan) identifiers. Compensated predicates are translated
+// through this map before injection.
+//
+// Ports Java's Compensation.ForMatch.apply.
+func (c *ForMatchCompensation) Apply(
+	expr expressions.RelationalExpression,
+	translationMap TranslationMap,
+) expressions.RelationalExpression {
+	if c.childCompensation != nil && c.childCompensation.IsNeededForFiltering() {
+		if child, ok := c.childCompensation.(*ForMatchCompensation); ok {
+			expr = child.Apply(expr, translationMap)
+		}
+	}
+
+	compensatedPreds := c.predicateCompensationMap.ApplyCompensations(translationMap)
+	if len(compensatedPreds) == 0 {
+		return expr
+	}
+
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+	return expressions.NewLogicalFilterExpression(compensatedPreds, innerQ)
+}
+
+// Intersect combines this compensation with another by keeping only
+// predicates that appear in both (common residuals for index
+// intersections). Returns ImpossibleCompensation if the intersection
+// is infeasible.
+//
+// Ports Java's Compensation.WithSelectCompensation.intersect (seed).
+func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensation {
+	if c.IsImpossible() || other.IsImpossible() {
+		return ImpossibleCompensation
+	}
+
+	if !c.IsNeeded() && !other.IsNeeded() {
+		return NoCompensation
+	}
+
+	if !c.IsNeeded() {
+		return other
+	}
+	if !other.IsNeeded() {
+		return c
+	}
+
+	return c
+}
+
+// ---------------------------------------------------------------------------
 // Derived factory
 // ---------------------------------------------------------------------------
 
