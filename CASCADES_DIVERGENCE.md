@@ -130,8 +130,8 @@ Go has full PlanPartition infrastructure: ToPlanPartitions, RollUpPlanPartitions
 ## PRIORITY ORDER FOR REMAINING 1:1 ALIGNMENT
 
 1. ~~**D-7** (multi-aggregate) — DONE~~
-2. **Scalar subqueries** — biggest user-visible gap. Needs DecorrelateValuesRule + SelectExpression. AliasMap + TranslationMap + MaxMatchMap foundations ready. ~2-3 shifts.
+2. **Scalar subqueries** — biggest user-visible gap. DecorrelateValuesRule landed (dayshift-85). Remaining: wire into SQL translator for `(SELECT MAX(v) FROM t)` patterns, correlated subquery infrastructure. ~1-2 shifts.
 3. ~~**D-8** (CardinalityProperty split) — DONE~~
 4. ~~**D-11** (ConstantObjectValue promotion) — DONE~~
-5. **D-2** (PushOrdering constraint vs structural) — 2-3 shifts
-6. **D-5** (InComparison architecture) — 2-3 shifts (M-1 + M-2 foundations now available)
+5. ~~**D-2** (PushOrdering constraint vs structural) — DONE~~
+6. ~~**D-5** (InComparison architecture) — DONE~~
