@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // ExpressionMatchAdjuster is an optional interface that a
@@ -180,9 +181,94 @@ func matchWithCandidate(pm *PartialMatchImpl, candidateExpr expressions.Relation
 		return adjuster.AdjustMatch(pm)
 	}
 
+	// MatchableSortExpression lives in the expressions package which
+	// cannot import cascades (circular dependency). Handle its
+	// adjustMatch logic here via type assertion.
+	if mse, ok := candidateExpr.(*expressions.MatchableSortExpression); ok {
+		return adjustMatchForMatchableSort(mse, pm)
+	}
+
 	// Default: Java's RelationalExpression.adjustMatch returns
 	// Optional.empty(). Most expressions cannot be absorbed.
 	return nil
+}
+
+// OrderingPartsComputer is an optional interface that MatchCandidate
+// implementations can satisfy to provide ordering-part computation
+// for MatchableSortExpression adjustment. The MatchCandidate interface
+// itself does not require this method because most seed candidates
+// don't yet need it.
+//
+// Ports the computeMatchedOrderingParts method from Java's
+// MatchCandidate / ValueIndexLikeMatchCandidate.
+type OrderingPartsComputer interface {
+	// ComputeMatchedOrderingParts computes matched ordering parts from
+	// this candidate's structure, the existing match info, the sort
+	// parameter IDs, and the reverse flag. Returns a list of
+	// MatchedOrderingParts describing the order of the outgoing data
+	// stream.
+	ComputeMatchedOrderingParts(
+		matchInfo MatchInfo,
+		sortParameterIDs []values.CorrelationIdentifier,
+		isReverse bool,
+	) []*MatchedOrderingPart
+}
+
+// adjustMatchForMatchableSort implements the adjustMatch logic for
+// MatchableSortExpression. This lives in the cascades package (not on
+// the expression type) because it needs PartialMatch, MatchInfo,
+// AdjustedBuilder, and MatchCandidate — all cascades types that the
+// expressions package cannot import.
+//
+// Ports Java's MatchableSortExpression.adjustMatch.
+func adjustMatchForMatchableSort(mse *expressions.MatchableSortExpression, pm *PartialMatchImpl) MatchInfo {
+	childMatchInfo := pm.GetMatchInfo()
+	maxMatchMap := childMatchInfo.GetMaxMatchMap()
+	if maxMatchMap == nil {
+		return nil
+	}
+
+	innerAlias := mse.GetInner().GetAlias()
+	rangedOver := map[values.CorrelationIdentifier]struct{}{innerAlias: {}}
+
+	adjustedMaxMatchMap, ok := maxMatchMap.AdjustMaybe(
+		innerAlias,
+		mse.GetResultValue(),
+		rangedOver,
+	)
+	if !ok {
+		return nil
+	}
+
+	// Compute matched ordering parts. Java delegates to
+	// matchCandidate.computeMatchedOrderingParts; if the candidate
+	// implements OrderingPartsComputer, use it. Otherwise, fall back
+	// to the child match info's existing ordering parts (no-op
+	// ordering adjustment).
+	var orderingParts []*MatchedOrderingPart
+	if computer, ok := pm.GetMatchCandidate().(OrderingPartsComputer); ok {
+		orderingParts = computer.ComputeMatchedOrderingParts(
+			childMatchInfo,
+			mse.GetSortParameterIDs(),
+			mse.IsReverse(),
+		)
+	} else {
+		orderingParts = childMatchInfo.GetMatchedOrderingParts()
+	}
+
+	// Java calls childMatchInfo.adjustGroupByMappings(inner) which
+	// pulls up candidate-side group-by values through the inner
+	// quantifier. The full pullUp infrastructure is not yet ported;
+	// pass through the child's group-by mappings unchanged. This is
+	// correct for non-aggregate indexes (which have empty group-by
+	// mappings) and will be refined when Value.pullUp lands.
+	groupByMappings := childMatchInfo.GetGroupByMappings()
+
+	return NewAdjustedBuilder(childMatchInfo).
+		SetMaxMatchMap(adjustedMaxMatchMap).
+		SetMatchedOrderingParts(orderingParts).
+		SetGroupByMappings(groupByMappings).
+		Build()
 }
 
 // correlatedToEquals checks whether a candidate expression's
