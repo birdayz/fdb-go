@@ -115,7 +115,7 @@ Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchInterm
 - ForMatchCompensation: Apply (wraps expression with residual filters) + Intersect (combines compensations for index intersections).
 - QueryPlanConstraint: ported from placeholder to full type (wraps QueryPredicate, IsTautology/IsConstrained).
 
-**Remaining:** Full recursive MaxMatchMap.compute (currently seed: structural equality + pairwise child recursion; Java does Cartesian-product variant generation for complex value tree alignments like reordered record constructor fields). Adequate for all current query patterns — upgrade when complex value matching surfaces real divergences.
+**Complete.** Full recursive MaxMatchMap.compute ported (dayshift-85): incrementalValueMatcher with lazy candidate tracking, cross-product children enumeration, memoization, branch-and-bound pruning via maxDepthBound. Only the Simplification variant-expansion step (MaxMatchMapSimplificationRuleSet) is deferred — it generates algebraically equivalent rewrites and requires a separate rule engine.
 
 ### M-3: PushReferencedFields rules — DONE (dayshift-85)
 
