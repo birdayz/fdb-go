@@ -39,20 +39,25 @@ func (r *MergeFetchIntoCoveringIndexRule) OnMatch(call *ImplementationRuleCall) 
 		return
 	}
 
-	// Check if the inner is a covering index scan.
+	// Check if the inner is a covering index scan marked as covering.
+	// In Java, this rule matches FetchPlan(CoveringIndexPlan(IndexPlan))
+	// where CoveringIndexPlan is an explicit wrapper indicating the
+	// index provides all needed columns. In Go, we check the index
+	// scan wrapper's `covering` flag (set by the data access pipeline
+	// when the index is known to cover all referenced fields).
 	var indexW *physicalIndexScanWrapper
 	for _, m := range innerRef.AllMembers() {
 		if iw, ok := m.(*physicalIndexScanWrapper); ok {
-			indexW = iw
-			break
+			if iw.covering {
+				indexW = iw
+				break
+			}
 		}
 	}
 	if indexW == nil {
 		return
 	}
 
-	// The covering index provides all needed columns — eliminate the
-	// fetch and yield the index scan directly.
 	call.Yield(indexW)
 }
 

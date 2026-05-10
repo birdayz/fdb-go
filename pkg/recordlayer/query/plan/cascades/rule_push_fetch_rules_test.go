@@ -15,7 +15,7 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	indexPlan := plans.NewRecordQueryIndexPlan(
 		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
 	)
-	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
+	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: true}
 	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
@@ -34,6 +34,32 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	}
 	if _, ok := yielded[0].(*physicalIndexScanWrapper); !ok {
 		t.Fatalf("expected physicalIndexScanWrapper, got %T", yielded[0])
+	}
+}
+
+func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonCoveringIndex(t *testing.T) {
+	t.Parallel()
+
+	indexPlan := plans.NewRecordQueryIndexPlan(
+		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
+	)
+	// NOT marked as covering — MergeFetch should NOT fire.
+	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: false}
+	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+
+	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		indexPlan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
+	)
+	fetchQ := expressions.ForEachQuantifier(indexRef)
+	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+
+	ref := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+
+	rule := NewMergeFetchIntoCoveringIndexRule()
+	yielded := FireImplementationRule(rule, ref)
+
+	if len(yielded) != 0 {
+		t.Fatalf("expected 0 yielded (non-covering index), got %d", len(yielded))
 	}
 }
 
