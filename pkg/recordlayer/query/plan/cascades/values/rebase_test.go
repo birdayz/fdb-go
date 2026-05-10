@@ -401,6 +401,43 @@ func TestRebaseValue_PickValue_Generic(t *testing.T) {
 	}
 }
 
+func TestRebaseValue_CorrelationRoundTrip(t *testing.T) {
+	t.Parallel()
+	oldA := NamedCorrelationIdentifier("a")
+	oldB := NamedCorrelationIdentifier("b")
+	newA := NamedCorrelationIdentifier("a_prime")
+	newB := NamedCorrelationIdentifier("b_prime")
+
+	tree := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &QuantifiedObjectValue{Correlation: oldA},
+		Right: &ScalarFunctionValue{FuncName: "F", Args: []Value{&QuantifiedObjectValue{Correlation: oldB}}, Typ: UnknownType},
+	}
+
+	before := GetCorrelatedToOfValue(tree)
+	if _, ok := before[oldA]; !ok {
+		t.Fatal("before: missing oldA")
+	}
+	if _, ok := before[oldB]; !ok {
+		t.Fatal("before: missing oldB")
+	}
+
+	rebased := RebaseValue(tree, AliasMap{oldA: newA, oldB: newB})
+	after := GetCorrelatedToOfValue(rebased)
+	if _, ok := after[newA]; !ok {
+		t.Fatal("after: missing newA")
+	}
+	if _, ok := after[newB]; !ok {
+		t.Fatal("after: missing newB")
+	}
+	if _, ok := after[oldA]; ok {
+		t.Fatal("after: old alias A should not be present")
+	}
+	if _, ok := after[oldB]; ok {
+		t.Fatal("after: old alias B should not be present")
+	}
+}
+
 func TestRebaseValue_LeafNoChange(t *testing.T) {
 	t.Parallel()
 	aliases := AliasMap{NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new")}
