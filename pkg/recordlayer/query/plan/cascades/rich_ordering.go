@@ -264,10 +264,7 @@ func (o *RichOrdering) Satisfies(requested *RequestedOrdering) bool {
 }
 
 func valuesEqual(a, b values.Value) bool {
-	if a == b {
-		return true
-	}
-	return values.ExplainValue(a) == values.ExplainValue(b)
+	return values.ValuesStructurallyEqual(a, b)
 }
 
 func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {

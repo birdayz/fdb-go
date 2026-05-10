@@ -47,13 +47,13 @@ func (p *RecordQueryFirstOrDefaultPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-// EqualsWithoutChildren compares the default value via ExplainValue.
+// EqualsWithoutChildren compares the default value structurally.
 func (p *RecordQueryFirstOrDefaultPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFirstOrDefaultPlan)
 	if !ok {
 		return false
 	}
-	return values.ExplainValue(p.defaultValue) == values.ExplainValue(o.defaultValue)
+	return values.ValuesStructurallyEqual(p.defaultValue, o.defaultValue)
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + default

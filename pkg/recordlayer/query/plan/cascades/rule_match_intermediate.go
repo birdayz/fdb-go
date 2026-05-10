@@ -445,16 +445,16 @@ func matchFilterAgainstSelect(
 }
 
 // valuesMatchColumn checks if two values reference the same column.
-// Uses structural comparison via ExplainValue: for FieldValues this
-// is the field name (case-sensitive, matching the Go convention that
-// column names are normalised to a single canonical casing at SQL
-// identifier resolution time). For complex values (arithmetic,
-// casts, etc.) ExplainValue renders the full expression tree.
+// Uses structural comparison via ValuesStructurallyEqual: for
+// FieldValues this compares field names (case-sensitive, matching the
+// Go convention that column names are normalised to a single canonical
+// casing at SQL identifier resolution time). For complex values
+// (arithmetic, casts, etc.) it recursively compares the value tree.
 func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false
 	}
-	return values.ExplainValue(queryValue) == values.ExplainValue(placeholderValue)
+	return values.ValuesStructurallyEqual(queryValue, placeholderValue)
 }
 
 var _ ExpressionRule = (*MatchIntermediateRule)(nil)

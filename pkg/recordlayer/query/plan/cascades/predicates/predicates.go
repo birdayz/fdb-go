@@ -179,14 +179,7 @@ func valueNamesEqual(a, b values.Value) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	// Structural equality via the SQL-ish rendering ExplainValue
-	// already produces: `age`, `'hello'`, `(a + b)`, `CAST(...)`,
-	// `NULL`, etc. Values that render the same are equal for
-	// simplification purposes. Name() alone is wrong — it returns
-	// the *kind* ("field", "constant"), not the per-instance data.
-	// A dedicated structural ValueEquals can replace this once Values
-	// carry nullability / source info that Explain doesn't render.
-	return values.ExplainValue(a) == values.ExplainValue(b)
+	return values.ValuesStructurallyEqual(a, b)
 }
 
 // QueryPredicate is the root of the predicate hierarchy. A

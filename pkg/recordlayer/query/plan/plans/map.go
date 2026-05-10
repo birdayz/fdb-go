@@ -49,13 +49,13 @@ func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
-// EqualsWithoutChildren compares the result value via ExplainValue.
+// EqualsWithoutChildren compares the result value structurally.
 func (p *RecordQueryMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMapPlan)
 	if !ok {
 		return false
 	}
-	return values.ExplainValue(p.resultValue) == values.ExplainValue(o.resultValue)
+	return values.ValuesStructurallyEqual(p.resultValue, o.resultValue)
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + result
