@@ -39,9 +39,13 @@ func ExpandValueIndex(candidate MatchCandidate) *Traversal {
 	// columnNames and sargableAliases are parallel slices; iterate over
 	// sargableAliases as the authoritative length (callers that pass nil
 	// sargableAliases get zero placeholders).
+	baseAlias := baseQuantifier.GetAlias()
 	for i, alias := range sargableAliases {
 		colName := columnNames[i]
-		fv := &values.FieldValue{Field: colName, Typ: values.UnknownType}
+		fv := values.NewFieldValue(
+			values.NewQuantifiedObjectValue(baseAlias),
+			colName, values.UnknownType,
+		)
 		ph := predicates.NewPlaceholder(alias, fv)
 		builder.AddPredicate(ph)
 		builder.AddPlaceholder(ph)

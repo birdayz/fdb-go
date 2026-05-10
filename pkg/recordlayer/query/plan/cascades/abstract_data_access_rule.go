@@ -267,6 +267,11 @@ func DataAccessForMatchPartition(
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
+				// Java passes TranslationMap.ofAliases(candidateTopAlias, realizedAlias)
+				// to rebase compensated predicates from the candidate's alias to the
+				// physical plan's alias. With flat FieldValues (no correlation), the
+				// empty map is correct. When C-5 full FieldValue wiring lands, this
+				// needs a real map: candidateTopAlias → quantifier alias of expr.
 				expr = fmc.ApplyAllNeeded(expr, EmptyTranslationMap())
 			}
 		}

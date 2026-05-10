@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"strings"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -455,7 +457,21 @@ func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false
 	}
-	return values.ValuesStructurallyEqual(queryValue, placeholderValue)
+	// Fast path: structural equality (same field name, same child structure).
+	if values.ValuesStructurallyEqual(queryValue, placeholderValue) {
+		return true
+	}
+	// Cross-alias match: compare field names ignoring child QOV aliases.
+	// This handles the case where the query has a flat FieldValue
+	// ("COL") and the candidate has a child-bearing FieldValue
+	// (QOV(alias)."COL") — or both have children with different aliases.
+	// Mirrors Java's semanticEquals with alias equivalence map.
+	qFV, qOk := queryValue.(*values.FieldValue)
+	pFV, pOk := placeholderValue.(*values.FieldValue)
+	if qOk && pOk {
+		return strings.EqualFold(qFV.Field, pFV.Field)
+	}
+	return false
 }
 
 var _ ExpressionRule = (*MatchIntermediateRule)(nil)
