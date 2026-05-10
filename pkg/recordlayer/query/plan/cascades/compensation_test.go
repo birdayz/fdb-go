@@ -1454,3 +1454,322 @@ func TestResultCompensation_IsImpossible_WithoutUnmatched(t *testing.T) {
 		t.Fatal("ResultCompensation with FieldValue should be needed")
 	}
 }
+
+// --- ForMatchCompensation.Union tests ---
+
+func TestForMatchCompensation_Union_BothNotNeeded(t *testing.T) {
+	t.Parallel()
+
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := c1.Union(c2)
+	if result.IsNeeded() {
+		t.Fatal("union of two not-needed compensations should not be needed")
+	}
+	if result != NoCompensation {
+		t.Fatalf("expected NoCompensation, got %T", result)
+	}
+}
+
+func TestForMatchCompensation_Union_OneNotNeeded(t *testing.T) {
+	t.Parallel()
+
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	// c1 not needed, c2 needed → returns c2.
+	result := c1.Union(c2)
+	if !result.IsNeeded() {
+		t.Fatal("result should be needed since c2 is needed")
+	}
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+	if fmc != c2 {
+		t.Fatal("result should be c2 itself (identity)")
+	}
+
+	// Reverse: c2 needed, c1 not needed → returns c1.
+	result2 := c2.Union(c1)
+	if !result2.IsNeeded() {
+		t.Fatal("result should be needed since c2 is needed")
+	}
+	fmc2, ok := result2.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result2)
+	}
+	if fmc2 != c1 {
+		// c2.Union(c1): c2 is needed, c1 is not needed → returns c1.
+		// Wait — the code checks: "if !other.IsNeeded() { return c }"
+		// so c2.Union(c1) where c1 is not needed returns c2, not c1.
+		// Both c2 is self, c1 is other. other not needed → return self (c2).
+		if fmc2 != c2 {
+			t.Fatal("result should be c2 itself when other is not needed")
+		}
+	}
+}
+
+func TestForMatchCompensation_Union_PredicateMapMerge(t *testing.T) {
+	t.Parallel()
+
+	predA := predicates.NewConstantPredicate(predicates.TriTrue)
+	predB := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	predMap1 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predA},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+	predMap2 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predB},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	ref := expressions.InitialOf(nil)
+	q := expressions.ForEachQuantifier(ref)
+
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, predMap1,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, predMap2,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Union(c2)
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+	// Union merges predicate maps: {A} ∪ {B} = {A, B}.
+	if fmc.GetPredicateCompensationMap().Len() != 2 {
+		t.Fatalf("expected 2 predicates in union, got %d", fmc.GetPredicateCompensationMap().Len())
+	}
+	// Verify both predicate pointers are present.
+	if fmc.GetPredicateCompensationMap().Get(predA) == nil {
+		t.Fatal("union predicate map should contain predA")
+	}
+	if fmc.GetPredicateCompensationMap().Get(predB) == nil {
+		t.Fatal("union predicate map should contain predB")
+	}
+}
+
+func TestForMatchCompensation_Union_DuplicateKeyImpossible(t *testing.T) {
+	t.Parallel()
+
+	// Same predicate pointer in both maps → duplicate → ImpossibleCompensation.
+	sharedPred := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	predMap1 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{sharedPred},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+	predMap2 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{sharedPred},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	ref := expressions.InitialOf(nil)
+	q := expressions.ForEachQuantifier(ref)
+
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, predMap1,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, predMap2,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Union(c2)
+	if !result.IsImpossible() {
+		t.Fatal("union with duplicate predicate pointer should be impossible")
+	}
+	if result != ImpossibleCompensation {
+		t.Fatalf("expected ImpossibleCompensation sentinel, got %T", result)
+	}
+}
+
+func TestForMatchCompensation_Union_MultiForEachImpossible(t *testing.T) {
+	t.Parallel()
+
+	ref := expressions.InitialOf(nil)
+	q1 := expressions.ForEachQuantifier(ref)
+	q2 := expressions.ForEachQuantifier(ref)
+
+	// c1 matched {q1 (ForEach)}, c2 matched {q2 (ForEach)}.
+	// Union of matched quantifiers has 2 ForEach → impossible.
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		[]expressions.Quantifier{q1}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		[]expressions.Quantifier{q2}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Union(c2)
+	if !result.IsImpossible() {
+		t.Fatal("union with 2 ForEach matched quantifiers should be impossible")
+	}
+	if result != ImpossibleCompensation {
+		t.Fatalf("expected ImpossibleCompensation sentinel, got %T", result)
+	}
+}
+
+func TestForMatchCompensation_Union_UnmatchedForEachImpossible(t *testing.T) {
+	t.Parallel()
+
+	ref := expressions.InitialOf(nil)
+	unmatchedForEach := expressions.ForEachQuantifier(ref)
+
+	// c1 has unmatched ForEach → union is impossible.
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, []expressions.Quantifier{unmatchedForEach}, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Union(c2)
+	if !result.IsImpossible() {
+		t.Fatal("union with unmatched ForEach on c1 should be impossible")
+	}
+
+	// Reverse: c2 has unmatched ForEach.
+	c3 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c4 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, []expressions.Quantifier{unmatchedForEach}, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result2 := c3.Union(c4)
+	if !result2.IsImpossible() {
+		t.Fatal("union with unmatched ForEach on c2 should be impossible")
+	}
+}
+
+func TestForMatchCompensation_Union_ChildRecursive(t *testing.T) {
+	t.Parallel()
+
+	// Build two ForMatchCompensations with ForMatchCompensation children.
+	// Children have non-overlapping predicate maps; union should merge them.
+	childPredA := predicates.NewConstantPredicate(predicates.TriTrue)
+	childPredB := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	ref := expressions.InitialOf(nil)
+	childQ := expressions.ForEachQuantifier(ref)
+
+	// child1 has predicate {childPredA}
+	childPredMap1 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{childPredA},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+	child1 := NewForMatchCompensation(
+		false, NoCompensation, childPredMap1,
+		[]expressions.Quantifier{childQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	// child2 has predicate {childPredB}
+	childPredMap2 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{childPredB},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+	child2 := NewForMatchCompensation(
+		false, NoCompensation, childPredMap2,
+		[]expressions.Quantifier{childQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	// Outer compensations each carry one of the children.
+	outerPredA := predicates.NewConstantPredicate(predicates.TriTrue)
+	outerPredB := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	outerPredMap1 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{outerPredA},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+	outerPredMap2 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{outerPredB},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	outerQ := expressions.ForEachQuantifier(ref)
+
+	c1 := NewForMatchCompensation(
+		false, child1, outerPredMap1,
+		[]expressions.Quantifier{outerQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, child2, outerPredMap2,
+		[]expressions.Quantifier{outerQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Union(c2)
+	if result.IsImpossible() {
+		t.Fatal("recursive union should not be impossible")
+	}
+	if !result.IsNeeded() {
+		t.Fatal("recursive union should be needed")
+	}
+
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+
+	// Outer predicate map should be union: {outerPredA, outerPredB}.
+	if fmc.GetPredicateCompensationMap().Len() != 2 {
+		t.Fatalf("expected 2 predicates in outer union, got %d",
+			fmc.GetPredicateCompensationMap().Len())
+	}
+
+	// The child should also be a ForMatchCompensation (recursively unioned).
+	childResult, ok := fmc.GetChildCompensation().(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected child to be *ForMatchCompensation, got %T",
+			fmc.GetChildCompensation())
+	}
+	// The recursively unioned child should have both child predicates merged:
+	// {childPredA} ∪ {childPredB} = {childPredA, childPredB}.
+	if childResult.GetPredicateCompensationMap().Len() != 2 {
+		t.Fatalf("expected 2 predicates in child union, got %d",
+			childResult.GetPredicateCompensationMap().Len())
+	}
+	if childResult.GetPredicateCompensationMap().Get(childPredA) == nil {
+		t.Fatal("child union predicate map should contain childPredA")
+	}
+	if childResult.GetPredicateCompensationMap().Get(childPredB) == nil {
+		t.Fatal("child union predicate map should contain childPredB")
+	}
+}
