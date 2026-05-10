@@ -968,6 +968,81 @@ func TestForMatchCompensation_Apply_WithPredicates(t *testing.T) {
 	}
 }
 
+// Ports Java's CompensationTests.testImpossiblePrimitives monoid checks.
+func TestCompensation_SentinelPrimitives(t *testing.T) {
+	t.Parallel()
+	t.Run("NoCompensation", func(t *testing.T) {
+		t.Parallel()
+		if NoCompensation.IsNeeded() {
+			t.Fatal("NoCompensation should not be needed")
+		}
+		if NoCompensation.IsImpossible() {
+			t.Fatal("NoCompensation should not be impossible")
+		}
+		if !NoCompensation.CanBeDeferred() {
+			t.Fatal("NoCompensation should be deferrable")
+		}
+	})
+	t.Run("ImpossibleCompensation", func(t *testing.T) {
+		t.Parallel()
+		if !ImpossibleCompensation.IsImpossible() {
+			t.Fatal("ImpossibleCompensation should be impossible")
+		}
+	})
+	t.Run("NoPredicateCompensationNeeded", func(t *testing.T) {
+		t.Parallel()
+		f := NoPredicateCompensationNeeded()
+		if f.IsNeeded() {
+			t.Fatal("should not be needed")
+		}
+		if f.IsImpossible() {
+			t.Fatal("should not be impossible")
+		}
+		amended := f.Amend(NewCorrValueBiMap(), nil)
+		if amended != f {
+			t.Fatal("amend should return self")
+		}
+	})
+	t.Run("ImpossiblePredicateCompensation", func(t *testing.T) {
+		t.Parallel()
+		f := ImpossiblePredicateCompensation()
+		if !f.IsNeeded() {
+			t.Fatal("should be needed")
+		}
+		if !f.IsImpossible() {
+			t.Fatal("should be impossible")
+		}
+		amended := f.Amend(NewCorrValueBiMap(), nil)
+		if amended != f {
+			t.Fatal("amend should return self")
+		}
+	})
+	t.Run("NoResultCompensation", func(t *testing.T) {
+		t.Parallel()
+		f := NoResultCompensation()
+		if f.IsNeeded() {
+			t.Fatal("should not be needed")
+		}
+		if f.IsImpossible() {
+			t.Fatal("should not be impossible")
+		}
+		amended := f.Amend(NewCorrValueBiMap(), nil)
+		if amended != f {
+			t.Fatal("amend on not-needed should return self")
+		}
+	})
+	t.Run("ImpossibleResultCompensation", func(t *testing.T) {
+		t.Parallel()
+		f := NewImpossibleResultCompensation()
+		if !f.IsNeeded() {
+			t.Fatal("should be needed")
+		}
+		if !f.IsImpossible() {
+			t.Fatal("should be impossible")
+		}
+	})
+}
+
 func TestForMatchCompensation_Intersect_BothEmpty(t *testing.T) {
 	t.Parallel()
 	c1 := NewForMatchCompensation(
