@@ -200,10 +200,33 @@ func (p *PartialMatchImpl) CompensationCanBeDeferred() bool {
 	return true
 }
 
+// GetBoundSargableAliases returns the sargable aliases that have
+// non-empty parameter bindings. Ports Java's
+// PartialMatch.getBoundSargableAliases.
+func (p *PartialMatchImpl) GetBoundSargableAliases() map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias, cr := range p.GetBoundParameterPrefixMap() {
+		if !cr.IsEmpty() {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
+
+// GetCompensatedAliases returns the set of quantifier aliases that
+// this partial match compensates for. Ports Java's
+// PartialMatch.getCompensatedAliases.
+func (p *PartialMatchImpl) GetCompensatedAliases() map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for _, q := range p.GetMatchedQuantifiers() {
+		result[q.GetAlias()] = struct{}{}
+	}
+	return result
+}
+
 // Remaining not yet ported: nestPullUp, prepareForUnification,
 // pullUpToParent, getPulledUpPredicateMappings, compensate (full
 // SelectExpression delegation), compensateExistential,
-// getBoundPlaceholders, getBoundSargableAliases, getCompensatedAliases,
 // getAccumulatedPredicateMap, matchInfosFromMap.
 
 // Compile-time interface satisfaction check.
