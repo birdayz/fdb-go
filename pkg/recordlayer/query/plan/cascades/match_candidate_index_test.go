@@ -114,9 +114,13 @@ func TestValueIndexScanMatchCandidate_ToScanPlan(t *testing.T) {
 		a1: eqRes.Range,
 	}
 	plan := c.ToScanPlan(prefix, false)
-	idxPlan, ok := plan.(*plans.RecordQueryIndexPlan)
+	fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan)
 	if !ok {
-		t.Fatalf("expected *RecordQueryIndexPlan, got %T", plan)
+		t.Fatalf("expected *RecordQueryFetchFromPartialRecordPlan, got %T", plan)
+	}
+	idxPlan, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatalf("expected inner *RecordQueryIndexPlan, got %T", fetchPlan.GetInner())
 	}
 	if idxPlan.GetIndexName() != "Order$status" {
 		t.Fatalf("index name=%q, want Order$status", idxPlan.GetIndexName())

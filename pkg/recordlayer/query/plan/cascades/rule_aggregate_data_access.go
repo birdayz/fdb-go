@@ -76,8 +76,8 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 		scanPlan := aggCand.ToScanPlan(emptyPrefix, false)
-		idxPlan, ok := scanPlan.(*plans.RecordQueryIndexPlan)
-		if !ok {
+		idxPlan := extractIndexPlan(scanPlan)
+		if idxPlan == nil {
 			continue
 		}
 
@@ -181,8 +181,8 @@ func tryMultiAggregateIntersection(
 	for i, mc := range matched {
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 		sp := mc.ToScanPlan(emptyPrefix, false)
-		idxPlan, ok := sp.(*plans.RecordQueryIndexPlan)
-		if !ok {
+		idxPlan := extractIndexPlan(sp)
+		if idxPlan == nil {
 			return
 		}
 		childPlans[i] = idxPlan

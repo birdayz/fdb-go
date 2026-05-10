@@ -123,8 +123,8 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		idxPlan := cand.ToScanPlan(prefix, false)
-		idxPlanTyped, ok := idxPlan.(*plans.RecordQueryIndexPlan)
-		if !ok {
+		idxPlanTyped := extractIndexPlan(idxPlan)
+		if idxPlanTyped == nil {
 			continue
 		}
 
@@ -139,6 +139,23 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
 		}
 	}
+}
+
+// extractIndexPlan extracts a *RecordQueryIndexPlan from a plan that
+// may be either an IndexPlan directly or a FetchFromPartialRecordPlan
+// wrapping one.
+func extractIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
+	if ip, ok := p.(*plans.RecordQueryIndexPlan); ok {
+		return ip
+	}
+	if fp, ok := p.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		if inner := fp.GetInner(); inner != nil {
+			if ip, ok := inner.(*plans.RecordQueryIndexPlan); ok {
+				return ip
+			}
+		}
+	}
+	return nil
 }
 
 // findFullScan looks for a FullUnorderedScanExpression in a Reference.

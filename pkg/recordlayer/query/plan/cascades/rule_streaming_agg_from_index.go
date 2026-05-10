@@ -86,8 +86,8 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 		for _, reverse := range []bool{false, true} {
 			scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
-			idxPlan, ok := scanPlan.(*plans.RecordQueryIndexPlan)
-			if !ok {
+			idxPlan := extractIndexPlan(scanPlan)
+			if idxPlan == nil {
 				continue
 			}
 
