@@ -231,6 +231,97 @@ func TestPrimitiveEqual_RemainingTypes(t *testing.T) {
 	}
 }
 
+func TestDateTimestampTypes(t *testing.T) {
+	t.Parallel()
+
+	// DateType: singleton, equal if same nullability.
+	d1 := NewDateType(false)
+	d2 := NewDateType(false)
+	if d1 != d2 {
+		t.Fatal("NewDateType(false) should return singleton")
+	}
+	if !d1.Equal(d2) {
+		t.Fatal("date(non-null) should equal date(non-null)")
+	}
+	if d1.Equal(NewDateType(true)) {
+		t.Fatal("date(non-null) should NOT equal date(null)")
+	}
+	if d1.Equal(NewStringType(false)) {
+		t.Fatal("date != string")
+	}
+	if d1.Code() != CodeDate {
+		t.Fatalf("date code = %v, want CodeDate", d1.Code())
+	}
+	if !d1.IsPrimitive() {
+		t.Fatal("date should be primitive")
+	}
+	if !d1.IsResolved() {
+		t.Fatal("date should be resolved")
+	}
+	if d1.String() != "date" {
+		t.Fatalf("date.String() = %q, want %q", d1.String(), "date")
+	}
+	if NewDateType(true).String() != "date ∪ ∅" {
+		t.Fatalf("nullable date.String() = %q", NewDateType(true).String())
+	}
+	if d1.WithNullable(true) != NewDateType(true) {
+		t.Fatal("date.WithNullable(true) should return nullable singleton")
+	}
+
+	// TimestampType: same pattern.
+	ts1 := NewTimestampType(false)
+	ts2 := NewTimestampType(false)
+	if ts1 != ts2 {
+		t.Fatal("NewTimestampType(false) should return singleton")
+	}
+	if !ts1.Equal(ts2) {
+		t.Fatal("timestamp(non-null) should equal timestamp(non-null)")
+	}
+	if ts1.Equal(NewTimestampType(true)) {
+		t.Fatal("timestamp(non-null) should NOT equal timestamp(null)")
+	}
+	if ts1.Equal(NewDateType(false)) {
+		t.Fatal("timestamp != date")
+	}
+	if ts1.Code() != CodeTimestamp {
+		t.Fatalf("timestamp code = %v, want CodeTimestamp", ts1.Code())
+	}
+	if ts1.String() != "timestamp" {
+		t.Fatalf("timestamp.String() = %q, want %q", ts1.String(), "timestamp")
+	}
+	if NewTimestampType(true).String() != "timestamp ∪ ∅" {
+		t.Fatalf("nullable timestamp.String() = %q", NewTimestampType(true).String())
+	}
+
+	// JDBC mappings.
+	if JDBCType(CodeDate) != JDBCDate {
+		t.Fatalf("JDBCType(CodeDate) = %d, want %d", JDBCType(CodeDate), JDBCDate)
+	}
+	if JDBCType(CodeTimestamp) != JDBCTimestamp {
+		t.Fatalf("JDBCType(CodeTimestamp) = %d, want %d", JDBCType(CodeTimestamp), JDBCTimestamp)
+	}
+
+	// SQL type name round-trip.
+	if SQLTypeNameFromJDBC(JDBCDate) != SQLTypeNameDate {
+		t.Fatal("SQLTypeNameFromJDBC(JDBCDate) should be DATE")
+	}
+	if SQLTypeNameFromJDBC(JDBCTimestamp) != SQLTypeNameTimestamp {
+		t.Fatal("SQLTypeNameFromJDBC(JDBCTimestamp) should be TIMESTAMP")
+	}
+	if JDBCFromSQLTypeName(SQLTypeNameDate) != JDBCDate {
+		t.Fatal("JDBCFromSQLTypeName(DATE) should be JDBCDate")
+	}
+	if JDBCFromSQLTypeName(SQLTypeNameTimestamp) != JDBCTimestamp {
+		t.Fatal("JDBCFromSQLTypeName(TIMESTAMP) should be JDBCTimestamp")
+	}
+	if DataTypeFromSQLTypeName(SQLTypeNameDate) == nil {
+		t.Fatal("DataTypeFromSQLTypeName(DATE) should not be nil")
+	}
+	if DataTypeFromSQLTypeName(SQLTypeNameTimestamp) == nil {
+		t.Fatal("DataTypeFromSQLTypeName(TIMESTAMP) should not be nil")
+	}
+}
+
 // TestPrimitiveResolve_RemainingTypes pins the no-op Resolve on
 // fully-resolved primitive types (Version, UUID, Null) — they
 // return themselves verbatim regardless of the binding map.
