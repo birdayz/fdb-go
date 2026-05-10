@@ -139,106 +139,20 @@ func ValuesStructurallyEqual(a, b Value) bool {
 	if a == nil || b == nil {
 		return false
 	}
-
-	switch av := a.(type) {
-	case *FieldValue:
-		bv, ok := b.(*FieldValue)
-		return ok && av.Field == bv.Field
-	case *ConstantValue:
-		bv, ok := b.(*ConstantValue)
-		if !ok {
-			return false
-		}
-		return constantValuesEqual(av.Value, bv.Value)
-	case *NullValue:
-		_, ok := b.(*NullValue)
-		return ok
-	case *BooleanValue:
-		bv, ok := b.(*BooleanValue)
-		if !ok {
-			return false
-		}
-		if av.Value == nil && bv.Value == nil {
-			return true
-		}
-		if av.Value == nil || bv.Value == nil {
-			return false
-		}
-		return *av.Value == *bv.Value
-	case *ParameterValue:
-		bv, ok := b.(*ParameterValue)
-		if !ok {
-			return false
-		}
-		return av.Ordinal == bv.Ordinal && av.ParamName == bv.ParamName
-	case *QuantifiedObjectValue:
-		bv, ok := b.(*QuantifiedObjectValue)
-		return ok && av.Correlation == bv.Correlation
-	case *ObjectValue:
-		bv, ok := b.(*ObjectValue)
-		return ok && av.Alias == bv.Alias
-	case *ArithmeticValue:
-		bv, ok := b.(*ArithmeticValue)
-		if !ok || av.Op != bv.Op {
-			return false
-		}
-		return ValuesStructurallyEqual(av.Left, bv.Left) &&
-			ValuesStructurallyEqual(av.Right, bv.Right)
-	case *CastValue:
-		bv, ok := b.(*CastValue)
-		if !ok {
-			return false
-		}
-		return typesEqual(av.Target, bv.Target) &&
-			ValuesStructurallyEqual(av.Child, bv.Child)
-	case *PromoteValue:
-		bv, ok := b.(*PromoteValue)
-		if !ok {
-			return false
-		}
-		return typesEqual(av.Target, bv.Target) &&
-			ValuesStructurallyEqual(av.Child, bv.Child)
-	case *ScalarFunctionValue:
-		bv, ok := b.(*ScalarFunctionValue)
-		if !ok || av.FuncName != bv.FuncName || len(av.Args) != len(bv.Args) {
-			return false
-		}
-		for i := range av.Args {
-			if !ValuesStructurallyEqual(av.Args[i], bv.Args[i]) {
-				return false
-			}
-		}
-		return true
-	case *AggregateValue:
-		bv, ok := b.(*AggregateValue)
-		if !ok || av.Op != bv.Op {
-			return false
-		}
-		return ValuesStructurallyEqual(av.Operand, bv.Operand)
-	case *RecordConstructorValue:
-		bv, ok := b.(*RecordConstructorValue)
-		if !ok || len(av.Fields) != len(bv.Fields) {
-			return false
-		}
-		for i := range av.Fields {
-			if av.Fields[i].Name != bv.Fields[i].Name {
-				return false
-			}
-			if !ValuesStructurallyEqual(av.Fields[i].Value, bv.Fields[i].Value) {
-				return false
-			}
-		}
-		return true
-	case *NotValue:
-		bv, ok := b.(*NotValue)
-		return ok && ValuesStructurallyEqual(av.Child, bv.Child)
-	default:
-		// For types not explicitly handled, fall back to ExplainValue
-		// comparison. Preserves prior behavior for rarely-encountered
-		// types while the common types above get proper structural
-		// equality.
-		return ExplainValue(a) == ExplainValue(b)
+	if !EqualsWithoutChildren(a, b) {
+		return false
 	}
+	ac := a.Children()
+	bc := b.Children()
+	if len(ac) != len(bc) {
+		return false
+	}
+	for i := range ac {
+		if !ValuesStructurallyEqual(ac[i], bc[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // constantValuesEqual compares two any values for equality, handling
