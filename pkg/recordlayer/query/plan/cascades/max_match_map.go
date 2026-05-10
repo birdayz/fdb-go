@@ -457,6 +457,22 @@ func recurseQueryResultValue(
 		}
 	}
 
+	// Try to expand the current query value into a more matchable shape
+	// and recurse with the expanded version. Ports Java's
+	// MaxMatchMapSimplificationRuleSet (ExpandRecordRule +
+	// ExpandFusedFieldValueRule).
+	if anyParentsMatching || bestMaxDepth > 0 {
+		for _, expanded := range expandValueForMatching(currentQueryValue) {
+			expandedResults := recurseQueryResultValue(
+				expanded, candidateValue, rangedOverAliases,
+				descendOrdinal, parentMatchers, maxDepthBound, memoMap,
+			)
+			for v, r := range expandedResults {
+				putResult(v, r)
+			}
+		}
+	}
+
 	resultMap := toResultMap()
 
 	// Memoize if appropriate.
@@ -789,4 +805,68 @@ func (m *MaxMatchMap) AdjustMaybe(
 
 	result := ComputeMaxMatchMap(translated, upperCandidateResultValue, rangedOverAliases)
 	return result, true
+}
+
+// ---------------------------------------------------------------------------
+// Value expansion for matching (MaxMatchMapSimplificationRuleSet)
+// ---------------------------------------------------------------------------
+
+// expandValueForMatching generates alternative representations of a
+// Value that are more matchable against candidate value trees. Ports
+// Java's MaxMatchMapSimplificationRuleSet (ExpandRecordRule +
+// ExpandFusedFieldValueRule).
+func expandValueForMatching(v values.Value) []values.Value {
+	var results []values.Value
+
+	// ExpandRecordRule: if v has a Record result type and is NOT already
+	// a RecordConstructorValue, expand it to
+	// RCV(FV(v, field0), FV(v, field1), ...).
+	if _, isRCV := v.(*values.RecordConstructorValue); !isRCV {
+		if expanded := expandRecordValue(v); expanded != nil {
+			results = append(results, expanded)
+		}
+	}
+
+	// ExpandFusedFieldValueRule: if v is a FieldValue with a multi-step
+	// path (e.g. "a.b.c"), split the last step:
+	// FV(v, "a.b.c") → FV(FV(v, "a.b"), "c").
+	// Go's FieldValue uses a single string Field, not a path list,
+	// so this rule doesn't apply to Go's current FieldValue model.
+	// (Java's FieldValue has a FieldPath with multiple accessors.)
+
+	return results
+}
+
+// expandRecordValue expands a non-RCV value with Record type into a
+// RecordConstructorValue with FieldValue children. Ports Java's
+// ExpandRecordRule.onMatch.
+//
+// Java's FieldValue has a child value (base) + FieldPath, so the
+// expansion produces FV(v, "field_i") for each field. Go's FieldValue
+// is a flat field name with no child, so the expansion produces bare
+// FV("field_i"). This is correct for structural matching (the
+// candidate RCV also has bare FV children) but loses the base-value
+// reference. When Go's FieldValue gains a child value (tracking
+// Java's FieldValue architecture), this expansion should use it.
+func expandRecordValue(v values.Value) values.Value {
+	typ := v.Type()
+	if typ == nil {
+		return nil
+	}
+	rt, ok := typ.(*values.RecordType)
+	if !ok {
+		return nil
+	}
+	if len(rt.Fields) == 0 {
+		return nil
+	}
+
+	fields := make([]values.RecordConstructorField, len(rt.Fields))
+	for i, f := range rt.Fields {
+		fields[i] = values.RecordConstructorField{
+			Name:  f.Name,
+			Value: &values.FieldValue{Field: f.Name, Typ: f.FieldType},
+		}
+	}
+	return &values.RecordConstructorValue{Fields: fields}
 }
