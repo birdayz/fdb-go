@@ -90,3 +90,42 @@ func TestFormatDate_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip: got %v, want same date as %v", parsed, original)
 	}
 }
+
+func FuzzParseTimestamp(f *testing.F) {
+	f.Add("2024-07-04 15:30:45")
+	f.Add("2024-07-04")
+	f.Add("2024-07-04T15:30:45Z")
+	f.Add("2024-07-04T15:30:45")
+	f.Add("")
+	f.Add("not-a-date")
+	f.Add("9999-12-31 23:59:59")
+	f.Add("1970-01-01 00:00:00")
+	f.Add("2024-02-29")
+	f.Add("2024-13-01 00:00:00")
+
+	f.Fuzz(func(t *testing.T, s string) {
+		_, _ = ParseTimestamp(s)
+	})
+}
+
+func FuzzFormatParseRoundTrip(f *testing.F) {
+	f.Add(int64(0))
+	f.Add(int64(1720108245))
+	f.Add(int64(-1))
+	f.Add(int64(253402300799)) // 9999-12-31 23:59:59
+
+	f.Fuzz(func(t *testing.T, epochSec int64) {
+		if epochSec < -62135596800 || epochSec > 253402300799 {
+			return
+		}
+		original := time.Unix(epochSec, 0).UTC()
+		formatted := FormatTimestamp(original)
+		parsed, ok := ParseTimestamp(formatted)
+		if !ok {
+			t.Fatalf("ParseTimestamp(FormatTimestamp(%v)) failed; formatted=%q", original, formatted)
+		}
+		if !parsed.Equal(original) {
+			t.Fatalf("round-trip mismatch: %v → %q → %v", original, formatted, parsed)
+		}
+	})
+}
