@@ -244,7 +244,10 @@ func IsConstantValue(v Value) bool {
 	switch v.(type) {
 	case *ConstantValue, *NullValue, *BooleanValue:
 		return true
-	case *FieldValue, *QuantifiedObjectValue, *AggregateValue, *ParameterValue:
+	case *FieldValue, *QuantifiedObjectValue, *AggregateValue, *ParameterValue,
+		*QuantifiedRecordValue, *ExistsValue, *ScalarSubqueryValue,
+		*ObjectValue, *UnmatchedAggregateValue, *ConstantObjectValue,
+		*IndexEntryObjectValue:
 		return false
 	}
 	// Composite: all children must be constant.
