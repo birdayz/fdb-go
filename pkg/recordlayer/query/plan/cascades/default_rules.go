@@ -107,6 +107,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewNoOpLimitElimRule(),
 		NewZeroLimitRule(),
 		NewRemoveRangeOneRule(),
+		NewSelectMergeRule(),
 	}
 }
 

@@ -155,9 +155,17 @@ func extractFieldNames(v values.Value, out map[string]struct{}) {
 	}
 }
 
-// findRecordTypes walks down through transparent operators (projection,
-// filter, sort, distinct, unique, type-filter) to find a
+// findRecordTypes walks down through transparent LOGICAL operators
+// (projection, filter, sort, distinct, unique, type-filter) to find a
 // FullUnorderedScanExpression and returns its record types.
+//
+// Intentionally handles only logical expressions. During PLANNING,
+// innerRef.Get() returns physical wrappers which this function does
+// not match, so distinctEliminatedByUniqueKey returns false and the
+// per-FinalMember PropDistinctRecords property check (the primary
+// path) handles distinctness. This function is a fallback for tests
+// and scenarios where the inner Reference contains only logical
+// expressions (no PLANNING phase ran).
 func findRecordTypes(expr expressions.RelationalExpression) []string {
 	switch e := expr.(type) {
 	case *expressions.FullUnorderedScanExpression:
