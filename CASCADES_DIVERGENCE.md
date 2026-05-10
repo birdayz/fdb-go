@@ -119,7 +119,9 @@ Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchInterm
 
 **PullUp type ported (swingshift-86):** PullUp chain for translating values across expression boundaries during matching. PullUpValueMaybe walks the chain bottom-up via MaxMatchMap. ComputeResultCompensation uses PullUp to determine whether result-shape compensation is needed.
 
-**Remaining:** MaxMatchMap Simplification variant-expansion (MaxMatchMapSimplificationRuleSet) — generates algebraically equivalent rewrites and requires a separate rule engine. Deferred. PullUp.Visitor pattern (MatchPullUp, PullUpVisitor) — requires expression visitor infrastructure.
+**MaxMatchMap Simplification ported (swingshift-86):** ExpandRecordRule implemented directly in the recursive matcher — expands non-RCV values with Record type into RCV with FieldValue children. ExpandFusedFieldValueRule not applicable (Go's FieldValue has single field name, not multi-step path).
+
+**Remaining:** PullUp.Visitor pattern (MatchPullUp, PullUpVisitor) — requires expression visitor infrastructure.
 
 ### M-3: PushReferencedFields rules — DONE (dayshift-85)
 
@@ -140,6 +142,6 @@ Go has full PlanPartition infrastructure: ToPlanPartitions, RollUpPlanPartitions
 5. ~~**D-2** (PushOrdering constraint vs structural) — DONE~~
 6. ~~**D-5** (InComparison architecture) — DONE~~
 7. **6 unported ImplementationCascadesRules** — MergeFetchIntoCoveringIndexRule, PushDistinctBelowFilterRule, PushDistinctThroughFetchRule, PushFilterThroughFetchRule, PushMapThroughFetchRule, PushSetOperationThroughFetchRule. All require RecordQueryFetchFromPartialRecordPlan (covering index fetch plan type) which Go doesn't have. ~9-15 shifts total.
-8. **MaxMatchMap Simplification** — variant-expansion step generating algebraically equivalent value rewrites. Requires separate simplification rule engine (needs Type.Record field metadata). Deferred.
+8. ~~**MaxMatchMap Simplification** — DONE (swingshift-86). ExpandRecordRule ported directly into recursive matcher.~~
 9. **SelectExpression.compensate** — full predicate compensation computation. Needs expression-level `compensate` method port (~100 LOC). PullUp + ComputeResultCompensation already ported (swingshift-86).
 10. **MaxMatchMap ValueEquivalence parameter** — cross-alias matching in PullUpValueMaybe. ComputeMaxMatchMap currently uses structural matching only; Java passes ValueEquivalence for cross-scope comparisons.
