@@ -159,11 +159,51 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 	)
 }
 
+// GetMatchedQuantifiers returns the query expression's quantifiers
+// that have child partial matches in the match info. Ports Java's
+// PartialMatch.getMatchedQuantifiers().
+func (p *PartialMatchImpl) GetMatchedQuantifiers() []expressions.Quantifier {
+	mi := p.GetRegularMatchInfo()
+	var matched []expressions.Quantifier
+	for _, q := range p.queryExpression.GetQuantifiers() {
+		if mi.GetChildPartialMatchMaybe(q.GetAlias()) != nil {
+			matched = append(matched, q)
+		}
+	}
+	return matched
+}
+
+// GetUnmatchedQuantifiers returns the query expression's quantifiers
+// that do NOT have child partial matches. Ports Java's
+// PartialMatch.getUnmatchedQuantifiers().
+func (p *PartialMatchImpl) GetUnmatchedQuantifiers() []expressions.Quantifier {
+	mi := p.GetRegularMatchInfo()
+	var unmatched []expressions.Quantifier
+	for _, q := range p.queryExpression.GetQuantifiers() {
+		if mi.GetChildPartialMatchMaybe(q.GetAlias()) == nil {
+			unmatched = append(unmatched, q)
+		}
+	}
+	return unmatched
+}
+
+// CompensationCanBeDeferred reports whether compensation for this
+// match can be deferred to a higher level. Returns false if any
+// unmatched quantifier is ForEach (affects cardinality). Ports
+// Java's PartialMatch.compensationCanBeDeferred().
+func (p *PartialMatchImpl) CompensationCanBeDeferred() bool {
+	for _, q := range p.GetUnmatchedQuantifiers() {
+		if q.Kind() == expressions.QuantifierForEach {
+			return false
+		}
+	}
+	return true
+}
+
 // Remaining not yet ported: nestPullUp, prepareForUnification,
 // pullUpToParent, getPulledUpPredicateMappings, compensate (full
 // SelectExpression delegation), compensateExistential,
-// getMatchedQuantifiers, getUnmatchedQuantifiers, getBoundPlaceholders,
-// getBoundSargableAliases, getCompensatedAliases,
+// getBoundPlaceholders, getBoundSargableAliases, getCompensatedAliases,
 // getAccumulatedPredicateMap, matchInfosFromMap.
 
 // Compile-time interface satisfaction check.
