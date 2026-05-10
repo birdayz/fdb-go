@@ -92,6 +92,19 @@ func (p *RecordQueryFetchFromPartialRecordPlan) PushValue(
 	return p.translateValueFunction(value, sourceAlias, targetAlias)
 }
 
+// IsReverse delegates to the inner plan's reverse flag. Mirrors Java's
+// RecordQueryFetchFromPartialRecordPlan.isReverse() which returns
+// getChild().isReverse().
+func (p *RecordQueryFetchFromPartialRecordPlan) IsReverse() bool {
+	if p.inner == nil {
+		return false
+	}
+	if rev, ok := p.inner.(interface{ IsReverse() bool }); ok {
+		return rev.IsReverse()
+	}
+	return false
+}
+
 // GetChildren returns the inner plan.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetChildren() []RecordQueryPlan {
 	if p.inner == nil {

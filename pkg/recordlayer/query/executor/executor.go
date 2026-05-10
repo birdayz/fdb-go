@@ -126,6 +126,9 @@ func ExecutePlan(
 	case *plans.RecordQueryInUnionPlan:
 		return executeInUnion(ctx, p, store, evalCtx, continuation, props)
 
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		return executeFetchFromPartialRecord(ctx, p, store, evalCtx, continuation, props)
+
 	// --- Go extensions (no Java equivalent) ---
 	case *plans.RecordQueryInMemorySortPlan:
 		return executeInMemorySort(ctx, p, store, evalCtx, continuation, props)
@@ -450,6 +453,28 @@ func executeLimit(
 	}
 
 	return recordlayer.SkipThenLimit(innerCursor, offset, limit), nil
+}
+
+// executeFetchFromPartialRecord executes a FetchFromPartialRecordPlan.
+// In Java, this takes index entries (partial records) and fetches full
+// records by PK. In Go, the index scan executor already returns full
+// records, so the fetch is a pass-through that delegates to the inner.
+// This exists as a safety net for plans where the Cascades optimizer
+// didn't eliminate the fetch via MergeFetchIntoCoveringIndex or
+// PushMapThroughFetch.
+func executeFetchFromPartialRecord(
+	ctx context.Context,
+	p *plans.RecordQueryFetchFromPartialRecordPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	inner := p.GetInner()
+	if inner == nil {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+	return ExecutePlan(ctx, inner, store, evalCtx, continuation, props)
 }
 
 func executeDistinct(
