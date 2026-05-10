@@ -457,3 +457,60 @@ func TestRebaseValue_LeafNoChange(t *testing.T) {
 		}
 	}
 }
+
+func TestUnmatchedAggregateValue_FullIntegration(t *testing.T) {
+	t.Parallel()
+	id := UniqueUnmatchedID()
+	v := NewUnmatchedAggregateValue(id)
+
+	// Name and Type
+	if v.Name() != "unmatched_aggregate" {
+		t.Fatalf("Name() = %q, want unmatched_aggregate", v.Name())
+	}
+	if v.Type() != UnknownType {
+		t.Fatal("Type() should be UnknownType")
+	}
+
+	// Children (leaf)
+	if len(v.Children()) != 0 {
+		t.Fatal("should have no children")
+	}
+
+	// GetCorrelatedTo
+	corr := GetCorrelatedToOfValue(v)
+	if _, ok := corr[id]; !ok {
+		t.Fatal("UnmatchedID should be in correlation set")
+	}
+
+	// IsConstantValue
+	if IsConstantValue(v) {
+		t.Fatal("should not be constant")
+	}
+
+	// RebaseValue
+	newID := NamedCorrelationIdentifier("new_id")
+	rebased := RebaseValue(v, AliasMap{id: newID})
+	uav, ok := rebased.(*UnmatchedAggregateValue)
+	if !ok {
+		t.Fatalf("rebased should be *UnmatchedAggregateValue, got %T", rebased)
+	}
+	if uav.UnmatchedID != newID {
+		t.Fatalf("rebased ID = %v, want %v", uav.UnmatchedID, newID)
+	}
+
+	// ValuesStructurallyEqual
+	v2 := NewUnmatchedAggregateValue(id)
+	if !ValuesStructurallyEqual(v, v2) {
+		t.Fatal("two UAVs with same ID should be structurally equal")
+	}
+	v3 := NewUnmatchedAggregateValue(newID)
+	if ValuesStructurallyEqual(v, v3) {
+		t.Fatal("two UAVs with different IDs should not be equal")
+	}
+
+	// ExplainValue
+	explain := ExplainValue(v)
+	if explain == "" {
+		t.Fatal("ExplainValue should return non-empty")
+	}
+}
