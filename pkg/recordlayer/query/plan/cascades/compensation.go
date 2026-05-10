@@ -601,13 +601,9 @@ func (c *ForMatchCompensation) String() string {
 // (physical plan) identifiers. Compensated predicates are translated
 // through this map before injection.
 //
-// Ports Java's Compensation.ForMatch.apply (then-branch: no pulled-up
-// quantifiers). The else-branch (multi-join compensation with unmatched
-// ForEach quantifiers pulled up into a new SelectExpression) is not yet
-// ported — it requires GraphExpansion.buildSimpleSelectOverQuantifier
-// and is needed only when an index covers one leg of a multi-table join
-// but not the others. Current Go (single-table queries) always takes
-// the then-branch.
+// Ports Java's Compensation.ForMatch.apply — full implementation
+// including the else-branch (multi-join compensation with unmatched
+// ForEach quantifiers pulled up into a new SelectExpression).
 func (c *ForMatchCompensation) Apply(
 	expr expressions.RelationalExpression,
 	translationMap TranslationMap,
@@ -619,12 +615,67 @@ func (c *ForMatchCompensation) Apply(
 	}
 
 	compensatedPreds := c.predicateCompensationMap.ApplyCompensations(translationMap)
-	if len(compensatedPreds) == 0 {
+
+	// Collect correlations referenced by compensated predicates.
+	compensatedCorrelations := make(map[values.CorrelationIdentifier]struct{})
+	for _, pred := range compensatedPreds {
+		for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
+			compensatedCorrelations[alias] = struct{}{}
+		}
+	}
+
+	// Determine which quantifiers must be "pulled up" (re-introduced
+	// into the compensation expression).
+	var toBePulledUp []expressions.Quantifier
+
+	// Matched existential quantifiers referenced by compensation
+	// predicates must be pulled up (partial EXISTS match).
+	for _, q := range c.matchedQuantifiers {
+		if q.Kind() == expressions.QuantifierExistential {
+			if _, referenced := compensatedCorrelations[q.GetAlias()]; referenced {
+				toBePulledUp = append(toBePulledUp, q)
+			}
+		}
+	}
+
+	// Unmatched ForEach quantifiers affect cardinality — must be
+	// retained. Unmatched existential quantifiers are pulled up only
+	// if referenced by compensation predicates.
+	for _, q := range c.unmatchedQuantifiers {
+		if q.Kind() == expressions.QuantifierForEach {
+			toBePulledUp = append(toBePulledUp, q)
+		} else if q.Kind() == expressions.QuantifierExistential {
+			if _, referenced := compensatedCorrelations[q.GetAlias()]; referenced {
+				toBePulledUp = append(toBePulledUp, q)
+			}
+		}
+	}
+
+	if len(compensatedPreds) == 0 && len(toBePulledUp) == 0 {
 		return expr
 	}
 
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
-	return expressions.NewLogicalFilterExpression(compensatedPreds, innerQ)
+	// Create the base quantifier over the compensated expression.
+	newBaseQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+
+	if len(toBePulledUp) == 0 {
+		// Then-branch: simple filter, no join needed.
+		return expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ)
+	}
+
+	// Else-branch: build a SelectExpression that joins the base scan
+	// with the pulled-up quantifiers and applies compensation predicates.
+	builder := NewGraphExpansionBuilder()
+	builder.AddQuantifier(newBaseQ)
+	for _, q := range toBePulledUp {
+		builder.AddQuantifier(q)
+	}
+	for _, pred := range compensatedPreds {
+		builder.AddPredicate(pred)
+	}
+	expansion := builder.Build()
+	sealed := expansion.Seal()
+	return sealed.BuildSelectWithResultValue(newBaseQ.GetFlowedObjectValue())
 }
 
 // ApplyFinal applies the result (shape) compensation by wrapping the
