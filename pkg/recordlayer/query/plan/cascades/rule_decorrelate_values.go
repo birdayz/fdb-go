@@ -183,20 +183,33 @@ func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value 
 	if v == nil {
 		return nil
 	}
-	// Replace QOV leaves that reference translated aliases.
+	// Replace all correlation-bearing leaf values whose alias is in the
+	// translation map. Ports Java's Value.translateCorrelations which
+	// dispatches per-type.
 	return values.Replace(v, func(val values.Value) values.Value {
-		qov, ok := val.(*values.QuantifiedObjectValue)
-		if !ok {
+		var alias values.CorrelationIdentifier
+		switch n := val.(type) {
+		case *values.QuantifiedObjectValue:
+			alias = n.Correlation
+		case *values.QuantifiedRecordValue:
+			alias = n.Alias
+		case *values.ExistsValue:
+			alias = n.Alias
+		case *values.ScalarSubqueryValue:
+			alias = n.Alias
+		case *values.ObjectValue:
+			alias = n.Alias
+		default:
 			return val
 		}
-		if !tm.ContainsSourceAlias(qov.Correlation) {
+		if !tm.ContainsSourceAlias(alias) {
 			return val
 		}
 		lv, ok := val.(values.LeafValue)
 		if !ok {
 			return val
 		}
-		return tm.ApplyTranslationFunction(qov.Correlation, lv)
+		return tm.ApplyTranslationFunction(alias, lv)
 	})
 }
 
