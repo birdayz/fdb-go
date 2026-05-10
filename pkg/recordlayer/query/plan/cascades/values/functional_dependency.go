@@ -42,17 +42,3 @@ func IsFunctionallyDependentOn(v Value, otherValue Value) bool {
 	})
 	return allDependent
 }
-
-// WithComparison creates a ComparisonPredicate from a Value and a
-// comparison. Convenience method matching Java's
-// Value.withComparison(Comparison).
-//
-// Note: returns a predicates.ComparisonPredicate but the import is
-// avoided by returning the predicate components. Callers construct
-// the predicate in their own package.
-
-// AsPlaceholder creates a Placeholder predicate from a Value and a
-// parameter alias. Convenience method matching Java's
-// Value.asPlaceholder(CorrelationIdentifier).
-//
-// Note: same import-avoidance as WithComparison — returns components.

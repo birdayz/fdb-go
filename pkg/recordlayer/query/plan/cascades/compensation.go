@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"sync"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -435,9 +437,9 @@ type ForMatchCompensation struct {
 	resultCompensationFn     *ResultCompensationFunction
 	groupByMappings          *GroupByMappings
 
-	// Lazily computed set of unmatched ForEach quantifiers.
+	// Lazily computed set of unmatched ForEach quantifiers (thread-safe).
 	unmatchedForEachQuantifiers []expressions.Quantifier
-	forEachComputed             bool
+	forEachOnce                 sync.Once
 }
 
 // NewForMatchCompensation constructs a ForMatchCompensation.
@@ -539,7 +541,7 @@ func (c *ForMatchCompensation) GetUnmatchedQuantifiers() []expressions.Quantifie
 // Mirrors Java's ForMatch.computeUnmatchedForEachQuantifiers() with
 // Suppliers.memoize.
 func (c *ForMatchCompensation) GetUnmatchedForEachQuantifiers() []expressions.Quantifier {
-	if !c.forEachComputed {
+	c.forEachOnce.Do(func() {
 		var result []expressions.Quantifier
 		for _, q := range c.unmatchedQuantifiers {
 			if q.Kind() == expressions.QuantifierForEach {
@@ -547,8 +549,7 @@ func (c *ForMatchCompensation) GetUnmatchedForEachQuantifiers() []expressions.Qu
 			}
 		}
 		c.unmatchedForEachQuantifiers = result
-		c.forEachComputed = true
-	}
+	})
 	return c.unmatchedForEachQuantifiers
 }
 
