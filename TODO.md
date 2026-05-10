@@ -14,7 +14,7 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 - [x] **C-2** MaxMatchMap ValueEquivalence parameter — ported (swingshift-86). Added ComputeMaxMatchMapWithEquivalence and PullUpValueMaybeWithEquivalence that thread ValueEquivalence through the matching algorithm. findMatchingReachableCandidate now consults ValueEquivalence as fallback when structural equality fails.
 - [ ] **C-3** PullUp.Visitor (MatchPullUp, PullUpVisitor) — builds PullUp chains from expression trees by visiting candidate expressions. Needs expression visitor infrastructure. ~0.5 shift.
 - [x] **C-4** Pareto filtering in MaximumCoverageMatches — ported (swingshift-86). findContainingAccess prunes dominated matches: if match A from candidate C has strictly more bound sargable aliases that contain all of match B's aliases, B is eliminated.
-- [ ] **C-5** FieldValue child value — Go's FieldValue is a flat string; Java's has a child value + multi-step FieldPath. Blocks full ExpandRecordRule (expansion currently creates bare FVs without base-value reference) and ExpandFusedFieldValueRule. Structural change to FieldValue. ~1 shift.
+- [x] **C-5** FieldValue child value — ported (swingshift-86). Added optional `Child Value` field to FieldValue. nil Child = legacy flat behavior (backward-compatible). With Child set, FieldValue participates in correlation tracking (Children() returns the child, WalkValue/GetCorrelatedToOfValue discover its alias). NewFieldValue(child, field, typ) constructor for the full model; NewFlatFieldValue for legacy. Unblocks C-6 fetch rules' value translation.
 
 ### Blocked on larger infrastructure
 

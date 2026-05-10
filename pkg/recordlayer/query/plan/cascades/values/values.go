@@ -150,25 +150,36 @@ func (c *ConstantValue) Type() Type {
 	return WithNullability(c.Typ, c.Value == nil)
 }
 
-// FieldValue references a column by name. Evaluate expects a
-// `map[string]any` eval context and returns the field's value
-// (nil if absent — SQL NULL semantics).
+// FieldValue references a column by name on a base value. In the full
+// Java model, FieldValue always has a child value (typically a
+// QuantifiedObjectValue correlated to a quantifier) and a FieldPath
+// (multi-step for nested access). In Go, Child is optional for backward
+// compatibility: nil Child = leaf field reference (flat model used by
+// existing code).
+//
+// With Child set, FieldValue participates in correlation tracking:
+// GetCorrelatedToOfValue walks into Children() and discovers the
+// child's correlation. This is essential for push-through rules that
+// need to know whether a value is correlated to a specific quantifier.
 //
 // Field-name contract: callers constructing FieldValue via the SQL
 // resolver (expr.ResolveIdentifier) receive the case-folded (upper-
 // case) form, matching Identifier.Name(). Downstream row producers
-// MUST normalise their map keys to the same form — a row with
-// lowercase keys against an UPPER-case FieldValue silently returns
-// nil for every lookup. This is intentional: SQL identifier
-// resolution is case-insensitive by default, so there has to be a
-// single canonical casing at the evaluation boundary.
+// MUST normalise their map keys to the same form.
 type FieldValue struct {
 	Field string
 	Typ   Type
+	Child Value // base value (nil = legacy flat field reference)
 }
 
-func (f *FieldValue) Children() []Value { return []Value{} }
-func (f *FieldValue) Name() string      { return "field" }
+func (f *FieldValue) Children() []Value {
+	if f.Child == nil {
+		return []Value{}
+	}
+	return []Value{f.Child}
+}
+
+func (f *FieldValue) Name() string { return "field" }
 
 // Type returns the field's rich Type. The seed's FieldValue stores
 // the column type as-is; callers that know NOT NULL information
@@ -181,6 +192,9 @@ func (f *FieldValue) Type() Type {
 }
 
 func (f *FieldValue) Evaluate(evalCtx any) any {
+	if f.Child != nil {
+		evalCtx = f.Child.Evaluate(evalCtx)
+	}
 	if evalCtx == nil {
 		return nil
 	}
@@ -191,6 +205,18 @@ func (f *FieldValue) Evaluate(evalCtx any) any {
 		return rc.Datum[f.Field]
 	}
 	return nil
+}
+
+// NewFieldValue constructs a FieldValue with a child (base) value.
+// Mirrors Java's FieldValue(childValue, FieldPath).
+func NewFieldValue(child Value, field string, typ Type) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, Child: child}
+}
+
+// NewFlatFieldValue constructs a FieldValue without a child (legacy
+// flat model).
+func NewFlatFieldValue(field string, typ Type) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ}
 }
 
 // WalkValue applies visit to every node in v's subtree, pre-order.
