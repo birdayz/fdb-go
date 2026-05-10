@@ -121,7 +121,9 @@ Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchInterm
 
 **MaxMatchMap Simplification ported (swingshift-86):** ExpandRecordRule implemented directly in the recursive matcher — expands non-RCV values with Record type into RCV with FieldValue children. ExpandFusedFieldValueRule not applicable (Go's FieldValue has single field name, not multi-step path).
 
-**Remaining:** PullUp.Visitor pattern (MatchPullUp, PullUpVisitor) — requires expression visitor infrastructure.
+**PartialMatch methods ported (swingshift-86):** CompensateCompleteMatch (recursive child compensation chain via UnionCompensations), PullUp, GetMatchedQuantifiers, GetUnmatchedQuantifiers, CompensationCanBeDeferred, GetBoundSargableAliases, GetCompensatedAliases, GetBoundParameterPrefixMap. childPartialMatchMap wired into MatchIntermediateRule. AdjustGroupByMappings wired into SingleMatchedAccess. SatisfiesRequestedOrdering + SatisfiesAnyRequestedOrderings ported and wired into PrepareMatchesAndCompensations. Compensation.Apply wired into data access path. Real bound-predicate-count sorting replaces proxy.
+
+**Remaining:** PullUp.Visitor pattern (MatchPullUp, PullUpVisitor) — requires expression visitor infrastructure. SelectExpression.compensate full predicate compensation computation (~100 LOC). MaxMatchMap ValueEquivalence parameter for cross-alias matching.
 
 ### M-3: PushReferencedFields rules — DONE (dayshift-85)
 
