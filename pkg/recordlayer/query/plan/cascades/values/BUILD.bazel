@@ -67,6 +67,7 @@ go_test(
     srcs = [
         "coercion_test.go",
         "correlation_test.go",
+        "equals_without_children_test.go",
         "folder_test.go",
         "integration_test.go",
         "like_match_test.go",

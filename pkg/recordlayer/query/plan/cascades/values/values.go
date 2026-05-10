@@ -1866,19 +1866,24 @@ type RecordConstructorValue struct {
 }
 
 // NewRecordConstructorValue constructs a RecordConstructorValue.
-// Panics on duplicate field names — callers should rename via AS
-// before constructing.
+// Duplicate field names are deduplicated by appending a numeric
+// suffix (_2, _3, ...) to later occurrences, matching SQL semantics
+// where `SELECT a, a FROM T` produces columns a, a_2.
 func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
-	seen := make(map[string]struct{}, len(fields))
-	for _, f := range fields {
-		if _, dup := seen[f.Name]; dup {
-			panic("NewRecordConstructorValue: duplicate field name: " + f.Name)
-		}
-		seen[f.Name] = struct{}{}
-	}
-	// Defensive copy so the caller can't mutate.
+	seen := make(map[string]int, len(fields))
 	out := make([]RecordConstructorField, len(fields))
-	copy(out, fields)
+	for i, f := range fields {
+		count := seen[f.Name]
+		seen[f.Name] = count + 1
+		if count > 0 {
+			out[i] = RecordConstructorField{
+				Name:  fmt.Sprintf("%s_%d", f.Name, count+1),
+				Value: f.Value,
+			}
+		} else {
+			out[i] = f
+		}
+	}
 	return &RecordConstructorValue{Fields: out}
 }
 

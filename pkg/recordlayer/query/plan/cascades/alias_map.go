@@ -109,6 +109,14 @@ func (m *AliasMap) ContainsTarget(target values.CorrelationIdentifier) bool {
 	return ok
 }
 
+// ContainsMapping reports whether source maps to target.
+func (m *AliasMap) ContainsMapping(source, target values.CorrelationIdentifier) bool {
+	if t, ok := m.forward[source]; ok {
+		return t == target
+	}
+	return false
+}
+
 // GetTarget returns the target for the given source, or the source
 // itself if not mapped (identity fallback).
 func (m *AliasMap) GetTarget(source values.CorrelationIdentifier) values.CorrelationIdentifier {

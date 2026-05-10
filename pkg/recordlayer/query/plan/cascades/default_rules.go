@@ -107,6 +107,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewNoOpLimitElimRule(),
 		NewZeroLimitRule(),
 		NewRemoveRangeOneRule(),
+		NewSelectMergeRule(),
+		NewDecorrelateValuesRule(),
 	}
 }
 
@@ -201,6 +203,12 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughProjectionRule(),
 		NewPushRequestedOrderingThroughGroupByRule(),
 		NewPushRequestedOrderingThroughUnionRule(),
+
+		// --- Referenced-field push rules (column pruning, top-down) ---
+		NewPushReferencedFieldsThroughFilterRule(),
+		NewPushReferencedFieldsThroughSelectRule(),
+		NewPushReferencedFieldsThroughDistinctRule(),
+		NewPushReferencedFieldsThroughUniqueRule(),
 
 		// --- Java-ported rules (1:1 with fdb-record-layer-core) ---
 		NewImplementSimpleSelectRule(),

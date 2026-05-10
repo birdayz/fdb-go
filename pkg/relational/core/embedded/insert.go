@@ -98,7 +98,11 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		}
 	}
 
-	tableName := functions.FullIdToName(ins.TableName().FullId())
+	rawTableName := functions.FullIdToName(ins.TableName().FullId())
+	tableName, resolveErr := functions.ResolveQualifiedTableName(rawTableName, c.sess.Schema)
+	if resolveErr != nil {
+		return 0, resolveErr
+	}
 
 	// Handle INSERT INTO ... SELECT (insertStatementValueSelect).
 	if selCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueSelectContext); ok {

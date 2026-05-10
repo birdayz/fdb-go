@@ -23,10 +23,10 @@ func NewPlanPartition(
 ) *PlanPartition {
 	p := &PlanPartition{
 		partitionProps: partitionProps,
-		exprProps:      exprProps,
+		exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap, len(exprProps)),
 	}
-	for e := range exprProps {
-		p.orderedExprs = append(p.orderedExprs, e)
+	for e, props := range exprProps {
+		p.addExpression(e, props)
 	}
 	return p
 }
@@ -173,7 +173,9 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 	}
 
 	groups := make(map[propKey]*PlanPartition)
-	for expr, props := range pm.All() {
+	var order []propKey // preserve first-seen order
+	for _, expr := range pm.Expressions() {
+		props := pm.GetProperties(expr)
 		ordering := props.GetOrdering()
 		key := propKey{
 			distinct:    props.GetBool(properties.PropDistinctRecords),
@@ -193,13 +195,14 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 				exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
 			}
 			groups[key] = part
+			order = append(order, key)
 		}
 		part.addExpression(expr, props)
 	}
 
-	result := make([]*PlanPartition, 0, len(groups))
-	for _, part := range groups {
-		result = append(result, part)
+	result := make([]*PlanPartition, 0, len(order))
+	for _, key := range order {
+		result = append(result, groups[key])
 	}
 	return result
 }
@@ -259,6 +262,74 @@ func RollUpPlanPartitions(partitions []*PlanPartition, interestingProps ...*prop
 		result = append(result, groups[key])
 	}
 	return result
+}
+
+// FilterPlanPartitions returns partitions that satisfy the predicate.
+// Ports Java's PlanPartitionMatchers.filterPlanPartitions.
+func FilterPlanPartitions(partitions []*PlanPartition, pred func(*PlanPartition) bool) []*PlanPartition {
+	var result []*PlanPartition
+	for _, p := range partitions {
+		if pred(p) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// SelectMinCostPartition returns the partition whose first expression
+// has the lowest estimated cost. Ties broken by first occurrence.
+// Returns nil if partitions is empty.
+// Ports Java's ExpressionPartitionMatchers.argmin (simplified).
+func SelectMinCostPartition(partitions []*PlanPartition) *PlanPartition {
+	if len(partitions) == 0 {
+		return nil
+	}
+	best := partitions[0]
+	bestCost := partitionCost(best)
+	for _, p := range partitions[1:] {
+		c := partitionCost(p)
+		if c < bestCost {
+			best = p
+			bestCost = c
+		}
+	}
+	return best
+}
+
+func partitionCost(p *PlanPartition) float64 {
+	exprs := p.GetExpressions()
+	if len(exprs) == 0 {
+		return 1e18
+	}
+	if hc, ok := exprs[0].(interface {
+		HintCost([]properties.Cost) properties.Cost
+	}); ok {
+		c := hc.HintCost(nil)
+		return c.Cardinality + c.CPU
+	}
+	return 1e18
+}
+
+// WhereDistinct returns partitions where DistinctRecords is true.
+func WhereDistinct(partitions []*PlanPartition) []*PlanPartition {
+	return FilterPlanPartitions(partitions, func(p *PlanPartition) bool {
+		return p.IsDistinct()
+	})
+}
+
+// WhereStored returns partitions where StoredRecord is true.
+func WhereStored(partitions []*PlanPartition) []*PlanPartition {
+	return FilterPlanPartitions(partitions, func(p *PlanPartition) bool {
+		return p.IsStoredRecord()
+	})
+}
+
+// WhereOrdered returns partitions that have a known ordering.
+func WhereOrdered(partitions []*PlanPartition) []*PlanPartition {
+	return FilterPlanPartitions(partitions, func(p *PlanPartition) bool {
+		o := p.GetOrdering()
+		return o.IsKnown && len(o.Keys) > 0
+	})
 }
 
 // AllAttributesExcept returns plan properties excluding the specified ones.

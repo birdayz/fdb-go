@@ -24,12 +24,14 @@ go_library(
 go_test(
     name = "functions_test",
     srcs = [
+        "ast_util_test.go",
         "functions_test.go",
         "proto_value_test.go",
     ],
     embed = [":functions"],
     deps = [
         "//gen",
+        "//pkg/relational/api",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/dynamicpb",

@@ -74,6 +74,12 @@ func ReplaceLeavesMaybe(v Value, replaceFn func(Value) Value) Value {
 	})
 }
 
+// WithChildren is the exported entry point for reconstructing a Value
+// with new children. Delegates to the unexported withChildren.
+func WithChildren(v Value, newChildren []Value) Value {
+	return withChildren(v, newChildren)
+}
+
 // withChildren reconstructs a Value with new children. Dispatches
 // via type switch over all known concrete Value types in this
 // package. Types that already have a WithChildren method are called

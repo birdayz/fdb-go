@@ -7494,3 +7494,325 @@ func TestFDB_CTEChainedColumnAliases(t *testing.T) {
 		{2, 20}, {3, 30}, {4, 40},
 	}), "chained CTE column aliases: base(d,val), filtered(x,y)")
 }
+
+// --- Schema-qualified table names (TODO #99) ---
+
+func TestFDB_SchemaQualifiedSelect(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sqtselect")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtselect"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sqt_tmpl "+
+			"CREATE TABLE Items (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sqtselect/sqt WITH TEMPLATE sqt_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sqtselect?cluster_file=%s&schema=sqt", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (1, 10)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (2, 20)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// Query using schema-qualified name: sqt.Items
+	rows, err := db.QueryContext(ctx, "SELECT id, val FROM sqt.Items ORDER BY id")
+	if err != nil {
+		t.Fatalf("schema-qualified SELECT: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.val); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	want := []row{{1, 10}, {2, 20}}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d: got %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestFDB_SchemaQualifiedInsert(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sqtins")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtins"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sqti_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sqtins/s1 WITH TEMPLATE sqti_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sqtins?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// INSERT using schema-qualified name
+	res, err := db.ExecContext(ctx, "INSERT INTO s1.T VALUES (42)")
+	if err != nil {
+		t.Fatalf("schema-qualified INSERT: %v", err)
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		t.Fatalf("RowsAffected = %d, want 1", n)
+	}
+
+	// Verify via unqualified SELECT
+	var id int64
+	if err := db.QueryRowContext(ctx, "SELECT id FROM T").Scan(&id); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if id != 42 {
+		t.Fatalf("id = %d, want 42", id)
+	}
+}
+
+func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sqtupd")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtupd"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sqtu_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sqtupd/s1 WITH TEMPLATE sqtu_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sqtupd?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (1, 100)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// UPDATE using schema-qualified name
+	res, err := db.ExecContext(ctx, "UPDATE s1.T SET val = 200 WHERE id = 1")
+	if err != nil {
+		t.Fatalf("schema-qualified UPDATE: %v", err)
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		t.Fatalf("RowsAffected = %d, want 1", n)
+	}
+
+	var val int64
+	if err := db.QueryRowContext(ctx, "SELECT val FROM T WHERE id = 1").Scan(&val); err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if val != 200 {
+		t.Fatalf("val = %d, want 200", val)
+	}
+}
+
+func TestFDB_SchemaQualifiedDelete(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sqtdel")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtdel"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sqtd_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sqtdel/s1 WITH TEMPLATE sqtd_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sqtdel?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (1)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (2)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// DELETE using schema-qualified name
+	res, err := db.ExecContext(ctx, "DELETE FROM s1.T WHERE id = 1")
+	if err != nil {
+		t.Fatalf("schema-qualified DELETE: %v", err)
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		t.Fatalf("RowsAffected = %d, want 1", n)
+	}
+
+	var count int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM T").Scan(&count); err != nil {
+		t.Fatalf("SELECT COUNT: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+}
+
+func TestFDB_SchemaQualifiedWrongSchema(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sqtwrong")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtwrong"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sqtw_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sqtwrong/s1 WITH TEMPLATE sqtw_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sqtwrong?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// SELECT with wrong schema qualifier → error
+	_, err = db.QueryContext(ctx, "SELECT id FROM wrongschema.T")
+	if err == nil {
+		t.Fatal("expected error for wrong schema qualifier")
+	}
+
+	// INSERT with wrong schema qualifier → error
+	_, err = db.ExecContext(ctx, "INSERT INTO wrongschema.T VALUES (1)")
+	if err == nil {
+		t.Fatal("expected error for wrong schema qualifier on INSERT")
+	}
+
+	// UPDATE with wrong schema qualifier → error
+	_, err = db.ExecContext(ctx, "UPDATE wrongschema.T SET id = 1 WHERE id = 1")
+	if err == nil {
+		t.Fatal("expected error for wrong schema qualifier on UPDATE")
+	}
+
+	// DELETE with wrong schema qualifier → error
+	_, err = db.ExecContext(ctx, "DELETE FROM wrongschema.T WHERE id = 1")
+	if err == nil {
+		t.Fatal("expected error for wrong schema qualifier on DELETE")
+	}
+}
+
+func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sqtcase")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtcase"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sqtc_tmpl "+
+			"CREATE TABLE Items (id BIGINT NOT NULL, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sqtcase/MySchema WITH TEMPLATE sqtc_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sqtcase?cluster_file=%s&schema=MySchema", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (1)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// Schema qualifier in different case should work
+	var id int64
+	if err := db.QueryRowContext(ctx, "SELECT id FROM MYSCHEMA.Items").Scan(&id); err != nil {
+		t.Fatalf("upper-case schema qualifier: %v", err)
+	}
+	if id != 1 {
+		t.Fatalf("id = %d, want 1", id)
+	}
+
+	if err := db.QueryRowContext(ctx, "SELECT id FROM myschema.Items").Scan(&id); err != nil {
+		t.Fatalf("lower-case schema qualifier: %v", err)
+	}
+	if id != 1 {
+		t.Fatalf("id = %d, want 1", id)
+	}
+}

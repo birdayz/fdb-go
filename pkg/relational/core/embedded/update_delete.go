@@ -49,7 +49,11 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := functions.FullIdToName(upd.TableName().FullId())
+	rawTableName := functions.FullIdToName(upd.TableName().FullId())
+	tableName, resolveErr := functions.ResolveQualifiedTableName(rawTableName, c.sess.Schema)
+	if resolveErr != nil {
+		return 0, resolveErr
+	}
 	whereExpr := upd.WhereExpr()
 	if whereExpr != nil {
 		if err := rejectTopLevelParenthesizedWhere(whereExpr.Expression()); err != nil {
@@ -215,7 +219,11 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := functions.FullIdToName(del.TableName().FullId())
+	rawDelTableName := functions.FullIdToName(del.TableName().FullId())
+	tableName, resolveErr := functions.ResolveQualifiedTableName(rawDelTableName, c.sess.Schema)
+	if resolveErr != nil {
+		return 0, resolveErr
+	}
 	whereExpr := del.WhereExpr()
 	if whereExpr != nil {
 		if err := rejectTopLevelParenthesizedWhere(whereExpr.Expression()); err != nil {

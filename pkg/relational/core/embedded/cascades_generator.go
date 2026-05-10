@@ -117,6 +117,10 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"Unsupported operator "+fn)
 	}
 
+	if err := resolveQualifiedTableNames(logicalOp, g.c.sess.Schema); err != nil {
+		return nil, err
+	}
+
 	if err := validateTablesAndColumns(logicalOp, md); err != nil {
 		return nil, err
 	}
@@ -223,6 +227,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 	if logicalOp == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
+	}
+
+	if err := resolveQualifiedTableNames(logicalOp, g.c.sess.Schema); err != nil {
+		return nil, err
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
@@ -906,6 +914,49 @@ func findDistinctAggregate(op logical.LogicalOperator) string {
 		}
 	}
 	return ""
+}
+
+// resolveQualifiedTableNames walks the logical plan tree and resolves
+// schema-qualified table names (schema.table → table) in LogicalScan
+// nodes. Mirrors Java's SemanticAnalyzer.tableExists qualifier validation.
+func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) error {
+	if op == nil {
+		return nil
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		resolved, err := functions.ResolveQualifiedTableName(scan.Table, schemaName)
+		if err != nil {
+			return err
+		}
+		scan.Table = resolved
+	}
+	if ins, ok := op.(*logical.LogicalInsert); ok {
+		resolved, err := functions.ResolveQualifiedTableName(ins.Table, schemaName)
+		if err != nil {
+			return err
+		}
+		ins.Table = resolved
+	}
+	if del, ok := op.(*logical.LogicalDelete); ok {
+		resolved, err := functions.ResolveQualifiedTableName(del.Target, schemaName)
+		if err != nil {
+			return err
+		}
+		del.Target = resolved
+	}
+	if upd, ok := op.(*logical.LogicalUpdate); ok {
+		resolved, err := functions.ResolveQualifiedTableName(upd.Target, schemaName)
+		if err != nil {
+			return err
+		}
+		upd.Target = resolved
+	}
+	for _, ch := range op.Children() {
+		if err := resolveQualifiedTableNames(ch, schemaName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateTablesAndColumns(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {

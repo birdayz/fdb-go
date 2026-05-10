@@ -102,29 +102,36 @@ Physical operator that materializes inner result and sorts in memory. Fallback w
 
 Gates: DecorrelateValuesRule (scalar subqueries), AbstractDataAccessRule, MatchPartition infrastructure.
 
-### M-2: MatchPartition / PartialMatch / Compensation — MOSTLY PORTED (nightshift-84)
+### M-2: MatchPartition / PartialMatch / Compensation — MOSTLY PORTED (dayshift-85)
 
 Foundation types complete: TranslationMap, BiMap (structural equality), GroupByMappings, MatchedOrderingPart, MatchInfo (Regular + Adjusted + Builder), Compensation (No/Impossible/ForMatch), PartialMatchImpl, MatchPartition, SingleMatchedAccess, MaxMatchMap (with TranslateQueryValueMaybe/PullUpMaybe/AdjustMaybe), Traversal (candidate tree walker), Value.Replace tree substitution.
 
-Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchIntermediateRule (composing child matches), AdjustMatches (absorbing candidate-side expressions). All three fire during EXPLORE via MatchingRules().
+Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchIntermediateRule (composing child matches), AdjustMatches (absorbing candidate-side expressions). All three fire during EXPLORE via MatchingRules(). SelectMergeRule normalizes nested Select/Filter combinations.
 
-**Remaining:** PredicateMultiMap (full predicate mapping, currently placeholder). ValueEquivalence (semantic equality beyond structural). Full recursive MaxMatchMap.compute (currently seed: structural equality + pairwise child recursion).
+**dayshift-85 progress:**
+- PredicateCompensationMap: real identity-keyed map (was entry-count stub). Methods: Entries, ApplyCompensations, Amend.
+- PredicateCompensationFunc: extended with Amend + ApplyCompensationForPredicate. OfPredicateCompensation factory wraps predicates with alias-rebase translation.
+- ResultCompensationFunction: extended with Amend + ApplyCompensationForResult. ResultCompensationOfValue factory.
+- ForMatchCompensation: Apply (wraps expression with residual filters) + Intersect (combines compensations for index intersections).
+- QueryPlanConstraint: ported from placeholder to full type (wraps QueryPredicate, IsTautology/IsConstrained).
 
-### M-3: PushReferencedFields rules (5 rules)
+**Complete.** Full recursive MaxMatchMap.compute ported (dayshift-85): incrementalValueMatcher with lazy candidate tracking, cross-product children enumeration, memoization, branch-and-bound pruning via maxDepthBound. Only the Simplification variant-expansion step (MaxMatchMapSimplificationRuleSet) is deferred — it generates algebraically equivalent rewrites and requires a separate rule engine.
 
-Column pruning optimization. Reduces I/O by tracking which columns each operator needs.
+### M-3: PushReferencedFields rules — DONE (dayshift-85)
 
-### M-4: PlanPartition property-based matching
+All 4 rules ported: Filter, Select, Distinct, Unique. ReferencedFields constraint type + ReferencedFieldsConstraintKey. Propagates top-down during PLANNING constraint pass.
 
-Java's ImplementationRules match against PlanPartition property sets (ordering, distinct, stored-record). Go approximates with simpler partition iteration.
+### M-4: PlanPartition property-based matching — DONE (dayshift-85)
+
+Go has full PlanPartition infrastructure: ToPlanPartitions, RollUpPlanPartitions, AllAttributesExcept, per-expression property isolation. Matcher abstraction added: FilterPlanPartitions, SelectMinCostPartition, WhereDistinct/WhereStored/WhereOrdered convenience filters.
 
 ---
 
 ## PRIORITY ORDER FOR REMAINING 1:1 ALIGNMENT
 
 1. ~~**D-7** (multi-aggregate) — DONE~~
-2. **Scalar subqueries** — biggest user-visible gap. Needs DecorrelateValuesRule + SelectExpression. AliasMap + TranslationMap + MaxMatchMap foundations ready. ~2-3 shifts.
+2. **Scalar subqueries** — biggest user-visible gap. DecorrelateValuesRule landed (dayshift-85). Remaining: wire into SQL translator for `(SELECT MAX(v) FROM t)` patterns, correlated subquery infrastructure. ~1-2 shifts.
 3. ~~**D-8** (CardinalityProperty split) — DONE~~
 4. ~~**D-11** (ConstantObjectValue promotion) — DONE~~
-5. **D-2** (PushOrdering constraint vs structural) — 2-3 shifts
-6. **D-5** (InComparison architecture) — 2-3 shifts (M-1 + M-2 foundations now available)
+5. ~~**D-2** (PushOrdering constraint vs structural) — DONE~~
+6. ~~**D-5** (InComparison architecture) — DONE~~

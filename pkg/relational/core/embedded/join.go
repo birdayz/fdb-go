@@ -9,6 +9,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 )
 
@@ -29,6 +30,20 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
 			return nil, err
 		}
+	}
+
+	// Resolve schema-qualified table names before execution.
+	resolved, resolveErr := functions.ResolveQualifiedTableName(sq.tableName, c.sess.Schema)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	sq.tableName = resolved
+	for i := range sq.joins {
+		jResolved, jErr := functions.ResolveQualifiedTableName(sq.joins[i].tableName, c.sess.Schema)
+		if jErr != nil {
+			return nil, jErr
+		}
+		sq.joins[i].tableName = jResolved
 	}
 
 	var cols []string

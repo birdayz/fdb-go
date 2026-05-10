@@ -5,9 +5,48 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// QueryPlanConstraint captures assumptions under which a match is valid.
-// Placeholder -- full port pending.
-type QueryPlanConstraint struct{}
+// QueryPlanConstraint captures assumptions under which a plan match is
+// valid. Wraps a QueryPredicate that must evaluate to true for the
+// match to be applicable.
+//
+// Ports Java's com.apple.foundationdb.record.query.plan.QueryPlanConstraint.
+type QueryPlanConstraint struct {
+	predicate predicates.QueryPredicate
+}
+
+// Tautology returns a constraint that is always satisfied.
+func Tautology() *QueryPlanConstraint {
+	return &QueryPlanConstraint{predicate: predicates.NewConstantPredicate(predicates.TriTrue)}
+}
+
+// NewQueryPlanConstraint creates a constraint from a predicate.
+func NewQueryPlanConstraint(pred predicates.QueryPredicate) *QueryPlanConstraint {
+	return &QueryPlanConstraint{predicate: pred}
+}
+
+// IsTautology reports whether this constraint is always satisfied.
+func (c *QueryPlanConstraint) IsTautology() bool {
+	if c == nil || c.predicate == nil {
+		return true
+	}
+	if cp, ok := c.predicate.(*predicates.ConstantPredicate); ok {
+		return cp.Value == predicates.TriTrue
+	}
+	return false
+}
+
+// IsConstrained reports whether this constraint is non-trivial.
+func (c *QueryPlanConstraint) IsConstrained() bool {
+	return !c.IsTautology()
+}
+
+// GetPredicate returns the underlying predicate.
+func (c *QueryPlanConstraint) GetPredicate() predicates.QueryPredicate {
+	if c == nil {
+		return nil
+	}
+	return c.predicate
+}
 
 // PartialMatch is forward-declared -- full definition will live in
 // partial_match.go. Using an interface to avoid circular dependencies.
