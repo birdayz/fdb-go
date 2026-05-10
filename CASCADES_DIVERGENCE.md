@@ -102,13 +102,20 @@ Physical operator that materializes inner result and sorts in memory. Fallback w
 
 Gates: DecorrelateValuesRule (scalar subqueries), AbstractDataAccessRule, MatchPartition infrastructure.
 
-### M-2: MatchPartition / PartialMatch / Compensation — MOSTLY PORTED (nightshift-84)
+### M-2: MatchPartition / PartialMatch / Compensation — MOSTLY PORTED (dayshift-85)
 
 Foundation types complete: TranslationMap, BiMap (structural equality), GroupByMappings, MatchedOrderingPart, MatchInfo (Regular + Adjusted + Builder), Compensation (No/Impossible/ForMatch), PartialMatchImpl, MatchPartition, SingleMatchedAccess, MaxMatchMap (with TranslateQueryValueMaybe/PullUpMaybe/AdjustMaybe), Traversal (candidate tree walker), Value.Replace tree substitution.
 
-Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchIntermediateRule (composing child matches), AdjustMatches (absorbing candidate-side expressions). All three fire during EXPLORE via MatchingRules().
+Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchIntermediateRule (composing child matches), AdjustMatches (absorbing candidate-side expressions). All three fire during EXPLORE via MatchingRules(). SelectMergeRule normalizes nested Select/Filter combinations.
 
-**Remaining:** PredicateMultiMap (full predicate mapping, currently placeholder). ValueEquivalence (semantic equality beyond structural). Full recursive MaxMatchMap.compute (currently seed: structural equality + pairwise child recursion).
+**dayshift-85 progress:**
+- PredicateCompensationMap: real identity-keyed map (was entry-count stub). Methods: Entries, ApplyCompensations, Amend.
+- PredicateCompensationFunc: extended with Amend + ApplyCompensationForPredicate. OfPredicateCompensation factory wraps predicates with alias-rebase translation.
+- ResultCompensationFunction: extended with Amend + ApplyCompensationForResult. ResultCompensationOfValue factory.
+- ForMatchCompensation: Apply (wraps expression with residual filters) + Intersect (combines compensations for index intersections).
+- QueryPlanConstraint: ported from placeholder to full type (wraps QueryPredicate, IsTautology/IsConstrained).
+
+**Remaining:** ValueEquivalence (semantic equality beyond structural). Full recursive MaxMatchMap.compute (currently seed: structural equality + pairwise child recursion).
 
 ### M-3: PushReferencedFields rules (5 rules)
 
