@@ -432,6 +432,7 @@ func matchFilterAgainstSelect(
 		nil,                    // rollUpToGroupingValues
 		nil,                    // additionalPlanConstraint
 	)
+	mi.SetChildPartialMatch(queryQs[0].GetAlias(), childMatch)
 
 	pm := NewPartialMatch(
 		boundAliasMap,

@@ -125,6 +125,7 @@ type RegularMatchInfo struct {
 	groupByMappings          *GroupByMappings
 	rollUpToGroupingValues   []values.Value // nil when not applicable
 	additionalPlanConstraint *QueryPlanConstraint
+	childPartialMatchMap     map[values.CorrelationIdentifier]PartialMatch
 }
 
 // NewRegularMatchInfo constructs a RegularMatchInfo. All collection
@@ -210,6 +211,25 @@ func (r *RegularMatchInfo) GetAdditionalPlanConstraint() *QueryPlanConstraint {
 }
 
 // IsAdjusted returns false -- RegularMatchInfo is not adjusted.
+// GetChildPartialMatchMaybe returns the child PartialMatch for the
+// given quantifier alias, or nil if no child match exists for that
+// alias. Ports Java's RegularMatchInfo.getChildPartialMatchMaybe.
+func (r *RegularMatchInfo) GetChildPartialMatchMaybe(alias values.CorrelationIdentifier) PartialMatch {
+	if r.childPartialMatchMap == nil {
+		return nil
+	}
+	return r.childPartialMatchMap[alias]
+}
+
+// SetChildPartialMatch sets the child PartialMatch for a quantifier
+// alias. Called by MatchIntermediateRule when building composite matches.
+func (r *RegularMatchInfo) SetChildPartialMatch(alias values.CorrelationIdentifier, pm PartialMatch) {
+	if r.childPartialMatchMap == nil {
+		r.childPartialMatchMap = make(map[values.CorrelationIdentifier]PartialMatch)
+	}
+	r.childPartialMatchMap[alias] = pm
+}
+
 func (r *RegularMatchInfo) IsAdjusted() bool { return false }
 
 // IsRegular returns true -- RegularMatchInfo is a regular match.
