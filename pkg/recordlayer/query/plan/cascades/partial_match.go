@@ -133,12 +133,22 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 	unificationPullUp *PullUp,
 	candidateTopAlias values.CorrelationIdentifier,
 ) Compensation {
-	pullUp := p.PullUp(candidateTopAlias)
+	// Build the PullUp. For adjusted match infos (match wrapping),
+	// use NestPullUp to build a chain through the candidate expression
+	// hierarchy. For simple matches, use the flat PullUp.
+	var pullUp *PullUp
+	mi := p.GetRegularMatchInfo()
+	if p.GetMatchInfo().IsAdjusted() && p.GetCandidateRef() != nil {
+		rootOfMatchPullUp, _ := NestPullUp(p, unificationPullUp, candidateTopAlias)
+		pullUp = rootOfMatchPullUp
+	}
 	if pullUp == nil {
-		return ImpossibleCompensation
+		pullUp = p.PullUp(candidateTopAlias)
+		if pullUp == nil {
+			return ImpossibleCompensation
+		}
 	}
 
-	mi := p.GetRegularMatchInfo()
 	quantifiers := p.queryExpression.GetQuantifiers()
 
 	// Phase 1: Compute child compensation — union of compensations from
