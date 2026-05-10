@@ -190,6 +190,7 @@ go_test(
         "alias_map_test.go",
         "benchmark_test.go",
         "comparison_simplify_test.go",
+        "compensation_fuzz_test.go",
         "compensation_test.go",
         "cost_fuzz_test.go",
         "cross_product_test.go",

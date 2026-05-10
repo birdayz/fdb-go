@@ -20,9 +20,8 @@ import (
 //
 // Ports Java's com.apple.foundationdb.record.query.plan.cascades.Compensation.
 //
-// Methods that depend on types not yet ported (apply, applyFinal,
-// intersect, union) are omitted and will be added when their
-// dependencies land.
+// ForMatchCompensation implements Intersect, Union, and Apply.
+// applyFinal requires memoizer infrastructure (not yet ported).
 type Compensation interface {
 	// IsNeeded reports whether this compensation must be applied.
 	// Returns false only for NoCompensation.

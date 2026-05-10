@@ -514,3 +514,91 @@ func TestUnmatchedAggregateValue_FullIntegration(t *testing.T) {
 		t.Fatal("ExplainValue should return non-empty")
 	}
 }
+
+func TestValuesStructurallyEqual_Nil(t *testing.T) {
+	t.Parallel()
+	if !ValuesStructurallyEqual(nil, nil) {
+		t.Fatal("nil == nil should be true")
+	}
+	if ValuesStructurallyEqual(nil, &FieldValue{Field: "x"}) {
+		t.Fatal("nil != non-nil should be false")
+	}
+}
+
+func TestValuesStructurallyEqual_SamePointer(t *testing.T) {
+	t.Parallel()
+	v := &FieldValue{Field: "x"}
+	if !ValuesStructurallyEqual(v, v) {
+		t.Fatal("same pointer should be equal")
+	}
+}
+
+func TestValuesStructurallyEqual_Leaf(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "COL"}
+	b := &FieldValue{Field: "COL"}
+	if !ValuesStructurallyEqual(a, b) {
+		t.Fatal("identical FieldValues should be equal")
+	}
+	c := &FieldValue{Field: "OTHER"}
+	if ValuesStructurallyEqual(a, c) {
+		t.Fatal("different FieldValues should not be equal")
+	}
+}
+
+func TestValuesStructurallyEqual_Composite(t *testing.T) {
+	t.Parallel()
+	a := &ArithmeticValue{Op: OpAdd, Left: &ConstantValue{Value: int64(1)}, Right: &ConstantValue{Value: int64(2)}}
+	b := &ArithmeticValue{Op: OpAdd, Left: &ConstantValue{Value: int64(1)}, Right: &ConstantValue{Value: int64(2)}}
+	if !ValuesStructurallyEqual(a, b) {
+		t.Fatal("identical ArithmeticValues should be equal")
+	}
+	c := &ArithmeticValue{Op: OpSub, Left: &ConstantValue{Value: int64(1)}, Right: &ConstantValue{Value: int64(2)}}
+	if ValuesStructurallyEqual(a, c) {
+		t.Fatal("different ops should not be equal")
+	}
+}
+
+func TestValuesStructurallyEqual_DifferentTypes(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "x"}
+	b := &ConstantValue{Value: "x"}
+	if ValuesStructurallyEqual(a, b) {
+		t.Fatal("different types should not be equal")
+	}
+}
+
+func TestValuesStructurallyEqual_AndOrValue(t *testing.T) {
+	t.Parallel()
+	a := NewAndOrValue(AndOrAnd, &ConstantValue{Value: true}, &ConstantValue{Value: false})
+	b := NewAndOrValue(AndOrAnd, &ConstantValue{Value: true}, &ConstantValue{Value: false})
+	if !ValuesStructurallyEqual(a, b) {
+		t.Fatal("identical AndOrValues should be equal")
+	}
+	c := NewAndOrValue(AndOrOr, &ConstantValue{Value: true}, &ConstantValue{Value: false})
+	if ValuesStructurallyEqual(a, c) {
+		t.Fatal("different ops should not be equal")
+	}
+}
+
+func TestValuesStructurallyEqual_RecordConstructor(t *testing.T) {
+	t.Parallel()
+	a := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "a", Value: &ConstantValue{Value: int64(1)}},
+		{Name: "b", Value: &ConstantValue{Value: int64(2)}},
+	}}
+	b := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "a", Value: &ConstantValue{Value: int64(1)}},
+		{Name: "b", Value: &ConstantValue{Value: int64(2)}},
+	}}
+	if !ValuesStructurallyEqual(a, b) {
+		t.Fatal("identical RecordConstructorValues should be equal")
+	}
+	c := &RecordConstructorValue{Fields: []RecordConstructorField{
+		{Name: "a", Value: &ConstantValue{Value: int64(1)}},
+		{Name: "DIFFERENT", Value: &ConstantValue{Value: int64(2)}},
+	}}
+	if ValuesStructurallyEqual(a, c) {
+		t.Fatal("different field names should not be equal")
+	}
+}
