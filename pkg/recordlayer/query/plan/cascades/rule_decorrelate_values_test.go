@@ -151,6 +151,151 @@ func TestDecorrelateValuesRule_SidewaysCorrelation(t *testing.T) {
 	}
 }
 
+func TestDecorrelateValuesRule_AndPredicateTranslation(t *testing.T) {
+	t.Parallel()
+
+	// Values box with constant result.
+	rangeSource := &expressions.FullUnorderedScanExpression{}
+	rangeRef := expressions.InitialOf(rangeSource)
+	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	constResult := &values.ConstantValue{Value: int64(7)}
+	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
+	valuesBoxRef := expressions.InitialOf(valuesBox)
+	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
+
+	scan := &expressions.FullUnorderedScanExpression{}
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	// AND predicate: f.col = p.x AND f.col > 0
+	andPred := predicates.NewAnd(
+		&predicates.ComparisonPredicate{
+			Operand: &values.FieldValue{Field: "COL"},
+			Comparison: predicates.Comparison{
+				Type:    predicates.ComparisonEquals,
+				Operand: values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias()),
+			},
+		},
+		&predicates.ComparisonPredicate{
+			Operand: &values.FieldValue{Field: "COL"},
+			Comparison: predicates.Comparison{
+				Type:    predicates.ComparisonGreaterThan,
+				Operand: &values.ConstantValue{Value: int64(0)},
+			},
+		},
+	)
+	outerSel := expressions.NewSelectExpression(
+		scanQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{valuesBoxQ, scanQ},
+		[]predicates.QueryPredicate{andPred},
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+	if len(decorrelated.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier, got %d", len(decorrelated.GetQuantifiers()))
+	}
+	// The AND predicate should have the constant substituted.
+	ap, ok := decorrelated.GetPredicates()[0].(*predicates.AndPredicate)
+	if !ok {
+		t.Fatalf("expected AndPredicate, got %T", decorrelated.GetPredicates()[0])
+	}
+	cp := ap.SubPredicates[0].(*predicates.ComparisonPredicate)
+	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("expected ConstantValue after decorrelation, got %T", cp.Comparison.Operand)
+	}
+	if cv.Value != int64(7) {
+		t.Errorf("expected 7, got %v", cv.Value)
+	}
+}
+
+func TestDecorrelateValuesRule_ResultValueTranslation(t *testing.T) {
+	t.Parallel()
+
+	// Values box.
+	rangeSource := &expressions.FullUnorderedScanExpression{}
+	rangeRef := expressions.InitialOf(rangeSource)
+	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	constResult := &values.ConstantValue{Value: "hello"}
+	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
+	valuesBoxRef := expressions.InitialOf(valuesBox)
+	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
+
+	scan := &expressions.FullUnorderedScanExpression{}
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	// Result value references the values box alias.
+	outerResult := values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias())
+	outerSel := expressions.NewSelectExpression(
+		outerResult,
+		[]expressions.Quantifier{valuesBoxQ, scanQ},
+		nil,
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+	// Result value should be the constant "hello", not the QOV.
+	rv := decorrelated.GetResultValue()
+	cv, ok := rv.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("expected ConstantValue in result, got %T", rv)
+	}
+	if cv.Value != "hello" {
+		t.Errorf("expected 'hello', got %v", cv.Value)
+	}
+}
+
+func TestDecorrelateValuesRule_WithSourceAliases(t *testing.T) {
+	t.Parallel()
+
+	// Values box.
+	rangeSource := &expressions.FullUnorderedScanExpression{}
+	rangeRef := expressions.InitialOf(rangeSource)
+	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	constResult := &values.ConstantValue{Value: int64(1)}
+	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
+	valuesBoxRef := expressions.InitialOf(valuesBox)
+	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
+
+	scan := &expressions.FullUnorderedScanExpression{}
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	outerSel := expressions.NewSelectExpressionWithAliases(
+		scanQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{valuesBoxQ, scanQ},
+		nil,
+		[]string{"P", "F"},
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+	aliases := decorrelated.GetSourceAliases()
+	if len(aliases) != 1 {
+		t.Fatalf("expected 1 source alias (F), got %d: %v", len(aliases), aliases)
+	}
+	if aliases[0] != "F" {
+		t.Errorf("expected alias F, got %s", aliases[0])
+	}
+}
+
 func TestDecorrelateValuesRule_MultipleValuesBoxes(t *testing.T) {
 	t.Parallel()
 

@@ -339,3 +339,100 @@ func TestSelectMergeRule_MultiQuantifierChild(t *testing.T) {
 			qov.Correlation.Name(), scan1Q.GetAlias().Name())
 	}
 }
+
+func TestSelectMergeRule_WithSourceAliases(t *testing.T) {
+	t.Parallel()
+
+	scan := &expressions.FullUnorderedScanExpression{}
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	filter := expressions.NewLogicalFilterExpression(nil, scanQ)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+
+	sel := expressions.NewSelectExpressionWithAliases(
+		filterQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{filterQ},
+		nil,
+		[]string{"FILTERED_SOURCE"},
+	)
+	selRef := expressions.InitialOf(sel)
+
+	yielded := FireExpressionRule(NewSelectMergeRule(), selRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yielded, got %d", len(yielded))
+	}
+
+	merged := yielded[0].(*expressions.SelectExpression)
+	if len(merged.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier, got %d", len(merged.GetQuantifiers()))
+	}
+}
+
+func TestSelectMergeRule_MultiQuantifierWithPredicates(t *testing.T) {
+	t.Parallel()
+
+	scan1 := &expressions.FullUnorderedScanExpression{}
+	scan1Ref := expressions.InitialOf(scan1)
+	scan1Q := expressions.ForEachQuantifier(scan1Ref)
+
+	scan2 := &expressions.FullUnorderedScanExpression{}
+	scan2Ref := expressions.InitialOf(scan2)
+	scan2Q := expressions.ForEachQuantifier(scan2Ref)
+
+	childPred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "A"},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(1)},
+		},
+	}
+	childSel := expressions.NewSelectExpression(
+		scan1Q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{scan1Q, scan2Q},
+		[]predicates.QueryPredicate{childPred},
+	)
+	childRef := expressions.InitialOf(childSel)
+	childQ := expressions.ForEachQuantifier(childRef)
+
+	outerPred := &predicates.ComparisonPredicate{
+		Operand: values.NewQuantifiedObjectValue(childQ.GetAlias()),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(99)},
+		},
+	}
+	outerSel := expressions.NewSelectExpression(
+		values.NewQuantifiedObjectValue(childQ.GetAlias()),
+		[]expressions.Quantifier{childQ},
+		[]predicates.QueryPredicate{outerPred},
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewSelectMergeRule(), outerRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yielded, got %d", len(yielded))
+	}
+
+	merged := yielded[0].(*expressions.SelectExpression)
+	// 2 quantifiers from child, child's predicate pulled up
+	if len(merged.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(merged.GetQuantifiers()))
+	}
+	// outer pred (translated) + child pred
+	if len(merged.GetPredicates()) != 2 {
+		t.Fatalf("expected 2 predicates, got %d", len(merged.GetPredicates()))
+	}
+	// Outer predicate's operand should be translated from childQ alias
+	// to the child's result value (scan1Q's QOV).
+	outerTranslated := merged.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	rv, ok := outerTranslated.Operand.(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected QOV in translated predicate, got %T", outerTranslated.Operand)
+	}
+	if rv.Correlation != scan1Q.GetAlias() {
+		t.Errorf("predicate operand alias = %s, want %s",
+			rv.Correlation.Name(), scan1Q.GetAlias().Name())
+	}
+}
