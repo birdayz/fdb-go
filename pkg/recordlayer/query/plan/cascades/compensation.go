@@ -688,6 +688,129 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 	)
 }
 
+// Union combines this compensation with another by merging predicate
+// maps from both sides. Used when multiple partial matches combine
+// their compensations (e.g. union of data access matches).
+//
+// Ports Java's Compensation.WithSelectCompensation.union.
+func (c *ForMatchCompensation) Union(other *ForMatchCompensation) Compensation {
+	if c.IsImpossible() || other.IsImpossible() {
+		return ImpossibleCompensation
+	}
+	if !c.IsNeeded() && !other.IsNeeded() {
+		return NoCompensation
+	}
+	if !c.IsNeeded() {
+		return other
+	}
+	if !other.IsNeeded() {
+		return c
+	}
+
+	// Check: union of matched quantifiers must have at most one ForEach.
+	matchedSet := make(map[values.CorrelationIdentifier]expressions.Quantifier)
+	for _, q := range c.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	for _, q := range other.matchedQuantifiers {
+		matchedSet[q.GetAlias()] = q
+	}
+	forEachCount := 0
+	var unionedMatched []expressions.Quantifier
+	for _, q := range matchedSet {
+		unionedMatched = append(unionedMatched, q)
+		if q.Kind() == expressions.QuantifierForEach {
+			forEachCount++
+		}
+	}
+	if forEachCount > 1 {
+		return ImpossibleCompensation
+	}
+
+	// If either side has unmatched ForEach quantifiers, union is impossible.
+	if len(c.GetUnmatchedForEachQuantifiers()) > 0 || len(other.GetUnmatchedForEachQuantifiers()) > 0 {
+		return ImpossibleCompensation
+	}
+
+	// Union child compensations.
+	childComp := c.childCompensation
+	var unionedChild Compensation
+	if childForMatch, ok := childComp.(*ForMatchCompensation); ok {
+		if otherChild, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
+			unionedChild = childForMatch.Union(otherChild)
+		} else {
+			unionedChild = childComp
+		}
+	} else {
+		unionedChild = childComp
+	}
+	if unionedChild.IsImpossible() || !unionedChild.CanBeDeferred() {
+		return ImpossibleCompensation
+	}
+
+	// Result compensation: pick one side (same shape guaranteed).
+	var newResultFn *ResultCompensationFunction
+	rcf := c.resultCompensationFn
+	otherRcf := other.resultCompensationFn
+	if !rcf.IsNeeded() && !otherRcf.IsNeeded() {
+		newResultFn = NoResultCompensation()
+	} else {
+		newResultFn = rcf
+	}
+
+	// Predicate map union: merge both sides. Java throws on duplicates;
+	// Go uses identity (pointer) comparison so duplicates shouldn't happen
+	// unless the same predicate pointer appears in both maps.
+	var combinedKeys []predicates.QueryPredicate
+	var combinedVals []PredicateCompensationFunc
+
+	predKeys, predVals := c.predicateCompensationMap.Entries()
+	combinedKeys = append(combinedKeys, predKeys...)
+	combinedVals = append(combinedVals, predVals...)
+
+	otherKeys, otherVals := other.predicateCompensationMap.Entries()
+	existingSet := make(map[predicates.QueryPredicate]struct{})
+	for _, k := range predKeys {
+		existingSet[k] = struct{}{}
+	}
+	for i, k := range otherKeys {
+		if _, dup := existingSet[k]; dup {
+			return ImpossibleCompensation
+		}
+		combinedKeys = append(combinedKeys, k)
+		combinedVals = append(combinedVals, otherVals[i])
+	}
+	combinedPredMap := NewPredicateCompensationMap(combinedKeys, combinedVals)
+
+	// Early returns.
+	if !unionedChild.IsNeededForFiltering() && !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return NoCompensation
+	}
+	if !newResultFn.IsNeeded() && combinedPredMap.IsEmpty() {
+		return unionedChild
+	}
+
+	// Merge compensated aliases.
+	mergedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for k, v := range c.compensatedAliases {
+		mergedAliases[k] = v
+	}
+	for k, v := range other.compensatedAliases {
+		mergedAliases[k] = v
+	}
+
+	return DerivedCompensation(
+		unionedChild,
+		false,
+		combinedPredMap,
+		unionedMatched,
+		nil, // unmatched is empty in union
+		mergedAliases,
+		newResultFn,
+		EmptyGroupByMappings(),
+	)
+}
+
 // ---------------------------------------------------------------------------
 // Derived factory
 // ---------------------------------------------------------------------------
