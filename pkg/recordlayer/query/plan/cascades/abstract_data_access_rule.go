@@ -86,13 +86,10 @@ func PrepareMatchesAndCompensations(
 	}
 
 	// Sort by bound predicate count descending (maximum coverage first).
-	// Uses the number of matched ordering parts as a proxy for "bound
-	// predicate count" since getBoundPlaceholders is not yet
-	// on the PartialMatch interface. This preserves the Java sort
-	// contract's intent: higher-coverage matches first.
+	// Ports Java's sort by getBoundPlaceholders().size().
 	sort.SliceStable(result, func(i, j int) bool {
-		iCount := len(result[i].GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts())
-		jCount := len(result[j].GetPartialMatch().GetMatchInfo().GetMatchedOrderingParts())
+		iCount := boundPredicateCount(result[i].GetPartialMatch())
+		jCount := boundPredicateCount(result[j].GetPartialMatch())
 		return iCount > jCount
 	})
 
@@ -287,6 +284,16 @@ var _ expressions.RelationalExpression = (*scanPlanExpression)(nil)
 // ---------------------------------------------------------------------------
 // Ordering satisfaction
 // ---------------------------------------------------------------------------
+
+// boundPredicateCount returns the number of bound sargable aliases
+// for a PartialMatch. For PartialMatchImpl, uses GetBoundSargableAliases;
+// for test stubs, falls back to matched ordering parts count.
+func boundPredicateCount(pm PartialMatch) int {
+	if pmi, ok := pm.(*PartialMatchImpl); ok {
+		return len(pmi.GetBoundSargableAliases())
+	}
+	return len(pm.GetMatchInfo().GetMatchedOrderingParts())
+}
 
 // SatisfiesRequestedOrdering checks if a PartialMatch's matched
 // ordering parts satisfy a RequestedOrdering. Returns the scan
