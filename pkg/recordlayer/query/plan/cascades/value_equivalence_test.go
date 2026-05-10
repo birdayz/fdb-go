@@ -122,3 +122,81 @@ func TestConstrainedBoolean_TrueWithConstraint(t *testing.T) {
 		t.Fatal("should carry the constraint")
 	}
 }
+
+func TestConstrainedBoolean_IsTrue_IsFalse(t *testing.T) {
+	t.Parallel()
+	tr := AlwaysTrue()
+	fa := FalseValue()
+	if !tr.IsTrue() {
+		t.Fatal("AlwaysTrue should be true")
+	}
+	if tr.IsFalse() {
+		t.Fatal("AlwaysTrue should not be false")
+	}
+	if fa.IsTrue() {
+		t.Fatal("FalseValue should not be true")
+	}
+	if !fa.IsFalse() {
+		t.Fatal("FalseValue should be false")
+	}
+}
+
+func TestConstrainedBoolean_ComposeWithOther(t *testing.T) {
+	t.Parallel()
+	t.Run("true_true", func(t *testing.T) {
+		t.Parallel()
+		result := AlwaysTrue().ComposeWithOther(AlwaysTrue())
+		if !result.IsTrue() {
+			t.Fatal("true AND true should be true")
+		}
+	})
+	t.Run("true_false", func(t *testing.T) {
+		t.Parallel()
+		result := AlwaysTrue().ComposeWithOther(FalseValue())
+		if !result.IsFalse() {
+			t.Fatal("true AND false should be false")
+		}
+	})
+	t.Run("false_true", func(t *testing.T) {
+		t.Parallel()
+		result := FalseValue().ComposeWithOther(AlwaysTrue())
+		if !result.IsFalse() {
+			t.Fatal("false AND true should be false")
+		}
+	})
+	t.Run("constrained_true", func(t *testing.T) {
+		t.Parallel()
+		c := Tautology()
+		result := TrueWithConstraint(c).ComposeWithOther(AlwaysTrue())
+		if !result.IsTrue() || result.Constraint != c {
+			t.Fatal("constrained AND true should preserve constraint")
+		}
+	})
+}
+
+func TestConstrainedBoolean_Filter(t *testing.T) {
+	t.Parallel()
+	t.Run("false_short_circuits", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		result := FalseValue().Filter(func() ConstrainedBoolean {
+			called = true
+			return AlwaysTrue()
+		})
+		if !result.IsFalse() {
+			t.Fatal("false.Filter should return false")
+		}
+		if called {
+			t.Fatal("Filter should short-circuit on false")
+		}
+	})
+	t.Run("true_evaluates", func(t *testing.T) {
+		t.Parallel()
+		result := AlwaysTrue().Filter(func() ConstrainedBoolean {
+			return AlwaysTrue()
+		})
+		if !result.IsTrue() {
+			t.Fatal("true.Filter(true) should be true")
+		}
+	})
+}
