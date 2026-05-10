@@ -259,7 +259,10 @@ func DataAccessForMatchPartition(
 			continue
 		}
 
-		var expr expressions.RelationalExpression = wrapScanPlan(plan)
+		// Determine if the index is covering: no result compensation
+		// needed means all output fields are available from the index.
+		isCovering := !comp.IsFinalNeeded()
+		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering)
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
@@ -282,14 +285,30 @@ func DataAccessForMatchPartition(
 }
 
 // wrapScanPlan converts a RecordQueryPlan from the data access pipeline
-// into the properly-typed RelationalExpression wrapper. For a
-// FetchFromPartialRecordPlan wrapping an IndexPlan, this produces a
-// physicalFetchFromPartialRecordWrapper over a physicalIndexScanWrapper
-// — the structure that C-6 push-through rules match against.
-// For other plan types, falls back to the generic scanPlanExpression.
+// into the properly-typed RelationalExpression wrapper.
 func wrapScanPlan(plan plans.RecordQueryPlan) expressions.RelationalExpression {
+	return wrapScanPlanWithCoverage(plan, false)
+}
+
+// wrapScanPlanWithCoverage converts a RecordQueryPlan into the
+// properly-typed RelationalExpression wrapper with coverage info.
+//
+// When isCovering=true AND the plan is a FetchFromPartialRecordPlan
+// wrapping an IndexPlan, the fetch is eliminated and the index scan
+// is marked as covering. This matches Java's path where
+// CoveringIndexPlan (no Fetch needed) is produced when the index
+// covers all output fields.
+//
+// When isCovering=false, the Fetch wrapper is preserved so push-through
+// rules can optimize it (push filters below, eliminate via PushMap).
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool) expressions.RelationalExpression {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
+			if isCovering {
+				// Index covers all needed columns — no fetch needed.
+				return &physicalIndexScanWrapper{plan: innerIdx, covering: true}
+			}
+			// Non-covering: preserve the fetch wrapper.
 			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx}
 			idxRef := expressions.NewFinalReference([]expressions.RelationalExpression{idxWrapper})
 			fetchQ := expressions.ForEachQuantifier(idxRef)
@@ -297,7 +316,7 @@ func wrapScanPlan(plan plans.RecordQueryPlan) expressions.RelationalExpression {
 		}
 	}
 	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
-		return &physicalIndexScanWrapper{plan: idxPlan}
+		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering}
 	}
 	return &scanPlanExpression{plan: plan}
 }
