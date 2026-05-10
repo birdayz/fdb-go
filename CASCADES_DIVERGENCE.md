@@ -117,7 +117,9 @@ Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchInterm
 - PredicateCompensationMap.Get: identity-keyed lookup for intersection algorithm.
 - replacePredicateValues: ports Java's QueryPredicate.replaceValuesMaybe.
 
-**Remaining:** MaxMatchMap Simplification variant-expansion (MaxMatchMapSimplificationRuleSet) — generates algebraically equivalent rewrites and requires a separate rule engine. Deferred.
+**PullUp type ported (swingshift-86):** PullUp chain for translating values across expression boundaries during matching. PullUpValueMaybe walks the chain bottom-up via MaxMatchMap. ComputeResultCompensation uses PullUp to determine whether result-shape compensation is needed.
+
+**Remaining:** MaxMatchMap Simplification variant-expansion (MaxMatchMapSimplificationRuleSet) — generates algebraically equivalent rewrites and requires a separate rule engine. Deferred. PullUp.Visitor pattern (MatchPullUp, PullUpVisitor) — requires expression visitor infrastructure.
 
 ### M-3: PushReferencedFields rules — DONE (dayshift-85)
 

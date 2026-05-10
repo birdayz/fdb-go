@@ -5,6 +5,8 @@ import (
 	"reflect"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PartialMatchImpl is the concrete implementation of PartialMatch.
@@ -97,13 +99,69 @@ func (p *PartialMatchImpl) String() string {
 	return fmt.Sprintf("%s[%s]", exprType.Name(), p.matchCandidate.CandidateName())
 }
 
-// compensateCompleteMatch, pullUp, nestPullUp, prepareForUnification,
-// compensationCanBeDeferred, pullUpToParent, getPulledUpPredicateMappings,
-// compensate, compensateExistential, getMatchedQuantifiers,
-// getUnmatchedQuantifiers, getBoundParameterPrefixMap, getBoundPlaceholders,
-// getBoundSargableAliases, getCompensatedAliases, getAccumulatedPredicateMap,
-// matchInfosFromMap, toPlannerEventPartialMatchProto
-// -- pending full PartialMatch infrastructure.
+// GetBoundParameterPrefixMap returns the parameter binding map from
+// the match info. Ports Java's PartialMatch.getBoundParameterPrefixMap().
+func (p *PartialMatchImpl) GetBoundParameterPrefixMap() map[values.CorrelationIdentifier]*predicates.ComparisonRange {
+	return p.GetRegularMatchInfo().GetParameterBindingMap()
+}
+
+// PullUp computes the PullUp chain for this partial match from the
+// candidate side. Ports Java's PartialMatch.pullUp(candidateAlias).
+func (p *PartialMatchImpl) PullUp(candidateAlias values.CorrelationIdentifier) *PullUp {
+	mi := p.GetRegularMatchInfo()
+	mmm := mi.GetMaxMatchMap()
+	if mmm == nil {
+		return nil
+	}
+	rangedOver := make(map[values.CorrelationIdentifier]struct{})
+	for _, alias := range mi.GetBindingAliasMap().Sources() {
+		rangedOver[alias] = struct{}{}
+	}
+	return NewPullUp(nil, candidateAlias, mmm.GetCandidateValue(), rangedOver)
+}
+
+// CompensateCompleteMatch computes compensation for a complete match.
+// Ports Java's PartialMatch.compensateCompleteMatch.
+func (p *PartialMatchImpl) CompensateCompleteMatch(
+	unificationPullUp *PullUp,
+	candidateTopAlias values.CorrelationIdentifier,
+) Compensation {
+	pullUp := p.PullUp(candidateTopAlias)
+	if pullUp == nil {
+		return ImpossibleCompensation
+	}
+
+	cr := ComputeResultCompensation(p, pullUp)
+	if cr == nil {
+		return ImpossibleCompensation
+	}
+
+	if cr.Impossible {
+		return ImpossibleCompensation
+	}
+
+	if !cr.ResultCompensationFn.IsNeeded() {
+		return NoCompensation
+	}
+
+	return NewForMatchCompensation(
+		cr.Impossible,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		nil,
+		nil,
+		map[values.CorrelationIdentifier]struct{}{candidateTopAlias: {}},
+		cr.ResultCompensationFn,
+		cr.GroupByMappings,
+	)
+}
+
+// Remaining not yet ported: nestPullUp, prepareForUnification,
+// pullUpToParent, getPulledUpPredicateMappings, compensate (full
+// SelectExpression delegation), compensateExistential,
+// getMatchedQuantifiers, getUnmatchedQuantifiers, getBoundPlaceholders,
+// getBoundSargableAliases, getCompensatedAliases,
+// getAccumulatedPredicateMap, matchInfosFromMap.
 
 // Compile-time interface satisfaction check.
 var _ PartialMatch = (*PartialMatchImpl)(nil)
