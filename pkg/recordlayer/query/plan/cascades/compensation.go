@@ -682,16 +682,19 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 	}
 
 	// Phase 2: Intersect child compensations.
-	childComp := c.childCompensation
+	// Java: childCompensation.intersect(other.getChildCompensation())
+	// Uses interface dispatch. In Go, ForMatchCompensation.Intersect
+	// handles the impossible check; for non-ForMatch types, use
+	// intersectTwo which handles the monoid identities.
 	var intersectedChild Compensation
-	if childForMatch, ok := childComp.(*ForMatchCompensation); ok {
-		if otherChild, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
-			intersectedChild = childForMatch.Intersect(otherChild)
+	if childFM, ok := c.childCompensation.(*ForMatchCompensation); ok {
+		if otherChildFM, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
+			intersectedChild = childFM.Intersect(otherChildFM)
 		} else {
-			intersectedChild = childComp
+			intersectedChild = intersectTwo(c.childCompensation, other.childCompensation)
 		}
 	} else {
-		intersectedChild = childComp
+		intersectedChild = intersectTwo(c.childCompensation, other.childCompensation)
 	}
 	if intersectedChild.IsImpossible() || !intersectedChild.CanBeDeferred() {
 		return ImpossibleCompensation
@@ -883,16 +886,15 @@ func (c *ForMatchCompensation) Union(other *ForMatchCompensation) Compensation {
 	}
 
 	// Union child compensations.
-	childComp := c.childCompensation
 	var unionedChild Compensation
-	if childForMatch, ok := childComp.(*ForMatchCompensation); ok {
-		if otherChild, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
-			unionedChild = childForMatch.Union(otherChild)
+	if childFM, ok := c.childCompensation.(*ForMatchCompensation); ok {
+		if otherChildFM, ok2 := other.childCompensation.(*ForMatchCompensation); ok2 {
+			unionedChild = childFM.Union(otherChildFM)
 		} else {
-			unionedChild = childComp
+			unionedChild = unionTwo(c.childCompensation, other.childCompensation)
 		}
 	} else {
-		unionedChild = childComp
+		unionedChild = unionTwo(c.childCompensation, other.childCompensation)
 	}
 	if unionedChild.IsImpossible() || !unionedChild.CanBeDeferred() {
 		return ImpossibleCompensation
