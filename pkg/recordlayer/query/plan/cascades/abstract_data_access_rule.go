@@ -281,3 +281,123 @@ func (s *scanPlanExpression) GetRecordQueryPlan() plans.RecordQueryPlan {
 
 // compile-time check
 var _ expressions.RelationalExpression = (*scanPlanExpression)(nil)
+
+// ---------------------------------------------------------------------------
+// Ordering satisfaction
+// ---------------------------------------------------------------------------
+
+// SatisfiesRequestedOrdering checks if a PartialMatch's matched
+// ordering parts satisfy a RequestedOrdering. Returns the scan
+// direction needed, or nil if the ordering is not satisfied.
+//
+// Ports Java's AbstractDataAccessRule.satisfiesRequestedOrdering.
+func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDirection {
+	if ro.IsPreserve() {
+		both := ScanDirectionBoth
+		return &both
+	}
+
+	resolved := ScanDirectionBoth
+	mi := pm.GetMatchInfo()
+	orderingParts := mi.GetMatchedOrderingParts()
+
+	equalityBound := make(map[string]struct{})
+	for _, op := range orderingParts {
+		if op.GetComparisonRange().IsEquality() {
+			equalityBound[values.ExplainValue(op.GetValue())] = struct{}{}
+		}
+	}
+
+	opIdx := 0
+	for _, reqPart := range ro.GetParts() {
+		reqValue := reqPart.Value
+		reqKey := values.ExplainValue(reqValue)
+
+		if _, eq := equalityBound[reqKey]; eq {
+			continue
+		}
+
+		found := false
+		for opIdx < len(orderingParts) {
+			op := orderingParts[opIdx]
+			opIdx++
+			if op.GetComparisonRange().IsEquality() {
+				continue
+			}
+
+			opKey := values.ExplainValue(op.GetValue())
+			if reqKey == opKey {
+				reqSort := reqPart.SortOrder
+				if reqSort != RequestedSortOrderAny {
+					matchedSort := op.GetMatchedSortOrder()
+					reqDesc := reqSort == RequestedSortOrderDescending
+					if matchedSort.IsAnyDescending() == reqDesc {
+						if resolved == ScanDirectionBoth {
+							resolved = ScanDirectionForward
+						} else if resolved != ScanDirectionForward {
+							return nil
+						}
+					} else {
+						if resolved == ScanDirectionBoth {
+							resolved = ScanDirectionReverse
+						} else if resolved != ScanDirectionReverse {
+							return nil
+						}
+					}
+				}
+				found = true
+				break
+			}
+			return nil
+		}
+		if !found {
+			return nil
+		}
+	}
+
+	return &resolved
+}
+
+// SatisfiesAnyRequestedOrderings filters requestedOrderings to those
+// satisfied by the partial match. Returns the satisfied orderings and
+// the scan direction, or nil if none are satisfied.
+//
+// Ports Java's AbstractDataAccessRule.satisfiesAnyRequestedOrderings.
+func SatisfiesAnyRequestedOrderings(
+	pm PartialMatch,
+	requestedOrderings []*RequestedOrdering,
+) ([]*RequestedOrdering, *ScanDirection) {
+	seenForward := false
+	seenReverse := false
+	var satisfying []*RequestedOrdering
+
+	for _, ro := range requestedOrderings {
+		dir := SatisfiesRequestedOrdering(pm, ro)
+		if dir != nil {
+			satisfying = append(satisfying, ro)
+			switch *dir {
+			case ScanDirectionForward:
+				seenForward = true
+			case ScanDirectionReverse:
+				seenReverse = true
+			case ScanDirectionBoth:
+				seenForward = true
+				seenReverse = true
+			}
+		}
+	}
+
+	if !seenForward && !seenReverse {
+		return nil, nil
+	}
+
+	var resolved ScanDirection
+	if seenForward && seenReverse {
+		resolved = ScanDirectionBoth
+	} else if seenForward {
+		resolved = ScanDirectionForward
+	} else {
+		resolved = ScanDirectionReverse
+	}
+	return satisfying, &resolved
+}
