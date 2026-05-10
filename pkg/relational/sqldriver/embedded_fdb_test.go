@@ -8424,3 +8424,61 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+func TestFDB_DateTimestampParameterBinding(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dt_params")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_params")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE dt_params_tmpl "+
+			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, PRIMARY KEY(id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_params/s1 WITH TEMPLATE dt_params_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dt_params?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// INSERT using parameterized query with time.Time.
+	ts := time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC)
+	_, err = db.ExecContext(ctx, "INSERT INTO Events VALUES (?, ?)", int64(1), ts)
+	if err != nil {
+		t.Fatalf("INSERT with time.Time parameter: %v", err)
+	}
+
+	// SELECT back and verify the timestamp round-trips correctly.
+	var got string
+	err = db.QueryRowContext(ctx, "SELECT ts FROM Events WHERE id = 1").Scan(&got)
+	if err != nil {
+		t.Fatalf("SELECT ts: %v", err)
+	}
+	if got != "2024-07-04 15:30:45" {
+		t.Errorf("round-trip timestamp = %q, want %q", got, "2024-07-04 15:30:45")
+	}
+
+	// WHERE clause with a time.Time parameter.
+	var id int64
+	err = db.QueryRowContext(ctx, "SELECT id FROM Events WHERE ts = ?", time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC)).Scan(&id)
+	if err != nil {
+		t.Fatalf("SELECT with WHERE ts = ?: %v", err)
+	}
+	if id != 1 {
+		t.Errorf("WHERE ts = ? returned id=%d, want 1", id)
+	}
+}

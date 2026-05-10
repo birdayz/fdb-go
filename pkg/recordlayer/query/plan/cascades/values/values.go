@@ -1852,31 +1852,32 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 	case TypeCodeDate:
 		switch val := v.(type) {
 		case time.Time:
-			return time.Date(val.Year(), val.Month(), val.Day(), 0, 0, 0, 0, time.UTC)
+			return val.UTC().Format("2006-01-02")
 		case string:
-			t, err := time.Parse("2006-01-02", strings.TrimSpace(val))
+			s := strings.TrimSpace(val)
+			t, err := time.Parse("2006-01-02", s)
 			if err != nil {
-				if t2, err2 := time.Parse("2006-01-02 15:04:05", strings.TrimSpace(val)); err2 == nil {
-					return time.Date(t2.Year(), t2.Month(), t2.Day(), 0, 0, 0, 0, time.UTC)
+				if t2, err2 := time.Parse("2006-01-02 15:04:05", s); err2 == nil {
+					return t2.UTC().Format("2006-01-02")
 				}
 				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DATE: %s", val, err)})
 			}
-			return t
+			return t.UTC().Format("2006-01-02")
 		}
 	case TypeCodeTimestamp:
 		switch val := v.(type) {
 		case time.Time:
-			return val
+			return val.UTC().Format("2006-01-02 15:04:05")
 		case string:
 			s := strings.TrimSpace(val)
 			for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", "2006-01-02"} {
 				if t, err := time.Parse(layout, s); err == nil {
-					return t.UTC()
+					return t.UTC().Format("2006-01-02 15:04:05")
 				}
 			}
 			panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to TIMESTAMP", val)})
 		case int64:
-			return time.UnixMilli(val).UTC()
+			return time.UnixMilli(val).UTC().Format("2006-01-02 15:04:05")
 		}
 	case TypeCodeFloat, TypeCodeDouble:
 		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
