@@ -267,3 +267,156 @@ func TestRebaseValue_AggregateValue_CountStar(t *testing.T) {
 		t.Fatal("COUNT(*) (nil operand) should return same pointer")
 	}
 }
+
+func TestRebaseValue_QuantifiedRecordValue(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := &QuantifiedRecordValue{Alias: oldAlias, ResultType: TypeInt}
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	qrv, ok := result.(*QuantifiedRecordValue)
+	if !ok {
+		t.Fatalf("expected *QuantifiedRecordValue, got %T", result)
+	}
+	if qrv.Alias != newAlias {
+		t.Fatalf("expected alias %v, got %v", newAlias, qrv.Alias)
+	}
+	if qrv.ResultType != TypeInt {
+		t.Fatal("ResultType should be preserved")
+	}
+}
+
+func TestRebaseValue_ExistsValue(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := &ExistsValue{Alias: oldAlias}
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	ev, ok := result.(*ExistsValue)
+	if !ok {
+		t.Fatalf("expected *ExistsValue, got %T", result)
+	}
+	if ev.Alias != newAlias {
+		t.Fatalf("expected alias %v, got %v", newAlias, ev.Alias)
+	}
+}
+
+func TestRebaseValue_ScalarSubqueryValue(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := &ScalarSubqueryValue{Alias: oldAlias}
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	ssv, ok := result.(*ScalarSubqueryValue)
+	if !ok {
+		t.Fatalf("expected *ScalarSubqueryValue, got %T", result)
+	}
+	if ssv.Alias != newAlias {
+		t.Fatalf("expected alias %v, got %v", newAlias, ssv.Alias)
+	}
+}
+
+func TestRebaseValue_ObjectValue(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := &ObjectValue{Alias: oldAlias, ResultType: TypeString}
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	ov, ok := result.(*ObjectValue)
+	if !ok {
+		t.Fatalf("expected *ObjectValue, got %T", result)
+	}
+	if ov.Alias != newAlias {
+		t.Fatalf("expected alias %v, got %v", newAlias, ov.Alias)
+	}
+	if ov.ResultType != TypeString {
+		t.Fatal("ResultType should be preserved")
+	}
+}
+
+func TestRebaseValue_AndOrValue_Generic(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := NewAndOrValue(AndOrAnd, &QuantifiedObjectValue{Correlation: oldAlias}, &ConstantValue{Value: true})
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	aov, ok := result.(*AndOrValue)
+	if !ok {
+		t.Fatalf("expected *AndOrValue, got %T", result)
+	}
+	if aov.Op != AndOrAnd {
+		t.Fatalf("op should be AND, got %v", aov.Op)
+	}
+	qov, ok := aov.Left.(*QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected Left to be *QuantifiedObjectValue, got %T", aov.Left)
+	}
+	if qov.Correlation != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	}
+}
+
+func TestRebaseValue_LikeOperatorValue_Generic(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := &LikeOperatorValue{
+		Probe:   &QuantifiedObjectValue{Correlation: oldAlias},
+		Pattern: &ConstantValue{Value: "%test%"},
+	}
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	lv, ok := result.(*LikeOperatorValue)
+	if !ok {
+		t.Fatalf("expected *LikeOperatorValue, got %T", result)
+	}
+	qov, ok := lv.Probe.(*QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected Probe to be *QuantifiedObjectValue, got %T", lv.Probe)
+	}
+	if qov.Correlation != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	}
+}
+
+func TestRebaseValue_PickValue_Generic(t *testing.T) {
+	t.Parallel()
+	oldAlias := NamedCorrelationIdentifier("old")
+	newAlias := NamedCorrelationIdentifier("new")
+	v := &PickValue{
+		Selector:     &ConstantValue{Value: 0},
+		Alternatives: []Value{&QuantifiedObjectValue{Correlation: oldAlias}, &ConstantValue{Value: 42}},
+		Typ:          UnknownType,
+	}
+	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
+	pv, ok := result.(*PickValue)
+	if !ok {
+		t.Fatalf("expected *PickValue, got %T", result)
+	}
+	qov, ok := pv.Alternatives[0].(*QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected Alternatives[0] to be *QuantifiedObjectValue, got %T", pv.Alternatives[0])
+	}
+	if qov.Correlation != newAlias {
+		t.Fatalf("expected rebased correlation %v, got %v", newAlias, qov.Correlation)
+	}
+}
+
+func TestRebaseValue_LeafNoChange(t *testing.T) {
+	t.Parallel()
+	aliases := AliasMap{NamedCorrelationIdentifier("old"): NamedCorrelationIdentifier("new")}
+	leaves := []Value{
+		&FieldValue{Field: "x"},
+		&ConstantValue{Value: 42},
+		&NullValue{},
+		&BooleanValue{},
+		&ParameterValue{Ordinal: 1},
+		&EmptyValue{},
+		&IncarnationValue{},
+	}
+	for _, v := range leaves {
+		result := RebaseValue(v, aliases)
+		if result != v {
+			t.Fatalf("%T should return same pointer (no correlation)", v)
+		}
+	}
+}
