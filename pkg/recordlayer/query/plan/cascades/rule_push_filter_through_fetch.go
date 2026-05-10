@@ -187,9 +187,13 @@ func tryPushComparisonPredicate(
 }
 
 // tryTranslateValue attempts to translate a value through the fetch.
-// Constants and values not correlated to the source alias pass through
-// unchanged (they don't reference the full-record domain). Only values
-// correlated to the source alias need actual translation.
+// Recursively processes composite values (like ArithmeticValue) by
+// translating their children first, then reconstructing the parent.
+// Leaf values correlated to the source alias are translated via
+// PushValue. Uncorrelated values and constants pass through unchanged.
+//
+// Ports Java's mapMaybe-based recursive translation in
+// ScanWithFetchMatchCandidate.pushValueThroughFetch.
 func tryTranslateValue(
 	fetchPlan *plans.RecordQueryFetchFromPartialRecordPlan,
 	oldAlias, newAlias values.CorrelationIdentifier,
@@ -205,15 +209,30 @@ func tryTranslateValue(
 	// Check if the value is correlated to the source alias.
 	correlated := values.GetCorrelatedToOfValue(v)
 	if _, isCorrelated := correlated[oldAlias]; !isCorrelated {
-		// Not correlated to the source — pushable as-is.
 		return v
 	}
-	// Value IS correlated to the source — must translate.
-	translated, ok := fetchPlan.PushValue(v, oldAlias, newAlias)
-	if !ok {
-		return nil
+	// Try direct translation first (leaf values like FieldValue, QOV).
+	if translated, ok := fetchPlan.PushValue(v, oldAlias, newAlias); ok {
+		return translated
 	}
-	return translated
+	// Direct translation failed — try recursive decomposition.
+	// Translate children first, then reconstruct the parent with
+	// translated children. This handles composite values like
+	// ArithmeticValue(FieldValue, Constant).
+	children := v.Children()
+	if len(children) == 0 {
+		return nil // leaf that can't be translated
+	}
+	translated := make([]values.Value, len(children))
+	for i, child := range children {
+		tc := tryTranslateValue(fetchPlan, oldAlias, newAlias, child)
+		if tc == nil {
+			return nil
+		}
+		translated[i] = tc
+	}
+	// Reconstruct with translated children.
+	return values.WithChildren(v, translated)
 }
 
 func tryPushAndPredicate(
