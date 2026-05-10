@@ -999,3 +999,365 @@ func TestForMatchCompensation_Intersect_OneImpossible(t *testing.T) {
 		t.Fatal("intersection with impossible should be impossible")
 	}
 }
+
+func TestForMatchCompensation_Intersect_OneNotNeeded(t *testing.T) {
+	t.Parallel()
+
+	// c1 is not needed (empty everything), c2 is needed (has predicates).
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := c1.Intersect(c2)
+	// When c1 is not needed, intersection returns c2.
+	if !result.IsNeeded() {
+		t.Fatal("result should be needed since c2 is needed")
+	}
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+	if fmc != c2 {
+		t.Fatal("result should be c2 itself (identity)")
+	}
+}
+
+func TestForMatchCompensation_Intersect_PredicateMapIntersection(t *testing.T) {
+	t.Parallel()
+
+	// Three distinct predicate pointers; share predB between both maps.
+	predA := predicates.NewConstantPredicate(predicates.TriTrue)
+	predB := predicates.NewConstantPredicate(predicates.TriTrue) // shared pointer
+	predC := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	// c1 has predicates {A, B}
+	predMap1 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predA, predB},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded(), NoPredicateCompensationNeeded()},
+	)
+	// c2 has predicates {B, C}
+	predMap2 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predB, predC},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded(), NoPredicateCompensationNeeded()},
+	)
+
+	ref := expressions.InitialOf(nil)
+	q := expressions.ForEachQuantifier(ref)
+
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, predMap1,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, predMap2,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Intersect(c2)
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+	// Only predB is common; the intersection predicate map should have 1 entry.
+	if fmc.GetPredicateCompensationMap().Len() != 1 {
+		t.Fatalf("expected 1 predicate in intersection, got %d", fmc.GetPredicateCompensationMap().Len())
+	}
+}
+
+func TestForMatchCompensation_Intersect_EmptyPredicateIntersection(t *testing.T) {
+	t.Parallel()
+
+	// c1 has {A}, c2 has {B}, no overlap → empty combined predicate map.
+	predA := predicates.NewConstantPredicate(predicates.TriTrue)
+	predB := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	predMap1 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predA},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+	predMap2 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{predB},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, predMap1,
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, predMap2,
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Intersect(c2)
+	// No common predicates, no child filtering needed, no result comp → NoCompensation.
+	if result.IsNeeded() {
+		t.Fatal("result should not be needed when predicate intersection is empty and nothing else triggers")
+	}
+	if result != NoCompensation {
+		t.Fatalf("expected NoCompensation, got %T", result)
+	}
+}
+
+func TestForMatchCompensation_Intersect_GroupByMappingsMerge(t *testing.T) {
+	t.Parallel()
+
+	// Build distinct Value instances for groupings and aggregates.
+	gkA := &values.FieldValue{Field: "group_a"}
+	gvA := &values.FieldValue{Field: "group_a_cand"}
+	gkB := &values.FieldValue{Field: "group_b"}
+	gvB := &values.FieldValue{Field: "group_b_cand"}
+
+	akX := &values.FieldValue{Field: "agg_x"}
+	avX := &values.FieldValue{Field: "agg_x_cand"}
+	akY := &values.FieldValue{Field: "agg_y"}
+	avY := &values.FieldValue{Field: "agg_y_cand"}
+
+	// Side 1: matched grouping {A→A'}, matched aggregate {X→X'}
+	mg1 := NewValueBiMap()
+	mg1.Put(gkA, gvA)
+	ma1 := NewValueBiMap()
+	ma1.Put(akX, avX)
+	ua1 := NewCorrValueBiMap()
+	gbm1 := NewGroupByMappings(mg1, ma1, ua1)
+
+	// Side 2: matched grouping {B→B'}, matched aggregate {Y→Y'}
+	mg2 := NewValueBiMap()
+	mg2.Put(gkB, gvB)
+	ma2 := NewValueBiMap()
+	ma2.Put(akY, avY)
+	ua2 := NewCorrValueBiMap()
+	gbm2 := NewGroupByMappings(mg2, ma2, ua2)
+
+	// Both need compensation via a shared predicate so the intersection
+	// actually reaches the GroupByMappings merging code.
+	sharedPred := predicates.NewConstantPredicate(predicates.TriTrue)
+	predMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{sharedPred},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	ref := expressions.InitialOf(nil)
+	q := expressions.ForEachQuantifier(ref)
+
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, predMap,
+		[]expressions.Quantifier{q}, nil, nil, NoResultCompensation(), gbm1,
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, predMap,
+		[]expressions.Quantifier{q}, nil, nil, NoResultCompensation(), gbm2,
+	)
+
+	result := c1.Intersect(c2)
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+
+	mergedGBM := fmc.GetGroupByMappings()
+	// Matched groupings should be the union: {A, B}.
+	if mergedGBM.MatchedGroupingsMap().Len() != 2 {
+		t.Fatalf("expected 2 matched groupings, got %d", mergedGBM.MatchedGroupingsMap().Len())
+	}
+	// Matched aggregates should be the union: {X, Y}.
+	if mergedGBM.MatchedAggregatesMap().Len() != 2 {
+		t.Fatalf("expected 2 matched aggregates, got %d", mergedGBM.MatchedAggregatesMap().Len())
+	}
+}
+
+func TestForMatchCompensation_Intersect_QuantifierSets(t *testing.T) {
+	t.Parallel()
+
+	ref := expressions.InitialOf(nil)
+
+	aliasA := values.NamedCorrelationIdentifier("qA")
+	aliasB := values.NamedCorrelationIdentifier("qB")
+	aliasC := values.NamedCorrelationIdentifier("qC")
+	aliasD := values.NamedCorrelationIdentifier("qD")
+	aliasE := values.NamedCorrelationIdentifier("qE")
+	aliasF := values.NamedCorrelationIdentifier("qF")
+
+	qA := expressions.NamedForEachQuantifier(aliasA, ref)
+	qB := expressions.NamedForEachQuantifier(aliasB, ref)
+	qC := expressions.NamedForEachQuantifier(aliasC, ref)
+	qD := expressions.NamedForEachQuantifier(aliasD, ref)
+	qE := expressions.NamedForEachQuantifier(aliasE, ref)
+	qF := expressions.NamedForEachQuantifier(aliasF, ref)
+
+	// Use a shared predicate so the intersection doesn't short-circuit
+	// to NoCompensation via the "empty predicate map + no result" early return.
+	sharedPred := predicates.NewConstantPredicate(predicates.TriTrue)
+	predMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{sharedPred},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	// c1: matched {A, B}, unmatched {C, D}
+	c1 := NewForMatchCompensation(
+		false, NoCompensation, predMap,
+		[]expressions.Quantifier{qA, qB}, []expressions.Quantifier{qC, qD},
+		nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	// c2: matched {B, E}, unmatched {C, F}
+	c2 := NewForMatchCompensation(
+		false, NoCompensation, predMap,
+		[]expressions.Quantifier{qB, qE}, []expressions.Quantifier{qC, qF},
+		nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Intersect(c2)
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+
+	// Matched = union of {A, B} ∪ {B, E} = {A, B, E}
+	matchedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for _, q := range fmc.GetMatchedQuantifiers() {
+		matchedAliases[q.GetAlias()] = struct{}{}
+	}
+	if len(matchedAliases) != 3 {
+		t.Fatalf("expected 3 matched quantifiers, got %d", len(matchedAliases))
+	}
+	for _, expected := range []values.CorrelationIdentifier{aliasA, aliasB, aliasE} {
+		if _, ok := matchedAliases[expected]; !ok {
+			t.Fatalf("matched set missing alias %s", expected.Name())
+		}
+	}
+
+	// Unmatched = intersection of {C, D} ∩ {C, F} = {C}
+	unmatchedAliases := make(map[values.CorrelationIdentifier]struct{})
+	for _, q := range fmc.GetUnmatchedQuantifiers() {
+		unmatchedAliases[q.GetAlias()] = struct{}{}
+	}
+	if len(unmatchedAliases) != 1 {
+		t.Fatalf("expected 1 unmatched quantifier, got %d", len(unmatchedAliases))
+	}
+	if _, ok := unmatchedAliases[aliasC]; !ok {
+		t.Fatal("unmatched set should contain alias C")
+	}
+}
+
+func TestForMatchCompensation_Intersect_ChildCompensationRecursive(t *testing.T) {
+	t.Parallel()
+
+	// Build two ForMatchCompensations with ForMatchCompensation children.
+	// The children themselves have predicates so they are "needed".
+	sharedChildPred := predicates.NewConstantPredicate(predicates.TriTrue)
+	childOnlyPred1 := predicates.NewConstantPredicate(predicates.TriTrue)
+	childOnlyPred2 := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	// child1 has predicates {shared, only1}
+	childPredMap1 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{sharedChildPred, childOnlyPred1},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded(), NoPredicateCompensationNeeded()},
+	)
+	ref := expressions.InitialOf(nil)
+	childQ := expressions.ForEachQuantifier(ref)
+	child1 := NewForMatchCompensation(
+		false, NoCompensation, childPredMap1,
+		[]expressions.Quantifier{childQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	// child2 has predicates {shared, only2}
+	childPredMap2 := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{sharedChildPred, childOnlyPred2},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded(), NoPredicateCompensationNeeded()},
+	)
+	child2 := NewForMatchCompensation(
+		false, NoCompensation, childPredMap2,
+		[]expressions.Quantifier{childQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	// Outer compensations, each carrying one of the children.
+	outerPred := predicates.NewConstantPredicate(predicates.TriTrue)
+	outerPredMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{outerPred},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+	outerQ := expressions.ForEachQuantifier(ref)
+
+	c1 := NewForMatchCompensation(
+		false, child1, outerPredMap,
+		[]expressions.Quantifier{outerQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, child2, outerPredMap,
+		[]expressions.Quantifier{outerQ}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Intersect(c2)
+	if result.IsImpossible() {
+		t.Fatal("recursive intersection should not be impossible")
+	}
+	if !result.IsNeeded() {
+		t.Fatal("recursive intersection should be needed")
+	}
+
+	fmc, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+
+	// The child should also be a ForMatchCompensation (recursively intersected).
+	childResult, ok := fmc.GetChildCompensation().(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected child to be *ForMatchCompensation, got %T", fmc.GetChildCompensation())
+	}
+	// The recursively intersected child should have only the shared predicate.
+	if childResult.GetPredicateCompensationMap().Len() != 1 {
+		t.Fatalf("expected 1 predicate in intersected child, got %d",
+			childResult.GetPredicateCompensationMap().Len())
+	}
+}
+
+func TestForMatchCompensation_Intersect_ChildImpossible(t *testing.T) {
+	t.Parallel()
+
+	// child1 is impossible, child2 has predicates.
+	child1 := NewForMatchCompensation(
+		true, NoCompensation, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	child2 := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	// Outer compensations need to be "needed" to avoid the short-circuit.
+	outerPred := predicates.NewConstantPredicate(predicates.TriTrue)
+	outerPredMap := NewPredicateCompensationMap(
+		[]predicates.QueryPredicate{outerPred},
+		[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+	)
+
+	ref := expressions.InitialOf(nil)
+	q := expressions.ForEachQuantifier(ref)
+
+	c1 := NewForMatchCompensation(
+		false, child1, outerPredMap,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, child2, outerPredMap,
+		[]expressions.Quantifier{q}, nil, nil,
+		NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	result := c1.Intersect(c2)
+	if !result.IsImpossible() {
+		t.Fatal("intersection should be impossible when child intersection is impossible")
+	}
+}
