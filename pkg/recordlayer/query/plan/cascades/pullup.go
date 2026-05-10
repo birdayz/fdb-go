@@ -74,7 +74,7 @@ func (p *PullUp) PullUpValueMaybeWithEquivalence(v values.Value, ve ValueEquival
 		if translated == nil {
 			return nil
 		}
-		currentValue = translated
+		currentValue = values.SimplifyValue(translated)
 
 		if cur.parent == nil {
 			return currentValue
