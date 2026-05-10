@@ -73,6 +73,8 @@ const (
 	CodeUnknown
 	CodeNull
 	CodeVector
+	CodeDate
+	CodeTimestamp
 )
 
 // String returns the enum name (matches Java's Code.name()).
@@ -108,6 +110,10 @@ func (c Code) String() string {
 		return "NULL"
 	case CodeVector:
 		return "VECTOR"
+	case CodeDate:
+		return "DATE"
+	case CodeTimestamp:
+		return "TIMESTAMP"
 	default:
 		return "?"
 	}
@@ -163,6 +169,10 @@ func JDBCType(c Code) int {
 		return JDBCVarchar
 	case CodeBytes, CodeVersion:
 		return JDBCBinary
+	case CodeDate:
+		return JDBCDate
+	case CodeTimestamp:
+		return JDBCTimestamp
 	case CodeEnum, CodeUUID, CodeVector, CodeUnknown:
 		return JDBCOther
 	case CodeStruct:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 )
 
 // IsTruthy returns true when v is a non-nil, non-zero boolean or
@@ -85,6 +86,27 @@ func CompareValues(a, b driver.Value) int {
 		return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
 	}
 
+	// time.Time comparison (DATE/TIMESTAMP values).
+	if at, ok1 := a.(time.Time); ok1 {
+		if bt, ok2 := b.(time.Time); ok2 {
+			return compareTimes(at, bt)
+		}
+		if bs, ok2 := b.(string); ok2 {
+			if bt, ok3 := ParseTimestamp(bs); ok3 {
+				return compareTimes(at, bt)
+			}
+		}
+		return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
+	}
+	if bs, ok1 := b.(time.Time); ok1 {
+		if as, ok2 := a.(string); ok2 {
+			if at, ok3 := ParseTimestamp(as); ok3 {
+				return compareTimes(at, bs)
+			}
+		}
+		return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
+	}
+
 	// Same concrete type.
 	if reflect.TypeOf(a) == reflect.TypeOf(b) {
 		switch av := a.(type) {
@@ -108,4 +130,14 @@ func CompareValues(a, b driver.Value) int {
 
 	// Genuinely different types (e.g. string vs bool) — stable non-zero order.
 	return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
+}
+
+func compareTimes(a, b time.Time) int {
+	switch {
+	case a.Before(b):
+		return -1
+	case a.After(b):
+		return 1
+	}
+	return 0
 }

@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -837,6 +838,8 @@ func (r *cascadesRows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf((*bool)(nil)).Elem()
 	case "BYTES":
 		return reflect.TypeOf((*[]byte)(nil)).Elem()
+	case "DATE", "TIMESTAMP":
+		return reflect.TypeOf((*time.Time)(nil)).Elem()
 	default:
 		return reflect.TypeOf((*any)(nil)).Elem()
 	}

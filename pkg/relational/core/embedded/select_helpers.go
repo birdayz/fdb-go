@@ -100,11 +100,19 @@ func jdbcTypeMax(a, b string) string {
 			return 3
 		case "DOUBLE":
 			return 4
+		case "DATE":
+			return 100
+		case "TIMESTAMP":
+			return 101
 		}
 		return 0
 	}
 	ra, rb := rank(a), rank(b)
 	if ra == 0 || rb == 0 {
+		return ""
+	}
+	// DATE promotes to TIMESTAMP; temporal types are incompatible with numeric.
+	if (ra >= 100) != (rb >= 100) {
 		return ""
 	}
 	if ra >= rb {
@@ -308,6 +316,13 @@ func inferSpecificFunctionJDBCType(sf antlrgen.ISpecificFunctionContext, msgDesc
 	case *antlrgen.CaseExpressionFunctionCallContext:
 		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
 		return inferCaseBranchesJDBCType(sf.AllCaseFuncAlternative(), sf.GetElseArg(), msgDesc)
+	case *antlrgen.SimpleFunctionCallContext:
+		switch {
+		case sf.CURRENT_DATE() != nil:
+			return "DATE"
+		case sf.CURRENT_TIMESTAMP() != nil, sf.LOCALTIME() != nil, sf.CURRENT_TIME() != nil:
+			return "TIMESTAMP"
+		}
 	}
 	return ""
 }
@@ -372,6 +387,10 @@ func convertedDataTypeToJDBC(text string) string {
 		return "BINARY"
 	case "UUID":
 		return "OTHER"
+	case "DATE":
+		return "DATE"
+	case "TIMESTAMP":
+		return "TIMESTAMP"
 	}
 	return ""
 }

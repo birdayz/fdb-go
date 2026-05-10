@@ -3,6 +3,7 @@ package embedded
 import (
 	"database/sql/driver"
 	"reflect"
+	"time"
 )
 
 // SQL value-comparison helpers used across every predicate path.
@@ -30,6 +31,16 @@ func valuesComparable(a, b driver.Value) bool {
 	_, bFloat := b.(float64)
 	if (aInt || aFloat) && (bInt || bFloat) {
 		return true
+	}
+	_, aTime := a.(time.Time)
+	_, bTime := b.(time.Time)
+	if aTime || bTime {
+		// time.Time is comparable with other time.Time and with strings
+		// (ISO format from proto storage). CompareValues handles the
+		// cross-type parsing.
+		_, aStr := a.(string)
+		_, bStr := b.(string)
+		return (aTime && bTime) || (aTime && bStr) || (aStr && bTime)
 	}
 	return reflect.TypeOf(a) == reflect.TypeOf(b)
 }

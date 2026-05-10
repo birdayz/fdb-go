@@ -7816,3 +7816,280 @@ func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
 		t.Fatalf("id = %d, want 1", id)
 	}
 }
+
+func TestFDB_DateTimestampColumns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_datetime")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_datetime")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE datetime_events_tmpl "+
+			"CREATE TABLE Events (id BIGINT NOT NULL, event_date DATE, event_ts TIMESTAMP, PRIMARY KEY(id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_datetime/s1 WITH TEMPLATE datetime_events_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_datetime?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert with string literals (ISO format).
+	_, err = db.ExecContext(ctx, "INSERT INTO Events VALUES (1, '2024-03-15', '2024-03-15 10:30:00')")
+	if err != nil {
+		t.Fatalf("INSERT 1: %v", err)
+	}
+	_, err = db.ExecContext(ctx, "INSERT INTO Events VALUES (2, '2024-06-20', '2024-06-20 14:45:30')")
+	if err != nil {
+		t.Fatalf("INSERT 2: %v", err)
+	}
+	_, err = db.ExecContext(ctx, "INSERT INTO Events VALUES (3, '2024-01-01', '2024-01-01 00:00:00')")
+	if err != nil {
+		t.Fatalf("INSERT 3: %v", err)
+	}
+
+	// Select all rows ordered by id.
+	rows, err := db.QueryContext(ctx, "SELECT id, event_date, event_ts FROM Events")
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id   int64
+		date string
+		ts   string
+	}
+	var results []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.date, &r.ts); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("got %d rows, want 3", len(results))
+	}
+	if results[0].date != "2024-03-15" {
+		t.Errorf("row 1 date = %q, want 2024-03-15", results[0].date)
+	}
+	if results[0].ts != "2024-03-15 10:30:00" {
+		t.Errorf("row 1 ts = %q, want 2024-03-15 10:30:00", results[0].ts)
+	}
+
+	// Test WHERE comparison with string literal.
+	var count int64
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Events WHERE event_date > '2024-02-01'").Scan(&count)
+	if err != nil {
+		t.Fatalf("WHERE date comparison: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("events after 2024-02-01: got %d, want 2", count)
+	}
+
+	// Test CURRENT_TIMESTAMP is non-nil.
+	var ts2 string
+	err = db.QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP FROM Events WHERE id = 1").Scan(&ts2)
+	if err != nil {
+		t.Fatalf("CURRENT_TIMESTAMP: %v", err)
+	}
+	if ts2 == "" {
+		t.Error("CURRENT_TIMESTAMP returned empty string")
+	}
+
+	// Test CURRENT_DATE is non-nil.
+	var dt string
+	err = db.QueryRowContext(ctx, "SELECT CURRENT_DATE FROM Events WHERE id = 1").Scan(&dt)
+	if err != nil {
+		t.Fatalf("CURRENT_DATE: %v", err)
+	}
+	if dt == "" {
+		t.Error("CURRENT_DATE returned empty string")
+	}
+}
+
+func TestFDB_DateTimestampComparison(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dtcmp")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dtcmp")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE datetime_logs_tmpl "+
+			"CREATE TABLE Logs (id BIGINT NOT NULL, ts TIMESTAMP, PRIMARY KEY(id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dtcmp/s1 WITH TEMPLATE datetime_logs_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dtcmp?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO Logs VALUES (1, '2020-01-01 00:00:00')")
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	_, err = db.ExecContext(ctx, "INSERT INTO Logs VALUES (2, '2099-12-31 23:59:59')")
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// CURRENT_TIMESTAMP should be between 2020 and 2099.
+	var count int64
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Logs WHERE ts < CURRENT_TIMESTAMP").Scan(&count)
+	if err != nil {
+		t.Fatalf("WHERE ts < CURRENT_TIMESTAMP: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("rows before now: got %d, want 1 (only 2020 row)", count)
+	}
+
+	// Comparison with string literal.
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Logs WHERE ts > '2050-01-01 00:00:00'").Scan(&count)
+	if err != nil {
+		t.Fatalf("WHERE ts > '2050...': %v", err)
+	}
+	if count != 1 {
+		t.Errorf("rows after 2050: got %d, want 1 (only 2099 row)", count)
+	}
+}
+
+func TestFDB_DateTimestampInsertWithLiteral(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dtinsert")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dtinsert")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE datetime_audit_tmpl "+
+			"CREATE TABLE Audit (id BIGINT NOT NULL, created_at TIMESTAMP, PRIMARY KEY(id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dtinsert/s1 WITH TEMPLATE datetime_audit_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dtinsert?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	_, err = db.ExecContext(ctx, fmt.Sprintf("INSERT INTO Audit VALUES (1, '%s')", now))
+	if err != nil {
+		t.Fatalf("INSERT with timestamp literal: %v", err)
+	}
+
+	var ts string
+	err = db.QueryRowContext(ctx, "SELECT created_at FROM Audit WHERE id = 1").Scan(&ts)
+	if err != nil {
+		t.Fatalf("SELECT created_at: %v", err)
+	}
+
+	// Verify it parses as a valid timestamp.
+	parsed, perr := time.Parse("2006-01-02 15:04:05", ts)
+	if perr != nil {
+		t.Fatalf("stored timestamp %q doesn't parse: %v", ts, perr)
+	}
+	// Should be within the last minute.
+	if time.Since(parsed) > time.Minute {
+		t.Errorf("created_at %v is more than 1 minute old", parsed)
+	}
+}
+
+func TestFDB_DateTimestampCast(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dtcast")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dtcast")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE datetime_cast_tmpl "+
+			"CREATE TABLE T1 (id BIGINT NOT NULL, val STRING, PRIMARY KEY(id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dtcast/s1 WITH TEMPLATE datetime_cast_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dtcast?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO T1 VALUES (1, '2024-07-04 12:00:00')")
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// CAST(string AS TIMESTAMP) should work.
+	var ts string
+	err = db.QueryRowContext(ctx, "SELECT CAST(val AS TIMESTAMP) FROM T1 WHERE id = 1").Scan(&ts)
+	if err != nil {
+		t.Fatalf("CAST AS TIMESTAMP: %v", err)
+	}
+	if ts == "" {
+		t.Error("CAST AS TIMESTAMP returned empty")
+	}
+
+	// CAST(string AS DATE) should work.
+	var dt string
+	err = db.QueryRowContext(ctx, "SELECT CAST('2024-07-04' AS DATE) FROM T1 WHERE id = 1").Scan(&dt)
+	if err != nil {
+		t.Fatalf("CAST AS DATE: %v", err)
+	}
+	if dt == "" {
+		t.Error("CAST AS DATE returned empty")
+	}
+}

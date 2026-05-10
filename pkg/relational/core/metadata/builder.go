@@ -293,6 +293,8 @@ func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProt
 		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, "", nil
 	case api.CodeUUID:
 		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, uuidProtoTypeName, nil
+	case api.CodeDate, api.CodeTimestamp:
+		return descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil
 	default:
 		return 0, "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"unsupported DataType code %v", dt.Code())

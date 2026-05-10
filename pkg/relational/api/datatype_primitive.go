@@ -303,3 +303,58 @@ func (t *UnknownType) Equal(other DataType) bool {
 }
 
 func (t *UnknownType) String() string { return "???" }
+
+// ---- DateType ----
+// Go extension: Java 4.11.1.0 has no DATE column type. Stored as int64
+// (epoch days since 1970-01-01) for compactness and ordering.
+
+type DateType struct{ typeBase }
+
+var (
+	dateNotNullable = &DateType{typeBase{code: CodeDate, isPrimitive: true}}
+	dateNullable    = &DateType{typeBase{code: CodeDate, isPrimitive: true, isNullable: true}}
+)
+
+func NewDateType(isNullable bool) *DateType {
+	if isNullable {
+		return dateNullable
+	}
+	return dateNotNullable
+}
+
+func (t *DateType) IsResolved() bool                      { return true }
+func (t *DateType) WithNullable(isNullable bool) DataType { return NewDateType(isNullable) }
+func (t *DateType) Resolve(_ map[string]Named) DataType   { return t }
+func (t *DateType) Equal(other DataType) bool {
+	o, ok := other.(*DateType)
+	return ok && o.isNullable == t.isNullable
+}
+func (t *DateType) String() string { return "date" + nullableSuffix(t.isNullable) }
+
+// ---- TimestampType ----
+// Go extension: Java 4.11.1.0 has no TIMESTAMP column type. Stored as
+// int64 (epoch milliseconds) for compactness, ordering, and sub-second
+// resolution.
+
+type TimestampType struct{ typeBase }
+
+var (
+	timestampNotNullable = &TimestampType{typeBase{code: CodeTimestamp, isPrimitive: true}}
+	timestampNullable    = &TimestampType{typeBase{code: CodeTimestamp, isPrimitive: true, isNullable: true}}
+)
+
+func NewTimestampType(isNullable bool) *TimestampType {
+	if isNullable {
+		return timestampNullable
+	}
+	return timestampNotNullable
+}
+
+func (t *TimestampType) IsResolved() bool                      { return true }
+func (t *TimestampType) WithNullable(isNullable bool) DataType { return NewTimestampType(isNullable) }
+func (t *TimestampType) Resolve(_ map[string]Named) DataType   { return t }
+func (t *TimestampType) Equal(other DataType) bool {
+	o, ok := other.(*TimestampType)
+	return ok && o.isNullable == t.isNullable
+}
+func (t *TimestampType) String() string { return "timestamp" + nullableSuffix(t.isNullable) }

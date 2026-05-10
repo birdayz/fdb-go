@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/binary"
 	"math"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -238,6 +239,9 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	case protoreflect.StringKind:
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfString(v), nil
+		}
+		if v, ok := val.(time.Time); ok {
+			return protoreflect.ValueOfString(FormatTimestamp(v)), nil
 		}
 	case protoreflect.BytesKind:
 		if v, ok := val.([]byte); ok {

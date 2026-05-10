@@ -1849,6 +1849,35 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			}
 			return "false"
 		}
+	case TypeCodeDate:
+		switch val := v.(type) {
+		case time.Time:
+			return time.Date(val.Year(), val.Month(), val.Day(), 0, 0, 0, 0, time.UTC)
+		case string:
+			t, err := time.Parse("2006-01-02", strings.TrimSpace(val))
+			if err != nil {
+				if t2, err2 := time.Parse("2006-01-02 15:04:05", strings.TrimSpace(val)); err2 == nil {
+					return time.Date(t2.Year(), t2.Month(), t2.Day(), 0, 0, 0, 0, time.UTC)
+				}
+				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DATE: %s", val, err)})
+			}
+			return t
+		}
+	case TypeCodeTimestamp:
+		switch val := v.(type) {
+		case time.Time:
+			return val
+		case string:
+			s := strings.TrimSpace(val)
+			for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", "2006-01-02"} {
+				if t, err := time.Parse(layout, s); err == nil {
+					return t.UTC()
+				}
+			}
+			panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to TIMESTAMP", val)})
+		case int64:
+			return time.UnixMilli(val).UTC()
+		}
 	case TypeCodeFloat, TypeCodeDouble:
 		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
 		// integral types to float64. Without this case, the walker's

@@ -9,6 +9,7 @@ go_library(
         "compare.go",
         "like.go",
         "proto_value.go",
+        "time.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions",
     visibility = ["//visibility:public"],
