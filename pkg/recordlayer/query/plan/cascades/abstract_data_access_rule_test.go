@@ -204,7 +204,7 @@ func TestPrepareMatchesAndCompensations_ThreeMatches(t *testing.T) {
 	// Verify forward scan direction.
 	for _, a := range accesses {
 		if a.IsReverseScanOrder() {
-			t.Fatal("seed should use forward scan")
+			t.Fatal("test stubs should use forward scan")
 		}
 	}
 }
@@ -253,7 +253,7 @@ func TestMaximumCoverageMatches_WrapsWithPositions(t *testing.T) {
 	)
 
 	if len(matches) != 3 {
-		t.Fatalf("expected 3 vectored matches (seed keeps all), got %d", len(matches))
+		t.Fatalf("expected 3 vectored matches (no Pareto filtering), got %d", len(matches))
 	}
 
 	// Verify positions are 0, 1, 2 (assigned after sorting by coverage).
