@@ -19,7 +19,7 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 ### Blocked on larger infrastructure
 
 - [x] **C-6** 6 unported ImplementationCascadesRules — MergeFetchIntoCoveringIndexRule, PushDistinctBelowFilterRule, PushDistinctThroughFetchRule, PushFilterThroughFetchRule, PushMapThroughFetchRule, PushSetOperationThroughFetchRule. Rules ported (swingshift-86). RecordQueryFetchFromPartialRecordPlan + TranslateValueFunction + physicalFetchFromPartialRecordWrapper + 7 rules registered. Full value-translation effectiveness gated on C-5 (FieldValue child value). Executor integration (runtime fetch) is a separate follow-up.
-- [ ] **C-7** generateDataAccess phase ordering — runs before PLANNING constraint propagation, so requestedOrderings aren't available. Java's data access rules fire during a phase with ordering constraints. Requires restructuring planner phase sequence. ~1 shift.
+- [x] **C-7** generateDataAccess phase ordering — restructured (swingshift-86). Data access generation now runs inside the PLANNING phase between constraint propagation (Pass 1) and bottom-up implementation (Pass 3). Reads requestedOrderings from ConstraintMap. Matches Java's architecture where data access rules fire with ordering constraints available.
 
 ---
 
