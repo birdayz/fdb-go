@@ -194,9 +194,10 @@ func matchIntermediateWithCandidate(
 	//
 	// This is the Go equivalent of Java's match-then-subsumedBy path
 	// where SelectExpression.subsumedBy handles predicate-to-
-	// Placeholder mapping. Go doesn't yet have a SelectMergeRule to
-	// normalise LogicalFilter into Select before matching, so we
-	// handle the subsumption inline.
+	// Placeholder mapping. SelectMergeRule normalises
+	// Select(Filter(scan)) into flat Select(scan, preds) during
+	// EXPLORE, but this inline path remains for LogicalFilter nodes
+	// that aren't nested under a SelectExpression.
 	if qf, ok := queryExpr.(*expressions.LogicalFilterExpression); ok {
 		if cs, ok := candidateExpr.(*expressions.SelectExpression); ok {
 			matchFilterAgainstSelect(call, qf, cs, candidate, candidateRef)
@@ -312,7 +313,7 @@ func matchIntermediateStructural(
 //
 // Mirrors the predicate-mapping logic inside Java's
 // SelectExpression.subsumedBy, narrowed to the Filter-vs-Select
-// case that Go encounters before SelectMergeRule normalisation.
+// case that Go encounters alongside SelectMergeRule normalisation.
 func matchFilterAgainstSelect(
 	call *ExpressionRuleCall,
 	queryFilter *expressions.LogicalFilterExpression,
