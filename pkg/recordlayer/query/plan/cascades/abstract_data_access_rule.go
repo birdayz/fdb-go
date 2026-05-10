@@ -259,7 +259,7 @@ func DataAccessForMatchPartition(
 			continue
 		}
 
-		var expr expressions.RelationalExpression = &scanPlanExpression{plan: plan}
+		var expr expressions.RelationalExpression = wrapScanPlan(plan)
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
@@ -279,6 +279,27 @@ func DataAccessForMatchPartition(
 	}
 
 	return resultExprs
+}
+
+// wrapScanPlan converts a RecordQueryPlan from the data access pipeline
+// into the properly-typed RelationalExpression wrapper. For a
+// FetchFromPartialRecordPlan wrapping an IndexPlan, this produces a
+// physicalFetchFromPartialRecordWrapper over a physicalIndexScanWrapper
+// — the structure that C-6 push-through rules match against.
+// For other plan types, falls back to the generic scanPlanExpression.
+func wrapScanPlan(plan plans.RecordQueryPlan) expressions.RelationalExpression {
+	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
+			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx}
+			idxRef := expressions.NewFinalReference([]expressions.RelationalExpression{idxWrapper})
+			fetchQ := expressions.ForEachQuantifier(idxRef)
+			return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+		}
+	}
+	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
+		return &physicalIndexScanWrapper{plan: idxPlan}
+	}
+	return &scanPlanExpression{plan: plan}
 }
 
 // ---------------------------------------------------------------------------
