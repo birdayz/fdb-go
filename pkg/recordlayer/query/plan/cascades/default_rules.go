@@ -108,6 +108,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewZeroLimitRule(),
 		NewRemoveRangeOneRule(),
 		NewSelectMergeRule(),
+		NewDecorrelateValuesRule(),
 	}
 }
 
