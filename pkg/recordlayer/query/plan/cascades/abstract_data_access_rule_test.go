@@ -193,10 +193,11 @@ func TestPrepareMatchesAndCompensations_ThreeMatches(t *testing.T) {
 		seen[alias] = true
 	}
 
-	// Verify compensation is NoCompensation for seed.
+	// testPartialMatch stubs don't implement PartialMatchImpl, so
+	// CompensateCompleteMatch falls back to NoCompensation.
 	for _, a := range accesses {
 		if a.GetCompensation() != NoCompensation {
-			t.Fatal("seed should use NoCompensation")
+			t.Fatal("test stubs should yield NoCompensation")
 		}
 	}
 
