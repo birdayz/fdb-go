@@ -28,6 +28,8 @@ func (*UnmatchedAggregateValue) Evaluate(_ any) any {
 	panic("UnmatchedAggregateValue is a non-evaluable marker")
 }
 
+func (*UnmatchedAggregateValue) IsNonEvaluable() bool { return true }
+
 func (v *UnmatchedAggregateValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
 	return map[CorrelationIdentifier]struct{}{v.UnmatchedID: {}}
 }
