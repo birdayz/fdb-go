@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -469,6 +472,45 @@ func cmpAny(a, b any) (int, bool) {
 		default: // av && !bv: true > false
 			return 1, true
 		}
+	}
+	// time.Time comparison (DATE/TIMESTAMP values from CAST or CURRENT_TIMESTAMP).
+	// Also handles time.Time vs string cross-type (stored dates are strings).
+	if at, ok := a.(time.Time); ok {
+		switch bv := b.(type) {
+		case time.Time:
+			switch {
+			case at.Before(bv):
+				return -1, true
+			case at.After(bv):
+				return 1, true
+			}
+			return 0, true
+		case string:
+			if bt, pOK := functions.ParseTimestamp(bv); pOK {
+				switch {
+				case at.Before(bt):
+					return -1, true
+				case at.After(bt):
+					return 1, true
+				}
+				return 0, true
+			}
+		}
+		return 0, false
+	}
+	if at, ok := b.(time.Time); ok {
+		if as, ok2 := a.(string); ok2 {
+			if parsed, pOK := functions.ParseTimestamp(as); pOK {
+				switch {
+				case parsed.Before(at):
+					return -1, true
+				case parsed.After(at):
+					return 1, true
+				}
+				return 0, true
+			}
+		}
+		return 0, false
 	}
 	// Bytes comparison is lexicographic — matches SQL's BINARY / VARBINARY
 	// collation and proto `bytes` semantics. Mixed bytes/string degrades

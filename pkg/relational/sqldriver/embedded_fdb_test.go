@@ -8185,3 +8185,56 @@ func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
 		t.Errorf("YEAR(CURRENT_TIMESTAMP) = %d, want reasonable year", year)
 	}
 }
+
+func TestFDB_ArrayColumnDDL(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_array_col")
+
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_array_col"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE array_col_tmpl "+
+			"CREATE TABLE TaggedItem (item_id BIGINT NOT NULL, tags STRING ARRAY, PRIMARY KEY (item_id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_array_col/store WITH TEMPLATE array_col_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	// Open a new connection with the schema set via DSN.
+	dsn := fmt.Sprintf("fdbsql:///testdb_array_col?cluster_file=%s&schema=store", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// INSERT a row with NULL for the array column (SQL array literals are not
+	// supported in this system; NULL is the valid way to leave an array field
+	// empty via INSERT).
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO TaggedItem (item_id, tags) VALUES (1, NULL)"); err != nil {
+		t.Fatalf("INSERT with NULL array: %v", err)
+	}
+
+	// SELECT and verify the row comes back.
+	var itemID int64
+	var tags any
+	err = db.QueryRowContext(ctx, "SELECT item_id, tags FROM TaggedItem WHERE item_id = 1").Scan(&itemID, &tags)
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	if itemID != 1 {
+		t.Errorf("item_id = %d, want 1", itemID)
+	}
+	if tags != nil {
+		t.Errorf("tags = %v, want nil (NULL)", tags)
+	}
+}
