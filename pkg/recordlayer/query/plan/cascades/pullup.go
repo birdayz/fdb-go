@@ -57,9 +57,16 @@ func (p *PullUp) IsRoot() bool { return p.parent == nil }
 //
 // Ports Java's PullUp.pullUpValueMaybe.
 func (p *PullUp) PullUpValueMaybe(v values.Value) values.Value {
+	return p.PullUpValueMaybeWithEquivalence(v, nil)
+}
+
+// PullUpValueMaybeWithEquivalence is like PullUpValueMaybe but accepts
+// a ValueEquivalence for cross-alias matching during MaxMatchMap
+// computation. Ports Java's overload that threads ValueEquivalence.
+func (p *PullUp) PullUpValueMaybeWithEquivalence(v values.Value, ve ValueEquivalence) values.Value {
 	currentValue := v
 	for cur := p; ; cur = cur.parent {
-		mmm := ComputeMaxMatchMap(currentValue, cur.pullThroughValue, cur.rangedOverAliases)
+		mmm := ComputeMaxMatchMapWithEquivalence(currentValue, cur.pullThroughValue, cur.rangedOverAliases, ve)
 		translated := mmm.TranslateQueryValueMaybe(cur.candidateAlias)
 		if translated == nil {
 			return nil

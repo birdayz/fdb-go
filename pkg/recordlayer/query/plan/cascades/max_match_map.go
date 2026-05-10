@@ -169,6 +169,22 @@ func ComputeMaxMatchMap(
 	candidateValue values.Value,
 	rangedOverAliases map[values.CorrelationIdentifier]struct{},
 ) *MaxMatchMap {
+	return ComputeMaxMatchMapWithEquivalence(queryValue, candidateValue, rangedOverAliases, nil)
+}
+
+// ComputeMaxMatchMapWithEquivalence is like ComputeMaxMatchMap but
+// accepts an optional ValueEquivalence for cross-alias matching. When
+// structural equality fails, the ValueEquivalence is consulted to
+// determine whether two values should be considered equal.
+//
+// Ports Java's MaxMatchMap.compute(queryValue, candidateValue,
+// rangedOverAliases, valueEquivalence).
+func ComputeMaxMatchMapWithEquivalence(
+	queryValue values.Value,
+	candidateValue values.Value,
+	rangedOverAliases map[values.CorrelationIdentifier]struct{},
+	valueEquivalence ValueEquivalence,
+) *MaxMatchMap {
 	if rangedOverAliases == nil {
 		rangedOverAliases = map[values.CorrelationIdentifier]struct{}{}
 	}
@@ -604,24 +620,31 @@ func computeForCurrent(
 
 // findMatchingReachableCandidate walks the candidate tree (only descending
 // into RecordConstructorValue for reachability) and checks if any
-// reachable subtree is structurally equal to queryValue.
+// reachable subtree is structurally equal to queryValue, or equal via
+// the ValueEquivalence (if provided).
 //
 // Returns (true, candidateValue) on match, (false, nil) otherwise.
 //
-// Ports Java's MaxMatchMap.findMatchingReachableCandidateValue (minus
-// the ValueEquivalence and unmatchedHandler extension points).
+// Ports Java's MaxMatchMap.findMatchingReachableCandidateValue.
 func findMatchingReachableCandidate(
 	queryValue values.Value,
 	candidateRoot values.Value,
+) (bool, values.Value) {
+	return findMatchingReachableCandidateWithEquivalence(queryValue, candidateRoot, nil)
+}
+
+func findMatchingReachableCandidateWithEquivalence(
+	queryValue values.Value,
+	candidateRoot values.Value,
+	ve ValueEquivalence,
 ) (bool, values.Value) {
 	var found bool
 	var match values.Value
 
 	walkReachable(candidateRoot, func(cv values.Value) {
 		if found {
-			return // already found, skip
+			return
 		}
-		// At root: QuantifiedRecordValue always matches.
 		if cv == candidateRoot {
 			if _, ok := queryValue.(*values.QuantifiedRecordValue); ok {
 				found = true
@@ -629,13 +652,25 @@ func findMatchingReachableCandidate(
 				return
 			}
 		}
-		if values.ValuesStructurallyEqual(queryValue, cv) {
+		if valuesEqualWithEquivalence(queryValue, cv, ve) {
 			found = true
 			match = cv
 		}
 	})
 
 	return found, match
+}
+
+// valuesEqualWithEquivalence checks structural equality first, then
+// consults the ValueEquivalence if provided.
+func valuesEqualWithEquivalence(a, b values.Value, ve ValueEquivalence) bool {
+	if values.ValuesStructurallyEqual(a, b) {
+		return true
+	}
+	if ve == nil {
+		return false
+	}
+	return ve.IsDefinedEqual(a, b).Value
 }
 
 // ---------------------------------------------------------------------------
