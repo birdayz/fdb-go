@@ -340,6 +340,8 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 		expressions.ForEachQuantifier(innerRef))
 }
 
+// Go extension: Java's fdb-relational 4.11.1.0 does not support GROUP BY;
+// its AstNormalizer rejects it with UNSUPPORTED_QUERY before reaching the planner.
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
 	if a.Having != "" && a.HavingPredicate == nil {
 		return nil

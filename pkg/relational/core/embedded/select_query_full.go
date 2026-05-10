@@ -1274,11 +1274,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// non-aggregate path.
 		isAggregate := len(sq.aggCols) > 0 || sq.countStar
 		satisfiable := naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied
+		// Go extension: Java's fdb-relational 4.11.1.0 rejects DISTINCT + ORDER BY
+		// together (Cascades composition gap). Go supports the combination.
+		//
 		// DISTINCT is exempted because the deduped result set is
-		// usually small enough that in-memory sort is harmless;
-		// Java's planner rejects DISTINCT + ORDER BY together
-		// (Cascades composition gap, see TODO #1 closure note),
-		// so the combination is one-sided in either direction.
+		// usually small enough that in-memory sort is harmless.
 		// Aggregate is exempted because the post-aggregation result
 		// is a small projected set; sorting it in-memory is harmless
 		// and matches Java's behaviour for groupings within the same

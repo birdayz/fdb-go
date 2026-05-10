@@ -1235,7 +1235,7 @@ expressionAtom
     | fullColumnName                                                                      #fullColumnNameExpressionAtom // done
     | functionCall                                                                        #functionCallExpressionAtom // done
     | preparedStatementParameter                                                          #preparedStatementParameterAtom // done
-    | '(' query ')'                                                                       #subqueryExpressionAtom // scalar subquery
+    | '(' query ')'                                                                       #subqueryExpressionAtom // Go extension: Java's RelationalParser.g4 has no scalar subquery in expressionAtom
     | recordConstructor                                                                   #recordConstructorExpressionAtom // done
     | arrayConstructor                                                                    #arrayConstructorExpressionAtom // done
     | base=expressionAtom LEFT_SQUARE_BRACKET index=expressionAtom RIGHT_SQUARE_BRACKET   #subscriptExpression // done
