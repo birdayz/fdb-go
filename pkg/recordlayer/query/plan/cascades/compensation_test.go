@@ -1361,3 +1361,96 @@ func TestForMatchCompensation_Intersect_ChildImpossible(t *testing.T) {
 		t.Fatal("intersection should be impossible when child intersection is impossible")
 	}
 }
+
+func TestResultCompensation_Amend_NoChange(t *testing.T) {
+	t.Parallel()
+
+	// A ConstantValue has no UnmatchedAggregateValue nodes, so Amend
+	// with empty maps should return an equivalent compensation with the
+	// same value.
+	v := &values.ConstantValue{Value: int64(42)}
+	f := ResultCompensationOfValue(v)
+
+	amended := f.Amend(NewCorrValueBiMap(), nil)
+	if !amended.IsNeeded() {
+		t.Fatal("amended should still be needed")
+	}
+	if amended.IsImpossible() {
+		t.Fatal("amended should not be impossible")
+	}
+	result := amended.ApplyCompensationForResult(nil)
+	cv, ok := result.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("expected *ConstantValue, got %T", result)
+	}
+	if cv.Value != int64(42) {
+		t.Fatalf("expected 42, got %v", cv.Value)
+	}
+}
+
+func TestResultCompensation_Amend_ReplacesUnmatched(t *testing.T) {
+	t.Parallel()
+
+	// Create an UnmatchedAggregateValue as the result value.
+	unmatchedID := values.UniqueUnmatchedID()
+	unmatchedVal := values.NewUnmatchedAggregateValue(unmatchedID)
+	f := ResultCompensationOfValue(unmatchedVal)
+
+	// Before amendment, this should be impossible (contains unmatched).
+	if !f.IsImpossible() {
+		t.Fatal("ResultCompensation with UnmatchedAggregateValue should be impossible")
+	}
+
+	// Build the unmatchedAggregateMap: unmatchedID → FieldValue("SUM_X")
+	queryAgg := &values.FieldValue{Field: "SUM_X"}
+	unmatchedAggMap := NewCorrValueBiMap()
+	unmatchedAggMap.Put(unmatchedID, queryAgg)
+
+	// Build the amendedMatchedAggregateMap: FieldValue("SUM_X") → FieldValue("IDX_SUM")
+	idxSum := &values.FieldValue{Field: "IDX_SUM"}
+	amendedMatchedAggMap := map[values.Value]values.Value{
+		queryAgg: idxSum,
+	}
+
+	amended := f.Amend(unmatchedAggMap, amendedMatchedAggMap)
+	if !amended.IsNeeded() {
+		t.Fatal("amended should be needed")
+	}
+	if amended.IsImpossible() {
+		t.Fatal("amended should not be impossible after replacing unmatched aggregate")
+	}
+
+	result := amended.ApplyCompensationForResult(nil)
+	fv, ok := result.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("expected *FieldValue, got %T", result)
+	}
+	if fv.Field != "IDX_SUM" {
+		t.Fatalf("expected field IDX_SUM, got %s", fv.Field)
+	}
+}
+
+func TestResultCompensation_IsImpossible_WithUnmatched(t *testing.T) {
+	t.Parallel()
+
+	unmatchedVal := values.NewUnmatchedAggregateValue(values.UniqueUnmatchedID())
+	f := ResultCompensationOfValue(unmatchedVal)
+	if !f.IsImpossible() {
+		t.Fatal("ResultCompensation with UnmatchedAggregateValue should be impossible")
+	}
+	if !f.IsNeeded() {
+		t.Fatal("ResultCompensation with UnmatchedAggregateValue should be needed")
+	}
+}
+
+func TestResultCompensation_IsImpossible_WithoutUnmatched(t *testing.T) {
+	t.Parallel()
+
+	f := ResultCompensationOfValue(&values.FieldValue{Field: "X"})
+	if f.IsImpossible() {
+		t.Fatal("ResultCompensation with FieldValue should not be impossible")
+	}
+	if !f.IsNeeded() {
+		t.Fatal("ResultCompensation with FieldValue should be needed")
+	}
+}

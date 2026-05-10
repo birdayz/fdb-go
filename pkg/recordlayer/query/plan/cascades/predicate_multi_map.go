@@ -181,11 +181,8 @@ func (f *predicateCompensationOfPredicate) ApplyCompensationForPredicate(tm Tran
 	if tm == nil || tm.DefinesOnlyIdentities() {
 		return []predicates.QueryPredicate{f.predicate}
 	}
-	if am, ok := tm.GetAliasMap(); ok {
-		rebased := predicates.RebasePredicate(f.predicate, am.ForwardMap())
-		return []predicates.QueryPredicate{rebased}
-	}
-	return []predicates.QueryPredicate{f.predicate}
+	translated := translatePredicateCorrelations(f.predicate, tm)
+	return []predicates.QueryPredicate{translated}
 }
 
 // OfPredicateCompensation creates a PredicateCompensationFunc that

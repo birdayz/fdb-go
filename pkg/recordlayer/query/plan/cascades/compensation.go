@@ -304,10 +304,7 @@ func (f *ResultCompensationFunction) ApplyCompensationForResult(tm TranslationMa
 	if tm == nil || tm.DefinesOnlyIdentities() {
 		return f.resultVal
 	}
-	if am, ok := tm.GetAliasMap(); ok {
-		return values.RebaseValue(f.resultVal, am.ForwardMap())
-	}
-	return f.resultVal
+	return translateValueCorrelations(f.resultVal, tm)
 }
 
 // ---------------------------------------------------------------------------
