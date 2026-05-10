@@ -305,8 +305,9 @@ func (t *UnknownType) Equal(other DataType) bool {
 func (t *UnknownType) String() string { return "???" }
 
 // ---- DateType ----
-// Go extension: Java 4.11.1.0 has no DATE column type. Stored as int64
-// (epoch days since 1970-01-01) for compactness and ordering.
+// Go extension: Java 4.11.1.0 has no DATE column type. Stored as STRING
+// (ISO 8601 "2006-01-02") in proto for self-describing reads and
+// lexicographic ordering.
 
 type DateType struct{ typeBase }
 
@@ -333,8 +334,8 @@ func (t *DateType) String() string { return "date" + nullableSuffix(t.isNullable
 
 // ---- TimestampType ----
 // Go extension: Java 4.11.1.0 has no TIMESTAMP column type. Stored as
-// int64 (epoch milliseconds) for compactness, ordering, and sub-second
-// resolution.
+// STRING (ISO 8601 "2006-01-02 15:04:05") in proto for self-describing
+// reads and lexicographic ordering.
 
 type TimestampType struct{ typeBase }
 
