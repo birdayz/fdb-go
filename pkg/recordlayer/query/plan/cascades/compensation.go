@@ -93,6 +93,15 @@ var (
 	ImpossibleCompensation Compensation = impossibleCompensation{}
 )
 
+// CompensatedResult bundles the results of computing result
+// compensation for a partial match. Ports Java's
+// Compensation.CompensatedResult.
+type CompensatedResult struct {
+	Impossible           bool
+	ResultCompensationFn *ResultCompensationFunction
+	GroupByMappings      *GroupByMappings
+}
+
 // IntersectCompensations folds a slice of Compensations via the
 // intersection monoid. The identity element is ImpossibleCompensation.
 // Ports Java's `compensations.stream().reduce(impossibleCompensation, Compensation::intersect)`.
