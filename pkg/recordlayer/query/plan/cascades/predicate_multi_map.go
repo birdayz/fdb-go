@@ -873,6 +873,16 @@ func replacePredicateValues(p predicates.QueryPredicate, fn func(values.Value) v
 			return p
 		}
 		return predicates.NewNot(newChild)
+	case *predicates.Placeholder:
+		newVal := values.Replace(pred.Value, fn)
+		if newVal == pred.Value {
+			return p
+		}
+		return &predicates.Placeholder{
+			ParameterAlias: pred.ParameterAlias,
+			Value:          newVal,
+			CompRange:      pred.CompRange,
+		}
 	default:
 		return p
 	}
