@@ -759,7 +759,9 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		newResultFn = NoResultCompensation()
 	} else {
 		if !rcf.IsNeeded() || !otherRcf.IsNeeded() {
-			panic("Compensation.Intersect: both sides must have result compensation or neither")
+			// Java: Verify.verify(both needed). Invariant violation —
+			// return impossible instead of panicking.
+			return ImpossibleCompensation
 		}
 		newResultFn = rcf.Amend(unmatchedAggMap, amendedMatchedAggMap)
 		isImpossible = isImpossible || newResultFn.IsImpossible()
@@ -834,13 +836,22 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 	}
 
 	// Phase 8: Build derived compensation.
+	// Java: Preconditions.checkArgument(compensatedAliases.equals(other.compensatedAliases))
+	// Merge both sides (defensive — Java asserts identity).
+	mergedAliases := make(map[values.CorrelationIdentifier]struct{}, len(c.compensatedAliases))
+	for k, v := range c.compensatedAliases {
+		mergedAliases[k] = v
+	}
+	for k, v := range other.compensatedAliases {
+		mergedAliases[k] = v
+	}
 	return DerivedCompensation(
 		intersectedChild,
 		isImpossible,
 		combinedPredMap,
 		intersectedMatched,
 		intersectedUnmatched,
-		c.compensatedAliases, // both sides should be identical
+		mergedAliases,
 		newResultFn,
 		newGroupByMappings,
 	)

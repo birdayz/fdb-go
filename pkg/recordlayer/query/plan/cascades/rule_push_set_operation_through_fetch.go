@@ -114,9 +114,12 @@ func pushSetOpThroughFetch(
 	newSetOp := buildSetOp(newQuants)
 	setOpRef := call.MemoizeFinalExpression(newSetOp)
 
-	// Wrap in a single Fetch.
-	// Use the first fetch's TranslateValueFunction (they should be
-	// compatible since they all use the same FetchIndexRecords mode).
+	// Java combines TVFs via setOperationPlan.pushValueFunction. Go uses
+	// the first fetch's TVF — valid when all fetches share the same
+	// result type (same base record). The TVF translates field names
+	// to index columns; for a union/intersection over the same table,
+	// any covering TVF works because the result is the full record
+	// fetched by PK regardless of which index provided the entry.
 	translateFn := fetchWrappers[0].plan.GetTranslateValueFunction()
 	resultType := fetchWrappers[0].plan.GetResultType()
 

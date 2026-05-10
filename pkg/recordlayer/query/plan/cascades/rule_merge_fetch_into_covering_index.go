@@ -19,6 +19,13 @@ import (
 // filter or distinct).
 //
 // Mirrors Java's `MergeFetchIntoCoveringIndexRule`.
+//
+// Note: currently unreachable in the production pipeline because
+// wrapScanPlanWithCoverage strips the Fetch at construction time for
+// covering indexes (returning a bare physicalIndexScanWrapper with
+// covering=true). This rule exists for completeness and would fire if
+// a Fetch(covering-index) structure were produced by a different path
+// (e.g., manual plan construction or future rule rewrites).
 type MergeFetchIntoCoveringIndexRule struct {
 	matcher matching.BindingMatcher
 }

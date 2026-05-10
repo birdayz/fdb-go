@@ -154,11 +154,10 @@ func tryPushPredicate(
 		}
 		return predicates.NewNot(child), true
 	default:
-		// Non-value-bearing predicates (ExistsPredicate, Placeholder) are
-		// pushable as-is. They're self-contained (own quantifier scope)
-		// and don't reference the filter's inner alias. Matches Java's
-		// "if not PredicateWithValue, return leafPredicate unchanged."
-		return pred, true
+		// Unknown predicate type — keep as residual (don't push). Safe
+		// default prevents future predicate types with correlation-bearing
+		// values from being pushed without translation.
+		return nil, false
 	}
 }
 
