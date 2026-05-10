@@ -117,13 +117,13 @@ Matching rules wired into planner: MatchLeafRule (leaf expressions), MatchInterm
 
 **Remaining:** Full recursive MaxMatchMap.compute (currently seed: structural equality + pairwise child recursion; Java does Cartesian-product variant generation for complex value tree alignments like reordered record constructor fields). Adequate for all current query patterns — upgrade when complex value matching surfaces real divergences.
 
-### M-3: PushReferencedFields rules (5 rules)
+### M-3: PushReferencedFields rules — DONE (dayshift-85)
 
-Column pruning optimization. Reduces I/O by tracking which columns each operator needs.
+All 4 rules ported: Filter, Select, Distinct, Unique. ReferencedFields constraint type + ReferencedFieldsConstraintKey. Propagates top-down during PLANNING constraint pass.
 
-### M-4: PlanPartition property-based matching
+### M-4: PlanPartition property-based matching — DONE (dayshift-85)
 
-Java's ImplementationRules match against PlanPartition property sets (ordering, distinct, stored-record). Go approximates with simpler partition iteration.
+Go has full PlanPartition infrastructure: ToPlanPartitions, RollUpPlanPartitions, AllAttributesExcept, per-expression property isolation. Matcher abstraction added: FilterPlanPartitions, SelectMinCostPartition, WhereDistinct/WhereStored/WhereOrdered convenience filters.
 
 ---
 
