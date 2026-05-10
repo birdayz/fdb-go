@@ -220,6 +220,16 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementDistinctFinalRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
+
+		// --- Fetch push-through rules (physical plan optimization) ---
+		NewMergeFetchIntoCoveringIndexRule(),
+		NewPushDistinctBelowFilterRule(),
+		NewPushDistinctThroughFetchRule(),
+		NewPushFilterThroughFetchRule(),
+		NewPushMapThroughFetchRule(),
+		NewPushUnionThroughFetchRule(),
+		NewPushIntersectionThroughFetchRule(),
+
 		NewFinalizeExpressionsRule(),
 	}
 	rules = append(rules, GoExtensionImplementationRules()...)

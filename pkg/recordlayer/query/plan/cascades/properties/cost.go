@@ -81,6 +81,7 @@ const (
 	IntersectionCPU = 1.0
 	SelectCPU       = 0.5
 	WriteCPU        = 1.0
+	FetchCPU        = 0.5 // per-row base-record fetch via PK lookup
 )
 
 // Cost is a Go-native heuristic cost: a cardinality estimate plus a
