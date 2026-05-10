@@ -1,5 +1,7 @@
 package values
 
+import "fmt"
+
 // Replace applies replacementFn to every node in the Value tree
 // rooted at v, in pre-order (parent before children). If
 // replacementFn returns nil, the entire subtree is removed (Replace
@@ -90,6 +92,12 @@ func WithChildren(v Value, newChildren []Value) Value {
 // old children — the caller's fn was still applied to the node
 // itself in step 1.
 func withChildren(v Value, newChildren []Value) Value {
+	if v == nil {
+		return nil
+	}
+	if len(newChildren) == 0 && len(v.Children()) == 0 {
+		return v
+	}
 	switch vt := v.(type) {
 	// --- Types with existing WithChildren methods ---
 	case *AndOrValue:
@@ -287,10 +295,6 @@ func withChildren(v Value, newChildren []Value) Value {
 		return &RangeValue{BeginInclusive: newChildren[0], EndExclusive: newChildren[1], Step: newChildren[2]}
 
 	default:
-		// Unknown non-leaf type — can't reconstruct, return as-is.
-		// This is safe: the caller's fn was applied to the node itself
-		// in step 1 of Replace. A future port of a new Value type
-		// should add a case here.
-		return v
+		panic(fmt.Sprintf("withChildren: unhandled Value type %T", v))
 	}
 }
