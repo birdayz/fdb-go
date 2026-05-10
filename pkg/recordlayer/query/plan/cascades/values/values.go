@@ -402,6 +402,8 @@ func ExplainValue(v Value) string {
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
 	case *ScalarSubqueryValue:
 		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
+	case *UnmatchedAggregateValue:
+		return "unmatched(" + cv.UnmatchedID.Name() + ")"
 	}
 	return v.Name()
 }

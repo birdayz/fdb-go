@@ -1,29 +1,33 @@
 package values
 
 // GetCorrelatedToOfValue walks v + its descendants and returns the
-// union of every QuantifiedObjectValue's correlation. The result is a
-// fresh map; callers may mutate freely.
+// union of every correlation-bearing leaf Value's alias. Handles
+// QuantifiedObjectValue, QuantifiedRecordValue, ExistsValue,
+// ScalarSubqueryValue, ObjectValue, and UnmatchedAggregateValue.
 //
-// Returns nil for nil input. Returns an empty map (not nil) for trees
-// that contain no QuantifiedObjectValue, so callers can rely on a
-// non-nil map shape if they want to use map literal-syntax.
+// Returns nil for nil input. Returns a non-nil empty map for trees
+// with no correlations.
 //
-// Java's equivalent walks `Value.getCorrelatedTo()` which delegates to
-// `getCorrelatedToWithoutChildren` + child sets. We don't have the
-// per-Value-type methods yet (Correlated is implemented only on
-// QuantifiedObjectValue today), so this single-walk implementation is
-// the bridge until each Value type ports a per-impl method. When that
-// happens this helper degrades naturally — collect already returns
-// the same set, just with O(N) calls into each impl rather than one
-// type-switch per node.
+// Ports Java's Value.getCorrelatedTo().
 func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 	if v == nil {
 		return nil
 	}
 	out := map[CorrelationIdentifier]struct{}{}
 	WalkValue(v, func(node Value) bool {
-		if q, ok := node.(*QuantifiedObjectValue); ok {
+		switch q := node.(type) {
+		case *QuantifiedObjectValue:
 			out[q.Correlation] = struct{}{}
+		case *QuantifiedRecordValue:
+			out[q.Alias] = struct{}{}
+		case *ExistsValue:
+			out[q.Alias] = struct{}{}
+		case *ScalarSubqueryValue:
+			out[q.Alias] = struct{}{}
+		case *ObjectValue:
+			out[q.Alias] = struct{}{}
+		case *UnmatchedAggregateValue:
+			out[q.UnmatchedID] = struct{}{}
 		}
 		return true
 	})
