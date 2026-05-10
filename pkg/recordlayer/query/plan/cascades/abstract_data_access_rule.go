@@ -263,7 +263,7 @@ func DataAccessForMatchPartition(
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
-				expr = fmc.Apply(expr, EmptyTranslationMap())
+				expr = fmc.ApplyAllNeeded(expr, EmptyTranslationMap())
 			}
 		}
 		resultExprs = append(resultExprs, expr)

@@ -622,6 +622,44 @@ func (c *ForMatchCompensation) Apply(
 	return expressions.NewLogicalFilterExpression(compensatedPreds, innerQ)
 }
 
+// ApplyFinal applies the result (shape) compensation by wrapping the
+// expression in a map that reshapes the output. Returns the original
+// expression if no result compensation is needed.
+//
+// Ports Java's Compensation.WithSelectCompensation.applyFinal.
+func (c *ForMatchCompensation) ApplyFinal(
+	expr expressions.RelationalExpression,
+	translationMap TranslationMap,
+) expressions.RelationalExpression {
+	if !c.resultCompensationFn.IsNeeded() {
+		return expr
+	}
+	resultVal := c.resultCompensationFn.ApplyCompensationForResult(translationMap)
+	if resultVal == nil {
+		return expr
+	}
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+	return expressions.NewLogicalProjectionExpression([]values.Value{resultVal}, innerQ)
+}
+
+// ApplyAllNeeded applies both filter compensation (Apply) and result
+// compensation (ApplyFinal) as needed. This is the primary entry point
+// for applying compensation to a plan expression.
+//
+// Ports Java's Compensation.applyAllNeededCompensations.
+func (c *ForMatchCompensation) ApplyAllNeeded(
+	expr expressions.RelationalExpression,
+	translationMap TranslationMap,
+) expressions.RelationalExpression {
+	if c.IsNeededForFiltering() {
+		expr = c.Apply(expr, translationMap)
+	}
+	if c.IsFinalNeeded() {
+		expr = c.ApplyFinal(expr, translationMap)
+	}
+	return expr
+}
+
 // Intersect combines this compensation with another by keeping only
 // predicates that appear in both (common residuals for index
 // intersections). Returns ImpossibleCompensation if the intersection
