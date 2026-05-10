@@ -67,17 +67,18 @@ func PrepareMatchesAndCompensations(
 			comp = NoCompensation
 		}
 
-		// Seed: all requested orderings are satisfied. The full
-		// satisfiesAnyRequestedOrderings logic checks ordering parts
-		// against matched ordering parts; deferred to refinement.
-		satisfying := make([]*RequestedOrdering, len(requestedOrderings))
-		copy(satisfying, requestedOrderings)
+		satisfying, scanDir := SatisfiesAnyRequestedOrderings(pm, requestedOrderings)
+		if satisfying == nil {
+			satisfying = make([]*RequestedOrdering, len(requestedOrderings))
+			copy(satisfying, requestedOrderings)
+		}
+		reverseScan := scanDir != nil && *scanDir == ScanDirectionReverse
 
 		access := NewSingleMatchedAccess(
 			pm,
 			comp,
 			candidateTopAlias,
-			false, // forward scan
+			reverseScan,
 			EmptyTranslationMap(),
 			satisfying,
 		)
