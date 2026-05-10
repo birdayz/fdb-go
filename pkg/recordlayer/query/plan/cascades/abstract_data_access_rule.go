@@ -40,8 +40,8 @@ type IntersectorFunc func(
 // by coverage (descending bound predicate count). For each
 // PartialMatch:
 //   - assigns a unique candidateTopAlias
-//   - computes compensation (seed: NoCompensation)
-//   - computes satisfying orderings (seed: all orderings satisfy)
+//   - computes compensation via CompensateCompleteMatch
+//   - computes satisfying orderings via SatisfiesAnyRequestedOrderings
 //   - creates a forward-scan SingleMatchedAccess with empty translation
 //
 // Returns the accesses sorted by coverage (highest first).
