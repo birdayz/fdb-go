@@ -23,6 +23,9 @@ func StructurallyEqual(a, b QueryPredicate) bool {
 		if ap.Comparison.Type != bp.Comparison.Type {
 			return false
 		}
+		if ap.Comparison.Escape != bp.Comparison.Escape {
+			return false
+		}
 		if !values.ValuesStructurallyEqual(ap.Operand, bp.Operand) {
 			return false
 		}
