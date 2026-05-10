@@ -60,13 +60,12 @@ func PrepareMatchesAndCompensations(
 	for _, pm := range partialMatches {
 		candidateTopAlias := values.UniqueCorrelationIdentifier()
 
-		// Seed: no compensation -- full compensation computation
-		// (compensateCompleteMatch, prepareForUnification) requires
-		// infrastructure not yet wired. Architecturally correct because
-		// NoCompensation means "the scan fully covers the match",
-		// which is the optimistic assumption the Pareto filter will
-		// refine later.
-		comp := NoCompensation
+		var comp Compensation
+		if pmi, ok := pm.(*PartialMatchImpl); ok {
+			comp = pmi.CompensateCompleteMatch(nil, candidateTopAlias)
+		} else {
+			comp = NoCompensation
+		}
 
 		// Seed: all requested orderings are satisfied. The full
 		// satisfiesAnyRequestedOrderings logic checks ordering parts
