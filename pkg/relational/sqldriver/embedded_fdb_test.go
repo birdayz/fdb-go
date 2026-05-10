@@ -8482,3 +8482,86 @@ func TestFDB_DateTimestampParameterBinding(t *testing.T) {
 		t.Errorf("WHERE ts = ? returned id=%d, want 1", id)
 	}
 }
+
+func TestFDB_DateTimestampIndexScan(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dt_idx")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_idx")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE dt_idx_tmpl "+
+			"CREATE TABLE Events (id BIGINT NOT NULL, ts TIMESTAMP, label STRING, PRIMARY KEY(id)) "+
+			"CREATE INDEX idx_ts ON Events (ts)")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_idx/s1 WITH TEMPLATE dt_idx_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dt_idx?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert 4 rows with different timestamps.
+	inserts := []struct {
+		id    int64
+		ts    string
+		label string
+	}{
+		{1, "2020-06-15 10:00:00", "alpha"},
+		{2, "2022-03-20 14:30:00", "beta"},
+		{3, "2024-09-01 08:45:00", "gamma"},
+		{4, "2026-01-10 23:59:59", "delta"},
+	}
+	for _, r := range inserts {
+		_, err = db.ExecContext(ctx, "INSERT INTO Events VALUES (?, ?, ?)", r.id, r.ts, r.label)
+		if err != nil {
+			t.Fatalf("INSERT id=%d: %v", r.id, err)
+		}
+	}
+
+	// Range query: WHERE ts >= '2023-01-01 00:00:00' should return rows with 2024 and 2026 timestamps.
+	rows, err := db.QueryContext(ctx, "SELECT id, label FROM Events WHERE ts >= '2023-01-01 00:00:00' ORDER BY id")
+	if err != nil {
+		t.Fatalf("SELECT with WHERE ts >= ...: %v", err)
+	}
+	defer rows.Close()
+
+	type result struct {
+		id    int64
+		label string
+	}
+	var results []result
+	for rows.Next() {
+		var r result
+		if err := rows.Scan(&r.id, &r.label); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 rows for ts >= '2023-01-01 00:00:00', got %d", len(results))
+	}
+	if results[0].id != 3 || results[0].label != "gamma" {
+		t.Errorf("row 0: got id=%d label=%q, want id=3 label=\"gamma\"", results[0].id, results[0].label)
+	}
+	if results[1].id != 4 || results[1].label != "delta" {
+		t.Errorf("row 1: got id=%d label=%q, want id=4 label=\"delta\"", results[1].id, results[1].label)
+	}
+}
