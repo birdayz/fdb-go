@@ -8238,3 +8238,189 @@ func TestFDB_ArrayColumnDDL(t *testing.T) {
 		t.Errorf("tags = %v, want nil (NULL)", tags)
 	}
 }
+
+func TestFDB_DateTimestampEdgeCases(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dt_edge")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_edge")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE dt_edge_tmpl "+
+			"CREATE TABLE Events (id BIGINT NOT NULL, d DATE, ts TIMESTAMP, PRIMARY KEY(id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_edge/s1 WITH TEMPLATE dt_edge_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dt_edge?cluster_file=%s&schema=s1", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert edge-case rows: year boundaries, leap day, far future, epoch.
+	inserts := []struct {
+		id int64
+		d  string
+		ts string
+	}{
+		{1, "2000-01-01", "2000-01-01 00:00:00"},
+		{2, "1999-12-31", "1999-12-31 23:59:59"},
+		{3, "2024-02-29", "2024-02-29 12:00:00"},
+		{4, "9999-12-31", "9999-12-31 23:59:59"},
+		{5, "1970-01-01", "1970-01-01 00:00:00"},
+	}
+	for _, ins := range inserts {
+		_, err = db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Events VALUES (%d, '%s', '%s')", ins.id, ins.d, ins.ts))
+		if err != nil {
+			t.Fatalf("INSERT id=%d: %v", ins.id, err)
+		}
+	}
+
+	// --- Verify round-trip of all rows ---
+	rows, err := db.QueryContext(ctx, "SELECT id, d, ts FROM Events ORDER BY id")
+	if err != nil {
+		t.Fatalf("SELECT all: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id int64
+		d  string
+		ts string
+	}
+	var results []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.d, &r.ts); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("got %d rows, want 5", len(results))
+	}
+
+	// Spot-check stored values.
+	if results[0].d != "2000-01-01" {
+		t.Errorf("row 1 date = %q, want 2000-01-01", results[0].d)
+	}
+	if results[1].d != "1999-12-31" {
+		t.Errorf("row 2 date = %q, want 1999-12-31", results[1].d)
+	}
+	if results[2].d != "2024-02-29" {
+		t.Errorf("row 3 date = %q, want 2024-02-29 (leap day)", results[2].d)
+	}
+	if results[3].ts != "9999-12-31 23:59:59" {
+		t.Errorf("row 4 ts = %q, want 9999-12-31 23:59:59", results[3].ts)
+	}
+	if results[4].ts != "1970-01-01 00:00:00" {
+		t.Errorf("row 5 ts = %q, want 1970-01-01 00:00:00", results[4].ts)
+	}
+
+	// --- WHERE with CAST(string AS TIMESTAMP) ---
+	var count int64
+	err = db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM Events WHERE ts >= CAST('2000-01-01 00:00:00' AS TIMESTAMP)").Scan(&count)
+	if err != nil {
+		t.Fatalf("WHERE CAST AS TIMESTAMP: %v", err)
+	}
+	// Rows 1 (2000), 3 (2024), 4 (9999) satisfy >= 2000-01-01 00:00:00.
+	if count != 3 {
+		t.Errorf("rows >= 2000-01-01 via CAST: got %d, want 3", count)
+	}
+
+	// --- YEAR/MONTH/DAY on edge dates ---
+	var year, month, day int64
+
+	// Y2K boundary.
+	err = db.QueryRowContext(ctx, "SELECT YEAR(d), MONTH(d), DAY(d) FROM Events WHERE id = 1").Scan(&year, &month, &day)
+	if err != nil {
+		t.Fatalf("YEAR/MONTH/DAY id=1: %v", err)
+	}
+	if year != 2000 || month != 1 || day != 1 {
+		t.Errorf("id=1: YEAR/MONTH/DAY = %d/%d/%d, want 2000/1/1", year, month, day)
+	}
+
+	// 1999-12-31.
+	err = db.QueryRowContext(ctx, "SELECT YEAR(d), MONTH(d), DAY(d) FROM Events WHERE id = 2").Scan(&year, &month, &day)
+	if err != nil {
+		t.Fatalf("YEAR/MONTH/DAY id=2: %v", err)
+	}
+	if year != 1999 || month != 12 || day != 31 {
+		t.Errorf("id=2: YEAR/MONTH/DAY = %d/%d/%d, want 1999/12/31", year, month, day)
+	}
+
+	// Leap day.
+	err = db.QueryRowContext(ctx, "SELECT YEAR(d), MONTH(d), DAY(d) FROM Events WHERE id = 3").Scan(&year, &month, &day)
+	if err != nil {
+		t.Fatalf("YEAR/MONTH/DAY id=3: %v", err)
+	}
+	if year != 2024 || month != 2 || day != 29 {
+		t.Errorf("id=3: YEAR/MONTH/DAY = %d/%d/%d, want 2024/2/29", year, month, day)
+	}
+
+	// Far future.
+	err = db.QueryRowContext(ctx, "SELECT YEAR(ts), MONTH(ts), DAY(ts) FROM Events WHERE id = 4").Scan(&year, &month, &day)
+	if err != nil {
+		t.Fatalf("YEAR/MONTH/DAY id=4: %v", err)
+	}
+	if year != 9999 || month != 12 || day != 31 {
+		t.Errorf("id=4: YEAR/MONTH/DAY = %d/%d/%d, want 9999/12/31", year, month, day)
+	}
+
+	// Epoch.
+	err = db.QueryRowContext(ctx, "SELECT YEAR(ts), MONTH(ts), DAY(ts) FROM Events WHERE id = 5").Scan(&year, &month, &day)
+	if err != nil {
+		t.Fatalf("YEAR/MONTH/DAY id=5: %v", err)
+	}
+	if year != 1970 || month != 1 || day != 1 {
+		t.Errorf("id=5: YEAR/MONTH/DAY = %d/%d/%d, want 1970/1/1", year, month, day)
+	}
+
+	// --- ORDER BY TIMESTAMP: verify lexicographic ordering on ISO strings ---
+	rows2, err := db.QueryContext(ctx, "SELECT id FROM Events ORDER BY ts ASC")
+	if err != nil {
+		t.Fatalf("ORDER BY ts ASC: %v", err)
+	}
+	defer rows2.Close()
+
+	var ids []int64
+	for rows2.Next() {
+		var id int64
+		if err := rows2.Scan(&id); err != nil {
+			t.Fatalf("Scan ORDER BY: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows2.Err(); err != nil {
+		t.Fatalf("rows2.Err: %v", err)
+	}
+
+	// Expected order by ts ascending:
+	// 1970-01-01 (id=5), 1999-12-31 (id=2), 2000-01-01 (id=1), 2024-02-29 (id=3), 9999-12-31 (id=4)
+	wantOrder := []int64{5, 2, 1, 3, 4}
+	if len(ids) != len(wantOrder) {
+		t.Fatalf("ORDER BY returned %d rows, want %d", len(ids), len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if ids[i] != want {
+			t.Errorf("ORDER BY ts ASC position %d: got id=%d, want id=%d", i, ids[i], want)
+		}
+	}
+}

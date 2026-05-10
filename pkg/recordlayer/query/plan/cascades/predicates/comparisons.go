@@ -443,18 +443,28 @@ func cmpAny(a, b any) (int, bool) {
 		}
 	}
 	if av, ok := a.(string); ok {
-		bv, ok2 := b.(string)
-		if !ok2 {
-			return 0, false
+		if bv, ok2 := b.(string); ok2 {
+			switch {
+			case av < bv:
+				return -1, true
+			case av > bv:
+				return 1, true
+			default:
+				return 0, true
+			}
 		}
-		switch {
-		case av < bv:
-			return -1, true
-		case av > bv:
-			return 1, true
-		default:
-			return 0, true
+		if bt, ok2 := b.(time.Time); ok2 {
+			if at, pOK := functions.ParseTimestamp(av); pOK {
+				switch {
+				case at.Before(bt):
+					return -1, true
+				case at.After(bt):
+					return 1, true
+				}
+				return 0, true
+			}
 		}
+		return 0, false
 	}
 	// Bool equality: FALSE < TRUE (following SQL's TRUE > FALSE
 	// convention). Used by `x = TRUE` / `x = FALSE` from the
