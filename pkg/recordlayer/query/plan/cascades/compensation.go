@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"fmt"
-
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -1005,13 +1003,16 @@ func DerivedCompensation(
 	resultCompensationFn *ResultCompensationFunction,
 	groupByMappings *GroupByMappings,
 ) *ForMatchCompensation {
-	// Verify preconditions (mirrors Java's Verify.verify in derived()).
+	// Java uses Verify.verify here (crashes on violation). Go returns
+	// an impossible compensation instead of panicking — matches the
+	// "never panic in library code" principle while preserving the
+	// invariant semantics (an impossible compensation is never applied).
 	if !impossible &&
 		len(unmatchedQuantifiers) == 0 &&
 		predicateCompensationMap.IsEmpty() &&
 		!resultCompensationFn.IsNeeded() &&
 		!parent.IsNeededForFiltering() {
-		panic(fmt.Sprintf("DerivedCompensation: at least one of impossible, unmatched quantifiers, predicate compensation, result compensation, or child filtering must be needed"))
+		impossible = true
 	}
 
 	return NewForMatchCompensation(

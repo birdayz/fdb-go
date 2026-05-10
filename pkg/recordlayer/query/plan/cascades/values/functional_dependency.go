@@ -4,9 +4,10 @@ package values
 // on otherValue — meaning v's output is fully determined by
 // otherValue's output. Ports Java's Value.isFunctionallyDependentOn.
 //
-// Returns true if all QuantifiedObjectValue leaves in v reference the
+// Returns true if all correlation-bearing leaves in v reference the
 // same correlation as otherValue (when otherValue is a QOV). Returns
-// false for non-QOV otherValue.
+// false if any leaf references a different scope, or if otherValue is
+// not a QOV.
 func IsFunctionallyDependentOn(v Value, otherValue Value) bool {
 	otherQOV, ok := otherValue.(*QuantifiedObjectValue)
 	if !ok {
@@ -18,13 +19,26 @@ func IsFunctionallyDependentOn(v Value, otherValue Value) bool {
 		if !allDependent {
 			return false
 		}
-		if qov, isQOV := node.(*QuantifiedObjectValue); isQOV {
-			if qov.Correlation != otherQOV.Correlation {
+		// Check ALL correlation-bearing value types, not just QOV.
+		switch n := node.(type) {
+		case *QuantifiedObjectValue:
+			if n.Correlation != otherQOV.Correlation {
 				allDependent = false
-				return false
+			}
+		case *QuantifiedRecordValue:
+			if n.Alias != otherQOV.Correlation {
+				allDependent = false
+			}
+		case *ExistsValue:
+			if n.Alias != otherQOV.Correlation {
+				allDependent = false
+			}
+		case *ScalarSubqueryValue:
+			if n.Alias != otherQOV.Correlation {
+				allDependent = false
 			}
 		}
-		return true
+		return allDependent
 	})
 	return allDependent
 }

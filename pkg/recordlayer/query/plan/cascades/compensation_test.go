@@ -571,16 +571,13 @@ func TestDerivedCompensation_Impossible(t *testing.T) {
 	}
 }
 
-func TestDerivedCompensation_PanicWhenNothingNeeded(t *testing.T) {
+func TestDerivedCompensation_ImpossibleWhenNothingNeeded(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic when nothing is needed")
-		}
-	}()
-
-	DerivedCompensation(
+	// When nothing is needed but DerivedCompensation is called anyway,
+	// it marks the compensation as impossible (preserves invariant
+	// without panicking — CLAUDE.md: no panics in library code).
+	result := DerivedCompensation(
 		NoCompensation,
 		false,
 		EmptyPredicateCompensationMap(),
@@ -590,6 +587,9 @@ func TestDerivedCompensation_PanicWhenNothingNeeded(t *testing.T) {
 		NoResultCompensation(),
 		EmptyGroupByMappings(),
 	)
+	if !result.IsImpossible() {
+		t.Fatal("expected impossible compensation when nothing is needed")
+	}
 }
 
 func TestPredicateCompensationMap(t *testing.T) {
