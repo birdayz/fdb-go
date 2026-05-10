@@ -40,7 +40,7 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 |---|---|---|---|---|---|
 | ~~**D-2**~~ | ~~PushOrdering rules~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~DONE~~ | ~~done~~ |
 | **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Postgres-inspired: multi-dim, memoized | NONE — intentional (RFC-024) | N/A |
-| **D-5** | InComparison architecture | Union of filter legs per IN-element | SelectExpression + ExplodeExpression | LOW — same results, less elegant | 2-3 shifts |
+| ~~**D-5**~~ | ~~InComparison architecture~~ | ~~SelectExpression + ExplodeExpression~~ | ~~SelectExpression + ExplodeExpression~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-7**~~ | ~~Multi-aggregate matching~~ | ~~Multi-aggregate via index intersection~~ | ~~Multi-aggregate via index intersection~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-8**~~ | ~~CardinalityProperty~~ | ~~Coupled to Cost struct~~ | ~~Separate class with min/max bounds~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-11**~~ | ~~ConstantObjectValue promotion~~ | ~~No type promotion on eval~~ | ~~PromoteValue.isPromotionNeeded~~ | ~~DONE~~ | ~~done~~ |

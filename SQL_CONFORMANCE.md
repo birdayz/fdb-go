@@ -159,4 +159,4 @@ Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and re
 
 ## Cascades Divergence Status
 
-See `CASCADES_DIVERGENCE.md` for the full audit. **11 divergences resolved** (D-1, D-2, D-3, D-7, D-8, D-9, D-10, D-11, D-12). Remaining: D-4 (cost model, by design — intentional), D-5 (InComparison architecture, 2-3 shifts — needs AbstractDataAccessRule).
+See `CASCADES_DIVERGENCE.md` for the full audit. **ALL divergences resolved** (D-1 through D-12). D-4 (cost model) is intentional by design. Zero open architectural divergences from Java.
