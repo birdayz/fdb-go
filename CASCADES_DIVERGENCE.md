@@ -60,15 +60,23 @@ Transparent rules (Sort, Distinct, Unique, Delete, Filter, Insert, Update, TempT
 
 ---
 
-### D-5: InComparisonToExplodeRule architecture
+### D-5: InComparisonToExplodeRule architecture — INFRASTRUCTURE COMPLETE (nightshift-84)
 
 **Java:** `InComparisonToExplodeRule` creates a `SelectExpression` with a `ForEach` quantifier over `ExplodeExpression`, then `AbstractDataAccessRule` resolves predicates against index candidates within the SelectExpression.
 
-**Go:** Simplified architecture. Multi-element IN uses Union approach where each filter leg independently matches indexes.
+**Go:** Multi-element IN uses Union approach where each filter leg independently matches indexes.
 
-**Fix:** Port `AbstractDataAccessRule` for `SelectExpression` predicates. Requires `SelectExpression` + `ExplorationCascadesRule` + `TranslationMap` infrastructure.
+**Infrastructure ported (nightshift-84):** All foundation types for D-5 are in place:
+- Placeholder predicate (sargable parameter slots)
+- GraphExpansion builder (index definition → SelectExpression with Placeholders)
+- MatchableSortExpression (candidate ordering wrapper)
+- ValueIndexExpansion (builds Traversals from index definitions — MatchCandidates now have real Traversals)
+- Predicate-to-Placeholder matching in MatchIntermediateRule
+- AbstractDataAccessRule orchestration functions
+- generateDataAccess planner phase
+- PredicateMultiMap, IntersectionResult/Info/BitSet
 
-**Effort:** ~2-3 shifts (gated on M-1).
+**Remaining:** Rewrite InComparisonToExplodeRule to produce SelectExpression + ExplodeExpression (instead of Union-of-filters). Requires extending matching for multi-quantifier SelectExpressions (ExplodeExpression adds a 2nd ForEach). ~0.5-1 shift with infrastructure in place.
 
 ---
 
