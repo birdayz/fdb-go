@@ -140,4 +140,6 @@ Go has full PlanPartition infrastructure: ToPlanPartitions, RollUpPlanPartitions
 5. ~~**D-2** (PushOrdering constraint vs structural) — DONE~~
 6. ~~**D-5** (InComparison architecture) — DONE~~
 7. **6 unported ImplementationCascadesRules** — MergeFetchIntoCoveringIndexRule, PushDistinctBelowFilterRule, PushDistinctThroughFetchRule, PushFilterThroughFetchRule, PushMapThroughFetchRule, PushSetOperationThroughFetchRule. All require RecordQueryFetchFromPartialRecordPlan (covering index fetch plan type) which Go doesn't have. ~9-15 shifts total.
-8. **MaxMatchMap Simplification** — variant-expansion step generating algebraically equivalent value rewrites. Requires separate simplification rule engine. Deferred.
+8. **MaxMatchMap Simplification** — variant-expansion step generating algebraically equivalent value rewrites. Requires separate simplification rule engine (needs Type.Record field metadata). Deferred.
+9. **SelectExpression.compensate** — full predicate compensation computation. Needs expression-level `compensate` method port (~100 LOC). PullUp + ComputeResultCompensation already ported (swingshift-86).
+10. **MaxMatchMap ValueEquivalence parameter** — cross-alias matching in PullUpValueMaybe. ComputeMaxMatchMap currently uses structural matching only; Java passes ValueEquivalence for cross-scope comparisons.
