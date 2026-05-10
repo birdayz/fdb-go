@@ -57,6 +57,7 @@ go_library(
         "planner_constraint.go",
         "planner_phase.go",
         "predicate_multi_map.go",
+        "pullup.go",
         "referenced_fields.go",
         "requested_ordering.go",
         "rich_ordering.go",
