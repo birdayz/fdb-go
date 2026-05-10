@@ -1848,3 +1848,76 @@ func TestForMatchCompensation_Union_ChildRecursive(t *testing.T) {
 		t.Fatal("child union predicate map should contain childPredB")
 	}
 }
+
+func TestIntersectCompensations_Empty(t *testing.T) {
+	t.Parallel()
+	result := IntersectCompensations(nil)
+	if result != ImpossibleCompensation {
+		t.Fatal("empty intersection should be ImpossibleCompensation (identity)")
+	}
+}
+
+func TestIntersectCompensations_SingleElement(t *testing.T) {
+	t.Parallel()
+	c := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := IntersectCompensations([]Compensation{c})
+	if result != c {
+		t.Fatal("impossible ∩ c should equal c (identity property)")
+	}
+}
+
+func TestIntersectCompensations_WithNoCompensation(t *testing.T) {
+	t.Parallel()
+	c := NewForMatchCompensation(
+		false, NoCompensation, StubPredicateCompensationMap(1),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := IntersectCompensations([]Compensation{NoCompensation, c})
+	if result.IsNeeded() {
+		t.Fatal("none ∩ c should be NoCompensation (absorbing)")
+	}
+}
+
+func TestUnionCompensations_Empty(t *testing.T) {
+	t.Parallel()
+	result := UnionCompensations(nil)
+	if result.IsNeeded() {
+		t.Fatal("empty union should be NoCompensation (identity)")
+	}
+}
+
+func TestUnionCompensations_TwoForMatch(t *testing.T) {
+	t.Parallel()
+	predA := predicates.NewConstantPredicate(predicates.TriTrue)
+	predB := predicates.NewConstantPredicate(predicates.TriTrue)
+	c1 := NewForMatchCompensation(
+		false, NoCompensation,
+		NewPredicateCompensationMap(
+			[]predicates.QueryPredicate{predA},
+			[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+		),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	c2 := NewForMatchCompensation(
+		false, NoCompensation,
+		NewPredicateCompensationMap(
+			[]predicates.QueryPredicate{predB},
+			[]PredicateCompensationFunc{NoPredicateCompensationNeeded()},
+		),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	result := UnionCompensations([]Compensation{c1, c2})
+	if !result.IsNeeded() {
+		t.Fatal("union of two needed compensations should be needed")
+	}
+	fm, ok := result.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("expected *ForMatchCompensation, got %T", result)
+	}
+	if fm.GetPredicateCompensationMap().Len() != 2 {
+		t.Fatalf("union predicate map should have 2 entries, got %d", fm.GetPredicateCompensationMap().Len())
+	}
+}
