@@ -84,6 +84,19 @@ func TestMatchedSortOrder_ToProvidedSortOrder(t *testing.T) {
 	if MatchedSortOrderDescending.ToProvidedSortOrder(true) != ProvidedSortOrderAscending {
 		t.Fatal("desc reverse")
 	}
+	// NullsLast/NullsFirst variants.
+	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(false) != ProvidedSortOrderAscendingNullsFirst {
+		t.Fatal("asc-nulls-last forward")
+	}
+	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(true) != ProvidedSortOrderDescendingNullsLast {
+		t.Fatal("asc-nulls-last reverse")
+	}
+	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(false) != ProvidedSortOrderDescendingNullsLast {
+		t.Fatal("desc-nulls-first forward")
+	}
+	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(true) != ProvidedSortOrderAscendingNullsFirst {
+		t.Fatal("desc-nulls-first reverse")
+	}
 }
 
 func TestNewMatchedOrderingPart_Getters(t *testing.T) {

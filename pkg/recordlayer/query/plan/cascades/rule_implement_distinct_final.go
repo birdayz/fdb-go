@@ -56,9 +56,13 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Logical-level check: if projected columns cover a unique key,
-	// ALL physical plans are guaranteed distinct — matches Java's
-	// "strictlySorted" path where all partition members get elided.
+	// Logical-level fallback: if projected columns cover a unique key,
+	// ALL physical plans are guaranteed distinct. This only fires when
+	// innerRef.Get() returns a logical expression (e.g. during tests
+	// without a full PLANNING phase). During normal planning, Get()
+	// returns physical wrappers which findRecordTypes doesn't handle,
+	// so allDistinct stays false and the per-member PropDistinctRecords
+	// check below is the primary path.
 	allDistinct := false
 	if call.Context != nil {
 		innerExpr := innerRef.Get()

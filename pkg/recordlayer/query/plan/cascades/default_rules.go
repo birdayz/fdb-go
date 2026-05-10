@@ -237,7 +237,7 @@ func GoExtensionImplementationRules() []ImplementationRule {
 //
 // Mirrors Java's PlanningRuleSet.MATCHING_RULES:
 //   - MatchLeafRule: seeds leaf-to-leaf matches
-//   - MatchIntermediateRule: propagates matches upward (future)
+//   - MatchIntermediateRule: composes child matches into parent matches
 //
 // Compose with: append(DefaultExpressionRules(), MatchingRules()...)
 func MatchingRules() []ExpressionRule {
