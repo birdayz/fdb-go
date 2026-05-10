@@ -512,6 +512,9 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *RankValue:
 		_, ok := b.(*RankValue)
 		return ok
+	case *UnmatchedAggregateValue:
+		bv, ok := b.(*UnmatchedAggregateValue)
+		return ok && av.UnmatchedID == bv.UnmatchedID
 	default:
 		panic(fmt.Sprintf("EqualsWithoutChildren: unhandled Value type %T", a))
 	}
