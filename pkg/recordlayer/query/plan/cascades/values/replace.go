@@ -294,6 +294,12 @@ func withChildren(v Value, newChildren []Value) Value {
 		}
 		return &RangeValue{BeginInclusive: newChildren[0], EndExclusive: newChildren[1], Step: newChildren[2]}
 
+	case *FieldValue:
+		if len(newChildren) != 1 {
+			return v
+		}
+		return &FieldValue{Field: vt.Field, Typ: vt.Typ, Child: newChildren[0]}
+
 	default:
 		panic(fmt.Sprintf("withChildren: unhandled Value type %T", v))
 	}

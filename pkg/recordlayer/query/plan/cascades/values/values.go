@@ -365,6 +365,9 @@ func ExplainValue(v Value) string {
 		}
 		return valueLiteralString(cv.Value)
 	case *FieldValue:
+		if cv.Child != nil {
+			return ExplainValue(cv.Child) + "." + cv.Field
+		}
 		return cv.Field
 	case *ArithmeticValue:
 		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
