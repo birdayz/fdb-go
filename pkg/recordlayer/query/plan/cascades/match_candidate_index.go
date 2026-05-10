@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"sync"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -22,6 +24,9 @@ type ValueIndexScanMatchCandidate struct {
 	sargableAliases []values.CorrelationIdentifier
 	flowedType      values.Type
 	unique          bool
+
+	traversalOnce sync.Once
+	traversal     *Traversal
 }
 
 // NewValueIndexScanMatchCandidate constructs a match candidate for a
@@ -56,10 +61,16 @@ func NewValueIndexScanMatchCandidate(
 // CandidateName returns the index name.
 func (c *ValueIndexScanMatchCandidate) CandidateName() string { return c.indexName }
 
-// GetTraversal returns nil — the seed ValueIndexScanMatchCandidate does
-// not yet build an expression tree; traversal-based matching is not yet
-// supported for this candidate type.
-func (c *ValueIndexScanMatchCandidate) GetTraversal() *Traversal { return nil }
+// GetTraversal returns the Traversal of this candidate's expression
+// tree, built lazily on first access via ExpandValueIndex. The
+// traversal is stable once computed (sync.Once). Ports Java's
+// ValueIndexScanMatchCandidate.getTraversal().
+func (c *ValueIndexScanMatchCandidate) GetTraversal() *Traversal {
+	c.traversalOnce.Do(func() {
+		c.traversal = ExpandValueIndex(c)
+	})
+	return c.traversal
+}
 
 // GetColumnNames returns the ordered column-name list (one per index
 // key column, parallel to GetSargableAliases).

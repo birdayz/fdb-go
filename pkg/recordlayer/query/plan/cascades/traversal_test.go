@@ -5,6 +5,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // helper: build a single scan leaf wrapped in a Reference.
@@ -339,17 +340,28 @@ func TestTraversal_FindReferencingExpressions_Dedup(t *testing.T) {
 	}
 }
 
-func TestTraversal_MatchCandidate_GetTraversal_NilDefault(t *testing.T) {
+func TestTraversal_MatchCandidate_GetTraversal_NonNil(t *testing.T) {
 	t.Parallel()
 
-	// Verify that the seed match candidates return nil for GetTraversal.
-	vc := NewValueIndexScanMatchCandidate("idx", []string{"T"}, []string{"a"}, nil, nil, false)
-	if vc.GetTraversal() != nil {
-		t.Fatal("expected nil traversal from ValueIndexScanMatchCandidate")
+	// Both match candidate types now build traversals lazily via
+	// ExpandValueIndex. Verify they return non-nil with correct root.
+	alias := values.UniqueCorrelationIdentifier()
+	vc := NewValueIndexScanMatchCandidate("idx", []string{"T"}, []string{"a"},
+		[]values.CorrelationIdentifier{alias}, nil, false)
+	trav := vc.GetTraversal()
+	if trav == nil {
+		t.Fatal("expected non-nil traversal from ValueIndexScanMatchCandidate")
+	}
+	if trav.GetRootReference() == nil {
+		t.Fatal("expected non-nil root reference")
 	}
 
 	ac := NewAggregateIndexMatchCandidate("agg_idx", []string{"T"}, []string{"g"}, expressions.AggSum, "v")
-	if ac.GetTraversal() != nil {
-		t.Fatal("expected nil traversal from AggregateIndexMatchCandidate")
+	aggTrav := ac.GetTraversal()
+	if aggTrav == nil {
+		t.Fatal("expected non-nil traversal from AggregateIndexMatchCandidate")
+	}
+	if aggTrav.GetRootReference() == nil {
+		t.Fatal("expected non-nil root reference")
 	}
 }

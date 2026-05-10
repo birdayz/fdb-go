@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"sync"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -24,6 +26,9 @@ type AggregateIndexMatchCandidate struct {
 	aggFunction expressions.AggregateFunction
 	aggColumn   string
 	aliases     []values.CorrelationIdentifier
+
+	traversalOnce sync.Once
+	traversal     *Traversal
 }
 
 // NewAggregateIndexMatchCandidate creates a candidate for an aggregate
@@ -52,9 +57,16 @@ func NewAggregateIndexMatchCandidate(
 
 func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
 
-// GetTraversal returns nil — the seed AggregateIndexMatchCandidate does
-// not yet build an expression tree for traversal-based matching.
-func (c *AggregateIndexMatchCandidate) GetTraversal() *Traversal { return nil }
+// GetTraversal returns the Traversal of this candidate's expression
+// tree, built lazily on first access via ExpandValueIndex (using the
+// grouping columns as the index columns). The traversal is stable once
+// computed (sync.Once).
+func (c *AggregateIndexMatchCandidate) GetTraversal() *Traversal {
+	c.traversalOnce.Do(func() {
+		c.traversal = ExpandValueIndex(c)
+	})
+	return c.traversal
+}
 func (c *AggregateIndexMatchCandidate) GetColumnNames() []string { return c.groupCols }
 func (c *AggregateIndexMatchCandidate) GetRecordTypes() []string { return c.recordTypes }
 func (c *AggregateIndexMatchCandidate) IsUnique() bool           { return false }
