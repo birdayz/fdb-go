@@ -10,6 +10,7 @@
 package executor
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"math"
@@ -410,6 +411,13 @@ func executeFilter(
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
 }
 
+// executeLimit implements LIMIT/OFFSET. Go-only SQL extension — Java
+// uses ExecuteProperties.ReturnedRowLimit set at the JDBC layer instead.
+//
+// Optimization: propagates the effective row limit (limit + offset)
+// into the inner plan's ExecuteProperties so downstream scans stop
+// reading from FDB after enough records are produced. This avoids
+// reading the full table when only N rows are needed.
 func executeLimit(
 	ctx context.Context,
 	p *plans.RecordQueryLimitPlan,
@@ -422,13 +430,25 @@ func executeLimit(
 	if len(children) == 0 {
 		return recordlayer.Empty[QueryResult](), nil
 	}
-	innerCursor, err := ExecutePlan(ctx, children[0], store, evalCtx, continuation, props)
+
+	limit := int(p.GetLimit())
+	offset := int(p.GetOffset())
+
+	// Go-only extension: propagate effective limit to inner plan so
+	// scans stop early. The inner needs at most (offset + limit) rows.
+	innerProps := props
+	effectiveLimit := offset + limit
+	if effectiveLimit > 0 {
+		if innerProps.ReturnedRowLimit == 0 || effectiveLimit < innerProps.ReturnedRowLimit {
+			innerProps.ReturnedRowLimit = effectiveLimit
+		}
+	}
+
+	innerCursor, err := ExecutePlan(ctx, children[0], store, evalCtx, continuation, innerProps)
 	if err != nil {
 		return nil, err
 	}
 
-	limit := int(p.GetLimit())
-	offset := int(p.GetOffset())
 	return recordlayer.SkipThenLimit(innerCursor, offset, limit), nil
 }
 
@@ -577,6 +597,10 @@ func (c *errCheckCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRe
 func (c *errCheckCursor) Close() error   { return c.inner.Close() }
 func (c *errCheckCursor) IsClosed() bool { return c.inner.IsClosed() }
 
+// executeSort implements ORDER BY. When a row limit is set (from a
+// LIMIT clause pushed down via ExecuteProperties), uses a heap-based
+// top-K algorithm that keeps only the needed rows in memory — O(K)
+// space instead of O(N). Go-only extension optimization.
 func executeSort(
 	ctx context.Context,
 	p *plans.RecordQuerySortPlan,
@@ -605,7 +629,17 @@ func executeSort(
 		}
 		directions[i] = k.Reverse
 	}
-	sortByKeys(items, keyNames, directions)
+
+	// Go-only extension: top-K optimization. When we only need the
+	// first K rows (limit + skip), partial-sort via heap to avoid
+	// sorting the entire dataset. O(N log K) time, O(K) output space.
+	k := props.Skip + props.ReturnedRowLimit
+	if k > 0 && k < len(items) {
+		partialSortTopK(items, keyNames, directions, k)
+		items = items[:k]
+	} else {
+		sortByKeys(items, keyNames, directions)
+	}
 
 	cursor := newSortResultCursor(items)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
@@ -1993,6 +2027,75 @@ func sortByKeys(items []QueryResult, keys []string, directions []bool) {
 		}
 		return false
 	})
+}
+
+// partialSortTopK is a Go-only extension optimization that rearranges
+// items so that the first k elements are the top-k in sorted order,
+// using a max-heap of size k. O(N log k) time, O(k) auxiliary space.
+// After this call, items[:k] contains the top-k in sorted order.
+func partialSortTopK(items []QueryResult, keys []string, directions []bool, k int) {
+	if k <= 0 || k >= len(items) {
+		sortByKeys(items, keys, directions)
+		return
+	}
+
+	less := func(a, b QueryResult) bool {
+		for i, key := range keys {
+			va := fieldFromDatum(a.Datum, key)
+			vb := fieldFromDatum(b.Datum, key)
+			cmp := compareAny(va, vb)
+			if cmp == 0 {
+				continue
+			}
+			desc := i < len(directions) && directions[i]
+			if desc {
+				return cmp > 0
+			}
+			return cmp < 0
+		}
+		return false
+	}
+
+	// Build a max-heap of size k (we want the SMALLEST k elements, so
+	// the heap root is the LARGEST among the current top-k — if a new
+	// element is smaller than the root, it replaces it).
+	h := &topKHeap{items: make([]QueryResult, k), less: less}
+	copy(h.items, items[:k])
+	heap.Init(h)
+
+	for i := k; i < len(items); i++ {
+		if less(items[i], h.items[0]) {
+			h.items[0] = items[i]
+			heap.Fix(h, 0)
+		}
+	}
+
+	// Extract from heap in reverse order → sorted ascending.
+	result := make([]QueryResult, k)
+	for i := k - 1; i >= 0; i-- {
+		result[i] = heap.Pop(h).(QueryResult)
+	}
+	copy(items[:k], result)
+}
+
+// topKHeap is a max-heap for the top-K partial sort. The "less"
+// function defines the desired sort order; the heap inverts it (max-
+// heap) so the root is the WORST element among the current top-K.
+type topKHeap struct {
+	items []QueryResult
+	less  func(a, b QueryResult) bool
+}
+
+func (h *topKHeap) Len() int           { return len(h.items) }
+func (h *topKHeap) Less(i, j int) bool { return h.less(h.items[j], h.items[i]) } // inverted for max-heap
+func (h *topKHeap) Swap(i, j int)      { h.items[i], h.items[j] = h.items[j], h.items[i] }
+func (h *topKHeap) Push(x any)         { h.items = append(h.items, x.(QueryResult)) }
+func (h *topKHeap) Pop() any {
+	old := h.items
+	n := len(old)
+	item := old[n-1]
+	h.items = old[:n-1]
+	return item
 }
 
 // comparePKTuples compares two primary key tuples using their packed
