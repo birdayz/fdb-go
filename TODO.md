@@ -13,7 +13,7 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 - [x] **C-1** SelectExpression.compensate — full predicate compensation computation. Ported (swingshift-86): CompensateCompleteMatch now iterates predicates, looks up PredicateMultiMap mappings, computes per-predicate compensation functions, and builds the real PredicateCompensationMap. Enables residual predicate filters after index scans.
 - [x] **C-2** MaxMatchMap ValueEquivalence parameter — ported (swingshift-86). Added ComputeMaxMatchMapWithEquivalence and PullUpValueMaybeWithEquivalence that thread ValueEquivalence through the matching algorithm. findMatchingReachableCandidate now consults ValueEquivalence as fallback when structural equality fails.
 - [ ] **C-3** PullUp.Visitor (MatchPullUp, PullUpVisitor) — builds PullUp chains from expression trees by visiting candidate expressions. Needs expression visitor infrastructure. ~0.5 shift.
-- [ ] **C-4** Pareto filtering in MaximumCoverageMatches — findContainingAccess logic that prunes dominated matches within the same MatchCandidate. Conservative without it (keeps all matches). ~0.5 shift.
+- [x] **C-4** Pareto filtering in MaximumCoverageMatches — ported (swingshift-86). findContainingAccess prunes dominated matches: if match A from candidate C has strictly more bound sargable aliases that contain all of match B's aliases, B is eliminated.
 - [ ] **C-5** FieldValue child value — Go's FieldValue is a flat string; Java's has a child value + multi-step FieldPath. Blocks full ExpandRecordRule (expansion currently creates bare FVs without base-value reference) and ExpandFusedFieldValueRule. Structural change to FieldValue. ~1 shift.
 
 ### Blocked on larger infrastructure

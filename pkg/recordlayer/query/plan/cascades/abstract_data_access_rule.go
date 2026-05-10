@@ -97,12 +97,13 @@ func PrepareMatchesAndCompensations(
 }
 
 // MaximumCoverageMatches eliminates PartialMatches whose coverage is
-// entirely contained in other matches, then wraps survivors in
-// Vectored with ascending position indices.
+// entirely contained in other matches from the same MatchCandidate,
+// then wraps survivors in Vectored with ascending position indices.
 //
-// No Pareto filtering yet — every match is kept (conservative/correct).
-// Full findContainingAccess logic that prunes dominated matches within
-// the same MatchCandidate is future work.
+// The Pareto filtering logic (findContainingAccess) prunes dominated
+// matches: if match A from candidate C binds {x, y, z} and match B
+// from the same candidate C binds {x, y}, then B is dominated by A
+// (A covers everything B covers plus more) and B is pruned.
 //
 // Ports Java's AbstractDataAccessRule.maximumCoverageMatches.
 func MaximumCoverageMatches(
@@ -115,12 +116,66 @@ func MaximumCoverageMatches(
 		return nil
 	}
 
-	// Wrap every access — no containment pruning (conservative).
-	result := make([]Vectored[*SingleMatchedAccess], len(accesses))
-	for i, access := range accesses {
-		result[i] = NewVectored(access, i)
+	var result []Vectored[*SingleMatchedAccess]
+	idx := 0
+	for i := range accesses {
+		if !findContainingAccess(accesses, accesses[i]) {
+			result = append(result, NewVectored(accesses[i], idx))
+			idx++
+		}
 	}
 	return result
+}
+
+// findContainingAccess checks whether `probe` is dominated by another
+// access from the same MatchCandidate in the list. A probe is
+// dominated if another match from the same candidate has strictly more
+// bound sargable aliases that include all of the probe's.
+//
+// Ports Java's AbstractDataAccessRule.findContainingAccess.
+func findContainingAccess(accesses []*SingleMatchedAccess, probe *SingleMatchedAccess) bool {
+	probeMatch := probe.partialMatch
+	probePMI, ok := probeMatch.(*PartialMatchImpl)
+	if !ok {
+		return false
+	}
+	probeBoundAliases := probePMI.GetBoundSargableAliases()
+
+	for _, access := range accesses {
+		if access == probe {
+			continue
+		}
+		// Same MatchCandidate?
+		if access.partialMatch.GetMatchCandidate() != probeMatch.GetMatchCandidate() {
+			continue
+		}
+		accessPMI, ok := access.partialMatch.(*PartialMatchImpl)
+		if !ok {
+			continue
+		}
+		accessBoundAliases := accessPMI.GetBoundSargableAliases()
+
+		// If probe has more or equal bindings, it can't be contained by this one.
+		if len(probeBoundAliases) >= len(accessBoundAliases) {
+			continue
+		}
+
+		// Check if access's bindings contain all of probe's.
+		if containsAll(accessBoundAliases, probeBoundAliases) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAll reports whether `super` contains all keys in `sub`.
+func containsAll(super, sub map[values.CorrelationIdentifier]struct{}) bool {
+	for k := range sub {
+		if _, ok := super[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // CreateScansForMatches converts each SingleMatchedAccess into a
