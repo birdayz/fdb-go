@@ -53,6 +53,7 @@ go_library(
         "value_subscript.go",
         "value_throws.go",
         "value_udf.go",
+        "value_unmatched_aggregate.go",
         "value_version.go",
         "value_windowed.go",
         "values.go",

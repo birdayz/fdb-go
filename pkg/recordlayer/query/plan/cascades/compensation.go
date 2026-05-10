@@ -234,7 +234,29 @@ func NewResultCompensationFunction(needed bool) *ResultCompensationFunction {
 // a result Value. When applied, it translates the value through the
 // translation map. Ports Java's ResultCompensationFunction.ofValue.
 func ResultCompensationOfValue(v values.Value) *ResultCompensationFunction {
-	return &ResultCompensationFunction{needed: true, resultVal: v}
+	return &ResultCompensationFunction{
+		needed:     true,
+		impossible: valueContainsUnmatchedAggregates(v),
+		resultVal:  v,
+	}
+}
+
+// valueContainsUnmatchedAggregates reports whether a Value tree
+// contains any UnmatchedAggregateValue nodes. Ports Java's
+// ResultCompensationFunction.valueContainsUnmatchedValues.
+func valueContainsUnmatchedAggregates(v values.Value) bool {
+	if v == nil {
+		return false
+	}
+	found := false
+	values.WalkValue(v, func(node values.Value) bool {
+		if _, ok := node.(*values.UnmatchedAggregateValue); ok {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
 }
 
 // NewImpossibleResultCompensation creates a ResultCompensationFunction
@@ -257,13 +279,18 @@ func (f *ResultCompensationFunction) IsImpossible() bool {
 // aggregate value mappings. Ports Java's
 // ResultCompensationFunction.amend.
 func (f *ResultCompensationFunction) Amend(
-	_ *BiMap[values.CorrelationIdentifier, values.Value],
-	_ map[values.Value]values.Value,
+	unmatchedAggregateMap *BiMap[values.CorrelationIdentifier, values.Value],
+	amendedMatchedAggregateMap map[values.Value]values.Value,
 ) *ResultCompensationFunction {
 	if f == nil || !f.needed {
 		return f
 	}
-	return f
+	if f.resultVal == nil {
+		return f
+	}
+	amended := replaceUnmatchedAggregateValues(
+		unmatchedAggregateMap, amendedMatchedAggregateMap, f.resultVal)
+	return ResultCompensationOfValue(amended)
 }
 
 // ApplyCompensationForResult applies this compensation by translating

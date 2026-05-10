@@ -494,15 +494,21 @@ func TestEqualsWithoutChildren_CrossTypeMismatch(t *testing.T) {
 	}
 }
 
-func TestEqualsWithoutChildren_FallbackSameConcreteType(t *testing.T) {
+func TestEqualsWithoutChildren_OfTypeValue_SameExpectedType(t *testing.T) {
 	t.Parallel()
-	// OfTypeValue is not in the explicit switch — it falls through to the
-	// reflect.TypeOf fallback. Two OfTypeValues with same concrete type
-	// should match via the fallback.
+	a := &OfTypeValue{Child: &ConstantValue{Value: int64(1), Typ: NullableLong}, ExpectedType: NullableLong}
+	b := &OfTypeValue{Child: &ConstantValue{Value: int64(2), Typ: NullableLong}, ExpectedType: NullableLong}
+	if !EqualsWithoutChildren(a, b) {
+		t.Fatal("OfTypeValue with same ExpectedType should be equal (children ignored)")
+	}
+}
+
+func TestEqualsWithoutChildren_OfTypeValue_DifferentExpectedType(t *testing.T) {
+	t.Parallel()
 	a := &OfTypeValue{Child: &ConstantValue{Value: int64(1), Typ: NullableLong}, ExpectedType: NullableLong}
 	b := &OfTypeValue{Child: &ConstantValue{Value: int64(2), Typ: NullableLong}, ExpectedType: NullableString}
-	if !EqualsWithoutChildren(a, b) {
-		t.Fatal("same concrete type via reflect fallback should be equal")
+	if EqualsWithoutChildren(a, b) {
+		t.Fatal("OfTypeValue with different ExpectedType should not be equal")
 	}
 }
 

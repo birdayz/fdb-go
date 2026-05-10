@@ -1,6 +1,6 @@
 package values
 
-import "reflect"
+import "fmt"
 
 // MapFieldValues recursively walks a Value tree and applies transform to
 // every FieldValue encountered at any depth. Non-FieldValue leaf nodes
@@ -386,9 +386,133 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *AndOrValue:
 		bv, ok := b.(*AndOrValue)
 		return ok && av.Op == bv.Op
+	case *ExistsValue:
+		bv, ok := b.(*ExistsValue)
+		return ok && av.Alias == bv.Alias
+	case *ScalarSubqueryValue:
+		bv, ok := b.(*ScalarSubqueryValue)
+		return ok && av.Alias == bv.Alias
+	case *ThrowsValue:
+		bv, ok := b.(*ThrowsValue)
+		return ok && typesEqual(av.ResultType, bv.ResultType)
+	case *IndexOnlyAggregateValue:
+		bv, ok := b.(*IndexOnlyAggregateValue)
+		return ok && av.Op == bv.Op
+	case *IndexEntryObjectValue:
+		bv, ok := b.(*IndexEntryObjectValue)
+		if !ok || len(av.OrdinalPath) != len(bv.OrdinalPath) {
+			return false
+		}
+		for i := range av.OrdinalPath {
+			if av.OrdinalPath[i] != bv.OrdinalPath[i] {
+				return false
+			}
+		}
+		return true
+	case *ToOrderedBytesValue:
+		bv, ok := b.(*ToOrderedBytesValue)
+		return ok && av.Direction == bv.Direction
+	case *FromOrderedBytesValue:
+		bv, ok := b.(*FromOrderedBytesValue)
+		return ok && av.Direction == bv.Direction && typesEqual(av.TargetType, bv.TargetType)
+	case *EvaluatesToValue:
+		bv, ok := b.(*EvaluatesToValue)
+		return ok && av.Eval == bv.Eval
+	case *OfTypeValue:
+		bv, ok := b.(*OfTypeValue)
+		return ok && typesEqual(av.ExpectedType, bv.ExpectedType)
+	case *DistanceValue:
+		bv, ok := b.(*DistanceValue)
+		return ok && av.Operator == bv.Operator
+	case *ConstantObjectValue:
+		bv, ok := b.(*ConstantObjectValue)
+		return ok && av.ConstantID == bv.ConstantID
+	case *UdfValue:
+		bv, ok := b.(*UdfValue)
+		return ok && av.FunctionName == bv.FunctionName
+	case *QueriedValue:
+		bv, ok := b.(*QueriedValue)
+		if !ok || len(av.RecordTypes) != len(bv.RecordTypes) {
+			return false
+		}
+		for i := range av.RecordTypes {
+			if av.RecordTypes[i] != bv.RecordTypes[i] {
+				return false
+			}
+		}
+		return true
+	case *IndexedValue:
+		bv, ok := b.(*IndexedValue)
+		return ok && typesEqual(av.ResultType, bv.ResultType)
+
+	// Types with no non-child attributes — type equality is sufficient.
+	case *CollateValue:
+		_, ok := b.(*CollateValue)
+		return ok
+	case *LikeOperatorValue:
+		_, ok := b.(*LikeOperatorValue)
+		return ok
+	case *InOpValue:
+		_, ok := b.(*InOpValue)
+		return ok
+	case *PickValue:
+		_, ok := b.(*PickValue)
+		return ok
+	case *CardinalityValue:
+		_, ok := b.(*CardinalityValue)
+		return ok
+	case *ArrayDistinctValue:
+		_, ok := b.(*ArrayDistinctValue)
+		return ok
+	case *ArrayConstructorValue:
+		_, ok := b.(*ArrayConstructorValue)
+		return ok
+	case *DerivedValue:
+		_, ok := b.(*DerivedValue)
+		return ok
+	case *FirstOrDefaultValue:
+		_, ok := b.(*FirstOrDefaultValue)
+		return ok
+	case *FirstOrDefaultStreamingValue:
+		_, ok := b.(*FirstOrDefaultStreamingValue)
+		return ok
+	case *ConditionSelectorValue:
+		_, ok := b.(*ConditionSelectorValue)
+		return ok
+	case *PatternForLikeValue:
+		_, ok := b.(*PatternForLikeValue)
+		return ok
+	case *SubscriptValue:
+		_, ok := b.(*SubscriptValue)
+		return ok
+	case *RangeValue:
+		_, ok := b.(*RangeValue)
+		return ok
+	case *EmptyValue:
+		_, ok := b.(*EmptyValue)
+		return ok
+	case *IncarnationValue:
+		_, ok := b.(*IncarnationValue)
+		return ok
+	case *RecordTypeValue:
+		_, ok := b.(*RecordTypeValue)
+		return ok
+	case *VersionValue:
+		_, ok := b.(*VersionValue)
+		return ok
+	case *DistanceRowNumberValue:
+		_, ok := b.(*DistanceRowNumberValue)
+		return ok
+	case *RowNumberValue:
+		_, ok := b.(*RowNumberValue)
+		return ok
+	case *RowNumberHighOrderValue:
+		_, ok := b.(*RowNumberHighOrderValue)
+		return ok
+	case *RankValue:
+		_, ok := b.(*RankValue)
+		return ok
 	default:
-		// Fallback: same concrete type means same "without children".
-		// reflect.TypeOf is correct here — we only care about the Go type.
-		return reflect.TypeOf(a) == reflect.TypeOf(b)
+		panic(fmt.Sprintf("EqualsWithoutChildren: unhandled Value type %T", a))
 	}
 }
