@@ -232,6 +232,7 @@ go_test(
         "planner_e2e_test.go",
         "planner_fuzz_test.go",
         "planner_limit_fuzz_test.go",
+        "planner_pipeline_stress_test.go",
         "planner_pipeline_test.go",
         "planner_planning_phase_test.go",
         "planner_test.go",

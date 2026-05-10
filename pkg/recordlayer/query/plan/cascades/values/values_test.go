@@ -707,17 +707,21 @@ func TestRecordConstructorValue_Explain(t *testing.T) {
 	}
 }
 
-func TestRecordConstructorValue_DuplicateFieldNamePanics(t *testing.T) {
+func TestRecordConstructorValue_DuplicateFieldNameDedup(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on duplicate field name")
-		}
-	}()
-	_ = NewRecordConstructorValue(
+	rcv := NewRecordConstructorValue(
 		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
 		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(2), Typ: TypeInt}},
 	)
+	if len(rcv.Fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(rcv.Fields))
+	}
+	if rcv.Fields[0].Name != "a" {
+		t.Fatalf("first field should be 'a', got %q", rcv.Fields[0].Name)
+	}
+	if rcv.Fields[1].Name != "a_2" {
+		t.Fatalf("second field should be 'a_2', got %q", rcv.Fields[1].Name)
+	}
 }
 
 func TestRecordConstructorValue_DefensiveCopy(t *testing.T) {
