@@ -671,3 +671,225 @@ func TestPredicateMultiMap_Entries(t *testing.T) {
 		t.Fatal("third entry should be for qp2")
 	}
 }
+
+func TestPredicateCompensation_Amend_ReplacesUnmatched(t *testing.T) {
+	t.Parallel()
+
+	// Create a ComparisonPredicate whose operand is an UnmatchedAggregateValue.
+	unmatchedID := values.UniqueUnmatchedID()
+	unmatchedVal := values.NewUnmatchedAggregateValue(unmatchedID)
+	pred := &predicates.ComparisonPredicate{
+		Operand: unmatchedVal,
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(10)},
+		},
+	}
+	f := OfPredicateCompensation(pred, false)
+
+	// Before amend: should be impossible (contains unmatched aggregate).
+	if !f.IsImpossible() {
+		t.Fatal("compensation with UnmatchedAggregateValue operand should be impossible")
+	}
+
+	// Build unmatchedAggMap: unmatchedID → FieldValue("SUM_X")
+	queryAgg := &values.FieldValue{Field: "SUM_X"}
+	unmatchedAggMap := NewCorrValueBiMap()
+	unmatchedAggMap.Put(unmatchedID, queryAgg)
+
+	// Build amendedMatchedAggMap: FieldValue("SUM_X") → FieldValue("IDX_SUM")
+	idxSum := &values.FieldValue{Field: "IDX_SUM"}
+	amendedMatchedAggMap := map[values.Value]values.Value{
+		queryAgg: idxSum,
+	}
+
+	amended := f.Amend(unmatchedAggMap, amendedMatchedAggMap)
+	if !amended.IsNeeded() {
+		t.Fatal("amended should be needed")
+	}
+	if amended.IsImpossible() {
+		t.Fatal("amended should not be impossible after replacing unmatched aggregate")
+	}
+
+	// Apply and verify the operand was replaced.
+	preds := amended.ApplyCompensationForPredicate(nil)
+	if len(preds) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(preds))
+	}
+	cp, ok := preds[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", preds[0])
+	}
+	fv, ok := cp.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("expected operand to be *FieldValue, got %T", cp.Operand)
+	}
+	if fv.Field != "IDX_SUM" {
+		t.Fatalf("expected operand field IDX_SUM, got %s", fv.Field)
+	}
+}
+
+func TestPredicateCompensation_IsImpossible_WithUnmatched(t *testing.T) {
+	t.Parallel()
+
+	pred := &predicates.ComparisonPredicate{
+		Operand: values.NewUnmatchedAggregateValue(values.UniqueUnmatchedID()),
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(1)},
+		},
+	}
+	f := OfPredicateCompensation(pred, false)
+	if !f.IsImpossible() {
+		t.Fatal("predicate compensation with UnmatchedAggregateValue should be impossible")
+	}
+	if !f.IsNeeded() {
+		t.Fatal("predicate compensation with UnmatchedAggregateValue should be needed")
+	}
+}
+
+func TestPredicateCompensation_IsImpossible_Normal(t *testing.T) {
+	t.Parallel()
+
+	pred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "X"},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(5)},
+		},
+	}
+	f := OfPredicateCompensation(pred, false)
+	if f.IsImpossible() {
+		t.Fatal("predicate compensation with normal values should not be impossible")
+	}
+	if !f.IsNeeded() {
+		t.Fatal("predicate compensation should be needed")
+	}
+}
+
+func TestReplacePredicateValues_ComparisonPredicate(t *testing.T) {
+	t.Parallel()
+
+	targetA := &values.FieldValue{Field: "A"}
+	pred := &predicates.ComparisonPredicate{
+		Operand: targetA,
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(1)},
+		},
+	}
+
+	replacementB := &values.FieldValue{Field: "B"}
+	replaced := replacePredicateValues(pred, func(v values.Value) values.Value {
+		if fv, ok := v.(*values.FieldValue); ok && fv.Field == "A" {
+			return replacementB
+		}
+		return v
+	})
+
+	cp, ok := replaced.(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", replaced)
+	}
+	fv, ok := cp.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("expected operand to be *FieldValue, got %T", cp.Operand)
+	}
+	if fv.Field != "B" {
+		t.Fatalf("expected operand field B, got %s", fv.Field)
+	}
+	// Comparison operand should be unchanged.
+	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("expected comparison operand to be *ConstantValue, got %T", cp.Comparison.Operand)
+	}
+	if cv.Value != int64(1) {
+		t.Fatalf("expected comparison operand 1, got %v", cv.Value)
+	}
+}
+
+func TestReplacePredicateValues_And(t *testing.T) {
+	t.Parallel()
+
+	targetA := &values.FieldValue{Field: "A"}
+	child1 := &predicates.ComparisonPredicate{
+		Operand: targetA,
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(1)},
+		},
+	}
+	child2 := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "C"},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(2)},
+		},
+	}
+	andPred := predicates.NewAnd(child1, child2)
+
+	replacementB := &values.FieldValue{Field: "B"}
+	replaced := replacePredicateValues(andPred, func(v values.Value) values.Value {
+		if fv, ok := v.(*values.FieldValue); ok && fv.Field == "A" {
+			return replacementB
+		}
+		return v
+	})
+
+	andResult, ok := replaced.(*predicates.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate, got %T", replaced)
+	}
+	if len(andResult.SubPredicates) != 2 {
+		t.Fatalf("expected 2 sub-predicates, got %d", len(andResult.SubPredicates))
+	}
+
+	// First child should have been replaced.
+	cp1, ok := andResult.SubPredicates[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected first child *ComparisonPredicate, got %T", andResult.SubPredicates[0])
+	}
+	fv, ok := cp1.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("expected first child operand *FieldValue, got %T", cp1.Operand)
+	}
+	if fv.Field != "B" {
+		t.Fatalf("expected first child operand field B, got %s", fv.Field)
+	}
+
+	// Second child should be unchanged (same pointer).
+	if andResult.SubPredicates[1] != child2 {
+		t.Fatal("second child should be the same pointer (unchanged)")
+	}
+}
+
+func TestValueContainsUncompensatable_Positive(t *testing.T) {
+	t.Parallel()
+
+	// IndexOnlyAggregateValue is uncompensatable.
+	v := values.NewIndexOnlyAggregateValue(values.IndexOnlyMaxEverLong,
+		&values.FieldValue{Field: "qty"})
+	if !valueContainsUncompensatable(v) {
+		t.Fatal("IndexOnlyAggregateValue should be uncompensatable")
+	}
+
+	// UnmatchedAggregateValue is also uncompensatable.
+	u := values.NewUnmatchedAggregateValue(values.UniqueUnmatchedID())
+	if !valueContainsUncompensatable(u) {
+		t.Fatal("UnmatchedAggregateValue should be uncompensatable")
+	}
+}
+
+func TestValueContainsUncompensatable_Negative(t *testing.T) {
+	t.Parallel()
+
+	v := &values.FieldValue{Field: "X"}
+	if valueContainsUncompensatable(v) {
+		t.Fatal("FieldValue should not be uncompensatable")
+	}
+
+	cv := &values.ConstantValue{Value: int64(42)}
+	if valueContainsUncompensatable(cv) {
+		t.Fatal("ConstantValue should not be uncompensatable")
+	}
+}
