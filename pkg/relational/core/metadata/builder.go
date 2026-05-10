@@ -295,15 +295,23 @@ func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProt
 		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, uuidProtoTypeName, nil
 	case api.CodeDate, api.CodeTimestamp:
 		return descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil
+	case api.CodeArray:
+		// Array types use the element type's proto field type with LABEL_REPEATED.
+		// The label is handled by datatypeToLabel; here we return the element's type.
+		at := dt.(*api.ArrayType)
+		return datatypeToProtoFieldType(at.ElementType())
 	default:
 		return 0, "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"unsupported DataType code %v", dt.Code())
 	}
 }
 
-// datatypeToLabel returns OPTIONAL for nullable types, REQUIRED for
-// not-nullable. (Proto2 semantics.)
+// datatypeToLabel returns LABEL_REPEATED for array types, OPTIONAL for
+// nullable types, REQUIRED for not-nullable. (Proto2 semantics.)
 func datatypeToLabel(dt api.DataType) descriptorpb.FieldDescriptorProto_Label {
+	if dt.Code() == api.CodeArray {
+		return descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	}
 	if dt.IsNullable() {
 		return descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
 	}

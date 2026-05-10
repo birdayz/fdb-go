@@ -188,6 +188,7 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 			return nil, nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"column %q has no type", colName)
 		}
+		isRepeated := colDef.ARRAY() != nil
 		nullable := true
 		if cc := colDef.ColumnConstraint(); cc != nil {
 			if nc, ok := cc.(*antlrgen.NullColumnConstraintContext); ok {
@@ -196,10 +197,19 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 				}
 			}
 		}
+		// Go extension: NOT NULL on any column type is valid (SQL standard).
+		// Java 4.11.1.0 restricts NOT NULL to ARRAY only due to a
+		// RecordMetaData limitation (see TODO #50). We intentionally
+		// don't replicate that restriction.
 		dt, err := parseColumnType(ct, nullable)
 		if err != nil {
 			return nil, nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 				"column %q", colName)
+		}
+		if isRepeated {
+			// Java: ArrayType.from(elementType.withNullable(false), isNullable)
+			// The element type is always NOT NULL; the array itself carries nullability.
+			dt = api.NewArrayType(dt.WithNullable(false), nullable)
 		}
 		cols = append(cols, metadata.NewColumnSpec(colName, dt, int32(i+1)))
 	}
