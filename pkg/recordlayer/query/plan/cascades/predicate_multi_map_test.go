@@ -167,7 +167,7 @@ func TestPredicateMapping_DefaultCompensation(t *testing.T) {
 	if comp == nil {
 		t.Fatal("default compensation should not be nil")
 	}
-	fn := comp(nil, nil)
+	fn := comp(nil, nil, nil)
 	if fn.IsNeeded() {
 		t.Fatal("default compensation should not be needed")
 	}

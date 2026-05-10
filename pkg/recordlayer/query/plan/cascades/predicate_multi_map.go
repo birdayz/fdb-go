@@ -88,13 +88,14 @@ func (k MappingKey) GetMappingKind() MappingKind {
 type PredicateCompensation func(
 	partialMatch PartialMatch,
 	boundParameterPrefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	pullUp *PullUp,
 ) PredicateCompensationFunc
 
 // DefaultPredicateCompensation returns a PredicateCompensation that
 // always yields no compensation needed. This is the default used by
 // Java's PredicateMapping.Builder.
 func DefaultPredicateCompensation() PredicateCompensation {
-	return func(_ PartialMatch, _ map[values.CorrelationIdentifier]*predicates.ComparisonRange) PredicateCompensationFunc {
+	return func(_ PartialMatch, _ map[values.CorrelationIdentifier]*predicates.ComparisonRange, _ *PullUp) PredicateCompensationFunc {
 		return NoPredicateCompensationNeeded()
 	}
 }

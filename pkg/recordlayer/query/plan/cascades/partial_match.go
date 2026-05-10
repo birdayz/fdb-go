@@ -215,7 +215,7 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 
 			for _, mapping := range mappings {
 				predComp := mapping.GetPredicateCompensation()
-				compFn := predComp(p, boundPrefixMap)
+				compFn := predComp(p, boundPrefixMap, pullUp)
 				if !compFn.IsNeeded() {
 					isCompensationFunctionNeeded = false
 					break
