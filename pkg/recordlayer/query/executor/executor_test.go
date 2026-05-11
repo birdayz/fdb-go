@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	functions "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 )
 
 type unsupportedTestPlan struct{}
@@ -1665,6 +1667,49 @@ func TestGoToProtoValue_Overflow(t *testing.T) {
 			t.Fatalf("expected no error for float32 max boundary, got: %v", err)
 		}
 	})
+}
+
+func TestGoToProtoValue_ConsistentWithConvertToProtoValue(t *testing.T) {
+	t.Parallel()
+
+	orderDesc := (&gen.Order{}).ProtoReflect().Descriptor()
+	typedDesc := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+
+	cases := []struct {
+		name string
+		fd   protoreflect.FieldDescriptor
+		val  any
+	}{
+		{"int64_to_int32", orderDesc.Fields().ByName("price"), int64(42)},
+		{"int64_to_int64", orderDesc.Fields().ByName("order_id"), int64(42)},
+		{"float64_to_float", typedDesc.Fields().ByName("val_float"), float64(2.5)},
+		{"float64_to_double", typedDesc.Fields().ByName("val_double"), float64(3.14)},
+		{"string_to_string", typedDesc.Fields().ByName("val_string"), "hello"},
+		{"bool_to_bool", typedDesc.Fields().ByName("val_bool"), true},
+		{"bytes_to_bytes", typedDesc.Fields().ByName("val_bytes"), []byte{1, 2, 3}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := goToProtoValue(tc.fd, tc.val)
+			if err != nil {
+				t.Fatalf("goToProtoValue: %v", err)
+			}
+			want, err2 := functions.ConvertToProtoValue(tc.fd, tc.val)
+			if err2 != nil {
+				t.Fatalf("ConvertToProtoValue: %v", err2)
+			}
+			// Bytes fields return []byte which is not comparable via !=; handle separately.
+			if tc.fd.Kind() == protoreflect.BytesKind {
+				if !bytes.Equal(got.Bytes(), want.Bytes()) {
+					t.Errorf("goToProtoValue = %v, ConvertToProtoValue = %v", got, want)
+				}
+			} else if got.Interface() != want.Interface() {
+				t.Errorf("goToProtoValue = %v, ConvertToProtoValue = %v", got, want)
+			}
+		})
+	}
 }
 
 func TestGoToProtoValue_Bytes(t *testing.T) {
