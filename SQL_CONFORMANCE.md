@@ -155,8 +155,8 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | Subqueries | Partial | **Matches Java** (EXISTS + scalar work, correlated scalar rejected by both) | ~70% |
 | CTEs | Full + recursive | Full + recursive + DFS ext | ~90% |
 | Ordering | Index-only | Full (in-memory sort ext) | ~80% |
-| Types | Core types | Core types + BYTES | ~60% |
-| Error codes | Full | Full | ~90% |
+| Types | Core types | All Java types + DATE/TIMESTAMP ext | ~80% |
+| Error codes | Full | Full (ExceptionUtil 1:1 port) | ~95% |
 
 Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, recursive CTEs, and temporal types. **Go matches Java exactly for subquery support** — uncorrelated scalar subqueries and correlated EXISTS both work; correlated scalar subqueries are rejected by both engines. Go has NO remaining user-visible gaps vs Java. Both engines lack string/math functions. Go extends beyond Java with DATE/TIMESTAMP column types, CAST, CURRENT_TIMESTAMP/CURRENT_DATE, and date-part extraction functions (YEAR/MONTH/DAY/HOUR/MINUTE/SECOND).
 
