@@ -596,6 +596,13 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
 	}
+	// D-4: PlanningCostModelLess is ported (16/16 Java criteria) but not
+	// yet wired in. Wiring produces wrong results because the model picks
+	// intermediate physical expressions that don't produce correct output.
+	// The old CostLess model's scalar cost avoided this via the
+	// physicalWrapperCostMultiplier discount. Full wiring requires
+	// restricting to FinalMembers + deeper investigation of the 17
+	// remaining sqldriver failures. See TODO.md D-4 section.
 	best := t.Ref.GetBest(properties.CostLess)
 	p.bestMember[t.Ref] = best
 	if p.events != nil {
