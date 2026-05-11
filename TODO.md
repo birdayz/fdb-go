@@ -56,12 +56,58 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 | ID | Divergence | Go approach | Java approach | Criticality | Effort |
 |---|---|---|---|---|---|
 | ~~**D-2**~~ | ~~PushOrdering rules~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~DONE~~ | ~~done~~ |
-| **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Postgres-inspired: multi-dim, memoized | NONE — intentional (RFC-024) | N/A |
+| **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Multi-criteria comparator on physical plans (PlanningCostModel.java, 16 ordered criteria) | **CRITICAL** — different cost model = different plan choices = different query behavior. Feature-complete port requires 1:1 cost model. | ~2 shifts |
 | ~~**D-5**~~ | ~~InComparison architecture~~ | ~~SelectExpression + ExplodeExpression~~ | ~~SelectExpression + ExplodeExpression~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-7**~~ | ~~Multi-aggregate matching~~ | ~~Multi-aggregate via index intersection~~ | ~~Multi-aggregate via index intersection~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-8**~~ | ~~CardinalityProperty~~ | ~~Coupled to Cost struct~~ | ~~Separate class with min/max bounds~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-11**~~ | ~~ConstantObjectValue promotion~~ | ~~No type promotion on eval~~ | ~~PromoteValue.isPromotionNeeded~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-3 gap**~~ | ~~Distinct elimination check~~ | ~~Physical DistinctRecordsProperty per FinalMember + logical PK fallback~~ | ~~Physical DistinctRecordsProperty~~ | ~~DONE~~ | ~~done~~ |
+
+### D-4 Port: Java PlanningCostModel → Go (CRITICAL)
+
+Java's `PlanningCostModel.java` is a `Comparator<RelationalExpression>` with 16 ordered comparison criteria applied to physical plan trees. Go's current cost model is a scalar cardinality × CPU heuristic on logical expressions — fundamentally different architecture that can produce different plan choices.
+
+**Java's 16 criteria (priority order):**
+1. Physical plan beats non-physical (instanceof RecordQueryPlan)
+2. Max cardinality of all data accesses (scan/index/covering)
+3. Normalized residual predicate count (fewer unsatisfied = better)
+4. Data access count (scan + index + covering, fewer = better)
+5. Recursive CTE tie-breaker (DFS > level-based)
+6. IN-plan penalty (penalize if IN-values aren't SARGs)
+7. Primary scan vs index scan (`IndexScanPreference` config flag)
+8. Type filter count (fewer = better)
+9. Type filter depth (deeper = better)
+10. For index scans: fetch count, fetch depth, fetch operator count
+11. Distinct depth (deeper = better)
+12. Unmatched field count (fewer = better)
+13. IN-join source count (more = better)
+14. MAP/FILTER operation count (fewer = better)
+15. FlatMap join ordering by outer cardinality (lower outer = better)
+16. Plan hash deterministic tie-break
+
+**Required Go infrastructure (already exists):**
+- `ExpressionProperty` framework (swingshift-70)
+- `PlanPartition` + property maps
+- `Reference.planProperties` field
+- Cardinality computation (D-8 done)
+
+**Required Go infrastructure (needs porting):**
+- `FindExpressionVisitor` — walk plan tree, collect typed plan instances
+- `NormalizedResidualPredicateProperty` — count unsatisfied predicates
+- `ComparisonsProperty` — extract comparison operators from plan
+- `ExpressionDepthProperty` — measure depth of specific plan types
+- `TypeFilterCountProperty` — count type filter operators
+- `UnmatchedFieldsCountProperty` — count unmatched fields
+- `PlannerConfiguration.IndexScanPreference` flag
+- Plan hash for deterministic tie-breaking
+
+**Port plan:**
+1. Port the 6 missing property evaluators (~200 LOC each)
+2. Port `FindExpressionVisitor` (walk plan tree, classify by type)
+3. Port `PlanningCostModel.compare()` as a Go function (~300 LOC)
+4. Wire into `Planner.extractBestPlan` to replace current `CostLess`
+5. Add tests verifying plan choice matches Java for key query patterns
+6. Remove old `cost.go` scalar model
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
