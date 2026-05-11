@@ -56,7 +56,7 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 | ID | Divergence | Go approach | Java approach | Criticality | Effort |
 |---|---|---|---|---|---|
 | ~~**D-2**~~ | ~~PushOrdering rules~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~DONE~~ | ~~done~~ |
-| **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Multi-criteria comparator on physical plans (PlanningCostModel.java, 16 ordered criteria) | **CRITICAL** — different cost model = different plan choices = different query behavior. Feature-complete port requires 1:1 cost model. | ~2 shifts |
+| ~~**D-4**~~ | ~~Cost model~~ | ~~PlanningCostModelLess: 16 ordered criteria~~ | ~~Multi-criteria comparator (PlanningCostModel.java)~~ | ~~**DONE** (swingshift-91)~~ | ~~done~~ |
 | ~~**D-5**~~ | ~~InComparison architecture~~ | ~~SelectExpression + ExplodeExpression~~ | ~~SelectExpression + ExplodeExpression~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-7**~~ | ~~Multi-aggregate matching~~ | ~~Multi-aggregate via index intersection~~ | ~~Multi-aggregate via index intersection~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-8**~~ | ~~CardinalityProperty~~ | ~~Coupled to Cost struct~~ | ~~Separate class with min/max bounds~~ | ~~DONE~~ | ~~done~~ |
