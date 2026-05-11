@@ -204,6 +204,13 @@ func executeIndexScan(
 
 	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
 
+	if p.IsCovering() {
+		return &coveringIndexCursor{
+			inner:   indexCursor,
+			columns: p.GetCoveringColumns(),
+		}, nil
+	}
+
 	resultCursor := &indexFetchCursor{
 		inner: indexCursor,
 		store: store,
@@ -353,6 +360,39 @@ func (c *indexFetchCursor) Close() error {
 }
 
 func (c *indexFetchCursor) IsClosed() bool { return c.closed }
+
+type coveringIndexCursor struct {
+	inner   recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	columns []string
+	closed  bool
+}
+
+func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+	}
+
+	entry := result.GetValue()
+	vals := entry.IndexValues()
+	datum := make(map[string]any, len(c.columns))
+	for i, col := range c.columns {
+		if i < len(vals) {
+			datum[col] = vals[i]
+		}
+	}
+	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
+}
+
+func (c *coveringIndexCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *coveringIndexCursor) IsClosed() bool { return c.closed }
 
 func executeTypeFilter(
 	ctx context.Context,

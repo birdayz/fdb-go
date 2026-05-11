@@ -158,10 +158,17 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 
 | Gap | Category | Blocked on |
 |---|---|---|
-| CoveringIndexPlan: `IndexKeyValueToPartialRecord` reconstruction | Execution | Partial-record reconstruction from index entries |
 | Plan proto serialization (Go plans not serialized to proto) | Wire format | Plan serialization infrastructure |
 | Value type proto serialization | Wire format | Value serialization infrastructure |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
+
+### Covering Index Scan (partially closed)
+
+**Planner:** `RecordQueryIndexPlan` carries `Covering bool` + `CoveringColumns []string`. Set by `wrapScanPlanWithCoverage` when the compensation analysis determines the index covers all needed columns (`!comp.IsFinalNeeded()`). Column names sourced from `MatchCandidate.GetColumnNames()`.
+
+**Executor:** `coveringIndexCursor` constructs `QueryResult` directly from `IndexEntry.IndexValues()` without calling `LoadRecord()`. Maps index column values to column names positionally.
+
+**Remaining:** Java's `IndexKeyValueToPartialRecord` builds a full protobuf `Message` from index entries (including nested fields, composite key expressions). Go's implementation reconstructs a flat `map[string]any` from index column values — sufficient for simple indexes but doesn't handle composite key expressions or nested message fields.
 
 ## Optimization-Quality Gaps (correctness unaffected)
 
@@ -178,7 +185,7 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | 2 InUnion subclasses | 1 `RecordQueryInUnionPlan` | Aligned |
 | 2 Union subclasses | 1 `RecordQueryUnionPlan` + `RecordQueryMergeSortUnionPlan` | Aligned |
 | 2 Distinct plan variants | 1 `RecordQueryDistinctPlan` | Aligned |
-| CoveringIndexPlan | `covering bool` on IndexPlan | Aligned for planning; execution gap |
+| CoveringIndexPlan | `covering bool` + `coveringColumns` on IndexPlan | Aligned (planner + executor) |
 | CountValue + NumericAggregationValue | `AggregateValue` | Aligned (no rule distinguishes them) |
 | VariadicFunctionValue | `ScalarFunctionValue` | Aligned (COALESCE folding matches Java) |
 | 12 Comparison subclasses | Single `Comparison` struct with optional fields | Aligned |
