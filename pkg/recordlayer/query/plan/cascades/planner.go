@@ -590,16 +590,14 @@ func (t *SaturationCheckTask) Run(p *Planner) {
 // child References itself via firstMemberCost (the cost model's
 // recursion contract).
 //
-// The seed uses properties.CostLess as the comparator. A future
-// shift can plumb a configurable comparator via PlanContext.
+// The comparator is p.costModel (PlanningCostModelLess for PLANNING,
+// RewritingCostModelLess for REWRITING), set via WithCostModel().
 //
-// PERF NOTE: properties.CostLess is the un-memoised cost-comparator
-// — every GetBest comparison re-walks the full sub-tree. For a
-// Reference with K members over an N-deep tree this is O(K·N)
-// per OptimizeReferenceTask. Acceptable for the seed (small trees,
-// low K). When N or K grow, switch to a memoised comparator
-// (properties.BestRefCostWith populates a per-call cache; expose
-// it via the PlanContext as a follow-up).
+// PERF NOTE: the cost model re-walks the full sub-tree on every
+// GetBest comparison. For a Reference with K members over an N-deep
+// tree this is O(K·N) per OptimizeReferenceTask. Acceptable for
+// current tree sizes. When N or K grow, switch to a memoised
+// comparator.
 type OptimizeReferenceTask struct {
 	Ref *expressions.Reference
 }

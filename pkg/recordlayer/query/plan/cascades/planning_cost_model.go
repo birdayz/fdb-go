@@ -14,20 +14,22 @@ import (
 // ordered tie-breaking criteria matching Java's priority:
 //
 //  1. Physical plan beats non-physical
-//  2. Max cardinality of all data accesses
+//  2. Max cardinality of all data accesses (lower wins)
 //  3. Fewer normalized residual predicates
-//  4. Fewer data access operators (scan + index)
+//  4. Fewer data access operators (scan + index + covering)
 //  5. Recursive CTE tie-breaker (DFS > level-based)
 //  6. IN-plan penalty (penalize if IN-values aren't SARGs)
-//  7. Type filter count (fewer = better)
-//  8. For index scans: fewer fetches
-//  9. Distinct depth (deeper = better)
-//  10. MAP/FILTER operation count (fewer = better)
-//  11. Plan hash deterministic tie-break
-//
-// Criteria 7 (IndexScanPreference) and some sub-criteria of 8-9 are
-// deferred to a follow-up shift — they require additional property
-// evaluators not yet ported.
+//  7. Primary scan vs index-scan-with-fetch (prefer primary)
+//  8. Type filter count (fewer = better)
+//  9. Type filter depth (deeper = better)
+//  10. Index fetch metrics (fewer non-covering + fetch = better)
+//  11. Distinct depth (deeper = better)
+//  12. Unmatched index field count (fewer = better)
+//  13. IN-join source count (more = better)
+//  14. MAP + PredicatesFilter count (fewer = better)
+//  15. Streaming aggregation beats hash aggregation
+//  16. Scalar cost fallback (EstimateCost)
+//  17. Plan hash deterministic tie-break
 func PlanningCostModelLess(a, b expressions.RelationalExpression) bool {
 	cmp := planningCostModelCompare(a, b)
 	return cmp < 0
@@ -330,16 +332,14 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	if e == nil {
 		return
 	}
-	switch e.(type) {
+	switch w := e.(type) {
 	case *physicalScanWrapper:
 		counts.scanCount++
-		w := e.(*physicalScanWrapper)
 		card := w.HintCost(nil).Cardinality
 		if card > counts.maxDataAccessCardinality {
 			counts.maxDataAccessCardinality = card
 		}
 	case *physicalIndexScanWrapper:
-		w := e.(*physicalIndexScanWrapper)
 		if w.covering {
 			counts.coveringIndexCount++
 		} else {
@@ -360,10 +360,9 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		}
 		counts.unmatchedFieldCount += totalCols - boundCols
 	case *physicalTypeFilterWrapper:
-		w := e.(*physicalTypeFilterWrapper)
 		counts.typeFilterCount += len(w.plan.GetRecordTypes())
 	case *physicalFilterWrapper:
-		// regular filter, not counted as predicates filter
+		_ = w // regular filter, not counted as predicates filter
 	case *physicalPredicatesFilterWrapper:
 		counts.predicatesFilterCount++
 	case *physicalMapWrapper:
@@ -380,11 +379,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		if ref == nil {
 			continue
 		}
-		for _, m := range ref.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				walkExpressionTree(m, counts)
-				break
-			}
+		if child := firstPhysicalChild(ref); child != nil {
+			walkExpressionTree(child, counts)
 		}
 	}
 }
@@ -413,11 +409,8 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 		if ref == nil {
 			continue
 		}
-		for _, m := range ref.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				countResidualPredicatesRec(m, count)
-				break
-			}
+		if child := firstPhysicalChild(ref); child != nil {
+			countResidualPredicatesRec(child, count)
 		}
 	}
 }
@@ -504,12 +497,9 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 		if ref == nil {
 			continue
 		}
-		for _, m := range ref.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				for alias := range collectSargedAliases(m) {
-					out[alias] = struct{}{}
-				}
-				break
+		if child := firstPhysicalChild(ref); child != nil {
+			for alias := range collectSargedAliases(child) {
+				out[alias] = struct{}{}
 			}
 		}
 	}
@@ -523,11 +513,8 @@ func intersectChildAliases(e expressions.RelationalExpression) map[values.Correl
 		if ref == nil {
 			continue
 		}
-		for _, m := range ref.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				childSets = append(childSets, collectSargedAliases(m))
-				break
-			}
+		if child := firstPhysicalChild(ref); child != nil {
+			childSets = append(childSets, collectSargedAliases(child))
 		}
 	}
 	if len(childSets) == 0 {
@@ -586,12 +573,10 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 		if ref == nil {
 			continue
 		}
-		for _, m := range ref.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				d := expressionDepthRec(m, match, depth+1)
-				if d >= 0 && (best < 0 || d < best) {
-					best = d
-				}
+		if child := firstPhysicalChild(ref); child != nil {
+			d := expressionDepthRec(child, match, depth+1)
+			if d >= 0 && (best < 0 || d < best) {
+				best = d
 			}
 		}
 	}
@@ -676,11 +661,9 @@ func deepHashCode(e expressions.RelationalExpression) uint64 {
 		if ref == nil {
 			continue
 		}
-		for _, m := range ref.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				child := deepHashCode(m)
-				h ^= child*0x517cc1b727220a95 + 0x6c62272e07bb0142
-			}
+		if child := firstPhysicalChild(ref); child != nil {
+			childHash := deepHashCode(child)
+			h ^= childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142
 		}
 	}
 	return h
@@ -694,4 +677,20 @@ func intCompare(a, b int) int {
 		return 1
 	}
 	return 0
+}
+
+// firstPhysicalChild returns the first physical member of ref.
+// Java's cost model recurses into the already-optimized best member
+// (Reference.get() after optimization); we pick the first physical
+// member by insertion order. Safe in practice because bottom-up
+// optimization means child References typically have exactly one
+// physical member at comparison time. To fully match Java, the
+// planner's bestMember map would need to be threaded through.
+func firstPhysicalChild(ref *expressions.Reference) expressions.RelationalExpression {
+	for _, m := range ref.AllMembers() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			return m
+		}
+	}
+	return nil
 }

@@ -64,7 +64,7 @@ func TestPlanningCostModel_FewerResidualPredicatesWins(t *testing.T) {
 	}
 }
 
-// TestPlanningCostModel_HashTieBreakIsDeterministic verifies criterion 11:
+// TestPlanningCostModel_HashTieBreakIsDeterministic verifies criterion 17:
 // two distinct physical scans must produce a stable ordering — the comparison
 // must not return 0 (one must strictly beat the other), and repeated calls
 // must agree.
