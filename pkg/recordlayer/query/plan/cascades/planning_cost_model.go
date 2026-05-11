@@ -91,6 +91,14 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
+	if opsA.unmatchedFieldCount != opsB.unmatchedFieldCount {
+		return intCompare(opsA.unmatchedFieldCount, opsB.unmatchedFieldCount)
+	}
+
+	if opsA.inJoinCount != opsB.inJoinCount {
+		return intCompare(opsB.inJoinCount, opsA.inJoinCount)
+	}
+
 	mapFilterA := opsA.mapCount + opsA.predicatesFilterCount
 	mapFilterB := opsB.mapCount + opsB.predicatesFilterCount
 	if mapFilterA != mapFilterB {
@@ -124,6 +132,7 @@ type expressionCounts struct {
 	inUnionCount          int
 	mapCount              int
 	predicatesFilterCount int
+	unmatchedFieldCount   int
 }
 
 func findExpressionsByType(e expressions.RelationalExpression) expressionCounts {
@@ -140,11 +149,22 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	case *physicalScanWrapper:
 		counts.scanCount++
 	case *physicalIndexScanWrapper:
-		if e.(*physicalIndexScanWrapper).covering {
+		w := e.(*physicalIndexScanWrapper)
+		if w.covering {
 			counts.coveringIndexCount++
 		} else {
 			counts.indexScanCount++
 		}
+		totalCols := len(w.columnNames)
+		boundCols := 0
+		if w.plan != nil {
+			for _, cr := range w.plan.GetScanComparisons() {
+				if !cr.IsEmpty() {
+					boundCols++
+				}
+			}
+		}
+		counts.unmatchedFieldCount += totalCols - boundCols
 	case *physicalTypeFilterWrapper:
 		counts.typeFilterCount++
 	case *physicalFilterWrapper:
