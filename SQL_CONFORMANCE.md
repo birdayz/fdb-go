@@ -138,8 +138,8 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | Integer overflow | 22003 | Y | Y | |
 | INT32 range overflow | 22003 | Y | Y | INSERT value > MAX_INT32 into INTEGER column |
 | Unsupported function | 42883 | Y | Y | |
-| FDB transaction timeout | 53F00 | Y | Y | translateFDBError (dayshift-89) |
-| FDB transaction conflict | 40001 | Y | Y | translateFDBError (dayshift-89) |
+| FDB transaction timeout | 53F00 | Y | Y | translateFDBError |
+| FDB transaction conflict | 40001 | Y | Y | translateFDBError |
 | Deserialization failure | XXF01 | Y | Y | RecordDeserializationError → translateFDBError |
 
 ## Summary
