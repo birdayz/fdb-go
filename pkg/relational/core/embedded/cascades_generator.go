@@ -685,9 +685,16 @@ func buildAggColumns(
 		if desc != nil {
 			typeName = protoFieldTypeName(desc, name)
 		}
+		nullable := api.ColumnNullable
+		if desc != nil {
+			if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() == protoreflect.Required {
+				nullable = api.ColumnNoNulls
+			}
+		}
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
 			TypeName: typeName,
+			Nullable: nullable,
 		})
 	}
 	for _, a := range aggregates {
@@ -696,6 +703,7 @@ func buildAggColumns(
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
 			TypeName: typeName,
+			Nullable: api.ColumnNullable,
 		})
 	}
 	return cols
