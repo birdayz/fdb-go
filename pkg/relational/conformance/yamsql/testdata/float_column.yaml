@@ -1,0 +1,32 @@
+# float_column.yaml
+#
+# FLOAT (32-bit) column type. Java supports FLOAT via proto FloatKind.
+# Tests DDL, INSERT, SELECT, WHERE comparison, and CAST.
+name: float_column
+schema_template: |
+  CREATE TABLE Measurements (id BIGINT NOT NULL, temp FLOAT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO Measurements VALUES (1, 36.6)
+  - INSERT INTO Measurements VALUES (2, 98.6)
+  - INSERT INTO Measurements VALUES (3, 0.0)
+  - INSERT INTO Measurements VALUES (4, NULL)
+tests:
+  # Round-trip.
+  - query: SELECT temp FROM Measurements WHERE id = 3
+    rows:
+      - [0]
+  # WHERE comparison.
+  - query: SELECT COUNT(*) FROM Measurements WHERE temp > 50.0
+    rows:
+      - [1]
+  # NULL handling.
+  - query: SELECT temp IS NULL FROM Measurements WHERE id = 4
+    rows:
+      - [true]
+  - query: SELECT COUNT(temp) FROM Measurements
+    rows:
+      - [3]
+  # CAST int to FLOAT.
+  - query: SELECT CAST(100 AS FLOAT) FROM Measurements WHERE id = 1
+    rows:
+      - [100]
