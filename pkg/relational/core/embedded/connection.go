@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -529,6 +530,27 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 	}
 }
 
+// CheckNamedValue implements driver.NamedValueChecker. Converts custom
+// Go types to driver-compatible values before they reach substituteParams.
+// Accepts: uuid.UUID → string (canonical 36-char form).
+// All standard types (int64, float64, string, bool, []byte, time.Time)
+// pass through unchanged.
+func (c *EmbeddedConnection) CheckNamedValue(nv *driver.NamedValue) error {
+	if nv.Value == nil {
+		return nil
+	}
+	switch v := nv.Value.(type) {
+	case int64, float64, string, bool, []byte, time.Time:
+		return nil
+	default:
+		if s, ok := v.(fmt.Stringer); ok {
+			nv.Value = s.String()
+			return nil
+		}
+		return fmt.Errorf("unsupported parameter type %T", v)
+	}
+}
+
 // translateFDBError maps known FDB wire errors to SQLSTATE error codes.
 // Mirrors Java's ExceptionUtil.translateException for FDB-specific errors.
 func translateFDBError(err error) error {
@@ -585,5 +607,6 @@ var (
 	_ driver.SessionResetter    = (*EmbeddedConnection)(nil)
 	_ driver.Validator          = (*EmbeddedConnection)(nil)
 	_ driver.ConnPrepareContext = (*EmbeddedConnection)(nil)
+	_ driver.NamedValueChecker  = (*EmbeddedConnection)(nil)
 	_ driver.Tx                 = (*embeddedTx)(nil)
 )
