@@ -31,3 +31,8 @@ tests:
   # INSERT below MIN_INT32 must error.
   - query: INSERT INTO IntTest VALUES (5, -2147483649)
     error_code: "22003"
+  # CAST(large AS INTEGER) must error with INVALID_CAST (22F3H).
+  - query: SELECT CAST(2147483648 AS INTEGER) FROM IntTest WHERE id = 1
+    error_code: "22F3H"
+  - query: SELECT CAST(-2147483649 AS INTEGER) FROM IntTest WHERE id = 1
+    error_code: "22F3H"
