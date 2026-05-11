@@ -125,6 +125,10 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
+	if cmp := compareStreamingVsHash(a, b); cmp != 0 {
+		return cmp
+	}
+
 	hashA := a.HashCodeWithoutChildren()
 	hashB := b.HashCodeWithoutChildren()
 	if hashA != hashB {
@@ -327,6 +331,21 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	}
 	_, ok = e.(*physicalIndexScanWrapper)
 	return ok
+}
+
+func compareStreamingVsHash(a, b expressions.RelationalExpression) int {
+	_, aStreaming := a.(*physicalStreamingAggWrapper)
+	_, bStreaming := b.(*physicalStreamingAggWrapper)
+	_, aHash := a.(*physicalHashAggWrapper)
+	_, bHash := b.(*physicalHashAggWrapper)
+
+	if aStreaming && bHash {
+		return -1
+	}
+	if aHash && bStreaming {
+		return 1
+	}
+	return 0
 }
 
 func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
