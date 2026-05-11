@@ -206,8 +206,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	p.runPlanningPhase(rootRef)
 
 	// Use the selector path so extraction reuses the OPTIMIZE-stamped
-	// best member per Reference (avoids re-computing CostLess that
-	// the OPTIMIZE phase already did).
+	// best member per Reference.
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
 }
@@ -603,7 +602,7 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	// physicalWrapperCostMultiplier discount. Full wiring requires
 	// restricting to FinalMembers + deeper investigation of the 17
 	// remaining sqldriver failures. See TODO.md D-4 section.
-	best := t.Ref.GetBest(properties.CostLess)
+	best := t.Ref.GetBest(PlanningCostModelLess)
 	p.bestMember[t.Ref] = best
 	if p.events != nil {
 		p.events.OnOptimizeReference(t.Ref, best)

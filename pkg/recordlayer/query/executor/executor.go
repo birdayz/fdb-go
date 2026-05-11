@@ -941,7 +941,6 @@ func executeNestedLoopJoin(
 	preds := p.GetPredicates()
 	joinType := p.GetJoinType()
 	var results []QueryResult
-
 	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
 		outerAlias := p.GetOuterAlias()
 		if len(preds) == 0 {
