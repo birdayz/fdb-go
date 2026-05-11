@@ -244,3 +244,175 @@ func BenchmarkFDB_TimestampRangeScan(b *testing.B) {
 		rows.Close()
 	}
 }
+
+// BenchmarkFDB_JoinQuery measures an inner join between two tables (Customers
+// and Orders) with a secondary index on the foreign key column. The join is
+// filtered to a single customer, returning 5 matching orders per iteration.
+func BenchmarkFDB_JoinQuery(b *testing.B) {
+	if clusterFilePath == "" {
+		b.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	seq := benchSeq.Add(1)
+	dbPath := fmt.Sprintf("/bench_join_%d", seq)
+	tmpl := fmt.Sprintf("bench_join_tmpl_%d", seq)
+
+	setup := openBenchDB(b, dbPath)
+	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE Orders (id BIGINT NOT NULL, cust_id BIGINT, amount BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX idx_orders_cust ON Orders (cust_id)", tmpl))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Seed 10 customers.
+	for i := int64(1); i <= 10; i++ {
+		execOrFail(b, db, ctx,
+			fmt.Sprintf("INSERT INTO Customers VALUES (%d, 'customer_%d')", i, i))
+	}
+	// Seed 50 orders (5 per customer).
+	for i := int64(1); i <= 50; i++ {
+		custID := ((i - 1) % 10) + 1
+		execOrFail(b, db, ctx,
+			fmt.Sprintf("INSERT INTO Orders VALUES (%d, %d, %d)", i, custID, i*10))
+	}
+
+	query := "SELECT c.name, o.amount FROM Customers c, Orders o WHERE c.id = o.cust_id AND c.id = 1"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+		for rows.Next() {
+			var name string
+			var amount int64
+			if err := rows.Scan(&name, &amount); err != nil {
+				b.Fatalf("scan: %v", err)
+			}
+		}
+		rows.Close()
+	}
+}
+
+// BenchmarkFDB_AggregateGroupBy measures a GROUP BY query with COUNT(*) and
+// SUM(amount) aggregates over a secondary-indexed category column. The table
+// contains 100 rows spread across 5 categories.
+func BenchmarkFDB_AggregateGroupBy(b *testing.B) {
+	if clusterFilePath == "" {
+		b.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	seq := benchSeq.Add(1)
+	dbPath := fmt.Sprintf("/bench_agg_%d", seq)
+	tmpl := fmt.Sprintf("bench_agg_tmpl_%d", seq)
+
+	setup := openBenchDB(b, dbPath)
+	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Sales (id BIGINT NOT NULL, category STRING, amount BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX idx_sales_cat ON Sales (category)", tmpl))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Seed 100 rows across 5 categories.
+	categories := []string{"electronics", "clothing", "food", "books", "toys"}
+	for i := int64(1); i <= 100; i++ {
+		cat := categories[(i-1)%5]
+		execOrFail(b, db, ctx,
+			fmt.Sprintf("INSERT INTO Sales VALUES (%d, '%s', %d)", i, cat, i*5))
+	}
+
+	query := "SELECT category, COUNT(*), SUM(amount) FROM Sales GROUP BY category"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+		for rows.Next() {
+			var cat string
+			var cnt, total int64
+			if err := rows.Scan(&cat, &cnt, &total); err != nil {
+				b.Fatalf("scan: %v", err)
+			}
+		}
+		rows.Close()
+	}
+}
+
+// BenchmarkFDB_IndexScanRange measures a secondary index range scan that
+// returns roughly half the rows. The Products table has 100 rows with prices
+// 1..100 and a secondary index on price; the query selects all products with
+// price > 50.
+func BenchmarkFDB_IndexScanRange(b *testing.B) {
+	if clusterFilePath == "" {
+		b.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	seq := benchSeq.Add(1)
+	dbPath := fmt.Sprintf("/bench_idxrange_%d", seq)
+	tmpl := fmt.Sprintf("bench_idxrange_tmpl_%d", seq)
+
+	setup := openBenchDB(b, dbPath)
+	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Products (id BIGINT NOT NULL, price BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE INDEX idx_products_price ON Products (price)", tmpl))
+	execOrFail(b, setup, ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Seed 100 products with prices 1..100.
+	for i := int64(1); i <= 100; i++ {
+		execOrFail(b, db, ctx,
+			fmt.Sprintf("INSERT INTO Products VALUES (%d, %d, 'product_%d')", i, i, i))
+	}
+
+	query := "SELECT id, name FROM Products WHERE price > 50"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+		for rows.Next() {
+			var id int64
+			var name string
+			if err := rows.Scan(&id, &name); err != nil {
+				b.Fatalf("scan: %v", err)
+			}
+		}
+		rows.Close()
+	}
+}
