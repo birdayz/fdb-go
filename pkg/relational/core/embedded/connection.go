@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	fdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
@@ -551,6 +552,22 @@ func (c *EmbeddedConnection) CheckNamedValue(nv *driver.NamedValue) error {
 	}
 }
 
+// translateFDBCode maps an FDB numeric error code to a SQLSTATE-wrapped error.
+// Returns the original error unchanged if the code is not recognized.
+func translateFDBCode(code int, err error) error {
+	switch code {
+	case 1031: // transaction_timed_out
+		return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
+	case 1020: // not_committed
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
+	case 1007: // transaction_too_old
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+	case 2017: // used_during_commit
+		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
+	}
+	return err
+}
+
 // translateFDBError maps known FDB wire errors to SQLSTATE error codes.
 // Mirrors Java's ExceptionUtil.translateException for FDB-specific errors.
 func translateFDBError(err error) error {
@@ -575,16 +592,11 @@ func translateFDBError(err error) error {
 	}
 	var fdbErr *wire.FDBError
 	if errors.As(err, &fdbErr) {
-		switch fdbErr.Code {
-		case 1031: // transaction_timed_out
-			return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
-		case 1020: // not_committed
-			return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
-		case 1007: // transaction_too_old
-			return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
-		case 2017: // used_during_commit
-			return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
-		}
+		return translateFDBCode(fdbErr.Code, err)
+	}
+	var fdbValErr fdb.Error
+	if errors.As(err, &fdbValErr) {
+		return translateFDBCode(fdbValErr.Code, err)
 	}
 	// Fallback: string matching for wrapped errors that lost the typed FDBError.
 	msg := err.Error()

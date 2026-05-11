@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	fdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -234,6 +235,7 @@ func TestTranslateFDBError(t *testing.T) {
 		{"fdb_conflict_typed", &wire.FDBError{Code: 1020}, api.ErrCodeSerializationFailure, false},
 		{"fdb_too_old_typed", &wire.FDBError{Code: 1007}, api.ErrCodeSerializationFailure, false},
 		{"fdb_during_commit_typed", &wire.FDBError{Code: 2017}, api.ErrCodeTransactionInactive, false},
+		{"fdb_timeout_fdb_error_value", fdb.Error{Code: 1031}, api.ErrCodeTransactionTimeout, false},
 		{"fdb_timeout_wrapped", fmt.Errorf("outer: %w", &wire.FDBError{Code: 1031}), api.ErrCodeTransactionTimeout, false},
 		{"fdb_timeout_string_fallback", fmt.Errorf("wrapped: transaction_timed_out"), api.ErrCodeTransactionTimeout, false},
 		{"fdb_conflict_string_fallback", fmt.Errorf("wrapped: not_committed"), api.ErrCodeSerializationFailure, false},
