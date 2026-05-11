@@ -46,6 +46,9 @@ func (w *physicalMultiIntersectionWrapper) GetQuantifiers() []expressions.Quanti
 	return w.innerQuants
 }
 
+// IsIntersection implements properties.IntersectionExpression.
+func (w *physicalMultiIntersectionWrapper) IsIntersection() {}
+
 func (w *physicalMultiIntersectionWrapper) CanCorrelate() bool  { return false }
 func (w *physicalMultiIntersectionWrapper) ChildrenAsSet() bool { return false }
 

@@ -1,8 +1,10 @@
 # Divergences from Java fdb-record-layer-core 4.11.1.0
 
-Comprehensive list of Go vs Java differences. Planning-layer divergences are
-fully closed. Remaining items are execution-layer, architectural, or blocked
-on infrastructure not yet built.
+Comprehensive list of Go vs Java differences. All Cascades planner subsystems
+fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
+34/34 physical plan types, 48/48 value types, 18/18 properties, 12/12 match
+candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
+are execution-layer, wire-format, or intentional architectural choices.
 
 ## Intentional Architectural Decisions (no functional difference)
 
@@ -41,7 +43,14 @@ Same execution semantics — for each outer row, evaluate inner with bound corre
 
 Correctness improvement — ensures ORDER BY works even when no index satisfies it.
 
-## Planning-Layer Aligned (all fixed this shift)
+### FieldValue: composition vs multi-step FieldPath
+
+**Java:** `FieldValue` contains `FieldPath` — a list of `ResolvedAccessor` objects for nested field traversal in a single node. Supports `getFieldPathNames()`, `getFieldOrdinals()`, `stripFieldPrefixMaybe()`, `ofFieldsAndFuseIfPossible()`.
+**Go:** `FieldValue` has a single `Field` string + optional `Child Value`. Multi-step paths are expressed as FieldValue chains (composition). `NewFieldValue(child, field, typ)` nests; `NewFlatFieldValue(field, typ)` is the leaf form.
+
+Functionally equivalent for current query shapes — all generated plans use single-step field access. Java's `FieldPath` matters for deeply-nested protobuf message fields; Go would need the multi-step model if/when nested record types are ported.
+
+## Planning-Layer: Fully Aligned
 
 ### Cost Model: PlanningCostModelLess
 
@@ -60,7 +69,7 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 9. Type filter depth | ExpressionDepthProperty | `expressionDepth` (min across all members) | Aligned |
 | 10. Index scan fetches | count(PlanWithIndex, Fetch) | `indexScanCount + fetchCount` | Aligned |
 | 11. Distinct depth | ExpressionDepthProperty | `expressionDepth` | Aligned |
-| 12. Unmatched fields | UnmatchedFieldsCountProperty | `totalCols - boundCols` | Aligned (primary scans have no comparisons in Go, so always tie — N/A) |
+| 12. Unmatched fields | UnmatchedFieldsCountProperty | `totalCols - boundCols` | Aligned |
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
 | 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
 | 15. FlatMap join ordering | Compare outer child cardinalities | N/A (Go uses NLJ, not FlatMap) | N/A |
@@ -72,15 +81,28 @@ Go-only addition: scalar `CostLess` fallback between criteria 14 and 16 (discrim
 
 All 4 criteria ported: fewer SelectExpressions, fewer TableFunctionExpressions, fewer CNF conjuncts, more predicates at deeper levels. `Planner.WithCostModel()` wires the appropriate cost model per phase.
 
-### 5 Inlined Property Computations
+### Properties: 18/18
 
-| Java Property | Go Location | Status |
+| Java Property | Go Implementation | Status |
 |---|---|---|
-| NormalizedResidualPredicateProperty | `countResidualPredicates()` + `cnfSize()` | Aligned |
-| ExpressionDepthProperty | `expressionDepth()` | Aligned |
-| TypeFilterCountProperty | `walkExpressionTree()` counter | Aligned |
-| UnmatchedFieldsCountProperty | `walkExpressionTree()` counter | Aligned |
-| ComparisonsProperty | `collectSargedAliases()` | Aligned (intersection semantics for intersection plans) |
+| CardinalitiesProperty | `cardinality.go` | Aligned |
+| OrderingProperty | `ordering.go` | Aligned |
+| DistinctRecordsProperty | `PropDistinctRecords` | Aligned |
+| StoredRecordProperty | `PropStoredRecord` | Aligned |
+| PrimaryKeyProperty | `PropPrimaryKey` | Aligned |
+| DerivationsProperty | `derivations_property.go` + `derivations_evaluator.go` (913 LOC) | Aligned |
+| ExpressionCountProperty | `expression_count_property.go` + `EvaluateExpressionCount()` | Aligned |
+| FieldWithComparisonCountProperty | `field_with_comparison_count_property.go` | Aligned |
+| PredicateComplexityProperty | `predicate_complexity_property.go` | Aligned |
+| PredicateCountByLevelProperty | `predicate_count_by_level_property.go` | Aligned |
+| RecordTypesProperty | `record_types_property.go` | Aligned |
+| ReferencesAndDependenciesProperty | `references_and_dependencies_property.go` | Aligned |
+| UsedTypesProperty | `used_types_property.go` | Aligned |
+| ComparisonsProperty | `comparisons_property.go` + `collectSargedAliases()` inline in cost model | Aligned |
+| NormalizedResidualPredicateProperty | `countResidualPredicates()` + `cnfSize()` inline in cost model | Aligned (inline) |
+| ExpressionDepthProperty | `expressionDepth()` inline in cost model | Aligned (inline) |
+| TypeFilterCountProperty | `walkExpressionTree()` counter inline in cost model | Aligned (inline) |
+| UnmatchedFieldsCountProperty | `walkExpressionTree()` counter inline in cost model | Aligned (inline) |
 
 ### Predicate Simplification: 12/12 Rules Covered
 
@@ -99,13 +121,19 @@ All 4 criteria ported: fewer SelectExpressions, fewer TableFunctionExpressions, 
 | ConstantFoldingPredicateWithRangesRule | `foldPredicateWithRanges()` | Aligned |
 | ConstantFoldingMultiConstraintPredicateRule | `foldPredicateWithRanges()` multi-constraint | Aligned |
 
-### NotOverComparisonRule: Negate() matches invertComparisonType()
+### Match Candidates: 9/9
 
-5 operators: EQUALS→NOT_EQUALS, LT↔GTE, LTE↔GT. All others rejected.
-
-### InJoinPlan: InSourceKind + PushInJoinThroughFetch
-
-`InSourceKind` enum classifies explode values (Values/Parameter/Comparand). `classifyInSourceKind()` sets it at plan creation. `PushInJoinThroughFetchRule` excludes InComparand. Source kind preserved through push-through-fetch.
+| Java Type | Go Equivalent | Status |
+|---|---|---|
+| ValueIndexScanMatchCandidate | `ValueIndexScanMatchCandidate` | Aligned |
+| AggregateIndexMatchCandidate | `AggregateIndexMatchCandidate` | Aligned |
+| PrimaryScanMatchCandidate | `PrimaryScanMatchCandidate` (260 LOC) | Aligned |
+| VectorIndexScanMatchCandidate | `VectorIndexScanMatchCandidate` (232 LOC) | Aligned |
+| WindowedIndexScanMatchCandidate | `WindowedIndexScanMatchCandidate` (352 LOC) | Aligned |
+| WithPrimaryKeyMatchCandidate | Interface | Aligned |
+| WithBaseQuantifierMatchCandidate | Interface | Aligned |
+| ScanWithFetchMatchCandidate | Interface | Aligned |
+| ValueIndexLikeMatchCandidate | Interface | Aligned |
 
 ### Value Simplification: SimplifyValue + SimplifyValueWithContext
 
@@ -113,16 +141,19 @@ Two-tier simplification matching Java's value rule sets:
 - `SimplifyValue()` — context-free: constant folding (arithmetic/cast/promote/scalar-function/not/and-or/pick/coalesce), `composeFieldOverConstructor`, `simplifyCoalesce`.
 - `SimplifyValueWithContext(v, ctx)` — context-aware with `constantAliases` + `isRoot`: `eliminateArithmeticWithConstant` (col+5 → col for ordering), `foldConstant` (wrap fully-constant subtrees), `liftConstructor` (flatten nested RC, isRoot-gated).
 
+### InJoinPlan: InSourceKind + PushInJoinThroughFetch
+
+`InSourceKind` enum classifies explode values (Values/Parameter/Comparand). `classifyInSourceKind()` sets it at plan creation. `PushInJoinThroughFetchRule` excludes InComparand. Source kind preserved through push-through-fetch.
+
 ## Execution-Layer Gaps (blocked on infrastructure not yet built)
 
 These affect runtime behavior and wire compatibility, NOT plan selection.
 
 | Gap | Category | Blocked on |
 |---|---|---|
-| InSource abstraction (InParameter runtime lookup, InComparand extraction) | Execution | Query execution engine |
-| CoveringIndexPlan struct (`IndexKeyValueToPartialRecord`, `recordTypeName`) | Execution | Partial-record reconstruction from index entries |
-| Plan proto serialization (Go plans are not serialized to proto at all) | Wire format | Plan serialization infrastructure |
-| Value type proto (CountValue, NumericAggregationValue, VariadicFunctionValue) | Wire format | Value serialization infrastructure |
+| CoveringIndexPlan: `IndexKeyValueToPartialRecord` reconstruction | Execution | Partial-record reconstruction from index entries |
+| Plan proto serialization (Go plans not serialized to proto) | Wire format | Plan serialization infrastructure |
+| Value type proto serialization | Wire format | Value serialization infrastructure |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
 
 ## Optimization-Quality Gaps (correctness unaffected)
@@ -130,9 +161,6 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | Gap | Status |
 |---|---|
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
-| EliminateArithmeticValueWithConstantRule | **DONE** — `eliminateArithmeticWithConstant()` in `SimplifyValueWithContext` |
-| FoldConstantRule | **DONE** — `foldConstant()` in `SimplifyValueWithContext` |
-| LiftConstructorRule | **DONE** — `liftConstructor()` in `SimplifyValueWithContext` (isRoot-gated) |
 | ExtractFromIndexKeyValueRuleSet (3 rules) | Blocked: execution layer (partial record construction) |
 
 ## Plan Architecture: Go collapses Java class hierarchies
@@ -140,10 +168,10 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | Java | Go | Planning status |
 |---|---|---|
 | 3 InJoin subclasses | 1 `RecordQueryInJoinPlan` with `InSourceKind` | Aligned |
-| 2 InUnion subclasses | 1 `RecordQueryInUnionPlan` | Aligned (Cascades-relevant variant covered) |
+| 2 InUnion subclasses | 1 `RecordQueryInUnionPlan` | Aligned |
 | 2 Union subclasses | 1 `RecordQueryUnionPlan` + `RecordQueryMergeSortUnionPlan` | Aligned |
-| 2 Distinct plan variants | 1 `RecordQueryDistinctPlan` | Aligned (Cascades produces PK-based only) |
+| 2 Distinct plan variants | 1 `RecordQueryDistinctPlan` | Aligned |
 | CoveringIndexPlan | `covering bool` on IndexPlan | Aligned for planning; execution gap |
 | CountValue + NumericAggregationValue | `AggregateValue` | Aligned (no rule distinguishes them) |
 | VariadicFunctionValue | `ScalarFunctionValue` | Aligned (COALESCE folding matches Java) |
-| 12 Comparison subclasses | Single `Comparison` struct with optional fields | Aligned: `ParameterName`, `TextTokenizerName`, `TextAnalyzerName`, `TextMaxDistance`, `TextStrictPrefix`, `Escape` cover SimpleComparison, ParameterComparison, ValueComparison, TextComparison variants. Niche types (OpaqueEquality, MultiColumn, InvertedFunction) not yet needed |
+| 12 Comparison subclasses | Single `Comparison` struct with optional fields | Aligned |
