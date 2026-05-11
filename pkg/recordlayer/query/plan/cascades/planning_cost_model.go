@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // PlanningCostModelLess is the Java-aligned multi-criteria plan comparator.
@@ -146,6 +147,20 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 
 	if cmp := compareStreamingVsHash(a, b); cmp != 0 {
 		return cmp
+	}
+
+	// Fall back to the scalar cost model when all multi-criteria tie.
+	// This avoids the hash tiebreak picking semantically broken plans
+	// (see D-4 wiring investigation). The scalar model's per-operator
+	// cost formulas discriminate between plans that look identical to
+	// the ordinal criteria.
+	costA := properties.EstimateCost(a)
+	costB := properties.EstimateCost(b)
+	if costA.Less(costB) {
+		return -1
+	}
+	if costB.Less(costA) {
+		return 1
 	}
 
 	hashA := a.HashCodeWithoutChildren()
