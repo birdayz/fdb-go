@@ -20,7 +20,9 @@ Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional
 **Java:** Fires on all SelectExpressions including those with Existential quantifiers.
 **Go:** Skips SelectExpressions with Existential quantifiers.
 
-Go's fixpoint architecture fires rules on all Reference members. Normalizing an EXISTS-bearing SelectExpression yields a new expression that downstream rules can't plan. The guard preserves the structural invariants EXISTS depends on. Same functional behavior.
+**Root cause (verified empirically):** Removing the guard causes `TestFDB_CorrelatedExistsSelfJoin` and `TestFDB_ParameterizedSubquery` to fail with `0AF00: Cascades planner could not plan query`. The normalized SelectExpression has the same quantifiers but different predicate structure. `ImplementSimpleSelectRule` requires exactly 1 quantifier (line 34: `len(quantifiers) != 1`) and skips the 2-quantifier EXISTS case. `ImplementNestedLoopJoinRule` handles 2+ quantifiers but can't resolve the EXISTS predicate structure after CNF normalization.
+
+**To fix:** Make `ImplementSimpleSelectRule` or a dedicated EXISTS implementation rule handle multi-quantifier SelectExpressions where one quantifier is Existential. This would align with Java where `ImplementSimpleSelectRule` processes normalized EXISTS expressions through its matcher infrastructure.
 
 ### WithPrimaryKeyDataAccessRule is an explicit planner pass
 
