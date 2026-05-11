@@ -101,6 +101,13 @@ tests:
       - [30]
 
   # ---------------------------------------------------------------
+  # WHERE with CAST AS TIMESTAMP (cross-type comparison).
+  # ---------------------------------------------------------------
+  - query: SELECT COUNT(*) FROM Events WHERE ts >= CAST('2024-03-15 10:30:00' AS TIMESTAMP)
+    rows:
+      - [2]
+
+  # ---------------------------------------------------------------
   # NULL handling: NULL DATE/TIMESTAMP columns.
   # ---------------------------------------------------------------
   - query: SELECT d IS NULL FROM Events WHERE id = 1
