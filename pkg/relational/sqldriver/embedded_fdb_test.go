@@ -7424,7 +7424,13 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	for i, ct := range colTypes {
 		nullable, ok := ct.Nullable()
 		g.Expect(ok).To(gomega.BeTrue(), "column %d (%s): Nullable should report ok=true", i, ct.Name())
-		g.Expect(nullable).To(gomega.BeTrue(), "column %d (%s): proto fields are nullable", i, ct.Name())
+		if i == 0 {
+			// id BIGINT NOT NULL → proto REQUIRED → not nullable
+			g.Expect(nullable).To(gomega.BeFalse(), "column 0 (ID): NOT NULL column should report nullable=false")
+		} else {
+			// name/flag/score are OPTIONAL → nullable
+			g.Expect(nullable).To(gomega.BeTrue(), "column %d (%s): nullable column should report nullable=true", i, ct.Name())
+		}
 	}
 
 	// ColumnTypeLength: STRING columns are variable-length.

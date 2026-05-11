@@ -482,9 +482,14 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	cols := make([]executor.ColumnDef, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
+		nullable := api.ColumnNullable
+		if fd.Cardinality() == protoreflect.Required {
+			nullable = api.ColumnNoNulls
+		}
 		cols[i] = executor.ColumnDef{
 			Name:     strings.ToUpper(string(fd.Name())),
 			TypeName: protoKindToTypeName(fd.Kind()),
+			Nullable: nullable,
 		}
 	}
 	return cols
@@ -573,10 +578,17 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if label != "" {
 			colName = label
 		}
+		nullable := api.ColumnNullable
+		if desc != nil {
+			if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() == protoreflect.Required {
+				nullable = api.ColumnNoNulls
+			}
+		}
 		cols[i] = executor.ColumnDef{
 			Name:     colName,
 			Label:    label,
 			TypeName: typeName,
+			Nullable: nullable,
 		}
 	}
 	return cols
@@ -673,9 +685,16 @@ func buildAggColumns(
 		if desc != nil {
 			typeName = protoFieldTypeName(desc, name)
 		}
+		nullable := api.ColumnNullable
+		if desc != nil {
+			if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() == protoreflect.Required {
+				nullable = api.ColumnNoNulls
+			}
+		}
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
 			TypeName: typeName,
+			Nullable: nullable,
 		})
 	}
 	for _, a := range aggregates {
@@ -684,6 +703,7 @@ func buildAggColumns(
 		cols = append(cols, executor.ColumnDef{
 			Name:     strings.ToUpper(name),
 			TypeName: typeName,
+			Nullable: api.ColumnNullable,
 		})
 	}
 	return cols
@@ -865,7 +885,12 @@ func (r *cascadesRows) ColumnTypeScanType(index int) reflect.Type {
 }
 
 func (r *cascadesRows) ColumnTypeNullable(index int) (nullable, ok bool) {
-	return true, true
+	md := r.rs.MetaData()
+	n, err := md.ColumnNullable(index + 1)
+	if err != nil {
+		return true, true
+	}
+	return n != api.ColumnNoNulls, true
 }
 
 func (r *cascadesRows) ColumnTypeLength(index int) (length int64, ok bool) {
