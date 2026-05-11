@@ -870,8 +870,13 @@ func (r *cascadesRows) ColumnTypeNullable(index int) (nullable, ok bool) {
 
 func (r *cascadesRows) ColumnTypeLength(index int) (length int64, ok bool) {
 	typeName := r.ColumnTypeDatabaseTypeName(index)
-	if typeName == "STRING" || typeName == "BYTES" {
+	switch typeName {
+	case "STRING", "BYTES":
 		return math.MaxInt64, true
+	case "DATE":
+		return 10, true // "2006-01-02"
+	case "TIMESTAMP":
+		return 19, true // "2006-01-02 15:04:05"
 	}
 	return 0, false
 }
