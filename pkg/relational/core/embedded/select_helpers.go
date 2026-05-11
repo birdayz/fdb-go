@@ -90,6 +90,7 @@ func jdbcTypeMax(a, b string) string {
 	if a == b {
 		return a
 	}
+	const temporalBase = 100
 	rank := func(t string) int {
 		switch t {
 		case "INTEGER":
@@ -101,9 +102,9 @@ func jdbcTypeMax(a, b string) string {
 		case "DOUBLE":
 			return 4
 		case "DATE":
-			return 100
+			return temporalBase
 		case "TIMESTAMP":
-			return 101
+			return temporalBase + 1
 		}
 		return 0
 	}
@@ -112,7 +113,7 @@ func jdbcTypeMax(a, b string) string {
 		return ""
 	}
 	// DATE promotes to TIMESTAMP; temporal types are incompatible with numeric.
-	if (ra >= 100) != (rb >= 100) {
+	if (ra >= temporalBase) != (rb >= temporalBase) {
 		return ""
 	}
 	if ra >= rb {
