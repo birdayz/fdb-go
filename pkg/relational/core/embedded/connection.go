@@ -537,6 +537,14 @@ func translateFDBError(err error) error {
 	if errors.As(err, &apiErr) {
 		return err
 	}
+	var metaErr *recordlayer.MetaDataError
+	if errors.As(err, &metaErr) {
+		return api.WrapError(api.ErrCodeSyntaxOrAccessViolation, metaErr.Error(), err)
+	}
+	var existsErr *recordlayer.RecordAlreadyExistsError
+	if errors.As(err, &existsErr) {
+		return api.WrapError(api.ErrCodeUniqueConstraintViolation, existsErr.Error(), err)
+	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "transaction_timed_out"):
