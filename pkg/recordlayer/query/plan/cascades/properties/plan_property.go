@@ -16,9 +16,22 @@ var (
 	PropPrimaryKey      = &ExpressionProperty{name: "primaryKey"}
 	PropCardinalities   = &ExpressionProperty{name: "cardinalities"}
 
+	PropComparisons               = &ExpressionProperty{name: "comparisons"}
+	PropExpressionCount           = &ExpressionProperty{name: "expressionCount"}
+	PropFieldWithComparisonCount  = &ExpressionProperty{name: "fieldWithComparisonCount"}
+	PropPredicateComplexity       = &ExpressionProperty{name: "predicateComplexity"}
+	PropPredicateCountByLevel     = &ExpressionProperty{name: "predicateCountByLevel"}
+	PropRecordTypes               = &ExpressionProperty{name: "recordTypes"}
+	PropReferencesAndDependencies = &ExpressionProperty{name: "referencesAndDependencies"}
+	PropUsedTypes                 = &ExpressionProperty{name: "usedTypes"}
+	PropDerivations               = &ExpressionProperty{name: "derivations"}
+
 	AllPlanProperties = []*ExpressionProperty{
 		PropOrdering, PropDistinctRecords, PropStoredRecord, PropPrimaryKey,
 		PropCardinalities,
+		PropComparisons, PropExpressionCount, PropFieldWithComparisonCount,
+		PropPredicateComplexity, PropPredicateCountByLevel, PropRecordTypes,
+		PropReferencesAndDependencies, PropUsedTypes, PropDerivations,
 	}
 )
 
@@ -54,4 +67,15 @@ func (m PropertyMap) GetCardinalities() Cardinalities {
 	}
 	c, _ := v.(Cardinalities)
 	return c
+}
+
+// GetDerivations returns the Derivations value for PropDerivations,
+// or nil if absent.
+func (m PropertyMap) GetDerivations() *Derivations {
+	v, ok := m[PropDerivations]
+	if !ok {
+		return nil
+	}
+	d, _ := v.(*Derivations)
+	return d
 }

@@ -53,6 +53,7 @@ func computeWrapperProperties(w physicalPlanExpression) properties.PropertyMap {
 		properties.PropPrimaryKey:      computePrimaryKey(plan),
 		properties.PropOrdering:        computeWrapperOrdering(w),
 		properties.PropCardinalities:   computeCardinalities(w, plan),
+		properties.PropDerivations:     ComputeDerivations(w),
 	}
 }
 

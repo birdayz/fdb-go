@@ -50,6 +50,55 @@ func (r *PushIntersectionThroughFetchRule) OnMatch(call *ImplementationRuleCall)
 
 var _ ImplementationRule = (*PushIntersectionThroughFetchRule)(nil)
 
+// PushUnorderedUnionThroughFetchRule handles the UnorderedUnion case.
+// Java: PushSetOperationThroughFetchRule<RecordQueryUnorderedUnionPlan>.
+type PushUnorderedUnionThroughFetchRule struct {
+	matcher matching.BindingMatcher
+}
+
+func NewPushUnorderedUnionThroughFetchRule() *PushUnorderedUnionThroughFetchRule {
+	return &PushUnorderedUnionThroughFetchRule{
+		matcher: NewExpressionMatcher[*physicalUnorderedUnionWrapper]("phys_unordered_union_over_fetches"),
+	}
+}
+
+func (r *PushUnorderedUnionThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func (r *PushUnorderedUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
+	w := matching.Get[*physicalUnorderedUnionWrapper](call.Bindings, r.matcher)
+	pushSetOpThroughFetch(call, w.innerQuants, func(newQuants []expressions.Quantifier) expressions.RelationalExpression {
+		return NewPhysicalUnorderedUnionWrapper(w.plan, newQuants)
+	})
+}
+
+var _ ImplementationRule = (*PushUnorderedUnionThroughFetchRule)(nil)
+
+// PushInUnionThroughFetchRule handles the InUnion case.
+// Java: PushSetOperationThroughFetchRule<RecordQueryInUnionOnValuesPlan>.
+type PushInUnionThroughFetchRule struct {
+	matcher matching.BindingMatcher
+}
+
+func NewPushInUnionThroughFetchRule() *PushInUnionThroughFetchRule {
+	return &PushInUnionThroughFetchRule{
+		matcher: NewExpressionMatcher[*physicalInUnionWrapper]("phys_in_union_over_fetches"),
+	}
+}
+
+func (r *PushInUnionThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
+	w := matching.Get[*physicalInUnionWrapper](call.Bindings, r.matcher)
+	pushSetOpThroughFetch(call, []expressions.Quantifier{w.innerQuant}, func(newQuants []expressions.Quantifier) expressions.RelationalExpression {
+		if len(newQuants) != 1 {
+			return nil
+		}
+		return NewPhysicalInUnionWrapper(w.plan, newQuants[0])
+	})
+}
+
+var _ ImplementationRule = (*PushInUnionThroughFetchRule)(nil)
+
 // pushSetOpThroughFetch is the shared logic for pushing a set operation
 // through fetch wrappers. All children must be fetch wrappers with the
 // same FetchIndexRecords mode. The buildSetOp callback constructs the

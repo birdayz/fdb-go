@@ -223,6 +223,83 @@ func TestImplementInJoinRule_MultipleExplodes(t *testing.T) {
 	}
 }
 
+// TestClassifyInSourceKind_ConstantValueCollection verifies that an
+// ExplodeExpression wrapping a ConstantValue classifies as InSourceValues.
+func TestClassifyInSourceKind_ConstantValueCollection(t *testing.T) {
+	t.Parallel()
+
+	collection := &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}, Typ: values.TypeInt}
+	explode := expressions.NewExplodeExpression(collection)
+	ref := expressions.InitialOf(explode)
+	q := expressions.ForEachQuantifier(ref)
+
+	got := classifyInSourceKind(q)
+	if got != plans.InSourceValues {
+		t.Errorf("classifyInSourceKind(ConstantValue collection) = %v, want InSourceValues (%v)", got, plans.InSourceValues)
+	}
+}
+
+// TestClassifyInSourceKind_QuantifiedObjectValueCollection verifies that
+// an ExplodeExpression wrapping a QuantifiedObjectValue classifies as
+// InSourceParameter.
+func TestClassifyInSourceKind_QuantifiedObjectValueCollection(t *testing.T) {
+	t.Parallel()
+
+	collection := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("param"))
+	explode := expressions.NewExplodeExpression(collection)
+	ref := expressions.InitialOf(explode)
+	q := expressions.ForEachQuantifier(ref)
+
+	got := classifyInSourceKind(q)
+	if got != plans.InSourceParameter {
+		t.Errorf("classifyInSourceKind(QuantifiedObjectValue) = %v, want InSourceParameter (%v)", got, plans.InSourceParameter)
+	}
+}
+
+// TestClassifyInSourceKind_NilRef verifies that when the quantifier has
+// no Reference (nil ranges-over), the function defaults to InSourceValues.
+func TestClassifyInSourceKind_NilRef(t *testing.T) {
+	t.Parallel()
+
+	q := expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("noref"), nil)
+
+	got := classifyInSourceKind(q)
+	if got != plans.InSourceValues {
+		t.Errorf("classifyInSourceKind(nil ref) = %v, want InSourceValues (%v)", got, plans.InSourceValues)
+	}
+}
+
+// TestClassifyInSourceKind_NonExplodeReference verifies that when the
+// Reference holds a non-Explode expression, the default InSourceValues
+// is returned.
+func TestClassifyInSourceKind_NonExplodeReference(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(ref)
+
+	got := classifyInSourceKind(q)
+	if got != plans.InSourceValues {
+		t.Errorf("classifyInSourceKind(non-explode ref) = %v, want InSourceValues (%v)", got, plans.InSourceValues)
+	}
+}
+
+// TestClassifyInSourceKind_NilCollectionValue verifies that an
+// ExplodeExpression with nil collection defaults to InSourceValues.
+func TestClassifyInSourceKind_NilCollectionValue(t *testing.T) {
+	t.Parallel()
+
+	explode := expressions.NewExplodeExpression(nil)
+	ref := expressions.InitialOf(explode)
+	q := expressions.ForEachQuantifier(ref)
+
+	got := classifyInSourceKind(q)
+	if got != plans.InSourceValues {
+		t.Errorf("classifyInSourceKind(nil collection) = %v, want InSourceValues (%v)", got, plans.InSourceValues)
+	}
+}
+
 func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 	t.Parallel()
 	eqRange := predicates.EmptyComparisonRange()

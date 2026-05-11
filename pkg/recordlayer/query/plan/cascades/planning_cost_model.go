@@ -4,6 +4,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PlanningCostModelLess is the Java-aligned multi-criteria plan comparator.
@@ -30,6 +31,131 @@ import (
 func PlanningCostModelLess(a, b expressions.RelationalExpression) bool {
 	cmp := planningCostModelCompare(a, b)
 	return cmp < 0
+}
+
+// RewritingCostModelLess is the Java-aligned cost model for the REWRITING
+// phase. Mirrors Java's RewritingCostModel.compare():
+//  1. Fewer SelectExpressions
+//  2. Fewer TableFunctionExpressions
+//  3. Fewer normalized residual predicate conjuncts (CNF full-size)
+//  4. More predicates at deeper levels (push predicates down)
+//  5. Semantic hash tiebreak
+func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
+	return rewritingCostModelCompare(a, b) < 0
+}
+
+func rewritingCostModelCompare(a, b expressions.RelationalExpression) int {
+	selectsA := properties.EvaluateExpressionCount(a, isSelectExpression)
+	selectsB := properties.EvaluateExpressionCount(b, isSelectExpression)
+	if selectsA != selectsB {
+		return intCompare(selectsA, selectsB)
+	}
+
+	tfA := properties.EvaluateExpressionCount(a, isTableFunctionExpression)
+	tfB := properties.EvaluateExpressionCount(b, isTableFunctionExpression)
+	if tfA != tfB {
+		return intCompare(tfA, tfB)
+	}
+
+	conjA := countResidualPredicates(a)
+	conjB := countResidualPredicates(b)
+	if conjA != conjB {
+		return intCompare(conjA, conjB)
+	}
+
+	infoA := predicateCountByLevel(a)
+	infoB := predicateCountByLevel(b)
+	if cmp := comparePredicateCountByLevel(infoB, infoA); cmp != 0 {
+		return cmp
+	}
+
+	hashA := deepHashCode(a)
+	hashB := deepHashCode(b)
+	if hashA != hashB {
+		if hashA < hashB {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// predicateCountByLevel computes predicate counts at each tree depth.
+// Level 0 = leaves, increasing towards root. Matches Java's
+// PredicateCountByLevelProperty.
+func predicateCountByLevel(e expressions.RelationalExpression) map[int]int {
+	result := map[int]int{}
+	predicateCountByLevelRec(e, result)
+	return result
+}
+
+func predicateCountByLevelRec(e expressions.RelationalExpression, counts map[int]int) int {
+	if e == nil {
+		return -1
+	}
+	maxChildLevel := -1
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			childLevel := predicateCountByLevelRec(m, counts)
+			if childLevel > maxChildLevel {
+				maxChildLevel = childLevel
+			}
+		}
+	}
+	currentLevel := maxChildLevel + 1
+	predCount := 0
+	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
+		predCount = len(wp.GetPredicates())
+	}
+	counts[currentLevel] += predCount
+	return currentLevel
+}
+
+func comparePredicateCountByLevel(a, b map[int]int) int {
+	maxLevel := -1
+	for k := range a {
+		if k > maxLevel {
+			maxLevel = k
+		}
+	}
+	for k := range b {
+		if k > maxLevel {
+			maxLevel = k
+		}
+	}
+	for level := 0; level <= maxLevel; level++ {
+		ac := a[level]
+		bc := b[level]
+		if ac != bc {
+			return intCompare(ac, bc)
+		}
+	}
+	highestA, highestB := -1, -1
+	for k := range a {
+		if k > highestA {
+			highestA = k
+		}
+	}
+	for k := range b {
+		if k > highestB {
+			highestB = k
+		}
+	}
+	return intCompare(highestA, highestB)
+}
+
+func isSelectExpression(e expressions.RelationalExpression) bool {
+	_, ok := e.(*expressions.SelectExpression)
+	return ok
+}
+
+func isTableFunctionExpression(e expressions.RelationalExpression) bool {
+	_, ok := e.(*expressions.TableFunctionExpression)
+	return ok
 }
 
 func planningCostModelCompare(a, b expressions.RelationalExpression) int {
@@ -163,8 +289,8 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return 1
 	}
 
-	hashA := a.HashCodeWithoutChildren()
-	hashB := b.HashCodeWithoutChildren()
+	hashA := deepHashCode(a)
+	hashB := deepHashCode(b)
 	if hashA != hashB {
 		if hashA < hashB {
 			return -1
@@ -234,7 +360,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		}
 		counts.unmatchedFieldCount += totalCols - boundCols
 	case *physicalTypeFilterWrapper:
-		counts.typeFilterCount++
+		w := e.(*physicalTypeFilterWrapper)
+		counts.typeFilterCount += len(w.plan.GetRecordTypes())
 	case *physicalFilterWrapper:
 		// regular filter, not counted as predicates filter
 	case *physicalPredicatesFilterWrapper:
@@ -274,10 +401,12 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 	}
 	if pf, ok := e.(*physicalPredicatesFilterWrapper); ok {
 		for _, p := range pf.plan.GetPredicates() {
-			*count += countConjuncts(p)
+			*count += int(cnfSize(p))
 		}
 	} else if ff, ok := e.(*physicalFilterWrapper); ok {
-		*count += len(ff.plan.GetPredicates())
+		for _, p := range ff.plan.GetPredicates() {
+			*count += int(cnfSize(p))
+		}
 	}
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
@@ -291,17 +420,6 @@ func countResidualPredicatesRec(e expressions.RelationalExpression, count *int) 
 			}
 		}
 	}
-}
-
-func countConjuncts(p predicates.QueryPredicate) int {
-	if and, ok := p.(*predicates.AndPredicate); ok {
-		total := 0
-		for _, child := range and.Children() {
-			total += countConjuncts(child)
-		}
-		return total
-	}
-	return 1
 }
 
 func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
@@ -319,13 +437,136 @@ func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
 	return 0
 }
 
-func compareInPlan(_, _ expressions.RelationalExpression, _, _ expressionCounts) int {
-	// Java's IN-plan penalty checks whether the IN-values are used as
-	// SARGs (index search arguments) by inspecting scan comparison
-	// correlation. Only penalizes when IN-values aren't SARGs. The full
-	// SARG check requires ComparisonsProperty + correlation inspection.
-	// Deferred to next shift — returning 0 (no preference) is safe.
+// compareInPlan implements Java's flipFlop(compareInOperator(a,b), compareInOperator(b,a)).
+// If variant A is applicable (even if result is 0), variant B is never evaluated.
+func compareInPlan(a, b expressions.RelationalExpression, _, _ expressionCounts) int {
+	if cmp, applicable := compareInOperator(a); applicable {
+		return cmp
+	}
+	if cmp, applicable := compareInOperator(b); applicable {
+		return -cmp
+	}
 	return 0
+}
+
+// compareInOperator returns (penalty, applicable). applicable=false means the
+// expression is not an IN-plan. Matches Java's OptionalInt return:
+// empty → (0, false), present(0) → (0, true), present(1) → (1, true).
+func compareInOperator(expr expressions.RelationalExpression) (int, bool) {
+	var bindingNames []string
+	switch w := expr.(type) {
+	case *physicalInJoinWrapper:
+		if w.plan != nil {
+			bindingNames = []string{w.plan.GetBindingName()}
+		}
+	case *physicalInUnionWrapper:
+		if w.plan != nil {
+			bindingNames = w.plan.GetBindingNames()
+		}
+	default:
+		return 0, false
+	}
+	if len(bindingNames) == 0 {
+		return 0, false
+	}
+
+	sargedAliases := collectSargedAliases(expr)
+
+	for _, name := range bindingNames {
+		alias := values.NamedCorrelationIdentifier(name)
+		if _, found := sargedAliases[alias]; found {
+			return 0, true
+		}
+	}
+	return 1, true
+}
+
+// collectSargedAliases walks the physical plan tree and collects all
+// CorrelationIdentifiers that appear in equality comparisons of index
+// scans. For intersection plans, takes the set intersection of children's
+// aliases (only aliases SARGed by ALL legs count). For all other nodes,
+// takes the union. Matches Java's ComparisonsProperty semantics.
+func collectSargedAliases(e expressions.RelationalExpression) map[values.CorrelationIdentifier]struct{} {
+	if e == nil {
+		return nil
+	}
+	if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan != nil {
+		return equalityAliasesFromRanges(w.plan.GetScanComparisons())
+	}
+	_, isIntersection := e.(*physicalIntersectionWrapper)
+	_, isMultiIntersection := e.(*physicalMultiIntersectionWrapper)
+	if isIntersection || isMultiIntersection {
+		return intersectChildAliases(e)
+	}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); ok {
+				for alias := range collectSargedAliases(m) {
+					out[alias] = struct{}{}
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
+func intersectChildAliases(e expressions.RelationalExpression) map[values.CorrelationIdentifier]struct{} {
+	var childSets []map[values.CorrelationIdentifier]struct{}
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); ok {
+				childSets = append(childSets, collectSargedAliases(m))
+				break
+			}
+		}
+	}
+	if len(childSets) == 0 {
+		return nil
+	}
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range childSets[0] {
+		inAll := true
+		for _, s := range childSets[1:] {
+			if _, found := s[alias]; !found {
+				inAll = false
+				break
+			}
+		}
+		if inAll {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
+
+func equalityAliasesFromRanges(ranges []*predicates.ComparisonRange) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, cr := range ranges {
+		if cr == nil || !cr.IsEquality() {
+			continue
+		}
+		eq := cr.GetEqualityComparison()
+		if eq == nil {
+			continue
+		}
+		if eq.Type != predicates.ComparisonEquals {
+			continue
+		}
+		for alias := range eq.GetCorrelatedTo() {
+			out[alias] = struct{}{}
+		}
+	}
+	return out
 }
 
 func expressionDepth(e expressions.RelationalExpression, match func(expressions.RelationalExpression) bool) int {
@@ -351,7 +592,6 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 				if d >= 0 && (best < 0 || d < best) {
 					best = d
 				}
-				break
 			}
 		}
 	}
@@ -392,19 +632,58 @@ func compareStreamingVsHash(a, b expressions.RelationalExpression) int {
 	return 0
 }
 
+// comparePrimaryScanVsIndexScan mirrors Java's comparePrimaryScanToIndexScan.
+// Only fires when one plan is a singular primary scan and the other is a
+// singular index scan WITH a fetch (non-covering or covering+fetch).
+// A covering index without fetch is strictly better and doesn't enter this path.
 func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
 	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0
 	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0
-	aIsIndexScan := opsA.scanCount == 0 && (opsA.indexScanCount+opsA.coveringIndexCount) == 1
-	bIsIndexScan := opsB.scanCount == 0 && (opsB.indexScanCount+opsB.coveringIndexCount) == 1
+	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
+	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
 
-	if aIsPrimaryScan && bIsIndexScan {
+	if aIsPrimaryScan && bIsIndexScanWithFetch {
 		return 1
 	}
-	if bIsPrimaryScan && aIsIndexScan {
+	if bIsPrimaryScan && aIsIndexScanWithFetch {
 		return -1
 	}
 	return 0
+}
+
+// isSingularIndexScanWithFetch matches Java's check: a single index scan
+// (non-covering or covering) that is accompanied by a fetch.
+func isSingularIndexScanWithFetch(ops expressionCounts) bool {
+	if ops.scanCount != 0 {
+		return false
+	}
+	if ops.indexScanCount == 1 {
+		return true
+	}
+	return ops.coveringIndexCount == 1 && ops.fetchCount >= 1
+}
+
+// deepHashCode computes a recursive hash of the expression tree,
+// matching Java's planHash(CURRENT_FOR_CONTINUATION). Combines the
+// node's own hash with children's hashes via FNV mixing.
+func deepHashCode(e expressions.RelationalExpression) uint64 {
+	if e == nil {
+		return 0
+	}
+	h := e.HashCodeWithoutChildren()
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); ok {
+				child := deepHashCode(m)
+				h ^= child*0x517cc1b727220a95 + 0x6c62272e07bb0142
+			}
+		}
+	}
+	return h
 }
 
 func intCompare(a, b int) int {
@@ -415,36 +694,4 @@ func intCompare(a, b int) int {
 		return 1
 	}
 	return 0
-}
-
-// collectScanComparisons walks the physical plan subtree rooted at e and
-// returns all ComparisonRanges from index scan nodes. Mirrors the intent of
-// Java's ComparisonsProperty, which unions per-node comparison sets bottom-up.
-// Only physicalIndexScanWrapper nodes contribute — full table scans
-// (physicalScanWrapper) have no column comparison ranges.
-func collectScanComparisons(e expressions.RelationalExpression) []*predicates.ComparisonRange {
-	var out []*predicates.ComparisonRange
-	collectScanComparisonsRec(e, &out)
-	return out
-}
-
-func collectScanComparisonsRec(e expressions.RelationalExpression, out *[]*predicates.ComparisonRange) {
-	if e == nil {
-		return
-	}
-	if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan != nil {
-		*out = append(*out, w.plan.GetScanComparisons()...)
-	}
-	for _, q := range e.GetQuantifiers() {
-		ref := q.GetRangesOver()
-		if ref == nil {
-			continue
-		}
-		for _, m := range ref.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				collectScanComparisonsRec(m, out)
-				break
-			}
-		}
-	}
 }

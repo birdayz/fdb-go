@@ -67,6 +67,11 @@ type Planner struct {
 
 	tasksRun int
 
+	// costModel is the comparator for OptimizeReferenceTask. Defaults
+	// to PlanningCostModelLess. Set to RewritingCostModelLess for the
+	// REWRITING phase. Matches Java's per-phase cost model architecture.
+	costModel func(a, b expressions.RelationalExpression) bool
+
 	// events is the (optional) event handler. Nil = no events.
 	events PlannerEventHandler
 }
@@ -110,6 +115,7 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		memo:         nil, // initialized lazily on first Explore call
 		exploreCount: make(map[*expressions.Reference]int),
 		bestMember:   make(map[*expressions.Reference]expressions.RelationalExpression),
+		costModel:    PlanningCostModelLess,
 		MaxTasks:     100_000,
 	}
 }
@@ -150,6 +156,14 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 // after the REWRITING phase converges. Returns p for chaining.
 func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 	p.implementationRules = rules
+	return p
+}
+
+// WithCostModel sets the comparator used by OptimizeReferenceTask.
+// Use RewritingCostModelLess for the REWRITING phase, PlanningCostModelLess
+// for the PLANNING phase. Matches Java's per-phase cost model. Returns p.
+func (p *Planner) WithCostModel(less func(a, b expressions.RelationalExpression) bool) *Planner {
+	p.costModel = less
 	return p
 }
 
@@ -595,14 +609,7 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
 	}
-	// D-4: PlanningCostModelLess is ported (16/16 Java criteria) but not
-	// yet wired in. Wiring produces wrong results because the model picks
-	// intermediate physical expressions that don't produce correct output.
-	// The old CostLess model's scalar cost avoided this via the
-	// physicalWrapperCostMultiplier discount. Full wiring requires
-	// restricting to FinalMembers + deeper investigation of the 17
-	// remaining sqldriver failures. See TODO.md D-4 section.
-	best := t.Ref.GetBest(PlanningCostModelLess)
+	best := t.Ref.GetBest(p.costModel)
 	p.bestMember[t.Ref] = best
 	if p.events != nil {
 		p.events.OnOptimizeReference(t.Ref, best)

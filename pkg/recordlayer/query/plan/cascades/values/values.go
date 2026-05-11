@@ -282,7 +282,7 @@ func IsConstantValue(v Value) bool {
 	case *FieldValue, *QuantifiedObjectValue, *AggregateValue, *ParameterValue,
 		*QuantifiedRecordValue, *ExistsValue, *ScalarSubqueryValue,
 		*ObjectValue, *UnmatchedAggregateValue, *ConstantObjectValue,
-		*IndexEntryObjectValue:
+		*IndexEntryObjectValue, *ParameterObjectValue:
 		return false
 	}
 	// Composite: all children must be constant.
@@ -445,6 +445,8 @@ func ExplainValue(v Value) string {
 		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
 	case *UnmatchedAggregateValue:
 		return "unmatched(" + cv.UnmatchedID.Name() + ")"
+	case *ParameterObjectValue:
+		return "$" + cv.ParameterName
 	}
 	return v.Name()
 }

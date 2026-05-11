@@ -41,6 +41,7 @@ go_library(
         "value_object.go",
         "value_oftype.go",
         "value_ordered_bytes.go",
+        "value_parameter_object.go",
         "value_pattern_for_like.go",
         "value_pick.go",
         "value_quantified_record.go",

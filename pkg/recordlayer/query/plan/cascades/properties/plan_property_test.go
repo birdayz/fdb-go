@@ -102,11 +102,20 @@ func TestExpressionProperty_String(t *testing.T) {
 func TestAllPlanProperties_Completeness(t *testing.T) {
 	t.Parallel()
 	expected := map[*ExpressionProperty]bool{
-		PropOrdering:        false,
-		PropDistinctRecords: false,
-		PropStoredRecord:    false,
-		PropPrimaryKey:      false,
-		PropCardinalities:   false,
+		PropOrdering:                  false,
+		PropDistinctRecords:           false,
+		PropStoredRecord:              false,
+		PropPrimaryKey:                false,
+		PropCardinalities:             false,
+		PropComparisons:               false,
+		PropExpressionCount:           false,
+		PropFieldWithComparisonCount:  false,
+		PropPredicateComplexity:       false,
+		PropPredicateCountByLevel:     false,
+		PropRecordTypes:               false,
+		PropReferencesAndDependencies: false,
+		PropUsedTypes:                 false,
+		PropDerivations:               false,
 	}
 	if len(AllPlanProperties) != len(expected) {
 		t.Fatalf("AllPlanProperties has %d entries, want %d", len(AllPlanProperties), len(expected))

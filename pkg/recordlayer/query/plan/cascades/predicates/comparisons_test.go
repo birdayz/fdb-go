@@ -408,16 +408,16 @@ func TestComparisonType_Negate(t *testing.T) {
 		ok   bool
 	}{
 		{ComparisonEquals, ComparisonNotEquals, true},
-		{ComparisonNotEquals, ComparisonEquals, true},
 		{ComparisonLessThan, ComparisonGreaterThanEq, true},
 		{ComparisonLessThanOrEq, ComparisonGreaterThan, true},
 		{ComparisonGreaterThan, ComparisonLessThanOrEq, true},
 		{ComparisonGreaterThanEq, ComparisonLessThan, true},
-		{ComparisonIsNull, ComparisonIsNotNull, true},
-		{ComparisonIsNotNull, ComparisonIsNull, true},
-		{ComparisonIsDistinctFrom, ComparisonNotDistinctFrom, true},
-		{ComparisonNotDistinctFrom, ComparisonIsDistinctFrom, true},
-		// No direct negation:
+		// Java's invertComparisonType rejects these:
+		{ComparisonNotEquals, ComparisonNotEquals, false},
+		{ComparisonIsNull, ComparisonIsNull, false},
+		{ComparisonIsNotNull, ComparisonIsNotNull, false},
+		{ComparisonIsDistinctFrom, ComparisonIsDistinctFrom, false},
+		{ComparisonNotDistinctFrom, ComparisonNotDistinctFrom, false},
 		{ComparisonIn, ComparisonIn, false},
 		{ComparisonStartsWith, ComparisonStartsWith, false},
 		{ComparisonLike, ComparisonLike, false},
@@ -429,17 +429,19 @@ func TestComparisonType_Negate(t *testing.T) {
 				tc.in.Symbol(), got.Symbol(), ok, tc.want.Symbol(), tc.ok)
 		}
 	}
-	// Negate is an involution for the types that have a direct
-	// negation: Negate(Negate(t)) == t.
-	for _, tc := range cases {
-		if !tc.ok {
-			continue
-		}
-		negated, _ := tc.in.Negate()
+	// Inequality pairs are involutions: Negate(Negate(t)) == t.
+	// EQUALS→NOT_EQUALS is one-way (Java's invertComparisonType
+	// doesn't invert NOT_EQUALS back to EQUALS).
+	involutionPairs := []ComparisonType{
+		ComparisonLessThan, ComparisonLessThanOrEq,
+		ComparisonGreaterThan, ComparisonGreaterThanEq,
+	}
+	for _, ct := range involutionPairs {
+		negated, _ := ct.Negate()
 		back, _ := negated.Negate()
-		if back != tc.in {
+		if back != ct {
 			t.Fatalf("Negate(Negate(%s)) = %s, want %s",
-				tc.in.Symbol(), back.Symbol(), tc.in.Symbol())
+				ct.Symbol(), back.Symbol(), ct.Symbol())
 		}
 	}
 }

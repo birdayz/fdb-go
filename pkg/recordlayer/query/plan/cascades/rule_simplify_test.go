@@ -775,20 +775,17 @@ func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
 }
 
 // NOT(x IS NULL) → x IS NOT NULL.
-func TestNotComparisonRewrite_NegatesIsNull(t *testing.T) {
+// NOT(IS NULL) is NOT invertible in Java — invertComparisonType
+// rejects unary operators. The rule should decline.
+func TestNotComparisonRewrite_IsNullDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()
 	cp := predicates.NewComparisonPredicate(
 		&values.FieldValue{Field: "email", Typ: values.TypeString},
 		predicates.Comparison{Type: predicates.ComparisonIsNull},
 	)
-	got := FireRule(rule, predicates.NewNot(cp))
-	if len(got) != 1 {
-		t.Fatalf("expected 1 yield, got %d", len(got))
-	}
-	out := got[0].(*predicates.ComparisonPredicate)
-	if out.Comparison.Type != predicates.ComparisonIsNotNull {
-		t.Fatalf("got %s, want IS NOT NULL", out.Comparison.Type.Symbol())
+	if got := FireRule(rule, predicates.NewNot(cp)); len(got) != 0 {
+		t.Fatalf("expected rule to decline for IS NULL, got %d yields", len(got))
 	}
 }
 

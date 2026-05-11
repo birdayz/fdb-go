@@ -26,6 +26,11 @@ type ValueIndexScanMatchCandidate struct {
 	flowedType      values.Type
 	unique          bool
 
+	// createsDuplicates is true when the index's root expression can
+	// produce multiple entries per record (fan-out / repeated-field
+	// indexes). Ports Java's index.getRootExpression().createsDuplicates().
+	createsDuplicates bool
+
 	traversalOnce sync.Once
 	traversal     *Traversal
 }
@@ -162,6 +167,46 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 	)
 }
 
+// GetBaseType returns the base record type for this candidate.
+// Implements ValueIndexLikeMatchCandidate.
+func (c *ValueIndexScanMatchCandidate) GetBaseType() values.Type { return c.flowedType }
+
+// GetColumnSize returns the number of key columns in the index.
+// Implements ValueIndexLikeMatchCandidate.
+func (c *ValueIndexScanMatchCandidate) GetColumnSize() int { return len(c.columnNames) }
+
+// CreatesDuplicates reports whether the index can produce duplicate
+// entries per record (fan-out / repeated-field indexes).
+// Implements ValueIndexLikeMatchCandidate.
+func (c *ValueIndexScanMatchCandidate) CreatesDuplicates() bool { return c.createsDuplicates }
+
+// HasAndOrderedByRecordTypeKey reports whether the index key starts
+// with the record type key. For standard value indexes this is false;
+// only indexes explicitly prefixed by recordType() return true.
+// Implements ValueIndexLikeMatchCandidate.
+func (c *ValueIndexScanMatchCandidate) HasAndOrderedByRecordTypeKey() bool { return false }
+
+// GetSargableAliasesRequiredForBinding returns the set of sargable
+// aliases that must be bound for the candidate to be valid. For
+// standard value indexes, no aliases are required (the default).
+// Implements ValueIndexLikeMatchCandidate.
+func (c *ValueIndexScanMatchCandidate) GetSargableAliasesRequiredForBinding() []values.CorrelationIdentifier {
+	return nil
+}
+
+// PushValueThroughFetch attempts to translate a value from the
+// full-record domain to the index-entry domain. Returns the
+// translated value and true on success; nil and false otherwise.
+// Implements ScanWithFetchMatchCandidate.
+func (c *ValueIndexScanMatchCandidate) PushValueThroughFetch(
+	value values.Value,
+	sourceAlias values.CorrelationIdentifier,
+	targetAlias values.CorrelationIdentifier,
+) (values.Value, bool) {
+	fn := c.buildTranslateValueFunction()
+	return fn(value, sourceAlias, targetAlias)
+}
+
 // buildTranslateValueFunction creates a TranslateValueFunction that
 // can translate values from the full-record domain to the index-entry
 // domain. A FieldValue is translatable if its field name matches one
@@ -199,3 +244,5 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 }
 
 var _ MatchCandidate = (*ValueIndexScanMatchCandidate)(nil)
+
+// Interface compliance also checked in match_candidate_interfaces.go.
