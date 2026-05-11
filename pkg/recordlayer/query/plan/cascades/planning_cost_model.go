@@ -64,6 +64,10 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return cmp
 	}
 
+	if cmp := comparePrimaryScanVsIndexScan(opsA, opsB); cmp != 0 {
+		return cmp
+	}
+
 	if opsA.typeFilterCount != opsB.typeFilterCount {
 		return intCompare(opsA.typeFilterCount, opsB.typeFilterCount)
 	}
@@ -302,6 +306,21 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	}
 	_, ok = e.(*physicalIndexScanWrapper)
 	return ok
+}
+
+func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
+	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0
+	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0
+	aIsIndexScan := opsA.scanCount == 0 && (opsA.indexScanCount+opsA.coveringIndexCount) == 1
+	bIsIndexScan := opsB.scanCount == 0 && (opsB.indexScanCount+opsB.coveringIndexCount) == 1
+
+	if aIsPrimaryScan && bIsIndexScan {
+		return 1
+	}
+	if bIsPrimaryScan && aIsIndexScan {
+		return -1
+	}
+	return 0
 }
 
 func intCompare(a, b int) int {
