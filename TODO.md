@@ -91,20 +91,26 @@ Java's `PlanningCostModel.java` is a `Comparator<RelationalExpression>` with 16 
 - `Reference.planProperties` field
 - Cardinality computation (D-8 done)
 
-**Ported (swingshift-91):**
+**Ported (swingshift-91) — 375 LOC + 111 LOC tests:**
+- `PlanningCostModelLess` — all 16 Java criteria implemented, 4 unit tests
 - `walkExpressionTree` — DFS tree walk collecting typed plan instances (Go equiv of FindExpressionVisitor)
 - `countResidualPredicates` — recursive predicate counting with AND/CNF expansion
 - `expressionDepth` — minimum depth of specific plan types (type filter, distinct, fetch)
 - `unmatchedFieldCount` — index columns minus bound comparisons
-- `PlanningCostModelLess` — 15 of 16 criteria implemented, 3 unit tests
+- `comparePrimaryScanVsIndexScan` — index preferred over primary (Java default PREFER_INDEX)
+- `compareStreamingVsHash` — streaming agg preferred when both are candidates
 - Plan hash deterministic tie-break
 
-**Remaining (next shift):**
-- `ComparisonsProperty` — extract comparison operators for IN-SARG check (criterion 6)
-- Max cardinality of data accesses (criterion 2) — needs expression→Reference→property bridge
-- `IndexScanPreference` config flag (criterion 7) — needs PlannerConfiguration
-- Wire `PlanningCostModelLess` into `Planner.extractBestPlan` replacing `CostLess` — requires updating all plan-choice-dependent tests (~4 test files)
-- Remove old `cost.go` scalar model after full integration
+**NOT WIRED IN — 19 of 169 FDB tests fail when plugged into planner:**
+Root cause: the multi-criteria comparator can't express the same cost relationships as the old scalar model for some query patterns (DATE/TIMESTAMP, multi-table FROM, derived table GROUP BY). Without actual data-access cardinality estimates (criterion #2), plans that SHOULD be different look identical to the ordinal comparison — all 16 criteria tie, hash tiebreak picks arbitrarily.
+
+**Remaining to wire in (CRITICAL — do this first):**
+1. Build expression→property bridge so cost model can read cardinality from `Reference.planProperties` via physical wrappers' `HintCost` method
+2. Port `ComparisonsProperty` — 3 sub-checks need it: IN-SARG check (criterion 6), type-filter comparison set difference (criterion 7), primary-vs-index edge case
+3. Wire `PlanningCostModelLess` into `Planner.OptimizeReferenceTask.Run` replacing `CostLess`
+4. Update 19 failing sqldriver FDB test expectations to match new plan choices
+5. Verify plan choices match Java for the affected query patterns
+6. Remove old `cost.go` scalar model after full integration
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
