@@ -52,6 +52,15 @@ import (
 	"unicode/utf8"
 )
 
+// Canonical ISO 8601 layouts for temporal value formatting/parsing.
+// Mirrors functions.TimestampLayout / functions.DateLayout — duplicated
+// here because values/ must not import functions/ (layering: values is
+// the leaf package that predicates/ and cascades/ depend on).
+const (
+	timestampLayout = "2006-01-02 15:04:05"
+	dateLayout      = "2006-01-02"
+)
+
 // Legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
 // TypeBool / TypeFloat) retired in swingshift-52 — every Value impl's
 // Type() now returns the rich Type directly. The names below remain
@@ -1310,8 +1319,8 @@ func evalScalarFunction(name string, args []any) any {
 		var t time.Time
 		var err error
 		for _, layout := range []string{
-			"2006-01-02 15:04:05",
-			"2006-01-02",
+			timestampLayout,
+			dateLayout,
 			"15:04:05",
 		} {
 			t, err = time.Parse(layout, s)
@@ -1324,9 +1333,9 @@ func evalScalarFunction(name string, args []any) any {
 		}
 		return datePartFromTime(name, t)
 	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
-		return time.Now().UTC().Format("2006-01-02 15:04:05")
+		return time.Now().UTC().Format(timestampLayout)
 	case "CURRENT_DATE":
-		return time.Now().UTC().Format("2006-01-02")
+		return time.Now().UTC().Format(dateLayout)
 	}
 	return nil
 }
@@ -1856,32 +1865,32 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 	case TypeCodeDate:
 		switch val := v.(type) {
 		case time.Time:
-			return val.UTC().Format("2006-01-02")
+			return val.UTC().Format(dateLayout)
 		case string:
 			s := strings.TrimSpace(val)
-			t, err := time.Parse("2006-01-02", s)
+			t, err := time.Parse(dateLayout, s)
 			if err != nil {
-				if t2, err2 := time.Parse("2006-01-02 15:04:05", s); err2 == nil {
-					return t2.UTC().Format("2006-01-02")
+				if t2, err2 := time.Parse(timestampLayout, s); err2 == nil {
+					return t2.UTC().Format(dateLayout)
 				}
 				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DATE: %s", val, err)})
 			}
-			return t.UTC().Format("2006-01-02")
+			return t.UTC().Format(dateLayout)
 		}
 	case TypeCodeTimestamp:
 		switch val := v.(type) {
 		case time.Time:
-			return val.UTC().Format("2006-01-02 15:04:05")
+			return val.UTC().Format(timestampLayout)
 		case string:
 			s := strings.TrimSpace(val)
-			for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", "2006-01-02"} {
+			for _, layout := range []string{timestampLayout, "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", dateLayout} {
 				if t, err := time.Parse(layout, s); err == nil {
-					return t.UTC().Format("2006-01-02 15:04:05")
+					return t.UTC().Format(timestampLayout)
 				}
 			}
 			panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to TIMESTAMP", val)})
 		case int64:
-			return time.UnixMilli(val).UTC().Format("2006-01-02 15:04:05")
+			return time.UnixMilli(val).UTC().Format(timestampLayout)
 		}
 	case TypeCodeFloat, TypeCodeDouble:
 		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
