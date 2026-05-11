@@ -54,6 +54,25 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 	opsA := findExpressionsByType(a)
 	opsB := findExpressionsByType(b)
 
+	// Criterion #2: max cardinality of all data accesses — lower wins.
+	// Unknown (-1) loses to known.
+	cardA := opsA.maxDataAccessCardinality
+	cardB := opsB.maxDataAccessCardinality
+	if cardA >= 0 || cardB >= 0 {
+		if cardA < 0 {
+			return 1 // a unknown, b known — b wins
+		}
+		if cardB < 0 {
+			return -1 // a known, b unknown — a wins
+		}
+		if cardA != cardB {
+			if cardA < cardB {
+				return -1
+			}
+			return 1
+		}
+	}
+
 	residualA := countResidualPredicates(a)
 	residualB := countResidualPredicates(b)
 	if residualA != residualB {
@@ -147,20 +166,21 @@ func isPhysical(e expressions.RelationalExpression) bool {
 }
 
 type expressionCounts struct {
-	scanCount             int
-	indexScanCount        int
-	coveringIndexCount    int
-	fetchCount            int
-	typeFilterCount       int
-	inJoinCount           int
-	inUnionCount          int
-	mapCount              int
-	predicatesFilterCount int
-	unmatchedFieldCount   int
+	scanCount                int
+	indexScanCount           int
+	coveringIndexCount       int
+	fetchCount               int
+	typeFilterCount          int
+	inJoinCount              int
+	inUnionCount             int
+	mapCount                 int
+	predicatesFilterCount    int
+	unmatchedFieldCount      int
+	maxDataAccessCardinality float64 // -1 means unknown (no data access found)
 }
 
 func findExpressionsByType(e expressions.RelationalExpression) expressionCounts {
-	var counts expressionCounts
+	counts := expressionCounts{maxDataAccessCardinality: -1}
 	walkExpressionTree(e, &counts)
 	return counts
 }
@@ -172,12 +192,21 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	switch e.(type) {
 	case *physicalScanWrapper:
 		counts.scanCount++
+		w := e.(*physicalScanWrapper)
+		card := w.HintCost(nil).Cardinality
+		if card > counts.maxDataAccessCardinality {
+			counts.maxDataAccessCardinality = card
+		}
 	case *physicalIndexScanWrapper:
 		w := e.(*physicalIndexScanWrapper)
 		if w.covering {
 			counts.coveringIndexCount++
 		} else {
 			counts.indexScanCount++
+		}
+		card := w.HintCost(nil).Cardinality
+		if card > counts.maxDataAccessCardinality {
+			counts.maxDataAccessCardinality = card
 		}
 		totalCols := len(w.columnNames)
 		boundCols := 0
