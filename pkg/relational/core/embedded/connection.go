@@ -10,6 +10,8 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -283,7 +285,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	return driver.RowsAffected(result.RowsAffected), nil
 }
@@ -320,7 +322,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	return rowsOrEmpty(result.Rows), nil
 }
@@ -523,6 +525,28 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 	default:
 		return 0, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported transaction statement: %s", txn.GetText())
 	}
+}
+
+// translateFDBError maps known FDB wire errors to SQLSTATE error codes.
+// Mirrors Java's ExceptionUtil.translateException for FDB-specific errors.
+func translateFDBError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *api.Error
+	if errors.As(err, &apiErr) {
+		return err
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "transaction_timed_out"):
+		return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
+	case strings.Contains(msg, "not_committed"):
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
+	case strings.Contains(msg, "transaction_too_old"):
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+	}
+	return err
 }
 
 // Static interface checks.
