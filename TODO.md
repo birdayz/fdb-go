@@ -91,23 +91,20 @@ Java's `PlanningCostModel.java` is a `Comparator<RelationalExpression>` with 16 
 - `Reference.planProperties` field
 - Cardinality computation (D-8 done)
 
-**Required Go infrastructure (needs porting):**
-- `FindExpressionVisitor` — walk plan tree, collect typed plan instances
-- `NormalizedResidualPredicateProperty` — count unsatisfied predicates
-- `ComparisonsProperty` — extract comparison operators from plan
-- `ExpressionDepthProperty` — measure depth of specific plan types
-- `TypeFilterCountProperty` — count type filter operators
-- `UnmatchedFieldsCountProperty` — count unmatched fields
-- `PlannerConfiguration.IndexScanPreference` flag
-- Plan hash for deterministic tie-breaking
+**Ported (swingshift-91):**
+- `walkExpressionTree` — DFS tree walk collecting typed plan instances (Go equiv of FindExpressionVisitor)
+- `countResidualPredicates` — recursive predicate counting with AND/CNF expansion
+- `expressionDepth` — minimum depth of specific plan types (type filter, distinct, fetch)
+- `unmatchedFieldCount` — index columns minus bound comparisons
+- `PlanningCostModelLess` — 15 of 16 criteria implemented, 3 unit tests
+- Plan hash deterministic tie-break
 
-**Port plan:**
-1. Port the 6 missing property evaluators (~200 LOC each)
-2. Port `FindExpressionVisitor` (walk plan tree, classify by type)
-3. Port `PlanningCostModel.compare()` as a Go function (~300 LOC)
-4. Wire into `Planner.extractBestPlan` to replace current `CostLess`
-5. Add tests verifying plan choice matches Java for key query patterns
-6. Remove old `cost.go` scalar model
+**Remaining (next shift):**
+- `ComparisonsProperty` — extract comparison operators for IN-SARG check (criterion 6)
+- Max cardinality of data accesses (criterion 2) — needs expression→Reference→property bridge
+- `IndexScanPreference` config flag (criterion 7) — needs PlannerConfiguration
+- Wire `PlanningCostModelLess` into `Planner.extractBestPlan` replacing `CostLess` — requires updating all plan-choice-dependent tests (~4 test files)
+- Remove old `cost.go` scalar model after full integration
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
