@@ -140,7 +140,11 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 	case *physicalScanWrapper:
 		counts.scanCount++
 	case *physicalIndexScanWrapper:
-		counts.indexScanCount++
+		if e.(*physicalIndexScanWrapper).covering {
+			counts.coveringIndexCount++
+		} else {
+			counts.indexScanCount++
+		}
 	case *physicalTypeFilterWrapper:
 		counts.typeFilterCount++
 	case *physicalFilterWrapper:
