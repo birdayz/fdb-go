@@ -51,6 +51,16 @@ func (e *AggregateTypeMismatchError) Error() string {
 	return e.Message
 }
 
+type NumericRangeOverflowError struct {
+	Value    int64
+	Column   string
+	TypeName string
+}
+
+func (e *NumericRangeOverflowError) Error() string {
+	return fmt.Sprintf("value %d out of range for %s column %q", e.Value, e.TypeName, e.Column)
+}
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -1535,10 +1545,16 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
 		switch n := v.(type) {
 		case int64:
+			if n < math.MinInt32 || n > math.MaxInt32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfInt32(int32(n)), nil
 		case int32:
 			return protoreflect.ValueOfInt32(n), nil
 		case int:
+			if int64(n) < math.MinInt32 || int64(n) > math.MaxInt32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: int64(n), Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfInt32(int32(n)), nil
 		}
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
@@ -1551,6 +1567,9 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		switch n := v.(type) {
 		case int64:
+			if n < 0 || n > math.MaxUint32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfUint32(uint32(n)), nil
 		case uint32:
 			return protoreflect.ValueOfUint32(n), nil

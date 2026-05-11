@@ -355,6 +355,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			if errors.As(execErr, &aggTypeMismatch) {
 				return nil, api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
 			}
+			var rangeOverflow *executor.NumericRangeOverflowError
+			if errors.As(execErr, &rangeOverflow) {
+				return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, rangeOverflow.Error())
+			}
 			return nil, execErr
 		}
 
