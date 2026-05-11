@@ -175,6 +175,10 @@ tests:
       - ['2024-01-01', 1]
       - ['2024-03-15', 1]
       - ['2024-06-20', 1]
+  # Aggregate on empty result set returns NULL (SQL standard).
+  - query: SELECT MIN(d) FROM Events WHERE id = 999
+    rows:
+      - [null]
   - query: SELECT YEAR(CAST(NULL AS TIMESTAMP)) IS NULL FROM Events WHERE id = 1
     rows:
       - [true]
