@@ -359,6 +359,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			if errors.As(execErr, &rangeOverflow) {
 				return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, rangeOverflow.Error())
 			}
+			var sumOverflow *executor.SumOverflowError
+			if errors.As(execErr, &sumOverflow) {
+				return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, sumOverflow.Error())
+			}
 			return nil, execErr
 		}
 

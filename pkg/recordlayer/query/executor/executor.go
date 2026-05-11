@@ -61,6 +61,10 @@ func (e *NumericRangeOverflowError) Error() string {
 	return fmt.Sprintf("value %v out of range for %s column %q", e.Value, e.TypeName, e.Column)
 }
 
+type SumOverflowError struct{}
+
+func (*SumOverflowError) Error() string { return "long overflow" }
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -1226,7 +1230,11 @@ func executeAggregation(
 			num := toFloat64(val)
 			gs.sums[i] += num
 			if intVal, ok := val.(int64); ok {
-				gs.sumsI[i] += intVal
+				s := gs.sumsI[i] + intVal
+				if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
+					return nil, &SumOverflowError{}
+				}
+				gs.sumsI[i] = s
 			} else {
 				gs.allInt[i] = false
 			}
