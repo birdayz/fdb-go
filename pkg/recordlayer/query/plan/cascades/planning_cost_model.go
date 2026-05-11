@@ -416,3 +416,35 @@ func intCompare(a, b int) int {
 	}
 	return 0
 }
+
+// collectScanComparisons walks the physical plan subtree rooted at e and
+// returns all ComparisonRanges from index scan nodes. Mirrors the intent of
+// Java's ComparisonsProperty, which unions per-node comparison sets bottom-up.
+// Only physicalIndexScanWrapper nodes contribute — full table scans
+// (physicalScanWrapper) have no column comparison ranges.
+func collectScanComparisons(e expressions.RelationalExpression) []*predicates.ComparisonRange {
+	var out []*predicates.ComparisonRange
+	collectScanComparisonsRec(e, &out)
+	return out
+}
+
+func collectScanComparisonsRec(e expressions.RelationalExpression, out *[]*predicates.ComparisonRange) {
+	if e == nil {
+		return
+	}
+	if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan != nil {
+		*out = append(*out, w.plan.GetScanComparisons()...)
+	}
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); ok {
+				collectScanComparisonsRec(m, out)
+				break
+			}
+		}
+	}
+}

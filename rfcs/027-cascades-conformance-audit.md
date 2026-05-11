@@ -216,13 +216,21 @@ Comprehensive audit of Go's Cascades planner against Java's `fdb-record-layer-co
 
 ## Summary of Gaps
 
-### Missing Java features (out of scope per CLAUDE.md):
-- Full-text search (`RecordQueryTextIndexPlan`, `TextIndexPlan`)
-- Rank functions (`RecordQueryScoreForRankPlan`)
-- Aggregate indexes (`RecordQueryAggregateIndexPlan`)
-- Bitmap aggregate indexes
-- UDFs / synthetic record types
+### Missing Java features (IN SCOPE — fdb-record-layer-core):
+- `RecordQueryTextIndexPlan` + 7 TEXT_CONTAINS_* comparisons + `TextComparison`
+- `RecordQueryAggregateIndexPlan` + `AggregateIndexMatchCandidate` (aggregate index scans)
+- `RecordQueryScoreForRankPlan` + 3 DISTANCE_RANK_* comparisons
+- `RecordQueryCoveringIndexPlan` (as separate plan type — Go uses `covering` flag)
 - `RecordQueryComparatorPlan` / `RecordQuerySelectorPlan` (multi-child comparison/selection)
+- `RecordQueryLoadByKeysPlan` / `RecordQueryFlatMapPlan`
+- `PrimaryScanMatchCandidate` + 6 other match candidate types
+- 11 Cascades rules (PartitionSelectRule, PredicatePushDownRule, etc.)
+- 9 property evaluators
+- 12 predicate simplification rules
+
+### Truly out of scope (fdb-relational, NOT fdb-record-layer-core):
+- UDFs / views / synthetic record types
+- Bitmap aggregate indexes (fdb-relational extension)
 
 ### Architectural differences (intentional):
 - Go uses `RecordQueryNestedLoopJoinPlan` with explicit predicates; Java uses `RecordQueryFlatMapPlan` with correlation bindings
