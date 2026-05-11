@@ -547,7 +547,7 @@ func (c *EmbeddedConnection) CheckNamedValue(nv *driver.NamedValue) error {
 			nv.Value = s.String()
 			return nil
 		}
-		return fmt.Errorf("unsupported parameter type %T", v)
+		return driver.ErrSkip
 	}
 }
 

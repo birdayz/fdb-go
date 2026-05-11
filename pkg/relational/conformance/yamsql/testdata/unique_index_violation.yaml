@@ -21,6 +21,13 @@ tests:
   - query: SELECT COUNT(*) FROM Users
     rows:
       - [2]
+  # Duplicate unique INDEX value (not PK) should also error.
+  - query: INSERT INTO Users VALUES (3, 'alice@example.com')
+    error_code: "23505"
+  # Verify original data still intact.
+  - query: SELECT COUNT(*) FROM Users
+    rows:
+      - [2]
   # Lookup by unique index works.
   - query: SELECT id FROM Users WHERE email = 'alice@example.com'
     rows:

@@ -287,7 +287,7 @@ func TestCheckNamedValue(t *testing.T) {
 		{"bytes", []byte{1, 2, 3}, []byte{1, 2, 3}, false},
 		{"time", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), false},
 		{"stringer", testStringer{"uuid-value"}, "uuid-value", false},
-		{"no_stringer", testNoStringer{42}, nil, true},
+		{"no_stringer_skip", testNoStringer{42}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
