@@ -179,6 +179,10 @@ tests:
   - query: SELECT MIN(d) FROM Events WHERE id = 999
     rows:
       - [null]
+  # DAYOFWEEK: 2024-03-15 is a Friday → MySQL convention Sunday=1, Friday=6.
+  - query: SELECT DAYOFWEEK(d) FROM Events WHERE id = 1
+    rows:
+      - [6]
   - query: SELECT YEAR(CAST(NULL AS TIMESTAMP)) IS NULL FROM Events WHERE id = 1
     rows:
       - [true]
