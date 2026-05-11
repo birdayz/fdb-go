@@ -289,6 +289,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 ## Phase 6 — Cross-language verification + perf
 
 - [ ] **#34** E1 Go-vs-Java SQL perf bench — simple SELECT, secondary-index, INSERT, aggregate, prepared statement. Gate: #21. (~1 shift)
+  **Go-side benchmarks done (nightshift-87 + dayshift-89):** BenchmarkFDB_PlanCacheHit/Miss, BenchmarkFDB_TimestampInsert, BenchmarkFDB_TimestampRangeScan, BenchmarkFDB_JoinQuery, BenchmarkFDB_AggregateGroupBy, BenchmarkFDB_IndexScanRange. Remaining: Java conformance server needed for cross-engine comparison.
 - [ ] **#35** A4 INFORMATION_SCHEMA cross-engine byte-equivalence. Gate: #9 + upstream. (~1 shift)
 - [ ] **#36** Catalog wire format reverse direction (Go writes → Java reads). (~1 shift)
 - [ ] **#37** E2 ANTLR parser DoS hardening — coordinate Go-side fix with upstream. Gate: upstream ticket. (~0.5 shift)
