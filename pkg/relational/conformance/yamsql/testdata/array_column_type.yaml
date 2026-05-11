@@ -10,16 +10,20 @@
 # columns work; the array column returns NULL when not populated.
 name: array_column_type
 schema_template: |
-  CREATE TABLE TaggedItems (id BIGINT NOT NULL, name STRING, tags STRING ARRAY, PRIMARY KEY (id))
+  CREATE TABLE TaggedItems (id BIGINT NOT NULL, name STRING, tags STRING ARRAY, scores BIGINT ARRAY, flags BOOLEAN ARRAY, weights DOUBLE ARRAY, PRIMARY KEY (id))
 setup:
-  - INSERT INTO TaggedItems VALUES (1, 'alpha', NULL)
-  - INSERT INTO TaggedItems VALUES (2, 'beta', NULL)
+  - INSERT INTO TaggedItems VALUES (1, 'alpha', NULL, NULL, NULL, NULL)
+  - INSERT INTO TaggedItems VALUES (2, 'beta', NULL, NULL, NULL, NULL)
 tests:
   # Round-trip: ARRAY column with NULL value.
   - query: SELECT id, name FROM TaggedItems WHERE id = 1
     rows:
       - [1, 'alpha']
   - query: SELECT tags IS NULL FROM TaggedItems WHERE id = 1
+    rows:
+      - [true]
+  # NULL array columns (both STRING and BIGINT ARRAY).
+  - query: SELECT scores IS NULL FROM TaggedItems WHERE id = 1
     rows:
       - [true]
   # COUNT ignores NULL array columns.
