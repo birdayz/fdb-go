@@ -275,7 +275,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	gen := &naiveGenerator{c: c}
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	// ExecContext accepts only update-shaped plans. A bare SELECT or
 	// SHOW passed to Exec is rejected with the pre-seam error message
@@ -311,7 +311,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	gen := newCascadesGenerator(c)
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	// QueryContext expects a Rows-returning plan. A multi-statement
 	// batch (MultiPlan) is always an update plan under today's
