@@ -160,20 +160,24 @@ func CastValue(v any, typeName string) (any, error) {
 	case typeName == "DATE":
 		switch n := v.(type) {
 		case time.Time:
-			return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC), nil
+			return FormatDate(n), nil
 		case string:
-			t, err := time.Parse("2006-01-02", strings.TrimSpace(n))
+			s := strings.TrimSpace(n)
+			t, err := time.Parse("2006-01-02", s)
 			if err != nil {
+				if t2, err2 := time.Parse("2006-01-02 15:04:05", s); err2 == nil {
+					return FormatDate(t2), nil
+				}
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to DATE", n)
 			}
-			return t, nil
+			return FormatDate(t), nil
 		case int64:
-			return time.Unix(n*86400, 0).UTC(), nil
+			return FormatDate(time.Unix(n*86400, 0).UTC()), nil
 		}
 	case typeName == "TIMESTAMP":
 		switch n := v.(type) {
 		case time.Time:
-			return n, nil
+			return FormatTimestamp(n), nil
 		case string:
 			s := strings.TrimSpace(n)
 			for _, layout := range []string{
@@ -184,12 +188,12 @@ func CastValue(v any, typeName string) (any, error) {
 				"2006-01-02",
 			} {
 				if t, err := time.Parse(layout, s); err == nil {
-					return t.UTC(), nil
+					return FormatTimestamp(t), nil
 				}
 			}
 			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to TIMESTAMP", n)
 		case int64:
-			return time.UnixMilli(n).UTC(), nil
+			return FormatTimestamp(time.UnixMilli(n).UTC()), nil
 		}
 	}
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)

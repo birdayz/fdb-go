@@ -2,6 +2,7 @@ package functions
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -817,18 +818,12 @@ func TestCastValue(t *testing.T) {
 		assertEq(t, got, true)
 	})
 
-	// DATE casts.
+	// DATE casts — return ISO string (consistent with Cascades path).
 	t.Run("string_to_DATE", func(t *testing.T) {
 		t.Parallel()
 		got, err := CastValue("2024-07-04", "DATE")
 		assertNoErr(t, err)
-		ts, ok := got.(time.Time)
-		if !ok {
-			t.Fatalf("want time.Time, got %T", got)
-		}
-		if ts.Year() != 2024 || ts.Month() != 7 || ts.Day() != 4 {
-			t.Errorf("date = %v, want 2024-07-04", ts)
-		}
+		assertEq(t, got, "2024-07-04")
 	})
 
 	t.Run("time_to_DATE", func(t *testing.T) {
@@ -836,13 +831,14 @@ func TestCastValue(t *testing.T) {
 		input := time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC)
 		got, err := CastValue(input, "DATE")
 		assertNoErr(t, err)
-		ts, ok := got.(time.Time)
-		if !ok {
-			t.Fatalf("want time.Time, got %T", got)
-		}
-		if ts.Hour() != 0 || ts.Minute() != 0 || ts.Second() != 0 {
-			t.Errorf("DATE should truncate time: %v", ts)
-		}
+		assertEq(t, got, "2024-07-04")
+	})
+
+	t.Run("timestamp_string_to_DATE", func(t *testing.T) {
+		t.Parallel()
+		got, err := CastValue("2024-07-04 15:30:45", "DATE")
+		assertNoErr(t, err)
+		assertEq(t, got, "2024-07-04")
 	})
 
 	t.Run("invalid_string_to_DATE", func(t *testing.T) {
@@ -851,34 +847,19 @@ func TestCastValue(t *testing.T) {
 		assertErr(t, err)
 	})
 
-	// TIMESTAMP casts.
+	// TIMESTAMP casts — return ISO string.
 	t.Run("string_to_TIMESTAMP", func(t *testing.T) {
 		t.Parallel()
 		got, err := CastValue("2024-07-04 15:30:45", "TIMESTAMP")
 		assertNoErr(t, err)
-		ts, ok := got.(time.Time)
-		if !ok {
-			t.Fatalf("want time.Time, got %T", got)
-		}
-		if ts.Year() != 2024 || ts.Month() != 7 || ts.Day() != 4 {
-			t.Errorf("date part wrong: %v", ts)
-		}
-		if ts.Hour() != 15 || ts.Minute() != 30 || ts.Second() != 45 {
-			t.Errorf("time part wrong: %v", ts)
-		}
+		assertEq(t, got, "2024-07-04 15:30:45")
 	})
 
 	t.Run("date_string_to_TIMESTAMP", func(t *testing.T) {
 		t.Parallel()
 		got, err := CastValue("2024-07-04", "TIMESTAMP")
 		assertNoErr(t, err)
-		ts, ok := got.(time.Time)
-		if !ok {
-			t.Fatalf("want time.Time, got %T", got)
-		}
-		if ts.Year() != 2024 || ts.Month() != 7 || ts.Day() != 4 {
-			t.Errorf("date part wrong: %v", ts)
-		}
+		assertEq(t, got, "2024-07-04 00:00:00")
 	})
 
 	t.Run("invalid_string_to_TIMESTAMP", func(t *testing.T) {
@@ -892,12 +873,12 @@ func TestCastValue(t *testing.T) {
 		millis := int64(1720108245000)
 		got, err := CastValue(millis, "TIMESTAMP")
 		assertNoErr(t, err)
-		ts, ok := got.(time.Time)
+		s, ok := got.(string)
 		if !ok {
-			t.Fatalf("want time.Time, got %T", got)
+			t.Fatalf("want string, got %T", got)
 		}
-		if ts.Year() != 2024 {
-			t.Errorf("year = %d, want 2024", ts.Year())
+		if !strings.Contains(s, "2024") {
+			t.Errorf("timestamp = %q, want year 2024", s)
 		}
 	})
 }
