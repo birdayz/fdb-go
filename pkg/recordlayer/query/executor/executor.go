@@ -1318,6 +1318,8 @@ func executeAggregation(
 				} else {
 					val = nil
 				}
+			default:
+				return nil, fmt.Errorf("executor: unsupported aggregate function %v", agg.Function)
 			}
 			result[name] = val
 			if agg.Alias != "" && agg.Alias != name {
