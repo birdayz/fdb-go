@@ -283,7 +283,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [x] **#31** B8 plan-cache-key diff — **done (swingshift-81)**. QueryHash (normalized SQL → FNV-64a) + LRU PlanCache (256 entries) on EmbeddedConnection. DDL invalidation.
 - [x] **#32** D4 Plan cache — **done (swingshift-81)**. Integrated into cascades_generator. Cache hit skips full Cascades pipeline. 10 unit tests.
 - [ ] **#33** D5 driver adapter gaps — custom scanner-valuer (Struct / Array / Versionstamp / Continuation). Gate: #22. (~1 shift remaining)
-  **Already done:** Stmt (embeddedStmt with ExecContext/QueryContext), Rows column-type (ColumnTypeDatabaseTypeName/ScanType/Nullable/Length/PrecisionScale), Tx (embeddedTx with Commit/Rollback), Pinger, SessionResetter, Validator, ConnPrepareContext, ConnBeginTx, time.Time parameter binding.
+  **Already done:** Stmt (embeddedStmt with ExecContext/QueryContext), Rows column-type (ColumnTypeDatabaseTypeName/ScanType/Nullable/Length/PrecisionScale), Tx (embeddedTx with Commit/Rollback), Pinger, SessionResetter, Validator, ConnPrepareContext, ConnBeginTx, time.Time parameter binding, NamedValueChecker (accepts fmt.Stringer including uuid.UUID).
   **Remaining:** Custom `database/sql.Scanner`/`driver.Valuer` types for complex values (Struct columns, Array columns, Versionstamp, Continuation token). These would let users `rows.Scan(&myStruct)` or pass structured types as parameters. Low priority — standard scalar types cover 95% of use cases.
 
 ## Phase 6 — Cross-language verification + perf
