@@ -1,0 +1,34 @@
+# unique_index_violation.yaml
+#
+# Tests that unique index constraints are enforced. INSERT of a
+# duplicate value for a unique-indexed column must error with
+# SQLSTATE 23505 (UNIQUE_CONSTRAINT_VIOLATION).
+#
+# Java equivalent: RecordAlreadyExistsException or
+# RecordIndexUniquenessViolation → ErrorCode.UNIQUE_CONSTRAINT_VIOLATION.
+name: unique_index_violation
+schema_template: |
+  CREATE TABLE Users (id BIGINT NOT NULL, email STRING, PRIMARY KEY (id))
+  CREATE UNIQUE INDEX idx_users_email ON Users (email)
+setup:
+  - INSERT INTO Users VALUES (1, 'alice@example.com')
+  - INSERT INTO Users VALUES (2, 'bob@example.com')
+tests:
+  # Duplicate PK should error.
+  - query: INSERT INTO Users VALUES (1, 'different@example.com')
+    error_code: "23505"
+  # Verify original data intact after failed insert.
+  - query: SELECT COUNT(*) FROM Users
+    rows:
+      - [2]
+  # Duplicate unique INDEX value (not PK) should also error.
+  - query: INSERT INTO Users VALUES (3, 'alice@example.com')
+    error_code: "23505"
+  # Verify original data still intact.
+  - query: SELECT COUNT(*) FROM Users
+    rows:
+      - [2]
+  # Lookup by unique index works.
+  - query: SELECT id FROM Users WHERE email = 'alice@example.com'
+    rows:
+      - [1]

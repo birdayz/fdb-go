@@ -1,0 +1,51 @@
+# order_by_index.yaml
+#
+# ORDER BY on indexed columns. The Cascades planner's RemoveSortRule
+# eliminates the sort when the underlying index provides the requested
+# ordering. Tests both ASC and DESC scan directions.
+#
+# Java equivalent: RemoveSortRule (ImplementationCascadesRule) checks
+# strictlySorted property on the plan partition.
+name: order_by_index
+schema_template: |
+  CREATE TABLE Products (id BIGINT NOT NULL, price BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE INDEX idx_products_price ON Products (price)
+setup:
+  - INSERT INTO Products VALUES (1, 30, 'banana')
+  - INSERT INTO Products VALUES (2, 10, 'apple')
+  - INSERT INTO Products VALUES (3, 50, 'cherry')
+  - INSERT INTO Products VALUES (4, 20, 'date')
+  - INSERT INTO Products VALUES (5, 40, 'elderberry')
+tests:
+  # ORDER BY indexed column ASC.
+  - query: SELECT id, price FROM Products ORDER BY price
+    rows:
+      - [2, 10]
+      - [4, 20]
+      - [1, 30]
+      - [5, 40]
+      - [3, 50]
+  # ORDER BY indexed column DESC (reverse scan).
+  - query: SELECT id, price FROM Products ORDER BY price DESC
+    rows:
+      - [3, 50]
+      - [5, 40]
+      - [1, 30]
+      - [4, 20]
+      - [2, 10]
+  # ORDER BY PK (always available via scan order).
+  - query: SELECT id, name FROM Products ORDER BY id
+    rows:
+      - [1, 'banana']
+      - [2, 'apple']
+      - [3, 'cherry']
+      - [4, 'date']
+      - [5, 'elderberry']
+  # ORDER BY PK DESC.
+  - query: SELECT id, name FROM Products ORDER BY id DESC
+    rows:
+      - [5, 'elderberry']
+      - [4, 'date']
+      - [3, 'cherry']
+      - [2, 'apple']
+      - [1, 'banana']

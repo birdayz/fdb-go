@@ -10,8 +10,14 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
+
+	fdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -271,7 +277,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	gen := &naiveGenerator{c: c}
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	// ExecContext accepts only update-shaped plans. A bare SELECT or
 	// SHOW passed to Exec is rejected with the pre-seam error message
@@ -283,7 +289,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	return driver.RowsAffected(result.RowsAffected), nil
 }
@@ -307,7 +313,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	gen := newCascadesGenerator(c)
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	// QueryContext expects a Rows-returning plan. A multi-statement
 	// batch (MultiPlan) is always an update plan under today's
@@ -320,7 +326,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
-		return nil, err
+		return nil, translateFDBError(err)
 	}
 	return rowsOrEmpty(result.Rows), nil
 }
@@ -525,6 +531,88 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 	}
 }
 
+// CheckNamedValue implements driver.NamedValueChecker. Converts custom
+// Go types to driver-compatible values before they reach substituteParams.
+// Accepts: uuid.UUID → string (canonical 36-char form).
+// All standard types (int64, float64, string, bool, []byte, time.Time)
+// pass through unchanged.
+func (c *EmbeddedConnection) CheckNamedValue(nv *driver.NamedValue) error {
+	if nv.Value == nil {
+		return nil
+	}
+	switch v := nv.Value.(type) {
+	case int64, float64, string, bool, []byte, time.Time:
+		return nil
+	default:
+		if s, ok := v.(fmt.Stringer); ok {
+			nv.Value = s.String()
+			return nil
+		}
+		return driver.ErrSkip
+	}
+}
+
+// translateFDBCode maps an FDB numeric error code to a SQLSTATE-wrapped error.
+// Returns the original error unchanged if the code is not recognized.
+func translateFDBCode(code int, err error) error {
+	switch code {
+	case 1031: // transaction_timed_out
+		return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
+	case 1020: // not_committed
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
+	case 1007: // transaction_too_old
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+	case 2017: // used_during_commit
+		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
+	}
+	return err
+}
+
+// translateFDBError maps known FDB wire errors to SQLSTATE error codes.
+// Mirrors Java's ExceptionUtil.translateException for FDB-specific errors.
+func translateFDBError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *api.Error
+	if errors.As(err, &apiErr) {
+		return err
+	}
+	var metaErr *recordlayer.MetaDataError
+	if errors.As(err, &metaErr) {
+		return api.WrapError(api.ErrCodeSyntaxOrAccessViolation, metaErr.Error(), err)
+	}
+	var existsErr *recordlayer.RecordAlreadyExistsError
+	if errors.As(err, &existsErr) {
+		return api.WrapError(api.ErrCodeUniqueConstraintViolation, existsErr.Error(), err)
+	}
+	var deserErr *recordlayer.RecordDeserializationError
+	if errors.As(err, &deserErr) {
+		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
+	}
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) {
+		return translateFDBCode(fdbErr.Code, err)
+	}
+	var fdbValErr fdb.Error
+	if errors.As(err, &fdbValErr) {
+		return translateFDBCode(fdbValErr.Code, err)
+	}
+	// Fallback: string matching for wrapped errors that lost the typed FDBError.
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "transaction_timed_out"):
+		return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
+	case strings.Contains(msg, "not_committed"):
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
+	case strings.Contains(msg, "transaction_too_old"):
+		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+	case strings.Contains(msg, "used_during_commit"):
+		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
+	}
+	return err
+}
+
 // Static interface checks.
 var (
 	_ driver.Conn               = (*EmbeddedConnection)(nil)
@@ -535,5 +623,6 @@ var (
 	_ driver.SessionResetter    = (*EmbeddedConnection)(nil)
 	_ driver.Validator          = (*EmbeddedConnection)(nil)
 	_ driver.ConnPrepareContext = (*EmbeddedConnection)(nil)
+	_ driver.NamedValueChecker  = (*EmbeddedConnection)(nil)
 	_ driver.Tx                 = (*embeddedTx)(nil)
 )

@@ -12,7 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	fdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -216,6 +218,99 @@ func TestEmbeddedConnection_BeginTxNestedReturnsError(t *testing.T) {
 	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
 	if err == nil {
 		t.Fatal("nested BeginTx: want error, got nil")
+	}
+}
+
+func TestTranslateFDBError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		err      error
+		wantCode api.ErrorCode
+		passThru bool
+	}{
+		{"nil", nil, "", true},
+		{"already api.Error", api.NewError(api.ErrCodeInternalError, "x"), api.ErrCodeInternalError, true},
+		{"fdb_timeout_typed", &wire.FDBError{Code: 1031}, api.ErrCodeTransactionTimeout, false},
+		{"fdb_conflict_typed", &wire.FDBError{Code: 1020}, api.ErrCodeSerializationFailure, false},
+		{"fdb_too_old_typed", &wire.FDBError{Code: 1007}, api.ErrCodeSerializationFailure, false},
+		{"fdb_during_commit_typed", &wire.FDBError{Code: 2017}, api.ErrCodeTransactionInactive, false},
+		{"fdb_timeout_fdb_error_value", fdb.Error{Code: 1031}, api.ErrCodeTransactionTimeout, false},
+		{"fdb_timeout_wrapped", fmt.Errorf("outer: %w", &wire.FDBError{Code: 1031}), api.ErrCodeTransactionTimeout, false},
+		{"fdb_timeout_string_fallback", fmt.Errorf("wrapped: transaction_timed_out"), api.ErrCodeTransactionTimeout, false},
+		{"fdb_conflict_string_fallback", fmt.Errorf("wrapped: not_committed"), api.ErrCodeSerializationFailure, false},
+		{"fdb_too_old_string_fallback", fmt.Errorf("wrapped: transaction_too_old"), api.ErrCodeSerializationFailure, false},
+		{"fdb_during_commit_string_fallback", fmt.Errorf("wrapped: used_during_commit"), api.ErrCodeTransactionInactive, false},
+		{"metadata error", &recordlayer.MetaDataError{Message: "bad schema"}, api.ErrCodeSyntaxOrAccessViolation, false},
+		{"record exists", &recordlayer.RecordAlreadyExistsError{PrimaryKey: tuple.Tuple{int64(1)}}, api.ErrCodeUniqueConstraintViolation, false},
+		{"deserialization", &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}, api.ErrCodeDeserializationFailure, false},
+		{"unknown error", fmt.Errorf("something else"), "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := translateFDBError(tt.err)
+			if tt.passThru {
+				if got != tt.err {
+					t.Fatalf("expected pass-through, got %v", got)
+				}
+				return
+			}
+			var apiErr *api.Error
+			if !errors.As(got, &apiErr) {
+				t.Fatalf("want *api.Error, got %T: %v", got, got)
+			}
+			if apiErr.Code != tt.wantCode {
+				t.Errorf("code = %s, want %s", apiErr.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+type testStringer struct{ s string }
+
+func (ts testStringer) String() string { return ts.s }
+
+type testNoStringer struct{ n int }
+
+func TestCheckNamedValue(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+
+	tests := []struct {
+		name    string
+		val     driver.Value
+		wantVal driver.Value
+		wantErr bool
+	}{
+		{"nil", nil, nil, false},
+		{"int64", int64(42), int64(42), false},
+		{"float64", float64(3.14), float64(3.14), false},
+		{"string", "hello", "hello", false},
+		{"bool", true, true, false},
+		{"bytes", []byte{1, 2, 3}, []byte{1, 2, 3}, false},
+		{"time", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), false},
+		{"stringer", testStringer{"uuid-value"}, "uuid-value", false},
+		{"no_stringer_skip", testNoStringer{42}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nv := &driver.NamedValue{Ordinal: 1, Value: tt.val}
+			err := conn.CheckNamedValue(nv)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("want error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if fmt.Sprintf("%v", nv.Value) != fmt.Sprintf("%v", tt.wantVal) {
+				t.Errorf("value = %v (%T), want %v (%T)", nv.Value, nv.Value, tt.wantVal, tt.wantVal)
+			}
+		})
 	}
 }
 
