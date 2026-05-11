@@ -148,6 +148,12 @@ tests:
   - query: SELECT MAX(ts) FROM Events
     rows:
       - ['2024-06-20 14:45:30']
+  # GROUP BY on DATE column.
+  - query: SELECT d, COUNT(*) FROM Events WHERE d IS NOT NULL GROUP BY d
+    rows:
+      - ['2024-01-01', 1]
+      - ['2024-03-15', 1]
+      - ['2024-06-20', 1]
   - query: SELECT YEAR(CAST(NULL AS TIMESTAMP)) IS NULL FROM Events WHERE id = 1
     rows:
       - [true]
