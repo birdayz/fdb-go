@@ -318,13 +318,13 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContext) (values.Value, error) {
 	switch {
 	case ctx.CURRENT_TIMESTAMP() != nil:
-		return values.NewScalarFunctionValue("CURRENT_TIMESTAMP", values.NullableString), nil
+		return values.NewScalarFunctionValue("CURRENT_TIMESTAMP", values.NullableTimestamp), nil
 	case ctx.CURRENT_DATE() != nil:
-		return values.NewScalarFunctionValue("CURRENT_DATE", values.NullableString), nil
+		return values.NewScalarFunctionValue("CURRENT_DATE", values.NullableDate), nil
 	case ctx.CURRENT_TIME() != nil:
-		return values.NewScalarFunctionValue("CURRENT_TIME", values.NullableString), nil
+		return values.NewScalarFunctionValue("CURRENT_TIME", values.NullableTimestamp), nil
 	case ctx.LOCALTIME() != nil:
-		return values.NewScalarFunctionValue("LOCALTIME", values.NullableString), nil
+		return values.NewScalarFunctionValue("LOCALTIME", values.NullableTimestamp), nil
 	case ctx.CURRENT_USER() != nil:
 		return &values.ConstantValue{Value: "", Typ: values.NullableString}, nil
 	default:
@@ -626,6 +626,10 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 		return values.TypeBool, true
 	case ptc.FLOAT() != nil, ptc.DOUBLE() != nil:
 		return values.TypeFloat, true
+	case ptc.DATE() != nil:
+		return values.NullableDate, true
+	case ptc.TIMESTAMP() != nil:
+		return values.NullableTimestamp, true
 	}
 	return values.TypeUnknown, false
 }

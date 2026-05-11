@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -737,26 +738,45 @@ func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageD
 // string-parsing the ExplainValue output. For plain field references,
 // it falls through and returns "".
 func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
-	av, ok := v.(*values.AggregateValue)
-	if !ok {
-		return ""
-	}
-	switch av.Op {
-	case values.AggCount, values.AggCountStar:
-		return "BIGINT"
-	case values.AggAvg:
-		return "DOUBLE"
-	case values.AggSum, values.AggMin, values.AggMax:
-		if av.Operand != nil && desc != nil {
-			operandName := values.ExplainValue(av.Operand)
-			if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
-				return t
+	if av, ok := v.(*values.AggregateValue); ok {
+		switch av.Op {
+		case values.AggCount, values.AggCountStar:
+			return "BIGINT"
+		case values.AggAvg:
+			return "DOUBLE"
+		case values.AggSum, values.AggMin, values.AggMax:
+			if av.Operand != nil && desc != nil {
+				operandName := values.ExplainValue(av.Operand)
+				if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
+					return t
+				}
 			}
+			return "BIGINT"
+		default:
+			return "UNKNOWN"
 		}
-		return "BIGINT"
-	default:
-		return "UNKNOWN"
 	}
+	if t := v.Type(); t != nil {
+		switch t.Code() {
+		case values.TypeCodeInt:
+			return "INTEGER"
+		case values.TypeCodeLong:
+			return "BIGINT"
+		case values.TypeCodeFloat:
+			return "FLOAT"
+		case values.TypeCodeDouble:
+			return "DOUBLE"
+		case values.TypeCodeString:
+			return "STRING"
+		case values.TypeCodeBoolean:
+			return "BOOLEAN"
+		case values.TypeCodeDate:
+			return "DATE"
+		case values.TypeCodeTimestamp:
+			return "TIMESTAMP"
+		}
+	}
+	return ""
 }
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
@@ -837,6 +857,8 @@ func (r *cascadesRows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf((*bool)(nil)).Elem()
 	case "BYTES":
 		return reflect.TypeOf((*[]byte)(nil)).Elem()
+	case "DATE", "TIMESTAMP":
+		return reflect.TypeOf((*time.Time)(nil)).Elem()
 	default:
 		return reflect.TypeOf((*any)(nil)).Elem()
 	}

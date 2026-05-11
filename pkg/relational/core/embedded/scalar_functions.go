@@ -182,6 +182,14 @@ func evalScalarFunctionCallCore(
 		}
 		t, ok := v.(time.Time)
 		if !ok {
+			if s, sOK := v.(string); sOK {
+				if parsed, pOK := functions.ParseTimestamp(s); pOK {
+					t = parsed
+					ok = true
+				}
+			}
+		}
+		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be a date/time, got %T", name, v)
 		}
 		switch name {

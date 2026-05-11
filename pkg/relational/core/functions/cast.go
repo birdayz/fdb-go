@@ -4,6 +4,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -144,19 +145,9 @@ func CastValue(v any, typeName string) (any, error) {
 		case bool:
 			return n, nil
 		case int64:
-			// Java's PromoteValue / SemanticAnalyzer rejects integer →
-			// BOOLEAN with `Invalid cast operation No cast defined from
-			// LONG to BOOLEAN`. Go used to silently coerce via `n != 0`;
-			// align to Java's rejection (TODO #47). Same wording so the
-			// harness pins byte-equal.
 			return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 				"Invalid cast operation No cast defined from LONG to BOOLEAN")
 		case string:
-			// Java CastValue.STRING_TO_BOOLEAN only accepts trim()ed
-			// "true"/"false" (case-insensitive) plus "1"/"0"; Go's
-			// strconv.ParseBool is wider (accepts "t", "T", "F", …).
-			// Narrow to match Java so Go and Java reject / accept the
-			// same strings.
 			s := strings.ToLower(strings.TrimSpace(n))
 			switch s {
 			case "true", "1":
@@ -165,6 +156,30 @@ func CastValue(v any, typeName string) (any, error) {
 				return false, nil
 			}
 			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to boolean", n)
+		}
+	case typeName == "DATE":
+		switch n := v.(type) {
+		case time.Time:
+			return FormatDate(n), nil
+		case string:
+			if t, ok := ParseTimestamp(strings.TrimSpace(n)); ok {
+				return FormatDate(t), nil
+			}
+			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to DATE", n)
+		case int64:
+			return FormatDate(time.Unix(n*86400, 0).UTC()), nil
+		}
+	case typeName == "TIMESTAMP":
+		switch n := v.(type) {
+		case time.Time:
+			return FormatTimestamp(n), nil
+		case string:
+			if t, ok := ParseTimestamp(strings.TrimSpace(n)); ok {
+				return FormatTimestamp(t), nil
+			}
+			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to TIMESTAMP", n)
+		case int64:
+			return FormatTimestamp(time.UnixMilli(n).UTC()), nil
 		}
 	}
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)

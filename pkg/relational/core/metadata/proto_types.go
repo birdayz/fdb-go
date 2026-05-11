@@ -85,6 +85,10 @@ func protoScalarToDataTypeWithNullabilityVisited(fd protoreflect.FieldDescriptor
 	case protoreflect.DoubleKind:
 		return api.NewDoubleType(nullable), nil
 	case protoreflect.StringKind:
+		// Go extension: DATE/TIMESTAMP columns are stored as STRING proto
+		// fields (ISO 8601). On read-back from proto, they appear as
+		// StringType — the SQL-level DATE/TIMESTAMP DataType is not
+		// recoverable from the proto descriptor alone.
 		return api.NewStringType(nullable), nil
 	case protoreflect.BytesKind:
 		return api.NewBytesType(nullable), nil

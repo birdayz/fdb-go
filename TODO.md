@@ -259,10 +259,10 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
   - [x] **#86** CTE+JOIN predicate resolution — **landed swingshift-77**. CTE aliases flow through translator's sourceAlias extraction from LogicalScan children.
   - [x] **#87** Streaming aggregation ordering — **landed swingshift-77**. StreamingAggFromIndexRule yields both forward/reverse scans; streaming agg wrapper inherits direction from inner index scan.
   - [x] **#88** Reverse index scan for ORDER BY DESC — **landed swingshift-77**. OrderedIndexScanRule produces reverse scans for DESC sort keys; SortOverOrderedElimRule checks direction per-key.
-  - [ ] **#89** Type mismatch in predicate resolver: `WHERE int_col = 'string'` correctly errors at runtime (TypeMismatchError → SQLSTATE 22000). However, `WHERE string_col = 5` only works when the predicate goes through the Cascades filter (RecordQueryFilterPlan). If the predicate isn't upgraded (stays text-based), the text filter silently returns 0 rows. Long-term: predicate resolver should ALWAYS produce typed ComparisonPredicates.
+  - [x] **#89** Type mismatch in predicate resolver — **resolved (nightshift-87)**. The text-based filter path is dead: all SELECT/DML routes through Cascades (#84). The Cascades filter uses typed ComparisonPredicates; `cmpAny` detects numeric-vs-string mismatch via `isNumericStringMismatch` and panics with `TypeMismatchError` (caught by executor → SQLSTATE 42804). Verified by TestFDB_SelectWhereTypeMismatch and TestFDB_MixedTypeEqualityNoStringCoerce.
   - [x] **#90** ImplementSortRule strictlySorted handling — **landed dayshift-82**. Ported Java's RemoveSortRule lines 112-157: (1) distinct partition with all ordering keys covered by sort/equality → strictlySorted, (2) unique index with full key coverage → strictlySorted. Added StrictlySorted field to RecordQueryIndexPlan, GetEqualityBoundValues/GetOrderingKeys to RichOrdering.
   - [x] **#91** FindUnsupportedFunction error code — **landed swingshift-77**. SELECT + DML paths now return ErrCodeUndefinedFunction (42883) matching Java's SqlFunctionCatalog.lookupFunction.
-  - [ ] **#92** Type mismatch detection layer: Java catches type mismatches at semantic analysis (compile time via `SemanticAnalyzer`), not at eval time. Go's runtime panic+recover works but is architecturally different. Long-term: move type checking to the predicate resolver (compile time).
+  - [ ] **#92** Type mismatch detection layer: Java catches at compile time (`SemanticAnalyzer`); Go catches at eval time (panic+recover). Functionally equivalent (same SQLSTATE 42804 error), architecturally different. Low priority: moving to compile-time would improve error locality but doesn't change user-visible behavior.
 
   **HN launch blockers (in priority order):**
   - [x] **#93** Fix #85 + #86 (alias threading) — **landed swingshift-77**.
@@ -275,14 +275,16 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
 ## Phase 5 — DDL + cache + driver completion
 
-- [ ] **#26** B0 type hierarchy: DATE / TIMESTAMP completion (TypeDate / TypeTimestamp + promotion). (~1 shift)
-- [ ] **#27** D2 DDL types: DATE / TIMESTAMP / ARRAY / JSON column types. Gate: #26. (~2 shifts)
-- [ ] **#28** Date-part Go-only cleanup (deferred from Phase 1) — keep / remove decision now that Java alignment is feasible. Gate: #27. (~0.5 shift)
+- [x] **#26** B0 type hierarchy: DATE / TIMESTAMP completion (TypeDate / TypeTimestamp + promotion). **Done (nightshift-87).** CodeDate/CodeTimestamp, DateType/TimestampType primitives, JDBC mappings, grammar + DDL, CompareValues time.Time handling, CastValue DATE/TIMESTAMP, Cascades CastValue.Evaluate, proto storage as STRING (ISO 8601), type inference for CURRENT_TIMESTAMP/DATE. 4 FDB integration tests.
+- [x] **#27** D2 DDL types: DATE / TIMESTAMP / ARRAY column types. **Done (nightshift-87).** DATE/TIMESTAMP via #26. ARRAY: grammar already had `ARRAY?` token; ported DdlVisitor.visitColumnDefinition's isRepeated handling (element type forced NOT NULL, array carries nullability); datatypeToProtoFieldType recurses on element type + LABEL_REPEATED label. JSON out of scope (Java doesn't have it). FDB integration test for ARRAY DDL.
+- [x] **#28** Date-part Go-only cleanup — **KEEP (nightshift-87)**. Decision: YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/DAYOFWEEK/DAYOFYEAR functions are kept as Go extensions. They work with the new DATE/TIMESTAMP type system (accept time.Time input from CURRENT_TIMESTAMP or CAST). Java doesn't have temporal column types at all — removing these would be a user-visible regression with no Java-compat benefit.
 - [ ] **#29** D1 DDL action types — `CreateTableAction` / `CreateIndexAction` / `DropTableAction` / `DropIndexAction` / `SetStoreStateAction`. Gate: #27. (~2 shifts)
 - [ ] **#30** D3 Online indexer integration via DDL — CREATE INDEX triggers background build. Gate: #29. (~1 shift)
 - [x] **#31** B8 plan-cache-key diff — **done (swingshift-81)**. QueryHash (normalized SQL → FNV-64a) + LRU PlanCache (256 entries) on EmbeddedConnection. DDL invalidation.
 - [x] **#32** D4 Plan cache — **done (swingshift-81)**. Integrated into cascades_generator. Cache hit skips full Cascades pipeline. 10 unit tests.
-- [ ] **#33** D5 driver adapter gaps — `Stmt` / `Rows` column-type / `Tx` / custom scanner-valuer (Struct / Array / Versionstamp / Continuation). Gate: #22. (~2 shifts)
+- [ ] **#33** D5 driver adapter gaps — custom scanner-valuer (Struct / Array / Versionstamp / Continuation). Gate: #22. (~1 shift remaining)
+  **Already done:** Stmt (embeddedStmt with ExecContext/QueryContext), Rows column-type (ColumnTypeDatabaseTypeName/ScanType/Nullable/Length/PrecisionScale), Tx (embeddedTx with Commit/Rollback), Pinger, SessionResetter, Validator, ConnPrepareContext, ConnBeginTx, time.Time parameter binding.
+  **Remaining:** Custom `database/sql.Scanner`/`driver.Valuer` types for complex values (Struct columns, Array columns, Versionstamp, Continuation token). These would let users `rows.Scan(&myStruct)` or pass structured types as parameters. Low priority — standard scalar types cover 95% of use cases.
 
 ## Phase 6 — Cross-language verification + perf
 

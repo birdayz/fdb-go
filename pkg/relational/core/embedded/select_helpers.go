@@ -90,6 +90,7 @@ func jdbcTypeMax(a, b string) string {
 	if a == b {
 		return a
 	}
+	const temporalBase = 100
 	rank := func(t string) int {
 		switch t {
 		case "INTEGER":
@@ -100,11 +101,19 @@ func jdbcTypeMax(a, b string) string {
 			return 3
 		case "DOUBLE":
 			return 4
+		case "DATE":
+			return temporalBase
+		case "TIMESTAMP":
+			return temporalBase + 1
 		}
 		return 0
 	}
 	ra, rb := rank(a), rank(b)
 	if ra == 0 || rb == 0 {
+		return ""
+	}
+	// DATE promotes to TIMESTAMP; temporal types are incompatible with numeric.
+	if (ra >= temporalBase) != (rb >= temporalBase) {
 		return ""
 	}
 	if ra >= rb {
@@ -253,7 +262,6 @@ func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc
 	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
 	switch name {
 	case "COALESCE", "GREATEST", "LEAST":
-		// Result type = MaximumType of all arguments. Walk each arg.
 		args := fc.FunctionArgs()
 		if args == nil {
 			return ""
@@ -271,6 +279,10 @@ func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc
 			}
 		}
 		return resultType
+	case "YEAR", "MONTH", "DAY", "DAYOFMONTH",
+		"HOUR", "MINUTE", "SECOND",
+		"DAYOFWEEK", "DAYOFYEAR":
+		return "BIGINT"
 	}
 	return ""
 }
@@ -308,6 +320,13 @@ func inferSpecificFunctionJDBCType(sf antlrgen.ISpecificFunctionContext, msgDesc
 	case *antlrgen.CaseExpressionFunctionCallContext:
 		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
 		return inferCaseBranchesJDBCType(sf.AllCaseFuncAlternative(), sf.GetElseArg(), msgDesc)
+	case *antlrgen.SimpleFunctionCallContext:
+		switch {
+		case sf.CURRENT_DATE() != nil:
+			return "DATE"
+		case sf.CURRENT_TIMESTAMP() != nil, sf.LOCALTIME() != nil, sf.CURRENT_TIME() != nil:
+			return "TIMESTAMP"
+		}
 	}
 	return ""
 }
@@ -372,6 +391,10 @@ func convertedDataTypeToJDBC(text string) string {
 		return "BINARY"
 	case "UUID":
 		return "OTHER"
+	case "DATE":
+		return "DATE"
+	case "TIMESTAMP":
+		return "TIMESTAMP"
 	}
 	return ""
 }

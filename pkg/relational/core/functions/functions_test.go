@@ -2,7 +2,9 @@ package functions
 
 import (
 	"math"
+	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -96,6 +98,41 @@ func TestCompareValues_CrossTypeStable(t *testing.T) {
 	}
 	if r1 == 0 {
 		t.Error("cross-type compare returned 0, expected non-zero")
+	}
+}
+
+func TestCompareValues_TimeTime(t *testing.T) {
+	t.Parallel()
+	t1 := time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)
+	t2 := time.Date(2024, 6, 20, 14, 45, 0, 0, time.UTC)
+	t3 := time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)
+
+	if got := CompareValues(t1, t2); got != -1 {
+		t.Errorf("t1 < t2: got %d, want -1", got)
+	}
+	if got := CompareValues(t2, t1); got != 1 {
+		t.Errorf("t2 > t1: got %d, want 1", got)
+	}
+	if got := CompareValues(t1, t3); got != 0 {
+		t.Errorf("t1 == t3: got %d, want 0", got)
+	}
+}
+
+func TestCompareValues_TimeVsString(t *testing.T) {
+	t.Parallel()
+	ts := time.Date(2024, 3, 15, 10, 30, 0, 0, time.UTC)
+
+	if got := CompareValues(ts, "2024-03-15 10:30:00"); got != 0 {
+		t.Errorf("time == string(same): got %d, want 0", got)
+	}
+	if got := CompareValues(ts, "2024-01-01 00:00:00"); got != 1 {
+		t.Errorf("time > string(earlier): got %d, want 1", got)
+	}
+	if got := CompareValues("2024-01-01 00:00:00", ts); got != -1 {
+		t.Errorf("string(earlier) < time: got %d, want -1", got)
+	}
+	if got := CompareValues(ts, "2025-12-31 23:59:59"); got != -1 {
+		t.Errorf("time < string(later): got %d, want -1", got)
 	}
 }
 
@@ -779,6 +816,70 @@ func TestCastValue(t *testing.T) {
 		got, err := CastValue(true, "BOOLEAN")
 		assertNoErr(t, err)
 		assertEq(t, got, true)
+	})
+
+	// DATE casts — return ISO string (consistent with Cascades path).
+	t.Run("string_to_DATE", func(t *testing.T) {
+		t.Parallel()
+		got, err := CastValue("2024-07-04", "DATE")
+		assertNoErr(t, err)
+		assertEq(t, got, "2024-07-04")
+	})
+
+	t.Run("time_to_DATE", func(t *testing.T) {
+		t.Parallel()
+		input := time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC)
+		got, err := CastValue(input, "DATE")
+		assertNoErr(t, err)
+		assertEq(t, got, "2024-07-04")
+	})
+
+	t.Run("timestamp_string_to_DATE", func(t *testing.T) {
+		t.Parallel()
+		got, err := CastValue("2024-07-04 15:30:45", "DATE")
+		assertNoErr(t, err)
+		assertEq(t, got, "2024-07-04")
+	})
+
+	t.Run("invalid_string_to_DATE", func(t *testing.T) {
+		t.Parallel()
+		_, err := CastValue("not-a-date", "DATE")
+		assertErr(t, err)
+	})
+
+	// TIMESTAMP casts — return ISO string.
+	t.Run("string_to_TIMESTAMP", func(t *testing.T) {
+		t.Parallel()
+		got, err := CastValue("2024-07-04 15:30:45", "TIMESTAMP")
+		assertNoErr(t, err)
+		assertEq(t, got, "2024-07-04 15:30:45")
+	})
+
+	t.Run("date_string_to_TIMESTAMP", func(t *testing.T) {
+		t.Parallel()
+		got, err := CastValue("2024-07-04", "TIMESTAMP")
+		assertNoErr(t, err)
+		assertEq(t, got, "2024-07-04 00:00:00")
+	})
+
+	t.Run("invalid_string_to_TIMESTAMP", func(t *testing.T) {
+		t.Parallel()
+		_, err := CastValue("not-a-timestamp", "TIMESTAMP")
+		assertErr(t, err)
+	})
+
+	t.Run("int64_millis_to_TIMESTAMP", func(t *testing.T) {
+		t.Parallel()
+		millis := int64(1720108245000)
+		got, err := CastValue(millis, "TIMESTAMP")
+		assertNoErr(t, err)
+		s, ok := got.(string)
+		if !ok {
+			t.Fatalf("want string, got %T", got)
+		}
+		if !strings.Contains(s, "2024") {
+			t.Errorf("timestamp = %q, want year 2024", s)
+		}
 	})
 }
 

@@ -404,6 +404,10 @@ func dataTypeFromName(typeName string) api.DataType {
 		return api.NewStringType(true)
 	case "BYTES", "BINARY", "VARBINARY":
 		return api.NewBytesType(true)
+	case "DATE":
+		return api.NewDateType(true)
+	case "TIMESTAMP":
+		return api.NewTimestampType(true)
 	default:
 		return api.NewStringType(true)
 	}
@@ -425,6 +429,10 @@ func jdbcTypeCode(typeName string) int {
 		return api.JDBCVarchar
 	case "BYTES", "BINARY", "VARBINARY":
 		return api.JDBCBinary
+	case "DATE":
+		return api.JDBCDate
+	case "TIMESTAMP":
+		return api.JDBCTimestamp
 	default:
 		return api.JDBCOther
 	}

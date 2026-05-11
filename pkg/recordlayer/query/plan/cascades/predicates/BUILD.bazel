@@ -16,7 +16,10 @@ go_library(
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/core/functions",
+    ],
 )
 
 go_test(

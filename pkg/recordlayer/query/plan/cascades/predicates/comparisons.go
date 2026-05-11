@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -440,18 +443,28 @@ func cmpAny(a, b any) (int, bool) {
 		}
 	}
 	if av, ok := a.(string); ok {
-		bv, ok2 := b.(string)
-		if !ok2 {
-			return 0, false
+		if bv, ok2 := b.(string); ok2 {
+			switch {
+			case av < bv:
+				return -1, true
+			case av > bv:
+				return 1, true
+			default:
+				return 0, true
+			}
 		}
-		switch {
-		case av < bv:
-			return -1, true
-		case av > bv:
-			return 1, true
-		default:
-			return 0, true
+		if bt, ok2 := b.(time.Time); ok2 {
+			if at, pOK := functions.ParseTimestamp(av); pOK {
+				switch {
+				case at.Before(bt):
+					return -1, true
+				case at.After(bt):
+					return 1, true
+				}
+				return 0, true
+			}
 		}
+		return 0, false
 	}
 	// Bool equality: FALSE < TRUE (following SQL's TRUE > FALSE
 	// convention). Used by `x = TRUE` / `x = FALSE` from the
@@ -469,6 +482,45 @@ func cmpAny(a, b any) (int, bool) {
 		default: // av && !bv: true > false
 			return 1, true
 		}
+	}
+	// time.Time comparison (DATE/TIMESTAMP values from CAST or CURRENT_TIMESTAMP).
+	// Also handles time.Time vs string cross-type (stored dates are strings).
+	if at, ok := a.(time.Time); ok {
+		switch bv := b.(type) {
+		case time.Time:
+			switch {
+			case at.Before(bv):
+				return -1, true
+			case at.After(bv):
+				return 1, true
+			}
+			return 0, true
+		case string:
+			if bt, pOK := functions.ParseTimestamp(bv); pOK {
+				switch {
+				case at.Before(bt):
+					return -1, true
+				case at.After(bt):
+					return 1, true
+				}
+				return 0, true
+			}
+		}
+		return 0, false
+	}
+	if at, ok := b.(time.Time); ok {
+		if as, ok2 := a.(string); ok2 {
+			if parsed, pOK := functions.ParseTimestamp(as); pOK {
+				switch {
+				case parsed.Before(at):
+					return -1, true
+				case parsed.After(at):
+					return 1, true
+				}
+				return 0, true
+			}
+		}
+		return 0, false
 	}
 	// Bytes comparison is lexicographic — matches SQL's BINARY / VARBINARY
 	// collation and proto `bytes` semantics. Mixed bytes/string degrades

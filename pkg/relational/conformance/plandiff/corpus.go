@@ -4435,10 +4435,10 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_OBA ORDER BY a + b",
 		},
 		// Skipped int32_overflow_insert: wording alignment for INT32
-		// overflow on INSERT (TODO #62) — needs INSERT-as-test-query
-		// support which Go's plandiff harness lacks (only SELECT/SHOW
-		// pass through to the query runner). Documented at the call
-		// site; revisit when the harness gains DML-query routing.
+		// overflow on INSERT (TODO #62). DML-as-test-query support now
+		// exists (nightshift-87), but pinning requires the Java
+		// conformance server to capture Java's exact error wording.
+		// Revisit when running cross-engine with Java server.
 		// Skipped not_null_scalar: Java's fdb-relational rejects
 		// `STRING NOT NULL` (or any scalar NOT NULL except ARRAY) at
 		// schema-create time with "NOT NULL is only allowed for ARRAY

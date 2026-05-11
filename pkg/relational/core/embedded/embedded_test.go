@@ -9,6 +9,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -111,6 +112,18 @@ func TestSubstituteParams(t *testing.T) {
 			query: "SELECT /* hmm? */ id FROM t WHERE id = ?",
 			args:  []driver.NamedValue{nv(1, int64(5))},
 			want:  "SELECT /* hmm? */ id FROM t WHERE id = 5",
+		},
+		{
+			name:  "time.Time parameter with time",
+			query: "INSERT INTO t VALUES (?, ?)",
+			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, time.Date(2024, 7, 4, 15, 30, 45, 0, time.UTC))},
+			want:  "INSERT INTO t VALUES (1, '2024-07-04 15:30:45')",
+		},
+		{
+			name:  "time.Time parameter midnight (DATE format)",
+			query: "INSERT INTO t VALUES (?, ?)",
+			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, time.Date(2024, 7, 4, 0, 0, 0, 0, time.UTC))},
+			want:  "INSERT INTO t VALUES (1, '2024-07-04')",
 		},
 	}
 	for _, tc := range cases {

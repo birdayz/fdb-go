@@ -25,8 +25,8 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | GREATEST / LEAST | Y | Y | Y | |
 | String functions (UPPER etc.) | N | N | Y | Both reject -- Java has no function catalog entry |
 | Math functions (ABS etc.) | N | N | Y | Both reject |
-| CURRENT_TIMESTAMP (no parens) | N | Ext | Y | Go extension -- Java's visitSimpleFunctionCall is broken |
-| Date-part functions (YEAR etc.) | N | N | Y | |
+| CURRENT_TIMESTAMP / CURRENT_DATE | N | Ext | Y | Go extension: proper TIMESTAMP/DATE types, comparisons, CAST |
+| Date-part functions (YEAR etc.) | N | Ext | Y | Go extension: YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/DAYOFWEEK/DAYOFYEAR |
 
 ## Predicates
 
@@ -111,7 +111,8 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 |---|:---:|:---:|:---:|---|
 | BIGINT / INTEGER / DOUBLE / STRING / BOOLEAN | Y | Y | Y | |
 | BYTES | Y | Y | -- | FDB-specific, not ANSI |
-| DATE / TIMESTAMP / TIME | N | N | Y | Phase 5 TODO |
+| DATE / TIMESTAMP | N | Ext | Y | Go extension: column types, CAST, comparisons, YEAR/MONTH/DAY |
+| ARRAY column type | Y | Y | Y | All primitive element types: STRING/BIGINT/INTEGER/DOUBLE/FLOAT/BOOLEAN/BYTES/UUID ARRAY |
 | CREATE TABLE / INDEX | Y | Y | Y | |
 | Schema-qualified names (schema.table) | Y | Y | Y | Qualifier validated against current schema |
 | INFORMATION_SCHEMA | N | Ext | Y | Go extension |
@@ -152,7 +153,7 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | Types | Core types | Core types + BYTES | ~60% |
 | Error codes | Full | Full | ~90% |
 
-Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, and recursive CTEs. **Go matches Java exactly for subquery support** — uncorrelated scalar subqueries and correlated EXISTS both work; correlated scalar subqueries are rejected by both engines. Go has NO remaining user-visible gaps vs Java. Both engines lack string/math functions and DATE/TIMESTAMP types.
+Go is more capable than Java 4.11.1.0 in aggregation, ordering, DISTINCT, recursive CTEs, and temporal types. **Go matches Java exactly for subquery support** — uncorrelated scalar subqueries and correlated EXISTS both work; correlated scalar subqueries are rejected by both engines. Go has NO remaining user-visible gaps vs Java. Both engines lack string/math functions. Go extends beyond Java with DATE/TIMESTAMP column types, CAST, CURRENT_TIMESTAMP/CURRENT_DATE, and date-part extraction functions (YEAR/MONTH/DAY/HOUR/MINUTE/SECOND).
 
 ## Yamsql Conformance
 

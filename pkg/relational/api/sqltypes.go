@@ -12,17 +12,19 @@ package api
 //
 // Values are uppercase, matching Java's switch arm labels.
 const (
-	SQLTypeNameInteger SQLTypeName = "INTEGER"
-	SQLTypeNameBigInt  SQLTypeName = "BIGINT"
-	SQLTypeNameFloat   SQLTypeName = "FLOAT"
-	SQLTypeNameDouble  SQLTypeName = "DOUBLE"
-	SQLTypeNameString  SQLTypeName = "STRING"
-	SQLTypeNameStruct  SQLTypeName = "STRUCT"
-	SQLTypeNameArray   SQLTypeName = "ARRAY"
-	SQLTypeNameBinary  SQLTypeName = "BINARY"
-	SQLTypeNameNull    SQLTypeName = "NULL"
-	SQLTypeNameOther   SQLTypeName = "OTHER"
-	SQLTypeNameBoolean SQLTypeName = "BOOLEAN"
+	SQLTypeNameInteger   SQLTypeName = "INTEGER"
+	SQLTypeNameBigInt    SQLTypeName = "BIGINT"
+	SQLTypeNameFloat     SQLTypeName = "FLOAT"
+	SQLTypeNameDouble    SQLTypeName = "DOUBLE"
+	SQLTypeNameString    SQLTypeName = "STRING"
+	SQLTypeNameStruct    SQLTypeName = "STRUCT"
+	SQLTypeNameArray     SQLTypeName = "ARRAY"
+	SQLTypeNameBinary    SQLTypeName = "BINARY"
+	SQLTypeNameNull      SQLTypeName = "NULL"
+	SQLTypeNameOther     SQLTypeName = "OTHER"
+	SQLTypeNameBoolean   SQLTypeName = "BOOLEAN"
+	SQLTypeNameDate      SQLTypeName = "DATE"
+	SQLTypeNameTimestamp SQLTypeName = "TIMESTAMP"
 )
 
 // SQLTypeName is a type-safe alias for SQL type display names.
@@ -56,6 +58,10 @@ func SQLTypeNameFromJDBC(jdbcCode int) SQLTypeName {
 		return SQLTypeNameOther
 	case JDBCBoolean:
 		return SQLTypeNameBoolean
+	case JDBCDate:
+		return SQLTypeNameDate
+	case JDBCTimestamp:
+		return SQLTypeNameTimestamp
 	default:
 		return ""
 	}
@@ -86,6 +92,10 @@ func JDBCFromSQLTypeName(name SQLTypeName) int {
 		return JDBCNull
 	case SQLTypeNameBoolean:
 		return JDBCBoolean
+	case SQLTypeNameDate:
+		return JDBCDate
+	case SQLTypeNameTimestamp:
+		return JDBCTimestamp
 	default:
 		return -1
 	}
@@ -113,6 +123,10 @@ func DataTypeFromSQLTypeName(name SQLTypeName) DataType {
 		return NewBooleanType(false)
 	case SQLTypeNameNull:
 		return NewNullType()
+	case SQLTypeNameDate:
+		return NewDateType(false)
+	case SQLTypeNameTimestamp:
+		return NewTimestampType(false)
 	default:
 		return nil
 	}
