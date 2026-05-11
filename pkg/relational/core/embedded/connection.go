@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
@@ -549,16 +551,26 @@ func translateFDBError(err error) error {
 	if errors.As(err, &deserErr) {
 		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
 	}
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) {
+		switch fdbErr.Code {
+		case 1031: // transaction_timed_out
+			return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
+		case 1020: // not_committed
+			return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
+		case 1007: // transaction_too_old
+			return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+		case 2017: // used_during_commit
+			return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
+		}
+	}
+	// Fallback: string matching for wrapped errors that lost the typed FDBError.
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "transaction_timed_out"):
 		return api.WrapError(api.ErrCodeTransactionTimeout, "FDB transaction timed out", err)
 	case strings.Contains(msg, "not_committed"):
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
-	case strings.Contains(msg, "transaction_too_old"):
-		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
-	case strings.Contains(msg, "used_during_commit"):
-		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
 	}
 	return err
 }

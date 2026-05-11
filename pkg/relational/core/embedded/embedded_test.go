@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -229,10 +230,12 @@ func TestTranslateFDBError(t *testing.T) {
 	}{
 		{"nil", nil, "", true},
 		{"already api.Error", api.NewError(api.ErrCodeInternalError, "x"), api.ErrCodeInternalError, true},
-		{"transaction_timed_out", fmt.Errorf("transaction_timed_out (1031)"), api.ErrCodeTransactionTimeout, false},
-		{"not_committed", fmt.Errorf("not_committed (1020)"), api.ErrCodeSerializationFailure, false},
-		{"transaction_too_old", fmt.Errorf("transaction_too_old (1007)"), api.ErrCodeSerializationFailure, false},
-		{"used_during_commit", fmt.Errorf("used_during_commit (2017)"), api.ErrCodeTransactionInactive, false},
+		{"fdb_timeout_typed", &wire.FDBError{Code: 1031}, api.ErrCodeTransactionTimeout, false},
+		{"fdb_conflict_typed", &wire.FDBError{Code: 1020}, api.ErrCodeSerializationFailure, false},
+		{"fdb_too_old_typed", &wire.FDBError{Code: 1007}, api.ErrCodeSerializationFailure, false},
+		{"fdb_during_commit_typed", &wire.FDBError{Code: 2017}, api.ErrCodeTransactionInactive, false},
+		{"fdb_timeout_string_fallback", fmt.Errorf("wrapped: transaction_timed_out"), api.ErrCodeTransactionTimeout, false},
+		{"fdb_conflict_string_fallback", fmt.Errorf("wrapped: not_committed"), api.ErrCodeSerializationFailure, false},
 		{"metadata error", &recordlayer.MetaDataError{Message: "bad schema"}, api.ErrCodeSyntaxOrAccessViolation, false},
 		{"record exists", &recordlayer.RecordAlreadyExistsError{PrimaryKey: tuple.Tuple{int64(1)}}, api.ErrCodeUniqueConstraintViolation, false},
 		{"deserialization", &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}, api.ErrCodeDeserializationFailure, false},

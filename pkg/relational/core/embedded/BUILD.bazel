@@ -50,6 +50,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades",
@@ -106,6 +107,7 @@ go_test(
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
