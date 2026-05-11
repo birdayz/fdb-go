@@ -134,8 +134,13 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | UNION type mismatch | 42F65 | Y | Y | |
 | NOT NULL violation | 23502 | Y | Y | |
 | PK constraint | 23505 | Y | Y | |
+| Unique index violation | 23505 | Y | Y | RecordAlreadyExistsError → translateFDBError |
 | Integer overflow | 22003 | Y | Y | |
+| INT32 range overflow | 22003 | Y | Y | INSERT value > MAX_INT32 into INTEGER column |
 | Unsupported function | 42883 | Y | Y | |
+| FDB transaction timeout | 53F00 | Y | Y | translateFDBError (dayshift-89) |
+| FDB transaction conflict | 40001 | Y | Y | translateFDBError (dayshift-89) |
+| Deserialization failure | XXF01 | Y | Y | RecordDeserializationError → translateFDBError |
 
 ## Summary
 
