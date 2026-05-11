@@ -219,6 +219,46 @@ func TestEmbeddedConnection_BeginTxNestedReturnsError(t *testing.T) {
 	}
 }
 
+func TestTranslateFDBError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		err      error
+		wantCode api.ErrorCode
+		passThru bool
+	}{
+		{"nil", nil, "", true},
+		{"already api.Error", api.NewError(api.ErrCodeInternalError, "x"), api.ErrCodeInternalError, true},
+		{"transaction_timed_out", fmt.Errorf("transaction_timed_out (1031)"), api.ErrCodeTransactionTimeout, false},
+		{"not_committed", fmt.Errorf("not_committed (1020)"), api.ErrCodeSerializationFailure, false},
+		{"transaction_too_old", fmt.Errorf("transaction_too_old (1007)"), api.ErrCodeSerializationFailure, false},
+		{"used_during_commit", fmt.Errorf("used_during_commit (2017)"), api.ErrCodeTransactionInactive, false},
+		{"metadata error", &recordlayer.MetaDataError{Message: "bad schema"}, api.ErrCodeSyntaxOrAccessViolation, false},
+		{"record exists", &recordlayer.RecordAlreadyExistsError{PrimaryKey: tuple.Tuple{int64(1)}}, api.ErrCodeUniqueConstraintViolation, false},
+		{"deserialization", &recordlayer.RecordDeserializationError{PrimaryKey: tuple.Tuple{int64(1)}, Cause: fmt.Errorf("bad proto")}, api.ErrCodeDeserializationFailure, false},
+		{"unknown error", fmt.Errorf("something else"), "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := translateFDBError(tt.err)
+			if tt.passThru {
+				if got != tt.err {
+					t.Fatalf("expected pass-through, got %v", got)
+				}
+				return
+			}
+			var apiErr *api.Error
+			if !errors.As(got, &apiErr) {
+				t.Fatalf("want *api.Error, got %T: %v", got, got)
+			}
+			if apiErr.Code != tt.wantCode {
+				t.Errorf("code = %s, want %s", apiErr.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{}
