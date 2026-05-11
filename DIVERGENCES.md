@@ -29,6 +29,13 @@ Go's fixpoint architecture fires rules on all Reference members. Normalizing an 
 
 No functional difference — same timing, same inputs, same outputs.
 
+### Type mismatch detection: eval-time vs compile-time
+
+**Java:** `SemanticAnalyzer` catches type mismatches at query compilation (before execution).
+**Go:** `cmpAny()` panics with `TypeMismatchError` at evaluation time; executor recovers and maps to SQLSTATE 42804.
+
+Same user-visible behavior: identical SQLSTATE, identical error message. 24 yamsql scenarios verify conformance. Moving to compile-time would improve error locality but has no correctness impact.
+
 ### AdjustMatchRule is an explicit planner pass
 
 **Java:** `CascadesRule<PartialMatch>`, scheduled as a TransformPartialMatch task.
