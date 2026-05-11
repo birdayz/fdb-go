@@ -263,6 +263,53 @@ func TestTranslateFDBError(t *testing.T) {
 	}
 }
 
+type testStringer struct{ s string }
+
+func (ts testStringer) String() string { return ts.s }
+
+type testNoStringer struct{ n int }
+
+func TestCheckNamedValue(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+
+	tests := []struct {
+		name    string
+		val     driver.Value
+		wantVal driver.Value
+		wantErr bool
+	}{
+		{"nil", nil, nil, false},
+		{"int64", int64(42), int64(42), false},
+		{"float64", float64(3.14), float64(3.14), false},
+		{"string", "hello", "hello", false},
+		{"bool", true, true, false},
+		{"bytes", []byte{1, 2, 3}, []byte{1, 2, 3}, false},
+		{"time", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), false},
+		{"stringer", testStringer{"uuid-value"}, "uuid-value", false},
+		{"no_stringer", testNoStringer{42}, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nv := &driver.NamedValue{Ordinal: 1, Value: tt.val}
+			err := conn.CheckNamedValue(nv)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("want error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if fmt.Sprintf("%v", nv.Value) != fmt.Sprintf("%v", tt.wantVal) {
+				t.Errorf("value = %v (%T), want %v (%T)", nv.Value, nv.Value, tt.wantVal, tt.wantVal)
+			}
+		})
+	}
+}
+
 func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{}
