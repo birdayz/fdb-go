@@ -169,13 +169,17 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | Value type proto serialization | Wire format | Value serialization infrastructure |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
 
-### Covering Index Scan (partially closed)
+### Covering Index Scan (planner infrastructure only — unreachable from SQL)
 
-**Planner:** `RecordQueryIndexPlan` carries `Covering bool` + `CoveringColumns []string`. Set by `wrapScanPlanWithCoverage` when the compensation analysis determines the index covers all needed columns (`!comp.IsFinalNeeded()`). Column names sourced from `MatchCandidate.GetColumnNames()`.
+**Planner:** `RecordQueryIndexPlan` carries `Covering bool` + `CoveringColumns []string`. Set by `wrapScanPlanWithCoverage` when `!comp.IsFinalNeeded()`. Column names from `MatchCandidate.GetColumnNames()`.
 
-**Executor:** `coveringIndexCursor` constructs `QueryResult` directly from `IndexEntry.IndexValues()` without calling `LoadRecord()`. Maps index column values to column names positionally.
+**Executor:** `coveringIndexCursor` constructs `QueryResult` from `IndexEntry.IndexValues()` without `LoadRecord()`.
 
-**Remaining:** Java's `IndexKeyValueToPartialRecord` builds a full protobuf `Message` from index entries (including nested fields, composite key expressions). Go's implementation reconstructs a flat `map[string]any` from index column values — sufficient for simple indexes but doesn't handle composite key expressions or nested message fields.
+**Why it doesn't fire for SQL:** The compensation check requires the pulled-up query result to be a bare `QuantifiedObjectValue`. SQL queries always wrap in `RecordConstructorValue` projections, so `IsFinalNeeded()` is always `true`. Covering only fires for direct record-layer API users.
+
+**Java's approach is fundamentally different:** `ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan()` uses `IndexKeyValueToPartialRecord` (826 LOC) to reconstruct a protobuf `Message` from index entries. It always wraps in `CoveringIndexPlan` + `FetchFromPartialRecordPlan`, then lets push-through rules eliminate the fetch. The covering decision is in the match candidate, not in compensation analysis.
+
+**To close:** Port `IndexKeyValueToPartialRecord` (copier-based field extraction from key+value tuples), `extractFromIndexEntryMaybe` (per-Value method), and `computeIndexEntryToLogicalRecord` (match candidate integration). Also needs value-column tracking in match candidates (current `GetColumnNames()` only returns key columns, not KeyWithValue value columns).
 
 ## Optimization-Quality Gaps (correctness unaffected)
 
@@ -183,6 +187,40 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 |---|---|
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
 | ExtractFromIndexKeyValueRuleSet (3 rules) | Blocked: execution layer (partial record construction) |
+
+## Go-Only Extensions (features Java 4.11.1.0 rejects)
+
+Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
+
+| Feature | Java behavior | Go behavior |
+|---|---|---|
+| `GROUP BY` | Rejects ALL forms (`UnableToPlanException`) | Full support (streaming + hash aggregation) |
+| `LIMIT` / `OFFSET` | Rejects at parse time (uses JDBC `setMaxRows`) | `RecordQueryLimitPlan` |
+| `SELECT DISTINCT` (complex shapes) | Rejects most via Cascades | Broad support via `RecordQueryDistinctPlan` + hash distinct |
+| In-memory sort | No physical sort operator; `RemoveSortRule` eliminates or fails | `RecordQuerySortPlan` / `RecordQueryInMemorySortPlan` |
+| Hash aggregation | Only streaming aggregation (requires ordered input) | `RecordQueryHashAggregationPlan` |
+| `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
+| `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |
+| Date-part functions | No temporal types | YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/etc. |
+| Simple CASE (`CASE expr WHEN val`) | `visitChildren` no-op (always falls through to ELSE) | Correct evaluation |
+
+Go-only plan types: `RecordQueryHashAggregationPlan`, `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryProjectionPlan`, `RecordQuerySortPlan`, `RecordQueryValuesPlan`, `RecordQueryMergeSortUnionPlan`, `RecordQueryNestedLoopJoinPlan`.
+
+Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
+
+## Java Upstream Bugs (Go is correct, Java is wrong)
+
+Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only positive tests; corpus entries omitted until Java upstream fixes.
+
+| Bug | Go behavior | Java behavior |
+|---|---|---|
+| Compound DISTINCT (`SELECT DISTINCT a, b`) | Correctly deduplicates | Fails to dedup (returns all rows) |
+| Signed-zero comparison (`WHERE v >= 0.0` with `-0.0`) | Keeps row (IEEE 754: `-0.0 == +0.0`) | Drops the row |
+| PK literal-eq AND join predicate | Applies both predicates correctly | Drops one predicate, over-counts |
+| 3-way join shared driver key | Returns correct rows | Returns cross product |
+| UNION ALL outer ORDER BY | Deterministic sorted output | Intermittent ordering |
+| `WHERE TRUE AND val > 5` | Succeeds correctly | `VerifyException` |
+| `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 
 ## Plan Architecture: Go collapses Java class hierarchies
 
