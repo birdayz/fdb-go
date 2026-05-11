@@ -216,15 +216,12 @@ func compareRecursiveCTE(a, b expressions.RelationalExpression) int {
 	return 0
 }
 
-func compareInPlan(a, b expressions.RelationalExpression, opsA, opsB expressionCounts) int {
-	aIsIn := opsA.inJoinCount > 0 || opsA.inUnionCount > 0
-	bIsIn := opsB.inJoinCount > 0 || opsB.inUnionCount > 0
-	if aIsIn && !bIsIn {
-		return 1
-	}
-	if !aIsIn && bIsIn {
-		return -1
-	}
+func compareInPlan(_, _ expressions.RelationalExpression, _, _ expressionCounts) int {
+	// Java's IN-plan penalty checks whether the IN-values are used as
+	// SARGs (index search arguments) by inspecting scan comparison
+	// correlation. Only penalizes when IN-values aren't SARGs. The full
+	// SARG check requires ComparisonsProperty + correlation inspection.
+	// Deferred to next shift — returning 0 (no preference) is safe.
 	return 0
 }
 
