@@ -162,6 +162,19 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 		}
 	}
 
+	// DML queries (INSERT/UPDATE/DELETE) use ExecContext and return rows-affected.
+	if isDMLQuery(querySql) {
+		result, err := schemaDB.ExecContext(ctx, querySql)
+		if err != nil {
+			return RowSet{}, fmt.Errorf("plandiff/go: exec: %w", err)
+		}
+		affected, _ := result.RowsAffected()
+		return RowSet{
+			Columns: []Column{{Name: "ROWS_AFFECTED", Type: "BIGINT"}},
+			Rows:    [][]any{{float64(affected)}},
+		}, nil
+	}
+
 	// Run the query and capture rows.
 	sqlRows, err := schemaDB.QueryContext(ctx, querySql)
 	if err != nil {
@@ -281,6 +294,15 @@ func base64Encode(b []byte) string {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+// isDMLQuery returns true if the SQL starts with INSERT/UPDATE/DELETE
+// (after stripping whitespace). These need ExecContext, not QueryContext.
+func isDMLQuery(sql string) bool {
+	s := strings.TrimSpace(strings.ToUpper(sql))
+	return strings.HasPrefix(s, "INSERT") ||
+		strings.HasPrefix(s, "UPDATE") ||
+		strings.HasPrefix(s, "DELETE")
 }
 
 // Compile-time assertion that goSQLRunner satisfies SetupRunner.
