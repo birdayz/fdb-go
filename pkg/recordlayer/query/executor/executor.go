@@ -52,13 +52,13 @@ func (e *AggregateTypeMismatchError) Error() string {
 }
 
 type NumericRangeOverflowError struct {
-	Value    int64
+	Value    any
 	Column   string
 	TypeName string
 }
 
 func (e *NumericRangeOverflowError) Error() string {
-	return fmt.Sprintf("value %d out of range for %s column %q", e.Value, e.TypeName, e.Column)
+	return fmt.Sprintf("value %v out of range for %s column %q", e.Value, e.TypeName, e.Column)
 }
 
 // ExecutePlan executes a RecordQueryPlan tree against a store,
@@ -1577,6 +1577,9 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		switch n := v.(type) {
 		case int64:
+			if n < 0 {
+				return protoreflect.Value{}, fmt.Errorf("negative value %d cannot be stored in unsigned %s column %q", n, fd.Kind(), fd.Name())
+			}
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		case uint64:
 			return protoreflect.ValueOfUint64(n), nil
@@ -1584,6 +1587,9 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.FloatKind:
 		switch n := v.(type) {
 		case float64:
+			if n > math.MaxFloat32 || n < -math.MaxFloat32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfFloat32(float32(n)), nil
 		case float32:
 			return protoreflect.ValueOfFloat32(n), nil

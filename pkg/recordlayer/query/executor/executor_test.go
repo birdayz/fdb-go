@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -1596,6 +1597,74 @@ func TestGoToProtoValue_Float(t *testing.T) {
 	if got := float32(v.Float()); got != 1.5 {
 		t.Errorf("got %f, want 1.5", got)
 	}
+}
+
+func TestGoToProtoValue_Overflow(t *testing.T) {
+	t.Parallel()
+	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	int32Field := order.Fields().ByName("price")
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	float32Field := typed.Fields().ByName("val_float")
+
+	t.Run("int32 overflow from int64", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(2147483648))
+		if err == nil {
+			t.Fatal("expected error for int64 value exceeding int32 max, got nil")
+		}
+		var overflowErr *NumericRangeOverflowError
+		if !errors.As(err, &overflowErr) {
+			t.Errorf("expected *NumericRangeOverflowError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("int32 underflow from int64", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(-2147483649))
+		if err == nil {
+			t.Fatal("expected error for int64 value below int32 min, got nil")
+		}
+		var overflowErr *NumericRangeOverflowError
+		if !errors.As(err, &overflowErr) {
+			t.Errorf("expected *NumericRangeOverflowError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("int32 boundary accept max", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(2147483647))
+		if err != nil {
+			t.Fatalf("expected no error for int32 max boundary, got: %v", err)
+		}
+	})
+
+	t.Run("int32 boundary accept min", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(-2147483648))
+		if err != nil {
+			t.Fatalf("expected no error for int32 min boundary, got: %v", err)
+		}
+	})
+
+	t.Run("float32 overflow from float64", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(float32Field, float64(math.MaxFloat32*2))
+		if err == nil {
+			t.Fatal("expected error for float64 value exceeding float32 range, got nil")
+		}
+		var overflowErr *NumericRangeOverflowError
+		if !errors.As(err, &overflowErr) {
+			t.Errorf("expected *NumericRangeOverflowError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("float32 boundary accept max", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(float32Field, float64(math.MaxFloat32))
+		if err != nil {
+			t.Fatalf("expected no error for float32 max boundary, got: %v", err)
+		}
+	})
 }
 
 func TestGoToProtoValue_Bytes(t *testing.T) {
