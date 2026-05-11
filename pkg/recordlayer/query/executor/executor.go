@@ -394,6 +394,8 @@ func (c *coveringIndexCursor) Close() error {
 
 func (c *coveringIndexCursor) IsClosed() bool { return c.closed }
 
+var _ recordlayer.RecordCursor[QueryResult] = (*coveringIndexCursor)(nil)
+
 func executeTypeFilter(
 	ctx context.Context,
 	p *plans.RecordQueryTypeFilterPlan,
