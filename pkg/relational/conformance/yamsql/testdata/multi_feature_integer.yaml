@@ -1,0 +1,115 @@
+# multi_feature_integer.yaml
+#
+# Integration tests combining multiple SQL features against INTEGER (INT32)
+# columns. Each test exercises at least two code paths at once: CTE + GROUP BY,
+# scalar subquery in WHERE, correlated EXISTS, self-join on INTEGER, CASE WHEN
+# over INTEGER ranges, INSERT with integer arithmetic, UPDATE with integer
+# arithmetic, and DELETE with an INTEGER subquery.
+name: multi_feature_integer
+schema_template: |
+  CREATE TABLE products (id BIGINT NOT NULL, category INTEGER, price INTEGER, name STRING, PRIMARY KEY (id))
+  CREATE INDEX idx_cat ON products (category)
+setup:
+  - INSERT INTO products VALUES (1, 1, 100, 'widget'), (2, 1, 200, 'gadget'), (3, 2, 150, 'gizmo'), (4, 2, 250, 'doohickey'), (5, NULL, 50, 'thingamajig')
+tests:
+  # --- CTE + GROUP BY on INTEGER ---
+  # CTE filters out NULL-category rows; outer SELECT aggregates per category.
+  # category 1: 100+200=300; category 2: 150+250=400.
+  - query: |-
+      WITH cat_totals AS (
+        SELECT category, SUM(price) AS total
+        FROM products
+        WHERE category IS NOT NULL
+        GROUP BY category
+      )
+      SELECT category, total FROM cat_totals ORDER BY category
+    rows:
+      - [1, 300]
+      - [2, 400]
+
+  # --- Scalar subquery in WHERE with INTEGER comparison ---
+  # MIN(price) among category=1 rows is 100. Filter price > 100 AND category=2
+  # → gizmo (150) and doohickey (250).
+  - query: |-
+      SELECT name FROM products
+      WHERE price > (SELECT MIN(price) FROM products WHERE category = 1)
+        AND category = 2
+      ORDER BY price
+    rows:
+      - ['gizmo']
+      - ['doohickey']
+
+  # --- Correlated EXISTS with INTEGER predicate ---
+  # Keep rows whose category contains at least one other product.
+  # category 1 has widget+gadget (2 rows), category 2 has gizmo+doohickey (2 rows).
+  # thingamajig has category=NULL so the inner predicate p2.category = p.category
+  # is UNKNOWN and EXISTS yields FALSE.
+  - query: |-
+      SELECT p.name FROM products p
+      WHERE EXISTS (
+        SELECT 1 FROM products p2
+        WHERE p2.category = p.category AND p2.id != p.id
+      )
+      ORDER BY p.name
+    rows:
+      - ['doohickey']
+      - ['gadget']
+      - ['gizmo']
+      - ['widget']
+
+  # --- Self-join on INTEGER column ---
+  # Pairs within the same category where a.id < b.id:
+  #   category 1: (widget,1) < (gadget,2) → one pair
+  #   category 2: (gizmo,3) < (doohickey,4) → one pair
+  # NULL-category row is excluded: NULL = NULL is UNKNOWN, not TRUE.
+  - query: |-
+      SELECT a.name, b.name
+      FROM products a JOIN products b
+        ON a.category = b.category AND a.id < b.id
+      ORDER BY a.name, b.name
+    rows:
+      - ['gizmo', 'doohickey']
+      - ['widget', 'gadget']
+
+  # --- CASE WHEN with INTEGER price ranges ---
+  # budget: price <= 100; mid: price <= 200; premium: price > 200.
+  # NULL-category row excluded by WHERE.
+  - query: |-
+      SELECT name,
+             CASE WHEN price <= 100 THEN 'budget'
+                  WHEN price <= 200 THEN 'mid'
+                  ELSE 'premium'
+             END
+      FROM products
+      WHERE category IS NOT NULL
+      ORDER BY price
+    rows:
+      - ['widget', 'budget']
+      - ['gizmo', 'mid']
+      - ['gadget', 'mid']
+      - ['doohickey', 'premium']
+
+  # --- INSERT with computed INTEGER values ---
+  # 1 + 1 = 2 for category; 100 * 3 = 300 for price.
+  - query: INSERT INTO products VALUES (6, 1 + 1, 100 * 3, 'newitem')
+  - query: SELECT category, price, name FROM products WHERE id = 6
+    rows:
+      - [2, 300, 'newitem']
+
+  # --- UPDATE with INTEGER arithmetic referencing own column ---
+  # Double the price for all category=1 rows (widget: 100→200, gadget: 200→400).
+  - query: UPDATE products SET price = price * 2 WHERE category = 1
+  - query: SELECT name, price FROM products WHERE category = 1 ORDER BY name
+    rows:
+      - ['gadget', 400]
+      - ['widget', 200]
+
+  # --- DELETE with INTEGER scalar subquery ---
+  # MAX(category) across all non-NULL rows is now 2 (after the INSERT above
+  # added another category=2 row). Delete all category=2 rows
+  # (gizmo, doohickey, newitem — 3 rows). Remaining: 2 category-1 rows +
+  # 1 NULL-category row = 3 rows.
+  - query: DELETE FROM products WHERE category = (SELECT MAX(category) FROM products)
+  - query: SELECT COUNT(*) FROM products
+    rows:
+      - [3]
