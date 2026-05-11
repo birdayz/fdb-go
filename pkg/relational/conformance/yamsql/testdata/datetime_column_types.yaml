@@ -50,6 +50,13 @@ tests:
   - query: SELECT COUNT(*) FROM Events WHERE ts < '2024-06-01 00:00:00'
     rows:
       - [2]
+  # BETWEEN on TIMESTAMP column.
+  - query: SELECT COUNT(*) FROM Events WHERE ts BETWEEN '2024-01-01 00:00:00' AND '2024-03-15 10:30:00'
+    rows:
+      - [2]
+  - query: SELECT COUNT(*) FROM Events WHERE d BETWEEN '2024-02-01' AND '2024-12-31'
+    rows:
+      - [2]
 
   # ---------------------------------------------------------------
   # CAST AS DATE (truncates timestamp to date-only).
