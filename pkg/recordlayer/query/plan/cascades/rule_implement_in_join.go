@@ -124,6 +124,7 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 					if inValues := extractInValues(source.quantifier); inValues != nil {
 						inJoinPlan.SetInValues(inValues)
 					}
+					inJoinPlan.SetSourceKind(classifyInSourceKind(source.quantifier))
 					wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
 						expressions.NewPhysicalQuantifier(currentRef))
 					currentRef = call.MemoizeFinalExpression(wrapper)
@@ -400,6 +401,37 @@ func getExplodeExpression(ref *expressions.Reference) *expressions.ExplodeExpres
 		}
 	}
 	return nil
+}
+
+// classifyInSourceKind determines the InSourceKind for an explode
+// quantifier, mirroring Java's ImplementInJoinRule.computeInSource:
+//   - ConstantValue (literal list) → InSourceValues
+//   - QuantifiedObjectValue (parameter ref) → InSourceParameter
+//   - IsConstantValue catch-all → InSourceComparand
+func classifyInSourceKind(q expressions.Quantifier) plans.InSourceKind {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return plans.InSourceValues
+	}
+	explode := getExplodeExpression(ref)
+	if explode == nil {
+		return plans.InSourceValues
+	}
+	cv := explode.GetCollectionValue()
+	if cv == nil {
+		return plans.InSourceValues
+	}
+	switch cv.(type) {
+	case *values.ConstantValue:
+		return plans.InSourceValues
+	case *values.QuantifiedObjectValue:
+		return plans.InSourceParameter
+	default:
+		if values.IsConstantValue(cv) {
+			return plans.InSourceComparand
+		}
+		return plans.InSourceValues
+	}
 }
 
 func extractInValues(q expressions.Quantifier) []any {

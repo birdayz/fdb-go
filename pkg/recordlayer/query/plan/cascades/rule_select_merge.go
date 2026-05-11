@@ -193,8 +193,17 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			if childSel, ok := target.childExpr.(*expressions.SelectExpression); ok {
 				newAliases = append(newAliases, childSel.GetSourceAliases()...)
 			} else {
+				// Non-SelectExpression child (e.g., LogicalFilter): preserve
+				// the parent's alias for this position. The merged quantifier
+				// replaces the parent's ForEach, so the alias that qualified
+				// the parent's quantifier should carry over to the child's
+				// quantifier(s).
+				parentAlias := ""
+				if i < len(srcAliases) {
+					parentAlias = srcAliases[i]
+				}
 				for range target.childExpr.GetQuantifiers() {
-					newAliases = append(newAliases, "")
+					newAliases = append(newAliases, parentAlias)
 				}
 			}
 		}

@@ -67,6 +67,11 @@ type Planner struct {
 
 	tasksRun int
 
+	// costModel is the comparator for OptimizeReferenceTask. Defaults
+	// to PlanningCostModelLess. Set to RewritingCostModelLess for the
+	// REWRITING phase. Matches Java's per-phase cost model architecture.
+	costModel func(a, b expressions.RelationalExpression) bool
+
 	// events is the (optional) event handler. Nil = no events.
 	events PlannerEventHandler
 }
@@ -110,6 +115,7 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		memo:         nil, // initialized lazily on first Explore call
 		exploreCount: make(map[*expressions.Reference]int),
 		bestMember:   make(map[*expressions.Reference]expressions.RelationalExpression),
+		costModel:    PlanningCostModelLess,
 		MaxTasks:     100_000,
 	}
 }
@@ -150,6 +156,14 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 // after the REWRITING phase converges. Returns p for chaining.
 func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 	p.implementationRules = rules
+	return p
+}
+
+// WithCostModel sets the comparator used by OptimizeReferenceTask.
+// Use RewritingCostModelLess for the REWRITING phase, PlanningCostModelLess
+// for the PLANNING phase. Matches Java's per-phase cost model. Returns p.
+func (p *Planner) WithCostModel(less func(a, b expressions.RelationalExpression) bool) *Planner {
+	p.costModel = less
 	return p
 }
 
@@ -206,8 +220,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	p.runPlanningPhase(rootRef)
 
 	// Use the selector path so extraction reuses the OPTIMIZE-stamped
-	// best member per Reference (avoids re-computing CostLess that
-	// the OPTIMIZE phase already did).
+	// best member per Reference.
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
 }
@@ -577,16 +590,14 @@ func (t *SaturationCheckTask) Run(p *Planner) {
 // child References itself via firstMemberCost (the cost model's
 // recursion contract).
 //
-// The seed uses properties.CostLess as the comparator. A future
-// shift can plumb a configurable comparator via PlanContext.
+// The comparator is p.costModel (PlanningCostModelLess for PLANNING,
+// RewritingCostModelLess for REWRITING), set via WithCostModel().
 //
-// PERF NOTE: properties.CostLess is the un-memoised cost-comparator
-// — every GetBest comparison re-walks the full sub-tree. For a
-// Reference with K members over an N-deep tree this is O(K·N)
-// per OptimizeReferenceTask. Acceptable for the seed (small trees,
-// low K). When N or K grow, switch to a memoised comparator
-// (properties.BestRefCostWith populates a per-call cache; expose
-// it via the PlanContext as a follow-up).
+// PERF NOTE: the cost model re-walks the full sub-tree on every
+// GetBest comparison. For a Reference with K members over an N-deep
+// tree this is O(K·N) per OptimizeReferenceTask. Acceptable for
+// current tree sizes. When N or K grow, switch to a memoised
+// comparator.
 type OptimizeReferenceTask struct {
 	Ref *expressions.Reference
 }
@@ -596,7 +607,7 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
 	}
-	best := t.Ref.GetBest(properties.CostLess)
+	best := t.Ref.GetBest(p.costModel)
 	p.bestMember[t.Ref] = best
 	if p.events != nil {
 		p.events.OnOptimizeReference(t.Ref, best)

@@ -52,6 +52,21 @@ type PlannerConfiguration struct {
 	// AttemptFailedInJoinAsUnionMaxSize controls when InUnionRule falls
 	// back from InJoin to InUnion. Java default is 0 (no fallback).
 	AttemptFailedInJoinAsUnionMaxSize int
+
+	// ShouldJoinRightDeep — when true, PartitionSelectRule only
+	// produces right-deep join trees (the upper partition has exactly
+	// 1 quantifier). This reduces join enumeration combinatorics at the
+	// cost of excluding bushy plans. Mirrors Java's
+	// RecordQueryPlannerConfiguration.shouldJoinRightDeep().
+	ShouldJoinRightDeep bool
+
+	// ShouldDeferCrossProducts — when true, PartitionSelectRule only
+	// partitions along independent quantifier boundaries (cross-product
+	// splits). Partitions that would split connected components are
+	// deferred until the components are individually partitioned into
+	// smaller pieces. Mirrors Java's
+	// RecordQueryPlannerConfiguration.shouldDeferCrossProducts().
+	ShouldDeferCrossProducts bool
 }
 
 // DefaultPlannerConfiguration mirrors Java's

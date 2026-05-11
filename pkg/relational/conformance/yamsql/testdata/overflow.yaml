@@ -53,3 +53,14 @@ tests:
   # Negative counterpart — -1e400 overflows to -Inf.
   - query: SELECT -1e400 FROM t WHERE id = 1
     error_code: "22003"
+  # SUM overflow: two MaxInt64 values → overflow during accumulation.
+  # Java's aggregate accumulator uses Math.addExact which throws
+  # ArithmeticException("long overflow").
+  - query: SELECT SUM(a) FROM t WHERE id IN (1, 3)
+    error_code: "22003"
+  # SUM of MaxInt64 + (-MaxInt64) is 0 — no overflow because the
+  # intermediate sum never exceeds int64 range (addends have opposite
+  # signs).
+  - query: SELECT SUM(a) FROM t WHERE id IN (1, 2)
+    rows:
+      - [-1]

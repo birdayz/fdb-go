@@ -108,7 +108,13 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewZeroLimitRule(),
 		NewRemoveRangeOneRule(),
 		NewSelectMergeRule(),
+		NewSplitSelectExtractIndependentQuantifiersRule(),
+		NewNormalizePredicatesRule(),
+		NewPredicateToLogicalUnionRule(),
+		NewPartitionSelectRule(),
+		NewPartitionBinarySelectRule(),
 		NewDecorrelateValuesRule(),
+		NewPullUpNullOnEmptyRule(),
 	}
 }
 
@@ -203,6 +209,10 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughProjectionRule(),
 		NewPushRequestedOrderingThroughGroupByRule(),
 		NewPushRequestedOrderingThroughUnionRule(),
+		NewPushRequestedOrderingThroughRecursiveUnionRule(),
+		NewPushRequestedOrderingThroughSelectExistentialRule(),
+		NewPushRequestedOrderingThroughSelectRule(),
+		NewPushRequestedOrderingThroughInLikeSelectRule(),
 
 		// --- Referenced-field push rules (column pruning, top-down) ---
 		NewPushReferencedFieldsThroughFilterRule(),
@@ -227,8 +237,13 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushDistinctThroughFetchRule(),
 		NewPushFilterThroughFetchRule(),
 		NewPushMapThroughFetchRule(),
+		NewPushInJoinThroughFetchRule(),
 		NewPushUnionThroughFetchRule(),
 		NewPushIntersectionThroughFetchRule(),
+		NewPushUnorderedUnionThroughFetchRule(),
+		NewPushInUnionThroughFetchRule(),
+		NewRemoveProjectionRule(),
+		NewMergeProjectionAndFetchRule(),
 
 		NewFinalizeExpressionsRule(),
 	}
@@ -243,6 +258,24 @@ func DefaultImplementationRules() []ImplementationRule {
 func GoExtensionImplementationRules() []ImplementationRule {
 	return []ImplementationRule{
 		NewImplementInMemorySortRule(),
+	}
+}
+
+// RewritingRules returns the exploration rules for the REWRITING phase.
+// Mirrors Java's RewritingRuleSet.EXPLORATION_RULES:
+//   - QueryPredicateSimplificationRule: constant-fold predicate values
+//   - PredicatePushDownRule: push predicates into child quantifiers
+//   - DecorrelateValuesRule: inline constant value boxes
+//
+// These rules are NOT part of DefaultExpressionRules — they target the
+// REWRITING phase, which runs before the main PLANNING phase to
+// normalise the expression tree. The planner driver composes rule sets
+// as needed.
+func RewritingRules() []ExpressionRule {
+	return []ExpressionRule{
+		NewQueryPredicateSimplificationRule(),
+		NewPredicatePushDownRule(),
+		NewDecorrelateValuesRule(),
 	}
 }
 
@@ -275,6 +308,17 @@ func init() {
 	registerDefaultRules()
 	registerBatchARules()
 	registerMatchingRules()
+	registerRewritingRules()
+}
+
+func registerRewritingRules() {
+	for _, r := range RewritingRules() {
+		name := shortTypeName(r)
+		if LookupRule(name) != nil {
+			continue
+		}
+		RegisterRule(name, r)
+	}
 }
 
 func registerDefaultRules() {

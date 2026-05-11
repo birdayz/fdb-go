@@ -68,6 +68,13 @@ func (c CorrelationIdentifier) String() string { return c.name }
 // Useful for nil-checks without a pointer.
 func (c CorrelationIdentifier) IsZero() bool { return c.name == "" }
 
+// CurrentAlias is the well-known CorrelationIdentifier representing
+// "the current row". Mirrors Java's `Quantifier.current()` — used by
+// set-operation comparison key values and other contexts where a Value
+// references "the row currently being processed" without binding to a
+// specific named Quantifier.
+var CurrentAlias = CorrelationIdentifier{name: "_current"}
+
 // Correlated is the interface Java's `Correlated<T>` maps to. A
 // Correlated value knows which CorrelationIdentifiers it depends
 // on, and can rebind them (used by TranslationMap rewrites).

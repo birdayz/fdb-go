@@ -56,12 +56,22 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 | ID | Divergence | Go approach | Java approach | Criticality | Effort |
 |---|---|---|---|---|---|
 | ~~**D-2**~~ | ~~PushOrdering rules~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~ImplementationRules (PLANNING): constraint-push~~ | ~~DONE~~ | ~~done~~ |
-| **D-4** | Cost model | Go-native: cardinality + CPU, on-demand | Postgres-inspired: multi-dim, memoized | NONE — intentional (RFC-024) | N/A |
+| ~~**D-4**~~ | ~~Cost model~~ | ~~PlanningCostModelLess: 16 ordered criteria~~ | ~~Multi-criteria comparator (PlanningCostModel.java)~~ | ~~**DONE** (swingshift-91)~~ | ~~done~~ |
 | ~~**D-5**~~ | ~~InComparison architecture~~ | ~~SelectExpression + ExplodeExpression~~ | ~~SelectExpression + ExplodeExpression~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-7**~~ | ~~Multi-aggregate matching~~ | ~~Multi-aggregate via index intersection~~ | ~~Multi-aggregate via index intersection~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-8**~~ | ~~CardinalityProperty~~ | ~~Coupled to Cost struct~~ | ~~Separate class with min/max bounds~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-11**~~ | ~~ConstantObjectValue promotion~~ | ~~No type promotion on eval~~ | ~~PromoteValue.isPromotionNeeded~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-3 gap**~~ | ~~Distinct elimination check~~ | ~~Physical DistinctRecordsProperty per FinalMember + logical PK fallback~~ | ~~Physical DistinctRecordsProperty~~ | ~~DONE~~ | ~~done~~ |
+
+### ~~D-4 Port: Java PlanningCostModel → Go~~ — **DONE (swingshift-91)**
+
+`PlanningCostModelLess` wired into `Planner.OptimizeReferenceTask.Run`, replacing `CostLess`. All 16 Java criteria ported (375 LOC + 111 LOC tests, 4 unit tests). Scalar `CostLess` retained as tiebreak fallback. 46/46 test targets pass.
+
+Also fixed `SelectMergeRule` alias preservation bug: non-SelectExpression children lost source aliases during merge, causing NLJ plans with empty innerAlias to fail predicate evaluation. Root cause was hidden by the old cost model.
+
+**Remaining refinements (optimization quality, not correctness):**
+- Port `ComparisonsProperty` for full-fidelity IN-SARG check (criterion 6) and type-filter comparison set difference (criterion 7 sub-check)
+- `IndexScanPreference` config flag — hardcoded to PREFER_INDEX (Java's default)
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
@@ -179,7 +189,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 ### Tier C — Wording / surface alignments (cosmetic but block byte-equal corpus pinning)
 
 - [x] **#43** ORDER BY rejection wording — **landed dayshift-66**. Replaced Go's specific "ORDER BY X cannot be satisfied by any scan strategy; Add an index…" with Java's generic "Cascades planner could not plan query" at `select_query_full.go`. Updated 2 sqldriver tests that pinned the old wording. Pinned via `order_by_arith_unindexed_probe` corpus entry.
-- [ ] **#62** INT32 overflow on INSERT — wording divergence. DML-as-test-query now supported in plandiff harness (nightshift-87). Pinning requires Java conformance server to capture Java's exact error wording for overflow. INTEGER range enforcement verified via yamsql (integer_range.yaml, dayshift-89). Go produces SQLSTATE 22003.
+- [ ] **#62** INT32 overflow on INSERT — wording divergence. DML-as-test-query now supported in plandiff harness (nightshift-87). Pinning requires Java conformance server to capture Java's exact error wording for overflow. INTEGER range enforcement verified via yamsql (integer_range.yaml, dayshift-89). Go produces SQLSTATE 22003. **swingshift-91:** Java source confirms message "Value out of range for INT: \<value\>" from SemanticException.ErrorCode.INVALID_CAST. Go uses 22003 (numeric_value_out_of_range) while Java uses INVALID_CAST — Go is more SQL-standard-correct (22003 for INSERT, 22F3H for explicit CAST). Also fixed UPDATE INT32 silent truncation bug in executor's goToProtoValue and SUM(BIGINT) silent overflow in Cascades executor aggregate accumulator.
 - [x] **#46** BIGINT literal overflow — **landed dayshift-66**. Go's `evalConstant` fell through to `ParseFloat` after `ParseInt` overflowed, silently accepting `99999999999999999999`. Java rejects with `NumberFormatException: For input string: "<text>"`. Fix: extract `parseDecimalLiteralValue` helper that distinguishes integer-shape text (no `.`/`e`/`E` — DECIMAL_LITERAL token) from float-shape (REAL_LITERAL); on `ParseInt` overflow of integer-shape text, error byte-equal `For input string: "<text>"` (without exception class prefix — the conformance harness reads the deepest cause message). Pinned via `bigint_literal_overflow_probe` corpus entry.
 - [x] **#47** CAST(BIGINT AS BOOLEAN) — **landed dayshift-66**. Replaced Go's silent int64→bool coercion (`n != 0`) with byte-equal Java rejection: `Invalid cast operation No cast defined from LONG to BOOLEAN`. Pinned via `cast_bigint_to_boolean_probe` corpus entry.
 - [x] **#50** NOT NULL constraint scope — **reclassified Java upstream limitation, dayshift-66**. Cross-engine probe confirmed: Java rejects scalar NOT NULL at schema-create time with `NOT NULL is only allowed for ARRAY column type`; Go follows SQL standard. Aligning Go to Java's restriction would invalidate dozens of existing schemas across the test surface — Java's behaviour is non-standard. Documented at the `not_null_scalar_probe` skip site.

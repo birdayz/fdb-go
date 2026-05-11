@@ -63,19 +63,30 @@ func isNumericType(v any) bool {
 type ComparisonType int
 
 const (
-	ComparisonEquals          ComparisonType = iota // =
-	ComparisonNotEquals                             // !=, <>
-	ComparisonLessThan                              // <
-	ComparisonLessThanOrEq                          // <=
-	ComparisonGreaterThan                           // >
-	ComparisonGreaterThanEq                         // >=
-	ComparisonIsNull                                // IS NULL (unary, LHS-only)
-	ComparisonIsNotNull                             // IS NOT NULL (unary, LHS-only)
-	ComparisonStartsWith                            // STARTS_WITH (string LHS, string RHS prefix)
-	ComparisonIn                                    // IN (LHS any, RHS is a []any membership list)
-	ComparisonIsDistinctFrom                        // IS DISTINCT FROM (null-safe !=)
-	ComparisonNotDistinctFrom                       // IS NOT DISTINCT FROM (null-safe =)
-	ComparisonLike                                  // LIKE (string LHS, SQL pattern RHS: % / _)
+	ComparisonEquals                   ComparisonType = iota // =
+	ComparisonNotEquals                                      // !=, <>
+	ComparisonLessThan                                       // <
+	ComparisonLessThanOrEq                                   // <=
+	ComparisonGreaterThan                                    // >
+	ComparisonGreaterThanEq                                  // >=
+	ComparisonIsNull                                         // IS NULL (unary, LHS-only)
+	ComparisonIsNotNull                                      // IS NOT NULL (unary, LHS-only)
+	ComparisonStartsWith                                     // STARTS_WITH (string LHS, string RHS prefix)
+	ComparisonIn                                             // IN (LHS any, RHS is a []any membership list)
+	ComparisonIsDistinctFrom                                 // IS DISTINCT FROM (null-safe !=)
+	ComparisonNotDistinctFrom                                // IS NOT DISTINCT FROM (null-safe =)
+	ComparisonLike                                           // LIKE (string LHS, SQL pattern RHS: % / _)
+	ComparisonTextContainsAll                                // TEXT_CONTAINS_ALL (full-text: all terms must match)
+	ComparisonTextContainsAllWithin                          // TEXT_CONTAINS_ALL_WITHIN (full-text: all terms within distance)
+	ComparisonTextContainsAny                                // TEXT_CONTAINS_ANY (full-text: any term matches)
+	ComparisonTextContainsPhrase                             // TEXT_CONTAINS_PHRASE (full-text: exact phrase match)
+	ComparisonTextContainsPrefix                             // TEXT_CONTAINS_PREFIX (full-text: prefix of any term)
+	ComparisonTextContainsAllPrefixes                        // TEXT_CONTAINS_ALL_PREFIXES (full-text: all prefixes match)
+	ComparisonTextContainsAnyPrefix                          // TEXT_CONTAINS_ANY_PREFIX (full-text: any prefix matches)
+	ComparisonSort                                           // SORT (ordering comparison, not a filter)
+	ComparisonDistanceRankEquals                             // DISTANCE_RANK_EQUALS (vector distance rank equality)
+	ComparisonDistanceRankLessThan                           // DISTANCE_RANK_LESS_THAN (vector distance rank bound)
+	ComparisonDistanceRankLessThanOrEq                       // DISTANCE_RANK_LESS_THAN_OR_EQUAL (vector distance rank bound)
 )
 
 // IsUnary reports whether the comparison takes no RHS operand
@@ -92,7 +103,10 @@ func (c ComparisonType) IsUnary() bool {
 // needs ranges).
 func (c ComparisonType) IsEquality() bool {
 	switch c {
-	case ComparisonEquals, ComparisonIn, ComparisonIsNull, ComparisonNotDistinctFrom:
+	case ComparisonEquals, ComparisonIn, ComparisonIsNull, ComparisonNotDistinctFrom,
+		ComparisonTextContainsAll, ComparisonTextContainsAllWithin,
+		ComparisonTextContainsAny, ComparisonTextContainsPhrase,
+		ComparisonDistanceRankEquals:
 		return true
 	}
 	return false
@@ -106,12 +120,15 @@ func (c ComparisonType) IsEquality() bool {
 //
 // IN / STARTS_WITH have no direct negation operator — the caller
 // should wrap in NotPredicate.
+// Negate returns the logical negation of the comparison operator, matching
+// Java's Comparisons.invertComparisonType(). Only binary inequality/equality
+// operators are invertible. Unary operators (IS_NULL, IS_NOT_NULL),
+// NOT_EQUALS, and DISTINCT variants return (c, false) — Java explicitly
+// rejects these.
 func (c ComparisonType) Negate() (ComparisonType, bool) {
 	switch c {
 	case ComparisonEquals:
 		return ComparisonNotEquals, true
-	case ComparisonNotEquals:
-		return ComparisonEquals, true
 	case ComparisonLessThan:
 		return ComparisonGreaterThanEq, true
 	case ComparisonLessThanOrEq:
@@ -120,14 +137,6 @@ func (c ComparisonType) Negate() (ComparisonType, bool) {
 		return ComparisonLessThanOrEq, true
 	case ComparisonGreaterThanEq:
 		return ComparisonLessThan, true
-	case ComparisonIsNull:
-		return ComparisonIsNotNull, true
-	case ComparisonIsNotNull:
-		return ComparisonIsNull, true
-	case ComparisonIsDistinctFrom:
-		return ComparisonNotDistinctFrom, true
-	case ComparisonNotDistinctFrom:
-		return ComparisonIsDistinctFrom, true
 	}
 	return c, false
 }
@@ -161,6 +170,28 @@ func (c ComparisonType) Symbol() string {
 		return "IS NOT DISTINCT FROM"
 	case ComparisonLike:
 		return "LIKE"
+	case ComparisonTextContainsAll:
+		return "TEXT_CONTAINS_ALL"
+	case ComparisonTextContainsAllWithin:
+		return "TEXT_CONTAINS_ALL_WITHIN"
+	case ComparisonTextContainsAny:
+		return "TEXT_CONTAINS_ANY"
+	case ComparisonTextContainsPhrase:
+		return "TEXT_CONTAINS_PHRASE"
+	case ComparisonTextContainsPrefix:
+		return "TEXT_CONTAINS_PREFIX"
+	case ComparisonTextContainsAllPrefixes:
+		return "TEXT_CONTAINS_ALL_PREFIXES"
+	case ComparisonTextContainsAnyPrefix:
+		return "TEXT_CONTAINS_ANY_PREFIX"
+	case ComparisonSort:
+		return "SORT"
+	case ComparisonDistanceRankEquals:
+		return "DISTANCE_RANK_EQUALS"
+	case ComparisonDistanceRankLessThan:
+		return "DISTANCE_RANK_LESS_THAN"
+	case ComparisonDistanceRankLessThanOrEq:
+		return "DISTANCE_RANK_LESS_THAN_OR_EQUAL"
 	default:
 		return "?"
 	}
@@ -187,6 +218,26 @@ type Comparison struct {
 	Type    ComparisonType
 	Operand values.Value
 	Escape  rune
+
+	// --- Optional fields for Java Comparison subclass variants ---
+
+	// ParameterName is set for parameter-bound comparisons (Java's
+	// ParameterComparison). Non-empty means the RHS is resolved at
+	// runtime from EvaluationContext.getBinding(ParameterName).
+	ParameterName string
+
+	// TextTokenizerName and TextAnalyzerName are set for text-search
+	// comparisons (Java's TextComparison). Empty = default tokenizer.
+	TextTokenizerName string
+	TextAnalyzerName  string
+
+	// TextMaxDistance is set for TEXT_CONTAINS_ALL_WITHIN comparisons
+	// (Java's TextWithMaxDistanceComparison).
+	TextMaxDistance int
+
+	// TextStrictPrefix is set for TEXT_CONTAINS_ALL_PREFIXES comparisons
+	// (Java's TextContainsAllPrefixesComparison).
+	TextStrictPrefix bool
 }
 
 // GetCorrelatedTo returns the set of correlation identifiers referenced

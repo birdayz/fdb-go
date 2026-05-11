@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	functions "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 )
 
 type unsupportedTestPlan struct{}
@@ -1595,6 +1598,117 @@ func TestGoToProtoValue_Float(t *testing.T) {
 	}
 	if got := float32(v.Float()); got != 1.5 {
 		t.Errorf("got %f, want 1.5", got)
+	}
+}
+
+func TestGoToProtoValue_Overflow(t *testing.T) {
+	t.Parallel()
+	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	int32Field := order.Fields().ByName("price")
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	float32Field := typed.Fields().ByName("val_float")
+
+	t.Run("int32 overflow from int64", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(2147483648))
+		if err == nil {
+			t.Fatal("expected error for int64 value exceeding int32 max, got nil")
+		}
+		var overflowErr *NumericRangeOverflowError
+		if !errors.As(err, &overflowErr) {
+			t.Errorf("expected *NumericRangeOverflowError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("int32 underflow from int64", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(-2147483649))
+		if err == nil {
+			t.Fatal("expected error for int64 value below int32 min, got nil")
+		}
+		var overflowErr *NumericRangeOverflowError
+		if !errors.As(err, &overflowErr) {
+			t.Errorf("expected *NumericRangeOverflowError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("int32 boundary accept max", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(2147483647))
+		if err != nil {
+			t.Fatalf("expected no error for int32 max boundary, got: %v", err)
+		}
+	})
+
+	t.Run("int32 boundary accept min", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(int32Field, int64(-2147483648))
+		if err != nil {
+			t.Fatalf("expected no error for int32 min boundary, got: %v", err)
+		}
+	})
+
+	t.Run("float32 overflow from float64", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(float32Field, float64(math.MaxFloat32*2))
+		if err == nil {
+			t.Fatal("expected error for float64 value exceeding float32 range, got nil")
+		}
+		var overflowErr *NumericRangeOverflowError
+		if !errors.As(err, &overflowErr) {
+			t.Errorf("expected *NumericRangeOverflowError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("float32 boundary accept max", func(t *testing.T) {
+		t.Parallel()
+		_, err := goToProtoValue(float32Field, float64(math.MaxFloat32))
+		if err != nil {
+			t.Fatalf("expected no error for float32 max boundary, got: %v", err)
+		}
+	})
+}
+
+func TestGoToProtoValue_ConsistentWithConvertToProtoValue(t *testing.T) {
+	t.Parallel()
+
+	orderDesc := (&gen.Order{}).ProtoReflect().Descriptor()
+	typedDesc := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+
+	cases := []struct {
+		name string
+		fd   protoreflect.FieldDescriptor
+		val  any
+	}{
+		{"int64_to_int32", orderDesc.Fields().ByName("price"), int64(42)},
+		{"int64_to_int64", orderDesc.Fields().ByName("order_id"), int64(42)},
+		{"float64_to_float", typedDesc.Fields().ByName("val_float"), float64(2.5)},
+		{"float64_to_double", typedDesc.Fields().ByName("val_double"), float64(3.14)},
+		{"string_to_string", typedDesc.Fields().ByName("val_string"), "hello"},
+		{"bool_to_bool", typedDesc.Fields().ByName("val_bool"), true},
+		{"bytes_to_bytes", typedDesc.Fields().ByName("val_bytes"), []byte{1, 2, 3}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := goToProtoValue(tc.fd, tc.val)
+			if err != nil {
+				t.Fatalf("goToProtoValue: %v", err)
+			}
+			want, err2 := functions.ConvertToProtoValue(tc.fd, tc.val)
+			if err2 != nil {
+				t.Fatalf("ConvertToProtoValue: %v", err2)
+			}
+			// Bytes fields return []byte which is not comparable via !=; handle separately.
+			if tc.fd.Kind() == protoreflect.BytesKind {
+				if !bytes.Equal(got.Bytes(), want.Bytes()) {
+					t.Errorf("goToProtoValue = %v, ConvertToProtoValue = %v", got, want)
+				}
+			} else if got.Interface() != want.Interface() {
+				t.Errorf("goToProtoValue = %v, ConvertToProtoValue = %v", got, want)
+			}
+		})
 	}
 }
 

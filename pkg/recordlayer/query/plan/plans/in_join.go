@@ -7,6 +7,15 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// InSourceKind distinguishes the three Java InJoin subclasses.
+type InSourceKind int
+
+const (
+	InSourceValues    InSourceKind = iota // static value list (InValuesJoinPlan)
+	InSourceParameter                     // runtime parameter binding (InParameterJoinPlan)
+	InSourceComparand                     // comparand from correlated subquery (InComparandJoinPlan)
+)
+
 // RecordQueryInJoinPlan executes its inner plan once for each value
 // from an IN-source, binding the value to a correlation variable.
 // The result is the concatenation of all inner executions.
@@ -19,6 +28,7 @@ type RecordQueryInJoinPlan struct {
 	sorted      bool
 	reverse     bool
 	inValues    []any
+	sourceKind  InSourceKind
 }
 
 func NewRecordQueryInJoinPlan(
@@ -35,12 +45,14 @@ func NewRecordQueryInJoinPlan(
 	}
 }
 
-func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return p.inner }
-func (p *RecordQueryInJoinPlan) GetBindingName() string    { return p.bindingName }
-func (p *RecordQueryInJoinPlan) IsSorted() bool            { return p.sorted }
-func (p *RecordQueryInJoinPlan) IsReverse() bool           { return p.reverse }
-func (p *RecordQueryInJoinPlan) GetInValues() []any        { return p.inValues }
-func (p *RecordQueryInJoinPlan) SetInValues(vals []any)    { p.inValues = vals }
+func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan    { return p.inner }
+func (p *RecordQueryInJoinPlan) GetBindingName() string       { return p.bindingName }
+func (p *RecordQueryInJoinPlan) IsSorted() bool               { return p.sorted }
+func (p *RecordQueryInJoinPlan) IsReverse() bool              { return p.reverse }
+func (p *RecordQueryInJoinPlan) GetInValues() []any           { return p.inValues }
+func (p *RecordQueryInJoinPlan) SetInValues(vals []any)       { p.inValues = vals }
+func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind  { return p.sourceKind }
+func (p *RecordQueryInJoinPlan) SetSourceKind(k InSourceKind) { p.sourceKind = k }
 
 func (p *RecordQueryInJoinPlan) GetResultType() values.Type {
 	if p.inner != nil {

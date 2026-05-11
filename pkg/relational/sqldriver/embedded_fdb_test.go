@@ -2496,6 +2496,57 @@ func TestFDB_UpdateSetArithmetic(t *testing.T) {
 	g.Expect(val).To(gomega.Equal(int64(15)))
 }
 
+func TestFDB_UpdateInt32Overflow(t *testing.T) {
+	// UPDATE on an INTEGER (INT32) column must reject values outside [-2147483648, 2147483647] with SQLSTATE 22003.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_upd_int32_ovf")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_int32_ovf")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE upd_int32_ovf_tmpl "+
+			"CREATE TABLE T32 (id BIGINT NOT NULL, val INTEGER, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_upd_int32_ovf/upd_int32_ovf WITH TEMPLATE upd_int32_ovf_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_upd_int32_ovf?cluster_file=%s&schema=upd_int32_ovf", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert a row with val at INT32 max.
+	g.Expect(db.ExecContext(ctx, "INSERT INTO T32 (id, val) VALUES (1, 2147483647)")).Error().NotTo(gomega.HaveOccurred())
+
+	// Literal overflow: 2147483648 exceeds INT32 max.
+	_, err = db.ExecContext(ctx, "UPDATE T32 SET val = 2147483648 WHERE id = 1")
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "expected *api.Error, got %T: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("22003"))
+
+	// Literal underflow: -2147483649 is below INT32 min.
+	_, err = db.ExecContext(ctx, "UPDATE T32 SET val = -2147483649 WHERE id = 1")
+	var apiErr2 *api.Error
+	g.Expect(errors.As(err, &apiErr2)).To(gomega.BeTrue(), "expected *api.Error, got %T: %v", err, err)
+	g.Expect(string(apiErr2.Code)).To(gomega.Equal("22003"))
+
+	// Arithmetic overflow: val is at INT32 max, val + 1 overflows.
+	_, err = db.ExecContext(ctx, "UPDATE T32 SET val = val + 1 WHERE id = 1")
+	var apiErr3 *api.Error
+	g.Expect(errors.As(err, &apiErr3)).To(gomega.BeTrue(), "expected *api.Error, got %T: %v", err, err)
+	g.Expect(string(apiErr3.Code)).To(gomega.Equal("22003"))
+
+	// Row must be unchanged: val is still 2147483647.
+	rows, err := db.QueryContext(ctx, "SELECT val FROM T32 WHERE id = 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var val int64
+	g.Expect(rows.Scan(&val)).To(gomega.Succeed())
+	g.Expect(val).To(gomega.Equal(int64(2147483647)))
+}
+
 func TestFDB_GroupByCount(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

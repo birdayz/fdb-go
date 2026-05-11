@@ -51,6 +51,20 @@ func (e *AggregateTypeMismatchError) Error() string {
 	return e.Message
 }
 
+type NumericRangeOverflowError struct {
+	Value    any
+	Column   string
+	TypeName string
+}
+
+func (e *NumericRangeOverflowError) Error() string {
+	return fmt.Sprintf("value %v out of range for %s column %q", e.Value, e.TypeName, e.Column)
+}
+
+type SumOverflowError struct{}
+
+func (*SumOverflowError) Error() string { return "long overflow" }
+
 // ExecutePlan executes a RecordQueryPlan tree against a store,
 // returning a cursor over the results. Recursive — child plans are
 // executed first, then the parent operator is applied.
@@ -927,7 +941,6 @@ func executeNestedLoopJoin(
 	preds := p.GetPredicates()
 	joinType := p.GetJoinType()
 	var results []QueryResult
-
 	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
 		outerAlias := p.GetOuterAlias()
 		if len(preds) == 0 {
@@ -1216,7 +1229,11 @@ func executeAggregation(
 			num := toFloat64(val)
 			gs.sums[i] += num
 			if intVal, ok := val.(int64); ok {
-				gs.sumsI[i] += intVal
+				s := gs.sumsI[i] + intVal
+				if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
+					return nil, &SumOverflowError{}
+				}
+				gs.sumsI[i] = s
 			} else {
 				gs.allInt[i] = false
 			}
@@ -1535,10 +1552,16 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
 		switch n := v.(type) {
 		case int64:
+			if n < math.MinInt32 || n > math.MaxInt32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfInt32(int32(n)), nil
 		case int32:
 			return protoreflect.ValueOfInt32(n), nil
 		case int:
+			if int64(n) < math.MinInt32 || int64(n) > math.MaxInt32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: int64(n), Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfInt32(int32(n)), nil
 		}
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
@@ -1551,6 +1574,9 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		switch n := v.(type) {
 		case int64:
+			if n < 0 || n > math.MaxUint32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfUint32(uint32(n)), nil
 		case uint32:
 			return protoreflect.ValueOfUint32(n), nil
@@ -1558,6 +1584,9 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		switch n := v.(type) {
 		case int64:
+			if n < 0 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		case uint64:
 			return protoreflect.ValueOfUint64(n), nil
@@ -1565,6 +1594,9 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	case protoreflect.FloatKind:
 		switch n := v.(type) {
 		case float64:
+			if n > math.MaxFloat32 || n < -math.MaxFloat32 {
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
+			}
 			return protoreflect.ValueOfFloat32(float32(n)), nil
 		case float32:
 			return protoreflect.ValueOfFloat32(n), nil

@@ -549,10 +549,11 @@ func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 		t.Fatalf("expected filter pushed below join, but Filter wraps NLJ.\nplan: %s", plan)
 	}
 
-	// Filter must appear INSIDE the NLJ (after the NLJ opening paren).
+	// Filter must appear INSIDE the NLJ or be absorbed into NLJ predicates.
+	// Both shapes are valid: Filter(pred, Scan) inside NLJ, or NLJ([2+ preds], Scan, Scan).
 	afterNLJ := plan[nljIdx:]
-	if !strings.Contains(afterNLJ, "Filter") {
-		t.Fatalf("expected pushed-down Filter inside NestedLoopJoin, got: %s", plan)
+	if !strings.Contains(afterNLJ, "Filter") && !strings.Contains(afterNLJ, "2 preds") {
+		t.Fatalf("expected pushed-down Filter inside NestedLoopJoin or merged predicates, got: %s", plan)
 	}
 
 	// The NLJ itself must carry the join predicate (ON e.did = d.did).
