@@ -179,7 +179,9 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 
 **Java's approach is fundamentally different:** `ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan()` uses `IndexKeyValueToPartialRecord` (826 LOC) to reconstruct a protobuf `Message` from index entries. It always wraps in `CoveringIndexPlan` + `FetchFromPartialRecordPlan`, then lets push-through rules eliminate the fetch. The covering decision is in the match candidate, not in compensation analysis.
 
-**To close:** Port `IndexKeyValueToPartialRecord` (copier-based field extraction from key+value tuples), `extractFromIndexEntryMaybe` (per-Value method), and `computeIndexEntryToLogicalRecord` (match candidate integration). Also needs value-column tracking in match candidates (current `GetColumnNames()` only returns key columns, not KeyWithValue value columns).
+**Root cause:** Two index-scan paths compete. `ImplementIndexScanRule` creates bare `physicalIndexScanWrapper` (no covering flag, no Fetch); `wrapScanPlanWithCoverage` in the data-access path strips the Fetch when `!comp.IsFinalNeeded()`. The cost model prefers the bare scan (cheaper) but it doesn't carry covering info. The data-access path's `isCovering` check only returns true when the PullUp resolves to a bare QOV — which doesn't happen with SQL projections above.
+
+**To close (multi-shift):** Port `IndexKeyValueToPartialRecord` (826 LOC copier-based field extraction from key+value tuples), `extractFromIndexEntryMaybe` (per-Value method), `computeIndexEntryToLogicalRecord` (match candidate integration), and `CollapseRecordConstructorOverFieldsToStar` (needs field-level type ordinal metadata). Also needs value-column tracking in match candidates (current `GetColumnNames()` only returns key columns, not KeyWithValue value columns).
 
 ## Optimization-Quality Gaps (correctness unaffected)
 
