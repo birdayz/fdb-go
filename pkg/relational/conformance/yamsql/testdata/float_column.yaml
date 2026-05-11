@@ -30,3 +30,20 @@ tests:
   - query: SELECT CAST(100 AS FLOAT) FROM Measurements WHERE id = 1
     rows:
       - [100]
+  # Arithmetic on FLOAT — 0.0 + 1 = 1 (exact float32).
+  - query: SELECT temp + 1 FROM Measurements WHERE id = 3
+    rows:
+      - [1]
+  # BETWEEN on FLOAT.
+  - query: SELECT COUNT(*) FROM Measurements WHERE temp BETWEEN 30 AND 100
+    rows:
+      - [2]
+  # UPDATE FLOAT to an exact float32 value (0.5 is a power-of-two fraction).
+  - query: UPDATE Measurements SET temp = 100.5 WHERE id = 3
+  - query: SELECT temp FROM Measurements WHERE id = 3
+    rows:
+      - [100.5]
+  # WHERE with strict greater-than; after the UPDATE above, rows 1, 2, 3 all > 0.
+  - query: SELECT COUNT(*) FROM Measurements WHERE temp > 0
+    rows:
+      - [3]
