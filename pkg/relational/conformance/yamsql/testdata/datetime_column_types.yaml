@@ -165,6 +165,10 @@ tests:
   - query: SELECT COUNT(DISTINCT d) FROM Events
     rows:
       - [3]
+  # IN operator with temporal literals.
+  - query: SELECT COUNT(*) FROM Events WHERE d IN ('2024-03-15', '2024-06-20')
+    rows:
+      - [2]
   - query: SELECT YEAR(CAST(NULL AS TIMESTAMP)) IS NULL FROM Events WHERE id = 1
     rows:
       - [true]
