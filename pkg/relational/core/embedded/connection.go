@@ -545,6 +545,8 @@ func translateFDBError(err error) error {
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction conflict", err)
 	case strings.Contains(msg, "transaction_too_old"):
 		return api.WrapError(api.ErrCodeSerializationFailure, "FDB transaction too old", err)
+	case strings.Contains(msg, "used_during_commit"):
+		return api.WrapError(api.ErrCodeTransactionInactive, "FDB transaction used during commit", err)
 	}
 	return err
 }
