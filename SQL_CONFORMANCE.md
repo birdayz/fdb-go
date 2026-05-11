@@ -26,7 +26,7 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | String functions (UPPER etc.) | N | N | Y | Both reject -- Java has no function catalog entry |
 | Math functions (ABS etc.) | N | N | Y | Both reject |
 | CURRENT_TIMESTAMP / CURRENT_DATE | N | Ext | Y | Go extension: proper TIMESTAMP/DATE types, comparisons, CAST |
-| Date-part functions (YEAR etc.) | N | N | Y | |
+| Date-part functions (YEAR etc.) | N | Ext | Y | Go extension: YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/DAYOFWEEK/DAYOFYEAR |
 
 ## Predicates
 
@@ -112,7 +112,7 @@ Java fdb-relational **4.11.1.0** vs Go implementation vs ANSI SQL standard.
 | BIGINT / INTEGER / DOUBLE / STRING / BOOLEAN | Y | Y | Y | |
 | BYTES | Y | Y | -- | FDB-specific, not ANSI |
 | DATE / TIMESTAMP | N | Ext | Y | Go extension: column types, CAST, comparisons, YEAR/MONTH/DAY |
-| ARRAY column type | Y | Y | Y | STRING ARRAY, BIGINT ARRAY, etc. |
+| ARRAY column type | Y | Y | Y | All primitive element types: STRING/BIGINT/INTEGER/DOUBLE/FLOAT/BOOLEAN/BYTES/UUID ARRAY |
 | CREATE TABLE / INDEX | Y | Y | Y | |
 | Schema-qualified names (schema.table) | Y | Y | Y | Qualifier validated against current schema |
 | INFORMATION_SCHEMA | N | Ext | Y | Go extension |
