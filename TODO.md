@@ -63,54 +63,15 @@ All priorities resolved. D-1 + D-3 done (sort + distinct → PLANNING phase). M-
 | ~~**D-11**~~ | ~~ConstantObjectValue promotion~~ | ~~No type promotion on eval~~ | ~~PromoteValue.isPromotionNeeded~~ | ~~DONE~~ | ~~done~~ |
 | ~~**D-3 gap**~~ | ~~Distinct elimination check~~ | ~~Physical DistinctRecordsProperty per FinalMember + logical PK fallback~~ | ~~Physical DistinctRecordsProperty~~ | ~~DONE~~ | ~~done~~ |
 
-### D-4 Port: Java PlanningCostModel → Go (CRITICAL)
+### ~~D-4 Port: Java PlanningCostModel → Go~~ — **DONE (swingshift-91)**
 
-Java's `PlanningCostModel.java` is a `Comparator<RelationalExpression>` with 16 ordered comparison criteria applied to physical plan trees. Go's current cost model is a scalar cardinality × CPU heuristic on logical expressions — fundamentally different architecture that can produce different plan choices.
+`PlanningCostModelLess` wired into `Planner.OptimizeReferenceTask.Run`, replacing `CostLess`. All 16 Java criteria ported (375 LOC + 111 LOC tests, 4 unit tests). Scalar `CostLess` retained as tiebreak fallback. 46/46 test targets pass.
 
-**Java's 16 criteria (priority order):**
-1. Physical plan beats non-physical (instanceof RecordQueryPlan)
-2. Max cardinality of all data accesses (scan/index/covering)
-3. Normalized residual predicate count (fewer unsatisfied = better)
-4. Data access count (scan + index + covering, fewer = better)
-5. Recursive CTE tie-breaker (DFS > level-based)
-6. IN-plan penalty (penalize if IN-values aren't SARGs)
-7. Primary scan vs index scan (`IndexScanPreference` config flag)
-8. Type filter count (fewer = better)
-9. Type filter depth (deeper = better)
-10. For index scans: fetch count, fetch depth, fetch operator count
-11. Distinct depth (deeper = better)
-12. Unmatched field count (fewer = better)
-13. IN-join source count (more = better)
-14. MAP/FILTER operation count (fewer = better)
-15. FlatMap join ordering by outer cardinality (lower outer = better)
-16. Plan hash deterministic tie-break
+Also fixed `SelectMergeRule` alias preservation bug: non-SelectExpression children lost source aliases during merge, causing NLJ plans with empty innerAlias to fail predicate evaluation. Root cause was hidden by the old cost model.
 
-**Required Go infrastructure (already exists):**
-- `ExpressionProperty` framework (swingshift-70)
-- `PlanPartition` + property maps
-- `Reference.planProperties` field
-- Cardinality computation (D-8 done)
-
-**Ported (swingshift-91) — 375 LOC + 111 LOC tests:**
-- `PlanningCostModelLess` — all 16 Java criteria implemented, 4 unit tests
-- `walkExpressionTree` — DFS tree walk collecting typed plan instances (Go equiv of FindExpressionVisitor)
-- `countResidualPredicates` — recursive predicate counting with AND/CNF expansion
-- `expressionDepth` — minimum depth of specific plan types (type filter, distinct, fetch)
-- `unmatchedFieldCount` — index columns minus bound comparisons
-- `comparePrimaryScanVsIndexScan` — index preferred over primary (Java default PREFER_INDEX)
-- `compareStreamingVsHash` — streaming agg preferred when both are candidates
-- Plan hash deterministic tie-break
-
-**NOT WIRED IN — 19 of 169 FDB tests fail when plugged into planner:**
-Root cause: the multi-criteria comparator can't express the same cost relationships as the old scalar model for some query patterns (DATE/TIMESTAMP, multi-table FROM, derived table GROUP BY). Without actual data-access cardinality estimates (criterion #2), plans that SHOULD be different look identical to the ordinal comparison — all 16 criteria tie, hash tiebreak picks arbitrarily.
-
-**Remaining to wire in (CRITICAL — do this first):**
-1. Build expression→property bridge so cost model can read cardinality from `Reference.planProperties` via physical wrappers' `HintCost` method
-2. Port `ComparisonsProperty` — 3 sub-checks need it: IN-SARG check (criterion 6), type-filter comparison set difference (criterion 7), primary-vs-index edge case
-3. Wire `PlanningCostModelLess` into `Planner.OptimizeReferenceTask.Run` replacing `CostLess`
-4. Update 19 failing sqldriver FDB test expectations to match new plan choices
-5. Verify plan choices match Java for the affected query patterns
-6. Remove old `cost.go` scalar model after full integration
+**Remaining refinements (optimization quality, not correctness):**
+- Port `ComparisonsProperty` for full-fidelity IN-SARG check (criterion 6) and type-filter comparison set difference (criterion 7 sub-check)
+- `IndexScanPreference` config flag — hardcoded to PREFER_INDEX (Java's default)
 
 ### Yamsql conformance detail (historical — mostly resolved)
 
