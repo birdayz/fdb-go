@@ -1033,17 +1033,19 @@ func executeNestedLoopJoin(
 		return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
 	}
 
+	// The inner scan is uncorrelated in the regular NLJ path (correlated
+	// EXISTS is handled by the branch above). Scan the inner once and
+	// reuse for every outer row. Eliminates N redundant inner scans.
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+	innerRows, err := CollectAll(ctx, innerCursor)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, outerRow := range outerRows {
-		innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
-			return nil, err
-		}
-
-		innerRows, err := CollectAll(ctx, innerCursor)
-		if err != nil {
-			return nil, err
-		}
-
 		matched := false
 		for _, innerRow := range innerRows {
 			combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
@@ -1054,10 +1056,6 @@ func executeNestedLoopJoin(
 		}
 
 		if !matched && joinType == plans.JoinLeftOuter {
-			// Emit the outer row with qualified alias keys so that
-			// downstream projections (e.g. "CUSTOMER.NAME") resolve
-			// correctly. Inner-table columns are absent from the map;
-			// the ResultSet treats missing keys as NULL.
 			results = append(results, qualifyOuterRow(outerRow, p.GetOuterAlias()))
 		}
 	}
