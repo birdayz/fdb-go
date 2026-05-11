@@ -96,6 +96,8 @@ func predicateCountByLevelRec(e expressions.RelationalExpression, counts map[int
 		return -1
 	}
 	maxChildLevel := -1
+	// AllMembers (not firstPhysicalChild) — this runs in the REWRITING phase
+	// where all members are logical and firstPhysicalChild would return nil.
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
 		if ref == nil {
@@ -118,16 +120,20 @@ func predicateCountByLevelRec(e expressions.RelationalExpression, counts map[int
 }
 
 func comparePredicateCountByLevel(a, b map[int]int) int {
-	maxLevel := -1
+	maxLevelA, maxLevelB := -1, -1
 	for k := range a {
-		if k > maxLevel {
-			maxLevel = k
+		if k > maxLevelA {
+			maxLevelA = k
 		}
 	}
 	for k := range b {
-		if k > maxLevel {
-			maxLevel = k
+		if k > maxLevelB {
+			maxLevelB = k
 		}
+	}
+	maxLevel := maxLevelA
+	if maxLevelB > maxLevel {
+		maxLevel = maxLevelB
 	}
 	for level := 0; level <= maxLevel; level++ {
 		ac := a[level]
@@ -136,18 +142,7 @@ func comparePredicateCountByLevel(a, b map[int]int) int {
 			return intCompare(ac, bc)
 		}
 	}
-	highestA, highestB := -1, -1
-	for k := range a {
-		if k > highestA {
-			highestA = k
-		}
-	}
-	for k := range b {
-		if k > highestB {
-			highestB = k
-		}
-	}
-	return intCompare(highestA, highestB)
+	return intCompare(maxLevelA, maxLevelB)
 }
 
 func isSelectExpression(e expressions.RelationalExpression) bool {
