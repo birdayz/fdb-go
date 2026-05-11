@@ -32,6 +32,16 @@ func PlanningCostModelLess(a, b expressions.RelationalExpression) bool {
 }
 
 func planningCostModelCompare(a, b expressions.RelationalExpression) int {
+	if a == nil && b == nil {
+		return 0
+	}
+	if a == nil {
+		return 1
+	}
+	if b == nil {
+		return -1
+	}
+
 	aIsPhysical := isPhysical(a)
 	bIsPhysical := isPhysical(b)
 	if aIsPhysical && !bIsPhysical {
@@ -70,6 +80,12 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 
 	if opsA.typeFilterCount != opsB.typeFilterCount {
 		return intCompare(opsA.typeFilterCount, opsB.typeFilterCount)
+	}
+
+	typeFilterDepthA := expressionDepth(a, isTypeFilterExpression)
+	typeFilterDepthB := expressionDepth(b, isTypeFilterExpression)
+	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB {
+		return intCompare(typeFilterDepthB, typeFilterDepthA)
 	}
 
 	if opsA.indexScanCount+opsA.coveringIndexCount > 0 &&
@@ -292,6 +308,11 @@ func expressionDepthRec(e expressions.RelationalExpression, match func(expressio
 		}
 	}
 	return best
+}
+
+func isTypeFilterExpression(e expressions.RelationalExpression) bool {
+	_, ok := e.(*physicalTypeFilterWrapper)
+	return ok
 }
 
 func isDistinctExpression(e expressions.RelationalExpression) bool {
