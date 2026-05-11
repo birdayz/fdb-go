@@ -1,0 +1,31 @@
+# array_column_type.yaml
+#
+# ARRAY column types. Java 4.11.1.0 supports ARRAY columns (repeated
+# proto fields). DDL syntax: `col_name TYPE ARRAY` where TYPE is any
+# primitive type.
+#
+# Limitation: SQL INSERT cannot provide array literal values — there's
+# no array literal syntax. Array columns can only be NULL or populated
+# via the direct record API. SQL-level queries on tables with ARRAY
+# columns work; the array column returns NULL when not populated.
+name: array_column_type
+schema_template: |
+  CREATE TABLE TaggedItems (id BIGINT NOT NULL, name STRING, tags STRING ARRAY, PRIMARY KEY (id))
+setup:
+  - INSERT INTO TaggedItems VALUES (1, 'alpha', NULL)
+  - INSERT INTO TaggedItems VALUES (2, 'beta', NULL)
+tests:
+  # Round-trip: ARRAY column with NULL value.
+  - query: SELECT id, name FROM TaggedItems WHERE id = 1
+    rows:
+      - [1, 'alpha']
+  - query: SELECT tags IS NULL FROM TaggedItems WHERE id = 1
+    rows:
+      - [true]
+  # COUNT ignores NULL array columns.
+  - query: SELECT COUNT(tags) FROM TaggedItems
+    rows:
+      - [0]
+  - query: SELECT COUNT(*) FROM TaggedItems
+    rows:
+      - [2]
