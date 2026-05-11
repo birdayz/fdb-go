@@ -545,6 +545,10 @@ func translateFDBError(err error) error {
 	if errors.As(err, &existsErr) {
 		return api.WrapError(api.ErrCodeUniqueConstraintViolation, existsErr.Error(), err)
 	}
+	var deserErr *recordlayer.RecordDeserializationError
+	if errors.As(err, &deserErr) {
+		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
+	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "transaction_timed_out"):
