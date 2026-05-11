@@ -52,13 +52,6 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 	quantifiers := sel.GetQuantifiers()
 
 	// Guard: don't push predicates into SelectExpressions containing
-	// Existential quantifiers. Same guard as NormalizePredicatesRule.
-	for _, q := range quantifiers {
-		if q.Kind() == expressions.QuantifierExistential {
-			return
-		}
-	}
-
 	allPredicates := sel.GetPredicates()
 	if len(allPredicates) == 0 {
 		return

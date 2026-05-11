@@ -193,37 +193,48 @@ func TestPredicatePushDown_NoPredicates(t *testing.T) {
 	}
 }
 
-// TestPredicatePushDown_ExistentialGuard verifies the rule skips
-// SelectExpressions containing Existential quantifiers.
-func TestPredicatePushDown_ExistentialGuard(t *testing.T) {
+// TestPredicatePushDown_PushWithExistentialSibling verifies that the
+// rule pushes predicates into ForEach children even when Existential
+// quantifiers are present. Matches Java's behavior: existential
+// quantifiers are skipped per-quantifier, not blocked globally.
+func TestPredicatePushDown_PushWithExistentialSibling(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	// Inner: SELECT a, b FROM T (a SelectExpression the predicate can push into)
+	baseScan := &expressions.FullUnorderedScanExpression{}
+	baseScanRef := expressions.InitialOf(baseScan)
+	baseQ := expressions.ForEachQuantifier(baseScanRef)
+	innerSel := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		nil,
+	)
+	innerRef := expressions.InitialOf(innerSel)
+	innerQ := expressions.ForEachQuantifier(innerRef)
 
+	// EXISTS subquery
 	existScan := &expressions.FullUnorderedScanExpression{}
 	existRef := expressions.InitialOf(existScan)
 	existQ := expressions.ExistentialQuantifier(existRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(scanQ.GetAlias()),
+		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: "test"},
+			Operand: &values.ConstantValue{Value: int64(42)},
 		},
 	}
 
 	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
-		[]expressions.Quantifier{scanQ, existQ},
+		innerQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{innerQ, existQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	selRef := expressions.InitialOf(sel)
 
 	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
-	if len(yielded) != 0 {
-		t.Fatalf("expected 0 yields (existential quantifier guard), got %d", len(yielded))
+	if len(yielded) == 0 {
+		t.Fatal("expected yields: predicate should push into ForEach child despite existential sibling")
 	}
 }
 
@@ -1483,16 +1494,21 @@ func TestPredicatePushDownRule_PushThroughExplodeNestedSelect(t *testing.T) {
 // Ported test: doNotPushDownToExistential
 // --------------------------------------------------------------------------
 
-// TestPredicatePushDownRule_DoNotPushToExistentialInJoin ports Java's
-// doNotPushDownToExistential. The Go rule guards against ANY existential
-// quantifier in the select, so the entire rule is skipped.
-func TestPredicatePushDownRule_DoNotPushToExistentialInJoin(t *testing.T) {
+// TestPredicatePushDownRule_PushForEachPredicateWithExistentialSibling ports
+// Java's doNotPushDownToExistential. The predicate referencing the ForEach
+// quantifier is pushed into its child (a SelectExpression); the EXISTS
+// predicate stays at the top level.
+func TestPredicatePushDownRule_PushForEachPredicateWithExistentialSibling(t *testing.T) {
 	t.Parallel()
 
 	baseQun, _ := baseLeaf()
 
-	// EXPLODE(baseQun.g)
-	explode := expressions.NewExplodeExpression(ppdFieldValue(baseQun, "g"))
+	// Wrap baseQun in a SelectExpression so the push has a target
+	innerSel := selectWithPreds(baseQun)
+	innerQun := forEachOf(innerSel)
+
+	// EXPLODE(innerQun.g)
+	explode := expressions.NewExplodeExpression(ppdFieldValue(innerQun, "g"))
 	explodeQun := forEachOf(explode)
 
 	// EXISTS subquery
@@ -1501,21 +1517,20 @@ func TestPredicatePushDownRule_DoNotPushToExistentialInJoin(t *testing.T) {
 	)
 	existsQun := existentialOf(existsInner)
 
-	// Top: SELECT a FROM t WHERE EXISTS(...) AND b > 'hello'
+	// Top: SELECT a FROM (SELECT ... FROM T) WHERE EXISTS(...) AND b > 'hello'
 	existsPred := predicates.NewExistsPredicate(existsQun.GetAlias())
-	bPred := ppdFieldPred(baseQun, "b", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "hello"))
+	bPred := ppdFieldPred(innerQun, "b", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "hello"))
 
 	topSel := expressions.NewSelectExpression(
-		baseQun.GetFlowedObjectValue(),
-		[]expressions.Quantifier{baseQun, existsQun},
+		innerQun.GetFlowedObjectValue(),
+		[]expressions.Quantifier{innerQun, existsQun},
 		[]predicates.QueryPredicate{existsPred, bPred},
 	)
 	topRef := expressions.InitialOf(topSel)
 
-	// Go's rule bails entirely when an existential quantifier is present.
 	yielded := FireExpressionRule(NewPredicatePushDownRule(), topRef)
-	if len(yielded) != 0 {
-		t.Fatalf("expected 0 yields (existential guard), got %d", len(yielded))
+	if len(yielded) == 0 {
+		t.Fatal("expected yields: bPred should push into ForEach child despite existential sibling")
 	}
 }
 
@@ -1652,16 +1667,10 @@ func TestPredicatePushDownRule_DoNotPushThroughGroupBy(t *testing.T) {
 // Ported test: pushDownOnePredicateOfMultiple (divergence)
 // --------------------------------------------------------------------------
 
-// TestPredicatePushDownRule_OneOfMultipleWithExistential documents a
-// divergence from Java: Java's rule can push a predicate on one ForEach
-// quantifier while leaving an ExistsPredicate on an Existential quantifier
-// untouched. Go's rule guards against ANY existential quantifier and bails
-// entirely. This test documents the divergence.
-//
-// Java test: pushDownOnePredicateOfMultiple
-//
-//	SELECT a FROM (SELECT a, b FROM T) WHERE a = 42 AND EXISTS (SELECT alpha FROM TAU)
-//	=> Java pushes a=42 to T; Go yields nothing (existential guard).
+// TestPredicatePushDownRule_OneOfMultipleWithExistential ports Java's
+// pushDownOnePredicateOfMultiple. The rule pushes pred1 (a=42) into the
+// ForEach child while leaving the EXISTS predicate at the top level.
+// Now matches Java's behavior after removing the existential guard.
 func TestPredicatePushDownRule_OneOfMultipleWithExistential(t *testing.T) {
 	t.Parallel()
 
@@ -1684,11 +1693,9 @@ func TestPredicatePushDownRule_OneOfMultipleWithExistential(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	// Go's existential guard prevents any push-down here.
-	// Java would yield a result. This documents the divergence.
 	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
-	if len(yielded) != 0 {
-		t.Fatalf("expected 0 yields (Go existential guard divergence), got %d", len(yielded))
+	if len(yielded) == 0 {
+		t.Fatal("expected yields: pred1 (a=42) should push into ForEach child despite existential sibling")
 	}
 }
 
