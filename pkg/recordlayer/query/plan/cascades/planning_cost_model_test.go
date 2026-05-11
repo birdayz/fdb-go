@@ -91,3 +91,21 @@ func TestPlanningCostModel_HashTieBreakIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanningCostModel_IndexScanPreferredOverPrimaryScan(t *testing.T) {
+	t.Parallel()
+	primary := &physicalScanWrapper{
+		plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+	}
+	index := &physicalIndexScanWrapper{
+		plan:        plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false),
+		columnNames: []string{"A"},
+	}
+
+	if !PlanningCostModelLess(index, primary) {
+		t.Error("index scan should be preferred over primary scan (Java default: PREFER_INDEX)")
+	}
+	if PlanningCostModelLess(primary, index) {
+		t.Error("primary scan should NOT be preferred over index scan")
+	}
+}
