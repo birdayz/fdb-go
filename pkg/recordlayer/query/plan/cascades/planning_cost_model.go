@@ -75,9 +75,20 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		if fetchA != fetchB {
 			return intCompare(fetchA, fetchB)
 		}
+		fetchDepthA := expressionDepth(a, isFetchExpression)
+		fetchDepthB := expressionDepth(b, isFetchExpression)
+		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB {
+			return intCompare(fetchDepthA, fetchDepthB)
+		}
 		if opsA.fetchCount != opsB.fetchCount {
 			return intCompare(opsA.fetchCount, opsB.fetchCount)
 		}
+	}
+
+	distinctDepthA := expressionDepth(a, isDistinctExpression)
+	distinctDepthB := expressionDepth(b, isDistinctExpression)
+	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB {
+		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
 	mapFilterA := opsA.mapCount + opsA.predicatesFilterCount
@@ -223,6 +234,50 @@ func compareInPlan(_, _ expressions.RelationalExpression, _, _ expressionCounts)
 	// SARG check requires ComparisonsProperty + correlation inspection.
 	// Deferred to next shift — returning 0 (no preference) is safe.
 	return 0
+}
+
+func expressionDepth(e expressions.RelationalExpression, match func(expressions.RelationalExpression) bool) int {
+	return expressionDepthRec(e, match, 0)
+}
+
+func expressionDepthRec(e expressions.RelationalExpression, match func(expressions.RelationalExpression) bool, depth int) int {
+	if e == nil {
+		return -1
+	}
+	if match(e) {
+		return depth
+	}
+	best := -1
+	for _, q := range e.GetQuantifiers() {
+		ref := q.GetRangesOver()
+		if ref == nil {
+			continue
+		}
+		for _, m := range ref.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); ok {
+				d := expressionDepthRec(m, match, depth+1)
+				if d >= 0 && (best < 0 || d < best) {
+					best = d
+				}
+				break
+			}
+		}
+	}
+	return best
+}
+
+func isDistinctExpression(e expressions.RelationalExpression) bool {
+	_, ok := e.(*physicalDistinctWrapper)
+	return ok
+}
+
+func isFetchExpression(e expressions.RelationalExpression) bool {
+	_, ok := e.(*physicalFetchFromPartialRecordWrapper)
+	if ok {
+		return true
+	}
+	_, ok = e.(*physicalIndexScanWrapper)
+	return ok
 }
 
 func intCompare(a, b int) int {
