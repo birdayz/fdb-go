@@ -1,0 +1,164 @@
+# integer_column_types.yaml
+#
+# Comprehensive INTEGER (INT32) column type coverage:
+#   - DDL, basic CRUD, boundary values
+#   - Arithmetic within range
+#   - JOIN predicates on INTEGER columns
+#   - GROUP BY and aggregates (COUNT, SUM, MIN, MAX)
+#   - ORDER BY
+#   - BETWEEN
+#   - CAST from/to INTEGER
+#   - NULL handling
+#   - Out-of-range enforcement (22003)
+#   - Invalid CAST enforcement (22F3H)
+name: integer_column_types
+schema_template: |
+  CREATE TABLE t_int (id BIGINT NOT NULL, val INTEGER, label STRING, PRIMARY KEY (id))
+  CREATE TABLE t_int2 (id BIGINT NOT NULL, ref_id INTEGER, amount INTEGER, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t_int VALUES (1, 2147483647, 'max'), (2, -2147483648, 'min'), (3, 0, 'zero'), (4, 42, 'answer'), (5, null, 'null')
+  - INSERT INTO t_int2 VALUES (10, 42, 100), (11, 42, 200), (12, 0, 300)
+tests:
+  # --- Basic CRUD ---
+
+  # Boundary values round-trip.
+  - query: SELECT val FROM t_int WHERE id = 1
+    rows:
+      - [2147483647]
+  - query: SELECT val FROM t_int WHERE id = 2
+    rows:
+      - [-2147483648]
+  - query: SELECT val FROM t_int WHERE id = 3
+    rows:
+      - [0]
+
+  # UPDATE and read-back.
+  - query: UPDATE t_int SET val = 99 WHERE id = 3
+  - query: SELECT val FROM t_int WHERE id = 3
+    rows:
+      - [99]
+
+  # --- Out-of-range enforcement ---
+
+  # INSERT above MAX_INT32 → 22003.
+  - query: INSERT INTO t_int VALUES (6, 2147483648, 'overflow')
+    error_code: "22003"
+
+  # INSERT below MIN_INT32 → 22003.
+  - query: INSERT INTO t_int VALUES (6, -2147483649, 'underflow')
+    error_code: "22003"
+
+  # UPDATE to out-of-range → 22003.
+  - query: UPDATE t_int SET val = 2147483648 WHERE id = 4
+    error_code: "22003"
+
+  # --- Arithmetic within range ---
+
+  # Simple addition.
+  - query: SELECT val + 1 FROM t_int WHERE id = 4
+    rows:
+      - [43]
+
+  # Multiplication stays in range.
+  - query: SELECT val * 2 FROM t_int WHERE id = 4
+    rows:
+      - [84]
+
+  # Integer division (truncates toward zero).
+  - query: SELECT val / 6 FROM t_int WHERE id = 4
+    rows:
+      - [7]
+
+  # --- BETWEEN ---
+
+  - query: SELECT val FROM t_int WHERE val BETWEEN 0 AND 100 ORDER BY val
+    rows:
+      - [42]
+      - [99]
+
+  # --- ORDER BY ---
+
+  - query: SELECT id, val FROM t_int WHERE val IS NOT NULL ORDER BY val ASC
+    rows:
+      - [2, -2147483648]
+      - [4, 42]
+      - [3, 99]
+      - [1, 2147483647]
+
+  # --- JOIN on INTEGER predicate ---
+
+  # INNER JOIN: t_int.val matches t_int2.ref_id.
+  - query: SELECT t_int.label, t_int2.amount FROM t_int JOIN t_int2 ON t_int.val = t_int2.ref_id ORDER BY t_int2.amount
+    rows:
+      - ['answer', 100]
+      - ['answer', 200]
+
+  # LEFT JOIN: t_int row with val=-2147483648 has no match in t_int2, amount is NULL.
+  - query: SELECT t_int.label, t_int2.amount FROM t_int LEFT JOIN t_int2 ON t_int.val = t_int2.ref_id WHERE t_int.id = 2
+    rows:
+      - ['min', ~]
+
+  # --- GROUP BY and aggregates ---
+
+  # COUNT, SUM, MIN, MAX grouped by ref_id.
+  - query: SELECT ref_id, COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM t_int2 GROUP BY ref_id ORDER BY ref_id
+    rows:
+      - [0, 1, 300, 300, 300]
+      - [42, 2, 300, 100, 200]
+
+  # SUM over a single INTEGER column with NULLs (NULLs excluded from SUM).
+  - query: SELECT SUM(val) FROM t_int WHERE id IN (3, 4, 5)
+    rows:
+      - [141]
+
+  # MIN / MAX over boundary values.
+  - query: SELECT MIN(val), MAX(val) FROM t_int WHERE val IS NOT NULL
+    rows:
+      - [-2147483648, 2147483647]
+
+  # COUNT excludes NULLs.
+  - query: SELECT COUNT(val) FROM t_int
+    rows:
+      - [4]
+
+  # --- CAST ---
+
+  # CAST literal BIGINT in range → INTEGER succeeds.
+  - query: SELECT CAST(100 AS INTEGER) FROM t_int WHERE id = 1
+    rows:
+      - [100]
+
+  # CAST INTEGER column to STRING.
+  - query: SELECT CAST(val AS STRING) FROM t_int WHERE id = 4
+    rows:
+      - ['42']
+
+  # CAST INTEGER column to DOUBLE.
+  - query: SELECT CAST(val AS DOUBLE) FROM t_int WHERE id = 4
+    rows:
+      - [42.0]
+
+  # CAST out-of-range BIGINT literal to INTEGER → 22F3H (INVALID_CAST).
+  - query: SELECT CAST(2147483648 AS INTEGER) FROM t_int WHERE id = 1
+    error_code: "22F3H"
+
+  # CAST negative out-of-range to INTEGER → 22F3H.
+  - query: SELECT CAST(-2147483649 AS INTEGER) FROM t_int WHERE id = 1
+    error_code: "22F3H"
+
+  # --- NULL handling ---
+
+  # NULL val IS NULL.
+  - query: SELECT val IS NULL FROM t_int WHERE id = 5
+    rows:
+      - [true]
+
+  # Arithmetic on NULL produces NULL.
+  - query: SELECT val + 1 IS NULL FROM t_int WHERE id = 5
+    rows:
+      - [true]
+
+  # CAST(NULL AS INTEGER) → NULL.
+  - query: SELECT CAST(NULL AS INTEGER) IS NULL FROM t_int WHERE id = 1
+    rows:
+      - [true]
