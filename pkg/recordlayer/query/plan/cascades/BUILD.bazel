@@ -248,6 +248,7 @@ go_test(
         "planner_pipeline_test.go",
         "planner_planning_phase_test.go",
         "planner_test.go",
+        "planning_cost_model_test.go",
         "predicate_matchers_test.go",
         "predicate_multi_map_test.go",
         "predicate_simplify_fuzz_test.go",
