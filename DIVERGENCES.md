@@ -29,6 +29,13 @@ Go's fixpoint architecture fires rules on all Reference members. Normalizing an 
 
 No functional difference — same timing, same inputs, same outputs.
 
+### AdjustMatchRule is an explicit planner pass
+
+**Java:** `CascadesRule<PartialMatch>`, scheduled as a TransformPartialMatch task.
+**Go:** Explicit `AdjustMatches()` call in `Planner.Plan()` after EXPLORE converges.
+
+No functional difference — absorbs candidate-side-only expressions (MatchableSortExpression) into partial matches. Same inputs, same outputs.
+
 ### Go uses NestedLoopJoinPlan instead of FlatMapPlan
 
 **Java:** `RecordQueryFlatMapPlan` with correlation bindings.

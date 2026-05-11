@@ -167,7 +167,7 @@ Comprehensive audit of Go's Cascades planner against Java's `fdb-record-layer-co
 | Status | Count | Examples |
 |---|---|---|
 | Aligned | ~70 | All PlanningRuleSet rules (~65 instances). All RewritingRuleSet rules (5): QueryPredicateSimplificationRule, PredicatePushDownRule (364 LOC), DecorrelateValuesRule, SelectMergeRule, FinalizeExpressionsRule. PredicateToLogicalUnionRule (248 LOC). PartitionSelectRule, PartitionBinarySelectRule, PullUpNullOnEmptyRule, NormalizePredicatesRule, SplitSelectExtractIndependentQuantifiersRule, all PushRequestedOrdering* (4+), PushInJoinThroughFetch, RemoveProjection, MergeProjectionAndFetch |
-| Structural divergence | 1 | WithPrimaryKeyDataAccessRule (Java=MatchPartition rule, Go=explicit planner pass) |
+| Structural divergence | 2 | WithPrimaryKeyDataAccessRule (Java=MatchPartition rule, Go=explicit planner pass), AdjustMatchRule (Java=CascadesRule\<PartialMatch\>, Go=explicit AdjustMatches() pass) |
 | Go extension | ~25 | PrimaryScanRule, ImplementIndexScanRule, ImplementLimitRule, ImplementHashAggregationRule, StreamingAggFromIndexRule, ImplementInMemorySortRule, ~40 exploration rewrite rules for decomposed expressions |
 
 **Why Go has ~25 extra rules:** Java uses `SelectExpression` as a unified node for filters/projections/joins. Go decomposes into `LogicalFilter`, `LogicalProjection`, `LogicalSort`, etc. — each needing explicit merge/push/pull rewrite rules.
@@ -247,7 +247,7 @@ All Java fdb-record-layer-core Cascades types are ported. Every PlanningRuleSet 
 | Physical Plans | 34 | 32 | 8 | 2 intentional divergences |
 | Value Types | 48 | 45 | 8 | 0 (3 collapsed) |
 | Properties | 18 | 18 | 0 | 0 |
-| Rules | ~70 | ~70 | ~65 | 0 (1 structural divergence) |
+| Rules | ~70 | ~70 | ~65 | 0 (2 structural divergences: explicit planner passes) |
 | Predicates | 9 | 9 | 0 | 0 |
 | Comparisons | 24 | 24 | 0 | 0 |
 | Match Candidates | 12 | 12 | 0 | 0 |
