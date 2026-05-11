@@ -57,6 +57,7 @@ go_library(
         "planner.go",
         "planner_constraint.go",
         "planner_phase.go",
+        "planning_cost_model.go",
         "predicate_multi_map.go",
         "pullup.go",
         "referenced_fields.go",
