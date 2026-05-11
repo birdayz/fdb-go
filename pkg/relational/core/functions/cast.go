@@ -162,15 +162,10 @@ func CastValue(v any, typeName string) (any, error) {
 		case time.Time:
 			return FormatDate(n), nil
 		case string:
-			s := strings.TrimSpace(n)
-			t, err := time.Parse("2006-01-02", s)
-			if err != nil {
-				if t2, err2 := time.Parse("2006-01-02 15:04:05", s); err2 == nil {
-					return FormatDate(t2), nil
-				}
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to DATE", n)
+			if t, ok := ParseTimestamp(strings.TrimSpace(n)); ok {
+				return FormatDate(t), nil
 			}
-			return FormatDate(t), nil
+			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to DATE", n)
 		case int64:
 			return FormatDate(time.Unix(n*86400, 0).UTC()), nil
 		}
@@ -179,17 +174,8 @@ func CastValue(v any, typeName string) (any, error) {
 		case time.Time:
 			return FormatTimestamp(n), nil
 		case string:
-			s := strings.TrimSpace(n)
-			for _, layout := range []string{
-				"2006-01-02 15:04:05",
-				"2006-01-02T15:04:05Z07:00",
-				"2006-01-02T15:04:05",
-				"2006-01-02 15:04:05.999999999",
-				"2006-01-02",
-			} {
-				if t, err := time.Parse(layout, s); err == nil {
-					return FormatTimestamp(t), nil
-				}
+			if t, ok := ParseTimestamp(strings.TrimSpace(n)); ok {
+				return FormatTimestamp(t), nil
 			}
 			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to TIMESTAMP", n)
 		case int64:

@@ -145,7 +145,11 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			b.WriteByte('\'')
 		case time.Time:
 			b.WriteByte('\'')
-			b.WriteString(functions.FormatTimestamp(val))
+			if val.Hour() == 0 && val.Minute() == 0 && val.Second() == 0 && val.Nanosecond() == 0 {
+				b.WriteString(functions.FormatDate(val))
+			} else {
+				b.WriteString(functions.FormatTimestamp(val))
+			}
 			b.WriteByte('\'')
 		case []byte:
 			b.WriteByte('\'')
