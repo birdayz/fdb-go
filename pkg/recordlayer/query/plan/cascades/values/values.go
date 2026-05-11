@@ -460,6 +460,10 @@ func explainTypeName(t Type) string {
 		return "BOOL"
 	case TypeCodeFloat, TypeCodeDouble:
 		return "FLOAT"
+	case TypeCodeDate:
+		return "DATE"
+	case TypeCodeTimestamp:
+		return "TIMESTAMP"
 	}
 	return "UNKNOWN"
 }
