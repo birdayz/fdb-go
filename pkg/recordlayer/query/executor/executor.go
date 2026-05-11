@@ -1578,7 +1578,7 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		switch n := v.(type) {
 		case int64:
 			if n < 0 {
-				return protoreflect.Value{}, fmt.Errorf("negative value %d cannot be stored in unsigned %s column %q", n, fd.Kind(), fd.Name())
+				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
 			}
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		case uint64:
