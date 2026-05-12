@@ -1,0 +1,34 @@
+# computed_column_names.yaml
+#
+# Verifies that unnamed computed expressions in SELECT projections
+# get positional names (_0, _1, _2) matching Java's naming convention.
+# swingshift-92 fixed Go to emit _N names for unnamed expressions
+# (previously used expression text like "(ID + 10)").
+name: computed_column_names
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  - query: SELECT id + 1 FROM t WHERE id = 1
+    rows:
+      - [2]
+  - query: SELECT id + 1, val * 2 FROM t WHERE id = 1
+    rows:
+      - [2, 20]
+  - query: SELECT id, id + val FROM t WHERE id = 2
+    rows:
+      - [2, 22]
+  - query: SELECT val - id, val + id FROM t WHERE id = 3
+    rows:
+      - [27, 33]
+  # Constant expression
+  - query: SELECT 42 FROM t WHERE id = 1
+    rows:
+      - [42]
+  # Mixed named and unnamed
+  - query: SELECT id, val + 1 FROM t ORDER BY id
+    rows:
+      - [1, 11]
+      - [2, 21]
+      - [3, 31]
