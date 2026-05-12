@@ -154,7 +154,7 @@ All 4 criteria ported: fewer SelectExpressions, fewer TableFunctionExpressions, 
 ### Value Simplification: SimplifyValue + SimplifyValueWithContext
 
 Two-tier simplification matching Java's value rule sets:
-- `SimplifyValue()` — context-free: constant folding (arithmetic/cast/promote/scalar-function/not/and-or/pick/coalesce), `composeFieldOverConstructor`, `simplifyCoalesce`.
+- `SimplifyValue()` — context-free: constant folding (arithmetic/cast/promote/scalar-function/not/and-or/pick/coalesce), `composeFieldOverConstructor`, `simplifyCoalesce`, `EvaluateConstantPromotion` (Promote(constant) → constant with target type).
 - `SimplifyValueWithContext(v, ctx)` — context-aware with `constantAliases` + `isRoot`: `eliminateArithmeticWithConstant` (col+5 → col for ordering), `foldConstant` (wrap fully-constant subtrees), `liftConstructor` (flatten nested RC, isRoot-gated).
 
 ### InJoinPlan: InSourceKind + PushInJoinThroughFetch
