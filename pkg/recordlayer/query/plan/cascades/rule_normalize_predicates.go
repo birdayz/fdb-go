@@ -72,15 +72,12 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	// Step 3: Extract conjuncts from the CNF result.
 	cnfConjuncts := andConjuncts(cnf)
 
-	// Step 4: Yield with original quantifiers (not rebuilt). Java
-	// rebuilds via toBuilder().build() but Go's Quantifier is a value
-	// type — rebuilding creates new values that break downstream
-	// pattern matching for Existential quantifiers. Reusing the
-	// originals preserves structural identity.
-	call.Yield(expressions.NewSelectExpression(
+	// Step 4: Yield with original quantifiers and metadata preserved.
+	call.Yield(expressions.NewSelectExpressionWithAliases(
 		sel.GetResultValue(),
 		sel.GetQuantifiers(),
 		cnfConjuncts,
+		sel.GetSourceAliases(),
 	))
 }
 

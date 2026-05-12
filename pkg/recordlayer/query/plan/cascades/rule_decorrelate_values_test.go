@@ -12,9 +12,7 @@ func TestDecorrelateValuesRule_InlineConstantBox(t *testing.T) {
 	t.Parallel()
 
 	// Values box: SELECT 42 AS x FROM range(1)
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	constResult := &values.ConstantValue{Value: int64(42)}
 	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
 	valuesBoxRef := expressions.InitialOf(valuesBox)
@@ -75,9 +73,7 @@ func TestDecorrelateValuesRule_SkipCorrelatedResult(t *testing.T) {
 	t.Parallel()
 
 	// Values box with result correlated to its own child → not a values box.
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	correlatedResult := values.NewQuantifiedObjectValue(rangeQ.GetAlias())
 	notAValuesBox := expressions.NewSelectExpression(correlatedResult, []expressions.Quantifier{rangeQ}, nil)
 	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
@@ -129,9 +125,7 @@ func TestDecorrelateValuesRule_SidewaysCorrelation(t *testing.T) {
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	// Result references the sibling scanQ's alias.
 	sidewaysResult := values.NewQuantifiedObjectValue(scanQ.GetAlias())
 	valuesBox := expressions.NewSelectExpression(sidewaysResult, []expressions.Quantifier{rangeQ}, nil)
@@ -155,9 +149,7 @@ func TestDecorrelateValuesRule_AndPredicateTranslation(t *testing.T) {
 	t.Parallel()
 
 	// Values box with constant result.
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	constResult := &values.ConstantValue{Value: int64(7)}
 	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
 	valuesBoxRef := expressions.InitialOf(valuesBox)
@@ -219,9 +211,7 @@ func TestDecorrelateValuesRule_ResultValueTranslation(t *testing.T) {
 	t.Parallel()
 
 	// Values box.
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	constResult := &values.ConstantValue{Value: "hello"}
 	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
 	valuesBoxRef := expressions.InitialOf(valuesBox)
@@ -261,9 +251,7 @@ func TestDecorrelateValuesRule_WithSourceAliases(t *testing.T) {
 	t.Parallel()
 
 	// Values box.
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	constResult := &values.ConstantValue{Value: int64(1)}
 	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
 	valuesBoxRef := expressions.InitialOf(valuesBox)
@@ -300,22 +288,16 @@ func TestDecorrelateValuesRule_MultipleValuesBoxes(t *testing.T) {
 	t.Parallel()
 
 	// Two values boxes + one real scan → both inlined.
-	range1 := &expressions.FullUnorderedScanExpression{}
-	range1Ref := expressions.InitialOf(range1)
-	range1Q := expressions.ForEachQuantifier(range1Ref)
 	vb1 := expressions.NewSelectExpression(
 		&values.ConstantValue{Value: int64(10)},
-		[]expressions.Quantifier{range1Q}, nil,
+		[]expressions.Quantifier{makeRangeOneQ()}, nil,
 	)
 	vb1Ref := expressions.InitialOf(vb1)
 	vb1Q := expressions.ForEachQuantifier(vb1Ref)
 
-	range2 := &expressions.FullUnorderedScanExpression{}
-	range2Ref := expressions.InitialOf(range2)
-	range2Q := expressions.ForEachQuantifier(range2Ref)
 	vb2 := expressions.NewSelectExpression(
 		&values.ConstantValue{Value: "hello"},
-		[]expressions.Quantifier{range2Q}, nil,
+		[]expressions.Quantifier{makeRangeOneQ()}, nil,
 	)
 	vb2Ref := expressions.InitialOf(vb2)
 	vb2Q := expressions.ForEachQuantifier(vb2Ref)
@@ -345,10 +327,19 @@ func TestDecorrelateValuesRule_MultipleValuesBoxes(t *testing.T) {
 
 // makeValuesBox creates a values box: SELECT constResult FROM range(1).
 // This is the Go equivalent of Java's valuesQun(...) helper.
-func makeValuesBox(resultValue values.Value) (expressions.Quantifier, *expressions.Reference) {
-	rangeSource := &expressions.FullUnorderedScanExpression{}
+func makeRangeOneQ() expressions.Quantifier {
+	rangeOne := values.NewRangeValue(
+		&values.ConstantValue{Value: int64(0)},
+		&values.ConstantValue{Value: int64(1)},
+		&values.ConstantValue{Value: int64(1)},
+	)
+	rangeSource := expressions.NewTableFunctionExpression(rangeOne)
 	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	return expressions.ForEachQuantifier(rangeRef)
+}
+
+func makeValuesBox(resultValue values.Value) (expressions.Quantifier, *expressions.Reference) {
+	rangeQ := makeRangeOneQ()
 	valuesBox := expressions.NewSelectExpression(resultValue, []expressions.Quantifier{rangeQ}, nil)
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
@@ -586,9 +577,7 @@ func TestDecorrelateValuesRule_DoNotPushDownExistentialValuesQuantifier(t *testi
 	t.Parallel()
 
 	// Values box: SELECT 42 FROM range(1), but wrapped in an existential quantifier.
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	valuesBox := expressions.NewSelectExpression(
 		&values.ConstantValue{Value: int64(42)},
 		[]expressions.Quantifier{rangeQ}, nil,
@@ -621,9 +610,7 @@ func TestDecorrelateValuesRule_DoNotMatchIfAllExistentialQuantifiers(t *testing.
 	t.Parallel()
 
 	// Existential over values box
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeQ := expressions.ForEachQuantifier(rangeRef)
+	rangeQ := makeRangeOneQ()
 	valuesBox := expressions.NewSelectExpression(
 		&values.ConstantValue{Value: int64(42)},
 		[]expressions.Quantifier{rangeQ}, nil,
@@ -674,17 +661,9 @@ func TestDecorrelateValuesRule_DoNotAllowValuesBoxWithJoin(t *testing.T) {
 	t.Parallel()
 
 	// "Values box" with two child quantifiers: SELECT 42 FROM range(1), range(1)
-	range1 := &expressions.FullUnorderedScanExpression{}
-	range1Ref := expressions.InitialOf(range1)
-	range1Q := expressions.ForEachQuantifier(range1Ref)
-
-	range2 := &expressions.FullUnorderedScanExpression{}
-	range2Ref := expressions.InitialOf(range2)
-	range2Q := expressions.ForEachQuantifier(range2Ref)
-
 	notAValuesBox := expressions.NewSelectExpression(
 		&values.ConstantValue{Value: int64(42)},
-		[]expressions.Quantifier{range1Q, range2Q}, nil,
+		[]expressions.Quantifier{makeRangeOneQ(), makeRangeOneQ()}, nil,
 	)
 	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
 	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
@@ -895,9 +874,6 @@ func TestDecorrelateValuesRule_DoNotUseValuesBoxWithCorrelationsInTheValue(t *te
 
 	// Values box whose result references lowerQ (a sibling).
 	// SELECT {x=lowerQ.b} FROM range(1) — the result is correlated to lowerQ.
-	rangeSource := &expressions.FullUnorderedScanExpression{}
-	rangeRef := expressions.InitialOf(rangeSource)
-	rangeRQ := expressions.ForEachQuantifier(rangeRef)
 	valuesBoxSel := expressions.NewSelectExpression(
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{
@@ -905,7 +881,7 @@ func TestDecorrelateValuesRule_DoNotUseValuesBoxWithCorrelationsInTheValue(t *te
 				Value: values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "b", nil),
 			},
 		),
-		[]expressions.Quantifier{rangeRQ}, nil,
+		[]expressions.Quantifier{makeRangeOneQ()}, nil,
 	)
 	valuesBoxRef := expressions.InitialOf(valuesBoxSel)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
@@ -1189,5 +1165,164 @@ func TestDecorrelateValuesRule_ConstantObjectValueResult(t *testing.T) {
 	}
 	if gotCOV != cov {
 		t.Error("expected the same ConstantObjectValue instance")
+	}
+}
+
+// TestDecorrelateValuesRule_DoNotUseValuesBoxWithPredicates ports Java's
+// doNotUseValuesBoxWithPredicates. A values box that has predicates
+// (even tautologies like TRUE) should NOT be treated as a values box.
+func TestDecorrelateValuesRule_DoNotUseValuesBoxWithPredicates(t *testing.T) {
+	t.Parallel()
+
+	rangeQ := makeRangeOneQ()
+
+	notAValuesBox := expressions.NewSelectExpression(
+		&values.ConstantValue{Value: int64(42)},
+		[]expressions.Quantifier{rangeQ},
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+	)
+	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
+	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
+
+	baseQ, _ := makeBaseScan()
+
+	correlatedSel := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewQuantifiedObjectValue(notAValuesBoxQ.GetAlias()),
+				},
+			},
+		},
+	)
+	correlatedRef := expressions.InitialOf(correlatedSel)
+	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
+
+	outerSel := expressions.NewSelectExpression(
+		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+		[]expressions.Quantifier{notAValuesBoxQ, correlatedQ},
+		nil,
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	if len(yielded) != 0 {
+		t.Fatalf("expected 0 yields (values box has predicates), got %d", len(yielded))
+	}
+}
+
+// TestDecorrelateValuesRule_DoNotTreatRangeTwoAsValues ports Java's
+// doNotTreatRangeTwoAsValues. A values box over range(2) has
+// cardinality 2, not 1. The rule should not treat it as a values box.
+func TestDecorrelateValuesRule_DoNotTreatRangeTwoAsValues(t *testing.T) {
+	t.Parallel()
+
+	rangeTwoValue := values.NewRangeValue(
+		&values.ConstantValue{Value: int64(0)},
+		&values.ConstantValue{Value: int64(2)},
+		&values.ConstantValue{Value: int64(1)},
+	)
+	rangeTwoExpr := expressions.NewTableFunctionExpression(rangeTwoValue)
+	rangeTwoRef := expressions.InitialOf(rangeTwoExpr)
+	rangeTwoQ := expressions.ForEachQuantifier(rangeTwoRef)
+
+	notAValuesBox := expressions.NewSelectExpression(
+		&values.ConstantValue{Value: int64(42)},
+		[]expressions.Quantifier{rangeTwoQ}, nil,
+	)
+	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
+	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
+
+	baseQ, _ := makeBaseScan()
+
+	correlatedSel := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewQuantifiedObjectValue(notAValuesBoxQ.GetAlias()),
+				},
+			},
+		},
+	)
+	correlatedRef := expressions.InitialOf(correlatedSel)
+	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
+
+	outerSel := expressions.NewSelectExpression(
+		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+		[]expressions.Quantifier{notAValuesBoxQ, correlatedQ},
+		nil,
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	if len(yielded) != 0 {
+		t.Fatalf("expected 0 yields (values box over range(2)), got %d", len(yielded))
+	}
+}
+
+// TestDecorrelateValuesRule_DoNotTreatRangeWithConstantObjectValueAsValueBox
+// ports Java's doNotTreatRangeWithConstantObjectValueAsValueBox. A values
+// box over range(constantObjectValue) should not be treated as a values
+// box because the constant could change between plan executions.
+func TestDecorrelateValuesRule_DoNotTreatRangeWithConstantObjectValueAsValueBox(t *testing.T) {
+	t.Parallel()
+
+	endCOV := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"),
+		"0", values.NotNullLong,
+	)
+	rangeExpr := expressions.NewTableFunctionExpression(
+		values.NewRangeValue(
+			&values.ConstantValue{Value: int64(0)},
+			endCOV,
+			&values.ConstantValue{Value: int64(1)},
+		),
+	)
+	rangeRef := expressions.InitialOf(rangeExpr)
+	rangeQ := expressions.ForEachQuantifier(rangeRef)
+
+	notAValuesBox := expressions.NewSelectExpression(
+		&values.ConstantValue{Value: int64(42)},
+		[]expressions.Quantifier{rangeQ}, nil,
+	)
+	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
+	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
+
+	baseQ, _ := makeBaseScan()
+
+	correlatedSel := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewQuantifiedObjectValue(notAValuesBoxQ.GetAlias()),
+				},
+			},
+		},
+	)
+	correlatedRef := expressions.InitialOf(correlatedSel)
+	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
+
+	outerSel := expressions.NewSelectExpression(
+		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+		[]expressions.Quantifier{notAValuesBoxQ, correlatedQ},
+		nil,
+	)
+	outerRef := expressions.InitialOf(outerSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	if len(yielded) != 0 {
+		t.Fatalf("expected 0 yields (values box over range with ConstantObjectValue), got %d", len(yielded))
 	}
 }

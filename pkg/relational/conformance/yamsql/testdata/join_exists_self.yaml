@@ -1,0 +1,30 @@
+# join_exists_self.yaml
+#
+# Self-join with EXISTS: exercises the NLJ existential path where
+# outer and inner both reference the same table. Exercises alias
+# threading, correlated predicate resolution, and EXISTS semi-join.
+name: join_exists_self
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, status STRING, val BIGINT, PRIMARY KEY (id))
+  CREATE INDEX idx_status ON t (status)
+setup:
+  - INSERT INTO t VALUES (1, 'active', 10), (2, 'inactive', 20), (3, 'active', 30), (4, 'deleted', 40)
+tests:
+  # EXISTS correlated on PK
+  - query: SELECT id FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
+    rows:
+      - [1]
+      - [3]
+  # NOT EXISTS — inverse
+  - query: SELECT id FROM t AS o WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
+    rows:
+      - [2]
+      - [4]
+  # EXISTS with additional outer predicate
+  - query: SELECT id FROM t AS o WHERE o.val > 15 AND EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
+    rows:
+      - [3]
+  # COUNT with EXISTS
+  - query: SELECT COUNT(*) FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active')
+    rows:
+      - [2]

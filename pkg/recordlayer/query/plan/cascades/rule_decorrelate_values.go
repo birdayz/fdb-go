@@ -76,6 +76,12 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 			if len(childQs) != 1 {
 				continue
 			}
+			if len(childSel.GetPredicates()) > 0 {
+				continue
+			}
+			if !isRangeOneQuantifier(childQs[0]) {
+				continue
+			}
 			rv := childSel.GetResultValue()
 			if rv == nil {
 				continue
@@ -301,6 +307,63 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		return p
 	default:
 		return p
+	}
+}
+
+// isRangeOneQuantifier checks if a quantifier ranges over a Reference
+// containing a TableFunctionExpression with cardinality exactly 1.
+// Mirrors Java's rangeOneMatcher which checks
+// `CardinalitiesProperty.Cardinalities.exactlyOne()`.
+func isRangeOneQuantifier(q expressions.Quantifier) bool {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return false
+	}
+	for _, m := range ref.AllMembers() {
+		tfe, ok := m.(*expressions.TableFunctionExpression)
+		if !ok {
+			continue
+		}
+		rv, ok := tfe.GetValue().(*values.RangeValue)
+		if !ok {
+			continue
+		}
+		begin, ok := rv.BeginInclusive.(*values.ConstantValue)
+		if !ok {
+			continue
+		}
+		end, ok := rv.EndExclusive.(*values.ConstantValue)
+		if !ok {
+			continue
+		}
+		step, ok := rv.Step.(*values.ConstantValue)
+		if !ok {
+			continue
+		}
+		b, bOk := toInt64(begin.Value)
+		e, eOk := toInt64(end.Value)
+		s, sOk := toInt64(step.Value)
+		if !bOk || !eOk || !sOk || s <= 0 {
+			continue
+		}
+		rows := (e - b + s - 1) / s
+		if rows == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func toInt64(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int32:
+		return int64(x), true
+	case int:
+		return int64(x), true
+	default:
+		return 0, false
 	}
 }
 

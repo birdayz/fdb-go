@@ -1,0 +1,51 @@
+# type_promotion.yaml
+#
+# Verifies implicit type promotion in comparisons and arithmetic.
+# swingshift-92 added PromoteValue constant folding (Promote(constant)
+# → constant with target type) and CastValue constant folding.
+name: type_promotion
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, i INTEGER NOT NULL, d DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 1.5), (2, 20, 2.5), (3, 30, null)
+tests:
+  # INTEGER compared to BIGINT literal — promotes INTEGER to BIGINT.
+  - query: SELECT id FROM t WHERE i > 15
+    rows:
+      - [2]
+      - [3]
+    unordered: true
+  # INTEGER compared to DOUBLE literal — promotes INTEGER to DOUBLE.
+  - query: SELECT id FROM t WHERE i > 15.5
+    rows:
+      - [2]
+      - [3]
+    unordered: true
+  # DOUBLE column compared to integer literal.
+  - query: SELECT id FROM t WHERE d > 2
+    rows:
+      - [2]
+  # Arithmetic with mixed types in WHERE.
+  - query: SELECT id FROM t WHERE i + 0.5 > 20
+    rows:
+      - [2]
+      - [3]
+    unordered: true
+  # NULL comparison — NULL > anything is NULL (falsy).
+  - query: SELECT id FROM t WHERE d > 0
+    rows:
+      - [1]
+      - [2]
+    unordered: true
+  # COUNT with promotion
+  - query: SELECT COUNT(*) FROM t WHERE i >= 20
+    rows:
+      - [2]
+  # SUM of INTEGER column returns BIGINT
+  - query: SELECT SUM(i) FROM t
+    rows:
+      - [60]
+  # AVG of INTEGER column returns DOUBLE
+  - query: SELECT AVG(i) FROM t
+    rows:
+      - [20.0]
