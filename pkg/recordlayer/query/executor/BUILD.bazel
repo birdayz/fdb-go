@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "executor",
     srcs = [
+        "covering_optimizer.go",
         "evaluation_context.go",
         "executor.go",
         "executor_new_plans.go",
