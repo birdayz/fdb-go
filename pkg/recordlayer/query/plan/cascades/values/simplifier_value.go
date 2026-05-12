@@ -99,6 +99,11 @@ func simplifyChildren(v Value) Value {
 		return &ArithmeticValue{Op: x.Op, Left: l, Right: r}
 	case *CastValue:
 		c := SimplifyValue(x.Child)
+		if cv, ok := c.(*ConstantValue); ok {
+			if folded := tryCastConstant(cv, x.Target); folded != nil {
+				return folded
+			}
+		}
 		if c == x.Child {
 			return v
 		}
@@ -208,6 +213,16 @@ func composeFieldOverConstructor(v Value) Value {
 // field(field(v, path1), path2) is a nested field access. In Go's single-step
 // model this doesn't apply directly (FieldValue has one Field, not a path).
 // But when Child is another FieldValue accessing the same base, we can flatten.
+func tryCastConstant(cv *ConstantValue, target Type) *ConstantValue {
+	defer func() { recover() }()
+	cast := NewCastValue(cv, target)
+	result := cast.Evaluate(nil)
+	if result != nil {
+		return &ConstantValue{Value: result, Typ: target}
+	}
+	return nil
+}
+
 func composeFieldOverField(v Value) Value {
 	outer, ok := v.(*FieldValue)
 	if !ok || outer.Child == nil {
