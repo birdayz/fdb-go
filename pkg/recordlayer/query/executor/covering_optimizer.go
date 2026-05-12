@@ -8,10 +8,19 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+// NOT YET WIRED INTO THE QUERY PIPELINE.
+//
 // OptimizeCoveringIndexScans walks a physical plan tree and marks
 // index scans as covering when the plan above them only references
 // columns available from the index. This is a post-extraction
 // optimization pass that avoids the per-row LoadRecord() call.
+//
+// STATUS: skeleton only. The filter cases collect referenced columns
+// but do NOT recurse into children — the most common covering
+// scenario (Filter → IndexScan) is not yet handled. The skeleton
+// compiles and passes tests but produces no optimization. Wire this
+// in after implementing recursive plan-tree walking with column
+// reference propagation.
 //
 // The optimization is conservative: it only fires when ALL referenced
 // columns in filters and projections above the index scan are present

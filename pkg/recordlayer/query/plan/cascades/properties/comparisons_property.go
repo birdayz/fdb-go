@@ -1,10 +1,9 @@
 package properties
 
 import (
-	"fmt"
-
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // ScanComparisonProvider is the interface plan nodes implement to
@@ -98,7 +97,7 @@ type compKey struct {
 func comparisonKey(c predicates.Comparison) compKey {
 	var op string
 	if c.Operand != nil {
-		op = fmt.Sprintf("%v", c.Operand)
+		op = values.ExplainValue(c.Operand)
 	}
 	return compKey{typ: c.Type, operand: op}
 }
