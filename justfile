@@ -62,9 +62,13 @@ generate-parser:
 build:
     bazelisk build //...
 
-# Test all targets (excludes Java conformance server tests which need manual setup).
+# Test all targets (excludes Java conformance server tests and stress tests).
 test:
-    bazelisk test //... --test_tag_filters=-conformance_java
+    bazelisk test //... --test_tag_filters=-conformance_java --test_arg=-test.short
+
+# Run stress tests (10K/100K rows — exercises FDB transaction limits).
+stress:
+    bazelisk test //pkg/relational/sqldriver:sqldriver_test --test_arg="--test.run=TestFDB_Stress" --test_timeout=600 --test_output=streamed
 
 # Run conformance server
 run-conformance-server:
