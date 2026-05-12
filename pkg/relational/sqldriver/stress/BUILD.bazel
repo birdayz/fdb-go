@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "stress_test",
+    timeout = "eternal",
+    srcs = ["stress_test.go"],
+    tags = ["stress"],
+    deps = [
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

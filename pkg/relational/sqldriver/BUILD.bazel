@@ -37,7 +37,6 @@ go_test(
         "recursive_cte_rename_probe_test.go",
         "scalar_subquery_cte_test.go",
         "sql_integration_test.go",
-        "stress_test.go",
     ],
     embed = [":sqldriver"],
     deps = [

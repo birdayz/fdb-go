@@ -1,18 +1,54 @@
-package sqldriver_test
+package stress_test
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
-// stressHarness manages setup/teardown for large-table stress tests.
-// It handles batched INSERT to stay within FDB's 5s transaction limit
-// and provides helpers for timing queries.
+var clusterFilePath string
+
+func TestMain(m *testing.M) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	container, err := foundationdbtc.Run(ctx, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stress: no Docker, skipping\n")
+		os.Exit(0)
+	}
+	defer container.Terminate(context.Background()) //nolint:errcheck
+
+	clusterContent, err := container.ClusterFile(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ClusterFile: %v\n", err)
+		os.Exit(1)
+	}
+
+	tmp, err := os.CreateTemp("", "fdb-stress-*.cluster")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "CreateTemp: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(clusterContent); err != nil {
+		fmt.Fprintf(os.Stderr, "WriteString: %v\n", err)
+		os.Exit(1)
+	}
+	tmp.Close()
+	clusterFilePath = tmp.Name()
+
+	os.Exit(m.Run())
+}
+
 type stressHarness struct {
 	t         *testing.T
 	db        *sql.DB
@@ -23,13 +59,16 @@ type stressHarness struct {
 
 func newStressHarness(t *testing.T, suffix string) *stressHarness {
 	t.Helper()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
 	dbPath := "/stress_" + suffix
 	ctx := context.Background()
 
-	sysDB := openTestDB(t, "/__SYS")
+	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
+	sysDB, err := sql.Open("fdbsql", sysDSN)
+	if err != nil {
+		t.Fatalf("sql.Open __SYS: %v", err)
+	}
+	defer sysDB.Close()
+
 	if _, err := sysDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -53,7 +92,13 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 func (h *stressHarness) createSchema(template string) {
 	h.t.Helper()
 	ctx := context.Background()
-	sysDB := openTestDB(h.t, "/__SYS")
+
+	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
+	sysDB, err := sql.Open("fdbsql", sysDSN)
+	if err != nil {
+		h.t.Fatalf("sql.Open __SYS: %v", err)
+	}
+	defer sysDB.Close()
 
 	tmplName := "stress_tmpl_" + strings.ReplaceAll(h.dbPath, "/", "")
 	if _, err := sysDB.ExecContext(ctx, "CREATE SCHEMA TEMPLATE "+tmplName+" "+template); err != nil {
@@ -64,9 +109,6 @@ func (h *stressHarness) createSchema(template string) {
 	}
 }
 
-// bulkInsert inserts n rows using batched multi-row INSERT VALUES.
-// Each batch is a separate transaction to stay within FDB's 5s limit.
-// genRow(i) returns the VALUES clause for row i (e.g., "(1, 'foo', 42)").
 func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) string) time.Duration {
 	h.t.Helper()
 	ctx := context.Background()
@@ -98,7 +140,6 @@ type queryResult struct {
 	Err      error
 }
 
-// timeQuery runs a SELECT query and returns timing + row count.
 func (h *stressHarness) timeQuery(query string, args ...any) queryResult {
 	ctx := context.Background()
 	start := time.Now()
@@ -117,11 +158,9 @@ func (h *stressHarness) timeQuery(query string, args ...any) queryResult {
 		return queryResult{Query: query, Duration: time.Since(start), RowCount: count, Err: err}
 	}
 
-	elapsed := time.Since(start)
-	return queryResult{Query: query, Duration: elapsed, RowCount: count}
+	return queryResult{Query: query, Duration: time.Since(start), RowCount: count}
 }
 
-// timeExec runs a DML statement and returns timing + rows affected.
 func (h *stressHarness) timeExec(stmt string, args ...any) queryResult {
 	ctx := context.Background()
 	start := time.Now()
@@ -161,28 +200,13 @@ func (r queryResult) expectRows(t *testing.T, label string, expected int) {
 }
 
 // ---------------------------------------------------------------------------
-// Stress tests
-// ---------------------------------------------------------------------------
 
-// TestFDB_Stress_10K exercises a 10,000-row table with various query
-// patterns. This is the baseline — should complete in under 3 minutes.
-// Run with: bazelisk test //pkg/relational/sqldriver:sqldriver_test --test_arg="--test.run=TestFDB_Stress" --test_timeout=300
 func TestFDB_Stress_10K(t *testing.T) {
-	if testing.Short() {
-		t.Skip("stress tests skipped in short mode")
-	}
 	t.Parallel()
 	runStressSuite(t, "10k", 10_000)
 }
 
-// TestFDB_Stress_100K exercises a 100,000-row table. This tests FDB
-// transaction timeout handling (5s limit) and continuation semantics
-// for large result sets. JOINs are limited to small outer sets because
-// NLJ is O(N×M) with per-row FDB transactions.
 func TestFDB_Stress_100K(t *testing.T) {
-	if testing.Short() {
-		t.Skip("stress tests skipped in short mode")
-	}
 	t.Parallel()
 	runStressSuite(t, "100k", 100_000)
 }
@@ -196,7 +220,6 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	}
 	h := newStressHarness(t, suffix)
 
-	// Schema: two tables for JOIN tests, with and without indexes.
 	h.createSchema(`
 		CREATE TABLE orders (
 			id BIGINT NOT NULL,
@@ -225,13 +248,10 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	statuses := []string{"pending", "shipped", "delivered", "cancelled"}
 	rng := rand.New(rand.NewSource(42))
 
-	// Insert customers
 	t.Log("--- SETUP ---")
 	h.bulkInsert("customers", numCustomers, func(i int) string {
 		return fmt.Sprintf("(%d, 'customer_%d', '%s')", i, i, tiers[i%len(tiers)])
 	})
-
-	// Insert orders
 	h.bulkInsert("orders", n, func(i int) string {
 		custID := rng.Intn(numCustomers)
 		amount := rng.Intn(10000) + 1
@@ -251,23 +271,16 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	r.mustSucceed(t, "PK lookup id=N-1")
 
 	t.Log("--- INDEX SCANS ---")
-	// Index scan on customer_id — should be fast, ~10 rows per customer
 	r = h.timeQuery("SELECT id, amount FROM orders WHERE customer_id = 0")
 	r.mustSucceed(t, "idx_customer eq")
-
-	// Index range scan on amount
 	r = h.timeQuery("SELECT id FROM orders WHERE amount > 9000")
 	r.mustSucceed(t, "idx_amount range >9000")
-
-	// Index scan on status — each status has ~N/4 rows
 	r = h.timeQuery("SELECT COUNT(*) FROM orders WHERE status = 'pending'")
 	r.expectRows(t, "idx_status count pending", 1)
 
 	t.Log("--- FULL TABLE SCANS ---")
 	r = h.timeQuery("SELECT COUNT(*) FROM orders")
 	r.expectRows(t, "full scan COUNT(*)", 1)
-
-	// Full scan with filter on non-indexed column
 	r = h.timeQuery("SELECT COUNT(*) FROM orders WHERE amount > 5000")
 	r.mustSucceed(t, "full scan filter amount>5000")
 
@@ -277,24 +290,18 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	if r.RowCount != len(statuses) {
 		t.Errorf("GROUP BY status: got %d rows, want %d (possible FDB timeout truncation)", r.RowCount, len(statuses))
 	}
-
 	r = h.timeQuery("SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
 	r.mustSucceed(t, "GROUP BY customer HAVING")
 
 	t.Log("--- JOINS ---")
-	// NLJ join: orders × customers on customer_id.
-	// Known issue: NLJ does full inner scan per outer row (no correlated
-	// index probes). At 10K+ this is catastrophic.
 	r = h.timeQuery("SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id")
 	r.mustSucceed(t, "JOIN 10 orders × customers")
 	if r.RowCount < 1 {
 		t.Error("JOIN returned 0 rows")
 	}
-
 	if n <= 10_000 {
 		r = h.timeQuery("SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 100 ORDER BY o.id")
 		r.mustSucceed(t, "JOIN 100 orders × customers")
-
 		r = h.timeQuery("SELECT COUNT(*) FROM orders o, customers c WHERE o.customer_id = c.id AND c.tier = 'gold' AND o.status = 'pending'")
 		r.mustSucceed(t, "JOIN filtered both sides")
 	} else {
@@ -307,7 +314,6 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	if r.RowCount != n {
 		t.Errorf("ORDER BY PK: got %d rows, want %d (silent truncation from FDB timeout?)", r.RowCount, n)
 	}
-
 	r = h.timeQuery("SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id")
 	r.mustSucceed(t, "ORDER BY PK + index filter")
 
@@ -317,7 +323,6 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	if r.RowCount != n {
 		t.Errorf("scan all rows: got %d rows, want %d (silent truncation)", r.RowCount, n)
 	}
-
 	r = h.timeQuery("SELECT id, customer_id, amount, status FROM orders ORDER BY id")
 	r.mustSucceed(t, "scan all rows wide")
 	if r.RowCount != n {
@@ -338,11 +343,8 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	r.mustSucceed(t, "IN-list 5 values")
 
 	t.Log("--- DML AT SCALE ---")
-	// UPDATE with index-backed WHERE
 	r = h.timeExec("UPDATE orders SET amount = amount + 1 WHERE customer_id = 0")
 	r.mustSucceed(t, "UPDATE by index")
-
-	// DELETE with index-backed WHERE
 	r = h.timeExec("DELETE FROM orders WHERE id = 0")
 	r.expectRows(t, "DELETE single row", 1)
 
