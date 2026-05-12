@@ -20,9 +20,9 @@ Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional
 **Java:** Fires on all SelectExpressions including those with Existential quantifiers.
 **Go:** Skips SelectExpressions with Existential quantifiers.
 
-**Root cause (verified empirically):** Removing the guard causes `TestFDB_CorrelatedExistsSelfJoin` and `TestFDB_ParameterizedSubquery` to fail with `0AF00: Cascades planner could not plan query`. The normalized SelectExpression has the same quantifiers but different predicate structure. `ImplementSimpleSelectRule` requires exactly 1 quantifier (line 34: `len(quantifiers) != 1`) and skips the 2-quantifier EXISTS case. `ImplementNestedLoopJoinRule` handles 2+ quantifiers but can't resolve the EXISTS predicate structure after CNF normalization.
+**Root cause (verified empirically, dayshift-93):** Removing the guard causes planner non-convergence (MaxTasks cap hit at 10k). The NLJ rule (ExpressionRule) successfully fires on the normalized SelectExpression and yields physical plans. However, the normalized predicates trigger cascading rule interactions (PredicatePushDownRule, SelectMergeRule) that produce new SelectExpression alternatives, which get normalized again, creating an infinite exploration loop. The NLJ plans ARE yielded correctly but the planner never converges to extract them.
 
-**To fix:** Make `ImplementSimpleSelectRule` or a dedicated EXISTS implementation rule handle multi-quantifier SelectExpressions where one quantifier is Existential. This would align with Java where `ImplementSimpleSelectRule` processes normalized EXISTS expressions through its matcher infrastructure.
+**To fix:** Requires proper rule deduplication infrastructure (tracking which expression-level normalizations have already been applied) to prevent the infinite re-normalization loop. Not a simple ImplementSimpleSelectRule change — the issue is in Explore-phase convergence, not Planning-phase implementation.
 
 ### WithPrimaryKeyDataAccessRule is an explicit planner pass
 
