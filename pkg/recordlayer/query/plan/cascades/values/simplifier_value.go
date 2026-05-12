@@ -105,6 +105,9 @@ func simplifyChildren(v Value) Value {
 		return NewCastValue(c, x.Target)
 	case *PromoteValue:
 		c := SimplifyValue(x.Child)
+		if cv, ok := c.(*ConstantValue); ok {
+			return &ConstantValue{Value: cv.Value, Typ: x.Target}
+		}
 		if c == x.Child {
 			return v
 		}
