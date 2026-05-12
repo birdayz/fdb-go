@@ -37,6 +37,8 @@ type RecordQueryIndexPlan struct {
 	flowedType      values.Type
 	reverse         bool
 	strictlySorted  bool
+	covering        bool
+	coveringColumns []string
 }
 
 // NewRecordQueryIndexPlan constructs an index scan plan.
@@ -91,6 +93,22 @@ func (p *RecordQueryIndexPlan) WithStrictlySorted() *RecordQueryIndexPlan {
 	return &cp
 }
 
+// IsCovering reports whether the index provides all columns needed by
+// the query, eliminating the need to fetch the full record by PK.
+func (p *RecordQueryIndexPlan) IsCovering() bool { return p.covering }
+
+// GetCoveringColumns returns the index column names when covering.
+func (p *RecordQueryIndexPlan) GetCoveringColumns() []string { return p.coveringColumns }
+
+// WithCovering returns a shallow copy marked as a covering index scan.
+func (p *RecordQueryIndexPlan) WithCovering(columns []string) *RecordQueryIndexPlan {
+	cp := *p
+	cp.covering = true
+	cp.coveringColumns = make([]string, len(columns))
+	copy(cp.coveringColumns, columns)
+	return &cp
+}
+
 // GetResultType returns the row Type.
 func (p *RecordQueryIndexPlan) GetResultType() values.Type { return p.flowedType }
 
@@ -104,7 +122,7 @@ func (p *RecordQueryIndexPlan) EqualsWithoutChildren(other RecordQueryPlan) bool
 	if !ok {
 		return false
 	}
-	if p.indexName != o.indexName || p.reverse != o.reverse || p.strictlySorted != o.strictlySorted {
+	if p.indexName != o.indexName || p.reverse != o.reverse || p.strictlySorted != o.strictlySorted || p.covering != o.covering {
 		return false
 	}
 	if !typeEquals(p.flowedType, o.flowedType) {
@@ -149,6 +167,11 @@ func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
 	} else {
 		h.Write([]byte{0})
 	}
+	if p.covering {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
 	return h.Sum64()
 }
 
@@ -170,6 +193,9 @@ func (p *RecordQueryIndexPlan) Explain() string {
 		}
 	}
 	b.WriteString("]")
+	if p.covering {
+		b.WriteString(" COVERING")
+	}
 	if p.reverse {
 		b.WriteString(") REVERSE")
 	} else {

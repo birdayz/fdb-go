@@ -204,6 +204,13 @@ func executeIndexScan(
 
 	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
 
+	if p.IsCovering() {
+		return &coveringIndexCursor{
+			inner:   indexCursor,
+			columns: p.GetCoveringColumns(),
+		}, nil
+	}
+
 	resultCursor := &indexFetchCursor{
 		inner: indexCursor,
 		store: store,
@@ -353,6 +360,41 @@ func (c *indexFetchCursor) Close() error {
 }
 
 func (c *indexFetchCursor) IsClosed() bool { return c.closed }
+
+type coveringIndexCursor struct {
+	inner   recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	columns []string
+	closed  bool
+}
+
+func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+	}
+
+	entry := result.GetValue()
+	vals := entry.IndexValues()
+	datum := make(map[string]any, len(c.columns))
+	for i, col := range c.columns {
+		if i < len(vals) {
+			datum[col] = vals[i]
+		}
+	}
+	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
+}
+
+func (c *coveringIndexCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *coveringIndexCursor) IsClosed() bool { return c.closed }
+
+var _ recordlayer.RecordCursor[QueryResult] = (*coveringIndexCursor)(nil)
 
 func executeTypeFilter(
 	ctx context.Context,
@@ -597,6 +639,15 @@ func executeProjection(
 					aliasKey := strings.ToUpper(aliases[i])
 					if aliasKey != key {
 						projected[aliasKey] = val
+					}
+				}
+				// For computed expressions, also store under the
+				// positional key (_0, _1, ...) so Java-compatible
+				// column name lookups work.
+				if _, isField := proj.(*values.FieldValue); !isField {
+					posKey := fmt.Sprintf("_%d", i)
+					if posKey != key {
+						projected[posKey] = val
 					}
 				}
 			}()
@@ -991,17 +1042,19 @@ func executeNestedLoopJoin(
 		return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
 	}
 
+	// The inner scan is uncorrelated in the regular NLJ path (correlated
+	// EXISTS is handled by the branch above). Scan the inner once and
+	// reuse for every outer row. Eliminates N redundant inner scans.
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+	innerRows, err := CollectAll(ctx, innerCursor)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, outerRow := range outerRows {
-		innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
-			return nil, err
-		}
-
-		innerRows, err := CollectAll(ctx, innerCursor)
-		if err != nil {
-			return nil, err
-		}
-
 		matched := false
 		for _, innerRow := range innerRows {
 			combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
@@ -1012,10 +1065,6 @@ func executeNestedLoopJoin(
 		}
 
 		if !matched && joinType == plans.JoinLeftOuter {
-			// Emit the outer row with qualified alias keys so that
-			// downstream projections (e.g. "CUSTOMER.NAME") resolve
-			// correctly. Inner-table columns are absent from the map;
-			// the ResultSet treats missing keys as NULL.
 			results = append(results, qualifyOuterRow(outerRow, p.GetOuterAlias()))
 		}
 	}
@@ -1318,6 +1367,8 @@ func executeAggregation(
 				} else {
 					val = nil
 				}
+			default:
+				return nil, fmt.Errorf("executor: unsupported aggregate function %v", agg.Function)
 			}
 			result[name] = val
 			if agg.Alias != "" && agg.Alias != name {

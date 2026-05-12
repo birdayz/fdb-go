@@ -1183,6 +1183,9 @@ func (w *physicalIntersectionWrapper) GetQuantifiers() []expressions.Quantifier 
 	return w.innerQuants
 }
 
+// IsIntersection implements properties.IntersectionExpression.
+func (w *physicalIntersectionWrapper) IsIntersection() {}
+
 // CanCorrelate is false.
 func (w *physicalIntersectionWrapper) CanCorrelate() bool { return false }
 

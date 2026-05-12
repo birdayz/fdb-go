@@ -32,6 +32,7 @@ go_test(
     name = "properties_test",
     srcs = [
         "cardinality_test.go",
+        "comparisons_property_test.go",
         "cost_test.go",
         "expression_count_property_test.go",
         "extract_fuzz_test.go",

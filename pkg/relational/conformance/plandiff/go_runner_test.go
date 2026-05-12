@@ -200,3 +200,31 @@ func TestGoSQLRunner_NullPassThrough(t *testing.T) {
 		t.Fatalf("Rows[1][1]: got %v (%T), want nil", got.Rows.Rows[1][1], got.Rows.Rows[1][1])
 	}
 }
+
+func TestGoSQLRunner_BytesINList(t *testing.T) {
+	t.Parallel()
+	if goSQLClusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	r := NewGoSQLSetupRunner(goSQLClusterFilePath)
+	got := r.RunWithSetup(
+		context.Background(),
+		"CREATE TABLE lb (a BIGINT, b BYTES, PRIMARY KEY (a))",
+		[]string{
+			"INSERT INTO lb VALUES (1, X'deadbeef'), (2, X'cafe'), (3, null)",
+		},
+		"SELECT a FROM lb WHERE b IN (X'cafe', X'deadbeef') ORDER BY a",
+	)
+	if got.Err != nil {
+		t.Fatalf("RunWithSetup: %v", got.Err)
+	}
+	if len(got.Rows.Rows) != 2 {
+		t.Fatalf("Rows: got %d, want 2 (%+v)", len(got.Rows.Rows), got.Rows.Rows)
+	}
+	if got.Rows.Rows[0][0] != float64(1) {
+		t.Fatalf("Row[0]: got %v (%T), want 1", got.Rows.Rows[0][0], got.Rows.Rows[0][0])
+	}
+	if got.Rows.Rows[1][0] != float64(2) {
+		t.Fatalf("Row[1]: got %v (%T), want 2", got.Rows.Rows[1][0], got.Rows.Rows[1][0])
+	}
+}

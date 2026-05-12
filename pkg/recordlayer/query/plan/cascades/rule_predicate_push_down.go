@@ -25,10 +25,10 @@ import (
 //  4. Build a new outer SelectExpression with the remaining (non-pushed)
 //     predicates and the rewritten quantifiers.
 //
-// Guard: skips SelectExpressions containing Existential quantifiers
-// (same guard as NormalizePredicatesRule). Existential quantifiers have
-// different correlation semantics — pushing predicates into them would
-// change the query's meaning.
+// Existential quantifiers are handled correctly: the per-quantifier
+// loop skips non-ForEach quantifiers, so predicates are only pushed
+// into ForEach children. Existential siblings remain untouched.
+// Matches Java's behavior (no global existential guard).
 //
 // Convergence: each firing strictly reduces the set of pushable
 // predicates in the outer SelectExpression. A SelectExpression with no
@@ -52,13 +52,6 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 	quantifiers := sel.GetQuantifiers()
 
 	// Guard: don't push predicates into SelectExpressions containing
-	// Existential quantifiers. Same guard as NormalizePredicatesRule.
-	for _, q := range quantifiers {
-		if q.Kind() == expressions.QuantifierExistential {
-			return
-		}
-	}
-
 	allPredicates := sel.GetPredicates()
 	if len(allPredicates) == 0 {
 		return

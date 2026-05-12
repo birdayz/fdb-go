@@ -8622,3 +8622,56 @@ func TestFDB_DateTimestampIndexScan(t *testing.T) {
 		t.Errorf("row 1: got id=%d label=%q, want id=4 label=\"delta\"", results[1].id, results[1].label)
 	}
 }
+
+func TestFDB_BytesINList(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_bytes_in")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_bytes_in")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE bytes_in_tmpl "+
+			"CREATE TABLE lb (a BIGINT, b BYTES, PRIMARY KEY (a))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_bytes_in/store WITH TEMPLATE bytes_in_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_bytes_in?cluster_file=%s&schema=store", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO lb VALUES (1, X'deadbeef'), (2, X'cafe'), (3, null)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Equality — should work.
+	rows, err := db.QueryContext(ctx, "SELECT a FROM lb WHERE b = X'cafe'")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var eqResults []int64
+	for rows.Next() {
+		var a int64
+		g.Expect(rows.Scan(&a)).NotTo(gomega.HaveOccurred())
+		eqResults = append(eqResults, a)
+	}
+	rows.Close()
+	g.Expect(eqResults).To(gomega.Equal([]int64{2}), "equality on BYTES should find row 2")
+
+	// IN list — the bug.
+	rows, err = db.QueryContext(ctx, "SELECT a FROM lb WHERE b IN (X'cafe', X'deadbeef') ORDER BY a")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var inResults []int64
+	for rows.Next() {
+		var a int64
+		g.Expect(rows.Scan(&a)).NotTo(gomega.HaveOccurred())
+		inResults = append(inResults, a)
+	}
+	rows.Close()
+	g.Expect(inResults).To(gomega.Equal([]int64{1, 2}), "IN on BYTES should find rows 1 and 2")
+}

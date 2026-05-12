@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"reflect"
@@ -137,6 +138,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
@@ -245,6 +247,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
@@ -570,6 +573,8 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		var label string
 		if i < len(aliases) && aliases[i] != "" {
 			label = strings.ToUpper(aliases[i])
+		} else if _, isField := v.(*values.FieldValue); !isField {
+			label = fmt.Sprintf("_%d", i)
 		}
 		typeName := valueTypeName(v, desc)
 		if typeName == "" && desc != nil {

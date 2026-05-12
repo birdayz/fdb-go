@@ -263,7 +263,11 @@ func DataAccessForMatchPartition(
 		// Determine if the index is covering: no result compensation
 		// needed means all output fields are available from the index.
 		isCovering := !comp.IsFinalNeeded()
-		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering)
+		var coveringCols []string
+		if isCovering {
+			coveringCols = pm.GetMatchCandidate().GetColumnNames()
+		}
+		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols)
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
@@ -293,7 +297,7 @@ func DataAccessForMatchPartition(
 // wrapScanPlan converts a RecordQueryPlan from the data access pipeline
 // into the properly-typed RelationalExpression wrapper.
 func wrapScanPlan(plan plans.RecordQueryPlan) expressions.RelationalExpression {
-	return wrapScanPlanWithCoverage(plan, false)
+	return wrapScanPlanWithCoverage(plan, false, nil)
 }
 
 // wrapScanPlanWithCoverage converts a RecordQueryPlan into the
@@ -307,12 +311,12 @@ func wrapScanPlan(plan plans.RecordQueryPlan) expressions.RelationalExpression {
 //
 // When isCovering=false, the Fetch wrapper is preserved so push-through
 // rules can optimize it (push filters below, eliminate via PushMap).
-func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool) expressions.RelationalExpression {
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string) expressions.RelationalExpression {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
 			if isCovering {
-				// Index covers all needed columns — no fetch needed.
-				return &physicalIndexScanWrapper{plan: innerIdx, covering: true}
+				covered := innerIdx.WithCovering(coveringColumns)
+				return &physicalIndexScanWrapper{plan: covered, covering: true}
 			}
 			// Non-covering: preserve the fetch wrapper.
 			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx}
@@ -322,6 +326,9 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool) expre
 		}
 	}
 	if idxPlan, ok := plan.(*plans.RecordQueryIndexPlan); ok {
+		if isCovering {
+			idxPlan = idxPlan.WithCovering(coveringColumns)
+		}
 		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering}
 	}
 	return &scanPlanExpression{plan: plan}
