@@ -1,0 +1,29 @@
+# update_computed_multi.yaml
+#
+# Verifies multi-column UPDATE with self-referencing SET expressions.
+# Phase 1.5 #63 fixed the bug where SET evaluated against the
+# in-progress row instead of the original row. SQL standard requires
+# all RHS expressions evaluate against the pre-UPDATE row.
+name: update_computed_multi
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, y BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 100, 80)
+tests:
+  # Single-column UPDATE
+  - query: UPDATE t SET x = x + 1 WHERE id = 1
+    rows_affected: 1
+  - query: SELECT x FROM t WHERE id = 1
+    rows:
+      - [101]
+  # Reset for multi-column test
+  - query: UPDATE t SET x = 100 WHERE id = 1
+    rows_affected: 1
+  # Multi-column UPDATE: y = y - x should use ORIGINAL x (100),
+  # not the already-updated x (180).
+  # x = 100 + 80 = 180, y = 80 - 100 = -20
+  - query: UPDATE t SET x = x + y, y = y - x WHERE id = 1
+    rows_affected: 1
+  - query: SELECT x, y FROM t WHERE id = 1
+    rows:
+      - [180, -20]

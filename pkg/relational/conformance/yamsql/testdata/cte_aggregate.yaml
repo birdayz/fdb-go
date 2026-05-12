@@ -1,0 +1,40 @@
+# cte_aggregate.yaml
+#
+# CTE materialization + GROUP BY aggregation. Exercises the
+# interaction between CTE scan and streaming/hash aggregation.
+name: cte_aggregate
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO orders VALUES (1, 1, 100), (2, 1, 200), (3, 2, 150), (4, 2, 250), (5, 3, 300)
+tests:
+  # CTE + GROUP BY
+  - query: >
+      WITH cte AS (SELECT customer_id, amount FROM orders)
+      SELECT customer_id, SUM(amount) FROM cte GROUP BY customer_id ORDER BY customer_id
+    rows:
+      - [1, 300]
+      - [2, 400]
+      - [3, 300]
+  # CTE + COUNT
+  - query: >
+      WITH cte AS (SELECT customer_id FROM orders)
+      SELECT customer_id, COUNT(*) FROM cte GROUP BY customer_id ORDER BY customer_id
+    rows:
+      - [1, 2]
+      - [2, 2]
+      - [3, 1]
+  # CTE + HAVING
+  - query: >
+      WITH cte AS (SELECT customer_id, amount FROM orders)
+      SELECT customer_id, SUM(amount) FROM cte GROUP BY customer_id HAVING SUM(amount) > 300 ORDER BY customer_id
+    rows:
+      - [2, 400]
+  # CTE + AVG
+  - query: >
+      WITH cte AS (SELECT customer_id, amount FROM orders)
+      SELECT customer_id, AVG(amount) FROM cte GROUP BY customer_id ORDER BY customer_id
+    rows:
+      - [1, 150.0]
+      - [2, 200.0]
+      - [3, 300.0]
