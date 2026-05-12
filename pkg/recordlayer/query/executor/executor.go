@@ -641,6 +641,15 @@ func executeProjection(
 						projected[aliasKey] = val
 					}
 				}
+				// For computed expressions, also store under the
+				// positional key (_0, _1, ...) so Java-compatible
+				// column name lookups work.
+				if _, isField := proj.(*values.FieldValue); !isField {
+					posKey := fmt.Sprintf("_%d", i)
+					if posKey != key {
+						projected[posKey] = val
+					}
+				}
 			}()
 			if evalErr != nil {
 				return qr

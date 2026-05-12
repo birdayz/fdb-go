@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"reflect"
@@ -570,6 +571,8 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		var label string
 		if i < len(aliases) && aliases[i] != "" {
 			label = strings.ToUpper(aliases[i])
+		} else if _, isField := v.(*values.FieldValue); !isField {
+			label = fmt.Sprintf("_%d", i)
 		}
 		typeName := valueTypeName(v, desc)
 		if typeName == "" && desc != nil {
