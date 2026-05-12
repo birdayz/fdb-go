@@ -60,7 +60,8 @@ type stressHarness struct {
 func newStressHarness(t *testing.T, suffix string) *stressHarness {
 	t.Helper()
 	dbPath := "/stress_" + suffix
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
 	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
 	sysDB, err := sql.Open("fdbsql", sysDSN)
@@ -91,7 +92,8 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 
 func (h *stressHarness) createSchema(template string) {
 	h.t.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
 	sysDSN := fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath)
 	sysDB, err := sql.Open("fdbsql", sysDSN)

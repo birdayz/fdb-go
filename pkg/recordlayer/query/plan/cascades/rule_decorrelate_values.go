@@ -330,24 +330,26 @@ func isRangeOneQuantifier(q expressions.Quantifier) bool {
 		}
 		begin, ok := rv.BeginInclusive.(*values.ConstantValue)
 		if !ok {
-			return false
+			continue
 		}
 		end, ok := rv.EndExclusive.(*values.ConstantValue)
 		if !ok {
-			return false
+			continue
 		}
 		step, ok := rv.Step.(*values.ConstantValue)
 		if !ok {
-			return false
+			continue
 		}
 		b, bOk := toInt64(begin.Value)
 		e, eOk := toInt64(end.Value)
 		s, sOk := toInt64(step.Value)
-		if !bOk || !eOk || !sOk || s == 0 {
-			return false
+		if !bOk || !eOk || !sOk || s <= 0 {
+			continue
 		}
 		rows := (e - b + s - 1) / s
-		return rows == 1
+		if rows == 1 {
+			return true
+		}
 	}
 	return false
 }
