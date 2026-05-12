@@ -59,6 +59,15 @@ Same execution semantics — for each outer row, evaluate inner with bound corre
 
 Correctness improvement — ensures ORDER BY works even when no index satisfies it.
 
+### Computed expression column names: ExplainValue vs positional
+
+**Java:** Unnamed computed expressions get positional names `_0`, `_1`, `_2` (from RecordConstructorValue field naming).
+**Go:** Unnamed computed expressions get expression text names like `(ID + 10)` (from `values.ExplainValue`).
+
+**Root cause:** Go's projection executor uses the column name as the datum map lookup key. The projection stores values under ExplainValue keys. Changing the external column name to `_N` without also changing the datum key breaks downstream CTE/derived table consumers that look up values by column name.
+
+**To fix:** Decouple the internal datum key from the external column name. Store projection values under both the ExplainValue key and a positional `_N` key, then return `_N` from `Columns()`. Requires changes to `executeProjection`, `deriveColumnsFromProjection`, and CTE/derived table column resolution.
+
 ### FieldValue: composition vs multi-step FieldPath
 
 **Java:** `FieldValue` contains `FieldPath` — a list of `ResolvedAccessor` objects for nested field traversal in a single node. Supports `getFieldPathNames()`, `getFieldOrdinals()`, `stripFieldPrefixMaybe()`, `ofFieldsAndFuseIfPossible()`.
