@@ -3,8 +3,8 @@ package executor
 import (
 	"context"
 	"fmt"
-	"strings"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -197,17 +197,21 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any) {
 		return "", nil
 	}
 	keyParts := make([]any, len(c.groupingKeys))
-	var keyStr strings.Builder
+	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
 		v := k.Evaluate(row.Datum)
 		keyParts[i] = v
-		if v == nil {
-			keyStr.WriteString("N|")
-		} else {
-			fmt.Fprintf(&keyStr, "%T:%v|", v, v)
+		// tuple.Pack handles nil, int64, float64, string, []byte natively.
+		// For types the tuple layer doesn't support, fall back to the
+		// string representation so we still get a deterministic key.
+		switch tv := v.(type) {
+		case nil, int64, float64, string, []byte, bool:
+			t[i] = tv
+		default:
+			t[i] = fmt.Sprintf("%T:%v", v, v)
 		}
 	}
-	return keyStr.String(), keyParts
+	return string(t.Pack()), keyParts
 }
 
 func (c *aggregateCursor) newGroupState() *groupState {
@@ -507,7 +511,6 @@ func (c *customSortCursor) IsClosed() bool { return c.closed }
 // nljCursor implements RecordCursor[QueryResult] for nested-loop joins.
 // Loads the inner side once, then streams outer rows one-by-one.
 type nljCursor struct {
-	ctx        context.Context
 	outerInner recordlayer.RecordCursor[QueryResult]
 	innerRows  []QueryResult
 	joinType   plans.JoinType
@@ -524,7 +527,6 @@ type nljCursor struct {
 }
 
 func newNLJCursor(
-	ctx context.Context,
 	outer recordlayer.RecordCursor[QueryResult],
 	innerRows []QueryResult,
 	joinType plans.JoinType,
@@ -533,7 +535,6 @@ func newNLJCursor(
 	evalCtx *EvaluationContext,
 ) *nljCursor {
 	return &nljCursor{
-		ctx:        ctx,
 		outerInner: outer,
 		innerRows:  innerRows,
 		joinType:   joinType,

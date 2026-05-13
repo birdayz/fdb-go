@@ -374,7 +374,7 @@ func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 		}
 		if !result.HasNext() {
-			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+			return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
 		}
 
 		entry := result.GetValue()
@@ -415,7 +415,7 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
 	}
 
 	entry := result.GetValue()
@@ -1045,7 +1045,7 @@ func executeNestedLoopJoin(
 	}
 
 	cursor := newNLJCursor(
-		ctx, outerCursor, innerRows,
+		outerCursor, innerRows,
 		p.GetJoinType(), p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetPredicates(), evalCtx,
 	)
@@ -1367,180 +1367,6 @@ func executeAggregation(
 		cursor.withPartialState(priorGroupKey, priorState.keyVals, priorState)
 	}
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
-}
-
-// AggregateRows computes grouped aggregations over pre-collected rows.
-// It applies the same logic as executeAggregation's accumulation loop:
-// grouping by the given keys, computing COUNT/SUM/MIN/MAX/AVG per group,
-// and handling the empty-input-with-no-grouping-keys case.
-func AggregateRows(
-	rows []QueryResult,
-	groupingKeys []values.Value,
-	aggregates []expressions.AggregateSpec,
-) ([]QueryResult, error) {
-	type groupState struct {
-		keyVals []any
-		count   int64
-		counts  []int64
-		sums    []float64
-		sumsI   []int64
-		allInt  []bool
-		mins    []any
-		maxs    []any
-	}
-
-	groups := make(map[string]*groupState)
-	var groupOrder []string
-
-	for _, row := range rows {
-		keyParts := make([]any, len(groupingKeys))
-		var keyStr strings.Builder
-		for i, k := range groupingKeys {
-			v := k.Evaluate(row.Datum)
-			keyParts[i] = v
-			if v == nil {
-				keyStr.WriteString("N|")
-			} else {
-				fmt.Fprintf(&keyStr, "%T:%v|", v, v)
-			}
-		}
-		gk := keyStr.String()
-
-		gs, exists := groups[gk]
-		if !exists {
-			allIntInit := make([]bool, len(aggregates))
-			for j := range allIntInit {
-				allIntInit[j] = true
-			}
-			gs = &groupState{
-				keyVals: keyParts,
-				counts:  make([]int64, len(aggregates)),
-				sums:    make([]float64, len(aggregates)),
-				sumsI:   make([]int64, len(aggregates)),
-				allInt:  allIntInit,
-				mins:    make([]any, len(aggregates)),
-				maxs:    make([]any, len(aggregates)),
-			}
-			groups[gk] = gs
-			groupOrder = append(groupOrder, gk)
-		}
-		gs.count++
-
-		for i, agg := range aggregates {
-			val := agg.Operand.Evaluate(row.Datum)
-			if val == nil {
-				continue
-			}
-			gs.counts[i]++
-			if agg.Function == expressions.AggSum || agg.Function == expressions.AggAvg {
-				if !isNumeric(val) {
-					return nil, fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
-				}
-			}
-			num := toFloat64(val)
-			gs.sums[i] += num
-			if intVal, ok := val.(int64); ok {
-				s := gs.sumsI[i] + intVal
-				if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
-					return nil, &SumOverflowError{}
-				}
-				gs.sumsI[i] = s
-			} else {
-				gs.allInt[i] = false
-			}
-
-			if !isNumeric(val) {
-				return nil, &AggregateTypeMismatchError{
-					Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
-				}
-			}
-			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
-				gs.mins[i] = val
-			}
-			if gs.maxs[i] == nil || compareAny(val, gs.maxs[i]) > 0 {
-				gs.maxs[i] = val
-			}
-		}
-	}
-
-	if len(groups) == 0 && len(groupingKeys) == 0 {
-		result := make(map[string]any)
-		for _, agg := range aggregates {
-			name := aggResultName(agg)
-			var val any
-			switch agg.Function {
-			case expressions.AggCount:
-				val = int64(0)
-			default:
-				val = nil
-			}
-			result[name] = val
-			if agg.Alias != "" && agg.Alias != name {
-				result[agg.Alias] = val
-			}
-		}
-		return []QueryResult{{Datum: result}}, nil
-	}
-
-	var results []QueryResult
-	for _, gk := range groupOrder {
-		gs := groups[gk]
-		result := make(map[string]any)
-		for i, k := range groupingKeys {
-			name := aggKeyName(k)
-			result[name] = gs.keyVals[i]
-			// Expression group keys (e.g. ArithmeticValue for `amt / 100`)
-			// produce an ExplainValue with outer parentheses: "(AMT / 100)".
-			// Projections above the aggregate reference the key by the raw
-			// SQL text (no outer parens): "AMT / 100". Store under both
-			// forms so lookups from either naming convention succeed.
-			if len(name) >= 2 && name[0] == '(' && name[len(name)-1] == ')' {
-				stripped := name[1 : len(name)-1]
-				if _, exists := result[stripped]; !exists {
-					result[stripped] = gs.keyVals[i]
-				}
-			}
-		}
-		for i, agg := range aggregates {
-			name := aggResultName(agg)
-			var val any
-			switch agg.Function {
-			case expressions.AggCount:
-				if isCountStar(agg) {
-					val = gs.count
-				} else {
-					val = gs.counts[i]
-				}
-			case expressions.AggSum:
-				if gs.counts[i] == 0 {
-					val = nil
-				} else if gs.allInt[i] {
-					val = gs.sumsI[i]
-				} else {
-					val = gs.sums[i]
-				}
-			case expressions.AggMin:
-				val = gs.mins[i]
-			case expressions.AggMax:
-				val = gs.maxs[i]
-			case expressions.AggAvg:
-				if gs.counts[i] > 0 {
-					val = gs.sums[i] / float64(gs.counts[i])
-				} else {
-					val = nil
-				}
-			default:
-				return nil, fmt.Errorf("executor: unsupported aggregate function %v", agg.Function)
-			}
-			result[name] = val
-			if agg.Alias != "" && agg.Alias != name {
-				result[agg.Alias] = val
-			}
-		}
-		results = append(results, QueryResult{Datum: result})
-	}
-
-	return results, nil
 }
 
 func toFloat64(v any) float64 {

@@ -324,17 +324,11 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 
 	cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
 
-	// Create the cursor hierarchy ONCE inside a transaction. The streaming
-	// cursors (aggregateCursor, memorySortCursor, nljCursor) keep their
-	// partial state in memory across OnNext calls. When the leaf cursor
-	// hits the 4s time limit, intermediate cursors pause and propagate
-	// TimeLimitReached upward. The paginatingRows layer then opens a
-	// NEW transaction, creates a new leaf cursor from the continuation,
-	// and the intermediate cursors continue accumulating.
-	//
-	// To make this work: ExecutePlan is called once with the full plan.
-	// The leaf cursor is wrapped in an autoPagingCursor that reopens
-	// transactions internally when TimeLimitReached fires.
+	// Each fetchPage creates a fresh cursor hierarchy from the plan +
+	// continuation. The continuation carries all intermediate state
+	// (aggregate accumulators, sort buffers) serialized as protobuf.
+	// No cursor persists across transactions — this matches Java's
+	// architecture.
 
 	pr := &paginatingRows{
 		ctx:              ctx,
@@ -356,12 +350,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 }
 
 // paginatingRows implements driver.Rows with cross-transaction pagination.
-// The cursor hierarchy is created ONCE and persists across fetchPage calls.
-// Streaming cursors (aggregateCursor, memorySortCursor, nljCursor)
-// accumulate state in memory. When the leaf cursor hits the 4s time
-// limit, TimeLimitReached propagates up, fetchPage saves the leaf
-// continuation, opens a new transaction, creates a new leaf cursor from
-// the continuation, and the intermediate cursors continue accumulating.
+// Each fetchPage creates a fresh cursor hierarchy from the plan +
+// continuation. The continuation carries all intermediate state
+// (aggregate accumulators, sort buffers) serialized as protobuf. No
+// cursor persists across transactions — this matches Java's architecture.
 type paginatingRows struct {
 	ctx              context.Context
 	conn             *EmbeddedConnection

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -38,7 +39,7 @@ func encodeAggregateContinuation(
 		var states []*gen.AccumulatorState
 		as := &gen.AccumulatorState{}
 
-		// Pack: count, then per-aggregate (count_i, sum_i, sumsI_i, allInt_i, hasMin_i, min_i, hasMax_i, max_i)
+		// Pack: count, then per-aggregate (count_i, sum_i, sumsI_i, allInt_i, min_i, max_i)
 		as.State = append(as.State, &gen.OneOfTypedState{
 			State: &gen.OneOfTypedState_Int64State{Int64State: gs.count},
 		})
@@ -59,17 +60,27 @@ func encodeAggregateContinuation(
 			as.State = append(as.State, &gen.OneOfTypedState{
 				State: &gen.OneOfTypedState_Int64State{Int64State: allIntVal},
 			})
+			// min_i: JSON-encoded bytes (nil → empty BytesState)
+			minBytes, _ := json.Marshal(gs.mins[i])
+			as.State = append(as.State, &gen.OneOfTypedState{
+				State: &gen.OneOfTypedState_BytesState{BytesState: minBytes},
+			})
+			// max_i: JSON-encoded bytes (nil → empty BytesState)
+			maxBytes, _ := json.Marshal(gs.maxs[i])
+			as.State = append(as.State, &gen.OneOfTypedState{
+				State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes},
+			})
 		}
 		states = append(states, as)
 
-		// Serialize the group key string + keyVals into group_key bytes.
-		// Use a simple format: groupKey string as UTF-8 bytes.
-		// The keyVals are reconstructable from the group key string +
-		// the next row's evaluation (Java reconstructs via DynamicMessage).
-		var groupKeyBytes []byte
-		if groupKey != "" {
-			groupKeyBytes = []byte(groupKey)
+		// Serialize groupKey + keyVals into group_key bytes.
+		// We JSON-encode a struct containing both so that keyVals
+		// (needed by finalizeGroup) survive the continuation round-trip.
+		type groupKeyPayload struct {
+			GroupKey string `json:"g"`
+			KeyVals  []any  `json:"k"`
 		}
+		groupKeyBytes, _ := json.Marshal(groupKeyPayload{GroupKey: groupKey, KeyVals: keyVals})
 
 		msg.PartialAggregationResults = &gen.PartialAggregationResult{
 			GroupKey:          groupKeyBytes,
@@ -90,7 +101,7 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 ) {
 	msg := &gen.AggregateCursorContinuation{}
 	if err := proto.Unmarshal(data, msg); err != nil {
-		return data, "", nil, nil
+		return nil, "", nil, fmt.Errorf("failed to unmarshal aggregate continuation: %w", err)
 	}
 
 	innerContinuation = msg.Continuation
@@ -100,8 +111,29 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 	}
 
 	par := msg.PartialAggregationResults
+
+	// Decode groupKey + keyVals from JSON payload.
+	var keyVals []any
 	if par.GroupKey != nil {
-		groupKey = string(par.GroupKey)
+		type groupKeyPayload struct {
+			GroupKey string `json:"g"`
+			KeyVals  []any  `json:"k"`
+		}
+		var payload groupKeyPayload
+		if jErr := json.Unmarshal(par.GroupKey, &payload); jErr == nil {
+			groupKey = payload.GroupKey
+			keyVals = payload.KeyVals
+			// JSON deserializes numbers as float64; convert back to int64
+			// for integer values (matching the Go SQL type system).
+			for i, v := range keyVals {
+				if f, ok := v.(float64); ok && f == float64(int64(f)) {
+					keyVals[i] = int64(f)
+				}
+			}
+		} else {
+			// Fallback: treat as raw group key string (legacy format).
+			groupKey = string(par.GroupKey)
+		}
 	}
 
 	if len(par.AccumulatorStates) == 0 {
@@ -110,12 +142,13 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 
 	as := par.AccumulatorStates[0]
 	gs = &groupState{
-		counts: make([]int64, numAggs),
-		sums:   make([]float64, numAggs),
-		sumsI:  make([]int64, numAggs),
-		allInt: make([]bool, numAggs),
-		mins:   make([]any, numAggs),
-		maxs:   make([]any, numAggs),
+		keyVals: keyVals,
+		counts:  make([]int64, numAggs),
+		sums:    make([]float64, numAggs),
+		sumsI:   make([]int64, numAggs),
+		allInt:  make([]bool, numAggs),
+		mins:    make([]any, numAggs),
+		maxs:    make([]any, numAggs),
 	}
 
 	idx := 0
@@ -125,7 +158,7 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		}
 		idx++
 	}
-	for i := 0; i < numAggs && idx+3 < len(as.State); i++ {
+	for i := 0; i < numAggs && idx+5 < len(as.State); i++ {
 		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State); ok {
 			gs.counts[i] = v.Int64State
 		}
@@ -140,6 +173,28 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		idx++
 		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_Int64State); ok {
 			gs.allInt[i] = v.Int64State != 0
+		}
+		idx++
+		// min_i: JSON-encoded bytes
+		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState); ok && len(v.BytesState) > 0 {
+			var minVal any
+			if jErr := json.Unmarshal(v.BytesState, &minVal); jErr == nil {
+				if f, ok := minVal.(float64); ok && f == float64(int64(f)) {
+					minVal = int64(f)
+				}
+				gs.mins[i] = minVal
+			}
+		}
+		idx++
+		// max_i: JSON-encoded bytes
+		if v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState); ok && len(v.BytesState) > 0 {
+			var maxVal any
+			if jErr := json.Unmarshal(v.BytesState, &maxVal); jErr == nil {
+				if f, ok := maxVal.(float64); ok && f == float64(int64(f)) {
+					maxVal = int64(f)
+				}
+				gs.maxs[i] = maxVal
+			}
 		}
 		idx++
 	}
