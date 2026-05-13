@@ -144,7 +144,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(10_000) // recursive CTEs + IN 5+ converge at ~6k tasks
+		WithMaxTasks(100_000) // Java has no low cap; EXISTS + correlated subqueries need full exploration
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
@@ -176,7 +176,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		}
 		subPlanner := cascades.NewPlanner(rules, planCtx).
 			WithImplementationRules(cascades.DefaultImplementationRules()).
-			WithMaxTasks(10_000) // recursive CTEs + IN 5+ converge at ~6k tasks
+			WithMaxTasks(100_000) // Java has no low cap; EXISTS + correlated subqueries need full exploration
 		subBest, _, subErr := subPlanner.Plan(subRef)
 		if subErr != nil || subBest == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
@@ -253,7 +253,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
-		WithMaxTasks(10_000) // recursive CTEs + IN 5+ converge at ~6k tasks
+		WithMaxTasks(100_000) // Java has no low cap; EXISTS + correlated subqueries need full exploration
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
