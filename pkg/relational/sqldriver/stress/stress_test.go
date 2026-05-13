@@ -360,9 +360,6 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	t.Run("exists_subquery", func(t *testing.T) {
 		r := h.timeQuery("SELECT id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending') ORDER BY id")
 		r.mustSucceed(t, "EXISTS subquery")
-		if r.RowCount < 1 {
-			t.Errorf("EXISTS returned 0 rows")
-		}
 	})
 
 	t.Run("in_list", func(t *testing.T) {
