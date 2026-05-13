@@ -110,8 +110,8 @@ func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 }
 
 // TestPlanner_GroupByProducesAggregation verifies that a GroupByExpression
-// with one group key and one COUNT aggregate produces either a
-// physicalHashAggWrapper or physicalStreamingAggWrapper.
+// with one group key and one COUNT aggregate produces a
+// physicalStreamingAggWrapper.
 func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 	t.Parallel()
 
@@ -131,15 +131,13 @@ func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
 	exploreAndVerify(t, ref, rules, nil)
 
-	foundHash := containsPhysical(ref, IsPhysicalHashAgg)
-	foundStreaming := containsPhysical(ref, IsPhysicalStreamingAgg)
-	if !foundHash && !foundStreaming {
+	if !containsPhysical(ref, IsPhysicalStreamingAgg) {
 		// Dump member types for diagnostics.
 		var types []string
 		for _, m := range ref.Members() {
 			types = append(types, fmt.Sprintf("%T", m))
 		}
-		t.Fatalf("expected physicalHashAggWrapper or physicalStreamingAggWrapper, found member types: %v", types)
+		t.Fatalf("expected physicalStreamingAggWrapper, found member types: %v", types)
 	}
 }
 

@@ -150,6 +150,27 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
+	// When the filter wraps a join (FROM a, b WHERE ...), merge the
+	// WHERE predicates into the SelectExpression so the NLJ rule sees
+	// them as join predicates. Java's PredicatePushDownRule achieves
+	// this during the REWRITING phase; Go does it eagerly here.
+	if join, ok := f.Input.(*logical.LogicalJoin); ok && f.Predicate != nil && len(f.ExistsSubqueries) == 0 {
+		joinExpr := t.translateJoin(join)
+		if joinExpr == nil {
+			return nil
+		}
+		if sel, ok := joinExpr.(*expressions.SelectExpression); ok {
+			merged := append(sel.GetPredicates(), f.Predicate)
+			return expressions.NewSelectExpressionWithJoinType(
+				sel.GetResultValue(),
+				sel.GetQuantifiers(),
+				merged,
+				sel.GetSourceAliases(),
+				sel.GetJoinType(),
+			)
+		}
+	}
+
 	innerRef := t.translateRef(f.Input)
 	if innerRef == nil {
 		return nil

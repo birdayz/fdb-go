@@ -868,9 +868,9 @@ func TestEndToEnd_PlanPicksStreamingAggOverHash(t *testing.T) {
 	}
 }
 
-// TestEndToEnd_PlanPicksHashAggWhenNoOrdering verifies that Plan()
-// picks hash aggregation when no ordered access path exists.
-func TestEndToEnd_PlanPicksHashAggWhenNoOrdering(t *testing.T) {
+// TestEndToEnd_PlanPicksStreamingAggWhenNoOrdering verifies that Plan()
+// picks streaming aggregation when no ordered access path exists.
+func TestEndToEnd_PlanPicksStreamingAggWhenNoOrdering(t *testing.T) {
 	t.Parallel()
 
 	// GroupBy(region, COUNT(id)) over plain Scan — no sort, no index.
@@ -897,9 +897,9 @@ func TestEndToEnd_PlanPicksHashAggWhenNoOrdering(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	// Without ordering, only hash agg is available.
-	if !cascades.IsPhysicalHashAgg(plan) {
-		t.Fatalf("expected hash agg as best plan (no ordered access path), got %T", plan)
+	// Streaming agg is the only aggregation implementation.
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg as best plan, got %T", plan)
 	}
 }
 
@@ -1169,10 +1169,9 @@ func TestEndToEnd_InExplodeWithGroupBy(t *testing.T) {
 	}
 
 	// After IN-explode + index utilization, the planner should produce
-	// either a streaming or hash agg. The specific choice depends on
-	// whether the index provides ordering for the group key.
-	if !cascades.IsPhysicalStreamingAgg(plan) && !cascades.IsPhysicalHashAgg(plan) {
-		t.Fatalf("expected aggregation plan (streaming or hash), got %T", plan)
+	// a streaming aggregation.
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming aggregation plan, got %T", plan)
 	}
 }
 
@@ -1364,11 +1363,7 @@ func TestEndToEnd_CompoundIndexFilterAndStreamingAgg(t *testing.T) {
 	if !cascades.IsPhysicalStreamingAgg(plan) {
 		explain := cascades.ExplainPhysicalPlan(plan)
 		t.Logf("plan type: %T, explain: %s", plan, explain)
-		// Hash agg is also acceptable if the ordering propagation through
-		// the filter wrapper doesn't reach the streaming agg rule in time.
-		if !cascades.IsPhysicalHashAgg(plan) {
-			t.Fatalf("expected streaming or hash agg, got %T", plan)
-		}
+		t.Fatalf("expected streaming agg, got %T", plan)
 	}
 }
 
@@ -1400,9 +1395,9 @@ func TestEndToEnd_MultipleAggregates(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	// No ordering → hash agg.
-	if !cascades.IsPhysicalHashAgg(plan) {
-		t.Fatalf("expected hash agg for multi-agg GROUP BY without ordering, got %T", plan)
+	// No ordering → streaming agg (the only aggregation implementation).
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg for multi-agg GROUP BY without ordering, got %T", plan)
 	}
 }
 
@@ -1728,9 +1723,9 @@ func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	// After elimination, the best plan should be a hash agg (no distinct wrapper).
-	if !cascades.IsPhysicalHashAgg(plan) {
-		t.Fatalf("expected hash agg (distinct eliminated), got %T", plan)
+	// After elimination, the best plan should be a streaming agg (no distinct wrapper).
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg (distinct eliminated), got %T", plan)
 	}
 }
 

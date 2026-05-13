@@ -214,12 +214,6 @@ func TestFDB_Stress_100K(t *testing.T) {
 }
 
 func runStressSuite(t *testing.T, suffix string, n int) {
-	if n > 10_000 {
-		t.Logf("WARNING: >10K rows exposes known scalability issues:")
-		t.Logf("  - PK lookups scale O(N) instead of O(1)")
-		t.Logf("  - Aggregations may silently truncate on FDB 5s timeout")
-		t.Logf("  - JOINs are O(N×M) NLJ without correlated index probes")
-	}
 	h := newStressHarness(t, suffix)
 
 	h.createSchema(`
@@ -250,7 +244,6 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	statuses := []string{"pending", "shipped", "delivered", "cancelled"}
 	rng := rand.New(rand.NewSource(42))
 
-	t.Log("--- SETUP ---")
 	h.bulkInsert("customers", numCustomers, func(i int) string {
 		return fmt.Sprintf("(%d, 'customer_%d', '%s')", i, i, tiers[i%len(tiers)])
 	})
@@ -261,94 +254,130 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		return fmt.Sprintf("(%d, %d, %d, '%s')", i, custID, amount, status)
 	})
 
-	t.Log("--- POINT LOOKUPS (PK) ---")
-	r := h.timeQuery("SELECT * FROM orders WHERE id = 0")
-	r.expectRows(t, "PK lookup id=0", 1)
-	if r.Duration > 2*time.Second {
-		t.Errorf("PK lookup took %v — scans may be O(N) instead of O(1)", r.Duration)
-	}
-	r = h.timeQuery("SELECT * FROM orders WHERE id = ?", n/2)
-	r.mustSucceed(t, "PK lookup id=N/2")
-	r = h.timeQuery("SELECT * FROM orders WHERE id = ?", n-1)
-	r.mustSucceed(t, "PK lookup id=N-1")
+	t.Run("pk_lookup_first", func(t *testing.T) {
+		r := h.timeQuery("SELECT * FROM orders WHERE id = 0")
+		r.expectRows(t, "PK lookup id=0", 1)
+		if r.Duration > 2*time.Second {
+			t.Errorf("PK lookup took %v — expected O(1)", r.Duration)
+		}
+	})
+	t.Run("pk_lookup_middle", func(t *testing.T) {
+		r := h.timeQuery("SELECT * FROM orders WHERE id = ?", n/2)
+		r.expectRows(t, "PK lookup id=N/2", 1)
+	})
+	t.Run("pk_lookup_last", func(t *testing.T) {
+		r := h.timeQuery("SELECT * FROM orders WHERE id = ?", n-1)
+		r.expectRows(t, "PK lookup id=N-1", 1)
+	})
 
-	t.Log("--- INDEX SCANS ---")
-	r = h.timeQuery("SELECT id, amount FROM orders WHERE customer_id = 0")
-	r.mustSucceed(t, "idx_customer eq")
-	r = h.timeQuery("SELECT id FROM orders WHERE amount > 9000")
-	r.mustSucceed(t, "idx_amount range >9000")
-	r = h.timeQuery("SELECT COUNT(*) FROM orders WHERE status = 'pending'")
-	r.expectRows(t, "idx_status count pending", 1)
+	t.Run("index_customer_eq", func(t *testing.T) {
+		r := h.timeQuery("SELECT id, amount FROM orders WHERE customer_id = 0")
+		r.mustSucceed(t, "idx_customer eq")
+	})
+	t.Run("index_amount_range", func(t *testing.T) {
+		r := h.timeQuery("SELECT id FROM orders WHERE amount > 9000")
+		r.mustSucceed(t, "idx_amount range >9000")
+	})
+	t.Run("index_status_count", func(t *testing.T) {
+		r := h.timeQuery("SELECT COUNT(*) FROM orders WHERE status = 'pending'")
+		r.expectRows(t, "idx_status count pending", 1)
+	})
 
-	t.Log("--- FULL TABLE SCANS ---")
-	r = h.timeQuery("SELECT COUNT(*) FROM orders")
-	r.expectRows(t, "full scan COUNT(*)", 1)
-	r = h.timeQuery("SELECT COUNT(*) FROM orders WHERE amount > 5000")
-	r.mustSucceed(t, "full scan filter amount>5000")
+	t.Run("full_scan_count", func(t *testing.T) {
+		ctx := context.Background()
+		var count int64
+		err := h.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM orders").Scan(&count)
+		if err != nil {
+			t.Fatalf("COUNT(*): %v", err)
+		}
+		t.Logf("COUNT(*) = %d (expected %d)", count, n)
+		if count != int64(n) {
+			t.Errorf("COUNT(*) = %d, want %d — inserts may have failed", count, n)
+		}
+	})
+	t.Run("full_scan_filter", func(t *testing.T) {
+		r := h.timeQuery("SELECT COUNT(*) FROM orders WHERE amount > 5000")
+		r.mustSucceed(t, "full scan filter amount>5000")
+	})
 
-	t.Log("--- AGGREGATIONS ---")
-	r = h.timeQuery("SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status")
-	r.mustSucceed(t, "GROUP BY status")
-	if r.RowCount != len(statuses) {
-		t.Errorf("GROUP BY status: got %d rows, want %d (possible FDB timeout truncation)", r.RowCount, len(statuses))
-	}
-	r = h.timeQuery("SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
-	r.mustSucceed(t, "GROUP BY customer HAVING")
+	t.Run("group_by_status", func(t *testing.T) {
+		r := h.timeQuery("SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status")
+		r.mustSucceed(t, "GROUP BY status")
+		if r.RowCount != len(statuses) {
+			t.Errorf("got %d groups, want %d (possible FDB timeout truncation)", r.RowCount, len(statuses))
+		}
+	})
+	t.Run("group_by_customer_having", func(t *testing.T) {
+		r := h.timeQuery("SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
+		r.mustSucceed(t, "GROUP BY customer HAVING")
+	})
 
-	t.Log("--- JOINS ---")
-	r = h.timeQuery("SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id")
-	r.mustSucceed(t, "JOIN 10 orders × customers")
-	if r.RowCount < 1 {
-		t.Error("JOIN returned 0 rows")
-	}
+	t.Run("join_10_outer", func(t *testing.T) {
+		r := h.timeQuery("SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id")
+		r.mustSucceed(t, "JOIN 10 orders x customers")
+		if r.RowCount < 1 {
+			t.Error("JOIN returned 0 rows")
+		}
+	})
 	if n <= 10_000 {
-		r = h.timeQuery("SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 100 ORDER BY o.id")
-		r.mustSucceed(t, "JOIN 100 orders × customers")
-		r = h.timeQuery("SELECT COUNT(*) FROM orders o, customers c WHERE o.customer_id = c.id AND c.tier = 'gold' AND o.status = 'pending'")
-		r.mustSucceed(t, "JOIN filtered both sides")
-	} else {
-		t.Log("  (skipping large JOINs at >10K — NLJ is O(N×M))")
+		t.Run("join_100_outer", func(t *testing.T) {
+			r := h.timeQuery("SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 100 ORDER BY o.id")
+			r.mustSucceed(t, "JOIN 100 orders x customers")
+		})
+		t.Run("join_filtered_both", func(t *testing.T) {
+			r := h.timeQuery("SELECT COUNT(*) FROM orders o, customers c WHERE o.customer_id = c.id AND c.tier = 'gold' AND o.status = 'pending'")
+			r.mustSucceed(t, "JOIN filtered both sides")
+		})
 	}
 
-	t.Log("--- ORDER BY (index-backed) ---")
-	r = h.timeQuery("SELECT id FROM orders ORDER BY id")
-	r.mustSucceed(t, "ORDER BY PK (full)")
-	if r.RowCount != n {
-		t.Errorf("ORDER BY PK: got %d rows, want %d (silent truncation from FDB timeout?)", r.RowCount, n)
-	}
-	r = h.timeQuery("SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id")
-	r.mustSucceed(t, "ORDER BY PK + index filter")
+	t.Run("order_by_pk_full", func(t *testing.T) {
+		r := h.timeQuery("SELECT id FROM orders ORDER BY id")
+		r.mustSucceed(t, "ORDER BY PK (full)")
+		if r.RowCount != n {
+			t.Errorf("got %d rows, want %d (silent truncation?)", r.RowCount, n)
+		}
+	})
+	t.Run("order_by_pk_index_filter", func(t *testing.T) {
+		r := h.timeQuery("SELECT id, amount FROM orders WHERE customer_id = 0 ORDER BY id")
+		r.mustSucceed(t, "ORDER BY PK + index filter")
+	})
 
-	t.Log("--- LARGE RESULT SET SCANS ---")
-	r = h.timeQuery("SELECT id FROM orders ORDER BY id")
-	r.mustSucceed(t, "scan all rows ordered")
-	if r.RowCount != n {
-		t.Errorf("scan all rows: got %d rows, want %d (silent truncation)", r.RowCount, n)
-	}
-	r = h.timeQuery("SELECT id, customer_id, amount, status FROM orders ORDER BY id")
-	r.mustSucceed(t, "scan all rows wide")
-	if r.RowCount != n {
-		t.Errorf("scan all rows wide: got %d rows, want %d", r.RowCount, n)
-	}
+	t.Run("scan_all_narrow", func(t *testing.T) {
+		r := h.timeQuery("SELECT id FROM orders ORDER BY id")
+		r.mustSucceed(t, "scan all rows ordered")
+		if r.RowCount != n {
+			t.Errorf("got %d rows, want %d (silent truncation)", r.RowCount, n)
+		}
+	})
+	t.Run("scan_all_wide", func(t *testing.T) {
+		r := h.timeQuery("SELECT id, customer_id, amount, status FROM orders ORDER BY id")
+		r.mustSucceed(t, "scan all rows wide")
+		if r.RowCount != n {
+			t.Errorf("got %d rows, want %d", r.RowCount, n)
+		}
+	})
 
-	t.Log("--- EXISTS SUBQUERY ---")
-	if n <= 10_000 {
-		r = h.timeQuery("SELECT id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending') ORDER BY id")
-		r.mustSucceed(t, "EXISTS subquery")
-	} else {
-		r = h.timeQuery("SELECT id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending') AND c.id < 10 ORDER BY id")
-		r.mustSucceed(t, "EXISTS subquery (limited)")
-	}
+	t.Run("exists_subquery", func(t *testing.T) {
+		if n <= 10_000 {
+			r := h.timeQuery("SELECT id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending') ORDER BY id")
+			r.mustSucceed(t, "EXISTS subquery")
+		} else {
+			r := h.timeQuery("SELECT id FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending') AND c.id < 10 ORDER BY id")
+			r.mustSucceed(t, "EXISTS subquery (limited)")
+		}
+	})
 
-	t.Log("--- IN-LIST ---")
-	r = h.timeQuery("SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id")
-	r.mustSucceed(t, "IN-list 5 values")
+	t.Run("in_list", func(t *testing.T) {
+		r := h.timeQuery("SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id")
+		r.mustSucceed(t, "IN-list 5 values")
+	})
 
-	t.Log("--- DML AT SCALE ---")
-	r = h.timeExec("UPDATE orders SET amount = amount + 1 WHERE customer_id = 0")
-	r.mustSucceed(t, "UPDATE by index")
-	r = h.timeExec("DELETE FROM orders WHERE id = 0")
-	r.expectRows(t, "DELETE single row", 1)
-
-	t.Log("--- DONE ---")
+	t.Run("update_by_index", func(t *testing.T) {
+		r := h.timeExec("UPDATE orders SET amount = amount + 1 WHERE customer_id = 0")
+		r.mustSucceed(t, "UPDATE by index")
+	})
+	t.Run("delete_single_row", func(t *testing.T) {
+		r := h.timeExec("DELETE FROM orders WHERE id = 0")
+		r.expectRows(t, "DELETE single row", 1)
+	})
 }

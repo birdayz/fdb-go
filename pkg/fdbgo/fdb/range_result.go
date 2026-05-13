@@ -156,6 +156,14 @@ type RangeIterator struct {
 	index      int // position returned by Get(); set by Advance()
 	exhausted  bool
 	firstBatch bool
+
+	// traceLog, when non-nil, is called after each batch fetch for debugging.
+	traceLog func(iteration, requested, returned int, more bool, err error)
+}
+
+// SetTraceLog sets a callback invoked after each batch fetch. For debugging.
+func (ri *RangeIterator) SetTraceLog(fn func(iteration, requested, returned int, more bool, err error)) {
+	ri.traceLog = fn
 }
 
 // Advance moves to the next key-value pair. Returns true if there is a
@@ -191,6 +199,12 @@ func (ri *RangeIterator) Advance() bool {
 	} else {
 		kvs, more, err = ri.rr.doRangeSnapshot(ri.begin, ri.end, batch)
 	}
+
+	// Trace: log every batch for debugging premature exhaustion.
+	if ri.traceLog != nil {
+		ri.traceLog(ri.iteration-1, batch, len(kvs), more, err)
+	}
+
 	if err != nil {
 		ri.err = convertError(err)
 		return false

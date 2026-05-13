@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "executor",
     srcs = [
+        "continuation.go",
         "covering_optimizer.go",
         "evaluation_context.go",
         "executor.go",
@@ -10,10 +11,12 @@ go_library(
         "query_result.go",
         "resultset.go",
         "scalar_subquery.go",
+        "streaming_cursors.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor",
     visibility = ["//visibility:public"],
     deps = [
+        "//gen",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/expressions",

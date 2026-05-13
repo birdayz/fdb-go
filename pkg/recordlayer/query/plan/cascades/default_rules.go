@@ -156,7 +156,6 @@ func BatchAExpressionRules() []ExpressionRule {
 		// is PLANNING-phase only. Sort elimination now happens exclusively
 		// in ImplementSortRule (DefaultImplementationRules).
 		NewImplementStreamingAggregationRule(),
-		NewImplementHashAggregationRule(),
 		NewStreamingAggFromIndexRule(),
 		NewAggregateDataAccessRule(),
 		NewImplementNestedLoopJoinRule(),

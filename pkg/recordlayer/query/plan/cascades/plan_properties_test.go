@@ -67,14 +67,14 @@ func TestComputeDistinctRecords_FilterInheritsFromChild(t *testing.T) {
 	}
 }
 
-func TestComputeDistinctRecords_HashAggIsFalse(t *testing.T) {
+func TestComputeDistinctRecords_StreamingAggIsFalse(t *testing.T) {
 	t.Parallel()
 	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	aggPlan := plans.NewRecordQueryHashAggregationPlan(nil, keys, nil)
-	wrapper := &physicalHashAggWrapper{plan: aggPlan}
+	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, keys, nil)
+	wrapper := &physicalStreamingAggWrapper{plan: aggPlan}
 	got := computeDistinctRecords(wrapper, aggPlan)
 	if got {
-		t.Fatal("hash aggregation should NOT produce distinct records")
+		t.Fatal("streaming aggregation should NOT produce distinct records")
 	}
 }
 
@@ -144,11 +144,11 @@ func TestComputeStoredRecord_FilterInheritsFromScan(t *testing.T) {
 	}
 }
 
-func TestComputeStoredRecord_HashAggIsFalse(t *testing.T) {
+func TestComputeStoredRecord_StreamingAggIsFalse(t *testing.T) {
 	t.Parallel()
-	aggPlan := plans.NewRecordQueryHashAggregationPlan(nil, nil, nil)
+	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
 	if computeStoredRecord(aggPlan) {
-		t.Fatal("hash aggregation should NOT produce stored records")
+		t.Fatal("streaming aggregation should NOT produce stored records")
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 // aggregation topologies: varying GroupBy key counts, aggregate function
 // combos, optional pre-filter, optional outer sort, optional DISTINCT,
 // and optional HAVING filter. The goal is to stress the interaction of:
-//   - ImplementStreamingAggregationRule / ImplementHashAggregationRule
+//   - ImplementStreamingAggregationRule
 //   - PushFilterThroughGroupByRule
 //   - DistinctOverGroupByElimRule
 //   - ImplementSortRule (when streaming agg produces order)

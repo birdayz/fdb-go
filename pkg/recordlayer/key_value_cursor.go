@@ -535,6 +535,12 @@ func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
 
 	// Advance iterator
 	if !c.iterator.Advance() {
+		// Advance returns false on exhaustion OR error. Check Get() for
+		// the stored error — this surfaces transaction_too_old (1007)
+		// instead of silently treating timeout as end-of-data.
+		if _, err := c.iterator.Get(); err != nil {
+			return fdb.KeyValue{}, false, fmt.Errorf("key-value cursor: iterator advance: %w", err)
+		}
 		return fdb.KeyValue{}, false, nil
 	}
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
@@ -309,6 +310,11 @@ func (p *cascadesPlan) Explain() string {
 	return p.explain
 }
 
+// txPageTimeLimit is the per-transaction time budget for SQL query
+// execution. Set below FDB's 5s hard wall to leave margin for commit
+// and cleanup. Matches Java's ExecuteProperties.setTimeLimit pattern.
+const txPageTimeLimit = 4 * time.Second
+
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	c := p.conn
 	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
@@ -316,11 +322,196 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return query.Result{}, ssErr
 	}
 
-	var rows driver.Rows
-	_, txErr := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
+
+	// Create the cursor hierarchy ONCE inside a transaction. The streaming
+	// cursors (aggregateCursor, memorySortCursor, nljCursor) keep their
+	// partial state in memory across OnNext calls. When the leaf cursor
+	// hits the 4s time limit, intermediate cursors pause and propagate
+	// TimeLimitReached upward. The paginatingRows layer then opens a
+	// NEW transaction, creates a new leaf cursor from the continuation,
+	// and the intermediate cursors continue accumulating.
+	//
+	// To make this work: ExecutePlan is called once with the full plan.
+	// The leaf cursor is wrapped in an autoPagingCursor that reopens
+	// transactions internally when TimeLimitReached fires.
+
+	pr := &paginatingRows{
+		ctx:              ctx,
+		conn:             c,
+		ss:               ss,
+		plan:             p.physicalPlan,
+		md:               p.md,
+		scalarSubqueries: p.scalarSubqueries,
+		cols:             cols,
+	}
+
+	// Eagerly fetch the first page so execution errors (type mismatches,
+	// plan failures) surface at QueryContext time, not during row iteration.
+	if err := pr.fetchPage(); err != nil {
+		return query.Result{}, err
+	}
+
+	return query.Result{Rows: pr}, nil
+}
+
+// paginatingRows implements driver.Rows with cross-transaction pagination.
+// The cursor hierarchy is created ONCE and persists across fetchPage calls.
+// Streaming cursors (aggregateCursor, memorySortCursor, nljCursor)
+// accumulate state in memory. When the leaf cursor hits the 4s time
+// limit, TimeLimitReached propagates up, fetchPage saves the leaf
+// continuation, opens a new transaction, creates a new leaf cursor from
+// the continuation, and the intermediate cursors continue accumulating.
+type paginatingRows struct {
+	ctx              context.Context
+	conn             *EmbeddedConnection
+	ss               subspace.Subspace
+	plan             plans.RecordQueryPlan
+	md               *recordlayer.RecordMetaData
+	scalarSubqueries []scalarSubqueryBinding
+	cols             []executor.ColumnDef
+
+	buf          [][]driver.Value
+	bufPos       int
+	continuation []byte
+	exhausted    bool
+	closed       bool
+	fetchErr     error
+}
+
+func (r *paginatingRows) Columns() []string {
+	cols := make([]string, len(r.cols))
+	for i, c := range r.cols {
+		if c.Label != "" {
+			cols[i] = c.Label
+		} else {
+			cols[i] = c.Name
+		}
+	}
+	return cols
+}
+
+func (r *paginatingRows) Close() error {
+	r.closed = true
+	return nil
+}
+
+func (r *paginatingRows) ColumnTypeDatabaseTypeName(index int) string {
+	if index < 0 || index >= len(r.cols) {
+		return ""
+	}
+	return r.cols[index].TypeName
+}
+
+func (r *paginatingRows) ColumnTypeScanType(index int) reflect.Type {
+	switch r.ColumnTypeDatabaseTypeName(index) {
+	case "BIGINT":
+		return reflect.TypeOf((*int64)(nil)).Elem()
+	case "INTEGER":
+		return reflect.TypeOf((*int32)(nil)).Elem()
+	case "DOUBLE":
+		return reflect.TypeOf((*float64)(nil)).Elem()
+	case "FLOAT":
+		return reflect.TypeOf((*float32)(nil)).Elem()
+	case "STRING":
+		return reflect.TypeOf((*string)(nil)).Elem()
+	case "BOOLEAN":
+		return reflect.TypeOf((*bool)(nil)).Elem()
+	case "BYTES":
+		return reflect.TypeOf((*[]byte)(nil)).Elem()
+	case "DATE", "TIMESTAMP":
+		return reflect.TypeOf((*time.Time)(nil)).Elem()
+	default:
+		return reflect.TypeOf((*any)(nil)).Elem()
+	}
+}
+
+func (r *paginatingRows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	if index < 0 || index >= len(r.cols) {
+		return true, true
+	}
+	return r.cols[index].Nullable != api.ColumnNoNulls, true
+}
+
+func (r *paginatingRows) ColumnTypeLength(index int) (length int64, ok bool) {
+	switch r.ColumnTypeDatabaseTypeName(index) {
+	case "STRING", "BYTES":
+		return math.MaxInt64, true
+	case "DATE":
+		return 10, true
+	case "TIMESTAMP":
+		return 19, true
+	}
+	return 0, false
+}
+
+func (r *paginatingRows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
+	return 0, 0, false
+}
+
+func (r *paginatingRows) Next(dest []driver.Value) error {
+	if r.closed {
+		return io.EOF
+	}
+
+	// Serve from buffer if available.
+	if r.bufPos < len(r.buf) {
+		row := r.buf[r.bufPos]
+		r.bufPos++
+		copy(dest, row)
+		return nil
+	}
+
+	// Buffer exhausted. If source is done, we're done.
+	if r.exhausted {
+		return io.EOF
+	}
+	if r.fetchErr != nil {
+		return r.fetchErr
+	}
+
+	// Fetch pages until we have rows or the source is truly exhausted.
+	// Blocking operators (aggregate, sort) may produce 0 result rows per
+	// page while accumulating — they only emit after the inner scan is
+	// fully drained. Keep fetching until rows appear or exhaustion.
+	for {
+		if err := r.fetchPage(); err != nil {
+			r.fetchErr = err
+			return err
+		}
+		if len(r.buf) > 0 {
+			break
+		}
+		if r.exhausted {
+			return io.EOF
+		}
+	}
+
+	row := r.buf[r.bufPos]
+	r.bufPos++
+	copy(dest, row)
+	return nil
+}
+
+// fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
+// (or recreates it from the continuation), drains the cursor until it
+// stops, and buffers the results. Everything happens INSIDE DB.Run so
+// FDB reads are against a live transaction.
+//
+// This matches Java's architecture: each transaction creates a fresh
+// cursor hierarchy from the plan + continuation. The continuation
+// carries ALL intermediate state (aggregate accumulators, sort buffers)
+// serialized as protobuf. No cursor persists across transactions.
+func (r *paginatingRows) fetchPage() error {
+	c := r.conn
+
+	_, txErr := c.sess.DB.Run(r.ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		r.buf = r.buf[:0]
+		r.bufPos = 0
+
 		store, storeErr := recordlayer.NewStoreBuilder().
 			SetContext(rctx).
-			SetSubspace(ss).
+			SetSubspace(r.ss).
 			SetMetaDataProvider(c.cachedMetaData()).
 			Open()
 		if storeErr != nil {
@@ -328,12 +519,10 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		}
 
 		evalCtx := executor.EmptyEvaluationContext()
-
-		// Pre-evaluate scalar subqueries and bind their results.
-		if len(p.scalarSubqueries) > 0 {
-			scalarResults := make(map[values.CorrelationIdentifier]any, len(p.scalarSubqueries))
-			for _, ssq := range p.scalarSubqueries {
-				result, ssqErr := executor.EvaluateScalarSubquery(ctx, ssq.plan, store, evalCtx)
+		if len(r.scalarSubqueries) > 0 {
+			scalarResults := make(map[values.CorrelationIdentifier]any, len(r.scalarSubqueries))
+			for _, ssq := range r.scalarSubqueries {
+				result, ssqErr := executor.EvaluateScalarSubquery(r.ctx, ssq.plan, store, evalCtx)
 				if ssqErr != nil {
 					return nil, ssqErr
 				}
@@ -342,47 +531,96 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
 		}
 
-		cursor, execErr := executor.ExecutePlan(ctx, p.physicalPlan, store, evalCtx, nil,
-			recordlayer.DefaultExecuteProperties())
+		props := recordlayer.DefaultExecuteProperties().WithTimeLimit(txPageTimeLimit)
+		cursor, execErr := executor.ExecutePlan(r.ctx, r.plan, store, evalCtx, r.continuation, props)
 		if execErr != nil {
-			var typeMismatch *predicates.TypeMismatchError
-			if errors.As(execErr, &typeMismatch) {
-				return nil, api.NewError(api.ErrCodeDatatypeMismatch,
-					"The operands of a comparison operator are not compatible.")
-			}
-			var depthExceeded *executor.RecursiveCTEDepthExceededError
-			if errors.As(execErr, &depthExceeded) {
-				return nil, api.NewError(api.ErrCodeExecutionLimitReached, depthExceeded.Error())
-			}
-			var aggTypeMismatch *executor.AggregateTypeMismatchError
-			if errors.As(execErr, &aggTypeMismatch) {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
-			}
-			var rangeOverflow *executor.NumericRangeOverflowError
-			if errors.As(execErr, &rangeOverflow) {
-				return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, rangeOverflow.Error())
-			}
-			var sumOverflow *executor.SumOverflowError
-			if errors.As(execErr, &sumOverflow) {
-				return nil, api.NewError(api.ErrCodeNumericValueOutOfRange, sumOverflow.Error())
-			}
-			return nil, execErr
+			return nil, translateExecError(execErr)
 		}
 
-		cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
-		rs := executor.NewRecordLayerResultSet(ctx, cursor, cols)
-		rows = newCascadesRows(rs)
+		rs := executor.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
+		defer rs.Close()
+
+		for rs.Next() {
+			row := make([]driver.Value, len(r.cols))
+			for i := range row {
+				v, err := rs.Object(i + 1)
+				if err != nil {
+					return nil, err
+				}
+				row[i] = v
+			}
+			r.buf = append(r.buf, row)
+		}
+		if err := rs.Err(); err != nil {
+			return nil, translateExecError(err)
+		}
+
+		cont := rs.GetContinuation()
+		if cont == nil || cont.IsEnd() {
+			r.exhausted = true
+			r.continuation = nil
+		} else {
+			contBytes, contErr := cont.ToBytes()
+			if contErr != nil {
+				return nil, contErr
+			}
+			if contBytes == nil {
+				r.exhausted = true
+			} else {
+				r.continuation = contBytes
+			}
+		}
 		return nil, nil
 	})
-	if txErr != nil {
-		var aggTypeMismatch *executor.AggregateTypeMismatchError
-		if errors.As(txErr, &aggTypeMismatch) {
-			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
-		}
-		return query.Result{}, txErr
-	}
 
-	return query.Result{Rows: rows}, nil
+	if txErr != nil {
+		return translateExecError(txErr)
+	}
+	return nil
+}
+
+func translateExecError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var typeMismatch *predicates.TypeMismatchError
+	if errors.As(err, &typeMismatch) {
+		return api.NewError(api.ErrCodeDatatypeMismatch,
+			"The operands of a comparison operator are not compatible.")
+	}
+	var depthExceeded *executor.RecursiveCTEDepthExceededError
+	if errors.As(err, &depthExceeded) {
+		return api.NewError(api.ErrCodeExecutionLimitReached, depthExceeded.Error())
+	}
+	var aggTypeMismatch *executor.AggregateTypeMismatchError
+	if errors.As(err, &aggTypeMismatch) {
+		return api.NewError(api.ErrCodeUnsupportedOperation, aggTypeMismatch.Error())
+	}
+	var rangeOverflow *executor.NumericRangeOverflowError
+	if errors.As(err, &rangeOverflow) {
+		return api.NewError(api.ErrCodeNumericValueOutOfRange, rangeOverflow.Error())
+	}
+	var sumOverflow *executor.SumOverflowError
+	if errors.As(err, &sumOverflow) {
+		return api.NewError(api.ErrCodeNumericValueOutOfRange, sumOverflow.Error())
+	}
+	var divZero *values.ArithmeticDivisionByZeroError
+	if errors.As(err, &divZero) {
+		return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
+	}
+	var overflow *values.ArithmeticOverflowError
+	if errors.As(err, &overflow) {
+		return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
+	}
+	var scalarMismatch *values.ScalarTypeMismatchError
+	if errors.As(err, &scalarMismatch) {
+		return api.NewError(api.ErrCodeCannotConvertType, scalarMismatch.Error())
+	}
+	var castErr *values.InvalidCastError
+	if errors.As(err, &castErr) {
+		return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
+	}
+	return err
 }
 
 func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanContext {
@@ -404,10 +642,43 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 	if c.md == nil {
 		return nil
 	}
-	allIndexes := c.md.GetAllIndexes()
-	if len(allIndexes) == 0 {
-		return nil
+
+	var candidates []cascades.MatchCandidate
+
+	// Register PrimaryScanMatchCandidates for each record type's PK.
+	// Mirrors Java's RecordStoreScope which creates a PrimaryScanMatchCandidate
+	// from the common primary key.
+	allTypes := c.md.RecordTypes()
+	allTypeNames := make([]string, 0, len(allTypes))
+	for name := range allTypes {
+		allTypeNames = append(allTypeNames, name)
 	}
+	for _, rt := range allTypes {
+		if rt.PrimaryKey == nil {
+			continue
+		}
+		pkCols := rt.PrimaryKey.FieldNames()
+		if len(pkCols) == 0 {
+			continue
+		}
+		upperPK := make([]string, len(pkCols))
+		aliases := make([]values.CorrelationIdentifier, len(pkCols))
+		for i, col := range pkCols {
+			upperPK[i] = strings.ToUpper(col)
+			aliases[i] = values.UniqueCorrelationIdentifier()
+		}
+		candidates = append(candidates, cascades.NewPrimaryScanMatchCandidate(
+			nil,
+			aliases,
+			allTypeNames,
+			[]string{rt.Name},
+			upperPK,
+			values.UnknownType,
+		))
+	}
+
+	// Register secondary index candidates.
+	allIndexes := c.md.GetAllIndexes()
 	defs := make([]cascades.IndexDef, 0, len(allIndexes))
 	for _, idx := range allIndexes {
 		if idx.RootExpression == nil {
@@ -415,11 +686,12 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 		}
 		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
 	}
-	if len(defs) == 0 {
-		return nil
+	if len(defs) > 0 {
+		ctx := cascades.NewPlanContextFromIndexDefs(defs)
+		candidates = append(candidates, ctx.GetMatchCandidates()...)
 	}
-	ctx := cascades.NewPlanContextFromIndexDefs(defs)
-	return ctx.GetMatchCandidates()
+
+	return candidates
 }
 
 type metadataIndexDef struct {
@@ -460,9 +732,6 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	}
 	if agg, ok := plan.(*plans.RecordQueryStreamingAggregationPlan); ok {
 		return deriveColumnsFromAggregation(agg, md)
-	}
-	if agg, ok := plan.(*plans.RecordQueryHashAggregationPlan); ok {
-		return deriveColumnsFromHashAggregation(agg, md)
 	}
 	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 		return deriveColumnsFromJoin(nlj, md)
@@ -608,11 +877,6 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 }
 
 func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	desc := findLeafDescriptor(agg.GetInner(), md)
-	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
-}
-
-func deriveColumnsFromHashAggregation(agg *plans.RecordQueryHashAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	desc := findLeafDescriptor(agg.GetInner(), md)
 	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
 }

@@ -179,9 +179,9 @@ func TestToPlanPartitions_GroupsByDistinctAndStored(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	wA := &physicalScanWrapper{plan: scanA}
 
-	// Hash agg has distinct=false, stored=false.
-	aggPlan := plans.NewRecordQueryHashAggregationPlan(nil, nil, nil)
-	wB := &physicalHashAggWrapper{plan: aggPlan}
+	// Streaming agg has distinct=false, stored=false.
+	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
+	wB := &physicalStreamingAggWrapper{plan: aggPlan}
 
 	ref := expressions.NewFinalReference([]expressions.RelationalExpression{wA, wB})
 	pm := NewPlanPropertiesMap()

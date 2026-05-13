@@ -8,7 +8,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
-func TestImplementStreamingAgg_UnorderedScanDoesNotFire(t *testing.T) {
+func TestImplementStreamingAgg_UnorderedScanFires(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
@@ -26,17 +26,19 @@ func TestImplementStreamingAgg_UnorderedScanDoesNotFire(t *testing.T) {
 
 	FireExpressionRule(NewPrimaryScanRule(), scanRef)
 
+	// Streaming agg is the only aggregation implementation, so it fires
+	// regardless of input ordering.
 	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
-	if len(results) != 0 {
-		t.Fatal("streaming agg should NOT fire over unordered scan")
+	if len(results) == 0 {
+		t.Fatal("streaming agg should fire over unordered scan (only agg implementation)")
 	}
 }
 
-func TestImplementStreamingAgg_UnorderedInput_DoesNotFire(t *testing.T) {
+func TestImplementStreamingAgg_UnorderedInput_Fires(t *testing.T) {
 	t.Parallel()
 
-	// GroupBy over a scan with no sort — the physical scan has no
-	// ordering guarantee, so streaming agg should NOT fire.
+	// GroupBy over a scan with no sort — streaming agg fires regardless
+	// since it is the only aggregation implementation.
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
@@ -54,8 +56,8 @@ func TestImplementStreamingAgg_UnorderedInput_DoesNotFire(t *testing.T) {
 	FireExpressionRule(NewPrimaryScanRule(), scanRef)
 
 	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
-	if len(results) != 0 {
-		t.Fatal("ImplementStreamingAggregationRule should NOT fire with unordered input")
+	if len(results) == 0 {
+		t.Fatal("ImplementStreamingAggregationRule should fire with unordered input (only agg implementation)")
 	}
 }
 

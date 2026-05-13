@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -21,10 +22,11 @@ import (
 // continuation, scan-comparison thunk. Those land when consumers
 // (Batch A index rules) need them.
 type RecordQueryScanPlan struct {
-	recordTypes    []string
-	flowedType     values.Type
-	reverse        bool
-	primaryKeyVals []values.Value
+	recordTypes     []string
+	flowedType      values.Type
+	reverse         bool
+	primaryKeyVals  []values.Value
+	scanComparisons []*predicates.ComparisonRange
 }
 
 // NewRecordQueryScanPlan builds a scan over the given record types
@@ -51,6 +53,25 @@ func (p *RecordQueryScanPlan) WithPrimaryKey(pk []values.Value) *RecordQueryScan
 		reverse:        p.reverse,
 		primaryKeyVals: copied,
 	}
+}
+
+// WithScanComparisons returns a copy with the given scan comparisons.
+// Mirrors Java's RecordQueryScanPlan constructor that accepts ScanComparisons.
+func (p *RecordQueryScanPlan) WithScanComparisons(comps []*predicates.ComparisonRange) *RecordQueryScanPlan {
+	copied := make([]*predicates.ComparisonRange, len(comps))
+	copy(copied, comps)
+	return &RecordQueryScanPlan{
+		recordTypes:     p.recordTypes,
+		flowedType:      p.flowedType,
+		reverse:         p.reverse,
+		primaryKeyVals:  p.primaryKeyVals,
+		scanComparisons: copied,
+	}
+}
+
+// GetScanComparisons returns the per-column comparison ranges for PK narrowing.
+func (p *RecordQueryScanPlan) GetScanComparisons() []*predicates.ComparisonRange {
+	return p.scanComparisons
 }
 
 // GetPrimaryKeyValues returns the primary key values, or nil if not set.
@@ -122,6 +143,23 @@ func (p *RecordQueryScanPlan) Explain() string {
 			b.WriteString(", ")
 		}
 		b.WriteString(name)
+	}
+	if len(p.scanComparisons) > 0 {
+		b.WriteString(", [")
+		for i, cr := range p.scanComparisons {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			switch cr.GetRangeType() {
+			case predicates.ComparisonRangeEmpty:
+				b.WriteString("*")
+			case predicates.ComparisonRangeEquality:
+				b.WriteString("=")
+			case predicates.ComparisonRangeInequality:
+				b.WriteString("<>")
+			}
+		}
+		b.WriteString("]")
 	}
 	if p.reverse {
 		b.WriteString(") REVERSE")
