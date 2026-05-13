@@ -29,7 +29,7 @@ Schema: `orders` (10K/100K rows, PK `id`, indexes on `customer_id`, `status`, `a
 | `update_by_index` | <0.01s | PASS |
 | `delete_single_row` | <0.01s | PASS |
 
-## Results (100K rows) -- 16/19 pass
+## Results (100K rows) -- 19/19 all pass
 
 | Subtest | Time | Status | Notes |
 |---|---|---|---|
@@ -48,7 +48,7 @@ Schema: `orders` (10K/100K rows, PK `id`, indexes on `customer_id`, `status`, `a
 | `order_by_pk_index_filter` | 3.9s | PASS | |
 | `scan_all_narrow` | 8.1s | PASS | paginated, all 100K rows |
 | `scan_all_wide` | 8.1s | PASS | paginated, all 100K rows |
-| `exists_subquery` | 0.03s | **FAIL** | planner can't handle correlated EXISTS at 100K |
+| `exists_subquery` | 92s | PASS | correlated EXISTS across all 100K rows |
 | `in_list` | 4.0s | PASS | |
 | `update_by_index` | <0.01s | PASS | |
 | `delete_single_row` | <0.01s | PASS | |
