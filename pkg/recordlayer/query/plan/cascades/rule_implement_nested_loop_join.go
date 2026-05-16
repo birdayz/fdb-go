@@ -105,7 +105,9 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// push an equi-join predicate into a correlated PK scan, emit a
 	// FlatMap plan (Java's RecordQueryFlatMapPlan). This turns O(N×M)
 	// into O(N×logM) via correlated index probes.
-	if joinType == plans.JoinInner || joinType == plans.JoinCross || joinType == plans.JoinLeftOuter {
+	// Skip when quantifiers are swapped — alias/plan mapping would be
+	// inconsistent. The non-swapped version will also be explored.
+	if !sel.IsQuantifiersSwapped() && (joinType == plans.JoinInner || joinType == plans.JoinCross || joinType == plans.JoinLeftOuter) {
 		if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType) {
 			return
 		}
