@@ -30,6 +30,12 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Ensure system tools
+        run: |
+          if ! command -v unzip &>/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq unzip
+          fi
+
       - name: Ensure bun is installed
         run: |
           mkdir -p "$HOME/.bun/bin"
