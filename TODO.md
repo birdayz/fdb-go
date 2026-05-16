@@ -70,13 +70,13 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 3. Calls `mergeRows(outer, inner, aliases)` — Go-specific hack that breaks for ambiguous columns
 
 **Fix (must be done as a unit, no intermediate states):**
-- [ ] `RecordQueryFlatMapPlan` must carry a `resultValue values.Value`
-- [ ] `flatMapCursor` must bind BOTH outer and inner as correlations, then evaluate `resultValue` with the combined context — no `mergeRows`
-- [ ] Planner (`ImplementNestedLoopJoinRule.tryFlatMapPlan`) must construct the appropriate `resultValue` (RecordConstructorValue selecting fields from both quantifiers via FieldValue(QOV(alias), column))
-- [ ] Multi-predicate support: absorb equi-join into correlated scan, wrap FlatMap in PredicatesFilterPlan for residual predicates (no `len(preds) != 1` gate)
-- [ ] Same-column-name joins (`a.id = b.id`) must work — resultValue disambiguates naturally
+- [x] `RecordQueryFlatMapPlan` carries `resultValue values.Value` + `inheritOuterRecordProperties`
+- [x] `flatMapCursor` binds BOTH outer and inner as correlations, evaluates `resultValue` — no `mergeRows`
+- [x] `JoinMergeResultValue` produces merged map with qualified keys from both correlation bindings
+- [x] Multi-predicate support: absorb equi-join into correlated scan, wrap FlatMap in PredicatesFilterPlan for residual predicates
+- [ ] Same-column-name joins (`a.id = b.id`) — column expansion layer needs to handle qualified keys from JoinMergeResultValue
 - [ ] `FlatMapContinuation` proto: serialize outer continuation + inner continuation + check value for cross-transaction pagination
-- [ ] Remove the `mergeRows` call from flatMapCursor entirely
+- [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
 
 ---
 
