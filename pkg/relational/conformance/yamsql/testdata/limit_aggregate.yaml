@@ -1,0 +1,22 @@
+# limit_aggregate.yaml — LIMIT with GROUP BY aggregates
+#
+# Verifies LIMIT works correctly when applied after aggregation.
+name: limit_aggregate
+schema_template: |
+  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales VALUES (1, 'North', 100), (2, 'North', 200), (3, 'South', 150), (4, 'South', 50), (5, 'East', 300), (6, 'East', 100)
+tests:
+  # LIMIT on grouped results.
+  - query: SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC LIMIT 2
+    result:
+      - ["East", 400]
+      - ["North", 300]
+  # LIMIT 1 — top region only.
+  - query: SELECT region, COUNT(*) AS cnt FROM sales GROUP BY region ORDER BY cnt DESC LIMIT 1
+    result:
+      - ["North", 2]
+  # LIMIT with OFFSET on aggregates.
+  - query: SELECT region FROM sales GROUP BY region ORDER BY region LIMIT 1 OFFSET 1
+    result:
+      - ["North"]
