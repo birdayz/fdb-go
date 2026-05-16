@@ -2783,4 +2783,29 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 		}
 	}
 	t.Logf("FlatMap LEFT JOIN → %d rows, all matched ✓", len(leftGot))
+
+	// --- Part 3: LIMIT with FlatMap join ---
+	limitQ := "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 5"
+	limitRows, err := db.QueryContext(ctx, limitQ)
+	if err != nil {
+		t.Fatalf("LIMIT+FlatMap query: %v", err)
+	}
+	defer limitRows.Close()
+
+	var limitCount int
+	for limitRows.Next() {
+		var oid int64
+		var cname string
+		if err := limitRows.Scan(&oid, &cname); err != nil {
+			t.Fatalf("LIMIT+FlatMap Scan: %v", err)
+		}
+		limitCount++
+	}
+	if err := limitRows.Err(); err != nil {
+		t.Fatalf("LIMIT+FlatMap rows.Err: %v", err)
+	}
+	if limitCount != 5 {
+		t.Fatalf("LIMIT 5 on FlatMap join: expected 5 rows, got %d", limitCount)
+	}
+	t.Logf("FlatMap + LIMIT 5 → %d rows ✓", limitCount)
 }
