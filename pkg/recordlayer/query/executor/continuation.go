@@ -251,7 +251,7 @@ func encodeSortContinuation(
 func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryResult, err error) {
 	msg := &gen.MemorySortContinuation{}
 	if err := proto.Unmarshal(data, msg); err != nil {
-		return data, nil, nil
+		return nil, nil, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
 	}
 
 	for _, srBytes := range msg.Records {

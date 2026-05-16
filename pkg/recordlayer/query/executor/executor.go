@@ -749,12 +749,11 @@ func executeSort(
 
 	if continuation != nil {
 		ic, buf, decErr := decodeSortContinuation(continuation)
-		if decErr == nil {
-			innerContinuation = ic
-			priorBuf = buf
-		} else {
-			innerContinuation = continuation
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
 		}
+		innerContinuation = ic
+		priorBuf = buf
 	}
 
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
@@ -1348,13 +1347,12 @@ func executeAggregation(
 
 	if continuation != nil {
 		ic, gk, gs, decErr := decodeAggregateContinuation(continuation, len(aggregates))
-		if decErr == nil {
-			innerContinuation = ic
-			priorGroupKey = gk
-			priorState = gs
-		} else {
-			innerContinuation = continuation
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
 		}
+		innerContinuation = ic
+		priorGroupKey = gk
+		priorState = gs
 	}
 
 	innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
@@ -2331,12 +2329,11 @@ func executeInMemorySort(
 	var priorBuf []QueryResult
 	if continuation != nil {
 		ic, buf, decErr := decodeSortContinuation(continuation)
-		if decErr == nil {
-			innerContinuation = ic
-			priorBuf = buf
-		} else {
-			innerContinuation = continuation
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
 		}
+		innerContinuation = ic
+		priorBuf = buf
 	}
 
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
