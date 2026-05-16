@@ -80,6 +80,12 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 
 ---
 
+## HIGH PRIORITY — SQL LIMIT/OFFSET extension
+
+Most-requested user feature. The infrastructure exists end-to-end (`RecordQueryLimitPlan`, `ImplementLimitRule`, `physicalLimitWrapper`, `LogicalLimitExpression`, `executeLimit`). The parser rejects LIMIT at parse time (Java alignment). Investigated in swingshift-95: removing the rejection and wiring the `visitLimit` PlanVisitor method produces a `LogicalLimit` node, but the Cascades pipeline doesn't emit the limit in the final physical plan. Need to debug: verify `ImplementLimitRule` fires, check if the `LogicalLimitExpression` placement relative to `LogicalProjectionExpression` causes the issue (LIMIT wraps before projection in the logical tree).
+
+---
+
 ## Active work
 
 ### Bytes IN-list Ginkgo harness flake (491→492/492)
