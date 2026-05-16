@@ -1,0 +1,23 @@
+# limit_join.yaml — LIMIT with JOIN (Go extension combo test)
+#
+# Exercises LIMIT/OFFSET applied to FlatMap correlated join results.
+name: limit_join
+schema_template: |
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 300), (40, 3, 50), (50, 3, 75)
+tests:
+  - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 3
+    result:
+      - [10, "Alice"]
+      - [20, "Alice"]
+      - [30, "Bob"]
+  - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 2 OFFSET 2
+    result:
+      - [30, "Bob"]
+      - [40, "Charlie"]
+  - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.amount > 100 ORDER BY o.id LIMIT 1
+    result:
+      - [20, "Alice"]
