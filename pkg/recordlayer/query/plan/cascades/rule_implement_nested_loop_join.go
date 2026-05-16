@@ -453,12 +453,10 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		}
 
 		// Check both directions: LHS=outer.FK, RHS=inner.PK or vice versa.
-		outerVal, innerCol := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
+		outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
 		if outerVal == nil {
 			continue
 		}
-
-		_ = innerCol
 
 		// Build correlated inner scan: the PK comparison operand is a
 		// FieldValue with a QuantifiedObjectValue child referencing the
@@ -541,11 +539,10 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			if cp.Operand == nil || cp.Comparison.Operand == nil {
 				continue
 			}
-			outerVal, innerCol := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, idxFirstCol)
+			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, idxFirstCol)
 			if outerVal == nil {
 				continue
 			}
-			_ = innerCol
 
 			outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
 			bareField := outerVal.Field
