@@ -1,0 +1,22 @@
+# left_join_aggregate.yaml — LEFT JOIN + GROUP BY on joined result
+#
+# Exercises aggregation over LEFT JOIN results where some outer rows
+# have no inner match (NULL values in aggregate input).
+name: left_join_aggregate
+schema_template: |
+  CREATE TABLE teams (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE scores (id BIGINT NOT NULL, team_id BIGINT NOT NULL, points BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO teams VALUES (1, 'Alpha'), (2, 'Beta'), (3, 'Gamma')
+  - INSERT INTO scores VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50)
+tests:
+  # COUNT with LEFT JOIN: team Gamma has 0 scores.
+  - query: >
+      SELECT t.name, COUNT(s.id) AS score_count
+      FROM teams t LEFT JOIN scores s ON t.id = s.team_id
+      GROUP BY t.name
+      ORDER BY t.name
+    result:
+      - ["Alpha", 2]
+      - ["Beta", 1]
+      - ["Gamma", 0]
