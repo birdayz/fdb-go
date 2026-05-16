@@ -45,12 +45,12 @@ Same user-visible behavior: identical SQLSTATE, identical error message. 24 yams
 
 No functional difference — absorbs candidate-side-only expressions (MatchableSortExpression) into partial matches. Same inputs, same outputs.
 
-### Go uses NestedLoopJoinPlan instead of FlatMapPlan
+### Go uses FlatMapPlan for PK equi-joins, NLJ for remaining cases
 
-**Java:** `RecordQueryFlatMapPlan` with correlation bindings.
-**Go:** `RecordQueryNestedLoopJoinPlan` with explicit predicates.
+**Java:** `RecordQueryFlatMapPlan` for ALL joins (inner, left, exists, not-exists). No separate NLJ plan exists. `inheritOuterRecordProperties = innerQuantifier instanceof Quantifier.Existential`.
+**Go (swingshift-95):** `RecordQueryFlatMapPlan` fires for INNER joins where the equi-join predicate matches the inner table's PK. Uses correlated scan + `JoinMergeResultValue` + `CorrelationBinder` interface. LEFT OUTER, EXISTS, NOT EXISTS still use `RecordQueryNestedLoopJoinPlan` with explicit predicates and `mergeRows`.
 
-Same execution semantics — for each outer row, evaluate inner with bound correlations, filter by predicate. The FlatMap join ordering criterion (criterion 15 in PlanningCostModel) is N/A — Go doesn't produce FlatMap plans.
+**Remaining:** Port FlatMap for LEFT OUTER, EXISTS/NOT EXISTS. Then remove `RecordQueryNestedLoopJoinPlan` entirely.
 
 ### Go has explicit Sort/InMemorySort physical operators
 

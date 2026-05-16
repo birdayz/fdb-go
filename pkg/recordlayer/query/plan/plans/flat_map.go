@@ -22,6 +22,7 @@ type RecordQueryFlatMapPlan struct {
 	innerAlias                   values.CorrelationIdentifier
 	resultValue                  values.Value
 	inheritOuterRecordProperties bool
+	leftOuter                    bool
 }
 
 func NewRecordQueryFlatMapPlan(
@@ -54,6 +55,8 @@ func (p *RecordQueryFlatMapPlan) GetResultValue() values.Value                { 
 func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 	return p.inheritOuterRecordProperties
 }
+func (p *RecordQueryFlatMapPlan) IsLeftOuter() bool   { return p.leftOuter }
+func (p *RecordQueryFlatMapPlan) SetLeftOuter(v bool) { p.leftOuter = v }
 
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)

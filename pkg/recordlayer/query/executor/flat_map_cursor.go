@@ -25,10 +25,12 @@ type flatMapCursor struct {
 	innerAlias   values.CorrelationIdentifier
 	resultValue  values.Value
 	inheritOuter bool
+	leftOuter    bool
 	props        recordlayer.ExecuteProperties
 
 	innerCursor    recordlayer.RecordCursor[QueryResult]
 	currentOuter   *QueryResult
+	innerHadMatch  bool
 	outerExhausted bool
 	closed         bool
 }
@@ -41,6 +43,7 @@ func newFlatMapCursor(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	inheritOuter bool,
+	leftOuter bool,
 	props recordlayer.ExecuteProperties,
 ) *flatMapCursor {
 	return &flatMapCursor{
@@ -52,6 +55,7 @@ func newFlatMapCursor(
 		innerAlias:   innerAlias,
 		resultValue:  resultValue,
 		inheritOuter: inheritOuter,
+		leftOuter:    leftOuter,
 		props:        props,
 	}
 }
@@ -69,6 +73,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				return recordlayer.RecordCursorResult[QueryResult]{}, err
 			}
 			if result.HasNext() {
+				c.innerHadMatch = true
 				innerRow := result.GetValue()
 				outputRow := c.computeResult(*c.currentOuter, innerRow)
 				return recordlayer.NewResultWithValue(outputRow, nonEndContinuation), nil
@@ -83,6 +88,12 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				return recordlayer.NewResultNoNext[QueryResult](
 					reason, result.GetContinuation(),
 				), nil
+			}
+
+			// LEFT OUTER: emit outer row with NULLs when inner had no match.
+			if c.leftOuter && !c.innerHadMatch {
+				outputRow := c.computeResult(*c.currentOuter, QueryResult{Datum: map[string]any{}})
+				return recordlayer.NewResultWithValue(outputRow, nonEndContinuation), nil
 			}
 		}
 
@@ -107,6 +118,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 
 		outerRow := outerResult.GetValue()
 		c.currentOuter = &outerRow
+		c.innerHadMatch = false
 
 		// Bind the outer row as a correlation and execute the inner plan.
 		outerDatum, _ := outerRow.Datum.(map[string]any)

@@ -105,8 +105,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// push an equi-join predicate into a correlated PK scan, emit a
 	// FlatMap plan (Java's RecordQueryFlatMapPlan). This turns O(N×M)
 	// into O(N×logM) via correlated index probes.
-	if joinType == plans.JoinInner || joinType == plans.JoinCross {
-		if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr) {
+	if joinType == plans.JoinInner || joinType == plans.JoinCross || joinType == plans.JoinLeftOuter {
+		if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType) {
 			return
 		}
 	}
@@ -408,6 +408,7 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 	leftPlan, rightPlan plans.RecordQueryPlan,
 	leftAlias, rightAlias string,
 	leftExpr, rightExpr expressions.RelationalExpression,
+	joinType plans.JoinType,
 ) bool {
 	// Only applies when the inner side is a full table scan.
 	innerScan, ok := rightPlan.(*plans.RecordQueryScanPlan)
@@ -495,6 +496,9 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			outerCorrelation, innerCorrelation,
 			resultVal, false,
 		)
+		if joinType == plans.JoinLeftOuter {
+			flatMapPlan.SetLeftOuter(true)
+		}
 
 		// Collect residual predicates (all except the matched equi-join).
 		var residualPreds []predicates.QueryPredicate

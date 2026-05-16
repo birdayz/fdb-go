@@ -1036,6 +1036,7 @@ func executeFlatMap(
 		outerCursor, p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(), p.InheritOuterRecordProperties(),
+		p.IsLeftOuter(),
 		nestedProps,
 	)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
