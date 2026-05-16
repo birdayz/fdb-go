@@ -54,6 +54,32 @@ See `RFC_TRANSACTION_PAGINATION.md` and `STRESS_RELATIONAL.md` for full analysis
 
 ---
 
+## CRITICAL — FlatMap Java alignment (IN PROGRESS)
+
+Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT how Java does it. Java evaluates a `resultValue` expression with both outer and inner bound as correlations. The `mergeRows` hack breaks for same-column-name joins and doesn't match Java's data flow.
+
+**What Java does (RecordQueryFlatMapPlan.executePlan):**
+1. Binds outer result as `CORRELATION` under `outerQuantifier.getAlias()`
+2. Executes inner plan with correlated context + innerContinuation
+3. For each inner result: binds BOTH outer AND inner as correlations → evaluates `resultValue` → produces output row
+4. `resultValue` is a Value tree (RecordConstructorValue) that explicitly selects fields from both correlations
+
+**What Go currently does (wrong):**
+1. Binds outer datum as correlation ✓
+2. Executes inner plan ✓
+3. Calls `mergeRows(outer, inner, aliases)` — Go-specific hack that breaks for ambiguous columns
+
+**Fix (must be done as a unit, no intermediate states):**
+- [ ] `RecordQueryFlatMapPlan` must carry a `resultValue values.Value`
+- [ ] `flatMapCursor` must bind BOTH outer and inner as correlations, then evaluate `resultValue` with the combined context — no `mergeRows`
+- [ ] Planner (`ImplementNestedLoopJoinRule.tryFlatMapPlan`) must construct the appropriate `resultValue` (RecordConstructorValue selecting fields from both quantifiers via FieldValue(QOV(alias), column))
+- [ ] Multi-predicate support: absorb equi-join into correlated scan, wrap FlatMap in PredicatesFilterPlan for residual predicates (no `len(preds) != 1` gate)
+- [ ] Same-column-name joins (`a.id = b.id`) must work — resultValue disambiguates naturally
+- [ ] `FlatMapContinuation` proto: serialize outer continuation + inner continuation + check value for cross-transaction pagination
+- [ ] Remove the `mergeRows` call from flatMapCursor entirely
+
+---
+
 ## Active work
 
 ### Bytes IN-list Ginkgo harness flake (491→492/492)
