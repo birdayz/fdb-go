@@ -1,0 +1,24 @@
+# flatmap_null_fk.yaml — FlatMap with NULL foreign key values
+#
+# When the outer FK is NULL, the correlated inner PK scan should
+# return 0 rows (NULL != any PK). For INNER JOIN, the outer row is
+# excluded. For LEFT JOIN, the outer row emits with NULL inner columns.
+name: flatmap_null_fk
+schema_template: |
+  CREATE TABLE parents (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE children (id BIGINT NOT NULL, parent_id BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO parents VALUES (1, 'Alice'), (2, 'Bob')
+  - INSERT INTO children VALUES (10, 1, 'child_a'), (20, NULL, 'orphan'), (30, 2, 'child_b')
+tests:
+  # INNER JOIN: NULL parent_id → no match → excluded.
+  - query: SELECT c.id, p.name FROM children c, parents p WHERE c.parent_id = p.id ORDER BY c.id
+    result:
+      - [10, "Alice"]
+      - [30, "Bob"]
+  # LEFT JOIN: NULL parent_id → no match → outer row with NULL name.
+  - query: SELECT c.id, p.name FROM children c LEFT JOIN parents p ON c.parent_id = p.id ORDER BY c.id
+    result:
+      - [10, "Alice"]
+      - [20, null]
+      - [30, "Bob"]
