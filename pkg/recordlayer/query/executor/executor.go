@@ -1025,7 +1025,8 @@ func executeNestedLoopJoin(
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	// Materialize the inner side once (typically the smaller table).
 	// Clear TimeLimit for inner — the inner must be fully materialized
-	// within this transaction.
+	// within this transaction. Java's FlatMapPipelinedCursor also
+	// materializes the inner fully per outer row.
 	innerProps := props.ClearSkipAndLimit().ClearRowAndTimeLimits()
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, innerProps)
 	if err != nil {
@@ -1040,37 +1041,6 @@ func executeNestedLoopJoin(
 	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
-	}
-
-	// Attempt hash join optimization: detect equi-join keys, build a
-	// hash index on the inner rows, and probe per outer row in O(1).
-	// Falls back to brute-force NLJ when no equi-join keys are found.
-	// Peek one outer row to determine field schema for key detection.
-	if len(innerRows) > 0 && len(p.GetPredicates()) > 0 {
-		firstResult, peekErr := outerCursor.OnNext(ctx)
-		if peekErr == nil && firstResult.HasNext() {
-			firstRow := firstResult.GetValue()
-			outerSample := []QueryResult{firstRow}
-			equiKeys, residualPreds, hasEqui := extractEquiJoinKeys(
-				p.GetPredicates(), outerSample, innerRows,
-				p.GetOuterAlias(), p.GetInnerAlias(),
-			)
-			// Prepend the peeked row back by wrapping the cursor.
-			outerCursor = newPrependCursor(firstRow, outerCursor)
-			if hasEqui {
-				hashIdx, _ := buildInnerHashIndex(innerRows, equiKeys, p.GetInnerAlias())
-				cursor := newHashJoinCursor(
-					outerCursor, hashIdx, innerRows, equiKeys, residualPreds,
-					p.GetJoinType(), p.GetOuterAlias(), p.GetInnerAlias(), evalCtx,
-				)
-				return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
-			}
-		} else if peekErr == nil && !firstResult.HasNext() {
-			// Outer is empty — no results.
-			return newEmptyCursor[QueryResult](), nil
-		} else if peekErr != nil {
-			return nil, peekErr
-		}
 	}
 
 	cursor := newNLJCursor(

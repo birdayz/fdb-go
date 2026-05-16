@@ -36,7 +36,6 @@ go_test(
         "evaluation_context_test.go",
         "executor_integration_test.go",
         "executor_test.go",
-        "hash_join_test.go",
         "limit_extension_test.go",
         "resultset_test.go",
     ],
