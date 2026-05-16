@@ -510,6 +510,8 @@ func (c *customSortCursor) IsClosed() bool { return c.closed }
 
 // nljCursor implements RecordCursor[QueryResult] for nested-loop joins.
 // Loads the inner side once, then streams outer rows one-by-one.
+// When equi-join keys are detected, uses a hash index for O(1) probe
+// per outer row instead of scanning all inner rows.
 type nljCursor struct {
 	outerInner recordlayer.RecordCursor[QueryResult]
 	innerRows  []QueryResult
@@ -519,7 +521,13 @@ type nljCursor struct {
 	preds      []predicates.QueryPredicate
 	evalCtx    *EvaluationContext
 
+	// Hash join state (set when equi-join keys detected).
+	hashIdx       map[string][]QueryResult
+	equiKeys      []equiJoinKey
+	residualPreds []predicates.QueryPredicate
+
 	currentOuter   *QueryResult
+	matchedInner   []QueryResult
 	innerIdx       int
 	outerMatched   bool
 	outerExhausted bool
@@ -542,6 +550,30 @@ func newNLJCursor(
 		innerAlias: innerAlias,
 		preds:      preds,
 		evalCtx:    evalCtx,
+	}
+}
+
+func newHashJoinCursor(
+	outer recordlayer.RecordCursor[QueryResult],
+	hashIdx map[string][]QueryResult,
+	innerRows []QueryResult,
+	equiKeys []equiJoinKey,
+	residualPreds []predicates.QueryPredicate,
+	joinType plans.JoinType,
+	outerAlias, innerAlias string,
+	evalCtx *EvaluationContext,
+) *nljCursor {
+	return &nljCursor{
+		outerInner:    outer,
+		innerRows:     innerRows,
+		joinType:      joinType,
+		outerAlias:    outerAlias,
+		innerAlias:    innerAlias,
+		preds:         nil,
+		evalCtx:       evalCtx,
+		hashIdx:       hashIdx,
+		equiKeys:      equiKeys,
+		residualPreds: residualPreds,
 	}
 }
 
@@ -577,14 +609,15 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			c.currentOuter = &outerRow
 			c.innerIdx = 0
 			c.outerMatched = false
+			c.matchedInner = c.resolveInnerRows(*c.currentOuter)
 		}
 
-		for c.innerIdx < len(c.innerRows) {
-			innerRow := c.innerRows[c.innerIdx]
+		for c.innerIdx < len(c.matchedInner) {
+			innerRow := c.matchedInner[c.innerIdx]
 			c.innerIdx++
 
 			combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-			if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
+			if !passesJoinPredicates(combined, c.effectivePreds(), c.evalCtx) {
 				continue
 			}
 			c.outerMatched = true
@@ -629,6 +662,29 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 	}
 }
 
+// resolveInnerRows returns the inner rows to iterate for the current
+// outer row. When a hash index is available, probes by key for O(1)
+// lookup. Falls back to all inner rows for brute-force scan.
+func (c *nljCursor) resolveInnerRows(outerRow QueryResult) []QueryResult {
+	if c.hashIdx == nil {
+		return c.innerRows
+	}
+	key, hasNull := computeJoinKey(outerRow, c.equiKeys, false, c.outerAlias)
+	if hasNull {
+		return nil
+	}
+	return c.hashIdx[key]
+}
+
+// effectivePreds returns the predicates to evaluate against merged rows.
+// When hash join is active, only residual (non-equi) predicates remain.
+func (c *nljCursor) effectivePreds() []predicates.QueryPredicate {
+	if c.hashIdx != nil {
+		return c.residualPreds
+	}
+	return c.preds
+}
+
 func (c *nljCursor) Close() error {
 	c.closed = true
 	return c.outerInner.Close()
@@ -636,9 +692,42 @@ func (c *nljCursor) Close() error {
 
 func (c *nljCursor) IsClosed() bool { return c.closed }
 
+// prependCursor yields a single buffered row, then delegates to an
+// inner cursor. Used by the hash join path to re-emit the peeked first
+// outer row without losing it.
+type prependCursor struct {
+	first  *QueryResult
+	inner  recordlayer.RecordCursor[QueryResult]
+	closed bool
+}
+
+func newPrependCursor(first QueryResult, inner recordlayer.RecordCursor[QueryResult]) *prependCursor {
+	return &prependCursor{first: &first, inner: inner}
+}
+
+func (c *prependCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.closed {
+		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
+	}
+	if c.first != nil {
+		row := *c.first
+		c.first = nil
+		return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
+	}
+	return c.inner.OnNext(ctx)
+}
+
+func (c *prependCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *prependCursor) IsClosed() bool { return c.closed }
+
 var (
 	_ recordlayer.RecordCursor[QueryResult] = (*aggregateCursor)(nil)
 	_ recordlayer.RecordCursor[QueryResult] = (*memorySortCursor)(nil)
 	_ recordlayer.RecordCursor[QueryResult] = (*nljCursor)(nil)
 	_ recordlayer.RecordCursor[QueryResult] = (*customSortCursor)(nil)
+	_ recordlayer.RecordCursor[QueryResult] = (*prependCursor)(nil)
 )
