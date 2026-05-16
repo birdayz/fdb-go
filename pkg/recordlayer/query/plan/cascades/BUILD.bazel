@@ -35,6 +35,7 @@ go_library(
         "physical_explode_wrapper.go",
         "physical_fetch_from_partial_record_wrapper.go",
         "physical_first_or_default_wrapper.go",
+        "physical_flat_map_wrapper.go",
         "physical_in_join_wrapper.go",
         "physical_in_memory_sort_wrapper.go",
         "physical_in_union_wrapper.go",

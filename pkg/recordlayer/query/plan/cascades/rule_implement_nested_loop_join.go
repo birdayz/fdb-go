@@ -101,6 +101,16 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		joinType = plans.JoinInner
 	}
 
+	// Try FlatMap path: if the inner side is a full scan and we can
+	// push an equi-join predicate into a correlated PK scan, emit a
+	// FlatMap plan (Java's RecordQueryFlatMapPlan). This turns O(N×M)
+	// into O(N×logM) via correlated index probes.
+	if joinType == plans.JoinInner || joinType == plans.JoinCross {
+		if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr) {
+			return
+		}
+	}
+
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
 		leftPlan, rightPlan,
 		sel.GetPredicates(),
@@ -385,6 +395,161 @@ func predicateReferencesAlias(p predicates.QueryPredicate, alias string) bool {
 		}
 	})
 	return found
+}
+
+// tryFlatMapPlan checks whether the join can be implemented as a
+// FlatMap with correlated inner PK scan. Returns true (and yields)
+// if successful, false otherwise. Mirrors Java's pattern where
+// RecordQueryFlatMapPlan re-executes the inner plan per outer row
+// with correlation bindings that parameterize the inner scan range.
+func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	leftPlan, rightPlan plans.RecordQueryPlan,
+	leftAlias, rightAlias string,
+	leftExpr, rightExpr expressions.RelationalExpression,
+) bool {
+	// Only applies when the inner side is a full table scan.
+	innerScan, ok := rightPlan.(*plans.RecordQueryScanPlan)
+	if !ok {
+		return false
+	}
+
+	// Need the inner table's PK columns to match against predicates.
+	recordTypes := innerScan.GetRecordTypes()
+	if len(recordTypes) != 1 {
+		return false
+	}
+
+	// Don't produce FlatMap for self-joins or same-type joins — the
+	// column derivation layer doesn't handle it yet.
+	outerScan, outerIsScan := leftPlan.(*plans.RecordQueryScanPlan)
+	if outerIsScan {
+		outerTypes := outerScan.GetRecordTypes()
+		if len(outerTypes) == 1 && outerTypes[0] == recordTypes[0] {
+			return false
+		}
+	}
+	pkCols := call.Context.GetPrimaryKeyColumns(recordTypes[0])
+	if len(pkCols) == 0 {
+		return false
+	}
+
+	// Find an equality predicate that matches: outer.X = inner.PK[0]
+	// (single-column PK equi-join — the most common case).
+	// Only produce FlatMap when the equi-join is the sole predicate.
+	// Multi-predicate cases (WHERE filters + JOIN condition) require
+	// wrapping with a Filter — deferred to a future change.
+	preds := flattenAndPredicates(sel.GetPredicates())
+	if len(preds) != 1 {
+		return false
+	}
+	innerPrefix := strings.ToUpper(rightAlias) + "."
+	outerPrefix := strings.ToUpper(leftAlias) + "."
+	pkCol := strings.ToUpper(pkCols[0])
+
+	for _, pred := range preds {
+		cp, ok := pred.(*predicates.ComparisonPredicate)
+		if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
+			continue
+		}
+		if cp.Operand == nil || cp.Comparison.Operand == nil {
+			continue
+		}
+
+		// Check both directions: LHS=outer.FK, RHS=inner.PK or vice versa.
+		outerVal, innerCol := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
+		if outerVal == nil {
+			continue
+		}
+
+		// Don't produce FlatMap when the outer FK bare name equals the
+		// inner PK name — SELECT * can't disambiguate the merged columns.
+		outerBare := outerVal.Field
+		if strings.HasPrefix(strings.ToUpper(outerBare), outerPrefix) {
+			outerBare = outerBare[len(outerPrefix):]
+		}
+		if strings.EqualFold(outerBare, innerCol) {
+			continue
+		}
+
+		// Build correlated inner scan: the PK comparison operand is a
+		// FieldValue with a QuantifiedObjectValue child referencing the
+		// outer correlation. When evaluated, it extracts the FK field
+		// from the correlated outer row.
+		//
+		// Strip the alias prefix — the raw outer row has unqualified keys
+		// (e.g. "CUSTOMER_ID"), not qualified ("ORDERS.CUSTOMER_ID").
+		outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
+		bareField := outerVal.Field
+		if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+			bareField = bareField[len(outerPrefix):]
+		}
+		correlatedOperand := values.NewFieldValue(
+			values.NewQuantifiedObjectValue(outerCorrelation),
+			bareField, outerVal.Typ,
+		)
+
+		correlatedComp := &predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: correlatedOperand,
+		}
+		cr := predicates.EmptyComparisonRange()
+		mergeResult := cr.Merge(correlatedComp)
+		if !mergeResult.Ok {
+			continue
+		}
+
+		correlatedScan := innerScan.WithScanComparisons([]*predicates.ComparisonRange{mergeResult.Range})
+
+		innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
+		flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+			leftPlan, correlatedScan,
+			outerCorrelation, innerCorrelation,
+		)
+
+		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
+		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+		return true
+	}
+
+	return false
+}
+
+// matchJoinPKPredicate checks if a comparison predicate matches the
+// pattern outer.FK = inner.PK (or reversed). Returns the outer-side
+// FieldValue and the inner column name if matched, nil otherwise.
+func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
+	cp *predicates.ComparisonPredicate,
+	outerPrefix, innerPrefix, pkCol string,
+) (*values.FieldValue, string) {
+	lhsFV, lhsOk := cp.Operand.(*values.FieldValue)
+	rhsFV, rhsOk := cp.Comparison.Operand.(*values.FieldValue)
+	if !lhsOk || !rhsOk {
+		return nil, ""
+	}
+
+	lhsField := strings.ToUpper(lhsFV.Field)
+	rhsField := strings.ToUpper(rhsFV.Field)
+
+	// LHS = outer.FK, RHS = inner.PK
+	if strings.HasPrefix(lhsField, outerPrefix) && strings.HasPrefix(rhsField, innerPrefix) {
+		innerCol := strings.TrimPrefix(rhsField, innerPrefix)
+		if innerCol == pkCol {
+			return lhsFV, innerCol
+		}
+	}
+
+	// LHS = inner.PK, RHS = outer.FK
+	if strings.HasPrefix(lhsField, innerPrefix) && strings.HasPrefix(rhsField, outerPrefix) {
+		innerCol := strings.TrimPrefix(lhsField, innerPrefix)
+		if innerCol == pkCol {
+			return rhsFV, innerCol
+		}
+	}
+
+	return nil, ""
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)

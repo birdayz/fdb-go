@@ -84,6 +84,14 @@ func (ec *EvaluationContext) GetBinding(id values.CorrelationIdentifier) (any, b
 	return v, ok
 }
 
+// GetCorrelationBinding implements values.CorrelationBinder so that
+// QuantifiedObjectValue can resolve correlated rows during scan
+// comparison evaluation in the FlatMap execution path.
+func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
+	v, ok := ec.bindings[id]
+	return v, ok
+}
+
 // GetOrCreateTempTable returns the TempTable at the given alias,
 // creating one if it doesn't exist. Mutates ec.bindings directly
 // (intentional — temp tables are shared mutable state across the

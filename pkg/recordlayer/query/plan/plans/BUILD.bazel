@@ -12,6 +12,7 @@ go_library(
         "fetch_from_partial_record.go",
         "filter.go",
         "first_or_default.go",
+        "flat_map.go",
         "in_join.go",
         "in_memory_sort.go",
         "in_union.go",

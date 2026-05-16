@@ -138,6 +138,9 @@ func ExecutePlan(
 	case *plans.RecordQueryInUnionPlan:
 		return executeInUnion(ctx, p, store, evalCtx, continuation, props)
 
+	case *plans.RecordQueryFlatMapPlan:
+		return executeFlatMap(ctx, p, store, evalCtx, continuation, props)
+
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return executeFetchFromPartialRecord(ctx, p, store, evalCtx, continuation, props)
 
@@ -1013,6 +1016,27 @@ func intersectionKey(qr QueryResult, keyVals []values.Value) string {
 		fmt.Fprintf(&b, "%v|", v)
 	}
 	return b.String()
+}
+
+func executeFlatMap(
+	ctx context.Context,
+	p *plans.RecordQueryFlatMapPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	nestedProps := props.ClearSkipAndLimit()
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, nestedProps)
+	if err != nil {
+		return nil, err
+	}
+
+	cursor := newFlatMapCursor(
+		outerCursor, p.GetInner(), store, evalCtx,
+		p.GetOuterAlias(), p.GetInnerAlias(), nestedProps,
+	)
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeNestedLoopJoin(

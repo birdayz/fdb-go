@@ -640,6 +640,14 @@ type ParameterBinder interface {
 	BindParameter(ordinal int, name string) (any, bool)
 }
 
+// CorrelationBinder is an optional eval-context capability for
+// resolving correlation bindings. When QuantifiedObjectValue.Evaluate
+// is called with a context implementing this interface, it resolves the
+// correlated row. Mirrors Java's EvaluationContext.getBinding(CORRELATION, alias).
+type CorrelationBinder interface {
+	GetCorrelationBinding(id CorrelationIdentifier) (any, bool)
+}
+
 // RowEvalContext is a composite evaluation context for Value.Evaluate
 // that satisfies both FieldValue (datum map) and ParameterValue
 // (ParameterBinder). Pass this when evaluating expressions that mix
@@ -2150,6 +2158,12 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) any {
 		return ctx[q.Correlation]
 	case map[string]any:
 		return ctx
+	case CorrelationBinder:
+		val, ok := ctx.GetCorrelationBinding(q.Correlation)
+		if !ok {
+			return nil
+		}
+		return val
 	}
 	return nil
 }
