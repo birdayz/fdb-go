@@ -377,8 +377,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	}
 
 	// Step 5: LIMIT/OFFSET → wrap with limit directly from ANTLR.
-	// classifySelectElements rejects LIMIT/OFFSET for this codebase
-	// (Java's AstNormalizer does the same), so this is always a no-op.
+	// Go extension: LIMIT/OFFSET parsed and applied post-execution.
 	op = v.visitLimit(op, simpleTable)
 
 	// Step 6: Projection (non-aggregate) + DISTINCT → directly from
@@ -1139,11 +1138,10 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	return logical.NewSort(op, keys)
 }
 
-// visitLimit checks the ANTLR parse tree for a LIMIT clause. For this
-// codebase, LIMIT/OFFSET are rejected at parse time by
-// classifySelectElements (matching Java's AstNormalizer), so the LIMIT
-// clause is never present when this method runs — it was already
-// rejected before the visitor pipeline starts.
+// visitLimit checks the ANTLR parse tree for a LIMIT clause. Go
+// extension: LIMIT/OFFSET are supported (most-requested feature).
+// Builds a LogicalLimit node; the Cascades translator skips it and
+// paginatingRows applies the limit post-execution.
 func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
 	limitClauseCtx := simpleTable.LimitClause()
 	if limitClauseCtx == nil {
