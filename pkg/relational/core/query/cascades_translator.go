@@ -150,6 +150,27 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
+	// When the filter wraps a join (FROM a, b WHERE ...), merge the
+	// WHERE predicates into the SelectExpression so the NLJ rule sees
+	// them as join predicates. Java's PredicatePushDownRule achieves
+	// this during the REWRITING phase; Go does it eagerly here.
+	if join, ok := f.Input.(*logical.LogicalJoin); ok && f.Predicate != nil && len(f.ExistsSubqueries) == 0 {
+		joinExpr := t.translateJoin(join)
+		if joinExpr == nil {
+			return nil
+		}
+		if sel, ok := joinExpr.(*expressions.SelectExpression); ok {
+			merged := append(sel.GetPredicates(), f.Predicate)
+			return expressions.NewSelectExpressionWithJoinType(
+				sel.GetResultValue(),
+				sel.GetQuantifiers(),
+				merged,
+				sel.GetSourceAliases(),
+				sel.GetJoinType(),
+			)
+		}
+	}
+
 	innerRef := t.translateRef(f.Input)
 	if innerRef == nil {
 		return nil
@@ -159,7 +180,13 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		outerQ := expressions.ForEachQuantifier(innerRef)
 		quantifiers := []expressions.Quantifier{outerQ}
 
-		allPreds := []predicates.QueryPredicate{f.Predicate}
+		// Split the predicate into non-EXISTS parts (regular predicates
+		// like c.id < 10) and EXISTS parts (ExistsPredicate nodes).
+		// Regular predicates go into the SelectExpression's predicate list
+		// directly. EXISTS predicates are handled via the Existential
+		// quantifier — the ImplementNestedLoopJoinRule detects them by
+		// type. If they're buried inside an AND, the rule can't find them.
+		allPreds := splitNonExistsPredicates(f.Predicate)
 		for _, esq := range f.ExistsSubqueries {
 			subRef := t.translateRef(esq.Plan)
 			if subRef == nil {
@@ -614,6 +641,35 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		sourceAliases,
 		joinType,
 	)
+}
+
+// splitNonExistsPredicates extracts the non-EXISTS parts of a predicate
+// tree. EXISTS predicates (and NOT EXISTS) are dropped — they're
+// represented by the Existential quantifier in the SelectExpression.
+// Compound AND predicates are flattened: AND(ExistsPredicate, c.id < 10)
+// yields just [c.id < 10].
+func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
+	if pred == nil {
+		return nil
+	}
+	if _, ok := pred.(*predicates.ExistsPredicate); ok {
+		return nil
+	}
+	if not, ok := pred.(*predicates.NotPredicate); ok {
+		if len(not.Children()) == 1 {
+			if _, ok := not.Children()[0].(*predicates.ExistsPredicate); ok {
+				return nil
+			}
+		}
+	}
+	if and, ok := pred.(*predicates.AndPredicate); ok {
+		var result []predicates.QueryPredicate
+		for _, sub := range and.SubPredicates {
+			result = append(result, splitNonExistsPredicates(sub)...)
+		}
+		return result
+	}
+	return []predicates.QueryPredicate{pred}
 }
 
 func sourceAlias(op logical.LogicalOperator) string {

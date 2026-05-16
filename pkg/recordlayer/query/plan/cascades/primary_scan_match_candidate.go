@@ -205,8 +205,9 @@ func (c *PrimaryScanMatchCandidate) ComputeBoundParameterPrefixMap(
 // the PK does not begin with a record-type discriminator), the scan is
 // wrapped in a TypeFilterPlan.
 //
-// Mirrors Java's PrimaryScanMatchCandidate.toEquivalentPlan(), adapted
-// to Go's simplified plan constructors.
+// Mirrors Java's PrimaryScanMatchCandidate.toEquivalentPlan(): extracts
+// ComparisonRanges from the prefix map in PK column order and embeds
+// them as ScanComparisons in the RecordQueryScanPlan.
 func (c *PrimaryScanMatchCandidate) ToScanPlan(
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	reverse bool,
@@ -217,11 +218,31 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 		flowedType = values.UnknownType
 	}
 
-	scanPlan := plans.NewRecordQueryScanPlan(c.availableRecordTypes, flowedType, reverse)
+	// Use queriedRecordTypes (not availableRecordTypes) so that executeScan
+	// can correctly prepend the RecordTypeKey prefix for point lookups.
+	// The TypeFilterPlan wrapper (added below when types differ) handles
+	// the broader filtering; the scan itself targets the specific type.
+	scanPlan := plans.NewRecordQueryScanPlan(c.queriedRecordTypes, flowedType, reverse)
 
 	// Attach primary key values if available.
 	if pkVals := c.GetPrimaryKeyValues(); len(pkVals) > 0 {
 		scanPlan = scanPlan.WithPrimaryKey(pkVals)
+	}
+
+	// Extract scan comparisons from the prefix map in PK column order.
+	// Mirrors Java's toScanComparisons(comparisonRanges).
+	if len(prefixMap) > 0 {
+		comps := make([]*predicates.ComparisonRange, 0, len(c.parameters))
+		for _, alias := range c.parameters {
+			cr, ok := prefixMap[alias]
+			if !ok || cr == nil {
+				break
+			}
+			comps = append(comps, cr)
+		}
+		if len(comps) > 0 {
+			scanPlan = scanPlan.WithScanComparisons(comps)
+		}
 	}
 
 	// If available == queried, no filter needed.

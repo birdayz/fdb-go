@@ -1757,9 +1757,9 @@ func TestIntegration_IntersectionPlan(t *testing.T) {
 	}
 }
 
-// TestIntegration_HashAggregation_CountAndSum tests hash aggregation with
+// TestIntegration_StreamingAggregation_CountAndSum tests streaming aggregation with
 // COUNT and SUM against real FDB data.
-func TestIntegration_HashAggregation_CountAndSum(t *testing.T) {
+func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := setupStore(t)
@@ -1779,7 +1779,7 @@ func TestIntegration_HashAggregation_CountAndSum(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryHashAggregationPlan(
+		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			[]values.Value{&values.FieldValue{Field: "PRICE"}},
 			[]expressions.AggregateSpec{
@@ -1856,7 +1856,7 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryHashAggregationPlan(
+		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
@@ -2036,7 +2036,7 @@ func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryHashAggregationPlan(
+		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil, // no grouping keys — aggregate over all
 			[]expressions.AggregateSpec{
@@ -2245,7 +2245,7 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryHashAggregationPlan(
+		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			[]values.Value{&values.FieldValue{Field: "PRICE"}},
 			[]expressions.AggregateSpec{
@@ -2449,7 +2449,7 @@ func TestIntegration_Aggregation_EmptyInput(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryHashAggregationPlan(
+		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
@@ -3090,7 +3090,7 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 		}
 
 		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		agg := plans.NewRecordQueryHashAggregationPlan(
+		agg := plans.NewRecordQueryStreamingAggregationPlan(
 			scan,
 			nil,
 			[]expressions.AggregateSpec{

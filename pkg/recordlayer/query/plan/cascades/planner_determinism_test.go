@@ -14,7 +14,7 @@ import (
 //
 // This catches the bug where non-deterministic Go map iteration in
 // PlanPropertiesMap caused different plan selection when costs tied
-// (e.g., StreamingAgg vs HashAgg+InMemorySort).
+// (e.g., tied StreamingAgg alternatives).
 func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 	t.Parallel()
 

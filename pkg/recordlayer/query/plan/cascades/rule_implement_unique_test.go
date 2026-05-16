@@ -79,9 +79,9 @@ func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 
 func TestImplementUniqueRule_NoYieldWhenInnerNotDistinct(t *testing.T) {
 	t.Parallel()
-	// Hash agg wrapper has distinct=false.
-	aggPlan := plans.NewRecordQueryHashAggregationPlan(nil, nil, nil)
-	aggWrapper := &physicalHashAggWrapper{plan: aggPlan}
+	// Streaming agg wrapper has distinct=false.
+	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
+	aggWrapper := &physicalStreamingAggWrapper{plan: aggPlan}
 
 	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{aggWrapper})
 	pm := NewPlanPropertiesMap()

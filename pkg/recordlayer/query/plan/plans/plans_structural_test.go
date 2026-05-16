@@ -1116,180 +1116,6 @@ func TestScanPlan_DedupAndSort(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RecordQueryHashAggregationPlan
-// ---------------------------------------------------------------------------
-
-func TestHashAggPlan_Construction(t *testing.T) {
-	t.Parallel()
-	inner := stub("Inner")
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-	}
-	p := NewRecordQueryHashAggregationPlan(inner, keys, aggs)
-	if p == nil {
-		t.Fatal("constructor returned nil")
-	}
-	if p.GetInner() != inner {
-		t.Fatal("GetInner() mismatch")
-	}
-	if len(p.GetGroupingKeys()) != 1 {
-		t.Fatalf("GetGroupingKeys() len = %d, want 1", len(p.GetGroupingKeys()))
-	}
-	if len(p.GetAggregates()) != 1 {
-		t.Fatalf("GetAggregates() len = %d, want 1", len(p.GetAggregates()))
-	}
-}
-
-func TestHashAggPlan_GetResultType(t *testing.T) {
-	t.Parallel()
-	p := NewRecordQueryHashAggregationPlan(stub("X"), nil, nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
-	}
-}
-
-func TestHashAggPlan_GetChildren(t *testing.T) {
-	t.Parallel()
-	inner := stub("Inner")
-	p := NewRecordQueryHashAggregationPlan(inner, nil, nil)
-	cs := p.GetChildren()
-	if len(cs) != 1 || cs[0] != inner {
-		t.Fatalf("GetChildren() = %v, want [inner]", cs)
-	}
-}
-
-func TestHashAggPlan_GetChildren_NilInner(t *testing.T) {
-	t.Parallel()
-	p := NewRecordQueryHashAggregationPlan(nil, nil, nil)
-	if cs := p.GetChildren(); cs != nil {
-		t.Fatalf("GetChildren() = %v, want nil", cs)
-	}
-}
-
-func TestHashAggPlan_Explain(t *testing.T) {
-	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	p := NewRecordQueryHashAggregationPlan(stub("Scan(T)"), keys, nil)
-	got := p.Explain()
-	if !strings.Contains(got, "HashAgg") {
-		t.Fatalf("Explain = %q, missing 'HashAgg'", got)
-	}
-}
-
-func TestHashAggPlan_EqualsWithoutChildren_Same(t *testing.T) {
-	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-	}
-	a := NewRecordQueryHashAggregationPlan(nil, keys, aggs)
-	b := NewRecordQueryHashAggregationPlan(nil, keys, aggs)
-	if !a.EqualsWithoutChildren(b) {
-		t.Fatal("same keys+aggs should be equal")
-	}
-}
-
-func TestHashAggPlan_EqualsWithoutChildren_DifferentGroupingKeys(t *testing.T) {
-	t.Parallel()
-	a := NewRecordQueryHashAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}, nil)
-	b := NewRecordQueryHashAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}}, nil)
-	if a.EqualsWithoutChildren(b) {
-		t.Fatal("different grouping keys should not be equal")
-	}
-}
-
-func TestHashAggPlan_EqualsWithoutChildren_DifferentGroupingKeyCount(t *testing.T) {
-	t.Parallel()
-	a := NewRecordQueryHashAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}, nil)
-	b := NewRecordQueryHashAggregationPlan(nil,
-		[]values.Value{
-			&values.FieldValue{Field: "dept", Typ: values.UnknownType},
-			&values.FieldValue{Field: "region", Typ: values.UnknownType},
-		}, nil)
-	if a.EqualsWithoutChildren(b) {
-		t.Fatal("different grouping key counts should not be equal")
-	}
-}
-
-func TestHashAggPlan_EqualsWithoutChildren_DifferentAggFunction(t *testing.T) {
-	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	operand := &values.FieldValue{Field: "val", Typ: values.UnknownType}
-	a := NewRecordQueryHashAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: operand},
-	})
-	b := NewRecordQueryHashAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: operand},
-	})
-	if a.EqualsWithoutChildren(b) {
-		t.Fatal("different aggregate functions should not be equal")
-	}
-}
-
-func TestHashAggPlan_EqualsWithoutChildren_DifferentAggOperand(t *testing.T) {
-	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	a := NewRecordQueryHashAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-	})
-	b := NewRecordQueryHashAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
-	})
-	if a.EqualsWithoutChildren(b) {
-		t.Fatal("different aggregate operands should not be equal")
-	}
-}
-
-func TestHashAggPlan_EqualsWithoutChildren_DifferentAggCount(t *testing.T) {
-	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	agg := expressions.AggregateSpec{
-		Function: expressions.AggCount,
-		Operand:  &values.FieldValue{Field: "id", Typ: values.UnknownType},
-	}
-	a := NewRecordQueryHashAggregationPlan(nil, keys, []expressions.AggregateSpec{agg})
-	b := NewRecordQueryHashAggregationPlan(nil, keys, []expressions.AggregateSpec{agg, agg})
-	if a.EqualsWithoutChildren(b) {
-		t.Fatal("different aggregate counts should not be equal")
-	}
-}
-
-func TestHashAggPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
-	t.Parallel()
-	h := NewRecordQueryHashAggregationPlan(nil, nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	if h.EqualsWithoutChildren(scan) {
-		t.Fatal("HashAggPlan should not equal ScanPlan")
-	}
-}
-
-func TestHashAggPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
-	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	p := NewRecordQueryHashAggregationPlan(nil, keys, nil)
-	h1 := p.HashCodeWithoutChildren()
-	h2 := p.HashCodeWithoutChildren()
-	if h1 != h2 {
-		t.Fatalf("hash non-deterministic: %d vs %d", h1, h2)
-	}
-}
-
-func TestHashAggPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
-	t.Parallel()
-	a := NewRecordQueryHashAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}, nil)
-	b := NewRecordQueryHashAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}}, nil)
-	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
-		t.Fatal("different grouping keys should (very likely) produce different hashes")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // RecordQueryStreamingAggregationPlan
 // ---------------------------------------------------------------------------
 
@@ -1407,9 +1233,9 @@ func TestStreamingAggPlan_EqualsWithoutChildren_DifferentAggOperand(t *testing.T
 func TestStreamingAggPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	s := NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
-	h := NewRecordQueryHashAggregationPlan(nil, nil, nil)
-	if s.EqualsWithoutChildren(h) {
-		t.Fatal("StreamingAgg should not equal HashAgg")
+	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	if s.EqualsWithoutChildren(scan) {
+		t.Fatal("StreamingAgg should not equal ScanPlan")
 	}
 }
 
@@ -1435,17 +1261,17 @@ func TestStreamingAggPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	}
 }
 
-func TestStreamingAggPlan_HashDistinctFromHashAgg(t *testing.T) {
+func TestStreamingAggPlan_HashDistinctFromScan(t *testing.T) {
 	t.Parallel()
-	// With same keys+aggs, streaming vs hash should have different hashes.
+	// StreamingAgg and Scan should have different hashes.
 	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 	}
 	s := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
-	h := NewRecordQueryHashAggregationPlan(nil, keys, aggs)
-	if s.HashCodeWithoutChildren() == h.HashCodeWithoutChildren() {
-		t.Fatal("streaming agg and hash agg with same params should have different hashes")
+	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	if s.HashCodeWithoutChildren() == scan.HashCodeWithoutChildren() {
+		t.Fatal("streaming agg and scan should have different hashes")
 	}
 }
 
@@ -1468,7 +1294,6 @@ func TestAllPlanTypes_DistinctTypeHashes(t *testing.T) {
 		"MultiIntersect": NewRecordQueryMultiIntersectionOnValuesPlan(nil, nil, nil).HashCodeWithoutChildren(),
 		"Values":         NewRecordQueryValuesPlan(nil).HashCodeWithoutChildren(),
 		"Scan":           NewRecordQueryScanPlan(nil, values.UnknownType, false).HashCodeWithoutChildren(),
-		"HashAgg":        NewRecordQueryHashAggregationPlan(nil, nil, nil).HashCodeWithoutChildren(),
 		"StreamAgg":      NewRecordQueryStreamingAggregationPlan(nil, nil, nil).HashCodeWithoutChildren(),
 	}
 	seen := make(map[uint64]string)
@@ -1528,23 +1353,23 @@ func BenchmarkScanPlan_HashCodeWithoutChildren(b *testing.B) {
 	}
 }
 
-func BenchmarkHashAggPlan_Explain(b *testing.B) {
+func BenchmarkStreamingAggPlan_Explain(b *testing.B) {
 	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 	}
-	p := NewRecordQueryHashAggregationPlan(stub("Scan(T)"), keys, aggs)
+	p := NewRecordQueryStreamingAggregationPlan(stub("Scan(T)"), keys, aggs)
 	for b.Loop() {
 		_ = p.Explain()
 	}
 }
 
-func BenchmarkHashAggPlan_HashCodeWithoutChildren(b *testing.B) {
+func BenchmarkStreamingAggPlan_HashCodeWithoutChildren(b *testing.B) {
 	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
 	aggs := []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 	}
-	p := NewRecordQueryHashAggregationPlan(nil, keys, aggs)
+	p := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
 	for b.Loop() {
 		_ = p.HashCodeWithoutChildren()
 	}

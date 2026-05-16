@@ -262,8 +262,8 @@ func TestPipeline_StreamingAgg(t *testing.T) {
 	plan := planPipeline(t, groupBy, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
 	// With an index on the grouping key, streaming aggregation is possible.
-	if !strings.Contains(plan, "StreamingAgg") && !strings.Contains(plan, "HashAgg") {
-		t.Fatalf("expected plan to contain StreamingAgg or HashAgg, got: %s", plan)
+	if !strings.Contains(plan, "StreamingAgg") {
+		t.Fatalf("expected plan to contain StreamingAgg, got: %s", plan)
 	}
 }
 
@@ -312,7 +312,7 @@ func TestPipeline_Join(t *testing.T) {
 	}
 }
 
-func TestPipeline_HashAgg(t *testing.T) {
+func TestPipeline_StreamingAggNoIndex(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
@@ -324,11 +324,11 @@ func TestPipeline_HashAgg(t *testing.T) {
 		},
 		expressions.ForEachQuantifier(scanRef),
 	)
-	// No indexes — forces hash aggregation.
+	// No indexes — streaming aggregation is the only implementation.
 	plan := planPipeline(t, groupBy)
 	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "HashAgg") && !strings.Contains(plan, "StreamingAgg") {
-		t.Fatalf("expected plan to contain HashAgg or StreamingAgg, got: %s", plan)
+	if !strings.Contains(plan, "StreamingAgg") {
+		t.Fatalf("expected plan to contain StreamingAgg, got: %s", plan)
 	}
 }
 

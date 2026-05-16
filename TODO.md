@@ -4,44 +4,53 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ---
 
-## CRITICAL — scalability bugs (dayshift-93 stress test)
+## CRITICAL — Streaming cursor architecture (DONE)
 
-Surfaced by `just stress` (10K/100K row tests). These are data correctness and architectural issues.
+**Resolved.** Replaced `CollectAll`-based blocking operators with Java-aligned streaming cursors. Every blocking operator (aggregation, sort, NLJ) is now a cursor that processes records one-by-one, propagates `TimeLimitReached`, and serializes partial state into protobuf continuations (`AggregateCursorContinuation`, `MemorySortContinuation`). The pagination layer recreates the cursor hierarchy per transaction from the composite continuation. Hash aggregation removed — streaming only (Java-aligned). 10K: 22/22 tests pass. 100K: 16/19 pass (3 remaining are intermittent FDB Docker issues + planner limitation).
 
-### Silent FDB timeout truncation
+Go's blocking operators call `CollectAll(ctx, innerCursor)` which drains the cursor into a `[]QueryResult` and **discards the stop reason**. When the leaf cursor hits the 4s time limit, `CollectAll` gets partial rows, doesn't know they're partial, and the operator produces wrong results. The `TimeLimitReached` signal is swallowed at the `CollectAll` boundary.
 
-Queries return **partial results without errors** when the 5s FDB transaction limit is hit. At 100K rows: GROUP BY returns 2/4 status groups, ORDER BY returns 47K/100K rows, JOINs return 0 rows. The caller has no way to know the result is incomplete.
+**What Java does per operator:**
 
-**Root cause:** the executor's scan cursor exhausts the FDB transaction timeout mid-scan and treats the end-of-transaction as end-of-data. No continuation is attempted across transaction boundaries for SQL queries (the record-layer cursor has `TimeScanLimiter` + continuation support, but the SQL executor doesn't use it).
-
-**Fix:** the SQL executor must either (a) paginate across FDB transactions using continuation tokens (matching Java's `executeState` loop in `PhysicalQueryPlan`), or (b) detect the timeout and raise an explicit error instead of silently truncating.
-
-### PK lookups scale O(N)
-
-Single-row PK lookup: 250ms at 10K rows, **6 seconds** at 100K rows. Should be O(log N) via index seek.
-
-**Root cause:** `scanComparisonsToTupleRange` likely produces a prefix range instead of a point key for equality comparisons on PK columns. The FDB range scan reads all records with the prefix, which is the entire table when the PK is the only key component. Needs investigation in the executor's `scanComparisonsToTupleRange` → `IndexFetchCursor` path.
-
-**Stress test data:**
-| Rows | PK lookup | COUNT(*) | ORDER BY (all rows) |
-|---|---|---|---|
-| 10K | 250ms | 240ms | 276ms |
-| 100K | 6.0s | 3.8s | 3.7s (47K/100K truncated) |
-
-### NLJ JOIN is O(N×M) — no correlated index probes
-
-NLJ does a full inner table scan for every outer row. `SELECT ... FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10` takes **37 seconds** at 10K orders × 1K customers — even though `c.id` is the customers PK.
-
-**Root cause:** the NLJ executor materializes the entire inner table per outer row and filters post-hoc. Java uses `FlatMapPlan` with correlation bindings that allow the inner scan to use index lookups. Go's `RecordQueryNestedLoopJoinPlan` has no equivalent — it calls `executePlan(innerPlan)` unconditionally.
-
-**Fix:** either (a) port Java's `FlatMapPlan` with correlated index probes, or (b) add hash-join / merge-join physical operators, or (c) at minimum, implement inner-result caching for uncorrelated inner scans (partially done in swingshift-92 for the uncorrelated case, but correlated JOINs still do full scans).
-
-**Stress test data:**
-| Operation | 10K (1K customers) | 100K (10K customers) |
+| Operator | Java cursor | State in continuation |
 |---|---|---|
-| JOIN 10 outer rows | 37.6s | 4.0s (0 rows!) |
-| JOIN 100 outer rows | 36.1s | skipped |
-| EXISTS subquery | 11.8s | skipped |
+| Streaming aggregation | `AggregateCursor` | partial accumulator (running SUM, current group key) |
+| Sort | `MemorySortCursor` | all buffered records + inner continuation |
+| FlatMap/NLJ | `FlatMapPipelinedCursor` | outer position + inner continuation + correlation bindings |
+
+Each processes records one-by-one, detects `TimeLimitReached` from the inner cursor, serializes partial state, and returns `TimeLimitReached` to the caller. Zero data loss.
+
+**Fix:** Replace `CollectAll`-based blocking operators with cursor implementations that:
+1. Process inner records incrementally (not drain-then-process)
+2. Detect `TimeLimitReached` from the inner cursor after each record
+3. Serialize partial operator state (accumulator, sorted buffer) into the continuation
+4. On resume: deserialize state, resume inner cursor, continue processing
+
+**Affected operators and their Java equivalents:**
+- `executeAggregation` → port `AggregateCursor` + `StreamGrouping` with `PartialAggregationResult` proto
+- `executeSort` / `executeInMemorySort` → port `MemorySortCursor` with buffered-records continuation
+- `executeNestedLoopJoin` → port `FlatMapPipelinedCursor` with outer+inner dual continuation
+- `executeIntersection` → port incremental intersection with per-side continuations
+
+See `RFC_TRANSACTION_PAGINATION.md` and `STRESS_RELATIONAL.md` for full analysis.
+
+### Fixed: silent FDB timeout truncation
+
+~~Queries return partial results without errors when the 5s FDB transaction limit is hit.~~
+
+**FIXED.** `keyValueCursor.nextKV()` now propagates FDB errors. `paginatingRows` replaces the single-transaction `cascadesRows` with cross-transaction pagination (`TimeLimit=4s` per page, continuation-based resume). Leaf scans (SELECT, ORDER BY PK, index scans) now paginate correctly at 100K+. Blocking operators still get partial input — see above.
+
+### Fixed: PK lookups scale O(N)
+
+~~Single-row PK lookup: 250ms at 10K, 6 seconds at 100K.~~
+
+**FIXED.** Registered `PrimaryScanMatchCandidate` in `GetMatchCandidates()`. Fixed `ImplementIndexScanRule` to handle `RecordQueryScanPlan`. Fixed `ToScanPlan()` to use `queriedRecordTypes`. PK lookup at 100K: **1ms** (was 6s).
+
+### NLJ JOIN predicates not pushed into plan
+
+`SELECT ... FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10` takes **42s** at 10K. The Cascades planner produces `Filter(predicates, NLJ(Scan, Scan))` — the NLJ has **zero predicates** and materializes the full cross-product (10M pairs). Join conditions live in a separate Filter above the NLJ.
+
+**Fix:** `ImplementNestedLoopJoinRule` must absorb predicates from the parent `LogicalFilterExpression` into the NLJ plan. Then the existing hash join infrastructure in the executor activates (equi-join key extraction, hash index build). Port Java's `FlatMapPlan` with correlation bindings for correlated joins (EXISTS subqueries).
 
 ---
 

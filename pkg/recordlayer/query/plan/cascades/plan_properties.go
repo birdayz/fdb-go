@@ -457,10 +457,6 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		}
 		return properties.UnknownMaxCardinality()
 
-	// --- Hash aggregation ---
-	case *plans.RecordQueryHashAggregationPlan:
-		return properties.UnknownMaxCardinality()
-
 	// --- InMemorySort (Go-only): transparent ---
 	case *plans.RecordQueryInMemorySortPlan:
 		return cardinalitiesFromChildRef(w)

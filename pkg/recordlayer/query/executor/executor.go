@@ -78,7 +78,7 @@ func ExecutePlan(
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	switch p := plan.(type) {
 	case *plans.RecordQueryScanPlan:
-		return executeScan(ctx, p, store, continuation, props)
+		return executeScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIndexPlan:
 		return executeIndexScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTypeFilterPlan:
@@ -100,8 +100,6 @@ func ExecutePlan(
 	case *plans.RecordQueryNestedLoopJoinPlan:
 		return executeNestedLoopJoin(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryStreamingAggregationPlan:
-		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
-	case *plans.RecordQueryHashAggregationPlan:
 		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
 	case *plans.RecordQueryExplodePlan:
 		return executeExplode(p, evalCtx, props)
@@ -156,12 +154,55 @@ func executeScan(
 	_ context.Context,
 	p *plans.RecordQueryScanPlan,
 	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties: props,
-		Reverse:           p.IsReverse(),
+		ExecuteProperties:   props,
+		Reverse:             p.IsReverse(),
+		CursorStreamingMode: recordlayer.StreamingModeIterator,
+	}
+
+	// If the plan carries scan comparisons (PK predicates pushed down
+	// by the Cascades planner), convert them to an FDB tuple range and
+	// scan only that range. Mirrors Java's RecordQueryScanPlan.executePlan()
+	// which calls comparisons.toTupleRange() → store.scanRecords(range).
+	if comps := p.GetScanComparisons(); len(comps) > 0 {
+		tupleRange, err := scanComparisonsToTupleRange(comps, evalCtx)
+		if err != nil {
+			return nil, fmt.Errorf("executor: building scan range for PK comparisons: %w", err)
+		}
+
+		// When the PK uses RecordTypeKey() as its first component, FDB
+		// keys are prefixed with the record type discriminator. Prepend
+		// it so the scan range matches the actual key structure.
+		types := p.GetRecordTypes()
+		if len(types) == 1 {
+			md := store.GetMetaData()
+			rt := md.GetRecordType(types[0])
+			if rt != nil && rt.PrimaryKey != nil && recordlayer.KeyExpressionHasRecordTypePrefix(rt.PrimaryKey) {
+				rtk := rt.GetRecordTypeKey()
+				tupleRange = tupleRange.Prepend(tuple.Tuple{rtk})
+			}
+		}
+
+		lowEP := tupleRange.LowEndpoint
+		highEP := tupleRange.HighEndpoint
+		if continuation != nil {
+			if scanProps.Reverse {
+				highEP = recordlayer.EndpointTypeContinuation
+			} else {
+				lowEP = recordlayer.EndpointTypeContinuation
+			}
+		}
+
+		inner := store.ScanRecordsInRange(
+			tupleRange.Low, tupleRange.High,
+			lowEP, highEP,
+			continuation, scanProps,
+		)
+		return recordlayer.MapCursor(inner, FromStoredRecord), nil
 	}
 
 	types := p.GetRecordTypes()
@@ -198,8 +239,9 @@ func executeIndexScan(
 	}
 
 	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties: props,
-		Reverse:           p.IsReverse(),
+		ExecuteProperties:   props,
+		Reverse:             p.IsReverse(),
+		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
 
 	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
@@ -332,7 +374,7 @@ func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 		}
 		if !result.HasNext() {
-			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+			return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
 		}
 
 		entry := result.GetValue()
@@ -373,7 +415,7 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
 	}
 
 	entry := result.GetValue()
@@ -699,12 +741,22 @@ func executeSort(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
+	// Deserialize the sort continuation (if resuming). Extract the
+	// inner continuation for the leaf cursor and the buffered records.
+	// Mirrors Java's RecordQuerySortPlan + MemorySortCursorContinuation.
+	var innerContinuation []byte
+	var priorBuf []QueryResult
+
+	if continuation != nil {
+		ic, buf, decErr := decodeSortContinuation(continuation)
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
+		}
+		innerContinuation = ic
+		priorBuf = buf
 	}
 
-	items, err := CollectAll(ctx, innerCursor)
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
@@ -720,18 +772,10 @@ func executeSort(
 		directions[i] = k.Reverse
 	}
 
-	// Go-only extension: top-K optimization. When we only need the
-	// first K rows (limit + skip), partial-sort via heap to avoid
-	// sorting the entire dataset. O(N log K) time, O(K) output space.
-	k := props.Skip + props.ReturnedRowLimit
-	if k > 0 && k < len(items) {
-		partialSortTopK(items, keyNames, directions, k)
-		items = items[:k]
-	} else {
-		sortByKeys(items, keyNames, directions)
+	cursor := newMemorySortCursor(innerCursor, keyNames, directions)
+	if len(priorBuf) > 0 {
+		cursor.buf = priorBuf
 	}
-
-	cursor := newSortResultCursor(items)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -979,73 +1023,12 @@ func executeNestedLoopJoin(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
-	}
-
-	outerRows, err := CollectAll(ctx, outerCursor)
-	if err != nil {
-		return nil, err
-	}
-
-	preds := p.GetPredicates()
-	joinType := p.GetJoinType()
-	var results []QueryResult
-	if joinType == plans.JoinExists || joinType == plans.JoinNotExists {
-		outerAlias := p.GetOuterAlias()
-		if len(preds) == 0 {
-			for _, outerRow := range outerRows {
-				innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
-				if innerErr != nil {
-					return nil, innerErr
-				}
-				innerResult, innerErr := innerCursor.OnNext(ctx)
-				_ = innerCursor.Close()
-				if innerErr != nil {
-					return nil, innerErr
-				}
-				hasRow := innerResult.HasNext() && innerResult.GetValue().Datum != nil
-				if (joinType == plans.JoinExists && hasRow) || (joinType == plans.JoinNotExists && !hasRow) {
-					if outerAlias != "" {
-						outerRow = qualifyOuterRow(outerRow, outerAlias)
-					}
-					results = append(results, outerRow)
-				}
-			}
-		} else {
-			innerCursor, innerErr := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
-			if innerErr != nil {
-				return nil, innerErr
-			}
-			innerRows, innerErr := CollectAll(ctx, innerCursor)
-			if innerErr != nil {
-				return nil, innerErr
-			}
-			for _, outerRow := range outerRows {
-				matched := false
-				for _, innerRow := range innerRows {
-					combined := mergeRows(outerRow, innerRow, outerAlias, p.GetInnerAlias())
-					if passesJoinPredicates(combined, preds, evalCtx) {
-						matched = true
-						break
-					}
-				}
-				if (joinType == plans.JoinExists && matched) || (joinType == plans.JoinNotExists && !matched) {
-					if outerAlias != "" {
-						outerRow = qualifyOuterRow(outerRow, outerAlias)
-					}
-					results = append(results, outerRow)
-				}
-			}
-		}
-		return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
-	}
-
-	// The inner scan is uncorrelated in the regular NLJ path (correlated
-	// EXISTS is handled by the branch above). Scan the inner once and
-	// reuse for every outer row. Eliminates N redundant inner scans.
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+	// Materialize the inner side once (typically the smaller table).
+	// Clear TimeLimit for inner — the inner must be fully materialized
+	// within this transaction. Java's FlatMapPipelinedCursor also
+	// materializes the inner fully per outer row.
+	innerProps := props.ClearSkipAndLimit().ClearRowAndTimeLimits()
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, innerProps)
 	if err != nil {
 		return nil, err
 	}
@@ -1054,22 +1037,18 @@ func executeNestedLoopJoin(
 		return nil, err
 	}
 
-	for _, outerRow := range outerRows {
-		matched := false
-		for _, innerRow := range innerRows {
-			combined := mergeRows(outerRow, innerRow, p.GetOuterAlias(), p.GetInnerAlias())
-			if passesJoinPredicates(combined, preds, evalCtx) {
-				results = append(results, combined)
-				matched = true
-			}
-		}
-
-		if !matched && joinType == plans.JoinLeftOuter {
-			results = append(results, qualifyOuterRow(outerRow, p.GetOuterAlias()))
-		}
+	// Stream the outer side one row at a time via nljCursor.
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
 	}
 
-	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	cursor := newNLJCursor(
+		outerCursor, innerRows,
+		p.GetJoinType(), p.GetOuterAlias(), p.GetInnerAlias(),
+		p.GetPredicates(), evalCtx,
+	)
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryResult {
@@ -1178,6 +1157,158 @@ func recordTypeName(qr QueryResult) string {
 	return ""
 }
 
+// equiJoinKey holds two Value extractors for one equi-join column pair.
+// outerVal evaluates against the outer row, innerVal against the inner row.
+type equiJoinKey struct {
+	outerVal values.Value
+	innerVal values.Value
+}
+
+// extractEquiJoinKeys analyses the NLJ predicates to find equi-join
+// conditions (FieldValue = FieldValue) where one side references the
+// outer table and the other the inner table. Returns the equi-join
+// keys, the residual (non-equi) predicates, and whether at least one
+// key was found.
+func extractEquiJoinKeys(
+	preds []predicates.QueryPredicate,
+	outerRows, innerRows []QueryResult,
+	outerAlias, innerAlias string,
+) ([]equiJoinKey, []predicates.QueryPredicate, bool) {
+	if len(preds) == 0 || len(outerRows) == 0 || len(innerRows) == 0 {
+		return nil, preds, false
+	}
+
+	outerSample, ok1 := outerRows[0].Datum.(map[string]any)
+	innerSample, ok2 := innerRows[0].Datum.(map[string]any)
+	if !ok1 || !ok2 {
+		return nil, preds, false
+	}
+
+	outerQual := outerAlias
+	if outerQual == "" {
+		outerQual = recordTypeName(outerRows[0])
+	}
+	innerQual := innerAlias
+	if innerQual == "" {
+		innerQual = recordTypeName(innerRows[0])
+	}
+
+	qualifiedOuter := qualifyMap(outerSample, outerQual, outerAlias, recordTypeName(outerRows[0]))
+	qualifiedInner := qualifyMap(innerSample, innerQual, innerAlias, recordTypeName(innerRows[0]))
+
+	var keys []equiJoinKey
+	var residual []predicates.QueryPredicate
+
+	for _, pred := range preds {
+		cp, ok := pred.(*predicates.ComparisonPredicate)
+		if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
+			residual = append(residual, pred)
+			continue
+		}
+		if cp.Operand == nil || cp.Comparison.Operand == nil {
+			residual = append(residual, pred)
+			continue
+		}
+
+		// Try LHS→outer, RHS→inner
+		lhsOuter := cp.Operand.Evaluate(qualifiedOuter)
+		rhsInner := cp.Comparison.Operand.Evaluate(qualifiedInner)
+		if lhsOuter != nil && rhsInner != nil {
+			lhsInner := cp.Operand.Evaluate(qualifiedInner)
+			if lhsInner == nil {
+				keys = append(keys, equiJoinKey{outerVal: cp.Operand, innerVal: cp.Comparison.Operand})
+				continue
+			}
+		}
+
+		// Try LHS→inner, RHS→outer
+		lhsInner := cp.Operand.Evaluate(qualifiedInner)
+		rhsOuter := cp.Comparison.Operand.Evaluate(qualifiedOuter)
+		if lhsInner != nil && rhsOuter != nil {
+			rhsInnerCheck := cp.Comparison.Operand.Evaluate(qualifiedInner)
+			if rhsInnerCheck == nil {
+				keys = append(keys, equiJoinKey{outerVal: cp.Comparison.Operand, innerVal: cp.Operand})
+				continue
+			}
+		}
+
+		residual = append(residual, pred)
+	}
+
+	if len(keys) == 0 {
+		return nil, preds, false
+	}
+	return keys, residual, true
+}
+
+// qualifyMap replicates the key qualification from mergeRows so that
+// predicate evaluation against individual (non-merged) rows resolves
+// qualified field names like "ORDERS.CUSTOMER_ID".
+func qualifyMap(row map[string]any, qual, alias, typeName string) map[string]any {
+	qualified := make(map[string]any, len(row)*3)
+	for k, v := range row {
+		qualified[k] = v
+		if strings.Contains(k, ".") {
+			continue
+		}
+		if qual != "" {
+			qualified[qual+"."+strings.ToUpper(k)] = v
+		}
+		if alias != "" && typeName != "" && alias != typeName {
+			qualified[typeName+"."+strings.ToUpper(k)] = v
+		}
+	}
+	return qualified
+}
+
+// buildInnerHashIndex indexes inner rows by the equi-join key values.
+// Rows with any NULL key component are excluded (SQL: NULL = NULL is UNKNOWN).
+func buildInnerHashIndex(innerRows []QueryResult, keys []equiJoinKey, innerAlias string) (map[string][]QueryResult, []QueryResult) {
+	index := make(map[string][]QueryResult, len(innerRows))
+	var nullRows []QueryResult
+	for _, row := range innerRows {
+		k, hasNull := computeJoinKey(row, keys, true, innerAlias)
+		if hasNull {
+			nullRows = append(nullRows, row)
+			continue
+		}
+		index[k] = append(index[k], row)
+	}
+	return index, nullRows
+}
+
+// computeJoinKey evaluates the equi-join key expressions against a row,
+// producing a string hash key. inner=true uses innerVal, inner=false uses outerVal.
+// Returns hasNull=true when any key component evaluates to NULL.
+func computeJoinKey(row QueryResult, keys []equiJoinKey, inner bool, alias string) (string, bool) {
+	rowMap, ok := row.Datum.(map[string]any)
+	if !ok {
+		return "", true
+	}
+
+	typeName := recordTypeName(row)
+	qual := alias
+	if qual == "" {
+		qual = typeName
+	}
+	qualified := qualifyMap(rowMap, qual, alias, typeName)
+
+	var b strings.Builder
+	for _, k := range keys {
+		var val any
+		if inner {
+			val = k.innerVal.Evaluate(qualified)
+		} else {
+			val = k.outerVal.Evaluate(qualified)
+		}
+		if val == nil {
+			return "", true
+		}
+		fmt.Fprintf(&b, "%T:%v|", val, val)
+	}
+	return b.String(), false
+}
+
 func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) bool {
 	if len(preds) == 0 {
 		return true
@@ -1206,179 +1337,34 @@ func executeAggregation(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
+	// Deserialize the aggregate continuation (if resuming from a
+	// previous transaction). Extract the inner continuation for the
+	// leaf cursor and the single in-progress group's partial state.
+	// Mirrors Java's RecordQueryStreamingAggregationPlan.executePlan().
+	var innerContinuation []byte
+	var priorGroupKey string
+	var priorState *groupState
+
+	if continuation != nil {
+		ic, gk, gs, decErr := decodeAggregateContinuation(continuation, len(aggregates))
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
+		}
+		innerContinuation = ic
+		priorGroupKey = gk
+		priorState = gs
+	}
+
+	innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
 
-	rows, err := CollectAll(ctx, innerCursor)
-	if err != nil {
-		return nil, err
+	cursor := newAggregateCursor(innerCursor, groupingKeys, aggregates)
+	if priorState != nil {
+		cursor.withPartialState(priorGroupKey, priorState.keyVals, priorState)
 	}
-
-	type groupState struct {
-		keyVals []any
-		count   int64
-		counts  []int64
-		sums    []float64
-		sumsI   []int64
-		allInt  []bool
-		mins    []any
-		maxs    []any
-	}
-
-	groups := make(map[string]*groupState)
-	var groupOrder []string
-
-	for _, row := range rows {
-		keyParts := make([]any, len(groupingKeys))
-		var keyStr strings.Builder
-		for i, k := range groupingKeys {
-			v := k.Evaluate(row.Datum)
-			keyParts[i] = v
-			if v == nil {
-				keyStr.WriteString("N|")
-			} else {
-				fmt.Fprintf(&keyStr, "%T:%v|", v, v)
-			}
-		}
-		gk := keyStr.String()
-
-		gs, exists := groups[gk]
-		if !exists {
-			allIntInit := make([]bool, len(aggregates))
-			for j := range allIntInit {
-				allIntInit[j] = true
-			}
-			gs = &groupState{
-				keyVals: keyParts,
-				counts:  make([]int64, len(aggregates)),
-				sums:    make([]float64, len(aggregates)),
-				sumsI:   make([]int64, len(aggregates)),
-				allInt:  allIntInit,
-				mins:    make([]any, len(aggregates)),
-				maxs:    make([]any, len(aggregates)),
-			}
-			groups[gk] = gs
-			groupOrder = append(groupOrder, gk)
-		}
-		gs.count++
-
-		for i, agg := range aggregates {
-			val := agg.Operand.Evaluate(row.Datum)
-			if val == nil {
-				continue
-			}
-			gs.counts[i]++
-			if agg.Function == expressions.AggSum || agg.Function == expressions.AggAvg {
-				if !isNumeric(val) {
-					return nil, fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
-				}
-			}
-			num := toFloat64(val)
-			gs.sums[i] += num
-			if intVal, ok := val.(int64); ok {
-				s := gs.sumsI[i] + intVal
-				if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
-					return nil, &SumOverflowError{}
-				}
-				gs.sumsI[i] = s
-			} else {
-				gs.allInt[i] = false
-			}
-
-			if !isNumeric(val) {
-				return nil, &AggregateTypeMismatchError{
-					Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
-				}
-			}
-			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
-				gs.mins[i] = val
-			}
-			if gs.maxs[i] == nil || compareAny(val, gs.maxs[i]) > 0 {
-				gs.maxs[i] = val
-			}
-		}
-	}
-
-	if len(groups) == 0 && len(groupingKeys) == 0 {
-		result := make(map[string]any)
-		for _, agg := range aggregates {
-			name := aggResultName(agg)
-			var val any
-			switch agg.Function {
-			case expressions.AggCount:
-				val = int64(0)
-			default:
-				val = nil
-			}
-			result[name] = val
-			if agg.Alias != "" && agg.Alias != name {
-				result[agg.Alias] = val
-			}
-		}
-		return recordlayer.FromList([]QueryResult{{Datum: result}}), nil
-	}
-
-	var results []QueryResult
-	for _, gk := range groupOrder {
-		gs := groups[gk]
-		result := make(map[string]any)
-		for i, k := range groupingKeys {
-			name := aggKeyName(k)
-			result[name] = gs.keyVals[i]
-			// Expression group keys (e.g. ArithmeticValue for `amt / 100`)
-			// produce an ExplainValue with outer parentheses: "(AMT / 100)".
-			// Projections above the aggregate reference the key by the raw
-			// SQL text (no outer parens): "AMT / 100". Store under both
-			// forms so lookups from either naming convention succeed.
-			if len(name) >= 2 && name[0] == '(' && name[len(name)-1] == ')' {
-				stripped := name[1 : len(name)-1]
-				if _, exists := result[stripped]; !exists {
-					result[stripped] = gs.keyVals[i]
-				}
-			}
-		}
-		for i, agg := range aggregates {
-			name := aggResultName(agg)
-			var val any
-			switch agg.Function {
-			case expressions.AggCount:
-				if isCountStar(agg) {
-					val = gs.count
-				} else {
-					val = gs.counts[i]
-				}
-			case expressions.AggSum:
-				if gs.counts[i] == 0 {
-					val = nil
-				} else if gs.allInt[i] {
-					val = gs.sumsI[i]
-				} else {
-					val = gs.sums[i]
-				}
-			case expressions.AggMin:
-				val = gs.mins[i]
-			case expressions.AggMax:
-				val = gs.maxs[i]
-			case expressions.AggAvg:
-				if gs.counts[i] > 0 {
-					val = gs.sums[i] / float64(gs.counts[i])
-				} else {
-					val = nil
-				}
-			default:
-				return nil, fmt.Errorf("executor: unsupported aggregate function %v", agg.Function)
-			}
-			result[name] = val
-			if agg.Alias != "" && agg.Alias != name {
-				result[agg.Alias] = val
-			}
-		}
-		results = append(results, QueryResult{Datum: result})
-	}
-
-	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func toFloat64(v any) float64 {
@@ -2339,70 +2325,76 @@ func executeInMemorySort(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
+	var innerContinuation []byte
+	var priorBuf []QueryResult
+	if continuation != nil {
+		ic, buf, decErr := decodeSortContinuation(continuation)
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid sort continuation: %w", decErr)
+		}
+		innerContinuation = ic
+		priorBuf = buf
 	}
-	results, err := CollectAll(ctx, innerCursor)
+
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerContinuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
 
 	keys := p.GetSortKeys()
-	// Determine the PK tiebreaker direction: match the last explicit
-	// sort key's direction. When all explicit sort keys compare equal,
-	// Java orders by PK in the same direction as the outermost sort
-	// column (reverse scan on a composite index emits PKs in
-	// descending order within each tied group).
-	pkDesc := false
-	if len(keys) > 0 {
-		pkDesc = keys[len(keys)-1].Desc
-	}
-	sort.SliceStable(results, func(i, j int) bool {
-		for _, k := range keys {
-			var ci, cj any
-			if k.ValueExpr != nil {
-				ci = k.ValueExpr.Evaluate(results[i].Datum)
-				cj = k.ValueExpr.Evaluate(results[j].Datum)
-			} else {
-				ci = compareByField(results[i], k.Field)
-				cj = compareByField(results[j], k.Field)
-			}
-			iNil := ci == nil
-			jNil := cj == nil
-			if iNil && jNil {
-				continue
-			}
-			if iNil || jNil {
-				if k.NullsFirst {
-					return iNil
-				}
-				return jNil
-			}
-			cmp := compareValues(ci, cj)
-			if cmp == 0 {
-				continue
-			}
-			if k.Desc {
-				return cmp > 0
-			}
-			return cmp < 0
+	sortFn := func(results []QueryResult) {
+		pkDesc := false
+		if len(keys) > 0 {
+			pkDesc = keys[len(keys)-1].Desc
 		}
-		// All explicit sort keys are equal — break ties by primary
-		// key so the output matches Java's index-scan ordering.
-		if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
-			cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
-			if cmp != 0 {
-				if pkDesc {
+		sort.SliceStable(results, func(i, j int) bool {
+			for _, k := range keys {
+				var ci, cj any
+				if k.ValueExpr != nil {
+					ci = k.ValueExpr.Evaluate(results[i].Datum)
+					cj = k.ValueExpr.Evaluate(results[j].Datum)
+				} else {
+					ci = compareByField(results[i], k.Field)
+					cj = compareByField(results[j], k.Field)
+				}
+				iNil := ci == nil
+				jNil := cj == nil
+				if iNil && jNil {
+					continue
+				}
+				if iNil || jNil {
+					if k.NullsFirst {
+						return iNil
+					}
+					return jNil
+				}
+				cmp := compareValues(ci, cj)
+				if cmp == 0 {
+					continue
+				}
+				if k.Desc {
 					return cmp > 0
 				}
 				return cmp < 0
 			}
-		}
-		return false
-	})
+			if results[i].PrimaryKey != nil && results[j].PrimaryKey != nil {
+				cmp := comparePKTuples(results[i].PrimaryKey, results[j].PrimaryKey)
+				if cmp != 0 {
+					if pkDesc {
+						return cmp > 0
+					}
+					return cmp < 0
+				}
+			}
+			return false
+		})
+	}
 
-	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	cursor := newCustomSortCursor(innerCursor, sortFn)
+	if len(priorBuf) > 0 {
+		cursor.buf = priorBuf
+	}
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func compareByField(qr QueryResult, field string) any {

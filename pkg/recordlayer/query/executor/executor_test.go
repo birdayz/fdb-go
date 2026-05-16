@@ -985,7 +985,7 @@ func TestExecuteNestedLoopJoin_LeftOuter_NoInnerMatch(t *testing.T) {
 	}
 }
 
-func TestExecuteHashAggregation_CountGroupBy(t *testing.T) {
+func TestExecuteStreamingAggregation_CountGroupBy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -1000,7 +1000,7 @@ func TestExecuteHashAggregation_CountGroupBy(t *testing.T) {
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
 	}
 
-	plan := plans.NewRecordQueryHashAggregationPlan(inner, groupKeys, aggs)
+	plan := plans.NewRecordQueryStreamingAggregationPlan(inner, groupKeys, aggs)
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -1072,7 +1072,7 @@ func TestExecuteAggregation_EmptyInput_NoGroupKeys(t *testing.T) {
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
 	}
 
-	plan := plans.NewRecordQueryHashAggregationPlan(inner, nil, aggs)
+	plan := plans.NewRecordQueryStreamingAggregationPlan(inner, nil, aggs)
 	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)

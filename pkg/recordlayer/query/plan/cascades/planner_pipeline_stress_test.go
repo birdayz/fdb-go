@@ -69,7 +69,7 @@ func TestPipeline_CostTieDeterminism(t *testing.T) {
 // TestPipeline_StreamingAggCostTie mirrors the exact query pattern
 // from the flaky TestFDB_CascadesStreamingAggFromIndex: GROUP BY on
 // an indexed column with ORDER BY. StreamingAgg(IndexScan) and
-// InMemorySort(HashAgg(Scan)) are alternative plans. Verifies the
+// InMemorySort(StreamingAgg(Scan)) are alternative plans. Verifies the
 // planner deterministically picks the same one 50 times.
 func TestPipeline_StreamingAggCostTie(t *testing.T) {
 	t.Parallel()

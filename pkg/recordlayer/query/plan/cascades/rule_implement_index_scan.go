@@ -99,6 +99,13 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			if !found {
 				continue
 			}
+			// Don't push type-incompatible comparisons into scan ranges.
+			// A BIGINT column compared to a string constant must surface
+			// as a type mismatch error during predicate evaluation, not
+			// silently produce an empty scan range.
+			if !comparisonTypesCompatible(fv, &cp.Comparison) {
+				continue
+			}
 			alias := aliases[colIdx]
 			if poisoned[alias] {
 				continue
@@ -123,20 +130,32 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		idxPlan := cand.ToScanPlan(prefix, false)
-		idxPlanTyped := extractIndexPlan(idxPlan)
-		if idxPlanTyped == nil {
-			continue
-		}
 
-		wrapper := &physicalIndexScanWrapper{plan: idxPlanTyped, columnNames: colNames, unique: cand.IsUnique()}
-
+		// The plan is either a RecordQueryIndexPlan (secondary index) or
+		// a RecordQueryScanPlan (PK scan from PrimaryScanMatchCandidate),
+		// optionally wrapped in a TypeFilterPlan. Handle all cases —
+		// Java's ImplementPhysicalScanRule covers both via the shared
+		// RecordQueryPlanWithComparisons interface.
 		residual := residualPredicates(preds, consumed, prefix, aliases, colToIdx)
-		if len(residual) == 0 {
-			call.Yield(wrapper)
-		} else {
-			filterPlan := plans.NewRecordQueryFilterPlan(residual, idxPlan)
-			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(wrapper))
-			call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
+
+		if idxPlanTyped := extractIndexPlan(idxPlan); idxPlanTyped != nil {
+			wrapper := &physicalIndexScanWrapper{plan: idxPlanTyped, columnNames: colNames, unique: cand.IsUnique()}
+			if len(residual) == 0 {
+				call.Yield(wrapper)
+			} else {
+				filterPlan := plans.NewRecordQueryFilterPlan(residual, idxPlan)
+				innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(wrapper))
+				call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
+			}
+		} else if scanPlan := extractScanPlan(idxPlan); scanPlan != nil {
+			wrapper := &physicalScanWrapper{plan: scanPlan}
+			if len(residual) == 0 {
+				call.Yield(wrapper)
+			} else {
+				filterPlan := plans.NewRecordQueryFilterPlan(residual, scanPlan)
+				innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(wrapper))
+				call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
+			}
 		}
 	}
 }
@@ -152,6 +171,66 @@ func extractIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
 		if inner := fp.GetInner(); inner != nil {
 			if ip, ok := inner.(*plans.RecordQueryIndexPlan); ok {
 				return ip
+			}
+		}
+	}
+	return nil
+}
+
+// comparisonTypesCompatible checks whether a field's type and the
+// comparison's operand type are compatible for index pushdown. Returns
+// false for obvious mismatches like BIGINT column vs STRING literal —
+// these must remain as residual predicates so the executor surfaces
+// the type error. Unknown types (from unresolved columns) pass through.
+func comparisonTypesCompatible(fv *values.FieldValue, cmp *predicates.Comparison) bool {
+	if cmp.Operand == nil {
+		return true
+	}
+	fieldType := fv.Type()
+	if fieldType == nil || fieldType == values.UnknownType {
+		return true
+	}
+	rhsType := cmp.Operand.Type()
+	if rhsType == nil || rhsType == values.UnknownType {
+		return true
+	}
+	// Numeric ↔ String is always a type mismatch.
+	fieldIsNum := isNumericType(fieldType)
+	rhsIsNum := isNumericType(rhsType)
+	fieldIsStr := isStringType(fieldType)
+	rhsIsStr := isStringType(rhsType)
+	if (fieldIsNum && rhsIsStr) || (fieldIsStr && rhsIsNum) {
+		return false
+	}
+	return true
+}
+
+func isNumericType(t values.Type) bool {
+	if pt, ok := t.(*values.PrimitiveType); ok {
+		return pt.TypeCode.IsNumeric()
+	}
+	return false
+}
+
+func isStringType(t values.Type) bool {
+	if pt, ok := t.(*values.PrimitiveType); ok {
+		return pt.TypeCode == values.TypeCodeString
+	}
+	return false
+}
+
+// extractScanPlan extracts a *RecordQueryScanPlan from a plan that may
+// be a ScanPlan directly or a TypeFilterPlan wrapping one. This handles
+// PrimaryScanMatchCandidate.ToScanPlan() which returns either a bare
+// ScanPlan or a TypeFilterPlan(ScanPlan).
+func extractScanPlan(p plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
+	if sp, ok := p.(*plans.RecordQueryScanPlan); ok {
+		return sp
+	}
+	if tfp, ok := p.(*plans.RecordQueryTypeFilterPlan); ok {
+		if inner := tfp.GetInner(); inner != nil {
+			if sp, ok := inner.(*plans.RecordQueryScanPlan); ok {
+				return sp
 			}
 		}
 	}

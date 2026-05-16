@@ -138,11 +138,6 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	case *physicalStreamingAggWrapper:
 		return derivationsForStreamingAgg(w)
 
-	// --- HashAggregation ---
-
-	case *physicalHashAggWrapper:
-		return derivationsFromSingleChildExpr(w)
-
 	// --- Explode ---
 
 	case *physicalExplodeWrapper:

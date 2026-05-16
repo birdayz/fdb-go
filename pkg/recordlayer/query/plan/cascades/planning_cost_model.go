@@ -268,10 +268,6 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
-	if cmp := compareStreamingVsHash(a, b); cmp != 0 {
-		return cmp
-	}
-
 	// Fall back to the scalar cost model when all multi-criteria tie.
 	// This avoids the hash tiebreak picking semantically broken plans
 	// (see D-4 wiring investigation). The scalar model's per-operator
@@ -595,21 +591,6 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 	}
 	_, ok = e.(*physicalIndexScanWrapper)
 	return ok
-}
-
-func compareStreamingVsHash(a, b expressions.RelationalExpression) int {
-	_, aStreaming := a.(*physicalStreamingAggWrapper)
-	_, bStreaming := b.(*physicalStreamingAggWrapper)
-	_, aHash := a.(*physicalHashAggWrapper)
-	_, bHash := b.(*physicalHashAggWrapper)
-
-	if aStreaming && bHash {
-		return -1
-	}
-	if aHash && bStreaming {
-		return 1
-	}
-	return 0
 }
 
 // comparePrimaryScanVsIndexScan mirrors Java's comparePrimaryScanToIndexScan.

@@ -12,7 +12,6 @@ go_library(
         "fetch_from_partial_record.go",
         "filter.go",
         "first_or_default.go",
-        "hash_aggregation.go",
         "in_join.go",
         "in_memory_sort.go",
         "in_union.go",

@@ -54,6 +54,12 @@ type BytesContinuation struct {
 	bytes []byte
 }
 
+// NewBytesContinuation creates a BytesContinuation with the given bytes.
+// A nil bytes value means end-of-cursor (IsEnd returns true).
+func NewBytesContinuation(b []byte) *BytesContinuation {
+	return &BytesContinuation{bytes: b}
+}
+
 // ToBytes returns the continuation bytes
 func (c *BytesContinuation) ToBytes() ([]byte, error) {
 	return c.bytes, nil

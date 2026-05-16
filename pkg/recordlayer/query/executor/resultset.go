@@ -227,6 +227,13 @@ func (rs *RecordLayerResultSet) ObjectByName(name string) (any, error) {
 	return rs.columnValueByName(name)
 }
 
+// GetContinuation returns the raw cursor continuation from the last
+// Next() call. Used by the paginating execution loop to resume across
+// FDB transactions.
+func (rs *RecordLayerResultSet) GetContinuation() recordlayer.RecordCursorContinuation {
+	return rs.lastContinuation
+}
+
 func (rs *RecordLayerResultSet) Continuation() (api.Continuation, error) {
 	if rs.lastContinuation == nil {
 		return &exhaustedContinuation{}, nil

@@ -63,7 +63,29 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	innerExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
 	if innerExpr == nil {
-		return
+		// Go extension: Java refuses GROUP BY without sorted input (no
+		// index on group key → "unable to plan"). Go inserts an in-memory
+		// sort below the streaming aggregation so GROUP BY works without
+		// an index. The sort cursor handles TimeLimitReached and carries
+		// its buffer in the MemorySortContinuation proto, so this
+		// composes correctly with cross-transaction pagination.
+		innerExpr = findPhysicalExpr(innerRef)
+		if innerExpr == nil {
+			return
+		}
+		sortKeys := make([]plans.SortKey, len(groupingKeys))
+		for i, gk := range groupingKeys {
+			if fv, ok := gk.(*values.FieldValue); ok {
+				sortKeys[i] = plans.SortKey{Field: fv.Field}
+			} else {
+				sortKeys[i] = plans.SortKey{
+					Field:     values.ExplainValue(gk),
+					ValueExpr: gk,
+				}
+			}
+		}
+		sortedPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, sortKeys)
+		innerPlan = sortedPlan
 	}
 
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, groupingKeys, gb.GetAggregates())
