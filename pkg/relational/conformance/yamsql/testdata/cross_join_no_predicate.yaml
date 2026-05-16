@@ -1,0 +1,27 @@
+# cross_join_no_predicate.yaml — CROSS JOIN without predicates
+#
+# Verifies CROSS JOIN (cartesian product) works correctly.
+# No equi-join predicate → NLJ path (not FlatMap).
+name: cross_join_no_predicate
+schema_template: |
+  CREATE TABLE colors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE sizes (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO colors VALUES (1, 'Red'), (2, 'Blue')
+  - INSERT INTO sizes VALUES (1, 'S'), (2, 'M'), (3, 'L')
+tests:
+  # CROSS JOIN: 2 colors × 3 sizes = 6 rows.
+  - query: SELECT c.name, s.label FROM colors c, sizes s ORDER BY c.name, s.label
+    result:
+      - ["Blue", "L"]
+      - ["Blue", "M"]
+      - ["Blue", "S"]
+      - ["Red", "L"]
+      - ["Red", "M"]
+      - ["Red", "S"]
+  # CROSS JOIN with LIMIT.
+  - query: SELECT c.name, s.label FROM colors c, sizes s ORDER BY c.name, s.label LIMIT 3
+    result:
+      - ["Blue", "L"]
+      - ["Blue", "M"]
+      - ["Blue", "S"]
