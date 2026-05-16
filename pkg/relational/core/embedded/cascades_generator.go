@@ -728,6 +728,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 		return deriveColumnsFromJoin(nlj, md)
 	}
+	if fm, ok := plan.(*plans.RecordQueryFlatMapPlan); ok {
+		return deriveColumnsFromFlatMap(fm, md)
+	}
 	if u := findUnionPlan(plan); u != nil {
 		return deriveColumnsFromPlan(u[0], md)
 	}
@@ -936,6 +939,34 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 		qual := c
 		if secondAlias != "" && !strings.Contains(c.Name, ".") {
 			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
+	return cols
+}
+
+func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	outerCols := deriveColumnsFromPlan(fm.GetOuter(), md)
+	innerCols := deriveColumnsFromPlan(fm.GetInner(), md)
+	if outerCols == nil && innerCols == nil {
+		return nil
+	}
+
+	outerAlias := strings.ToUpper(fm.GetOuterAlias().Name())
+	innerAlias := strings.ToUpper(fm.GetInnerAlias().Name())
+
+	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
+	for _, c := range outerCols {
+		qual := c
+		if outerAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = outerAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
+	for _, c := range innerCols {
+		qual := c
+		if innerAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = innerAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}

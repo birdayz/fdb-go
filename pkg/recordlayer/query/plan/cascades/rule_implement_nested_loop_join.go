@@ -457,16 +457,7 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			continue
 		}
 
-		// Skip when outer FK name matches inner PK — the column expansion
-		// layer for SELECT * doesn't handle the qualified-key output from
-		// FlatMap's JoinMergeResultValue the same way as NLJ's mergeRows.
-		outerBare := outerVal.Field
-		if strings.HasPrefix(strings.ToUpper(outerBare), outerPrefix) {
-			outerBare = outerBare[len(outerPrefix):]
-		}
-		if strings.EqualFold(outerBare, innerCol) {
-			continue
-		}
+		_ = innerCol
 
 		// Build correlated inner scan: the PK comparison operand is a
 		// FieldValue with a QuantifiedObjectValue child referencing the
