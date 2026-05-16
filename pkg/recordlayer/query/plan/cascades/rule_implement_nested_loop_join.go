@@ -519,6 +519,90 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		return true
 	}
 
+	// PK didn't match. Try secondary indexes: for each MatchCandidate
+	// whose first column matches the predicate's inner column, create a
+	// correlated INDEX scan.
+	for _, cand := range call.Context.GetMatchCandidates() {
+		candCols := cand.GetColumnNames()
+		if len(candCols) == 0 {
+			continue
+		}
+		candTypes := cand.GetRecordTypes()
+		if len(candTypes) == 0 || candTypes[0] != recordTypes[0] {
+			continue
+		}
+		idxFirstCol := strings.ToUpper(candCols[0])
+
+		for _, pred := range preds {
+			cp, ok := pred.(*predicates.ComparisonPredicate)
+			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
+				continue
+			}
+			if cp.Operand == nil || cp.Comparison.Operand == nil {
+				continue
+			}
+			outerVal, innerCol := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, idxFirstCol)
+			if outerVal == nil {
+				continue
+			}
+			_ = innerCol
+
+			outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
+			bareField := outerVal.Field
+			if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+				bareField = bareField[len(outerPrefix):]
+			}
+			correlatedOperand := values.NewFieldValue(
+				values.NewQuantifiedObjectValue(outerCorrelation),
+				bareField, outerVal.Typ,
+			)
+			correlatedComp := &predicates.Comparison{
+				Type:    predicates.ComparisonEquals,
+				Operand: correlatedOperand,
+			}
+			cr := predicates.EmptyComparisonRange()
+			mergeResult := cr.Merge(correlatedComp)
+			if !mergeResult.Ok {
+				continue
+			}
+
+			correlatedIndexScan := plans.NewRecordQueryIndexPlan(
+				cand.CandidateName(),
+				[]*predicates.ComparisonRange{mergeResult.Range},
+				recordTypes,
+				innerScan.GetFlowedType(),
+				false,
+			)
+
+			innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
+			resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
+			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+				leftPlan, correlatedIndexScan,
+				outerCorrelation, innerCorrelation,
+				resultVal, false,
+			)
+			if joinType == plans.JoinLeftOuter {
+				flatMapPlan.SetLeftOuter(true)
+			}
+
+			var residualPreds []predicates.QueryPredicate
+			for _, p := range preds {
+				if p != pred {
+					residualPreds = append(residualPreds, p)
+				}
+			}
+			var finalPlan plans.RecordQueryPlan = flatMapPlan
+			if len(residualPreds) > 0 {
+				finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, residualPreds)
+			}
+
+			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
+			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+			call.Yield(newPhysicalFlatMapWrapper(finalPlan, leftQ, rightQ))
+			return true
+		}
+	}
+
 	return false
 }
 
