@@ -1,0 +1,25 @@
+# flatmap_three_way.yaml — Three-way join (chained FlatMap)
+#
+# Tests that nested joins work correctly when multiple FlatMap
+# correlated scans are chained.
+name: flatmap_three_way
+schema_template: |
+  CREATE TABLE regions (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE stores (id BIGINT NOT NULL, region_id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT NOT NULL, store_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO regions VALUES (1, 'North'), (2, 'South')
+  - INSERT INTO stores VALUES (10, 1, 'Store_A'), (20, 1, 'Store_B'), (30, 2, 'Store_C')
+  - INSERT INTO products VALUES (100, 10, 'Widget', 5), (101, 10, 'Gadget', 10), (200, 20, 'Doohickey', 15), (300, 30, 'Thingamajig', 20)
+tests:
+  # Three-way join: regions → stores → products
+  - query: >
+      SELECT r.name, s.name, p.name
+      FROM regions r, stores s, products p
+      WHERE s.region_id = r.id AND p.store_id = s.id
+      ORDER BY r.name, s.name, p.name
+    result:
+      - ["North", "Store_A", "Gadget"]
+      - ["North", "Store_A", "Widget"]
+      - ["North", "Store_B", "Doohickey"]
+      - ["South", "Store_C", "Thingamajig"]
