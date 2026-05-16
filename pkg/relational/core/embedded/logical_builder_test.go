@@ -56,10 +56,8 @@ func TestBuildLogicalPlan_SelectStarWhere(t *testing.T) {
 }
 
 // TestBuildLogicalPlan_SelectColsOrder pins the SELECT-with-ORDER-BY
-// shape (without LIMIT — Java's AstNormalizer rejects LIMIT/OFFSET at
-// parse time, so the LIMIT branch of buildLogicalPlanForSelect is
-// unreachable from SQL; the LogicalLimit operator stays in place for
-// future setMaxRows-routing / Cascades work).
+// shape (without LIMIT in this specific query). LIMIT/OFFSET is now
+// supported as a Go extension via PlanVisitor.visitLimit.
 func TestBuildLogicalPlan_SelectColsOrder(t *testing.T) {
 	t.Parallel()
 	sq := parseSelect(t, "SELECT id, name FROM t ORDER BY id DESC")
