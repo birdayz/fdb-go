@@ -11,13 +11,13 @@ import (
 )
 
 type physicalFlatMapWrapper struct {
-	plan       *plans.RecordQueryFlatMapPlan
+	plan       plans.RecordQueryPlan
 	outerQuant expressions.Quantifier
 	innerQuant expressions.Quantifier
 }
 
 func newPhysicalFlatMapWrapper(
-	plan *plans.RecordQueryFlatMapPlan,
+	plan plans.RecordQueryPlan,
 	outerQuant, innerQuant expressions.Quantifier,
 ) *physicalFlatMapWrapper {
 	return &physicalFlatMapWrapper{
@@ -48,6 +48,9 @@ func (w *physicalFlatMapWrapper) EqualsWithoutChildren(other expressions.Relatio
 	o, ok := other.(*physicalFlatMapWrapper)
 	if !ok {
 		return false
+	}
+	if w.plan == nil || o.plan == nil {
+		return w.plan == nil && o.plan == nil
 	}
 	return w.plan.EqualsWithoutChildren(o.plan)
 }

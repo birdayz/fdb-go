@@ -435,15 +435,9 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		return false
 	}
 
-	// Find an equality predicate that matches: outer.X = inner.PK[0]
-	// (single-column PK equi-join — the most common case).
-	// Only produce FlatMap when the equi-join is the sole predicate.
-	// Multi-predicate cases (WHERE filters + JOIN condition) require
-	// wrapping with a Filter — deferred to a future change.
+	// Find an equality predicate that matches: outer.X = inner.PK[0].
+	// Residual predicates are wrapped in a Filter above the FlatMap.
 	preds := flattenAndPredicates(sel.GetPredicates())
-	if len(preds) != 1 {
-		return false
-	}
 	innerPrefix := strings.ToUpper(rightAlias) + "."
 	outerPrefix := strings.ToUpper(leftAlias) + "."
 	pkCol := strings.ToUpper(pkCols[0])
@@ -511,9 +505,22 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			resultVal, false,
 		)
 
+		// Collect residual predicates (all except the matched equi-join).
+		var residualPreds []predicates.QueryPredicate
+		for _, p := range preds {
+			if p != pred {
+				residualPreds = append(residualPreds, p)
+			}
+		}
+
+		var finalPlan plans.RecordQueryPlan = flatMapPlan
+		if len(residualPreds) > 0 {
+			finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, residualPreds)
+		}
+
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
-		call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+		call.Yield(newPhysicalFlatMapWrapper(finalPlan, leftQ, rightQ))
 		return true
 	}
 
