@@ -1,0 +1,15 @@
+# limit_zero.yaml — LIMIT 0 edge case
+#
+# LIMIT 0 must return empty result set immediately.
+name: limit_zero
+schema_template: |
+  CREATE TABLE data (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO data VALUES (1, 'a'), (2, 'b'), (3, 'c')
+tests:
+  - query: SELECT id FROM data LIMIT 0
+    result: []
+  - query: SELECT id FROM data ORDER BY id LIMIT 0
+    result: []
+  - query: SELECT COUNT(*) FROM data LIMIT 0
+    result: []
