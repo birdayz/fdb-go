@@ -16,21 +16,27 @@ import (
 // is parameterized by the outer row via correlation bindings. This
 // enables targeted index probes on the inner side (O(N×logM) vs O(N×M)).
 type RecordQueryFlatMapPlan struct {
-	outer      RecordQueryPlan
-	inner      RecordQueryPlan
-	outerAlias values.CorrelationIdentifier
-	innerAlias values.CorrelationIdentifier
+	outer                        RecordQueryPlan
+	inner                        RecordQueryPlan
+	outerAlias                   values.CorrelationIdentifier
+	innerAlias                   values.CorrelationIdentifier
+	resultValue                  values.Value
+	inheritOuterRecordProperties bool
 }
 
 func NewRecordQueryFlatMapPlan(
 	outer, inner RecordQueryPlan,
 	outerAlias, innerAlias values.CorrelationIdentifier,
+	resultValue values.Value,
+	inheritOuterRecordProperties bool,
 ) *RecordQueryFlatMapPlan {
 	return &RecordQueryFlatMapPlan{
-		outer:      outer,
-		inner:      inner,
-		outerAlias: outerAlias,
-		innerAlias: innerAlias,
+		outer:                        outer,
+		inner:                        inner,
+		outerAlias:                   outerAlias,
+		innerAlias:                   innerAlias,
+		resultValue:                  resultValue,
+		inheritOuterRecordProperties: inheritOuterRecordProperties,
 	}
 }
 
@@ -44,6 +50,10 @@ func (p *RecordQueryFlatMapPlan) GetOuter() RecordQueryPlan                   { 
 func (p *RecordQueryFlatMapPlan) GetInner() RecordQueryPlan                   { return p.inner }
 func (p *RecordQueryFlatMapPlan) GetOuterAlias() values.CorrelationIdentifier { return p.outerAlias }
 func (p *RecordQueryFlatMapPlan) GetInnerAlias() values.CorrelationIdentifier { return p.innerAlias }
+func (p *RecordQueryFlatMapPlan) GetResultValue() values.Value                { return p.resultValue }
+func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
+	return p.inheritOuterRecordProperties
+}
 
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)

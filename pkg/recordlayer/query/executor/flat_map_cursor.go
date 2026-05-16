@@ -17,13 +17,15 @@ import (
 // for overlapping FDB I/O). The semantics and continuation format are
 // identical.
 type flatMapCursor struct {
-	outerCursor recordlayer.RecordCursor[QueryResult]
-	innerPlan   plans.RecordQueryPlan
-	store       *recordlayer.FDBRecordStore
-	evalCtx     *EvaluationContext
-	outerAlias  values.CorrelationIdentifier
-	innerAlias  values.CorrelationIdentifier
-	props       recordlayer.ExecuteProperties
+	outerCursor  recordlayer.RecordCursor[QueryResult]
+	innerPlan    plans.RecordQueryPlan
+	store        *recordlayer.FDBRecordStore
+	evalCtx      *EvaluationContext
+	outerAlias   values.CorrelationIdentifier
+	innerAlias   values.CorrelationIdentifier
+	resultValue  values.Value
+	inheritOuter bool
+	props        recordlayer.ExecuteProperties
 
 	innerCursor    recordlayer.RecordCursor[QueryResult]
 	currentOuter   *QueryResult
@@ -37,16 +39,20 @@ func newFlatMapCursor(
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
 	outerAlias, innerAlias values.CorrelationIdentifier,
+	resultValue values.Value,
+	inheritOuter bool,
 	props recordlayer.ExecuteProperties,
 ) *flatMapCursor {
 	return &flatMapCursor{
-		outerCursor: outerCursor,
-		innerPlan:   innerPlan,
-		store:       store,
-		evalCtx:     evalCtx,
-		outerAlias:  outerAlias,
-		innerAlias:  innerAlias,
-		props:       props,
+		outerCursor:  outerCursor,
+		innerPlan:    innerPlan,
+		store:        store,
+		evalCtx:      evalCtx,
+		outerAlias:   outerAlias,
+		innerAlias:   innerAlias,
+		resultValue:  resultValue,
+		inheritOuter: inheritOuter,
+		props:        props,
 	}
 }
 
@@ -64,8 +70,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			}
 			if result.HasNext() {
 				innerRow := result.GetValue()
-				merged := mergeRows(*c.currentOuter, innerRow, c.outerAlias.Name(), c.innerAlias.Name())
-				return recordlayer.NewResultWithValue(merged, nonEndContinuation), nil
+				outputRow := c.computeResult(*c.currentOuter, innerRow)
+				return recordlayer.NewResultWithValue(outputRow, nonEndContinuation), nil
 			}
 			// Inner exhausted for this outer row — close and advance outer.
 			reason := result.GetNoNextReason()
@@ -111,6 +117,33 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		}
 		c.innerCursor = innerCursor
 	}
+}
+
+// computeResult evaluates the resultValue with both outer and inner
+// bound as correlations. Mirrors Java's FlatMapPipelinedCursor:
+//
+//	nestedContext = fromOuterContext.withBinding(CORRELATION, innerAlias, innerResult)
+//	computed = resultValue.eval(store, nestedContext)
+//	return inheritOuter ? outerResult.withComputed(computed) : QueryResult.ofComputed(computed)
+func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) QueryResult {
+	// Build evaluation context with both correlations bound.
+	outerDatum, _ := outerRow.Datum.(map[string]any)
+	innerDatum, _ := innerRow.Datum.(map[string]any)
+	nestedCtx := c.evalCtx.
+		WithBinding(c.outerAlias, outerDatum).
+		WithBinding(c.innerAlias, innerDatum)
+
+	computed := c.resultValue.Evaluate(nestedCtx)
+
+	if c.inheritOuter {
+		// EXISTS case: outer row with computed attached.
+		result := outerRow
+		if computed != nil {
+			result.Datum = computed
+		}
+		return result
+	}
+	return QueryResult{Datum: computed}
 }
 
 func (c *flatMapCursor) Close() error {

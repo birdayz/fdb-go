@@ -463,8 +463,9 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			continue
 		}
 
-		// Don't produce FlatMap when the outer FK bare name equals the
-		// inner PK name — SELECT * can't disambiguate the merged columns.
+		// Skip when outer FK name matches inner PK — the column expansion
+		// layer for SELECT * doesn't handle the qualified-key output from
+		// FlatMap's JoinMergeResultValue the same way as NLJ's mergeRows.
 		outerBare := outerVal.Field
 		if strings.HasPrefix(strings.ToUpper(outerBare), outerPrefix) {
 			outerBare = outerBare[len(outerPrefix):]
@@ -503,9 +504,11 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		correlatedScan := innerScan.WithScanComparisons([]*predicates.ComparisonRange{mergeResult.Range})
 
 		innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
+		resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
 		flatMapPlan := plans.NewRecordQueryFlatMapPlan(
 			leftPlan, correlatedScan,
 			outerCorrelation, innerCorrelation,
+			resultVal, false,
 		)
 
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
