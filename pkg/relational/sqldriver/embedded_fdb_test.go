@@ -1487,15 +1487,8 @@ func TestFDB_SelectDistinctOrderBy(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]int64{10, 20, 30}))
 }
 
-// TestFDB_SelectLimitRejected pins LIMIT-clause rejection.
-// fdb-relational 4.11.1.0's AstNormalizer.visitLimitClause throws
-// `RelationalException: LIMIT clause is not supported.`
-// (UNSUPPORTED_QUERY / 0AF00). Pagination is a JDBC-only knob via
-// Statement.setMaxRows; SQL-level LIMIT N is not in the planner's
-// repertoire. Go aligns at parse time in extractFromSimpleTable.
-// Per project conformance principle: doesn't work in Java →
-// doesn't work in Go.
-func TestFDB_SelectLimitRejected(t *testing.T) {
+// TestFDB_SelectLimit verifies SQL LIMIT/OFFSET (Go extension).
+func TestFDB_SelectLimit(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -1515,9 +1508,18 @@ func TestFDB_SelectLimitRejected(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id) VALUES (1), (2), (3), (4), (5)")).Error().NotTo(gomega.HaveOccurred())
 
-	_, err = db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC LIMIT 3")
-	g.Expect(err).To(gomega.HaveOccurred(), "LIMIT must be rejected")
-	expectRejectionOrCascadesError(t, err, "LIMIT clause is not supported.")
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC LIMIT 3")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 2, 3}))
 }
 
 func TestFDB_SelectWhereAnd(t *testing.T) {
@@ -2962,14 +2964,8 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
-// TestFDB_LimitOffsetRejected pins OFFSET-clause rejection. Java's
-// AstNormalizer.visitLimitClause checks offset first, so the
-// `LIMIT N OFFSET M` shape errors with `OFFSET clause is not
-// supported.` (UNSUPPORTED_QUERY / 0AF00) — even though both clauses
-// are unsupported. Mirror Java's order-of-checks so byte-equal
-// alignment holds for the combined shape. Per project conformance
-// principle: doesn't work in Java → doesn't work in Go.
-func TestFDB_LimitOffsetRejected(t *testing.T) {
+// TestFDB_LimitOffset verifies LIMIT + OFFSET (Go extension).
+func TestFDB_LimitOffset(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -2992,9 +2988,18 @@ func TestFDB_LimitOffsetRejected(t *testing.T) {
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 	}
 
-	_, err = db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
-	g.Expect(err).To(gomega.HaveOccurred(), "OFFSET must be rejected")
-	expectRejectionOrCascadesError(t, err, "OFFSET clause is not supported.")
+	rows, err := db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }
 
 func TestFDB_CaseWhen(t *testing.T) {

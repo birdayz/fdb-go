@@ -28,6 +28,7 @@ package embedded
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -1144,13 +1145,40 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 // clause is never present when this method runs — it was already
 // rejected before the visitor pipeline starts.
 func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
-	// classifySelectElements rejects LIMIT/OFFSET before we get here,
-	// so simpleTable.LimitClause() is always nil in practice. This
-	// guard is purely defensive future-proofing.
-	if simpleTable.LimitClause() != nil {
-		// When LIMIT support is added, parse the clause here and build
-		// logical.NewLimit(op, limit, offset).
+	limitClauseCtx := simpleTable.LimitClause()
+	if limitClauseCtx == nil {
 		return op
+	}
+
+	var limit int64 = -1
+	var offset int64
+
+	if offsetCtx := limitClauseCtx.GetOffset(); offsetCtx != nil {
+		if val, err := strconv.ParseInt(offsetCtx.GetText(), 10, 64); err == nil {
+			offset = val
+		}
+	}
+	if limitCtx := limitClauseCtx.GetLimit(); limitCtx != nil {
+		if val, err := strconv.ParseInt(limitCtx.GetText(), 10, 64); err == nil {
+			limit = val
+		}
+	}
+	atoms := limitClauseCtx.AllLimitClauseAtom()
+	if limit < 0 && offset == 0 && len(atoms) == 2 {
+		if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
+			offset = val
+		}
+		if val, err := strconv.ParseInt(atoms[1].GetText(), 10, 64); err == nil {
+			limit = val
+		}
+	} else if limit < 0 && offset == 0 && len(atoms) == 1 {
+		if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
+			limit = val
+		}
+	}
+
+	if limit >= 0 || offset > 0 {
+		return logical.NewLimit(op, limit, offset)
 	}
 	return op
 }

@@ -832,35 +832,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		}
 	}
 
-	// Reject LIMIT / OFFSET at parse time — fdb-relational 4.11.1.0's
-	// AstNormalizer.visitLimitClause throws UNSUPPORTED_QUERY for
-	// either, with a fixed message per branch ("OFFSET clause is not
-	// supported." / "LIMIT clause is not supported."). Pagination is
-	// a JDBC-only knob exposed via Statement.setMaxRows; SQL-level
-	// LIMIT N is not in the planner's repertoire. Java checks offset
-	// first, so `LIMIT N OFFSET M` errors on OFFSET; mirror that
-	// order so byte-equal alignment holds for the combined shape.
-	if limitClauseCtx := simpleTable.LimitClause(); limitClauseCtx != nil {
-		hasOffset := limitClauseCtx.GetOffset() != nil
-		hasLimit := limitClauseCtx.GetLimit() != nil
-		// MySQL "LIMIT offset, count" form: AllLimitClauseAtom() returns
-		// two atoms, neither set as the named GetLimit/GetOffset. Java's
-		// AstNormalizer doesn't special-case this — both atoms hit the
-		// `ctx.limit != null` branch via the grammar's labeling. Treat
-		// both atoms as a LIMIT presence for rejection.
-		atoms := limitClauseCtx.AllLimitClauseAtom()
-		if !hasLimit && !hasOffset && len(atoms) > 0 {
-			hasLimit = true
-		}
-		if hasOffset {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"OFFSET clause is not supported.")
-		}
-		if hasLimit {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"LIMIT clause is not supported.")
-		}
-	}
+	// Go extension: LIMIT / OFFSET accepted (most-requested feature).
+	// Java's fdb-relational 4.11.1.0 rejects them. Go applies them
+	// post-execution via paginatingRows.sqlLimit/sqlOffset.
 
 	// Parse GROUP BY clause. Bare column references go through the
 	// columnNameFromExpr fast path (used by the proto-scan field-descriptor
