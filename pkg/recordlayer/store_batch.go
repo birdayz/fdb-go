@@ -40,7 +40,8 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		recordType *RecordType
 		primaryKey tuple.Tuple
 		unsplitKey fdb.Key // pre-computed, reused for save
-		future     fdb.FutureByteSlice
+		unsplitFut fdb.FutureByteSlice
+		splitFut   fdb.FutureByteSlice // nil if !splitEnabled
 	}
 
 	pending := make([]pendingRecord, len(records))
@@ -69,18 +70,26 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			primaryKey[j] = v
 		}
 
-		// Issue the Get future — this is the key optimization.
-		// tx.Get returns immediately; the read is async over the wire.
+		// Issue Get futures for both unsplit and first-split keys.
+		// All futures are pipelined: N×2 frames queued, one TCP flush.
 		unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 		unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
-		future := tx.Get(unsplitKey)
+		unsplitFut := tx.Get(unsplitKey)
+
+		var splitFut fdb.FutureByteSlice
+		if splitEnabled {
+			firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
+			firstSplitKey := fdb.Key(recordsSubspace.Pack(firstSplitKeyTuple))
+			splitFut = tx.Get(firstSplitKey)
+		}
 
 		pending[i] = pendingRecord{
 			record:     record,
 			recordType: recordType,
 			primaryKey: primaryKey,
 			unsplitKey: unsplitKey,
-			future:     future,
+			unsplitFut: unsplitFut,
+			splitFut:   splitFut,
 		}
 	}
 
@@ -118,28 +127,34 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	for i := range pending {
 		p := &pending[i]
 
-		// Collect the existence check
-		oldValue, err := p.future.Get()
+		// Resolve pipelined existence checks (both unsplit + split).
+		unsplitVal, err := p.unsplitFut.Get()
 		if err != nil {
-			return nil, fmt.Errorf("record %d: existence check: %w", i, err)
+			return nil, fmt.Errorf("record %d: unsplit check: %w", i, err)
 		}
-		oldRecordExists := oldValue != nil
 
-		// Handle split records (rare for batch inserts, but correct)
+		var oldValue []byte
 		var oldsizeInfo sizeInfo
-		if !oldRecordExists && splitEnabled {
-			var err error
-			oldValue, err = loadSplitOnly(tx, recordsSubspace, p.primaryKey, &oldsizeInfo)
-			if err != nil {
-				return nil, fmt.Errorf("record %d: split check: %w", i, err)
-			}
-			oldRecordExists = oldValue != nil
-		} else if oldRecordExists {
+		if unsplitVal != nil {
+			oldValue = unsplitVal
 			oldsizeInfo.KeyCount = 1
 			oldsizeInfo.KeySize = len(p.unsplitKey)
-			oldsizeInfo.ValueSize = len(oldValue)
+			oldsizeInfo.ValueSize = len(unsplitVal)
 			oldsizeInfo.IsSplit = false
+		} else if splitEnabled {
+			splitVal, splitErr := p.splitFut.Get()
+			if splitErr != nil {
+				return nil, fmt.Errorf("record %d: split check: %w", i, splitErr)
+			}
+			if splitVal != nil {
+				// Record exists as split — full load needed for index maintenance.
+				oldValue, err = loadWithSplit(tx, recordsSubspace, p.primaryKey, splitEnabled, &oldsizeInfo)
+				if err != nil {
+					return nil, fmt.Errorf("record %d: split load: %w", i, err)
+				}
+			}
 		}
+		oldRecordExists := oldValue != nil
 
 		// Serialize
 		data, err := serializeUnion(p.record, p.recordType)
@@ -207,7 +222,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 
 		// Secondary indexes
 		var oldRecord *FDBStoredRecord[proto.Message]
-		if oldRecordExists && oldValue != nil {
+		if oldRecordExists {
 			oldMsg, err := store.deserializeRecord(oldValue, p.recordType)
 			if err == nil {
 				oldRecord = &FDBStoredRecord[proto.Message]{

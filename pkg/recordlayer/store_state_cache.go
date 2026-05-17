@@ -127,8 +127,6 @@ func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (
 // storeSubspaceKeys caches derived subspace keys for a store's subspace.
 // Avoids recomputing the same subspace operations on every Open().
 type storeSubspaceKeys struct {
-	storeBegin          fdb.Key
-	storeEnd            fdb.Key
 	indexStateBegin     fdb.Key
 	indexStateEnd       fdb.Key
 	indexStatePrefixLen int
@@ -169,12 +167,9 @@ func getCachedSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 }
 
 func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
-	storeBegin, storeEnd := ss.FDBRangeKeys()
 	isSubspace := ss.Sub(IndexStateSpaceKey)
 	isBegin, isEnd := isSubspace.FDBRangeKeys()
 	return &storeSubspaceKeys{
-		storeBegin:          storeBegin.FDBKey(),
-		storeEnd:            storeEnd.FDBKey(),
 		indexStateBegin:     isBegin.FDBKey(),
 		indexStateEnd:       isEnd.FDBKey(),
 		indexStatePrefixLen: len(isSubspace.Bytes()),
@@ -189,30 +184,38 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	// Cache derived subspace keys globally — same for every Open() on the same subspace.
 	ks := getCachedSubspaceKeys(store.subspace)
 
-	// Fire both range reads in parallel. Index states use snapshot isolation
-	// (matching Java's loadIndexStatesAsync which reads at SNAPSHOT).
-	// By issuing both before resolving either, the FDB client can pipeline them.
-	storeInfoFuture := tx.GetRange(fdb.KeyRange{Begin: ks.storeBegin, End: ks.storeEnd}, fdb.RangeOptions{Limit: 1})
+	// Point-read the store info key (matches Java's loadRecordStoreInfoAsync which
+	// uses txn.get(subspace.pack(STORE_INFO_KEY_TUPLE))). A point Get generates a
+	// minimal read conflict range [key, key\x00) — unlike GetRange over the full
+	// subspace which conflicts with ALL record writes.
+	storeInfoFuture := tx.Get(ks.expectedInfoKey)
+	// Index states use snapshot isolation (no conflict).
 	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{})
 
 	// Resolve store info.
-	storeKVs, err := storeInfoFuture.GetSliceWithError()
+	storeInfoValue, err := storeInfoFuture.Get()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read store range: %v", err)
+		return nil, fmt.Errorf("failed to read store info: %v", err)
 	}
 
 	var exists bool
 	var header *gen.DataStoreInfo
-	if len(storeKVs) > 0 {
-		firstKV := storeKVs[0]
-		if !bytes.Equal(firstKV.Key, ks.expectedInfoKey) {
-			return nil, &RecordStoreNoInfoButNotEmptyError{FirstKey: firstKV.Key}
-		}
+	if storeInfoValue != nil {
 		header = &gen.DataStoreInfo{}
-		if err := header.UnmarshalVT(firstKV.Value); err != nil {
+		if err := header.UnmarshalVT(storeInfoValue); err != nil {
 			return nil, fmt.Errorf("failed to parse store header: %v", err)
 		}
 		exists = true
+	} else if existenceCheck == ExistenceCheckErrorIfNotExists {
+		// Header missing — probe whether any key exists under the subspace.
+		// Detects corruption: data present but header deleted.
+		ssBegin, ssEnd := store.subspace.FDBRangeKeys()
+		probeKVs, probeErr := tx.Snapshot().GetRange(
+			fdb.KeyRange{Begin: ssBegin, End: ssEnd}, fdb.RangeOptions{Limit: 1},
+		).GetSliceWithError()
+		if probeErr == nil && len(probeKVs) > 0 {
+			return nil, &RecordStoreNoInfoButNotEmptyError{FirstKey: probeKVs[0].Key}
+		}
 	}
 
 	if err := checkStoreHeaderExistence(header, existenceCheck); err != nil {
