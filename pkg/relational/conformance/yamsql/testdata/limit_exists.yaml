@@ -1,0 +1,26 @@
+# limit_exists.yaml — LIMIT with EXISTS subquery
+#
+# Exercises LIMIT applied to correlated EXISTS results.
+name: limit_exists
+schema_template: |
+  CREATE TABLE managers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE reports (id BIGINT NOT NULL, mgr_id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO managers VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie'), (4, 'Diana')
+  - INSERT INTO reports VALUES (10, 1, 'R1'), (20, 1, 'R2'), (30, 2, 'R3'), (40, 3, 'R4')
+tests:
+  # EXISTS + LIMIT: only first 2 managers with reports
+  - query: >
+      SELECT m.name FROM managers m
+      WHERE EXISTS (SELECT 1 FROM reports r WHERE r.mgr_id = m.id)
+      ORDER BY m.name LIMIT 2
+    result:
+      - ["Alice"]
+      - ["Bob"]
+  # NOT EXISTS + LIMIT: managers without reports
+  - query: >
+      SELECT m.name FROM managers m
+      WHERE NOT EXISTS (SELECT 1 FROM reports r WHERE r.mgr_id = m.id)
+      ORDER BY m.name LIMIT 1
+    result:
+      - ["Diana"]
