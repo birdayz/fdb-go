@@ -11,6 +11,99 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// fakeOutOfBandCursor wraps a cursor and returns TimeLimitReached after limit
+// items. Matches Java's FakeOutOfBandCursor used in RecordCursorTest.
+func fakeOutOfBandCursor[T any](inner RecordCursor[T], limit int) RecordCursor[T] {
+	return &outOfBandCursor[T]{inner: inner, limit: limit}
+}
+
+type outOfBandCursor[T any] struct {
+	inner   RecordCursor[T]
+	limit   int
+	count   int
+	lastCon RecordCursorContinuation
+}
+
+func (c *outOfBandCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.count >= c.limit {
+		cont := c.lastCon
+		if cont == nil {
+			cont = &BytesContinuation{}
+		}
+		return NewResultNoNext[T](TimeLimitReached, cont), nil
+	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return result, err
+	}
+	if result.HasNext() {
+		c.count++
+		c.lastCon = result.GetContinuation()
+	}
+	return result, nil
+}
+
+func (c *outOfBandCursor[T]) Close() error   { return c.inner.Close() }
+func (c *outOfBandCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
+
+// collectUntilStop drains a cursor until it stops (exhaustion or limit),
+// returning items collected and the final continuation.
+func collectUntilStop(ctx context.Context, cursor RecordCursor[int]) ([]int, RecordCursorContinuation) {
+	var items []int
+	var lastCont RecordCursorContinuation
+	for {
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		if !r.HasNext() {
+			lastCont = r.GetContinuation()
+			break
+		}
+		items = append(items, r.GetValue())
+	}
+	cursor.Close()
+	return items, lastCont
+}
+
+// iterateGrid drives a FlatMap cursor through multiple continuation cycles
+// until SOURCE_EXHAUSTED, counting results and verifying monotonic ordering.
+// Port of Java's iterateGrid helper from RecordCursorTest.
+func iterateGrid(cursorFunc func(cont []byte) RecordCursor[[2]int]) int {
+	results := 0
+	leftSoFar := -1
+	rightSoFar := -1
+	var continuation []byte
+	for {
+		cursor := cursorFunc(continuation)
+		for {
+			r, err := cursor.OnNext(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				reason := r.GetNoNextReason()
+				if reason.IsSourceExhausted() {
+					cursor.Close()
+					return results
+				}
+				contBytes, contErr := r.GetContinuation().ToBytes()
+				Expect(contErr).NotTo(HaveOccurred())
+				Expect(contBytes).NotTo(BeEmpty())
+				continuation = contBytes
+				break
+			}
+			val := r.GetValue()
+			Expect(val[0]).To(BeNumerically(">", val[1]))
+			Expect(val[0]).To(BeNumerically(">=", leftSoFar))
+			if val[0] == leftSoFar {
+				Expect(val[1]).To(BeNumerically(">", rightSoFar))
+			} else {
+				leftSoFar = val[0]
+			}
+			rightSoFar = val[1]
+			results++
+		}
+		cursor.Close()
+	}
+}
+
 // populate10Orders saves 10 orders (IDs 1-10, prices 10-100) into the given subspace.
 func populate10Orders(ctx context.Context, metaData *RecordMetaData) {
 	ks := specSubspace()
@@ -666,6 +759,166 @@ var _ = Describe("CursorCombinators", func() {
 		result, err := AsList(ctx, cursor)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal([]int{1, 2, 3}))
+	})
+
+	// --- FlatMapPipelined TIME_LIMIT tests (Java RecordCursorTest alignment) ---
+
+	It("FlatMapPipelined testFlatMapReasons (5x5 grid, TIME_LIMIT every 3)", func() {
+		// Port of Java's testFlatMapReasons: 5×5 grid where the inner
+		// cursor fires TIME_LIMIT_REACHED every 3 items. Verifies 6
+		// continuation cycles produce the exact same item sequence.
+		list := []int{1, 2, 3, 4, 5}
+		outer := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(list, cont)
+		}
+		timedInner := func(outerVal int, cont []byte) RecordCursor[int] {
+			inner := make([]int, len(list))
+			for j, v := range list {
+				inner[j] = outerVal*10 + v
+			}
+			return fakeOutOfBandCursor(FromListWithContinuation(inner, cont), 3)
+		}
+
+		// Cycle 1: 11, 12, 13 → TIME_LIMIT
+		cursor := FlatMapPipelined(outer, timedInner, nil, 10)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{11, 12, 13}))
+		Expect(cont).NotTo(BeNil())
+
+		// Cycle 2: 14, 15, 21, 22, 23 → TIME_LIMIT
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{14, 15, 21, 22, 23}))
+
+		// Cycle 3: 24, 25, 31, 32, 33 → TIME_LIMIT
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{24, 25, 31, 32, 33}))
+
+		// Cycle 4: 34, 35, 41, 42, 43 → TIME_LIMIT
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{34, 35, 41, 42, 43}))
+
+		// Cycle 5: 44, 45, 51, 52, 53 → TIME_LIMIT
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{44, 45, 51, 52, 53}))
+
+		// Cycle 6: 54, 55 → SOURCE_EXHAUSTED
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{54, 55}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("FlatMapPipelined pipelineWithInnerLimits (out-of-band)", func() {
+		// Port of Java's pipelineWithInnerLimits: inner cursor hits
+		// TIME_LIMIT every 3 items, filter y < x. Verifies full N*(N-1)/2
+		// product across continuation cycles.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(ints, cont)
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := fakeOutOfBandCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		expectedResults := len(ints) * (len(ints) - 1) / 2
+		Expect(results).To(Equal(expectedResults))
+	})
+
+	It("FlatMapPipelined pipelineWithOuterLimits (out-of-band)", func() {
+		// Port of Java's pipelineWithOuterLimits: outer cursor hits
+		// TIME_LIMIT every 3 items, filtered to x in [7,9). Inner also
+		// limited to 3 items, filtered y < x.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			limited := fakeOutOfBandCursor(FromListWithContinuation(ints, cont), 3)
+			return &filterCursor[int]{inner: limited, predicate: func(x int) bool { return x >= 7 && x < 9 }}
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := fakeOutOfBandCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		// outer = {7, 8}, inner y < x: 7→{0..6}=7, 8→{0..7}=8 → total 15
+		Expect(results).To(Equal(15))
+	})
+
+	It("FlatMapPipelined pipelineWithInnerLimits (row-limit)", func() {
+		// Port of Java's pipelineWithInnerLimits with outOfBand=false:
+		// inner cursor uses LimitRowsCursor (RETURN_LIMIT) every 3 items,
+		// filter y < x. Verifies full N*(N-1)/2 product across continuation cycles.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(ints, cont)
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := LimitRowsCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		expectedResults := len(ints) * (len(ints) - 1) / 2
+		Expect(results).To(Equal(expectedResults))
+	})
+
+	It("FlatMapPipelined pipelineWithOuterLimits (row-limit)", func() {
+		// Port of Java's pipelineWithOuterLimits with outOfBand=false:
+		// outer cursor uses LimitRowsCursor (RETURN_LIMIT) every 3 items,
+		// filtered to x in [7,9). Inner also limited to 3 items via
+		// LimitRowsCursor, filtered y < x.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			limited := LimitRowsCursor(FromListWithContinuation(ints, cont), 3)
+			return &filterCursor[int]{inner: limited, predicate: func(x int) bool { return x >= 7 && x < 9 }}
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := LimitRowsCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		// outer = {7, 8}, inner y < x: 7→{0..6}=7, 8→{0..7}=8 → total 15
+		Expect(results).To(Equal(15))
 	})
 
 	It("AutoContinuingCursor scans across transaction boundaries", func() {

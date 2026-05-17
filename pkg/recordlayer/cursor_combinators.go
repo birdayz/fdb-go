@@ -441,10 +441,16 @@ func FlatMapPipelinedWithCheck[T, V any](
 		if err := cont.UnmarshalVT(continuation); err == nil {
 			c.outer = outerFactory(cont.GetOuterContinuation())
 			if cont.InnerContinuation != nil {
-				// Resuming mid-inner — need to advance outer once, then create inner with continuation
 				c.hasPending = true
 				c.pendingInner = cont.InnerContinuation
 				c.pendingCheck = cont.CheckValue
+				// Initialize outerCont so that priorOuterCont is set correctly
+				// when the first outer value is read. Without this, priorOuterCont
+				// would be nil and the next continuation would restart outer from
+				// the beginning instead of from the saved position.
+				if cont.OuterContinuation != nil {
+					c.outerCont = &BytesContinuation{bytes: cont.OuterContinuation}
+				}
 			}
 		} else {
 			c.outer = outerFactory(nil)
@@ -568,6 +574,14 @@ func (c *flatMapCursor[T, V]) wrapOuterStopContinuation(outerCont RecordCursorCo
 	}
 	fm := &gen.FlatMapContinuation{
 		OuterContinuation: outerBytes,
+	}
+	// Preserve pending inner continuation across outer-only resumes.
+	// When outer stops before producing a value (e.g., outer limit hit
+	// while filter rejects all items), the inner continuation from the
+	// original resume must be carried forward.
+	if c.hasPending {
+		fm.InnerContinuation = c.pendingInner
+		fm.CheckValue = c.pendingCheck
 	}
 	data, err := fm.MarshalVT()
 	if err != nil {
