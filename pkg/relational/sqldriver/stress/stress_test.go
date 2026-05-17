@@ -121,7 +121,7 @@ func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) strin
 		workers = 1
 	}
 	if n >= 10_000_000 {
-		workers = 2
+		workers = 1
 	}
 	chunkSize := (n + workers - 1) / workers
 
@@ -151,11 +151,11 @@ func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) strin
 				}
 				stmt := fmt.Sprintf("INSERT INTO %s VALUES %s", table, strings.Join(rows, ", "))
 				var lastErr error
-				for attempt := range 3 {
+				for attempt := range 5 {
 					if _, lastErr = h.db.ExecContext(context.Background(), stmt); lastErr == nil {
 						break
 					}
-					time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+					time.Sleep(time.Duration(attempt+1) * time.Second)
 				}
 				if lastErr != nil {
 					errCh <- fmt.Errorf("INSERT batch [%d..%d): %w", offset, end, lastErr)
