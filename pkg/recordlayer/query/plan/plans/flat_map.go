@@ -23,6 +23,8 @@ type RecordQueryFlatMapPlan struct {
 	resultValue                  values.Value
 	inheritOuterRecordProperties bool
 	leftOuter                    bool
+	existsMode                   bool
+	notExistsMode                bool
 }
 
 func NewRecordQueryFlatMapPlan(
@@ -57,6 +59,10 @@ func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 }
 func (p *RecordQueryFlatMapPlan) IsLeftOuter() bool   { return p.leftOuter }
 func (p *RecordQueryFlatMapPlan) SetLeftOuter(v bool) { p.leftOuter = v }
+func (p *RecordQueryFlatMapPlan) IsExists() bool      { return p.existsMode }
+func (p *RecordQueryFlatMapPlan) SetExists(v bool)    { p.existsMode = v }
+func (p *RecordQueryFlatMapPlan) IsNotExists() bool   { return p.notExistsMode }
+func (p *RecordQueryFlatMapPlan) SetNotExists(v bool) { p.notExistsMode = v }
 
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)

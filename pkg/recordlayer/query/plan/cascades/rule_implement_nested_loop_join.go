@@ -107,7 +107,7 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// into O(N×logM) via correlated index probes.
 	// Skip when quantifiers are swapped — alias/plan mapping would be
 	// inconsistent. The non-swapped version will also be explored.
-	if !sel.IsQuantifiersSwapped() && (joinType == plans.JoinInner || joinType == plans.JoinCross || joinType == plans.JoinLeftOuter) {
+	if !sel.IsQuantifiersSwapped() {
 		if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType) {
 			return
 		}
@@ -496,8 +496,13 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			outerCorrelation, innerCorrelation,
 			resultVal, false,
 		)
-		if joinType == plans.JoinLeftOuter {
+		switch joinType {
+		case plans.JoinLeftOuter:
 			flatMapPlan.SetLeftOuter(true)
+		case plans.JoinExists:
+			flatMapPlan.SetExists(true)
+		case plans.JoinNotExists:
+			flatMapPlan.SetNotExists(true)
 		}
 
 		// Collect residual predicates (all except the matched equi-join).
@@ -580,8 +585,13 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 				outerCorrelation, innerCorrelation,
 				resultVal, false,
 			)
-			if joinType == plans.JoinLeftOuter {
+			switch joinType {
+			case plans.JoinLeftOuter:
 				flatMapPlan.SetLeftOuter(true)
+			case plans.JoinExists:
+				flatMapPlan.SetExists(true)
+			case plans.JoinNotExists:
+				flatMapPlan.SetNotExists(true)
 			}
 
 			var residualPreds []predicates.QueryPredicate

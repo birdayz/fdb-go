@@ -17,16 +17,18 @@ import (
 // for overlapping FDB I/O). The semantics and continuation format are
 // identical.
 type flatMapCursor struct {
-	outerCursor  recordlayer.RecordCursor[QueryResult]
-	innerPlan    plans.RecordQueryPlan
-	store        *recordlayer.FDBRecordStore
-	evalCtx      *EvaluationContext
-	outerAlias   values.CorrelationIdentifier
-	innerAlias   values.CorrelationIdentifier
-	resultValue  values.Value
-	inheritOuter bool
-	leftOuter    bool
-	props        recordlayer.ExecuteProperties
+	outerCursor   recordlayer.RecordCursor[QueryResult]
+	innerPlan     plans.RecordQueryPlan
+	store         *recordlayer.FDBRecordStore
+	evalCtx       *EvaluationContext
+	outerAlias    values.CorrelationIdentifier
+	innerAlias    values.CorrelationIdentifier
+	resultValue   values.Value
+	inheritOuter  bool
+	leftOuter     bool
+	existsMode    bool
+	notExistsMode bool
+	props         recordlayer.ExecuteProperties
 
 	innerCursor    recordlayer.RecordCursor[QueryResult]
 	currentOuter   *QueryResult
@@ -44,19 +46,23 @@ func newFlatMapCursor(
 	resultValue values.Value,
 	inheritOuter bool,
 	leftOuter bool,
+	existsMode bool,
+	notExistsMode bool,
 	props recordlayer.ExecuteProperties,
 ) *flatMapCursor {
 	return &flatMapCursor{
-		outerCursor:  outerCursor,
-		innerPlan:    innerPlan,
-		store:        store,
-		evalCtx:      evalCtx,
-		outerAlias:   outerAlias,
-		innerAlias:   innerAlias,
-		resultValue:  resultValue,
-		inheritOuter: inheritOuter,
-		leftOuter:    leftOuter,
-		props:        props,
+		outerCursor:   outerCursor,
+		innerPlan:     innerPlan,
+		store:         store,
+		evalCtx:       evalCtx,
+		outerAlias:    outerAlias,
+		innerAlias:    innerAlias,
+		resultValue:   resultValue,
+		inheritOuter:  inheritOuter,
+		leftOuter:     leftOuter,
+		existsMode:    existsMode,
+		notExistsMode: notExistsMode,
+		props:         props,
 	}
 }
 
@@ -75,6 +81,14 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			if result.HasNext() {
 				c.innerHadMatch = true
 				innerRow := result.GetValue()
+
+				// EXISTS: inner has a match → emit outer row, skip rest.
+				if c.existsMode {
+					c.innerCursor.Close()
+					c.innerCursor = nil
+					return recordlayer.NewResultWithValue(*c.currentOuter, nonEndContinuation), nil
+				}
+
 				outputRow := c.computeResult(*c.currentOuter, innerRow)
 				return recordlayer.NewResultWithValue(outputRow, nonEndContinuation), nil
 			}
@@ -88,6 +102,11 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				return recordlayer.NewResultNoNext[QueryResult](
 					reason, result.GetContinuation(),
 				), nil
+			}
+
+			// NOT EXISTS: inner exhausted with no match → emit outer row.
+			if c.notExistsMode && !c.innerHadMatch {
+				return recordlayer.NewResultWithValue(*c.currentOuter, nonEndContinuation), nil
 			}
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
