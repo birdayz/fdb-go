@@ -251,6 +251,8 @@ func pushValuesIntoExpression(
 			e.GetResultValue(),
 			e.GetQuantifiers(),
 			e.GetPredicates(),
+			e.GetSourceAliases(),
+			e.GetJoinType(),
 		)
 	case *expressions.LogicalFilterExpression:
 		return selectWithQuantifiersPushed(
@@ -259,6 +261,8 @@ func pushValuesIntoExpression(
 			e.GetResultValue(),
 			e.GetQuantifiers(),
 			e.GetPredicates(),
+			nil,
+			expressions.JoinInner,
 		)
 	default:
 		return pushValuesDefault(expr, qunsToPushDown, tm, call)
@@ -275,6 +279,8 @@ func selectWithQuantifiersPushed(
 	resultValue values.Value,
 	quantifierBase []expressions.Quantifier,
 	preds []predicates.QueryPredicate,
+	sourceAliases []string,
+	joinType expressions.JoinType,
 ) *expressions.SelectExpression {
 	exprCorr := make(map[values.CorrelationIdentifier]struct{})
 	expressionCorrelationSet(expr, exprCorr)
@@ -286,7 +292,7 @@ func selectWithQuantifiersPushed(
 		}
 	}
 	newQs = append(newQs, quantifierBase...)
-	return expressions.NewSelectExpression(resultValue, newQs, preds)
+	return expressions.NewSelectExpressionWithJoinType(resultValue, newQs, preds, sourceAliases, joinType)
 }
 
 // pushValuesDefault handles the visitDefault case: for each child
