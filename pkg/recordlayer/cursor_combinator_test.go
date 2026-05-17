@@ -764,6 +764,48 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(results).To(Equal([]int{11, 20, 21}))
 	})
 
+	It("FlatMapPipelined check value mismatch restarts inner", func() {
+		// When check value doesn't match on resume (simulating concurrent
+		// modification of the outer record), the inner cursor restarts
+		// from the beginning instead of using the saved inner continuation.
+		callCount := 0
+		makeOuter := func(cont []byte) RecordCursor[int] {
+			callCount++
+			if callCount == 1 {
+				return FromListWithContinuation([]int{1, 2}, cont)
+			}
+			// Second creation: outer list has changed (simulating concurrent mod)
+			return FromListWithContinuation([]int{99, 2}, cont)
+		}
+		makeInner := func(outer int, cont []byte) RecordCursor[int] {
+			return FromListWithContinuation([]int{outer * 10, outer*10 + 1}, cont)
+		}
+		checkFunc := func(outer int) []byte {
+			return []byte(fmt.Sprintf("id:%d", outer))
+		}
+
+		cursor := LimitRowsCursor(
+			FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, nil, 1),
+			1,
+		)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.GetValue()).To(Equal(10))
+
+		contBytes, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cursor.Close()).To(Succeed())
+
+		// Resume: outer now returns 99 instead of 1. Check value "id:99"
+		// doesn't match saved "id:1". Inner should restart from nil, not
+		// from the saved inner continuation.
+		cursor2 := FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, contBytes, 1)
+		results, err := AsList(ctx, cursor2)
+		Expect(err).NotTo(HaveOccurred())
+		// Inner for outer=99 starts fresh: [990, 991], then outer=2: [20, 21]
+		Expect(results).To(Equal([]int{990, 991, 20, 21}))
+	})
+
 	It("FlatMapPipelined with type transformation", func() {
 		// Outer: strings, Inner: ints (different types)
 		cursor := FlatMapPipelined(
