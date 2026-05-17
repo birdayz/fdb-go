@@ -105,13 +105,13 @@ Shipped. Parse in PlanVisitor.visitLimit → LogicalLimit in logical tree → Ca
 
 1 remaining cross-engine conformance failure. `bytesAdvancedScenario` query #2: `SELECT id FROM t WHERE payload IN (X'DEADBEEF', X'CAFEBABE') ORDER BY id` returns 0 rows in the Ginkgo shared-container context. Same code passes in 4 independent test contexts. Needs Java conformance server to diagnose.
 
-### NormalizePredicatesRule existential guard
+### NormalizePredicatesRule existential guard — RESOLVED (swingshift-96)
 
-Go skips NormalizePredicatesRule for SelectExpressions with Existential quantifiers. Java fires on all. Root cause (dayshift-93): removing the guard causes planner non-convergence (MaxTasks cap hit) due to cascading rule interactions creating an infinite exploration loop. Fix requires rule deduplication infrastructure. Documented in DIVERGENCES.md.
+Fixed. Removed the existential quantifier guard and replaced with hash-based dedup to prevent the infinite normalization loop. Now fires on all SelectExpressions matching Java.
 
-### DecorrelateValuesRule test gap (25/29 Java tests)
+### DecorrelateValuesRule — RESOLVED (swingshift-96)
 
-4 remaining Java tests need push-down-into-child infrastructure (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations). Push-down infrastructure added in swingshift-96.
+Push-down-into-child infrastructure added. All 29/29 Java tests ported (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations).
 
 ### Covering index for SQL (multi-shift)
 

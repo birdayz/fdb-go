@@ -15,14 +15,10 @@ are execution-layer, wire-format, or intentional architectural choices.
 
 Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional behavior. Go's decomposition makes each operator's semantics explicit and simplifies rule correctness verification.
 
-### NormalizePredicatesRule skips Existential quantifiers
+### NormalizePredicatesRule — RESOLVED (swingshift-96)
 
 **Java:** Fires on all SelectExpressions including those with Existential quantifiers.
-**Go:** Skips SelectExpressions with Existential quantifiers.
-
-**Root cause (verified empirically, dayshift-93):** Removing the guard causes planner non-convergence (MaxTasks cap hit at 10k). The NLJ rule (ExpressionRule) successfully fires on the normalized SelectExpression and yields physical plans. However, the normalized predicates trigger cascading rule interactions (PredicatePushDownRule, SelectMergeRule) that produce new SelectExpression alternatives, which get normalized again, creating an infinite exploration loop. The NLJ plans ARE yielded correctly but the planner never converges to extract them.
-
-**To fix:** Requires proper rule deduplication infrastructure (tracking which expression-level normalizations have already been applied) to prevent the infinite re-normalization loop. Not a simple ImplementSimpleSelectRule change — the issue is in Explore-phase convergence, not Planning-phase implementation.
+**Go:** Now fires on all SelectExpressions (matching Java). Hash-based dedup prevents the infinite normalization loop that previously required an existential guard.
 
 ### WithPrimaryKeyDataAccessRule is an explicit planner pass
 
