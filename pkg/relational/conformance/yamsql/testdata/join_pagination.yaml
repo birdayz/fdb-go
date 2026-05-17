@@ -1,0 +1,51 @@
+# join_pagination.yaml — JOIN with paginated results (LIMIT+OFFSET)
+#
+# Tests correctness when paginating through JOIN results.
+# Simulates Java's setMaxRows + EXECUTE CONTINUATION pattern.
+# Verifies no duplicates, no skips at page boundaries.
+name: join_pagination
+schema_template: |
+  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO departments VALUES (1, 'Eng'), (2, 'Sales'), (3, 'HR')
+  - INSERT INTO employees VALUES (1, 1, 'Alice'), (2, 1, 'Bob'), (3, 1, 'Carol'), (4, 2, 'Dave'), (5, 2, 'Eve'), (6, 3, 'Frank')
+tests:
+  # Full result (reference)
+  - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id
+    result:
+      - ["Alice", "Eng"]
+      - ["Bob", "Eng"]
+      - ["Carol", "Eng"]
+      - ["Dave", "Sales"]
+      - ["Eve", "Sales"]
+      - ["Frank", "HR"]
+  # Page 1: LIMIT 2 OFFSET 0
+  - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2
+    result:
+      - ["Alice", "Eng"]
+      - ["Bob", "Eng"]
+  # Page 2: LIMIT 2 OFFSET 2
+  - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 2
+    result:
+      - ["Carol", "Eng"]
+      - ["Dave", "Sales"]
+  # Page 3: LIMIT 2 OFFSET 4
+  - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 4
+    result:
+      - ["Eve", "Sales"]
+      - ["Frank", "HR"]
+  # Page 4: LIMIT 2 OFFSET 6 (past end)
+  - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 6
+    result: []
+  # LEFT JOIN pagination
+  - query: SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON e.dept_id = d.id ORDER BY d.name, e.name LIMIT 3
+    result:
+      - ["Eng", "Alice"]
+      - ["Eng", "Bob"]
+      - ["Eng", "Carol"]
+  - query: SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON e.dept_id = d.id ORDER BY d.name, e.name LIMIT 3 OFFSET 3
+    result:
+      - ["HR", "Frank"]
+      - ["Sales", "Dave"]
+      - ["Sales", "Eve"]
