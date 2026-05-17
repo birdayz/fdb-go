@@ -1047,7 +1047,7 @@ func executeFlatMap(
 	cursor := newFlatMapCursor(
 		outerCursor, p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
-		p.GetResultValue(), p.InheritOuterRecordProperties(),
+		p.GetResultValue(),
 		p.IsLeftOuter(), p.IsExists(), p.IsNotExists(),
 		nestedProps,
 	)

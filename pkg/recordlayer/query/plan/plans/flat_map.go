@@ -69,7 +69,8 @@ func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bo
 	if !ok {
 		return false
 	}
-	return p.outerAlias == o.outerAlias && p.innerAlias == o.innerAlias
+	return p.outerAlias == o.outerAlias && p.innerAlias == o.innerAlias &&
+		p.leftOuter == o.leftOuter && p.existsMode == o.existsMode && p.notExistsMode == o.notExistsMode
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
@@ -78,6 +79,17 @@ func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte(p.outerAlias.Name()))
 	h.Write([]byte{0})
 	h.Write([]byte(p.innerAlias.Name()))
+	var flags byte
+	if p.leftOuter {
+		flags |= 1
+	}
+	if p.existsMode {
+		flags |= 2
+	}
+	if p.notExistsMode {
+		flags |= 4
+	}
+	h.Write([]byte{0, flags})
 	return h.Sum64()
 }
 

@@ -28,7 +28,6 @@ type flatMapCursor struct {
 	outerAlias    values.CorrelationIdentifier
 	innerAlias    values.CorrelationIdentifier
 	resultValue   values.Value
-	inheritOuter  bool
 	leftOuter     bool
 	existsMode    bool
 	notExistsMode bool
@@ -53,7 +52,6 @@ func newFlatMapCursor(
 	evalCtx *EvaluationContext,
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
-	inheritOuter bool,
 	leftOuter bool,
 	existsMode bool,
 	notExistsMode bool,
@@ -67,7 +65,6 @@ func newFlatMapCursor(
 		outerAlias:    outerAlias,
 		innerAlias:    innerAlias,
 		resultValue:   resultValue,
-		inheritOuter:  inheritOuter,
 		leftOuter:     leftOuter,
 		existsMode:    existsMode,
 		notExistsMode: notExistsMode,
@@ -97,6 +94,14 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 					c.innerCursor = nil
 					cont := c.buildContinuation(result.GetContinuation(), false)
 					return recordlayer.NewResultWithValue(*c.currentOuter, cont), nil
+				}
+
+				// NOT EXISTS: inner has a match → outer row excluded.
+				// Close inner and move to next outer.
+				if c.notExistsMode {
+					c.innerCursor.Close()
+					c.innerCursor = nil
+					continue
 				}
 
 				outputRow := c.computeResult(*c.currentOuter, innerRow)
@@ -187,15 +192,6 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) QueryResul
 		WithBinding(c.innerAlias, innerDatum)
 
 	computed := c.resultValue.Evaluate(nestedCtx)
-
-	if c.inheritOuter {
-		// EXISTS case: outer row with computed attached.
-		result := outerRow
-		if computed != nil {
-			result.Datum = computed
-		}
-		return result
-	}
 	return QueryResult{Datum: computed}
 }
 

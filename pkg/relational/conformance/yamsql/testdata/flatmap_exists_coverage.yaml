@@ -1,0 +1,25 @@
+# flatmap_exists_coverage.yaml — EXISTS/NOT EXISTS via FlatMap
+#
+# Schema designed so tryExistsFlatMap fires: the inner table's PK
+# matches the correlated predicate (user_id IS the PK of sessions).
+name: flatmap_exists_coverage
+schema_template: |
+  CREATE TABLE users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE sessions (user_id BIGINT NOT NULL, token STRING, PRIMARY KEY (user_id))
+setup:
+  - INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO sessions VALUES (1, 'tok_a'), (3, 'tok_c')
+tests:
+  # EXISTS: users WITH sessions (Alice, Charlie)
+  - query: SELECT u.name FROM users u WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id) ORDER BY u.name
+    result:
+      - ["Alice"]
+      - ["Charlie"]
+  # NOT EXISTS: users WITHOUT sessions (Bob)
+  - query: SELECT u.name FROM users u WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id) ORDER BY u.name
+    result:
+      - ["Bob"]
+  # EXISTS + LIMIT
+  - query: SELECT u.name FROM users u WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id) ORDER BY u.name LIMIT 1
+    result:
+      - ["Alice"]
