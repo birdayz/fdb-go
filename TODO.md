@@ -54,7 +54,7 @@ See `RFC_TRANSACTION_PAGINATION.md` and `STRESS_RELATIONAL.md` for full analysis
 
 ---
 
-## CRITICAL — FlatMap Java alignment (IN PROGRESS)
+## CRITICAL — FlatMap Java alignment (MOSTLY DONE)
 
 Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT how Java does it. Java evaluates a `resultValue` expression with both outer and inner bound as correlations. The `mergeRows` hack breaks for same-column-name joins and doesn't match Java's data flow.
 
@@ -73,10 +73,15 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] `RecordQueryFlatMapPlan` carries `resultValue values.Value` + `inheritOuterRecordProperties`
 - [x] `flatMapCursor` binds BOTH outer and inner as correlations, evaluates `resultValue` — no `mergeRows`
 - [x] `JoinMergeResultValue` produces merged map with qualified keys from both correlation bindings
-- [x] Multi-predicate support: absorb equi-join into correlated scan, wrap FlatMap in PredicatesFilterPlan for residual predicates
-- [ ] Same-column-name joins (`a.id = b.id`) — column expansion layer needs to handle qualified keys from JoinMergeResultValue
-- [ ] `FlatMapContinuation` proto: serialize outer continuation + inner continuation + check value for cross-transaction pagination
+- [x] Multi-predicate support: absorb equi-join into correlated scan, residual predicates above or inside inner
+- [x] Same-column-name joins — `deriveColumnsFromFlatMap` handles qualified keys
+- [x] `FlatMapContinuation` proto: wired (outer + inner position serialized/deserialized)
+- [x] Secondary index FlatMap: correlated index scans via MatchCandidate
+- [x] EXISTS/NOT EXISTS FlatMap mode with multi-predicate support (alias-stripped inner filter)
+- [x] LEFT OUTER FlatMap with correct NULL row emission
+- [x] Outer-only predicate push-down below FlatMap (alias-stripped)
 - [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
+- [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions)
 
 ---
 
