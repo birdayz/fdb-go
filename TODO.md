@@ -81,7 +81,7 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] LEFT OUTER FlatMap with correct NULL row emission
 - [x] Outer-only predicate push-down below FlatMap (alias-stripped)
 - [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
-- [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions)
+- [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions) (implemented in generic FlatMapPipelinedWithCheck; executor-level cursor does not use it — documented)
 
 ### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
 
@@ -89,7 +89,7 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] **OrElse (NOT EXISTS) under TIME_LIMIT**: Ported all 4 Java tests. Added OrElseWithContinuation with OrElseContinuation proto serialization. (swingshift-96)
 - [x] **Inner/outer limit grid tests**: Both out-of-band (TimeLimitReached) and in-band (ReturnLimitReached) variants ported via iterateGrid helper. (swingshift-96)
 - [ ] **JOIN continuation resume at SQL level**: Requires EXECUTE CONTINUATION implementation (parsed but not wired). Multi-shift effort.
-- [ ] **EXISTS + 3-way join + ORDER BY plan shape**: Java tests EXISTS nested between two FlatMap joins with ORDER BY controlling scan direction.
+- [x] **EXISTS + 3-way join + ORDER BY plan shape**: (covered by join_exists_self.yaml, correlated_exists_advanced.yaml, flatmap_exists_coverage.yaml, exists.yaml, correlated_subquery_probes.yaml + TestFDB_CorrelatedExistsCrossJoin, TestFDB_NestedCorrelatedExists)
 
 ---
 
@@ -111,7 +111,7 @@ Go skips NormalizePredicatesRule for SelectExpressions with Existential quantifi
 
 ### DecorrelateValuesRule test gap (25/29 Java tests)
 
-4 remaining Java tests need push-down-into-child infrastructure (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations).
+4 remaining Java tests need push-down-into-child infrastructure (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations). Push-down infrastructure added in swingshift-96.
 
 ### Covering index for SQL (multi-shift)
 
@@ -139,4 +139,4 @@ Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord
 
 ## Completed (summary)
 
-All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,553+ tests, 105 fuzz targets, 491/492 cross-engine conformance specs, 1754 yamsql scenarios.
+All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,568+ tests, 106 fuzz targets, 491/492 cross-engine conformance specs, 1754 yamsql scenarios.

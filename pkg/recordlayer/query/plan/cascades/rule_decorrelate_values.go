@@ -49,11 +49,6 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	childAliases := make(map[values.CorrelationIdentifier]struct{}, len(quantifiers))
-	for _, q := range quantifiers {
-		childAliases[q.GetAlias()] = struct{}{}
-	}
-
 	// Identify values box quantifiers and build per-alias maps.
 	type valuesBoxInfo struct {
 		idx              int
