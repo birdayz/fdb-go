@@ -13,6 +13,7 @@ go_library(
         "eval_predicate.go",
         "eval_predicate_map.go",
         "eval_proto.go",
+        "fast_insert.go",
         "in_list_pushdown.go",
         "insert.go",
         "join.go",

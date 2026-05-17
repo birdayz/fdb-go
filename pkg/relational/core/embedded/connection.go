@@ -12,8 +12,8 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -119,36 +119,7 @@ type EmbeddedConnection struct {
 	// DDL. Lazily initialized on first query.
 	planCache *PlanCache
 
-	execTimingMu sync.Mutex
-	execTimings  []execTiming
-}
-
-type execTiming struct {
-	parse, plan, exec, total time.Duration
-	rows                     int64
-}
-
-func (c *EmbeddedConnection) DumpExecTimings() string {
-	c.execTimingMu.Lock()
-	timings := append([]execTiming{}, c.execTimings...)
-	c.execTimingMu.Unlock()
-	if len(timings) == 0 {
-		return "no timings"
-	}
-	var totalParse, totalPlan, totalExec time.Duration
-	for _, t := range timings {
-		totalParse += t.parse
-		totalPlan += t.plan
-		totalExec += t.exec
-	}
-	n := len(timings)
-	return fmt.Sprintf("n=%d avgParse=%v avgPlan=%v avgExec=%v (parse=%.0f%% plan=%.0f%% exec=%.0f%%)",
-		n,
-		totalParse/time.Duration(n), totalPlan/time.Duration(n), totalExec/time.Duration(n),
-		float64(totalParse)/float64(totalParse+totalPlan+totalExec)*100,
-		float64(totalPlan)/float64(totalParse+totalPlan+totalExec)*100,
-		float64(totalExec)/float64(totalParse+totalPlan+totalExec)*100,
-	)
+	fastInsertDebugOnce atomic.Bool
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
@@ -303,15 +274,21 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 	}
 	defer c.beginStatement()()
 
-	t0 := time.Now()
 	substituted, err := substituteParams(sql, args)
 	if err != nil {
 		return nil, err
 	}
-	t1 := time.Now()
+
+	if n, fastErr := c.tryFastInsert(ctx, substituted); fastErr == nil {
+		return driver.RowsAffected(n), nil
+	} else if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(substituted)), "INSERT") {
+		if c.fastInsertDebugOnce.CompareAndSwap(false, true) {
+			fmt.Fprintf(os.Stderr, "[FAST INSERT] miss: %v sql=%.80s\n", fastErr, substituted)
+		}
+	}
+
 	gen := &naiveGenerator{c: c}
 	plan, err := gen.Plan(ctx, substituted)
-	t2 := time.Now()
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
@@ -320,17 +297,9 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 			"unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
 	}
 	result, err := plan.Execute(ctx)
-	t3 := time.Now()
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
-	parseDur := t1.Sub(t0)
-	planDur := t2.Sub(t1)
-	execDur := t3.Sub(t2)
-	total := t3.Sub(t0)
-	c.execTimingMu.Lock()
-	c.execTimings = append(c.execTimings, execTiming{parseDur, planDur, execDur, total, result.RowsAffected})
-	c.execTimingMu.Unlock()
 	return driver.RowsAffected(result.RowsAffected), nil
 }
 

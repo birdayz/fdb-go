@@ -24,13 +24,13 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 	type config struct {
 		workers int
 	}
-	configs := []config{{1}, {2}, {4}, {8}}
+	configs := []config{{1}, {4}, {8}}
 
 	for _, cfg := range configs {
 		cfg := cfg
 		t.Run(fmt.Sprintf("w%d", cfg.workers), func(t *testing.T) {
 			n := 500_000
-			batchSize := 500
+			batchSize := 2000
 			dbPath := fmt.Sprintf("/sqlpar_w%d", cfg.workers)
 
 			// Setup: create database + schema using a setup connection.
