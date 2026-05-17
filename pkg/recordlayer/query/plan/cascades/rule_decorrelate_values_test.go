@@ -1381,3 +1381,516 @@ func TestDecorrelateValuesRule_DoNotTreatRangeWithConstantObjectValueAsValueBox(
 		t.Fatalf("expected 0 yields (values box over range with ConstantObjectValue), got %d", len(yielded))
 	}
 }
+
+// TestDecorrelateValuesRule_PushIntoChildSelect ports Java's pushIntoChildSelect.
+// A values box with fields {x="hello", y=@0} is joined with a child select
+// SELECT a,c,d FROM T WHERE b=v.x AND v.y >= c. The values box is correlated to
+// the child select's predicates. The rule pushes the values box INTO the child
+// select:
+//
+//	SELECT t.* FROM values(x='hello', y=@0) AS v, (SELECT a,c,d FROM T WHERE b=v.x AND v.y >= c) AS t
+//	→ SELECT t.* FROM (SELECT a,c,d FROM values(x='hello', y=@0) AS v, T WHERE b=v.x AND v.y >= c) AS t
+func TestDecorrelateValuesRule_PushIntoChildSelect(t *testing.T) {
+	t.Parallel()
+
+	cov := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"),
+		"0", values.NotNullBytes,
+	)
+
+	// Values box: SELECT {x="hello", y=@0} FROM range(1)
+	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
+		"x": &values.ConstantValue{Value: "hello"},
+		"y": cov,
+	})
+
+	// Child select: SELECT a,c,d FROM T WHERE b = v.x AND v.y >= c
+	baseQ, _ := makeBaseScan()
+	childSel := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+				},
+			},
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonGreaterThanEq,
+					Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "c", nil),
+				},
+			},
+		},
+	)
+	childSelRef := expressions.InitialOf(childSel)
+	childSelQ := expressions.ForEachQuantifier(childSelRef)
+
+	// Top select: SELECT t.* FROM values v, (child select) t
+	topSel := expressions.NewSelectExpression(
+		childSelQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{valuesBoxQ, childSelQ},
+		nil,
+	)
+	topRef := expressions.InitialOf(topSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+
+	// Values box removed from top: only the (rewritten) child select quantifier remains.
+	if len(decorrelated.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier (values box pushed into child), got %d", len(decorrelated.GetQuantifiers()))
+	}
+
+	// The child select should now have 2 quantifiers: values box + baseQ.
+	pushedRef := decorrelated.GetQuantifiers()[0].GetRangesOver()
+	if pushedRef == nil {
+		t.Fatal("pushed child quantifier has nil Reference")
+	}
+	pushedSel, ok := pushedRef.Get().(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression after push-down, got %T", pushedRef.Get())
+	}
+	if len(pushedSel.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers in pushed child (values box + base), got %d", len(pushedSel.GetQuantifiers()))
+	}
+
+	// The pushed child should preserve the original predicates.
+	if len(pushedSel.GetPredicates()) != 2 {
+		t.Fatalf("expected 2 predicates in pushed child, got %d", len(pushedSel.GetPredicates()))
+	}
+}
+
+// TestDecorrelateValuesRule_PushIntoChildFilter ports Java's pushIntoChildFilter.
+// A values box is joined with a LogicalFilterExpression child. The filter
+// references values box fields. The rule converts the filter to a SelectExpression
+// with the values box prepended.
+//
+//	SELECT t.d FROM values(x=@0, y="hello", z=tau.gamma) AS v,
+//	  (FILTER T WHERE a=v.x AND b=v.y AND c=v.z) AS t
+//	→ SELECT t.d FROM (SELECT T.* FROM values(...) AS v, T WHERE a=v.x AND b=v.y AND c=v.z) AS t
+func TestDecorrelateValuesRule_PushIntoChildFilter(t *testing.T) {
+	t.Parallel()
+
+	cov := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"),
+		"0", values.NotNullLong,
+	)
+
+	// Values box: SELECT {x=@0, y="hello"} FROM range(1)
+	// (simplified from Java: no otherQun correlation for test clarity)
+	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
+		"x": cov,
+		"y": &values.ConstantValue{Value: "hello"},
+	})
+
+	// LogicalFilterExpression: FILTER T WHERE a = v.x AND b = v.y
+	baseQ, _ := makeBaseScan()
+	filterExpr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+				},
+			},
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+				},
+			},
+		},
+		baseQ,
+	)
+	filterRef := expressions.InitialOf(filterExpr)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+
+	// Top select: SELECT t.d FROM values v, (filter) t
+	topSel := expressions.NewSelectExpression(
+		values.NewFieldValue(filterQ.GetFlowedObjectValue(), "d", nil),
+		[]expressions.Quantifier{valuesBoxQ, filterQ},
+		nil,
+	)
+	topRef := expressions.InitialOf(topSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+
+	// Values box removed from top: only the rewritten child quantifier remains.
+	if len(decorrelated.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier (values box pushed into child), got %d", len(decorrelated.GetQuantifiers()))
+	}
+
+	// The pushed child should be a SelectExpression (NOT LogicalFilterExpression)
+	// because selectWithQuantifiersPushed always creates a SelectExpression.
+	pushedRef := decorrelated.GetQuantifiers()[0].GetRangesOver()
+	if pushedRef == nil {
+		t.Fatal("pushed child quantifier has nil Reference")
+	}
+	pushedSel, ok := pushedRef.Get().(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression after push-down into filter, got %T", pushedRef.Get())
+	}
+
+	// The pushed select should have 2 quantifiers: values box + baseQ.
+	if len(pushedSel.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers in pushed select (values box + base), got %d", len(pushedSel.GetQuantifiers()))
+	}
+
+	// The pushed select should preserve the 2 predicates from the filter.
+	if len(pushedSel.GetPredicates()) != 2 {
+		t.Fatalf("expected 2 predicates in pushed select, got %d", len(pushedSel.GetPredicates()))
+	}
+
+	// Result value of the pushed select should be the base's flowed object value
+	// (LogicalFilter result = inner's flowed object value).
+	rv := pushedSel.GetResultValue()
+	if rv == nil {
+		t.Fatal("expected non-nil result value in pushed select")
+	}
+}
+
+// TestDecorrelateValuesRule_PartitionValuesByChild ports Java's partitionValuesByChild.
+// Multiple values boxes, each correlated to a different child select.
+// Only the relevant values box is pushed into each child. An unreferenced
+// values box is trimmed entirely.
+//
+// Setup:
+//   - values0 (cov0) → correlated to select0 (base0.a = values0)
+//   - values1 (cov1) → correlated to select1 (values1 = base1.b)
+//   - values2 (cov2) → correlated to select2 (base2.c = promote(values2))
+//   - values3 (cov3) → NOT referenced by select3 (base3.d IS NULL) → trimmed
+//
+// Each select gets only the values box it references; values3 is removed.
+func TestDecorrelateValuesRule_PartitionValuesByChild(t *testing.T) {
+	t.Parallel()
+
+	cov0 := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"),
+		"0", values.NotNullLong,
+	)
+	values0Q, _ := makeValuesBox(cov0)
+
+	cov1 := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"),
+		"1", values.NotNullString,
+	)
+	values1Q, _ := makeValuesBox(cov1)
+
+	cov2 := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"),
+		"2", values.NotNullBytes,
+	)
+	values2Q, _ := makeValuesBox(cov2)
+
+	cov3 := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"),
+		"3", values.NotNullBoolean,
+	)
+	values3Q, _ := makeValuesBox(cov3)
+
+	// select0: SELECT * FROM T WHERE a = values0
+	base0Q, _ := makeBaseScan()
+	select0 := expressions.NewSelectExpression(
+		base0Q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{base0Q},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(base0Q.GetFlowedObjectValue(), "a", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewQuantifiedObjectValue(values0Q.GetAlias()),
+				},
+			},
+		},
+	)
+	select0Ref := expressions.InitialOf(select0)
+	select0Q := expressions.ForEachQuantifier(select0Ref)
+
+	// select1: SELECT * FROM T WHERE values1 = b
+	base1Q, _ := makeBaseScan()
+	select1 := expressions.NewSelectExpression(
+		base1Q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{base1Q},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewQuantifiedObjectValue(values1Q.GetAlias()),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(base1Q.GetFlowedObjectValue(), "b", nil),
+				},
+			},
+		},
+	)
+	select1Ref := expressions.InitialOf(select1)
+	select1Q := expressions.ForEachQuantifier(select1Ref)
+
+	// select2: SELECT * FROM T WHERE c = promote(values2)
+	base2Q, _ := makeBaseScan()
+	select2 := expressions.NewSelectExpression(
+		base2Q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{base2Q},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(base2Q.GetFlowedObjectValue(), "c", nil),
+				Comparison: predicates.Comparison{
+					Type: predicates.ComparisonEquals,
+					Operand: values.NewPromoteValue(
+						values.NewQuantifiedObjectValue(values2Q.GetAlias()),
+						values.NotNullBytes,
+					),
+				},
+			},
+		},
+	)
+	select2Ref := expressions.InitialOf(select2)
+	select2Q := expressions.ForEachQuantifier(select2Ref)
+
+	// select3: SELECT * FROM T WHERE d IS NULL (NOT correlated to values3)
+	base3Q, _ := makeBaseScan()
+	select3 := expressions.NewSelectExpression(
+		base3Q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{base3Q},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(base3Q.GetFlowedObjectValue(), "d", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonIsNull,
+					Operand: nil,
+				},
+			},
+		},
+	)
+	select3Ref := expressions.InitialOf(select3)
+	select3Q := expressions.ForEachQuantifier(select3Ref)
+
+	// Top select: join all values boxes with all selects.
+	topSel := expressions.NewSelectExpression(
+		select0Q.GetFlowedObjectValue(),
+		[]expressions.Quantifier{values0Q, select0Q, values1Q, values2Q, select1Q, select2Q, values3Q, select3Q},
+		nil,
+	)
+	topRef := expressions.InitialOf(topSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+
+	// All 4 values boxes removed. Remaining quantifiers: 4 (select0..select3,
+	// each possibly rewritten to absorb their values box).
+	if len(decorrelated.GetQuantifiers()) != 4 {
+		t.Fatalf("expected 4 quantifiers (all values boxes removed), got %d", len(decorrelated.GetQuantifiers()))
+	}
+
+	// Verify that select0 was rewritten to include values0.
+	pushed0Ref := decorrelated.GetQuantifiers()[0].GetRangesOver()
+	pushed0, ok := pushed0Ref.Get().(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression for rewritten select0, got %T", pushed0Ref.Get())
+	}
+	if len(pushed0.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers in pushed select0 (values0 + base0), got %d", len(pushed0.GetQuantifiers()))
+	}
+
+	// Verify that select1 was rewritten to include values1.
+	pushed1Ref := decorrelated.GetQuantifiers()[1].GetRangesOver()
+	pushed1, ok := pushed1Ref.Get().(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression for rewritten select1, got %T", pushed1Ref.Get())
+	}
+	if len(pushed1.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers in pushed select1 (values1 + base1), got %d", len(pushed1.GetQuantifiers()))
+	}
+
+	// Verify that select2 was rewritten to include values2.
+	pushed2Ref := decorrelated.GetQuantifiers()[2].GetRangesOver()
+	pushed2, ok := pushed2Ref.Get().(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression for rewritten select2, got %T", pushed2Ref.Get())
+	}
+	if len(pushed2.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers in pushed select2 (values2 + base2), got %d", len(pushed2.GetQuantifiers()))
+	}
+
+	// select3 should be UNCHANGED (not correlated to any values box).
+	pushed3Ref := decorrelated.GetQuantifiers()[3].GetRangesOver()
+	pushed3, ok := pushed3Ref.Get().(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression for unchanged select3, got %T", pushed3Ref.Get())
+	}
+	if len(pushed3.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier in unchanged select3 (base3 only), got %d", len(pushed3.GetQuantifiers()))
+	}
+}
+
+// TestDecorrelateValuesRule_PushIntoExpressionsWithVariations ports Java's
+// pushIntoExpressionsWithVariations. A Reference has multiple expression members
+// (some correlated to the values box, some not). Only correlated members get
+// the values box pushed in; uncorrelated members are left unchanged.
+//
+// Setup:
+//   - valuesBox: SELECT {x=42, y="hello"} FROM range(1)
+//   - ref with 3 members:
+//     (1) selectBase: SELECT c,d FROM T WHERE a=v.x AND b=v.y  ← correlated
+//     (2) distinct(reversePredicates): DISTINCT(SELECT c,d FROM T WHERE v.x=c AND v.y=d) ← correlated
+//     (3) selectUncorrelated: SELECT c,d FROM T  ← NOT correlated
+//
+// Result: values box removed from top. The child Reference's correlated members
+// get the values box pushed in; the uncorrelated member is left as-is.
+func TestDecorrelateValuesRule_PushIntoExpressionsWithVariations(t *testing.T) {
+	t.Parallel()
+
+	// Values box: SELECT {x=42, y="hello"} FROM range(1)
+	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
+		"x": &values.ConstantValue{Value: int64(42)},
+		"y": &values.ConstantValue{Value: "hello"},
+	})
+
+	// Base table scan (shared across all 3 members).
+	baseQ, _ := makeBaseScan()
+
+	// Member 1: SELECT c, d FROM T WHERE a = v.x AND b = v.y (correlated)
+	selectBase := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+				},
+			},
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+				},
+			},
+		},
+	)
+
+	// Member 2: DISTINCT(SELECT c,d FROM T WHERE v.x = c AND v.y = d)
+	// (correlated, but the correlation is in a child under LogicalDistinct)
+	reversePredicatesSel := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		[]predicates.QueryPredicate{
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "c", nil),
+				},
+			},
+			&predicates.ComparisonPredicate{
+				Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+				Comparison: predicates.Comparison{
+					Type:    predicates.ComparisonEquals,
+					Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "d", nil),
+				},
+			},
+		},
+	)
+	reversePredicatesRef := expressions.InitialOf(reversePredicatesSel)
+	reversePredicatesQ := expressions.ForEachQuantifier(reversePredicatesRef)
+	distinct := expressions.NewLogicalDistinctExpression(reversePredicatesQ)
+
+	// Member 3: SELECT c,d FROM T (NOT correlated)
+	selectUncorrelated := expressions.NewSelectExpression(
+		baseQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{baseQ},
+		nil,
+	)
+
+	// Create a Reference with all 3 members.
+	multiRef := expressions.InitialOf(selectBase)
+	multiRef.Insert(distinct)
+	multiRef.Insert(selectUncorrelated)
+
+	lowerQ := expressions.ForEachQuantifier(multiRef)
+
+	// Top select: SELECT v.x, v.y, lower.c, lower.d FROM values v, lower
+	topSel := expressions.NewSelectExpression(
+		lowerQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{valuesBoxQ, lowerQ},
+		nil,
+	)
+	topRef := expressions.InitialOf(topSel)
+
+	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+
+	// Values box removed from top: only the (rewritten) lower quantifier remains.
+	if len(decorrelated.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier (values box removed from top), got %d", len(decorrelated.GetQuantifiers()))
+	}
+
+	// The child Reference should contain members for the rewritten expressions.
+	// Check that we have at least 2 members (the correlated ones got rewritten,
+	// the uncorrelated one was preserved).
+	childRef := decorrelated.GetQuantifiers()[0].GetRangesOver()
+	if childRef == nil {
+		t.Fatal("rewritten child quantifier has nil Reference")
+	}
+	members := childRef.AllMembers()
+	if len(members) < 2 {
+		t.Fatalf("expected at least 2 members in rewritten Reference (correlated pushed + uncorrelated), got %d", len(members))
+	}
+
+	// Check: at least one member should be a SelectExpression with 2 quantifiers
+	// (the values box pushed into selectBase).
+	foundPushedSelect := false
+	for _, m := range members {
+		sel, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		if len(sel.GetQuantifiers()) == 2 {
+			foundPushedSelect = true
+			break
+		}
+	}
+	if !foundPushedSelect {
+		t.Error("expected at least one pushed SelectExpression with 2 quantifiers (values box + base)")
+	}
+
+	// Check: the uncorrelated member should still be present (possibly as itself
+	// or wrapped in a SelectExpression with the same quantifier count).
+	foundUncorrelated := false
+	for _, m := range members {
+		sel, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		if len(sel.GetQuantifiers()) == 1 && len(sel.GetPredicates()) == 0 {
+			foundUncorrelated = true
+			break
+		}
+	}
+	if !foundUncorrelated {
+		t.Error("expected uncorrelated member to be preserved unchanged")
+	}
+}
