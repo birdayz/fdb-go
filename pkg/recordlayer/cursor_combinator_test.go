@@ -1233,6 +1233,118 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(cursor.Close()).To(Succeed())
 	})
 
+	It("ConcatCursors with TIME_LIMIT on first cursor", func() {
+		// First cursor: fakeOutOfBandCursor([1,2,3,4,5], limit=3).
+		// Second cursor: [6,7,8].
+		// Cycle 1: [1,2,3] + TIME_LIMIT.
+		// Cycle 2: resume → [4,5,6,7,8] + SOURCE_EXHAUSTED.
+		items1 := []int{1, 2, 3, 4, 5}
+		items2 := []int{6, 7, 8}
+		makeFirst := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items1, cont), 3)
+		}
+		makeSecond := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(items2, cont)
+		}
+
+		// Cycle 1: first cursor yields [1,2,3] then TIME_LIMIT
+		cursor := ConcatCursors(makeFirst, makeSecond, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume from continuation → first yields [4,5], exhausts,
+		// switches to second → [6,7,8] → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{4, 5, 6, 7, 8}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("ConcatCursors with TIME_LIMIT on second cursor", func() {
+		// First cursor: [1,2]. Second cursor: fakeOutOfBandCursor([3,4,5,6], limit=2).
+		// Cycle 1: first exhausts [1,2], switches to second which yields [3,4] → TIME_LIMIT.
+		// Cycle 2: resume second, yields [5,6] → TIME_LIMIT (oob limit resets each cycle).
+		// Cycle 3: resume second, underlying exhausted → SOURCE_EXHAUSTED.
+		items1 := []int{1, 2}
+		items2 := []int{3, 4, 5, 6}
+		makeFirst := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(items1, cont)
+		}
+		makeSecond := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items2, cont), 2)
+		}
+
+		// Cycle 1: first [1,2] → SOURCE_EXHAUSTED → switch to second [3,4] → TIME_LIMIT
+		cursor := ConcatCursors(makeFirst, makeSecond, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2, 3, 4}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume second → [5,6] → TIME_LIMIT (oob counter resets)
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{5, 6}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 3: resume second → underlying exhausted → SOURCE_EXHAUSTED
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("ConcatCursors with TIME_LIMIT on both cursors", func() {
+		// First: fakeOutOfBandCursor([1,2,3], limit=2).
+		// Second: fakeOutOfBandCursor([4,5,6], limit=2).
+		// Cycle 1: first yields [1,2] → TIME_LIMIT.
+		// Cycle 2: resume first → [3], exhausts, switches to second → [4,5] → TIME_LIMIT.
+		// Cycle 3: resume second → [6] → SOURCE_EXHAUSTED.
+		items1 := []int{1, 2, 3}
+		items2 := []int{4, 5, 6}
+		makeFirst := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items1, cont), 2)
+		}
+		makeSecond := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items2, cont), 2)
+		}
+
+		// Cycle 1: first yields [1,2] → TIME_LIMIT
+		cursor := ConcatCursors(makeFirst, makeSecond, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume first → [3], exhausts → switch to second → [4,5] → TIME_LIMIT
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{3, 4, 5}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 3: resume second → [6] → SOURCE_EXHAUSTED
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{6}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
 	It("AutoContinuingCursor scans across transaction boundaries", func() {
 		ks := specSubspace()
 		populate10Orders(ctx, metaData)

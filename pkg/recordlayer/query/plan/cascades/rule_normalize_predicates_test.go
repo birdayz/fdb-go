@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -155,6 +156,41 @@ func TestNormalizeDNF_AlreadyInDNF_ReturnsFalse(t *testing.T) {
 	_, changed = NormalizeDNF(dnf, cnfSizeLimit)
 	if changed {
 		t.Fatal("OR(a, AND(b, c)) is already in DNF, should return false")
+	}
+}
+
+func TestNormalizePredicatesRule_FiresWithExistentialQuantifier(t *testing.T) {
+	t.Parallel()
+
+	scan := &expressions.FullUnorderedScanExpression{}
+	scanRef := expressions.InitialOf(scan)
+	forEachQ := expressions.ForEachQuantifier(scanRef)
+
+	existScan := &expressions.FullUnorderedScanExpression{}
+	existRef := expressions.InitialOf(existScan)
+	existQ := expressions.ExistentialQuantifier(existRef)
+
+	nonCNFPred := predicates.NewOr(
+		pred("a"),
+		predicates.NewAnd(pred("b"), pred("c")),
+	)
+
+	sel := expressions.NewSelectExpression(
+		forEachQ.GetFlowedObjectValue(),
+		[]expressions.Quantifier{forEachQ, existQ},
+		[]predicates.QueryPredicate{nonCNFPred},
+	)
+	ref := expressions.InitialOf(sel)
+
+	yielded := FireExpressionRule(NewNormalizePredicatesRule(), ref)
+	if len(yielded) == 0 {
+		t.Fatal("NormalizePredicatesRule should fire on SelectExpression with Existential quantifier")
+	}
+
+	result := yielded[0].(*expressions.SelectExpression)
+	preds := result.GetPredicates()
+	if len(preds) != 2 {
+		t.Fatalf("expected 2 CNF conjuncts (OR(a,b) AND OR(a,c)), got %d", len(preds))
 	}
 }
 
