@@ -374,12 +374,11 @@ func (c *MetaDataVersionStampStoreStateCache) Get(store *FDBRecordStore, existen
 	c.mu.Unlock()
 
 	if existing == nil {
-		// No cached entry — load from FDB and potentially cache.
 		entry, err := loadCacheEntry(store, existenceCheck)
 		if err != nil {
 			return nil, err
 		}
-		if entry.recordStoreState.StoreHeader != nil && entry.recordStoreState.StoreHeader.GetCacheable() {
+		if entry.recordStoreState.StoreHeader != nil {
 			c.addToCache(subKey, entry)
 		}
 		return entry, nil
@@ -398,12 +397,8 @@ func (c *MetaDataVersionStampStoreStateCache) Get(store *FDBRecordStore, existen
 		if err != nil {
 			return nil, err
 		}
-		if currentStamp != nil {
-			if entry.recordStoreState.StoreHeader != nil && entry.recordStoreState.StoreHeader.GetCacheable() {
-				c.addToCache(subKey, entry)
-			} else {
-				c.invalidateOlderEntry(subKey, currentStamp)
-			}
+		if currentStamp != nil && entry.recordStoreState.StoreHeader != nil {
+			c.addToCache(subKey, entry)
 		}
 		return entry, nil
 	}
