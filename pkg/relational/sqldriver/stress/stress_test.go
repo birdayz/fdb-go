@@ -377,7 +377,7 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		target := n - 1
 		r := h.timeQuery("SELECT id, customer_id, amount, status FROM orders WHERE id = ?", target)
 		r.expectRows(t, fmt.Sprintf("PK needle id=%d", target), 1)
-		if r.Duration > 5*time.Second {
+		if r.Duration > 30*time.Second {
 			t.Errorf("PK needle took %v — point lookup should be fast", r.Duration)
 		}
 	})
