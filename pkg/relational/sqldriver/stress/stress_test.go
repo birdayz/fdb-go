@@ -116,12 +116,9 @@ func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) strin
 	h.t.Helper()
 	start := time.Now()
 
-	workers := 4
-	if n < workers*h.batchSize {
-		workers = 1
-	}
-	if n >= 10_000_000 {
-		workers = 1
+	workers := 1
+	if n <= 100_000 {
+		workers = 4
 	}
 	chunkSize := (n + workers - 1) / workers
 
