@@ -45,12 +45,12 @@ Same user-visible behavior: identical SQLSTATE, identical error message. 24 yams
 
 No functional difference — absorbs candidate-side-only expressions (MatchableSortExpression) into partial matches. Same inputs, same outputs.
 
-### Go uses FlatMapPlan for PK equi-joins, NLJ for remaining cases
+### FlatMap covers all join types; NLJ is fallback for non-indexed joins
 
-**Java:** `RecordQueryFlatMapPlan` for ALL joins (inner, left, exists, not-exists). No separate NLJ plan exists. `inheritOuterRecordProperties = innerQuantifier instanceof Quantifier.Existential`.
-**Go (swingshift-95):** `RecordQueryFlatMapPlan` fires for INNER joins where the equi-join predicate matches the inner table's PK. Uses correlated scan + `JoinMergeResultValue` + `CorrelationBinder` interface. LEFT OUTER, EXISTS, NOT EXISTS still use `RecordQueryNestedLoopJoinPlan` with explicit predicates and `mergeRows`.
+**Java:** `RecordQueryFlatMapPlan` for ALL joins. No separate NLJ plan exists.
+**Go (swingshift-95):** `RecordQueryFlatMapPlan` fires for ALL join types (INNER, CROSS, LEFT OUTER, EXISTS, NOT EXISTS) when the equi-join predicate matches the inner table's PK or a secondary index. Uses correlated scan + `JoinMergeResultValue` + `CorrelationBinder` interface + `existsMode`/`notExistsMode` flags. `RecordQueryNestedLoopJoinPlan` remains as fallback for non-indexed joins (no PK/index match for the predicate).
 
-**Remaining:** Port FlatMap for LEFT OUTER, EXISTS/NOT EXISTS. Then remove `RecordQueryNestedLoopJoinPlan` entirely.
+**Remaining:** Remove NLJ entirely once all joins can be expressed as FlatMap (requires correlated scans for non-indexed predicates — full table re-scan per outer row, which Java does via async pipelining).
 
 ### Go has explicit Sort/InMemorySort physical operators
 
