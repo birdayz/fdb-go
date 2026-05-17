@@ -50,9 +50,9 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 **Java:** `RecordQueryFlatMapPlan` for ALL joins. No separate NLJ plan exists.
 **Go (swingshift-95):** `RecordQueryFlatMapPlan` fires for ALL join types (INNER, CROSS, LEFT OUTER, EXISTS, NOT EXISTS) when the equi-join predicate matches the inner table's PK or a secondary index. Uses correlated scan + `JoinMergeResultValue` + `CorrelationBinder` interface + `existsMode`/`notExistsMode` flags. `RecordQueryNestedLoopJoinPlan` remains as fallback for non-indexed joins (no PK/index match for the predicate).
 
-**Remaining:** Remove NLJ entirely once all joins can be expressed as FlatMap (requires correlated scans for non-indexed predicates — full table re-scan per outer row, which Java does via async pipelining).
+**Remaining NLJ cases:** Joins where no predicate matches any PK or index first column (brute-force NLJ is the only option). Self-joins now work via FlatMap (aliases disambiguate).
 
-**Composite PK limitation:** FlatMap only matches the FIRST PK column for correlated scans. Joins on composite PKs where the equi-join predicate matches a non-first PK column fall back to NLJ. Java handles this via the full MatchCandidate infrastructure with multi-column prefix matching.
+**Composite PK limitation:** FlatMap only matches the FIRST PK column. Joins on non-first PK columns fall back to NLJ.
 
 ### Go has explicit Sort/InMemorySort physical operators
 
