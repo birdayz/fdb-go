@@ -208,12 +208,11 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		innerAlias = aliases[1]
 	}
 
-	// Try FlatMap for correlated EXISTS: if there's exactly ONE
-	// correlated predicate matching the inner table's PK or index,
-	// use a correlated scan with EXISTS mode. Multi-predicate EXISTS
-	// requires predicate qualification alignment (inner scan has
-	// unqualified keys but predicates are qualified) — deferred.
-	if len(regularPreds) == 1 && !sel.IsQuantifiersSwapped() {
+	// Try FlatMap for correlated EXISTS: if a correlated predicate
+	// matches the inner table's PK or index, use a correlated scan.
+	// Residual predicates are stripped of inner alias prefix and
+	// wrapped inside the inner plan as a filter.
+	if len(regularPreds) > 0 && !sel.IsQuantifiersSwapped() {
 		if r.tryExistsFlatMap(call, sel, outerPlan, innerPlan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, regularPreds) {
 			return
 		}
@@ -691,7 +690,7 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			if outerVal == nil {
 				continue
 			}
-			return r.buildExistsFlatMap(call, sel, outerPlan, innerScan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, outerPrefix, outerVal, pred, preds)
+			return r.buildExistsFlatMap(call, sel, outerPlan, innerScan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, outerPrefix, innerPrefix, outerVal, pred, preds)
 		}
 	}
 
@@ -749,7 +748,8 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				}
 			}
 			if len(residuals) > 0 {
-				innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedIndexScan, residuals)
+				stripped := stripAliasFromPredicates(residuals, innerPrefix)
+				innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedIndexScan, stripped)
 			}
 
 			innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
@@ -782,7 +782,7 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	outerAlias, innerAlias string,
 	outerExpr, innerExpr expressions.RelationalExpression,
 	joinType plans.JoinType,
-	outerPrefix string,
+	outerPrefix, innerPrefix string,
 	outerVal *values.FieldValue,
 	matchedPred predicates.QueryPredicate,
 	allPreds []predicates.QueryPredicate,
@@ -805,7 +805,7 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 
 	correlatedScan := innerScan.WithScanComparisons([]*predicates.ComparisonRange{mergeResult.Range})
 
-	// Wrap residual predicates INSIDE the inner plan.
+	// Wrap residual predicates INSIDE the inner plan (alias-stripped).
 	var innerWithFilter plans.RecordQueryPlan = correlatedScan
 	var residuals []predicates.QueryPredicate
 	for _, p := range allPreds {
@@ -814,7 +814,8 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 		}
 	}
 	if len(residuals) > 0 {
-		innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedScan, residuals)
+		stripped := stripAliasFromPredicates(residuals, innerPrefix)
+		innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedScan, stripped)
 	}
 
 	innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
