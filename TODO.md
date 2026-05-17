@@ -85,10 +85,10 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 
 ### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
 
-- [ ] **Multi-step FlatMap continuation under TIME_LIMIT**: Java's `testFlatMapReasons` verifies 5×5 grid across 6 continuation cycles where inner hits TIME_LIMIT every 3 items. Go has ZERO resumption tests under time pressure.
-- [ ] **OrElse (NOT EXISTS) under TIME_LIMIT**: Java has 4 tests for decision-before-vs-after time limit in the orElse cursor. Go has zero.
-- [ ] **Inner/outer limit grid tests**: Java verifies full M×N product when cursors hit limits every N items (`pipelineWithInnerLimits`/`pipelineWithOuterLimits`). Go has no equivalent.
-- [ ] **JOIN continuation resume at SQL level**: Java's `JoinWithLimitTest.joinWithContinuationAndLimit` uses `EXECUTE CONTINUATION` to resume mid-join. Go uses LIMIT/OFFSET (simulates pages) but never tests actual continuation-based resume.
+- [x] **Multi-step FlatMap continuation under TIME_LIMIT**: testFlatMapReasons (5×5 grid, 6 cycles), pipelineWithInnerLimits, pipelineWithOuterLimits — both out-of-band and row-limit variants. Fixed two continuation bugs: priorOuterCont nil on resume, pending inner dropped on outer stop. (swingshift-96)
+- [x] **OrElse (NOT EXISTS) under TIME_LIMIT**: Ported all 4 Java tests. Added OrElseWithContinuation with OrElseContinuation proto serialization. (swingshift-96)
+- [x] **Inner/outer limit grid tests**: Both out-of-band (TimeLimitReached) and in-band (ReturnLimitReached) variants ported via iterateGrid helper. (swingshift-96)
+- [ ] **JOIN continuation resume at SQL level**: Requires EXECUTE CONTINUATION implementation (parsed but not wired). Multi-shift effort.
 - [ ] **EXISTS + 3-way join + ORDER BY plan shape**: Java tests EXISTS nested between two FlatMap joins with ORDER BY controlling scan direction.
 
 ---
