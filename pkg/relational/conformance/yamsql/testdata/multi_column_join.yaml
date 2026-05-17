@@ -1,0 +1,77 @@
+# multi_column_join.yaml
+#
+# Multi-column join predicates — joining on two columns simultaneously.
+# Exercises the join evaluator's ability to combine multiple equality
+# predicates in the ON/WHERE clause, ensuring that rows match only when
+# ALL join columns agree (not just the first one).
+name: multi_column_join
+schema_template: |
+  CREATE TABLE products (category BIGINT NOT NULL, sku BIGINT NOT NULL, name STRING, PRIMARY KEY (category, sku))
+  CREATE TABLE inventory (warehouse_cat BIGINT NOT NULL, warehouse_sku BIGINT NOT NULL, qty BIGINT, PRIMARY KEY (warehouse_cat, warehouse_sku))
+setup:
+  - INSERT INTO products VALUES
+      (1, 100, 'Widget'),
+      (1, 200, 'Gadget'),
+      (2, 100, 'Bolt'),
+      (2, 300, 'Nut')
+  - INSERT INTO inventory VALUES
+      (1, 100, 10),
+      (1, 200, 3),
+      (1, 300, 5),
+      (2, 100, 20),
+      (2, 200, 7),
+      (3, 100, 15)
+tests:
+  # Inner join on two columns via comma-join + WHERE.
+  # Matches: Bolt(2,100)->20, Gadget(1,200)->3, Widget(1,100)->10.
+  # Nut(2,300) has no inventory match; inventory rows (1,300), (2,200),
+  # (3,100) have no product match.
+  - query: |
+      SELECT p.name, i.qty
+      FROM products p, inventory i
+      WHERE p.category = i.warehouse_cat AND p.sku = i.warehouse_sku
+      ORDER BY p.name
+    rows:
+      - ['Bolt', 20]
+      - ['Gadget', 3]
+      - ['Widget', 10]
+
+  # Inner join with additional filter on qty > 5.
+  # From the 3 matches above, only Bolt(20) and Widget(10) survive.
+  - query: |
+      SELECT p.name, i.qty
+      FROM products p, inventory i
+      WHERE p.category = i.warehouse_cat AND p.sku = i.warehouse_sku
+        AND i.qty > 5
+      ORDER BY p.name
+    rows:
+      - ['Bolt', 20]
+      - ['Widget', 10]
+
+  # LEFT JOIN syntax — all products appear; Nut has no inventory match
+  # so qty is NULL.
+  - query: |
+      SELECT p.name, i.qty
+      FROM products p LEFT JOIN inventory i
+        ON p.category = i.warehouse_cat AND p.sku = i.warehouse_sku
+      ORDER BY p.name
+    rows:
+      - ['Bolt', 20]
+      - ['Gadget', 3]
+      - ['Nut', ~]
+      - ['Widget', 10]
+
+  # EXISTS with compound correlated predicate — only products that
+  # have at least one inventory row matching on both columns.
+  - query: |
+      SELECT p.name
+      FROM products p
+      WHERE EXISTS (
+        SELECT 1 FROM inventory i
+        WHERE i.warehouse_cat = p.category AND i.warehouse_sku = p.sku
+      )
+      ORDER BY p.name
+    rows:
+      - ['Bolt']
+      - ['Gadget']
+      - ['Widget']
