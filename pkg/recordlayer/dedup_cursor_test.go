@@ -2,24 +2,8 @@ package recordlayer
 
 import (
 	"context"
-	"encoding/binary"
 	"testing"
 )
-
-func packInt(v int) []byte {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf, uint64(v))
-	return buf
-}
-
-func unpackInt(b []byte) (int, bool) {
-	if len(b) < 8 {
-		return 0, false
-	}
-	return int(binary.LittleEndian.Uint64(b)), true
-}
-
-func intEqual(a, b int) bool { return a == b }
 
 func TestDedupCursorBasic(t *testing.T) {
 	t.Parallel()

@@ -144,21 +144,23 @@ func SkipThenLimit[T any](cursor RecordCursor[T], skip, limit int) RecordCursor[
 func OrElse[T any](primary RecordCursor[T], alternative func() RecordCursor[T]) RecordCursor[T] {
 	return OrElseWithContinuation(
 		func(cont []byte) RecordCursor[T] { return primary },
-		alternative,
+		func(cont []byte) RecordCursor[T] { return alternative() },
 		nil,
 	)
 }
 
 // OrElseWithContinuation creates an OrElse cursor with continuation support.
 // Matches Java's OrElseCursor with OrElseContinuation proto serialization.
+// Both primary and alternative are cursor factories that accept continuation
+// bytes for cross-transaction resume.
 func OrElseWithContinuation[T any](
 	primaryFactory CursorFactory[T],
-	alternative func() RecordCursor[T],
+	alternativeFactory CursorFactory[T],
 	continuation []byte,
 ) RecordCursor[T] {
 	c := &orElseCursor[T]{
-		alternative: alternative,
-		state:       gen.OrElseContinuation_UNDECIDED,
+		alternativeFactory: alternativeFactory,
+		state:              gen.OrElseContinuation_UNDECIDED,
 	}
 
 	if len(continuation) > 0 {
@@ -170,13 +172,7 @@ func OrElseWithContinuation[T any](
 				c.primary = primaryFactory(cont.Continuation)
 				c.active = c.primary
 			case gen.OrElseContinuation_USE_OTHER:
-				c.active = alternative()
-				// The alternative doesn't use continuation from the proto —
-				// Java creates the else cursor fresh each time too.
-				// The continuation field in USE_OTHER state IS the else cursor's
-				// continuation, but our alternative factory doesn't take one.
-				// For now, create fresh. This matches the common case where
-				// the else branch is a small constant list.
+				c.active = alternativeFactory(cont.Continuation)
 			default:
 				c.primary = primaryFactory(cont.Continuation)
 			}
@@ -191,10 +187,10 @@ func OrElseWithContinuation[T any](
 }
 
 type orElseCursor[T any] struct {
-	primary     RecordCursor[T]
-	alternative func() RecordCursor[T]
-	active      RecordCursor[T]
-	state       gen.OrElseContinuation_State
+	primary            RecordCursor[T]
+	alternativeFactory CursorFactory[T]
+	active             RecordCursor[T]
+	state              gen.OrElseContinuation_State
 }
 
 func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
@@ -215,7 +211,7 @@ func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 		}
 		c.state = gen.OrElseContinuation_USE_OTHER
 		_ = c.primary.Close()
-		c.active = c.alternative()
+		c.active = c.alternativeFactory(nil)
 		return c.advanceActive(ctx)
 	}
 	return c.advanceActive(ctx)

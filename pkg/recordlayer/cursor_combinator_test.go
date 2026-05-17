@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"slices"
 
@@ -10,6 +11,24 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+// intEqual compares two ints for dedup equality.
+func intEqual(a, b int) bool { return a == b }
+
+// packInt serializes an int to 8 little-endian bytes.
+func packInt(v int) []byte {
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint64(b, uint64(v))
+	return b
+}
+
+// unpackInt deserializes an int from 8 little-endian bytes.
+func unpackInt(b []byte) (int, bool) {
+	if len(b) < 8 {
+		return 0, false
+	}
+	return int(binary.LittleEndian.Uint64(b)), true
+}
 
 // fakeOutOfBandCursor wraps a cursor and returns TimeLimitReached after limit
 // items. Matches Java's FakeOutOfBandCursor used in RecordCursorTest.
@@ -933,7 +952,7 @@ var _ = Describe("CursorCombinators", func() {
 			limited := fakeOutOfBandCursor(raw, 3)
 			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return false }}
 		}
-		alternative := func() RecordCursor[int] {
+		alternative := func(_ []byte) RecordCursor[int] {
 			return FromList([]int{0})
 		}
 
@@ -967,7 +986,7 @@ var _ = Describe("CursorCombinators", func() {
 			limited := fakeOutOfBandCursor(raw, 3)
 			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return i > 4 }}
 		}
-		alternative := func() RecordCursor[int] {
+		alternative := func(_ []byte) RecordCursor[int] {
 			return FromList([]int{0})
 		}
 
@@ -1004,7 +1023,7 @@ var _ = Describe("CursorCombinators", func() {
 			limited := fakeOutOfBandCursor(raw, 3)
 			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return i > 10 }}
 		}
-		alternative := func() RecordCursor[int] {
+		alternative := func(_ []byte) RecordCursor[int] {
 			return FromList([]int{0})
 		}
 
@@ -1064,7 +1083,7 @@ var _ = Describe("CursorCombinators", func() {
 			limited := fakeOutOfBandCursor(raw, 3)
 			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return false }}
 		}
-		alternative := func() RecordCursor[int] {
+		alternative := func(_ []byte) RecordCursor[int] {
 			return FromList([]int{-1, -2, -3, -4, -5})
 		}
 
@@ -1343,6 +1362,190 @@ var _ = Describe("CursorCombinators", func() {
 		items, cont = collectUntilStop(ctx, cursor)
 		Expect(items).To(Equal([]int{6}))
 		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	// --- DedupCursor TIME_LIMIT tests (Java DedupCursorTest alignment) ---
+
+	It("DedupCursor with TIME_LIMIT preserves last value across resume", func() {
+		// Adjacent duplicates that span the TIME_LIMIT boundary must be
+		// deduplicated because the continuation carries the last emitted value.
+		// Input: [1,1,2,2,3,4], fakeOutOfBandCursor(limit=4).
+		// Cycle 1: inner yields [1,1,2,2] (4 raw items) → dedup emits [1,2] + TIME_LIMIT.
+		// Cycle 2: resume with lastValue=2, inner yields [3,4] (2 items, below limit) →
+		//          dedup emits [3,4] + SOURCE_EXHAUSTED.
+		// Total: [1,2,3,4].
+		items := []int{1, 1, 2, 2, 3, 4}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items, cont), 4)
+		}
+
+		// Cycle 1
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		cycle1, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle1).To(Equal([]int{1, 2}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume — lastValue=2 carried in continuation
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		cycle2, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle2).To(Equal([]int{3, 4}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("DedupCursor with TIME_LIMIT deduplicates across boundary", func() {
+		// The last value from cycle 1 spans into cycle 2: the continuation
+		// carries lastValue so duplicates at the boundary are removed.
+		// Input: [1,2,3,3,3,4], fakeOutOfBandCursor(limit=4).
+		// Cycle 1: inner yields [1,2,3,3] (4 raw items) → dedup emits [1,2,3] + TIME_LIMIT (lastValue=3).
+		// Cycle 2: resume, inner yields [3,4] (2 items, under limit) → dedup skips 3, emits [4] + SOURCE_EXHAUSTED.
+		items := []int{1, 2, 3, 3, 3, 4}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items, cont), 4)
+		}
+
+		// Cycle 1
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		cycle1, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle1).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: lastValue=3 carried in continuation; leading 3 is skipped.
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		cycle2, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle2).To(Equal([]int{4}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("DedupCursor with TIME_LIMIT all duplicates in second batch", func() {
+		// All items in the second batch are the same as the last emitted value
+		// from the first batch, so the second batch produces nothing.
+		// Input: [1,2,3,3,3], fakeOutOfBandCursor(limit=3).
+		// Cycle 1: inner yields [1,2,3] (3 raw items, hits limit) → dedup emits [1,2,3] + TIME_LIMIT.
+		// Cycle 2: resume with lastValue=3, inner yields [3,3] (2 items, under limit) →
+		//          all equal to lastValue=3, all skipped → inner exhausts → SOURCE_EXHAUSTED.
+		items := []int{1, 2, 3, 3, 3}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items, cont), 3)
+		}
+
+		// Cycle 1
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		cycle1, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle1).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: all remaining [3,3] are duplicates of lastValue=3 → no output.
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		cycle2, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle2).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("DedupCursor with TIME_LIMIT continuationsWithOutOfBand (Java port)", func() {
+		// Port of Java's DedupCursorTest.continuationsWithOutOfBandTest.
+		// Input: [1,1,1,1,2,3,4,5,5,5,5,6,8,8,10], filtered by !=1 && !=8,
+		// fakeOutOfBandCursor(limit=2). The dedup sees filter+oob output.
+		//
+		// Cycle 1: inner scans [1,1], both filtered → TIME_LIMIT, no output.
+		// Cycle 2: inner scans [1,1], both filtered → TIME_LIMIT, no output.
+		// Cycle 3: inner scans [2,3] → dedup emits [2,3] + TIME_LIMIT.
+		// Cycle 4: inner scans [4,5] → dedup emits [4,5] + TIME_LIMIT.
+		// Cycle 5: inner scans [5,5], both dupes of lastValue=5 → TIME_LIMIT, no output.
+		// Cycle 6: inner scans [5,6], 5 deduped, 6 new → dedup emits [6] + TIME_LIMIT.
+		// Cycle 7: inner scans [8,8], both filtered → TIME_LIMIT, no output.
+		// Cycle 8: inner scans [10] → dedup emits [10] + SOURCE_EXHAUSTED.
+		items := []int{1, 1, 1, 1, 2, 3, 4, 5, 5, 5, 5, 6, 8, 8, 10}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(items, cont)
+			limited := fakeOutOfBandCursor(raw, 2)
+			return &filterCursor[int]{inner: limited, predicate: func(v int) bool { return v != 1 && v != 8 }}
+		}
+
+		var allItems []int
+		var contBytes []byte
+
+		// Cycle 1: [1,1] filtered → TIME_LIMIT
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		batch, cont := collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 2: [1,1] filtered → TIME_LIMIT
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 3: [2,3] → emits [2,3]
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{2, 3}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 4: [4,5] → emits [4,5]
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{4, 5}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 5: [5,5] dupes of lastValue=5 → TIME_LIMIT, no output
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 6: [5,6] → 5 deduped, emits [6]
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{6}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 7: [8,8] filtered → TIME_LIMIT, no output
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 8: [10] → emits [10] + SOURCE_EXHAUSTED
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{10}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeTrue())
+
+		// Total across all cycles
+		Expect(allItems).To(Equal([]int{2, 3, 4, 5, 6, 10}))
 	})
 
 	It("AutoContinuingCursor scans across transaction boundaries", func() {

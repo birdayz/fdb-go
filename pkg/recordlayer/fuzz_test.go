@@ -373,7 +373,7 @@ func FuzzOrElseContinuation(f *testing.F) {
 		primary := func(_ []byte) RecordCursor[int] {
 			return FromList[int]([]int{1, 2, 3})
 		}
-		alt := func() RecordCursor[int] {
+		alt := func(_ []byte) RecordCursor[int] {
 			return FromList[int]([]int{4, 5})
 		}
 		cursor := OrElseWithContinuation(primary, alt, data)
