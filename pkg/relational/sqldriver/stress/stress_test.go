@@ -21,7 +21,7 @@ func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	container, err := foundationdbtc.Run(ctx, "")
+	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithStorageEngine("ssd"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stress: no Docker, skipping\n")
 		os.Exit(0)
