@@ -2622,3 +2622,190 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 	}
 	t.Logf("post-index schema recreation: results correct, plan cache working end-to-end")
 }
+
+func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_flatmap_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("flatmap_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, tier STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert 20 customers.
+	for i := 1; i <= 20; i++ {
+		tier := "silver"
+		if i%5 == 0 {
+			tier = "gold"
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO customers VALUES (%d, 'Customer%d', '%s')", i, i, tier)); err != nil {
+			t.Fatalf("INSERT customer %d: %v", i, err)
+		}
+	}
+
+	// Insert 100 orders (5 per customer, customer_id cycling 1-20).
+	// Amounts alternate: even order IDs get 30, odd get 75, so roughly half exceed 50.
+	for i := 1; i <= 100; i++ {
+		customerID := ((i - 1) % 20) + 1
+		amount := 30
+		if i%2 != 0 {
+			amount = 75
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, %d, %d)", i, customerID, amount)); err != nil {
+			t.Fatalf("INSERT order %d: %v", i, err)
+		}
+	}
+
+	// --- Part 1: inner join with filter + ORDER BY ---
+	innerJoinQ := "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.amount > 50 ORDER BY o.id"
+
+	plan := planExplainVia(t, ctx, db, innerJoinQ)
+	t.Logf("FlatMap plan: %s", plan)
+	if !strings.Contains(plan, "FlatMap") {
+		t.Fatalf("expected FlatMap in plan for correlated join, got: %s", plan)
+	}
+
+	rows, err := db.QueryContext(ctx, innerJoinQ)
+	if err != nil {
+		t.Fatalf("inner join query: %v", err)
+	}
+	defer rows.Close()
+
+	type joinRow struct {
+		orderID      int64
+		customerName string
+	}
+	var got []joinRow
+	for rows.Next() {
+		var r joinRow
+		if err := rows.Scan(&r.orderID, &r.customerName); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	// 100 orders, odd IDs have amount=75 (>50), even have amount=30.
+	// Odd IDs: 1,3,5,...,99 → 50 rows match the filter.
+	if len(got) != 50 {
+		t.Fatalf("expected 50 rows (odd orders with amount>50), got %d", len(got))
+	}
+
+	// Verify ordering by o.id is ascending.
+	for i := 1; i < len(got); i++ {
+		if got[i].orderID <= got[i-1].orderID {
+			t.Fatalf("results not ordered by o.id: got[%d].id=%d <= got[%d].id=%d",
+				i, got[i].orderID, i-1, got[i-1].orderID)
+		}
+	}
+
+	// Verify each row has the correct customer name and amount > 50 (odd IDs have amount=75).
+	for _, r := range got {
+		if r.orderID%2 == 0 {
+			t.Fatalf("order id=%d has amount=30 (<=50) but appeared in result", r.orderID)
+		}
+		// Customer name must match the cycling assignment.
+		expectedCustomerID := int64(((r.orderID - 1) % 20) + 1)
+		expectedName := fmt.Sprintf("Customer%d", expectedCustomerID)
+		if r.customerName != expectedName {
+			t.Fatalf("order id=%d: expected customer name %q, got %q",
+				r.orderID, expectedName, r.customerName)
+		}
+	}
+	t.Logf("FlatMap inner join → %d rows, ordered, correct ✓", len(got))
+
+	// --- Part 2: LEFT OUTER JOIN ---
+	leftJoinQ := "SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.id < 5 ORDER BY o.id"
+
+	leftRows, err := db.QueryContext(ctx, leftJoinQ)
+	if err != nil {
+		t.Fatalf("LEFT JOIN query: %v", err)
+	}
+	defer leftRows.Close()
+
+	type leftRow struct {
+		orderID      int64
+		customerName *string // nullable — NULL when no match
+	}
+	var leftGot []leftRow
+	for leftRows.Next() {
+		var r leftRow
+		if err := leftRows.Scan(&r.orderID, &r.customerName); err != nil {
+			t.Fatalf("LEFT JOIN Scan: %v", err)
+		}
+		leftGot = append(leftGot, r)
+	}
+	if err := leftRows.Err(); err != nil {
+		t.Fatalf("leftRows.Err: %v", err)
+	}
+
+	// Orders 1-4 all have customer_ids 1-4 which exist, so all should have non-NULL names.
+	if len(leftGot) != 4 {
+		t.Fatalf("LEFT JOIN: expected 4 rows (o.id in [1,2,3,4]), got %d", len(leftGot))
+	}
+	for i, r := range leftGot {
+		expectedID := int64(i + 1)
+		if r.orderID != expectedID {
+			t.Fatalf("LEFT JOIN row %d: expected o.id=%d, got %d", i, expectedID, r.orderID)
+		}
+		if r.customerName == nil {
+			t.Fatalf("LEFT JOIN row %d (o.id=%d): expected non-NULL customer name, got NULL", i, r.orderID)
+		}
+		expectedName := fmt.Sprintf("Customer%d", r.orderID)
+		if *r.customerName != expectedName {
+			t.Fatalf("LEFT JOIN row %d: expected name %q, got %q", i, expectedName, *r.customerName)
+		}
+	}
+	t.Logf("FlatMap LEFT JOIN → %d rows, all matched ✓", len(leftGot))
+
+	// --- Part 3: LIMIT with FlatMap join ---
+	limitQ := "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 5"
+	limitRows, err := db.QueryContext(ctx, limitQ)
+	if err != nil {
+		t.Fatalf("LIMIT+FlatMap query: %v", err)
+	}
+	defer limitRows.Close()
+
+	var limitCount int
+	for limitRows.Next() {
+		var oid int64
+		var cname string
+		if err := limitRows.Scan(&oid, &cname); err != nil {
+			t.Fatalf("LIMIT+FlatMap Scan: %v", err)
+		}
+		limitCount++
+	}
+	if err := limitRows.Err(); err != nil {
+		t.Fatalf("LIMIT+FlatMap rows.Err: %v", err)
+	}
+	if limitCount != 5 {
+		t.Fatalf("LIMIT 5 on FlatMap join: expected 5 rows, got %d", limitCount)
+	}
+	t.Logf("FlatMap + LIMIT 5 → %d rows ✓", limitCount)
+}

@@ -54,6 +54,51 @@ See `RFC_TRANSACTION_PAGINATION.md` and `STRESS_RELATIONAL.md` for full analysis
 
 ---
 
+## CRITICAL — FlatMap Java alignment (MOSTLY DONE)
+
+Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT how Java does it. Java evaluates a `resultValue` expression with both outer and inner bound as correlations. The `mergeRows` hack breaks for same-column-name joins and doesn't match Java's data flow.
+
+**What Java does (RecordQueryFlatMapPlan.executePlan):**
+1. Binds outer result as `CORRELATION` under `outerQuantifier.getAlias()`
+2. Executes inner plan with correlated context + innerContinuation
+3. For each inner result: binds BOTH outer AND inner as correlations → evaluates `resultValue` → produces output row
+4. `resultValue` is a Value tree (RecordConstructorValue) that explicitly selects fields from both correlations
+
+**What Go currently does (wrong):**
+1. Binds outer datum as correlation ✓
+2. Executes inner plan ✓
+3. Calls `mergeRows(outer, inner, aliases)` — Go-specific hack that breaks for ambiguous columns
+
+**Fix (must be done as a unit, no intermediate states):**
+- [x] `RecordQueryFlatMapPlan` carries `resultValue values.Value` + `inheritOuterRecordProperties`
+- [x] `flatMapCursor` binds BOTH outer and inner as correlations, evaluates `resultValue` — no `mergeRows`
+- [x] `JoinMergeResultValue` produces merged map with qualified keys from both correlation bindings
+- [x] Multi-predicate support: absorb equi-join into correlated scan, residual predicates above or inside inner
+- [x] Same-column-name joins — `deriveColumnsFromFlatMap` handles qualified keys
+- [x] `FlatMapContinuation` proto: wired (outer + inner position serialized/deserialized)
+- [x] Secondary index FlatMap: correlated index scans via MatchCandidate
+- [x] EXISTS/NOT EXISTS FlatMap mode with multi-predicate support (alias-stripped inner filter)
+- [x] LEFT OUTER FlatMap with correct NULL row emission
+- [x] Outer-only predicate push-down below FlatMap (alias-stripped)
+- [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
+- [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions)
+
+### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
+
+- [ ] **Multi-step FlatMap continuation under TIME_LIMIT**: Java's `testFlatMapReasons` verifies 5×5 grid across 6 continuation cycles where inner hits TIME_LIMIT every 3 items. Go has ZERO resumption tests under time pressure.
+- [ ] **OrElse (NOT EXISTS) under TIME_LIMIT**: Java has 4 tests for decision-before-vs-after time limit in the orElse cursor. Go has zero.
+- [ ] **Inner/outer limit grid tests**: Java verifies full M×N product when cursors hit limits every N items (`pipelineWithInnerLimits`/`pipelineWithOuterLimits`). Go has no equivalent.
+- [ ] **JOIN continuation resume at SQL level**: Java's `JoinWithLimitTest.joinWithContinuationAndLimit` uses `EXECUTE CONTINUATION` to resume mid-join. Go uses LIMIT/OFFSET (simulates pages) but never tests actual continuation-based resume.
+- [ ] **EXISTS + 3-way join + ORDER BY plan shape**: Java tests EXISTS nested between two FlatMap joins with ORDER BY controlling scan direction.
+
+---
+
+## DONE — SQL LIMIT/OFFSET extension (swingshift-95)
+
+Shipped. Parse in PlanVisitor.visitLimit → LogicalLimit in logical tree → Cascades translator skips it → paginatingRows applies post-execution. Tests: LIMIT 3, LIMIT 2 OFFSET 1, yamsql offset.yaml.
+
+---
+
 ## Active work
 
 ### Bytes IN-list Ginkgo harness flake (491→492/492)

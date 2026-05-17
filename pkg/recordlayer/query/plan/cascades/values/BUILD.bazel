@@ -36,6 +36,7 @@ go_library(
         "value_index_entry_object.go",
         "value_index_only_aggregate.go",
         "value_indexed.go",
+        "value_join_merge.go",
         "value_like.go",
         "value_not.go",
         "value_object.go",

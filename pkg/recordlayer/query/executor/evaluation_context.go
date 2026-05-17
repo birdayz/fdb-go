@@ -75,11 +75,19 @@ func (ec *EvaluationContext) WithBinding(id values.CorrelationIdentifier, val an
 		newBindings[k] = v
 	}
 	newBindings[id] = val
-	return &EvaluationContext{bindings: newBindings, params: ec.params}
+	return &EvaluationContext{bindings: newBindings, params: ec.params, scalarSubqueries: ec.scalarSubqueries}
 }
 
 // GetBinding retrieves a correlation binding.
 func (ec *EvaluationContext) GetBinding(id values.CorrelationIdentifier) (any, bool) {
+	v, ok := ec.bindings[id]
+	return v, ok
+}
+
+// GetCorrelationBinding implements values.CorrelationBinder so that
+// QuantifiedObjectValue can resolve correlated rows during scan
+// comparison evaluation in the FlatMap execution path.
+func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifier) (any, bool) {
 	v, ok := ec.bindings[id]
 	return v, ok
 }

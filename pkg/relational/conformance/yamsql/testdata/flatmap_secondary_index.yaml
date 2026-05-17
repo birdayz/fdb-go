@@ -1,0 +1,36 @@
+# flatmap_secondary_index.yaml — FlatMap via secondary index
+#
+# When the inner table has a secondary index on the join column (not PK),
+# the planner should use a correlated index scan via FlatMap.
+name: flatmap_secondary_index
+schema_template: |
+  CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE items (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, title STRING, PRIMARY KEY (id))
+  CREATE INDEX idx_items_cat ON items (cat_id)
+setup:
+  - INSERT INTO categories VALUES (1, 'Books'), (2, 'Electronics'), (3, 'Empty')
+  - INSERT INTO items VALUES (10, 1, 'Novel'), (20, 1, 'Textbook'), (30, 2, 'Laptop'), (40, 2, 'Phone'), (50, 2, 'Tablet')
+tests:
+  # Join via secondary index: categories.id = items.cat_id (cat_id has index)
+  - query: SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id ORDER BY c.name, i.title
+    result:
+      - ["Books", "Novel"]
+      - ["Books", "Textbook"]
+      - ["Electronics", "Laptop"]
+      - ["Electronics", "Phone"]
+      - ["Electronics", "Tablet"]
+  # LEFT JOIN: category 'Empty' has no items → NULL title
+  - query: SELECT c.name, i.title FROM categories c LEFT JOIN items i ON c.id = i.cat_id ORDER BY c.name, i.title
+    result:
+      - ["Books", "Novel"]
+      - ["Books", "Textbook"]
+      - ["Electronics", "Laptop"]
+      - ["Electronics", "Phone"]
+      - ["Electronics", "Tablet"]
+      - ["Empty", null]
+  # With filter: only Electronics items
+  - query: SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id AND c.name = 'Electronics' ORDER BY i.title
+    result:
+      - ["Electronics", "Laptop"]
+      - ["Electronics", "Phone"]
+      - ["Electronics", "Tablet"]

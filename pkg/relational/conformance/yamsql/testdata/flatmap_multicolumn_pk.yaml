@@ -1,0 +1,19 @@
+# flatmap_multicolumn_pk.yaml — FlatMap with composite primary keys
+#
+# Tests that FlatMap correlated scans work when the inner table has a
+# multi-column PK but the join only matches the first PK column.
+# The correlated scan should use a prefix match (range scan on first PK col).
+name: flatmap_multicolumn_pk
+schema_template: |
+  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (dept_id BIGINT NOT NULL, emp_id BIGINT NOT NULL, name STRING, PRIMARY KEY (dept_id, emp_id))
+setup:
+  - INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales')
+  - INSERT INTO employees VALUES (1, 100, 'Alice'), (1, 101, 'Bob'), (2, 200, 'Charlie')
+tests:
+  # Join on first PK column — should return all employees per department.
+  - query: SELECT d.name, e.name FROM departments d, employees e WHERE d.id = e.dept_id ORDER BY d.name, e.name
+    result:
+      - ["Engineering", "Alice"]
+      - ["Engineering", "Bob"]
+      - ["Sales", "Charlie"]

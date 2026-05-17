@@ -1,0 +1,30 @@
+# flatmap_left_outer_coverage.yaml — LEFT OUTER via FlatMap with PK match
+#
+# Schema where the join predicate matches inner PK, triggering FlatMap
+# LEFT OUTER path (not NLJ fallback).
+name: flatmap_left_outer_coverage
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')
+  - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50), (40, 99, 75)
+tests:
+  # LEFT JOIN: order 40 has customer_id=99 (no match) → NULL name
+  - query: SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id
+    result:
+      - [10, "Alice"]
+      - [20, "Alice"]
+      - [30, "Bob"]
+      - [40, null]
+  # LEFT JOIN with filter on outer: only high-value orders
+  - query: SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.amount > 60 ORDER BY o.id
+    result:
+      - [10, "Alice"]
+      - [20, "Alice"]
+      - [40, null]
+  # LEFT JOIN + LIMIT
+  - query: SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id LIMIT 2
+    result:
+      - [10, "Alice"]
+      - [20, "Alice"]

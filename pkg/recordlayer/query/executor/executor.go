@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -137,6 +138,9 @@ func ExecutePlan(
 		return executeMergeSortUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryInUnionPlan:
 		return executeInUnion(ctx, p, store, evalCtx, continuation, props)
+
+	case *plans.RecordQueryFlatMapPlan:
+		return executeFlatMap(ctx, p, store, evalCtx, continuation, props)
 
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return executeFetchFromPartialRecord(ctx, p, store, evalCtx, continuation, props)
@@ -1015,6 +1019,42 @@ func intersectionKey(qr QueryResult, keyVals []values.Value) string {
 	return b.String()
 }
 
+func executeFlatMap(
+	ctx context.Context,
+	p *plans.RecordQueryFlatMapPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	nestedProps := props.ClearSkipAndLimit()
+
+	// Parse FlatMapContinuation if resuming.
+	var outerCont, innerCont []byte
+	if len(continuation) > 0 {
+		var fmc gen.FlatMapContinuation
+		if err := proto.Unmarshal(continuation, &fmc); err == nil {
+			outerCont = fmc.OuterContinuation
+			innerCont = fmc.InnerContinuation
+		}
+	}
+
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, outerCont, nestedProps)
+	if err != nil {
+		return nil, err
+	}
+
+	cursor := newFlatMapCursor(
+		outerCursor, p.GetInner(), store, evalCtx,
+		p.GetOuterAlias(), p.GetInnerAlias(),
+		p.GetResultValue(),
+		p.IsLeftOuter(), p.IsExists(), p.IsNotExists(),
+		nestedProps,
+	)
+	cursor.initialInnerCont = innerCont
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+}
+
 func executeNestedLoopJoin(
 	ctx context.Context,
 	p *plans.RecordQueryNestedLoopJoinPlan,
@@ -1155,158 +1195,6 @@ func recordTypeName(qr QueryResult) string {
 		return strings.ToUpper(string(qr.Record.Record.ProtoReflect().Descriptor().Name()))
 	}
 	return ""
-}
-
-// equiJoinKey holds two Value extractors for one equi-join column pair.
-// outerVal evaluates against the outer row, innerVal against the inner row.
-type equiJoinKey struct {
-	outerVal values.Value
-	innerVal values.Value
-}
-
-// extractEquiJoinKeys analyses the NLJ predicates to find equi-join
-// conditions (FieldValue = FieldValue) where one side references the
-// outer table and the other the inner table. Returns the equi-join
-// keys, the residual (non-equi) predicates, and whether at least one
-// key was found.
-func extractEquiJoinKeys(
-	preds []predicates.QueryPredicate,
-	outerRows, innerRows []QueryResult,
-	outerAlias, innerAlias string,
-) ([]equiJoinKey, []predicates.QueryPredicate, bool) {
-	if len(preds) == 0 || len(outerRows) == 0 || len(innerRows) == 0 {
-		return nil, preds, false
-	}
-
-	outerSample, ok1 := outerRows[0].Datum.(map[string]any)
-	innerSample, ok2 := innerRows[0].Datum.(map[string]any)
-	if !ok1 || !ok2 {
-		return nil, preds, false
-	}
-
-	outerQual := outerAlias
-	if outerQual == "" {
-		outerQual = recordTypeName(outerRows[0])
-	}
-	innerQual := innerAlias
-	if innerQual == "" {
-		innerQual = recordTypeName(innerRows[0])
-	}
-
-	qualifiedOuter := qualifyMap(outerSample, outerQual, outerAlias, recordTypeName(outerRows[0]))
-	qualifiedInner := qualifyMap(innerSample, innerQual, innerAlias, recordTypeName(innerRows[0]))
-
-	var keys []equiJoinKey
-	var residual []predicates.QueryPredicate
-
-	for _, pred := range preds {
-		cp, ok := pred.(*predicates.ComparisonPredicate)
-		if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
-			residual = append(residual, pred)
-			continue
-		}
-		if cp.Operand == nil || cp.Comparison.Operand == nil {
-			residual = append(residual, pred)
-			continue
-		}
-
-		// Try LHS→outer, RHS→inner
-		lhsOuter := cp.Operand.Evaluate(qualifiedOuter)
-		rhsInner := cp.Comparison.Operand.Evaluate(qualifiedInner)
-		if lhsOuter != nil && rhsInner != nil {
-			lhsInner := cp.Operand.Evaluate(qualifiedInner)
-			if lhsInner == nil {
-				keys = append(keys, equiJoinKey{outerVal: cp.Operand, innerVal: cp.Comparison.Operand})
-				continue
-			}
-		}
-
-		// Try LHS→inner, RHS→outer
-		lhsInner := cp.Operand.Evaluate(qualifiedInner)
-		rhsOuter := cp.Comparison.Operand.Evaluate(qualifiedOuter)
-		if lhsInner != nil && rhsOuter != nil {
-			rhsInnerCheck := cp.Comparison.Operand.Evaluate(qualifiedInner)
-			if rhsInnerCheck == nil {
-				keys = append(keys, equiJoinKey{outerVal: cp.Comparison.Operand, innerVal: cp.Operand})
-				continue
-			}
-		}
-
-		residual = append(residual, pred)
-	}
-
-	if len(keys) == 0 {
-		return nil, preds, false
-	}
-	return keys, residual, true
-}
-
-// qualifyMap replicates the key qualification from mergeRows so that
-// predicate evaluation against individual (non-merged) rows resolves
-// qualified field names like "ORDERS.CUSTOMER_ID".
-func qualifyMap(row map[string]any, qual, alias, typeName string) map[string]any {
-	qualified := make(map[string]any, len(row)*3)
-	for k, v := range row {
-		qualified[k] = v
-		if strings.Contains(k, ".") {
-			continue
-		}
-		if qual != "" {
-			qualified[qual+"."+strings.ToUpper(k)] = v
-		}
-		if alias != "" && typeName != "" && alias != typeName {
-			qualified[typeName+"."+strings.ToUpper(k)] = v
-		}
-	}
-	return qualified
-}
-
-// buildInnerHashIndex indexes inner rows by the equi-join key values.
-// Rows with any NULL key component are excluded (SQL: NULL = NULL is UNKNOWN).
-func buildInnerHashIndex(innerRows []QueryResult, keys []equiJoinKey, innerAlias string) (map[string][]QueryResult, []QueryResult) {
-	index := make(map[string][]QueryResult, len(innerRows))
-	var nullRows []QueryResult
-	for _, row := range innerRows {
-		k, hasNull := computeJoinKey(row, keys, true, innerAlias)
-		if hasNull {
-			nullRows = append(nullRows, row)
-			continue
-		}
-		index[k] = append(index[k], row)
-	}
-	return index, nullRows
-}
-
-// computeJoinKey evaluates the equi-join key expressions against a row,
-// producing a string hash key. inner=true uses innerVal, inner=false uses outerVal.
-// Returns hasNull=true when any key component evaluates to NULL.
-func computeJoinKey(row QueryResult, keys []equiJoinKey, inner bool, alias string) (string, bool) {
-	rowMap, ok := row.Datum.(map[string]any)
-	if !ok {
-		return "", true
-	}
-
-	typeName := recordTypeName(row)
-	qual := alias
-	if qual == "" {
-		qual = typeName
-	}
-	qualified := qualifyMap(rowMap, qual, alias, typeName)
-
-	var b strings.Builder
-	for _, k := range keys {
-		var val any
-		if inner {
-			val = k.innerVal.Evaluate(qualified)
-		} else {
-			val = k.outerVal.Evaluate(qualified)
-		}
-		if val == nil {
-			return "", true
-		}
-		fmt.Fprintf(&b, "%T:%v|", val, val)
-	}
-	return b.String(), false
 }
 
 func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) bool {

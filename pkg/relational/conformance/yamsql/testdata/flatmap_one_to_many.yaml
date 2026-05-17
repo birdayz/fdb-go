@@ -1,0 +1,36 @@
+# flatmap_one_to_many.yaml — FlatMap with 1:N relationship (high fan-out)
+#
+# Tests that correlated PK scan returns ALL matching rows when
+# multiple inner rows share the same FK value.
+name: flatmap_one_to_many
+schema_template: |
+  CREATE TABLE authors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE books (id BIGINT NOT NULL, author_id BIGINT NOT NULL, title STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO authors VALUES (1, 'Tolkien'), (2, 'Asimov')
+  - INSERT INTO books VALUES (1, 1, 'LOTR'), (2, 1, 'Hobbit'), (3, 1, 'Silmarillion'), (4, 2, 'Foundation'), (5, 2, 'I Robot')
+tests:
+  # 1:N join — Tolkien has 3 books, Asimov has 2.
+  - query: SELECT a.name, b.title FROM authors a, books b WHERE b.author_id = a.id ORDER BY a.name, b.title
+    result:
+      - ["Asimov", "Foundation"]
+      - ["Asimov", "I Robot"]
+      - ["Tolkien", "Hobbit"]
+      - ["Tolkien", "LOTR"]
+      - ["Tolkien", "Silmarillion"]
+  # COUNT per author via GROUP BY on joined result.
+  - query: >
+      SELECT a.name, COUNT(*) AS book_count
+      FROM authors a, books b
+      WHERE b.author_id = a.id
+      GROUP BY a.name
+      ORDER BY a.name
+    result:
+      - ["Asimov", 2]
+      - ["Tolkien", 3]
+  # LIMIT on 1:N join.
+  - query: SELECT a.name, b.title FROM authors a, books b WHERE b.author_id = a.id ORDER BY b.title LIMIT 3
+    result:
+      - ["Asimov", "Foundation"]
+      - ["Tolkien", "Hobbit"]
+      - ["Asimov", "I Robot"]

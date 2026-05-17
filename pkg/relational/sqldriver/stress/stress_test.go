@@ -213,6 +213,11 @@ func TestFDB_Stress_100K(t *testing.T) {
 	runStressSuite(t, "100k", 100_000)
 }
 
+func TestFDB_Stress_1M(t *testing.T) {
+	t.Parallel()
+	runStressSuite(t, "1m", 1_000_000)
+}
+
 func runStressSuite(t *testing.T, suffix string, n int) {
 	h := newStressHarness(t, suffix)
 

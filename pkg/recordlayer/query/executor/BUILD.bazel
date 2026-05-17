@@ -8,6 +8,7 @@ go_library(
         "evaluation_context.go",
         "executor.go",
         "executor_new_plans.go",
+        "flat_map_cursor.go",
         "query_result.go",
         "resultset.go",
         "scalar_subquery.go",

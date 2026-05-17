@@ -67,7 +67,9 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	case *logical.LogicalFilter:
 		return t.translateFilter(o)
 	case *logical.LogicalLimit:
-		return t.translateLimit(o)
+		// LIMIT/OFFSET applied post-execution by paginatingRows.
+		// Skip the LogicalLimit wrapper — just translate its child.
+		return t.translateOp(o.Input)
 	case *logical.LogicalUnion:
 		return t.translateUnion(o)
 	case *logical.LogicalSort:

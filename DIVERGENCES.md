@@ -45,12 +45,14 @@ Same user-visible behavior: identical SQLSTATE, identical error message. 24 yams
 
 No functional difference — absorbs candidate-side-only expressions (MatchableSortExpression) into partial matches. Same inputs, same outputs.
 
-### Go uses NestedLoopJoinPlan instead of FlatMapPlan
+### FlatMap covers all join types; NLJ is fallback for non-indexed joins
 
-**Java:** `RecordQueryFlatMapPlan` with correlation bindings.
-**Go:** `RecordQueryNestedLoopJoinPlan` with explicit predicates.
+**Java:** `RecordQueryFlatMapPlan` for ALL joins. No separate NLJ plan exists.
+**Go (swingshift-95):** `RecordQueryFlatMapPlan` fires for ALL join types (INNER, CROSS, LEFT OUTER, EXISTS, NOT EXISTS) when the equi-join predicate matches the inner table's PK or a secondary index. Uses correlated scan + `JoinMergeResultValue` + `CorrelationBinder` interface + `existsMode`/`notExistsMode` flags. `RecordQueryNestedLoopJoinPlan` remains as fallback for non-indexed joins (no PK/index match for the predicate).
 
-Same execution semantics — for each outer row, evaluate inner with bound correlations, filter by predicate. The FlatMap join ordering criterion (criterion 15 in PlanningCostModel) is N/A — Go doesn't produce FlatMap plans.
+**Remaining NLJ cases:** Joins where no predicate matches any PK or index first column (brute-force NLJ is the only option). Self-joins now work via FlatMap (aliases disambiguate).
+
+**Composite PK limitation:** FlatMap only matches the FIRST PK column. Joins on non-first PK columns fall back to NLJ.
 
 ### Go has explicit Sort/InMemorySort physical operators
 
@@ -88,7 +90,7 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 12. Unmatched fields | UnmatchedFieldsCountProperty | `totalCols - boundCols` | Aligned |
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
 | 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
-| 15. FlatMap join ordering | Compare outer child cardinalities | N/A (Go uses NLJ, not FlatMap) | N/A |
+| 15. FlatMap join ordering | Compare outer child cardinalities | `physicalFlatMapWrapper.HintCost` treats child[0] as outer without cardinality comparison | Gap: Java's `FlatMapJoinOrderingProperty` prefers smaller-outer arrangement |
 | 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `deepHashCode()` recursive | Aligned |
 
 Go-only addition: scalar `CostLess` fallback between criteria 14 and 16 (discriminates plans the ordinal criteria can't distinguish).

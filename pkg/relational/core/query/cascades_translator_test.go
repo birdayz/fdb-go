@@ -36,6 +36,9 @@ func TestTranslateFilterOverScan(t *testing.T) {
 
 func TestTranslateLimit(t *testing.T) {
 	t.Parallel()
+	// LogicalLimit is skipped by the translator — LIMIT/OFFSET is
+	// applied post-execution by paginatingRows. The Cascades pipeline
+	// sees only the inner (scan) expression.
 	scan := logical.NewScan("orders", "")
 	limit := logical.NewLimit(scan, 10, 5)
 	ref := TranslateToCascades(limit)
@@ -43,8 +46,8 @@ func TestTranslateLimit(t *testing.T) {
 		t.Fatal("expected non-nil reference")
 	}
 	members := ref.Members()
-	if _, ok := members[0].(*expressions.LogicalLimitExpression); !ok {
-		t.Fatalf("expected LogicalLimitExpression, got %T", members[0])
+	if _, ok := members[0].(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("expected FullUnorderedScanExpression (limit skipped), got %T", members[0])
 	}
 }
 

@@ -101,6 +101,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 				physicalPlan:     cachedPlan,
 				explain:          cachedPlan.Explain(),
 				scalarSubqueries: cachedSubs,
+				sqlLimit:         -1,
 			}, nil
 		}
 	}
@@ -198,18 +199,37 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		})
 	}
 
+	sqlLimit, sqlOffset := extractLimitOffset(logicalOp)
+
 	// Cache the planned result for future queries with the same SQL.
-	if g.cache != nil {
+	// Don't cache LIMIT/OFFSET queries — the limit is applied post-execution
+	// and not stored in the cached plan.
+	if g.cache != nil && sqlLimit < 0 && sqlOffset == 0 {
 		g.cache.Put(sqlHash, sql, physPlan, scalarSubs)
 	}
-
 	return &cascadesPlan{
 		conn:             g.c,
 		md:               md,
 		physicalPlan:     physPlan,
 		explain:          logicalOp.Explain(""),
 		scalarSubqueries: scalarSubs,
+		sqlLimit:         sqlLimit,
+		sqlOffset:        sqlOffset,
 	}, nil
+}
+
+func extractLimitOffset(op logical.LogicalOperator) (int64, int64) {
+	for op != nil {
+		if lim, ok := op.(*logical.LogicalLimit); ok {
+			return lim.Limit, lim.Offset
+		}
+		children := op.Children()
+		if len(children) == 0 {
+			break
+		}
+		op = children[0]
+	}
+	return -1, 0
 }
 
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (query.Plan, error) {
@@ -299,6 +319,8 @@ type cascadesPlan struct {
 	explain          string
 	isUpdate         bool
 	scalarSubqueries []scalarSubqueryBinding
+	sqlLimit         int64 // Go extension: <0 means no limit
+	sqlOffset        int64
 }
 
 func (p *cascadesPlan) IsUpdate() bool { return p.isUpdate }
@@ -337,6 +359,8 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		plan:             p.physicalPlan,
 		md:               p.md,
 		scalarSubqueries: p.scalarSubqueries,
+		sqlLimit:         p.sqlLimit,
+		sqlOffset:        p.sqlOffset,
 		cols:             cols,
 	}
 
@@ -362,6 +386,12 @@ type paginatingRows struct {
 	md               *recordlayer.RecordMetaData
 	scalarSubqueries []scalarSubqueryBinding
 	cols             []executor.ColumnDef
+
+	// Go extension: SQL LIMIT/OFFSET applied post-execution.
+	sqlLimit  int64 // <0 means no limit
+	sqlOffset int64
+	emitted   int64
+	skipped   int64
 
 	buf          [][]driver.Value
 	bufPos       int
@@ -445,21 +475,45 @@ func (r *paginatingRows) Next(dest []driver.Value) error {
 	if r.closed {
 		return io.EOF
 	}
+	// LIMIT exhausted — stop early.
+	if r.sqlLimit >= 0 && r.emitted >= r.sqlLimit {
+		return io.EOF
+	}
+
+	for {
+		row, err := r.nextRow()
+		if err != nil {
+			return err
+		}
+		// OFFSET: skip rows.
+		if r.skipped < r.sqlOffset {
+			r.skipped++
+			continue
+		}
+		copy(dest, row)
+		r.emitted++
+		return nil
+	}
+}
+
+func (r *paginatingRows) nextRow() ([]driver.Value, error) {
+	if r.closed {
+		return nil, io.EOF
+	}
 
 	// Serve from buffer if available.
 	if r.bufPos < len(r.buf) {
 		row := r.buf[r.bufPos]
 		r.bufPos++
-		copy(dest, row)
-		return nil
+		return row, nil
 	}
 
 	// Buffer exhausted. If source is done, we're done.
 	if r.exhausted {
-		return io.EOF
+		return nil, io.EOF
 	}
 	if r.fetchErr != nil {
-		return r.fetchErr
+		return nil, r.fetchErr
 	}
 
 	// Fetch pages until we have rows or the source is truly exhausted.
@@ -469,20 +523,19 @@ func (r *paginatingRows) Next(dest []driver.Value) error {
 	for {
 		if err := r.fetchPage(); err != nil {
 			r.fetchErr = err
-			return err
+			return nil, err
 		}
 		if len(r.buf) > 0 {
 			break
 		}
 		if r.exhausted {
-			return io.EOF
+			return nil, io.EOF
 		}
 	}
 
 	row := r.buf[r.bufPos]
 	r.bufPos++
-	copy(dest, row)
-	return nil
+	return row, nil
 }
 
 // fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
@@ -728,6 +781,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 		return deriveColumnsFromJoin(nlj, md)
 	}
+	if fm, ok := plan.(*plans.RecordQueryFlatMapPlan); ok {
+		return deriveColumnsFromFlatMap(fm, md)
+	}
 	if u := findUnionPlan(plan); u != nil {
 		return deriveColumnsFromPlan(u[0], md)
 	}
@@ -936,6 +992,34 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 		qual := c
 		if secondAlias != "" && !strings.Contains(c.Name, ".") {
 			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
+	return cols
+}
+
+func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	outerCols := deriveColumnsFromPlan(fm.GetOuter(), md)
+	innerCols := deriveColumnsFromPlan(fm.GetInner(), md)
+	if outerCols == nil && innerCols == nil {
+		return nil
+	}
+
+	outerAlias := strings.ToUpper(fm.GetOuterAlias().Name())
+	innerAlias := strings.ToUpper(fm.GetInnerAlias().Name())
+
+	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
+	for _, c := range outerCols {
+		qual := c
+		if outerAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = outerAlias + "." + strings.ToUpper(c.Name)
+		}
+		cols = append(cols, qual)
+	}
+	for _, c := range innerCols {
+		qual := c
+		if innerAlias != "" && !strings.Contains(c.Name, ".") {
+			qual.Name = innerAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}

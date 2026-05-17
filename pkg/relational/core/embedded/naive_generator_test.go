@@ -46,10 +46,8 @@ func TestNaiveGenerator_Explain_SelectStar(t *testing.T) {
 
 func TestNaiveGenerator_Explain_SelectWhere(t *testing.T) {
 	t.Parallel()
-	// LIMIT is rejected at parse time (fdb-relational 4.11.1.0's
-	// AstNormalizer / Go's extractFromSimpleTable), so this exercises
-	// the WHERE + ORDER BY composition only. The LogicalLimit operator
-	// remains in the builder for future setMaxRows-routing.
+	// Exercises WHERE + ORDER BY composition (no LIMIT in this query).
+	// LIMIT/OFFSET is now supported as a Go extension.
 	p := helperPlan(t, "SELECT id, name FROM users WHERE active = TRUE ORDER BY id")
 	got := p.Explain()
 	// Composition: Project → Sort → Filter → Scan.
