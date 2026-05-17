@@ -43,6 +43,7 @@ type flatMapCursor struct {
 	priorOuterContinuation recordlayer.RecordCursorContinuation
 	lastOuterContinuation  recordlayer.RecordCursorContinuation
 	initialInnerCont       []byte
+	hasPendingInner        bool
 }
 
 func newFlatMapCursor(
@@ -167,6 +168,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		if c.initialInnerCont != nil {
 			innerContBytes = c.initialInnerCont
 			c.initialInnerCont = nil
+			c.hasPendingInner = false
 		}
 		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, innerContBytes, c.props)
 		if err != nil {
@@ -233,6 +235,9 @@ func (c *flatMapCursor) wrapOuterContinuation(outerCont recordlayer.RecordCursor
 	fmc := &gen.FlatMapContinuation{}
 	if outerCont != nil {
 		fmc.OuterContinuation, _ = outerCont.ToBytes()
+	}
+	if c.hasPendingInner {
+		fmc.InnerContinuation = c.initialInnerCont
 	}
 	data, err := proto.Marshal(fmc)
 	if err != nil {

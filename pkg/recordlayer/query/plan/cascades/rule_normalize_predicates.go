@@ -32,13 +32,13 @@ import (
 // default size limit of 1,000,000.
 type NormalizePredicatesRule struct {
 	matcher    matching.BindingMatcher
-	normalized map[uint64]struct{}
+	normalized map[*expressions.SelectExpression]struct{}
 }
 
 func NewNormalizePredicatesRule() *NormalizePredicatesRule {
 	return &NormalizePredicatesRule{
 		matcher:    NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
-		normalized: make(map[uint64]struct{}),
+		normalized: make(map[*expressions.SelectExpression]struct{}),
 	}
 }
 
@@ -51,8 +51,7 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	h := sel.HashCodeWithoutChildren()
-	if _, seen := r.normalized[h]; seen {
+	if _, seen := r.normalized[sel]; seen {
 		return
 	}
 
@@ -80,8 +79,8 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 		cnfConjuncts,
 		sel.GetSourceAliases(),
 	)
-	r.normalized[h] = struct{}{}
-	r.normalized[result.HashCodeWithoutChildren()] = struct{}{}
+	r.normalized[sel] = struct{}{}
+	r.normalized[result] = struct{}{}
 	call.Yield(result)
 }
 
