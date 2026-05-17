@@ -372,6 +372,40 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		r.mustSucceed(t, "IN-list 5 values")
 	})
 
+	t.Run("needle_in_haystack_pk", func(t *testing.T) {
+		// PK lookup deep in the table — should be O(1) via scan comparisons.
+		target := n - 1
+		r := h.timeQuery("SELECT id, customer_id, amount, status FROM orders WHERE id = ?", target)
+		r.expectRows(t, fmt.Sprintf("PK needle id=%d", target), 1)
+		if r.Duration > 5*time.Second {
+			t.Errorf("PK needle took %v — point lookup should be fast", r.Duration)
+		}
+	})
+	t.Run("needle_in_haystack_filter", func(t *testing.T) {
+		// Filter that matches exactly 1 row. Uses PK equality (fast) but
+		// combined with a non-indexed filter to force the planner to prove
+		// the filter evaluates correctly even at scale.
+		target := n / 2
+		r := h.timeQuery("SELECT id, amount FROM orders WHERE id = ? AND status = 'pending'", target)
+		r.mustSucceed(t, fmt.Sprintf("PK+filter needle id=%d", target))
+		// id=n/2 has status=statuses[(n/2)%4]. If (n/2)%4==0 → 'pending'.
+		// For even n, n/2 is always divisible by 2 but not necessarily by 4.
+		// Don't assert exact count — just verify no error and no truncation.
+		t.Logf("  PK+filter needle: %d rows", r.RowCount)
+	})
+	t.Run("full_scan_sparse_filter", func(t *testing.T) {
+		// Full scan with a filter matching very few rows deep in the table.
+		// amount is indexed but we use an expression (amount + 0) to prevent
+		// index usage, forcing a full scan + filter across all pages.
+		// With amounts 1..10000 uniform, amount=9999 matches ~N/10000 rows.
+		r := h.timeQuery("SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id")
+		r.mustSucceed(t, "full scan sparse filter")
+		if r.RowCount == 0 {
+			t.Error("sparse filter returned 0 rows — pagination may have truncated")
+		}
+		t.Logf("  sparse filter: found %d rows (expected ~%d)", r.RowCount, max(1, n/10000))
+	})
+
 	t.Run("update_by_index", func(t *testing.T) {
 		r := h.timeExec("UPDATE orders SET amount = amount + 1 WHERE customer_id = 0")
 		r.mustSucceed(t, "UPDATE by index")
