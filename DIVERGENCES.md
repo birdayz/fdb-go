@@ -52,6 +52,8 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Remaining:** Remove NLJ entirely once all joins can be expressed as FlatMap (requires correlated scans for non-indexed predicates — full table re-scan per outer row, which Java does via async pipelining).
 
+**Composite PK limitation:** FlatMap only matches the FIRST PK column for correlated scans. Joins on composite PKs where the equi-join predicate matches a non-first PK column fall back to NLJ. Java handles this via the full MatchCandidate infrastructure with multi-column prefix matching.
+
 ### Go has explicit Sort/InMemorySort physical operators
 
 **Java:** Relies on `RemoveSortRule` to eliminate sorts; no in-memory sort plan exists.
