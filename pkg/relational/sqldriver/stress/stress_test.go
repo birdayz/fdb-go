@@ -398,7 +398,24 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		// amount is indexed but we use an expression (amount + 0) to prevent
 		// index usage, forcing a full scan + filter across all pages.
 		// With amounts 1..10000 uniform, amount=9999 matches ~N/10000 rows.
-		r := h.timeQuery("SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id")
+		query := "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id"
+
+		// Log the plan to prove no index is used.
+		rows, err := h.db.QueryContext(context.Background(), "EXPLAIN "+query)
+		if err == nil {
+			for rows.Next() {
+				var planText string
+				if scanErr := rows.Scan(&planText); scanErr == nil {
+					t.Logf("  EXPLAIN: %s", planText)
+					if strings.Contains(planText, "Index") || strings.Contains(planText, "INDEX") {
+						t.Error("EXPLAIN shows index usage — expected full scan")
+					}
+				}
+			}
+			rows.Close()
+		}
+
+		r := h.timeQuery(query)
 		r.mustSucceed(t, "full scan sparse filter")
 		if r.RowCount == 0 {
 			t.Error("sparse filter returned 0 rows — pagination may have truncated")
