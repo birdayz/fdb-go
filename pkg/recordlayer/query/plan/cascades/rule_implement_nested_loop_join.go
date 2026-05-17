@@ -208,16 +208,18 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		innerAlias = aliases[1]
 	}
 
-	// When there are correlated join predicates (e.g. `sub.v = a.v`),
-	// use the raw inner scan instead of the FOD wrapper. The NLJ
-	// executor's with-predicates path collects all inner rows and
-	// tests each outer+inner combination against the predicates; a
-	// FOD limits the inner to one row, making correlation incomplete.
-	// Don't pre-filter the outer either -- correlated predicates
-	// reference inner columns that aren't in the outer row map.
-	//
-	// When there are NO correlated predicates (pure uncorrelated
-	// EXISTS), the FOD handles the "any row?" semantics correctly.
+	// Try FlatMap for correlated EXISTS: if there's exactly ONE
+	// correlated predicate matching the inner table's PK or index,
+	// use a correlated scan with EXISTS mode. Multi-predicate EXISTS
+	// requires predicate qualification alignment (inner scan has
+	// unqualified keys but predicates are qualified) — deferred.
+	if len(regularPreds) == 1 && !sel.IsQuantifiersSwapped() {
+		if r.tryExistsFlatMap(call, sel, outerPlan, innerPlan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, regularPreds) {
+			return
+		}
+	}
+
+	// Fallback: NLJ with predicate filtering.
 	var nljInner plans.RecordQueryPlan
 	if len(regularPreds) > 0 {
 		nljInner = innerPlan
@@ -613,6 +615,199 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 	}
 
 	return false
+}
+
+// tryExistsFlatMap is like tryFlatMapPlan but for EXISTS subqueries.
+// The key difference: residual predicates wrap the INNER plan (filter
+// inner rows before EXISTS check) rather than wrapping above the FlatMap.
+func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	outerPlan, innerPlan plans.RecordQueryPlan,
+	outerAlias, innerAlias string,
+	outerExpr, innerExpr expressions.RelationalExpression,
+	joinType plans.JoinType,
+	preds []predicates.QueryPredicate,
+) bool {
+	innerScan, ok := innerPlan.(*plans.RecordQueryScanPlan)
+	if !ok {
+		return false
+	}
+	recordTypes := innerScan.GetRecordTypes()
+	if len(recordTypes) != 1 {
+		return false
+	}
+	// Skip self-joins.
+	if outerScan, ok := outerPlan.(*plans.RecordQueryScanPlan); ok {
+		outerTypes := outerScan.GetRecordTypes()
+		if len(outerTypes) == 1 && outerTypes[0] == recordTypes[0] {
+			return false
+		}
+	}
+
+	innerPrefix := strings.ToUpper(innerAlias) + "."
+	outerPrefix := strings.ToUpper(outerAlias) + "."
+
+	// Try PK first.
+	pkCols := call.Context.GetPrimaryKeyColumns(recordTypes[0])
+	if len(pkCols) > 0 {
+		pkCol := strings.ToUpper(pkCols[0])
+		for _, pred := range preds {
+			cp, ok := pred.(*predicates.ComparisonPredicate)
+			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
+				continue
+			}
+			if cp.Operand == nil || cp.Comparison.Operand == nil {
+				continue
+			}
+			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
+			if outerVal == nil {
+				continue
+			}
+			return r.buildExistsFlatMap(call, sel, outerPlan, innerScan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, outerPrefix, outerVal, pred, preds)
+		}
+	}
+
+	// Try secondary indexes.
+	for _, cand := range call.Context.GetMatchCandidates() {
+		candCols := cand.GetColumnNames()
+		if len(candCols) == 0 {
+			continue
+		}
+		candTypes := cand.GetRecordTypes()
+		if len(candTypes) == 0 || candTypes[0] != recordTypes[0] {
+			continue
+		}
+		idxFirstCol := strings.ToUpper(candCols[0])
+		for _, pred := range preds {
+			cp, ok := pred.(*predicates.ComparisonPredicate)
+			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
+				continue
+			}
+			if cp.Operand == nil || cp.Comparison.Operand == nil {
+				continue
+			}
+			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, idxFirstCol)
+			if outerVal == nil {
+				continue
+			}
+			// Build correlated index scan.
+			outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
+			bareField := outerVal.Field
+			if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+				bareField = bareField[len(outerPrefix):]
+			}
+			correlatedOperand := values.NewFieldValue(
+				values.NewQuantifiedObjectValue(outerCorrelation),
+				bareField, outerVal.Typ,
+			)
+			correlatedComp := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: correlatedOperand}
+			cr := predicates.EmptyComparisonRange()
+			mergeResult := cr.Merge(correlatedComp)
+			if !mergeResult.Ok {
+				continue
+			}
+			correlatedIndexScan := plans.NewRecordQueryIndexPlan(
+				cand.CandidateName(),
+				[]*predicates.ComparisonRange{mergeResult.Range},
+				recordTypes, innerScan.GetFlowedType(), false,
+			)
+
+			// Wrap residual predicates INSIDE the inner (filter inner rows).
+			var innerWithFilter plans.RecordQueryPlan = correlatedIndexScan
+			var residuals []predicates.QueryPredicate
+			for _, p := range preds {
+				if p != pred {
+					residuals = append(residuals, p)
+				}
+			}
+			if len(residuals) > 0 {
+				innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedIndexScan, residuals)
+			}
+
+			innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
+			resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
+			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+				outerPlan, innerWithFilter,
+				outerCorrelation, innerCorrelation,
+				resultVal, true,
+			)
+			switch joinType {
+			case plans.JoinExists:
+				flatMapPlan.SetExists(true)
+			case plans.JoinNotExists:
+				flatMapPlan.SetNotExists(true)
+			}
+
+			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
+			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+			call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+			return true
+		}
+	}
+	return false
+}
+
+func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	outerPlan plans.RecordQueryPlan, innerScan *plans.RecordQueryScanPlan,
+	outerAlias, innerAlias string,
+	outerExpr, innerExpr expressions.RelationalExpression,
+	joinType plans.JoinType,
+	outerPrefix string,
+	outerVal *values.FieldValue,
+	matchedPred predicates.QueryPredicate,
+	allPreds []predicates.QueryPredicate,
+) bool {
+	outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
+	bareField := outerVal.Field
+	if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+		bareField = bareField[len(outerPrefix):]
+	}
+	correlatedOperand := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(outerCorrelation),
+		bareField, outerVal.Typ,
+	)
+	correlatedComp := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: correlatedOperand}
+	cr := predicates.EmptyComparisonRange()
+	mergeResult := cr.Merge(correlatedComp)
+	if !mergeResult.Ok {
+		return false
+	}
+
+	correlatedScan := innerScan.WithScanComparisons([]*predicates.ComparisonRange{mergeResult.Range})
+
+	// Wrap residual predicates INSIDE the inner plan.
+	var innerWithFilter plans.RecordQueryPlan = correlatedScan
+	var residuals []predicates.QueryPredicate
+	for _, p := range allPreds {
+		if p != matchedPred {
+			residuals = append(residuals, p)
+		}
+	}
+	if len(residuals) > 0 {
+		innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedScan, residuals)
+	}
+
+	innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
+	resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
+	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+		outerPlan, innerWithFilter,
+		outerCorrelation, innerCorrelation,
+		resultVal, true,
+	)
+	switch joinType {
+	case plans.JoinExists:
+		flatMapPlan.SetExists(true)
+	case plans.JoinNotExists:
+		flatMapPlan.SetNotExists(true)
+	}
+
+	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
+	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+	return true
 }
 
 // matchJoinPKPredicate checks if a comparison predicate matches the
