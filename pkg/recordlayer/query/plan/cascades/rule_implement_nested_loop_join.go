@@ -508,6 +508,9 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		}
 
 		// Collect residual predicates (all except the matched equi-join).
+		// All residuals stay above the FlatMap — pushing below requires
+		// predicate un-qualification (outer scan has unqualified keys but
+		// predicates use qualified O.AMOUNT form). Deferred optimization.
 		var residualPreds []predicates.QueryPredicate
 		for _, p := range preds {
 			if p != pred {
