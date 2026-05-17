@@ -75,7 +75,7 @@ func (ec *EvaluationContext) WithBinding(id values.CorrelationIdentifier, val an
 		newBindings[k] = v
 	}
 	newBindings[id] = val
-	return &EvaluationContext{bindings: newBindings, params: ec.params}
+	return &EvaluationContext{bindings: newBindings, params: ec.params, scalarSubqueries: ec.scalarSubqueries}
 }
 
 // GetBinding retrieves a correlation binding.
