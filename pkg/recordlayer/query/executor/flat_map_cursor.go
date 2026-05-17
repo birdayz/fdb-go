@@ -17,8 +17,9 @@ import (
 // plan with the outer row bound as a correlation.
 //
 // Go simplification: no async pipelining (Java uses pipeline depth 5
-// for overlapping FDB I/O). The semantics and continuation format are
-// identical.
+// for overlapping FDB I/O). Continuation: Go uses FlatMapContinuation
+// proto (outer+inner); check_value not populated (no concurrent-
+// modification detection).
 type flatMapCursor struct {
 	outerCursor   recordlayer.RecordCursor[QueryResult]
 	innerPlan     plans.RecordQueryPlan
@@ -117,13 +118,15 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 
 			// NOT EXISTS: inner exhausted with no match → emit outer row.
 			if c.notExistsMode && !c.innerHadMatch {
-				return recordlayer.NewResultWithValue(*c.currentOuter, nonEndContinuation), nil
+				cont := c.buildContinuation(innerCont, false)
+				return recordlayer.NewResultWithValue(*c.currentOuter, cont), nil
 			}
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
 			if c.leftOuter && !c.innerHadMatch {
 				outputRow := c.computeResult(*c.currentOuter, QueryResult{Datum: map[string]any{}})
-				return recordlayer.NewResultWithValue(outputRow, nonEndContinuation), nil
+				cont := c.buildContinuation(innerCont, false)
+				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
 		}
 
