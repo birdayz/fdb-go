@@ -83,6 +83,14 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
 - [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions)
 
+### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
+
+- [ ] **Multi-step FlatMap continuation under TIME_LIMIT**: Java's `testFlatMapReasons` verifies 5×5 grid across 6 continuation cycles where inner hits TIME_LIMIT every 3 items. Go has ZERO resumption tests under time pressure.
+- [ ] **OrElse (NOT EXISTS) under TIME_LIMIT**: Java has 4 tests for decision-before-vs-after time limit in the orElse cursor. Go has zero.
+- [ ] **Inner/outer limit grid tests**: Java verifies full M×N product when cursors hit limits every N items (`pipelineWithInnerLimits`/`pipelineWithOuterLimits`). Go has no equivalent.
+- [ ] **JOIN continuation resume at SQL level**: Java's `JoinWithLimitTest.joinWithContinuationAndLimit` uses `EXECUTE CONTINUATION` to resume mid-join. Go uses LIMIT/OFFSET (simulates pages) but never tests actual continuation-based resume.
+- [ ] **EXISTS + 3-way join + ORDER BY plan shape**: Java tests EXISTS nested between two FlatMap joins with ORDER BY controlling scan direction.
+
 ---
 
 ## DONE — SQL LIMIT/OFFSET extension (swingshift-95)
