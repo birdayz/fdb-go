@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -35,6 +38,11 @@ type flatMapCursor struct {
 	innerHadMatch  bool
 	outerExhausted bool
 	closed         bool
+
+	// Continuation state for cross-transaction resume.
+	priorOuterContinuation recordlayer.RecordCursorContinuation
+	lastOuterContinuation  recordlayer.RecordCursorContinuation
+	initialInnerCont       []byte
 }
 
 func newFlatMapCursor(
@@ -86,22 +94,25 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				if c.existsMode {
 					c.innerCursor.Close()
 					c.innerCursor = nil
-					return recordlayer.NewResultWithValue(*c.currentOuter, nonEndContinuation), nil
+					cont := c.buildContinuation(result.GetContinuation(), false)
+					return recordlayer.NewResultWithValue(*c.currentOuter, cont), nil
 				}
 
 				outputRow := c.computeResult(*c.currentOuter, innerRow)
-				return recordlayer.NewResultWithValue(outputRow, nonEndContinuation), nil
+				cont := c.buildContinuation(result.GetContinuation(), false)
+				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
 			// Inner exhausted for this outer row — close and advance outer.
 			reason := result.GetNoNextReason()
+			innerCont := result.GetContinuation()
 			c.innerCursor.Close()
 			c.innerCursor = nil
 
 			if reason != recordlayer.SourceExhausted {
-				// Inner hit time limit — propagate.
-				return recordlayer.NewResultNoNext[QueryResult](
-					reason, result.GetContinuation(),
-				), nil
+				// Inner hit time limit — serialize FlatMapContinuation
+				// with prior outer position + inner position for resume.
+				cont := c.buildContinuation(innerCont, true)
+				return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
 			}
 
 			// NOT EXISTS: inner exhausted with no match → emit outer row.
@@ -138,11 +149,19 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		outerRow := outerResult.GetValue()
 		c.currentOuter = &outerRow
 		c.innerHadMatch = false
+		c.priorOuterContinuation = c.lastOuterContinuation
+		c.lastOuterContinuation = outerResult.GetContinuation()
 
 		// Bind the outer row as a correlation and execute the inner plan.
+		// Use initialInnerCont for the first outer row on resume.
 		outerDatum, _ := outerRow.Datum.(map[string]any)
 		correlatedCtx := c.evalCtx.WithBinding(c.outerAlias, outerDatum)
-		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, nil, c.props)
+		var innerContBytes []byte
+		if c.initialInnerCont != nil {
+			innerContBytes = c.initialInnerCont
+			c.initialInnerCont = nil
+		}
+		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, innerContBytes, c.props)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
@@ -175,6 +194,35 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) QueryResul
 		return result
 	}
 	return QueryResult{Datum: computed}
+}
+
+// buildContinuation creates a FlatMapContinuation proto. When innerTimeLimited
+// is true, the inner cursor hit the time limit mid-row — encode the prior outer
+// position + inner position for resume. Otherwise encode the current outer
+// position (inner exhausted, next outer row on resume).
+func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorContinuation, innerTimeLimited bool) recordlayer.RecordCursorContinuation {
+	if innerCont != nil && innerCont.IsEnd() && c.lastOuterContinuation != nil && c.lastOuterContinuation.IsEnd() {
+		return &recordlayer.EndContinuation{}
+	}
+
+	fmc := &gen.FlatMapContinuation{}
+
+	if innerTimeLimited && innerCont != nil && !innerCont.IsEnd() {
+		if c.priorOuterContinuation != nil && !c.priorOuterContinuation.IsEnd() {
+			fmc.OuterContinuation, _ = c.priorOuterContinuation.ToBytes()
+		}
+		fmc.InnerContinuation, _ = innerCont.ToBytes()
+	} else {
+		if c.lastOuterContinuation != nil && !c.lastOuterContinuation.IsEnd() {
+			fmc.OuterContinuation, _ = c.lastOuterContinuation.ToBytes()
+		}
+	}
+
+	data, err := proto.Marshal(fmc)
+	if err != nil {
+		return nonEndContinuation
+	}
+	return recordlayer.NewBytesContinuation(data)
 }
 
 func (c *flatMapCursor) Close() error {

@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -1027,7 +1028,18 @@ func executeFlatMap(
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	nestedProps := props.ClearSkipAndLimit()
-	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, nestedProps)
+
+	// Parse FlatMapContinuation if resuming.
+	var outerCont, innerCont []byte
+	if len(continuation) > 0 {
+		var fmc gen.FlatMapContinuation
+		if err := proto.Unmarshal(continuation, &fmc); err == nil {
+			outerCont = fmc.OuterContinuation
+			innerCont = fmc.InnerContinuation
+		}
+	}
+
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, outerCont, nestedProps)
 	if err != nil {
 		return nil, err
 	}
@@ -1039,6 +1051,7 @@ func executeFlatMap(
 		p.IsLeftOuter(), p.IsExists(), p.IsNotExists(),
 		nestedProps,
 	)
+	cursor.initialInnerCont = innerCont
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
