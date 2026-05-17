@@ -3,10 +3,10 @@ package embedded
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
@@ -27,7 +27,6 @@ func (c *EmbeddedConnection) tryFastInsert(ctx context.Context, sql string) (int
 	if c.sess.Schema == "" || c.sess.DBPath == "" {
 		return 0, fmt.Errorf("fast-insert: no schema/db: schema=%q dbpath=%q", c.sess.Schema, c.sess.DBPath)
 	}
-	fmt.Fprintf(os.Stderr, "[FAST INSERT TRACE] schema=%q dbpath=%q sqllen=%d\n", c.sess.Schema, c.sess.DBPath, len(sql))
 
 	tableName, valueRows, err := parseFastInsert(sql)
 	if err != nil {
@@ -36,7 +35,7 @@ func (c *EmbeddedConnection) tryFastInsert(ctx context.Context, sql string) (int
 
 	resolvedTable, resolveErr := resolveTableForFastInsert(tableName, c.sess.Schema)
 	if resolveErr != nil {
-		return 0, errNotFastInsert
+		return 0, fmt.Errorf("resolve %q schema=%q: %w", tableName, c.sess.Schema, resolveErr)
 	}
 
 	var totalRows int64
@@ -52,7 +51,7 @@ func (c *EmbeddedConnection) tryFastInsert(ctx context.Context, sql string) (int
 			return nil, errNotFastInsert
 		}
 		md := rlTmpl.Underlying()
-		rt := md.GetRecordType(resolvedTable)
+		rt := md.GetRecordType(strings.ToUpper(resolvedTable))
 		if rt == nil {
 			return nil, errNotFastInsert
 		}
@@ -74,6 +73,7 @@ func (c *EmbeddedConnection) tryFastInsert(ctx context.Context, sql string) (int
 		fds := msgDesc.Fields()
 		numCols := fds.Len()
 
+		msgs := make([]proto.Message, 0, len(valueRows))
 		for _, vals := range valueRows {
 			if len(vals) != numCols {
 				return nil, errNotFastInsert
@@ -87,15 +87,16 @@ func (c *EmbeddedConnection) tryFastInsert(ctx context.Context, sql string) (int
 				}
 				msg.Set(fd, pv)
 			}
-			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
-				return nil, saveErr
-			}
-			totalRows++
+			msgs = append(msgs, msg)
 		}
+		if err := store.InsertBatch(msgs); err != nil {
+			return nil, err
+		}
+		totalRows = int64(len(msgs))
 		return nil, nil
 	})
 	if txErr != nil {
-		return 0, errNotFastInsert
+		return 0, fmt.Errorf("tx: %w", txErr)
 	}
 	return totalRows, nil
 }

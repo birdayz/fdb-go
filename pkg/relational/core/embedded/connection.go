@@ -12,7 +12,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -118,8 +117,6 @@ type EmbeddedConnection struct {
 	// hash. Per-connection (and therefore per-schema), invalidated on
 	// DDL. Lazily initialized on first query.
 	planCache *PlanCache
-
-	fastInsertDebugOnce atomic.Bool
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
@@ -281,10 +278,6 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 
 	if n, fastErr := c.tryFastInsert(ctx, substituted); fastErr == nil {
 		return driver.RowsAffected(n), nil
-	} else if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(substituted)), "INSERT") {
-		if c.fastInsertDebugOnce.CompareAndSwap(false, true) {
-			fmt.Fprintf(os.Stderr, "[FAST INSERT] miss: %v sql=%.80s\n", fastErr, substituted)
-		}
 	}
 
 	gen := &naiveGenerator{c: c}
