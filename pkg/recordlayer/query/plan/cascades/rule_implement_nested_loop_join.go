@@ -425,15 +425,6 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		return false
 	}
 
-	// Don't produce FlatMap for self-joins or same-type joins — the
-	// column derivation layer doesn't handle it yet.
-	outerScan, outerIsScan := leftPlan.(*plans.RecordQueryScanPlan)
-	if outerIsScan {
-		outerTypes := outerScan.GetRecordTypes()
-		if len(outerTypes) == 1 && outerTypes[0] == recordTypes[0] {
-			return false
-		}
-	}
 	pkCols := call.Context.GetPrimaryKeyColumns(recordTypes[0])
 	if len(pkCols) == 0 {
 		return false
@@ -662,13 +653,6 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 	recordTypes := innerScan.GetRecordTypes()
 	if len(recordTypes) != 1 {
 		return false
-	}
-	// Skip self-joins.
-	if outerScan, ok := outerPlan.(*plans.RecordQueryScanPlan); ok {
-		outerTypes := outerScan.GetRecordTypes()
-		if len(outerTypes) == 1 && outerTypes[0] == recordTypes[0] {
-			return false
-		}
 	}
 
 	innerPrefix := strings.ToUpper(innerAlias) + "."
