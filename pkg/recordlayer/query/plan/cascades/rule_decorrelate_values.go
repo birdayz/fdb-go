@@ -45,17 +45,21 @@ func (r *DecorrelateValuesRule) Matcher() matching.BindingMatcher { return r.mat
 func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 	quantifiers := sel.GetQuantifiers()
-	if len(quantifiers) < 2 {
+	if len(quantifiers) == 0 {
 		return
 	}
 
-	// Identify values box quantifiers: ForEach quantifiers whose child
-	// Reference holds a SelectExpression with an uncorrelated result
-	// value (constant w.r.t. its own child).
+	childAliases := make(map[values.CorrelationIdentifier]struct{}, len(quantifiers))
+	for _, q := range quantifiers {
+		childAliases[q.GetAlias()] = struct{}{}
+	}
+
+	// Identify values box quantifiers and build per-alias maps.
 	type valuesBoxInfo struct {
-		idx         int
-		alias       values.CorrelationIdentifier
-		resultValue values.Value
+		idx              int
+		alias            values.CorrelationIdentifier
+		resultValue      values.Value
+		quantifierToPush expressions.Quantifier
 	}
 	var valuesBoxes []valuesBoxInfo
 
@@ -86,15 +90,11 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 			if rv == nil {
 				continue
 			}
-			// Check that the result value is uncorrelated to the child's
-			// own quantifier — i.e., it's a constant expression.
 			childAlias := childQs[0].GetAlias()
 			correlated := values.GetCorrelatedToOfValue(rv)
 			if _, refsChild := correlated[childAlias]; refsChild {
 				continue
 			}
-			// Check for sideways correlations: the values box must not
-			// reference any sibling quantifier.
 			hasSidewaysCorrelation := false
 			for j, siblingQ := range quantifiers {
 				if j == i {
@@ -109,9 +109,10 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 				continue
 			}
 			valuesBoxes = append(valuesBoxes, valuesBoxInfo{
-				idx:         i,
-				alias:       q.GetAlias(),
-				resultValue: rv,
+				idx:              i,
+				alias:            q.GetAlias(),
+				resultValue:      rv,
+				quantifierToPush: q,
 			})
 			break
 		}
@@ -121,9 +122,10 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Build TranslationMap: each values box alias → its result value.
+	// Build TranslationMap and qunsToPushDown map.
 	tmBuilder := NewTranslationMapBuilder()
 	valuesBoxIdxSet := map[int]bool{}
+	qunsToPushDown := make(map[values.CorrelationIdentifier]expressions.Quantifier, len(valuesBoxes))
 
 	for _, vb := range valuesBoxes {
 		valuesBoxIdxSet[vb.idx] = true
@@ -131,55 +133,260 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		tmBuilder.When(vb.alias).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
 			return capturedResult
 		})
+		qunsToPushDown[vb.alias] = vb.quantifierToPush
 	}
 	tm := tmBuilder.Build()
 
-	// Build new quantifier list (excluding values boxes).
-	newQuantifiers := make([]expressions.Quantifier, 0, len(quantifiers)-len(valuesBoxes))
-	for i, q := range quantifiers {
-		if !valuesBoxIdxSet[i] {
-			newQuantifiers = append(newQuantifiers, q)
-		}
-	}
-
-	if len(newQuantifiers) == 0 {
-		return
-	}
-
-	// Translate result value: replace values box alias references with
-	// the constant result values.
+	// Translate result value and predicates.
 	newResultValue := sel.GetResultValue()
 	if newResultValue != nil {
 		newResultValue = translateValueCorrelations(newResultValue, tm)
 	}
-
-	// Translate predicates.
 	newPredicates := make([]predicates.QueryPredicate, len(sel.GetPredicates()))
 	for i, p := range sel.GetPredicates() {
 		newPredicates[i] = translatePredicateCorrelations(p, tm)
 	}
 
-	// Rebuild source aliases.
+	// Push values boxes into child quantifiers and build the new
+	// quantifier list.
+	pushDownAliasSet := make(map[values.CorrelationIdentifier]struct{}, len(qunsToPushDown))
+	for alias := range qunsToPushDown {
+		pushDownAliasSet[alias] = struct{}{}
+	}
+
+	newQuantifiers := make([]expressions.Quantifier, 0, max(1, len(quantifiers)-len(valuesBoxes)))
+	if len(quantifiers) == len(valuesBoxes) {
+		// All quantifiers are values boxes. Introduce a range(1)
+		// placeholder to avoid creating a Select with no children.
+		rangeOneExpr := expressions.NewTableFunctionExpression(
+			values.NewRangeValue(
+				&values.ConstantValue{Value: int64(0)},
+				&values.ConstantValue{Value: int64(1)},
+				&values.ConstantValue{Value: int64(1)},
+			),
+		)
+		rangeRef := call.MemoizeExpression(rangeOneExpr)
+		rangeQ := expressions.ForEachQuantifier(rangeRef)
+		newQuantifiers = append(newQuantifiers, rangeQ)
+	}
+
+	for i, q := range quantifiers {
+		if valuesBoxIdxSet[i] {
+			continue
+		}
+
+		childRef := q.GetRangesOver()
+		if childRef == nil {
+			newQuantifiers = append(newQuantifiers, q)
+			continue
+		}
+
+		anyChanged := false
+		var newMembers []expressions.RelationalExpression
+		for _, member := range childRef.AllMembers() {
+			lowerCorrelatedTo := expressionCorrelatedToAliases(member, pushDownAliasSet)
+			if len(lowerCorrelatedTo) == 0 {
+				newMembers = append(newMembers, member)
+			} else {
+				pushed := pushValuesIntoExpression(member, qunsToPushDown, tm, call)
+				newMembers = append(newMembers, pushed)
+				anyChanged = true
+			}
+		}
+		if anyChanged {
+			newRef := call.MemoizeExpression(newMembers[0])
+			for _, extra := range newMembers[1:] {
+				newRef.Insert(extra)
+			}
+			rebuilt := expressions.RebuildQuantifier(q, newRef)
+			newQuantifiers = append(newQuantifiers, rebuilt)
+		} else {
+			newQuantifiers = append(newQuantifiers, q)
+		}
+	}
+
+	// Preserve source aliases, dropping entries for removed values boxes.
+	oldAliases := sel.GetSourceAliases()
 	var newAliases []string
-	if srcAliases := sel.GetSourceAliases(); len(srcAliases) > 0 {
+	if len(oldAliases) > 0 {
 		for i := range quantifiers {
-			if !valuesBoxIdxSet[i] && i < len(srcAliases) {
-				newAliases = append(newAliases, srcAliases[i])
+			if valuesBoxIdxSet[i] {
+				continue
+			}
+			if i < len(oldAliases) {
+				newAliases = append(newAliases, oldAliases[i])
 			}
 		}
 	}
 
-	var merged *expressions.SelectExpression
-	if len(newAliases) > 0 {
-		merged = expressions.NewSelectExpressionWithJoinType(
-			newResultValue, newQuantifiers, newPredicates, newAliases, sel.GetJoinType(),
-		)
-	} else {
-		merged = expressions.NewSelectExpressionWithJoinType(
-			newResultValue, newQuantifiers, newPredicates, nil, sel.GetJoinType(),
-		)
-	}
+	merged := expressions.NewSelectExpressionWithAliases(newResultValue, newQuantifiers, newPredicates, newAliases)
 	call.Yield(merged)
+}
+
+// expressionCorrelatedToAliases returns the subset of aliases that the
+// given expression (including its transitive children) is correlated to.
+func expressionCorrelatedToAliases(
+	expr expressions.RelationalExpression,
+	aliases map[values.CorrelationIdentifier]struct{},
+) map[values.CorrelationIdentifier]struct{} {
+	allCorr := make(map[values.CorrelationIdentifier]struct{})
+	expressionCorrelationSet(expr, allCorr)
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range aliases {
+		if _, found := allCorr[alias]; found {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
+
+// pushValuesIntoExpression rewrites a child expression by pushing
+// values box quantifiers into it. Mirrors Java's PushValuesIntoVisitor.
+func pushValuesIntoExpression(
+	expr expressions.RelationalExpression,
+	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	tm TranslationMap,
+	call *ExpressionRuleCall,
+) expressions.RelationalExpression {
+	switch e := expr.(type) {
+	case *expressions.SelectExpression:
+		return selectWithQuantifiersPushed(
+			e,
+			qunsToPushDown,
+			e.GetResultValue(),
+			e.GetQuantifiers(),
+			e.GetPredicates(),
+		)
+	case *expressions.LogicalFilterExpression:
+		return selectWithQuantifiersPushed(
+			e,
+			qunsToPushDown,
+			e.GetResultValue(),
+			e.GetQuantifiers(),
+			e.GetPredicates(),
+		)
+	default:
+		return pushValuesDefault(expr, qunsToPushDown, tm, call)
+	}
+}
+
+// selectWithQuantifiersPushed prepends the relevant values box
+// quantifiers into a SelectExpression or LogicalFilterExpression,
+// returning a new SelectExpression. Only pushes values boxes that
+// the expression is actually correlated to.
+func selectWithQuantifiersPushed(
+	expr expressions.RelationalExpression,
+	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	resultValue values.Value,
+	quantifierBase []expressions.Quantifier,
+	preds []predicates.QueryPredicate,
+) *expressions.SelectExpression {
+	exprCorr := make(map[values.CorrelationIdentifier]struct{})
+	expressionCorrelationSet(expr, exprCorr)
+
+	newQs := make([]expressions.Quantifier, 0, len(quantifierBase)+len(qunsToPushDown))
+	for _, q := range qunsToPushDown {
+		if _, found := exprCorr[q.GetAlias()]; found {
+			newQs = append(newQs, q)
+		}
+	}
+	newQs = append(newQs, quantifierBase...)
+	return expressions.NewSelectExpression(resultValue, newQs, preds)
+}
+
+// pushValuesDefault handles the visitDefault case: for each child
+// quantifier that is correlated to a values box, wrap it in a new
+// SelectExpression with the relevant values boxes prepended. Then
+// rebuild the expression with the new quantifiers and translated
+// correlations.
+func pushValuesDefault(
+	expr expressions.RelationalExpression,
+	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	tm TranslationMap,
+	call *ExpressionRuleCall,
+) expressions.RelationalExpression {
+	pushDownAliasSet := make(map[values.CorrelationIdentifier]struct{}, len(qunsToPushDown))
+	for alias := range qunsToPushDown {
+		pushDownAliasSet[alias] = struct{}{}
+	}
+
+	origQs := expr.GetQuantifiers()
+	newQs := make([]expressions.Quantifier, 0, len(origQs))
+	for _, childQ := range origQs {
+		newQs = append(newQs, pushOnTopOfQuantifier(childQ, qunsToPushDown, pushDownAliasSet, call))
+	}
+
+	// Rebuild the expression with new quantifiers. For expression types
+	// that carry correlation-bearing node information (result values,
+	// predicates, grouping keys, etc.), translateCorrelations would also
+	// need to be applied. WithQuantifiers preserves node information
+	// (predicates, result values) unchanged — correlations in those
+	// fields still reference the values box aliases, which is correct
+	// because the values boxes have been pushed into the children where
+	// those aliases are now locally available.
+	return expr.WithQuantifiers(newQs)
+}
+
+// pushOnTopOfQuantifier wraps a child quantifier in a SelectExpression
+// with values boxes prepended, if the quantifier is correlated to any
+// values box. Returns the original quantifier if uncorrelated.
+func pushOnTopOfQuantifier(
+	childQ expressions.Quantifier,
+	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	pushDownAliasSet map[values.CorrelationIdentifier]struct{},
+	call *ExpressionRuleCall,
+) expressions.Quantifier {
+	childCorr := quantifierCorrelationSetLocal(childQ)
+	hasCorrelation := false
+	for alias := range pushDownAliasSet {
+		if _, found := childCorr[alias]; found {
+			hasCorrelation = true
+			break
+		}
+	}
+	if !hasCorrelation {
+		return childQ
+	}
+
+	newChild := expressions.ForEachQuantifier(childQ.GetRangesOver())
+
+	exprCorr := make(map[values.CorrelationIdentifier]struct{})
+	ref := newChild.GetRangesOver()
+	if ref != nil {
+		for _, m := range ref.AllMembers() {
+			expressionCorrelationSet(m, exprCorr)
+		}
+	}
+
+	newQs := make([]expressions.Quantifier, 0, 1+len(qunsToPushDown))
+	for _, q := range qunsToPushDown {
+		if _, found := exprCorr[q.GetAlias()]; found {
+			newQs = append(newQs, q)
+		}
+	}
+	newQs = append(newQs, newChild)
+
+	newSelect := expressions.NewSelectExpression(
+		newChild.GetFlowedObjectValue(),
+		newQs,
+		nil,
+	)
+	newRef := call.MemoizeExpression(newSelect)
+	return expressions.RebuildQuantifier(childQ, newRef)
+}
+
+// quantifierCorrelationSetLocal computes the correlation set of a
+// quantifier by walking the inner expression tree.
+func quantifierCorrelationSetLocal(q expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	result := map[values.CorrelationIdentifier]struct{}{}
+	for _, member := range ref.AllMembers() {
+		expressionCorrelationSet(member, result)
+	}
+	return result
 }
 
 // translateValueCorrelations applies the TranslationMap to a Value

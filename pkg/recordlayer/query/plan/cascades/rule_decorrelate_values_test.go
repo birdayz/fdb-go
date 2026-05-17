@@ -778,13 +778,8 @@ func TestDecorrelateValuesRule_DoNotTreatUngroupedCountAsValues(t *testing.T) {
 
 // TestDecorrelateValuesRule_RemoveValuesIfOnlyChild ports Java's
 // removeValuesIfOnlyChild. When the ONLY quantifier in a select is a
-// values box, Java replaces it with range(1) and inlines the values.
-// Go's current rule returns early when all quantifiers are values boxes
-// (len(newQuantifiers) == 0), so no yield is produced.
-//
-// This test documents the current Go behavior. When Go's rule is extended
-// to match Java's handling of this case, update this test to expect a
-// yield with the values inlined.
+// values box, it is replaced with a range(1) quantifier and the values
+// are inlined into result + predicates.
 func TestDecorrelateValuesRule_RemoveValuesIfOnlyChild(t *testing.T) {
 	t.Parallel()
 
@@ -807,17 +802,43 @@ func TestDecorrelateValuesRule_RemoveValuesIfOnlyChild(t *testing.T) {
 	outerRef := expressions.InitialOf(outerSel)
 
 	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
-	// Go divergence: returns early when all quantifiers would be removed.
-	// Java replaces with range(1). Document the current behavior.
-	if len(yielded) != 0 {
-		t.Fatalf("expected 0 yields (Go rule returns early when all quantifiers are values boxes), got %d", len(yielded))
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+	// Should have exactly 1 quantifier: the range(1) replacement.
+	if len(decorrelated.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier (range(1) inserted), got %d", len(decorrelated.GetQuantifiers()))
+	}
+	// The range(1) quantifier should point to a TableFunctionExpression.
+	rangeRef := decorrelated.GetQuantifiers()[0].GetRangesOver()
+	if rangeRef == nil {
+		t.Fatal("range(1) quantifier has nil Reference")
+	}
+	if _, ok := rangeRef.Get().(*expressions.TableFunctionExpression); !ok {
+		t.Fatalf("expected TableFunctionExpression, got %T", rangeRef.Get())
+	}
+	// The predicate should have the constant value substituted.
+	if len(decorrelated.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
+	}
+	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
+	}
+	cv, ok := cp.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("expected ConstantValue operand after decorrelation, got %T", cp.Operand)
+	}
+	if cv.Value != true {
+		t.Errorf("expected true, got %v", cv.Value)
 	}
 }
 
 // TestDecorrelateValuesRule_RemoveValuesIfAllChildren ports Java's
 // removeValuesIfAllChildren. When ALL quantifiers are values boxes,
-// Java replaces them all with a single range(1). Go's current rule
-// returns early (len(newQuantifiers) == 0).
+// they are replaced with a single range(1) and values are inlined.
 func TestDecorrelateValuesRule_RemoveValuesIfAllChildren(t *testing.T) {
 	t.Parallel()
 
@@ -840,9 +861,43 @@ func TestDecorrelateValuesRule_RemoveValuesIfAllChildren(t *testing.T) {
 	outerRef := expressions.InitialOf(outerSel)
 
 	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
-	// Go divergence: returns early when all quantifiers would be removed.
-	if len(yielded) != 0 {
-		t.Fatalf("expected 0 yields (Go rule returns early when all quantifiers are values boxes), got %d", len(yielded))
+	if len(yielded) < 1 {
+		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
+	}
+
+	decorrelated := yielded[0].(*expressions.SelectExpression)
+	// Should have exactly 1 quantifier: the range(1) replacement.
+	if len(decorrelated.GetQuantifiers()) != 1 {
+		t.Fatalf("expected 1 quantifier (range(1) inserted), got %d", len(decorrelated.GetQuantifiers()))
+	}
+	rangeRef := decorrelated.GetQuantifiers()[0].GetRangesOver()
+	if rangeRef == nil {
+		t.Fatal("range(1) quantifier has nil Reference")
+	}
+	if _, ok := rangeRef.Get().(*expressions.TableFunctionExpression); !ok {
+		t.Fatalf("expected TableFunctionExpression, got %T", rangeRef.Get())
+	}
+	// The predicate should have both values inlined.
+	if len(decorrelated.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
+	}
+	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
+	}
+	lhs, ok := cp.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("expected ConstantValue operand, got %T", cp.Operand)
+	}
+	if lhs.Value != "hello" {
+		t.Errorf("expected 'hello', got %v", lhs.Value)
+	}
+	rhs, ok := cp.Comparison.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("expected ConstantValue comparison operand, got %T", cp.Comparison.Operand)
+	}
+	if rhs.Value != "world" {
+		t.Errorf("expected 'world', got %v", rhs.Value)
 	}
 }
 

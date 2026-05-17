@@ -90,7 +90,7 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 12. Unmatched fields | UnmatchedFieldsCountProperty | `totalCols - boundCols` | Aligned |
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
 | 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
-| 15. FlatMap join ordering | Compare outer child cardinalities | `physicalFlatMapWrapper.HintCost` treats child[0] as outer without cardinality comparison | Gap: Java's `FlatMapJoinOrderingProperty` prefers smaller-outer arrangement |
+| 15. FlatMap join ordering | Compare outer child cardinalities | `compareFlatMapJoinOrdering` compares outer quantifier cardinalities | Aligned |
 | 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `deepHashCode()` recursive | Aligned |
 
 Go-only addition: scalar `CostLess` fallback between criteria 14 and 16 (discriminates plans the ordinal criteria can't distinguish).
