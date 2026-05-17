@@ -339,6 +339,10 @@ func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
 	return &embeddedStmt{conn: c, query: query}, nil
 }
 
+func (c *EmbeddedConnection) newStoreBuilder() *recordlayer.StoreBuilder {
+	return recordlayer.NewStoreBuilder().SetDatabase(c.sess.DB)
+}
+
 // Close marks the connection as closed.
 func (c *EmbeddedConnection) Close() error {
 	c.closed.Store(true)

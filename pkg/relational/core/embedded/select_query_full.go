@@ -147,7 +147,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		if ssErr != nil {
 			return nil, ssErr
 		}
-		store, storeErr := recordlayer.NewStoreBuilder().
+		store, storeErr := c.newStoreBuilder().
 			SetContext(rctx).
 			SetSubspace(ss).
 			SetMetaDataProvider(md).

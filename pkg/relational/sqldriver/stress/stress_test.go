@@ -56,6 +56,7 @@ type stressHarness struct {
 	dbPath    string
 	schema    string
 	batchSize int
+	workers   int
 }
 
 func newStressHarness(t *testing.T, suffix string) *stressHarness {
@@ -88,6 +89,7 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 		dbPath:    dbPath,
 		schema:    "main",
 		batchSize: 500,
+		workers:   4,
 	}
 }
 
@@ -116,9 +118,9 @@ func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) strin
 	h.t.Helper()
 	start := time.Now()
 
-	workers := 1
-	if n <= 100_000 {
-		workers = 4
+	workers := h.workers
+	if workers == 0 {
+		workers = 1
 	}
 	chunkSize := (n + workers - 1) / workers
 
@@ -259,6 +261,38 @@ func TestFDB_Stress_10M(t *testing.T) {
 	t.Skip("10M exceeds Docker FDB single-node throughput; run against a real cluster")
 	t.Parallel()
 	runStressSuite(t, "10m", 10_000_000)
+}
+
+func TestFDB_Ingest_Parallelism(t *testing.T) {
+	t.Parallel()
+
+	for _, workers := range []int{1, 2, 4, 8} {
+		workers := workers
+		t.Run(fmt.Sprintf("%d_workers", workers), func(t *testing.T) {
+			n := 1_000_000
+			h := newStressHarness(t, fmt.Sprintf("par%d", workers))
+			h.workers = workers
+			h.createSchema(`
+				CREATE TABLE items (
+					id BIGINT NOT NULL,
+					val BIGINT NOT NULL,
+					PRIMARY KEY (id)
+				)
+			`)
+			dur := h.bulkInsert("items", n, func(i int) string {
+				return fmt.Sprintf("(%d, %d)", i, i*7)
+			})
+			t.Logf("%d workers: %d rows in %v (%.0f rows/s)", workers, n, dur, float64(n)/dur.Seconds())
+
+			var count int64
+			if err := h.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM items").Scan(&count); err != nil {
+				t.Fatalf("COUNT(*): %v", err)
+			}
+			if count != int64(n) {
+				t.Fatalf("COUNT(*) = %d, want %d", count, n)
+			}
+		})
+	}
 }
 
 func TestFDB_Ingest_10M(t *testing.T) {

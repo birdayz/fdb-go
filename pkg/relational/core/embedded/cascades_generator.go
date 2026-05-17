@@ -554,7 +554,7 @@ func (r *paginatingRows) fetchPage() error {
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 
-		store, storeErr := recordlayer.NewStoreBuilder().
+		store, storeErr := c.newStoreBuilder().
 			SetContext(rctx).
 			SetSubspace(r.ss).
 			SetMetaDataProvider(c.cachedMetaData()).

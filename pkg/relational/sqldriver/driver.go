@@ -164,6 +164,7 @@ func (c *Connector) initialize(_ context.Context) error {
 			return api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
 		}
 		newDB := recordlayer.NewFDBDatabase(rawDB)
+		newDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 		// LoadOrStore returns the previously-stored entry if a concurrent
 		// caller raced ahead. In that case, the FDB database we just
 		// opened becomes garbage; close it to release its TCP connection.
