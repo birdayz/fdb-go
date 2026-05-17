@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,25 +114,54 @@ func (h *stressHarness) createSchema(template string) {
 
 func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) string) time.Duration {
 	h.t.Helper()
-	ctx := context.Background()
 	start := time.Now()
 
-	for offset := 0; offset < n; offset += h.batchSize {
-		end := offset + h.batchSize
-		if end > n {
-			end = n
-		}
-		var rows []string
-		for i := offset; i < end; i++ {
-			rows = append(rows, genRow(i))
-		}
-		stmt := fmt.Sprintf("INSERT INTO %s VALUES %s", table, strings.Join(rows, ", "))
-		if _, err := h.db.ExecContext(ctx, stmt); err != nil {
-			h.t.Fatalf("INSERT batch [%d..%d): %v", offset, end, err)
-		}
+	workers := 8
+	if n < workers*h.batchSize {
+		workers = 1
 	}
+	chunkSize := (n + workers - 1) / workers
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+
+	for w := range workers {
+		wStart := w * chunkSize
+		wEnd := wStart + chunkSize
+		if wEnd > n {
+			wEnd = n
+		}
+		if wStart >= n {
+			break
+		}
+		wg.Add(1)
+		go func(from, to int) {
+			defer wg.Done()
+			for offset := from; offset < to; offset += h.batchSize {
+				end := offset + h.batchSize
+				if end > to {
+					end = to
+				}
+				var rows []string
+				for i := offset; i < end; i++ {
+					rows = append(rows, genRow(i))
+				}
+				stmt := fmt.Sprintf("INSERT INTO %s VALUES %s", table, strings.Join(rows, ", "))
+				if _, err := h.db.ExecContext(context.Background(), stmt); err != nil {
+					errCh <- fmt.Errorf("INSERT batch [%d..%d): %w", offset, end, err)
+					return
+				}
+			}
+		}(wStart, wEnd)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		h.t.Fatalf("bulkInsert: %v", err)
+	}
+
 	elapsed := time.Since(start)
-	h.t.Logf("bulkInsert %s: %d rows in %v (%.0f rows/s)", table, n, elapsed, float64(n)/elapsed.Seconds())
+	h.t.Logf("bulkInsert %s: %d rows in %v (%.0f rows/s, %d workers)", table, n, elapsed, float64(n)/elapsed.Seconds(), workers)
 	return elapsed
 }
 
@@ -216,6 +246,11 @@ func TestFDB_Stress_100K(t *testing.T) {
 func TestFDB_Stress_1M(t *testing.T) {
 	t.Parallel()
 	runStressSuite(t, "1m", 1_000_000)
+}
+
+func TestFDB_Stress_10M(t *testing.T) {
+	t.Parallel()
+	runStressSuite(t, "10m", 10_000_000)
 }
 
 func runStressSuite(t *testing.T, suffix string, n int) {
