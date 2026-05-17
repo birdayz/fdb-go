@@ -507,20 +507,44 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			flatMapPlan.SetNotExists(true)
 		}
 
-		// Collect residual predicates (all except the matched equi-join).
-		// All residuals stay above the FlatMap — pushing below requires
-		// predicate un-qualification (outer scan has unqualified keys but
-		// predicates use qualified O.AMOUNT form). Deferred optimization.
-		var residualPreds []predicates.QueryPredicate
+		// Split residual predicates: outer-only → push below FlatMap
+		// (with alias prefix stripped so they match raw scan keys).
+		// Cross-table → stay above.
+		var outerPreds, abovePreds []predicates.QueryPredicate
 		for _, p := range preds {
-			if p != pred {
-				residualPreds = append(residualPreds, p)
+			if p == pred {
+				continue
+			}
+			if predicateReferencesAlias(p, rightAlias) {
+				abovePreds = append(abovePreds, p)
+			} else {
+				outerPreds = append(outerPreds, p)
+			}
+		}
+
+		if len(outerPreds) > 0 {
+			// Strip the outer alias prefix from predicates so they match
+			// unqualified keys in the raw scan output.
+			stripped := stripAliasFromPredicates(outerPreds, outerPrefix)
+			outerWithFilter := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan.GetOuter(), stripped)
+			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
+				outerWithFilter, flatMapPlan.GetInner(),
+				flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
+				flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
+			)
+			switch joinType {
+			case plans.JoinLeftOuter:
+				flatMapPlan.SetLeftOuter(true)
+			case plans.JoinExists:
+				flatMapPlan.SetExists(true)
+			case plans.JoinNotExists:
+				flatMapPlan.SetNotExists(true)
 			}
 		}
 
 		var finalPlan plans.RecordQueryPlan = flatMapPlan
-		if len(residualPreds) > 0 {
-			finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, residualPreds)
+		if len(abovePreds) > 0 {
+			finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, abovePreds)
 		}
 
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
@@ -811,6 +835,49 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
 	return true
+}
+
+// stripAliasFromPredicates creates copies of predicates with the alias
+// prefix stripped from FieldValue.Field names. E.g. "O.ID" → "ID" when
+// prefix is "O.". Used when pushing predicates below the FlatMap to the
+// raw scan output which has unqualified keys.
+func stripAliasFromPredicates(preds []predicates.QueryPredicate, prefix string) []predicates.QueryPredicate {
+	out := make([]predicates.QueryPredicate, len(preds))
+	for i, p := range preds {
+		out[i] = stripAliasFromPredicate(p, prefix)
+	}
+	return out
+}
+
+func stripAliasFromPredicate(p predicates.QueryPredicate, prefix string) predicates.QueryPredicate {
+	cp, ok := p.(*predicates.ComparisonPredicate)
+	if !ok {
+		return p
+	}
+	newOp := stripAliasFromValue(cp.Operand, prefix)
+	newCompOp := stripAliasFromValue(cp.Comparison.Operand, prefix)
+	return &predicates.ComparisonPredicate{
+		Operand: newOp,
+		Comparison: predicates.Comparison{
+			Type:    cp.Comparison.Type,
+			Operand: newCompOp,
+		},
+	}
+}
+
+func stripAliasFromValue(v values.Value, prefix string) values.Value {
+	if v == nil {
+		return nil
+	}
+	fv, ok := v.(*values.FieldValue)
+	if !ok {
+		return v
+	}
+	field := fv.Field
+	if strings.HasPrefix(strings.ToUpper(field), prefix) {
+		field = field[len(prefix):]
+	}
+	return &values.FieldValue{Field: field, Typ: fv.Typ, Child: fv.Child}
 }
 
 // matchJoinPKPredicate checks if a comparison predicate matches the
