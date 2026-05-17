@@ -1086,6 +1086,153 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(cont.IsEnd()).To(BeTrue())
 	})
 
+	It("asListWithContinuation iterates in chunks", func() {
+		// Port of Java's asListWithContinuationTest: creates [0..49], iterates
+		// in chunks of 10, verifying each chunk returns exactly the right items
+		// and the continuation correctly resumes. 5 chunks with data + 1 empty
+		// = 6 iterations total.
+		ints := make([]int, 50)
+		for i := range ints {
+			ints[i] = i
+		}
+
+		iterations := 0
+		var continuation []byte
+		for {
+			iterations++
+			items, cont, err := AsListWithContinuation(ctx,
+				LimitRowsCursor(FromListWithContinuation(ints, continuation), 10))
+			Expect(err).NotTo(HaveOccurred())
+
+			if len(items) > 0 {
+				Expect(items).To(HaveLen(10))
+				Expect(items[0]).To(Equal((iterations - 1) * 10))
+				// Should have a continuation (limit reached)
+				Expect(cont).NotTo(BeNil())
+			}
+			continuation = cont
+			if continuation == nil {
+				break
+			}
+		}
+
+		// 5 chunks with 10 items each + 1 final empty iteration = 6
+		Expect(iterations).To(Equal(6))
+	})
+
+	It("mapPipelinedContinuationWithTimeLimit", func() {
+		// Port of Java's mapPipelinedContinuationWithTimeLimit: MapCursor over
+		// a fakeOutOfBandCursor(limit=3). The inner cursor delivers 3 items
+		// then TIME_LIMIT. MapCursor should pass through the mapped values and
+		// the TIME_LIMIT stop reason with the correct continuation.
+		inner := fakeOutOfBandCursor(FromList([]int{0, 1, 2, 3}), 3)
+		cursor := MapCursor(inner, func(i int) int { return (i + 1) * 1000 })
+
+		// Should get 3 mapped items: 1000, 2000, 3000
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(1000))
+
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(2000))
+
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(3000))
+		lastCont := r.GetContinuation()
+
+		// Next call should hit TIME_LIMIT with the same continuation as the
+		// last returned result.
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(TimeLimitReached))
+
+		// Continuation from TIME_LIMIT stop should let us resume correctly.
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor2 := FromListWithContinuation([]int{0, 1, 2, 3}, contBytes)
+		resumed, err := cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resumed.HasNext()).To(BeTrue())
+		Expect(resumed.GetValue()).To(Equal(3))
+		Expect(cursor.Close()).To(Succeed())
+	})
+
+	It("mapPipelinedContinuationWithTimeLimitWithMoreToReturn", func() {
+		// Port of Java's variant: inner delivers 4 items then TIME_LIMIT.
+		// MapCursor returns all 4 mapped items, then TIME_LIMIT. Resume
+		// from last continuation should start at item index 4.
+		inner := fakeOutOfBandCursor(FromList([]int{0, 1, 2, 3, 4}), 4)
+		cursor := MapCursor(inner, func(i int) int { return (i + 1) * 1000 })
+
+		// Collect the 4 items
+		var lastCont RecordCursorContinuation
+		for i := range 4 {
+			r, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r.HasNext()).To(BeTrue())
+			Expect(r.GetValue()).To(Equal((i + 1) * 1000))
+			lastCont = r.GetContinuation()
+		}
+
+		// TIME_LIMIT after 4 items
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(TimeLimitReached))
+
+		// Resume from continuation of last returned item
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor2 := FromListWithContinuation([]int{0, 1, 2, 3, 4}, contBytes)
+		resumed, err := cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resumed.HasNext()).To(BeTrue())
+		Expect(resumed.GetValue()).To(Equal(4))
+		Expect(cursor.Close()).To(Succeed())
+	})
+
+	It("mapPipelinedContinuationWithTimeLimitBeforeFirstEntry", func() {
+		// Port of Java's variant: inner delivers 2 items then TIME_LIMIT.
+		// MapCursor returns both mapped items, then TIME_LIMIT. Resume from
+		// last continuation should start at item index 2.
+		inner := fakeOutOfBandCursor(FromList([]int{0, 1, 2}), 2)
+		cursor := MapCursor(inner, func(i int) int { return (i + 1) * 1000 })
+
+		// Get 2 items
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(1000))
+
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(2000))
+		lastCont := r.GetContinuation()
+
+		// TIME_LIMIT
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(TimeLimitReached))
+
+		// Resume
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor2 := FromListWithContinuation([]int{0, 1, 2}, contBytes)
+		resumed, err := cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resumed.HasNext()).To(BeTrue())
+		Expect(resumed.GetValue()).To(Equal(2))
+		Expect(cursor.Close()).To(Succeed())
+	})
+
 	It("AutoContinuingCursor scans across transaction boundaries", func() {
 		ks := specSubspace()
 		populate10Orders(ctx, metaData)
