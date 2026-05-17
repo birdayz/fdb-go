@@ -51,12 +51,13 @@ func TestMain(m *testing.M) {
 }
 
 type stressHarness struct {
-	t         *testing.T
-	db        *sql.DB
-	dbPath    string
-	schema    string
-	batchSize int
-	workers   int
+	t            *testing.T
+	db           *sql.DB
+	dbPath       string
+	schema       string
+	batchSize    int
+	workers      int
+	batchesPerTx int
 }
 
 func newStressHarness(t *testing.T, suffix string) *stressHarness {
@@ -81,6 +82,8 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
+	db.SetMaxOpenConns(32)
+	db.SetMaxIdleConns(32)
 	t.Cleanup(func() { db.Close() })
 
 	return &stressHarness{
@@ -139,27 +142,49 @@ func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) strin
 		wg.Add(1)
 		go func(from, to int) {
 			defer wg.Done()
-			for offset := from; offset < to; offset += h.batchSize {
-				end := offset + h.batchSize
-				if end > to {
-					end = to
+			batchesPerTx := h.batchesPerTx
+			if batchesPerTx <= 0 {
+				batchesPerTx = 1
+			}
+			for offset := from; offset < to; {
+				txEnd := offset + h.batchSize*batchesPerTx
+				if txEnd > to {
+					txEnd = to
 				}
-				var rows []string
-				for i := offset; i < end; i++ {
-					rows = append(rows, genRow(i))
-				}
-				stmt := fmt.Sprintf("INSERT INTO %s VALUES %s", table, strings.Join(rows, ", "))
 				var lastErr error
 				for attempt := range 5 {
-					if _, lastErr = h.db.ExecContext(context.Background(), stmt); lastErr == nil {
+					lastErr = func() error {
+						tx, txErr := h.db.BeginTx(context.Background(), nil)
+						if txErr != nil {
+							return txErr
+						}
+						for batchOff := offset; batchOff < txEnd; batchOff += h.batchSize {
+							batchEnd := batchOff + h.batchSize
+							if batchEnd > txEnd {
+								batchEnd = txEnd
+							}
+							var rows []string
+							for i := batchOff; i < batchEnd; i++ {
+								rows = append(rows, genRow(i))
+							}
+							stmt := fmt.Sprintf("INSERT INTO %s VALUES %s", table, strings.Join(rows, ", "))
+							if _, execErr := tx.ExecContext(context.Background(), stmt); execErr != nil {
+								tx.Rollback()
+								return execErr
+							}
+						}
+						return tx.Commit()
+					}()
+					if lastErr == nil {
 						break
 					}
 					time.Sleep(time.Duration(attempt+1) * time.Second)
 				}
 				if lastErr != nil {
-					errCh <- fmt.Errorf("INSERT batch [%d..%d): %w", offset, end, lastErr)
+					errCh <- fmt.Errorf("INSERT [%d..%d): %w", offset, txEnd, lastErr)
 					return
 				}
+				offset = txEnd
 			}
 		}(wStart, wEnd)
 	}
@@ -266,12 +291,26 @@ func TestFDB_Stress_10M(t *testing.T) {
 func TestFDB_Ingest_Parallelism(t *testing.T) {
 	t.Parallel()
 
-	for _, workers := range []int{1, 2, 4, 8} {
-		workers := workers
-		t.Run(fmt.Sprintf("%d_workers", workers), func(t *testing.T) {
+	type config struct {
+		workers      int
+		batchSize    int
+		batchesPerTx int
+	}
+	configs := []config{
+		{1, 500, 1},
+		{1, 500, 4},
+		{4, 500, 4},
+		{8, 500, 4},
+		{16, 500, 4},
+	}
+	for _, cfg := range configs {
+		cfg := cfg
+		t.Run(fmt.Sprintf("w%d_b%d_tx%d", cfg.workers, cfg.batchSize, cfg.batchesPerTx), func(t *testing.T) {
 			n := 1_000_000
-			h := newStressHarness(t, fmt.Sprintf("par%d", workers))
-			h.workers = workers
+			h := newStressHarness(t, fmt.Sprintf("par_w%d_b%d_tx%d", cfg.workers, cfg.batchSize, cfg.batchesPerTx))
+			h.workers = cfg.workers
+			h.batchSize = cfg.batchSize
+			h.batchesPerTx = cfg.batchesPerTx
 			h.createSchema(`
 				CREATE TABLE items (
 					id BIGINT NOT NULL,
@@ -282,7 +321,7 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 			dur := h.bulkInsert("items", n, func(i int) string {
 				return fmt.Sprintf("(%d, %d)", i, i*7)
 			})
-			t.Logf("%d workers: %d rows in %v (%.0f rows/s)", workers, n, dur, float64(n)/dur.Seconds())
+			t.Logf("w=%d b=%d tx=%d: %d rows in %v (%.0f rows/s)", cfg.workers, cfg.batchSize, cfg.batchesPerTx, n, dur, float64(n)/dur.Seconds())
 
 			var count int64
 			if err := h.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM items").Scan(&count); err != nil {
