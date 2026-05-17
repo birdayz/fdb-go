@@ -17,9 +17,13 @@ import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 import com.google.protobuf.Message;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Benchmark steps that measure Java Record Layer performance internally.
@@ -318,6 +322,158 @@ class BenchmarkSteps extends ConformanceBase {
             });
         }
         return timingResult(iterations, System.nanoTime() - start);
+    }
+
+    /**
+     * Bulk insert benchmark: N workers insert totalRecords rows in batches of batchSize.
+     * Uses synchronous saveRecord (sequential existence-check reads per row).
+     * Matches Go's pre-optimization SaveRecord-per-row path.
+     */
+    @ConformanceStep("benchmarkBulkInsertSync")
+    public Map<String, Object> benchmarkBulkInsertSync(
+            String clusterFile, byte[] subspace, long totalRecords, long batchSize, long workers) {
+        RecordMetaData md = benchMetaData();
+        FDBDatabase db = createDatabase(clusterFile);
+        Subspace ss = new Subspace(subspace);
+
+        db.run(context -> {
+            FDBRecordStore.newBuilder().setMetaDataProvider(md)
+                .setContext(context).setSubspace(ss).createOrOpen();
+            return null;
+        });
+
+        int total = (int) totalRecords;
+        int batch = (int) batchSize;
+        int nWorkers = (int) workers;
+        int chunkSize = (total + nWorkers - 1) / nWorkers;
+
+        AtomicLong totalWritten = new AtomicLong();
+        AtomicReference<Exception> firstError = new AtomicReference<>();
+
+        long start = System.nanoTime();
+
+        List<Thread> threads = new ArrayList<>();
+        for (int w = 0; w < nWorkers; w++) {
+            int wStart = w * chunkSize;
+            int wEnd = Math.min(wStart + chunkSize, total);
+            if (wStart >= total) break;
+
+            Thread t = new Thread(() -> {
+                try {
+                    for (int offset = wStart; offset < wEnd; offset += batch) {
+                        int end = Math.min(offset + batch, wEnd);
+                        int off = offset;
+                        db.run(context -> {
+                            FDBRecordStore store = FDBRecordStore.newBuilder()
+                                .setMetaDataProvider(md).setContext(context)
+                                .setSubspace(ss).open();
+                            for (int i = off; i < end; i++) {
+                                store.saveRecord(makeOrder(i, i * 7));
+                            }
+                            return null;
+                        });
+                        totalWritten.addAndGet(end - off);
+                    }
+                } catch (Exception e) {
+                    firstError.compareAndSet(null, e);
+                }
+            });
+            threads.add(t);
+            t.start();
+        }
+
+        for (Thread t : threads) {
+            try { t.join(); } catch (InterruptedException ignored) {}
+        }
+
+        long elapsed = System.nanoTime() - start;
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("totalRecords", totalWritten.get());
+        result.put("totalNanos", elapsed);
+        result.put("rowsPerSecond", (double) totalWritten.get() / elapsed * 1_000_000_000.0);
+        result.put("workers", nWorkers);
+        if (firstError.get() != null) {
+            result.put("error", firstError.get().getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * Bulk insert benchmark with pipelined saveRecordAsync.
+     * All saves within a batch are issued as CompletableFutures, then awaited.
+     * This pipelines the existence-check reads — matching the natural Java async pattern.
+     */
+    @ConformanceStep("benchmarkBulkInsertAsync")
+    public Map<String, Object> benchmarkBulkInsertAsync(
+            String clusterFile, byte[] subspace, long totalRecords, long batchSize, long workers) {
+        RecordMetaData md = benchMetaData();
+        FDBDatabase db = createDatabase(clusterFile);
+        Subspace ss = new Subspace(subspace);
+
+        db.run(context -> {
+            FDBRecordStore.newBuilder().setMetaDataProvider(md)
+                .setContext(context).setSubspace(ss).createOrOpen();
+            return null;
+        });
+
+        int total = (int) totalRecords;
+        int batch = (int) batchSize;
+        int nWorkers = (int) workers;
+        int chunkSize = (total + nWorkers - 1) / nWorkers;
+
+        AtomicLong totalWritten = new AtomicLong();
+        AtomicReference<Exception> firstError = new AtomicReference<>();
+
+        long start = System.nanoTime();
+
+        List<Thread> threads = new ArrayList<>();
+        for (int w = 0; w < nWorkers; w++) {
+            int wStart = w * chunkSize;
+            int wEnd = Math.min(wStart + chunkSize, total);
+            if (wStart >= total) break;
+
+            Thread t = new Thread(() -> {
+                try {
+                    for (int offset = wStart; offset < wEnd; offset += batch) {
+                        int end = Math.min(offset + batch, wEnd);
+                        int off = offset;
+                        db.run(context -> {
+                            FDBRecordStore store = FDBRecordStore.newBuilder()
+                                .setMetaDataProvider(md).setContext(context)
+                                .setSubspace(ss).open();
+                            List<CompletableFuture<?>> futures = new ArrayList<>(end - off);
+                            for (int i = off; i < end; i++) {
+                                futures.add(store.saveRecordAsync(makeOrder(i, i * 7)));
+                            }
+                            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                            return null;
+                        });
+                        totalWritten.addAndGet(end - off);
+                    }
+                } catch (Exception e) {
+                    firstError.compareAndSet(null, e);
+                }
+            });
+            threads.add(t);
+            t.start();
+        }
+
+        for (Thread t : threads) {
+            try { t.join(); } catch (InterruptedException ignored) {}
+        }
+
+        long elapsed = System.nanoTime() - start;
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("totalRecords", totalWritten.get());
+        result.put("totalNanos", elapsed);
+        result.put("rowsPerSecond", (double) totalWritten.get() / elapsed * 1_000_000_000.0);
+        result.put("workers", nWorkers);
+        if (firstError.get() != null) {
+            result.put("error", firstError.get().getMessage());
+        }
+        return result;
     }
 
     private static Map<String, Object> timingResult(long iterations, long totalNanos) {

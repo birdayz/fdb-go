@@ -415,6 +415,53 @@ var _ = Describe("Performance Comparison: Go vs Java", Label("benchmark"), func(
 		GinkgoWriter.Println("Go: pure Go FDB client (no CGo) | Java: FDB C binding (CGo)")
 		GinkgoWriter.Println("Ratio < 1.0 = Go faster, > 1.0 = Java faster")
 	})
+
+	It("compares bulk insert throughput: Go vs Java", Label("bulk-insert"), func() {
+		const totalRecords = 500_000
+		const batchSize = 2000
+		workers := []int{1, 4, 8}
+
+		type bulkResult struct {
+			TotalRecords float64 `json:"totalRecords"`
+			TotalNanos   float64 `json:"totalNanos"`
+			RowsPerSec   float64 `json:"rowsPerSecond"`
+			Workers      float64 `json:"workers"`
+			Error        string  `json:"error"`
+		}
+
+		invokeBulk := func(step string, ss subspace.Subspace, w int) bulkResult {
+			var result bulkResult
+			err := java.InvokeAs(ctx, step, map[string]any{
+				"clusterFile":  clusterFile,
+				"subspace":     BytesToIntArray(ss.Bytes()),
+				"totalRecords": totalRecords,
+				"batchSize":    batchSize,
+				"workers":      w,
+			}, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(BeEmpty(), "Java benchmark error")
+			return result
+		}
+
+		GinkgoWriter.Println("\n=== Bulk Insert: Java saveRecord (sync) vs saveRecordAsync (pipelined) ===")
+		GinkgoWriter.Println(fmt.Sprintf("%-6s %18s %18s", "Workers", "Sync (rows/s)", "Async (rows/s)"))
+		GinkgoWriter.Println(fmt.Sprintf("%-6s %18s %18s", "-------", "-------------", "--------------"))
+
+		for _, w := range workers {
+			syncSS := uniqueSS()
+			syncResult := invokeBulk("benchmarkBulkInsertSync", syncSS, w)
+
+			asyncSS := uniqueSS()
+			asyncResult := invokeBulk("benchmarkBulkInsertAsync", asyncSS, w)
+
+			GinkgoWriter.Println(fmt.Sprintf("w%-5d %18.0f %18.0f",
+				w, syncResult.RowsPerSec, asyncResult.RowsPerSec))
+		}
+
+		GinkgoWriter.Println(fmt.Sprintf("\n%d records, %d per batch, no secondary indexes", totalRecords, batchSize))
+		GinkgoWriter.Println("Sync = saveRecord() per row (sequential reads)")
+		GinkgoWriter.Println("Async = saveRecordAsync() + allOf().join() (pipelined reads)")
+	})
 })
 
 // runGoSaveWithIndex measures Go save with VALUE index.
