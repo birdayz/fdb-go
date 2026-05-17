@@ -149,9 +149,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		if !outerResult.HasNext() {
 			c.outerExhausted = true
 			reason := outerResult.GetNoNextReason()
-			return recordlayer.NewResultNoNext[QueryResult](
-				reason, outerResult.GetContinuation(),
-			), nil
+			cont := c.wrapOuterContinuation(outerResult.GetContinuation())
+			return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
 		}
 
 		outerRow := outerResult.GetValue()
@@ -217,6 +216,24 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 		}
 	}
 
+	data, err := proto.Marshal(fmc)
+	if err != nil {
+		return nonEndContinuation
+	}
+	return recordlayer.NewBytesContinuation(data)
+}
+
+// wrapOuterContinuation wraps the outer cursor's continuation in a
+// FlatMapContinuation proto. Used when the outer cursor stops (e.g.,
+// TimeLimitReached) before producing a value.
+func (c *flatMapCursor) wrapOuterContinuation(outerCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
+	if outerCont != nil && outerCont.IsEnd() {
+		return &recordlayer.EndContinuation{}
+	}
+	fmc := &gen.FlatMapContinuation{}
+	if outerCont != nil {
+		fmc.OuterContinuation, _ = outerCont.ToBytes()
+	}
 	data, err := proto.Marshal(fmc)
 	if err != nil {
 		return nonEndContinuation

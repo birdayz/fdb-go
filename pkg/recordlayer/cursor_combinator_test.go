@@ -921,6 +921,171 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(results).To(Equal(15))
 	})
 
+	It("OrElse testOrElseReasons", func() {
+		// Port of Java's testOrElseReasons: primary has 5 items, all filtered
+		// out, with fakeOutOfBandCursor(limit=3). First cycle scans 3 items,
+		// all filtered → TIME_LIMIT. Resume: scans remaining 2, all filtered →
+		// SOURCE_EXHAUSTED → switches to alternative → emits [0].
+		list := []int{1, 2, 3, 4, 5}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return false }}
+		}
+		alternative := func() RecordCursor[int] {
+			return FromList([]int{0})
+		}
+
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT, no values
+		cursor := OrElseWithContinuation(primaryFactory, alternative, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume, primary scans [4,5], all filtered → SOURCE_EXHAUSTED
+		// → switches to alternative → emits [0] → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{0}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("OrElse orElseWithEventuallyNonEmptyInner", func() {
+		// Port of Java's orElseWithEventuallyNonEmptyInner: primary has 5
+		// items filtered by i > 4 (only 5 passes), with fakeOutOfBandCursor
+		// (limit=3). First cycle: scans [1,2,3], all filtered → TIME_LIMIT.
+		// Resume: scans [4,5], 5 passes → USE_INNER, emits [5] → SOURCE_EXHAUSTED.
+		list := []int{1, 2, 3, 4, 5}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return i > 4 }}
+		}
+		alternative := func() RecordCursor[int] {
+			return FromList([]int{0})
+		}
+
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT, no values
+		cursor := OrElseWithContinuation(primaryFactory, alternative, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume, primary scans [4,5], 5 passes filter → USE_INNER
+		// emits [5] → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{5}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("OrElse orElseContinueWithInnerBranchAfterDecision", func() {
+		// Port of Java's orElseContinueWithInnerBranchAfterDecision: primary
+		// has 18 items filtered by i > 10, fakeOutOfBandCursor(limit=3).
+		// Cycles 1-3 produce no values (scanning [1-9]). Cycle 4 finds items
+		// 11,12 then TIME_LIMIT. Cycles 5-6 drain [13-18].
+		list := make([]int, 18)
+		for i := range list {
+			list[i] = i + 1
+		}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return i > 10 }}
+		}
+		alternative := func() RecordCursor[int] {
+			return FromList([]int{0})
+		}
+
+		var allItems []int
+		var contBytes []byte
+
+		// Cycles 1-3: primary scans [1-3], [4-6], [7-9] — all filtered → TIME_LIMIT
+		for cycle := range 3 {
+			cursor := OrElseWithContinuation(primaryFactory, alternative, contBytes)
+			items, cont := collectUntilStop(ctx, cursor)
+			Expect(items).To(BeEmpty(), "cycle %d should emit nothing", cycle+1)
+			Expect(cont).NotTo(BeNil())
+			Expect(cont.IsEnd()).To(BeFalse())
+			var err error
+			contBytes, err = cont.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(contBytes).NotTo(BeEmpty())
+		}
+
+		// Cycle 4: scans [10,11,12], 11 and 12 pass → USE_INNER, emits [11,12] → TIME_LIMIT
+		cursor := OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{11, 12}))
+		allItems = append(allItems, items...)
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Continue resuming until SOURCE_EXHAUSTED
+		for {
+			cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+			items, cont = collectUntilStop(ctx, cursor)
+			allItems = append(allItems, items...)
+			if cont.IsEnd() {
+				break
+			}
+			contBytes, err = cont.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(contBytes).NotTo(BeEmpty())
+		}
+
+		Expect(allItems).To(Equal([]int{11, 12, 13, 14, 15, 16, 17, 18}))
+	})
+
+	It("OrElse orElseContinueWithElseBranchAfterDecision", func() {
+		// Port of Java's orElseContinueWithElseBranchAfterDecision: primary
+		// has 5 items, all filtered out, with fakeOutOfBandCursor(limit=3).
+		// Alternative is [-1,-2,-3,-4,-5] (no time limit).
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT.
+		// Cycle 2: primary scans [4,5], all filtered → SOURCE_EXHAUSTED →
+		// switches to alternative → emits [-1,-2,-3,-4,-5] → SOURCE_EXHAUSTED.
+		list := []int{1, 2, 3, 4, 5}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return false }}
+		}
+		alternative := func() RecordCursor[int] {
+			return FromList([]int{-1, -2, -3, -4, -5})
+		}
+
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT
+		cursor := OrElseWithContinuation(primaryFactory, alternative, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume, primary scans [4,5], all filtered → SOURCE_EXHAUSTED
+		// → switches to alternative → emits all 5 items → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{-1, -2, -3, -4, -5}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
 	It("AutoContinuingCursor scans across transaction boundaries", func() {
 		ks := specSubspace()
 		populate10Orders(ctx, metaData)

@@ -142,57 +142,150 @@ func SkipThenLimit[T any](cursor RecordCursor[T], skip, limit int) RecordCursor[
 // OrElse returns the primary cursor if it has results, otherwise falls back
 // to the alternative cursor. Matches Java's RecordCursor.orElse().
 func OrElse[T any](primary RecordCursor[T], alternative func() RecordCursor[T]) RecordCursor[T] {
-	return &orElseCursor[T]{primary: primary, alternative: alternative}
+	return OrElseWithContinuation(
+		func(cont []byte) RecordCursor[T] { return primary },
+		alternative,
+		nil,
+	)
+}
+
+// OrElseWithContinuation creates an OrElse cursor with continuation support.
+// Matches Java's OrElseCursor with OrElseContinuation proto serialization.
+func OrElseWithContinuation[T any](
+	primaryFactory CursorFactory[T],
+	alternative func() RecordCursor[T],
+	continuation []byte,
+) RecordCursor[T] {
+	c := &orElseCursor[T]{
+		alternative: alternative,
+		state:       gen.OrElseContinuation_UNDECIDED,
+	}
+
+	if len(continuation) > 0 {
+		var cont gen.OrElseContinuation
+		if err := cont.UnmarshalVT(continuation); err == nil && cont.State != nil {
+			c.state = *cont.State
+			switch c.state {
+			case gen.OrElseContinuation_USE_INNER:
+				c.primary = primaryFactory(cont.Continuation)
+				c.active = c.primary
+			case gen.OrElseContinuation_USE_OTHER:
+				c.active = alternative()
+				// The alternative doesn't use continuation from the proto —
+				// Java creates the else cursor fresh each time too.
+				// The continuation field in USE_OTHER state IS the else cursor's
+				// continuation, but our alternative factory doesn't take one.
+				// For now, create fresh. This matches the common case where
+				// the else branch is a small constant list.
+			default:
+				c.primary = primaryFactory(cont.Continuation)
+			}
+		} else {
+			c.primary = primaryFactory(nil)
+		}
+	} else {
+		c.primary = primaryFactory(nil)
+	}
+
+	return c
 }
 
 type orElseCursor[T any] struct {
 	primary     RecordCursor[T]
 	alternative func() RecordCursor[T]
 	active      RecordCursor[T]
-	firstResult *RecordCursorResult[T]
-	started     bool
+	state       gen.OrElseContinuation_State
 }
 
 func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
-	if !c.started {
-		// Try the primary cursor first
+	if c.state == gen.OrElseContinuation_UNDECIDED {
 		result, err := c.primary.OnNext(ctx)
 		if err != nil {
 			return result, err
 		}
 		if result.HasNext() {
-			c.started = true
+			c.state = gen.OrElseContinuation_USE_INNER
 			c.active = c.primary
-			return result, nil
+			cont := c.wrapContinuation(gen.OrElseContinuation_USE_INNER, result.GetContinuation())
+			return NewResultWithValue(result.GetValue(), cont), nil
 		}
-		// Primary returned !hasNext. Check if it's an out-of-band reason.
-		// Matches Java's OrElseCursor 3-state model: stay UNDECIDED on OOB limits,
-		// propagate the result without switching to alternative.
 		if !result.GetNoNextReason().IsSourceExhausted() {
-			// Out-of-band limit — stay undecided (don't set c.started).
-			return result, nil
+			cont := c.wrapContinuation(gen.OrElseContinuation_UNDECIDED, result.GetContinuation())
+			return NewResultNoNext[T](result.GetNoNextReason(), cont), nil
 		}
-		// Primary truly exhausted — switch to alternative
-		c.started = true
+		c.state = gen.OrElseContinuation_USE_OTHER
 		_ = c.primary.Close()
 		c.active = c.alternative()
-		return c.active.OnNext(ctx)
+		return c.advanceActive(ctx)
 	}
-	return c.active.OnNext(ctx)
+	return c.advanceActive(ctx)
+}
+
+func (c *orElseCursor[T]) advanceActive(ctx context.Context) (RecordCursorResult[T], error) {
+	result, err := c.active.OnNext(ctx)
+	if err != nil {
+		return result, err
+	}
+	if result.HasNext() {
+		cont := c.wrapContinuation(c.state, result.GetContinuation())
+		return NewResultWithValue(result.GetValue(), cont), nil
+	}
+	if result.GetContinuation().IsEnd() {
+		return result, nil
+	}
+	cont := c.wrapContinuation(c.state, result.GetContinuation())
+	return NewResultNoNext[T](result.GetNoNextReason(), cont), nil
+}
+
+func (c *orElseCursor[T]) wrapContinuation(state gen.OrElseContinuation_State, inner RecordCursorContinuation) RecordCursorContinuation {
+	return &orElseContinuationWrapper{state: state, inner: inner}
 }
 
 func (c *orElseCursor[T]) Close() error {
 	if c.active != nil {
 		return c.active.Close()
 	}
-	return c.primary.Close()
+	if c.primary != nil {
+		return c.primary.Close()
+	}
+	return nil
 }
 
 func (c *orElseCursor[T]) IsClosed() bool {
 	if c.active != nil {
 		return c.active.IsClosed()
 	}
-	return c.primary.IsClosed()
+	if c.primary != nil {
+		return c.primary.IsClosed()
+	}
+	return true
+}
+
+type orElseContinuationWrapper struct {
+	state gen.OrElseContinuation_State
+	inner RecordCursorContinuation
+}
+
+func (w *orElseContinuationWrapper) ToBytes() ([]byte, error) {
+	if w.inner == nil || w.inner.IsEnd() {
+		return nil, nil
+	}
+	innerBytes, err := w.inner.ToBytes()
+	if err != nil {
+		return nil, fmt.Errorf("orelse continuation inner: %w", err)
+	}
+	if len(innerBytes) == 0 {
+		return nil, nil
+	}
+	oc := &gen.OrElseContinuation{
+		State:        w.state.Enum(),
+		Continuation: innerBytes,
+	}
+	return oc.MarshalVT()
+}
+
+func (w *orElseContinuationWrapper) IsEnd() bool {
+	return false
 }
 
 // ConcatCursor concatenates two cursors: returns all results from the first cursor,
