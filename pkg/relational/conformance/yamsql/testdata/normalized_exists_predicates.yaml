@@ -1,0 +1,67 @@
+# normalized_exists_predicates.yaml
+#
+# OR predicates combined with EXISTS subqueries that benefit from CNF
+# normalization via NormalizePredicatesRule. The rule fires on all
+# SelectExpressions (including those containing EXISTS), so these
+# queries exercise the interaction between predicate normalization,
+# correlated subquery evaluation, and NOT EXISTS semantics.
+name: normalized_exists_predicates
+schema_template: |
+  CREATE TABLE products (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO products VALUES (1, 'electronics', 100), (2, 'clothing', 25), (3, 'electronics', 40), (4, 'food', 10), (5, 'clothing', 60), (6, 'food', 80)
+  - INSERT INTO reviews VALUES (1, 1, 5), (2, 2, 3), (3, 3, 1), (4, 4, 4)
+tests:
+  # EXISTS with OR inside the correlated subquery. The inner OR
+  # (rating >= 4 OR rating = 1) is a candidate for CNF distribution.
+  # Product 1 has rating 5 (>=4), product 3 has rating 1 (=1),
+  # product 4 has rating 4 (>=4). Product 2 has rating 3 (neither).
+  # Products 5, 6 have no reviews.
+  - query: |-
+      SELECT id FROM products
+      WHERE EXISTS (
+        SELECT 1 FROM reviews
+        WHERE reviews.product_id = products.id
+          AND (reviews.rating >= 4 OR reviews.rating = 1)
+      )
+      ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [4]
+
+  # NOT EXISTS combined with an outer OR via AND. Only products
+  # without reviews pass the NOT EXISTS gate (products 5, 6). Of
+  # those, both satisfy the OR: product 5 has price 60 > 50,
+  # product 6 has price 80 > 50. Neither is 'electronics', but
+  # the OR only needs one arm true.
+  - query: |-
+      SELECT id FROM products
+      WHERE NOT EXISTS (
+        SELECT 1 FROM reviews
+        WHERE reviews.product_id = products.id
+      )
+      AND (products.category = 'electronics' OR products.price > 50)
+      ORDER BY id
+    rows:
+      - [5]
+      - [6]
+
+  # Outer OR with one arm being a correlated EXISTS. CNF
+  # normalization must preserve the EXISTS semantics through the
+  # disjunction. price < 30 captures products 2 (25) and 4 (10).
+  # EXISTS with rating = 5 captures product 1 (review rating 5).
+  # Union of both arms: 1, 2, 4.
+  - query: |-
+      SELECT id FROM products
+      WHERE products.price < 30
+        OR EXISTS (
+          SELECT 1 FROM reviews
+          WHERE reviews.product_id = products.id AND reviews.rating = 5
+        )
+      ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]

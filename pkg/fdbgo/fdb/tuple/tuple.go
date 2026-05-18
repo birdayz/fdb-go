@@ -575,37 +575,9 @@ func (pk *Packer) EncodeTuple(t Tuple)          { pk.p.encodeTuple(t, false, fal
 func (pk *Packer) EncodeElement(e TupleElement) { pk.p.encodeElement(e) }
 
 func (pk *Packer) AppendInto(buf *[]byte, prefix []byte) []byte {
-	return appendPacked(buf, prefix, pk.p)
-}
-
-// PackInt64ConcatInto packs an int64 + a tuple into a shared buffer.
-func PackInt64ConcatInto(buf *[]byte, prefix []byte, val int64, suffix Tuple) []byte {
-	p := packerPool.Get().(*packer)
-	p.versionstampPos = -1
-	p.buf = p.buf[:0]
-	p.encodeInt(val)
-	p.encodeTuple(suffix, false, false)
-	result := appendPacked(buf, prefix, p)
-	packerPool.Put(p)
-	return result
-}
-
-// PackInt64Into packs a single int64 into a shared buffer. Avoids any→int64 boxing.
-func PackInt64Into(buf *[]byte, prefix []byte, val int64) []byte {
-	p := packerPool.Get().(*packer)
-	p.versionstampPos = -1
-	p.buf = p.buf[:0]
-	p.encodeInt(val)
-	result := appendPacked(buf, prefix, p)
-	packerPool.Put(p)
-	return result
-}
-
-// appendPacked appends prefix + packer contents to the shared buffer, returns sub-slice.
-func appendPacked(buf *[]byte, prefix []byte, p *packer) []byte {
 	b := *buf
 	start := len(b)
-	needed := start + len(prefix) + len(p.buf)
+	needed := start + len(prefix) + len(pk.p.buf)
 	if needed > cap(b) {
 		newCap := max(2*cap(b), needed)
 		newB := make([]byte, start, newCap)
@@ -614,56 +586,9 @@ func appendPacked(buf *[]byte, prefix []byte, p *packer) []byte {
 	}
 	b = b[:needed]
 	copy(b[start:], prefix)
-	copy(b[start+len(prefix):], p.buf)
+	copy(b[start+len(prefix):], pk.p.buf)
 	*buf = b
 	return b[start:needed]
-}
-
-// PackWithPrefixInto packs tuple with prefix into a shared buffer.
-func (t Tuple) PackWithPrefixInto(buf *[]byte, prefix []byte) []byte {
-	p := packerPool.Get().(*packer)
-	p.versionstampPos = -1
-	p.buf = p.buf[:0]
-	p.encodeTuple(t, false, false)
-	result := appendPacked(buf, prefix, p)
-	packerPool.Put(p)
-	return result
-}
-
-// PackConcatInto packs multiple tuples into a shared buffer.
-func PackConcatInto(buf *[]byte, prefix []byte, tuples ...Tuple) []byte {
-	p := packerPool.Get().(*packer)
-	p.versionstampPos = -1
-	p.buf = p.buf[:0]
-	for _, t := range tuples {
-		p.encodeTuple(t, false, false)
-	}
-	result := appendPacked(buf, prefix, p)
-	packerPool.Put(p)
-	return result
-}
-
-// Pack1Into packs a single element into a shared buffer.
-func Pack1Into(buf *[]byte, prefix []byte, elem TupleElement) []byte {
-	p := packerPool.Get().(*packer)
-	p.versionstampPos = -1
-	p.buf = p.buf[:0]
-	p.encodeElement(elem)
-	result := appendPacked(buf, prefix, p)
-	packerPool.Put(p)
-	return result
-}
-
-// Pack1ConcatInto packs a single element + tuple into a shared buffer.
-func Pack1ConcatInto(buf *[]byte, prefix []byte, elem TupleElement, suffix Tuple) []byte {
-	p := packerPool.Get().(*packer)
-	p.versionstampPos = -1
-	p.buf = p.buf[:0]
-	p.encodeElement(elem)
-	p.encodeTuple(suffix, false, false)
-	result := appendPacked(buf, prefix, p)
-	packerPool.Put(p)
-	return result
 }
 
 // PackWithVersionstamp packs the specified tuple into a key for versionstamp

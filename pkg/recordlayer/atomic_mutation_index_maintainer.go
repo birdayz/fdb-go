@@ -140,12 +140,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 	}
 	groupKey := *(*tuple.Tuple)(unsafe.Pointer(&values))
 	groupKey = groupKey[:n]
-	var fdbKey fdb.Key
-	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
-		fdbKey = fdb.Key(groupKey.PackWithPrefixInto(s.batchKeyBuf, m.indexSubspace.Bytes()))
-	} else {
-		fdbKey = fdb.Key(m.indexSubspace.Pack(groupKey))
-	}
+	fdbKey := fdb.Key(m.indexSubspace.Pack(groupKey))
 
 	if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
 		return true, err
@@ -193,12 +188,7 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 	if gc == 0 {
 		switch m.mutation.(type) {
 		case *countMutation, *countUpdatesMutation:
-			var fdbKey fdb.Key
-			if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
-				fdbKey = fdb.Key(tuple.Tuple{}.PackWithPrefixInto(s.batchKeyBuf, m.indexSubspace.Bytes()))
-			} else {
-				fdbKey = fdb.Key(m.indexSubspace.Pack(tuple.Tuple{}))
-			}
+			fdbKey := fdb.Key(m.indexSubspace.Pack(tuple.Tuple{}))
 			return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 		}
 		return false, nil // SUM/other with gc=0: fall through
@@ -223,21 +213,13 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 			if !valid {
 				return false, nil
 			}
-			if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
-				fdbKey = fdb.Key(tuple.PackInt64Into(s.batchKeyBuf, m.indexSubspace.Bytes(), groupInt64))
-			} else {
-				fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), groupInt64))
-			}
+			fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), groupInt64))
 		} else if se, ok := comp.expressions[0].(ScalarEvaluator); ok {
 			groupVal, err := se.EvaluateScalar(newRecord, newRecord.Record)
 			if err != nil {
 				return false, nil
 			}
-			if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
-				fdbKey = fdb.Key(tuple.Pack1Into(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
-			} else {
-				fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
-			}
+			fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
 		} else {
 			return false, nil
 		}
@@ -281,15 +263,8 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 	if !ok || len(comp.expressions) < gc {
 		return false, nil
 	}
-	// Use shared batch packer if available to avoid pool churn.
-	var pk *tuple.Packer
-	var ownedPk bool
-	if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchPacker != nil {
-		pk = s.batchPacker
-	} else {
-		pk = tuple.GetPacker()
-		ownedPk = true
-	}
+	pk := tuple.GetPacker()
+	defer tuple.PutPacker(pk)
 	pk.Reset()
 	allDirect := true
 	for i := 0; i < gc; i++ {
@@ -304,21 +279,10 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		}
 	}
 	if !allDirect {
-		if ownedPk {
-			tuple.PutPacker(pk)
-		}
 		return false, nil
 	}
-	var fdbKey fdb.Key
-	if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchKeyBuf != nil {
-		fdbKey = fdb.Key(pk.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes()))
-	} else {
-		var buf []byte
-		fdbKey = fdb.Key(pk.AppendInto(&buf, m.indexSubspace.Bytes()))
-	}
-	if ownedPk {
-		tuple.PutPacker(pk)
-	}
+	var buf []byte
+	fdbKey := fdb.Key(pk.AppendInto(&buf, m.indexSubspace.Bytes()))
 
 	// Extract SUM value directly if this is a SUM mutation.
 	var sumSource any

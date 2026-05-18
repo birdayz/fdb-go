@@ -270,19 +270,17 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 		return nil, driver.ErrBadConn
 	}
 	defer c.beginStatement()()
+
 	substituted, err := substituteParams(sql, args)
 	if err != nil {
 		return nil, err
 	}
+
 	gen := &naiveGenerator{c: c}
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
-	// ExecContext accepts only update-shaped plans. A bare SELECT or
-	// SHOW passed to Exec is rejected with the pre-seam error message
-	// (matches TestFDB_EmbeddedSelectReturnsUnsupported). Callers use
-	// QueryContext for row-returning statements.
 	if !plan.IsUpdate() {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
@@ -337,6 +335,10 @@ func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
 		return nil, driver.ErrBadConn
 	}
 	return &embeddedStmt{conn: c, query: query}, nil
+}
+
+func (c *EmbeddedConnection) newStoreBuilder() *recordlayer.StoreBuilder {
+	return recordlayer.NewStoreBuilder().SetDatabase(c.sess.DB)
 }
 
 // Close marks the connection as closed.

@@ -81,15 +81,15 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] LEFT OUTER FlatMap with correct NULL row emission
 - [x] Outer-only predicate push-down below FlatMap (alias-stripped)
 - [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
-- [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions)
+- [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions) (implemented in generic FlatMapPipelinedWithCheck; executor-level cursor does not use it — documented)
 
 ### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
 
-- [ ] **Multi-step FlatMap continuation under TIME_LIMIT**: Java's `testFlatMapReasons` verifies 5×5 grid across 6 continuation cycles where inner hits TIME_LIMIT every 3 items. Go has ZERO resumption tests under time pressure.
-- [ ] **OrElse (NOT EXISTS) under TIME_LIMIT**: Java has 4 tests for decision-before-vs-after time limit in the orElse cursor. Go has zero.
-- [ ] **Inner/outer limit grid tests**: Java verifies full M×N product when cursors hit limits every N items (`pipelineWithInnerLimits`/`pipelineWithOuterLimits`). Go has no equivalent.
-- [ ] **JOIN continuation resume at SQL level**: Java's `JoinWithLimitTest.joinWithContinuationAndLimit` uses `EXECUTE CONTINUATION` to resume mid-join. Go uses LIMIT/OFFSET (simulates pages) but never tests actual continuation-based resume.
-- [ ] **EXISTS + 3-way join + ORDER BY plan shape**: Java tests EXISTS nested between two FlatMap joins with ORDER BY controlling scan direction.
+- [x] **Multi-step FlatMap continuation under TIME_LIMIT**: testFlatMapReasons (5×5 grid, 6 cycles), pipelineWithInnerLimits, pipelineWithOuterLimits — both out-of-band and row-limit variants. Fixed two continuation bugs: priorOuterCont nil on resume, pending inner dropped on outer stop. (swingshift-96)
+- [x] **OrElse (NOT EXISTS) under TIME_LIMIT**: Ported all 4 Java tests. Added OrElseWithContinuation with OrElseContinuation proto serialization. (swingshift-96)
+- [x] **Inner/outer limit grid tests**: Both out-of-band (TimeLimitReached) and in-band (ReturnLimitReached) variants ported via iterateGrid helper. (swingshift-96)
+- [ ] **JOIN continuation resume at SQL level**: Requires EXECUTE CONTINUATION implementation (parsed but not wired). Multi-shift effort.
+- [x] **EXISTS + 3-way join + ORDER BY plan shape**: (covered by join_exists_self.yaml, correlated_exists_advanced.yaml, flatmap_exists_coverage.yaml, exists.yaml, correlated_subquery_probes.yaml + TestFDB_CorrelatedExistsCrossJoin, TestFDB_NestedCorrelatedExists)
 
 ---
 
@@ -105,13 +105,13 @@ Shipped. Parse in PlanVisitor.visitLimit → LogicalLimit in logical tree → Ca
 
 1 remaining cross-engine conformance failure. `bytesAdvancedScenario` query #2: `SELECT id FROM t WHERE payload IN (X'DEADBEEF', X'CAFEBABE') ORDER BY id` returns 0 rows in the Ginkgo shared-container context. Same code passes in 4 independent test contexts. Needs Java conformance server to diagnose.
 
-### NormalizePredicatesRule existential guard
+### NormalizePredicatesRule existential guard — RESOLVED (swingshift-96)
 
-Go skips NormalizePredicatesRule for SelectExpressions with Existential quantifiers. Java fires on all. Root cause (dayshift-93): removing the guard causes planner non-convergence (MaxTasks cap hit) due to cascading rule interactions creating an infinite exploration loop. Fix requires rule deduplication infrastructure. Documented in DIVERGENCES.md.
+Fixed. Removed the existential quantifier guard and replaced with hash-based dedup to prevent the infinite normalization loop. Now fires on all SelectExpressions matching Java.
 
-### DecorrelateValuesRule test gap (25/29 Java tests)
+### DecorrelateValuesRule — RESOLVED (swingshift-96)
 
-4 remaining Java tests need push-down-into-child infrastructure (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations).
+Push-down-into-child infrastructure added. All 29/29 Java tests ported (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations).
 
 ### Covering index for SQL (multi-shift)
 
@@ -139,4 +139,4 @@ Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord
 
 ## Completed (summary)
 
-All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,553+ tests, 105 fuzz targets, 491/492 cross-engine conformance specs, 1754 yamsql scenarios.
+All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,568+ tests, 106 fuzz targets, 491/492 cross-engine conformance specs, 1754 yamsql scenarios.

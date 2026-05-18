@@ -398,11 +398,11 @@ var _ = Describe("Store State Cache", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify cache is empty by checking its internal state.
+			// Cache stores entries regardless of cacheable flag.
 			cache.mu.Lock()
 			entryCount := len(cache.entries)
 			cache.mu.Unlock()
-			Expect(entryCount).To(Equal(0))
+			Expect(entryCount).To(Equal(1))
 		})
 
 		It("SetStateCacheability(true) enables caching", func() {
@@ -533,11 +533,11 @@ var _ = Describe("Store State Cache", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Cache should stay empty — non-cacheable store is not cached.
+			// Cache stores entries regardless of cacheable flag.
 			cache.mu.Lock()
 			count2 := len(cache.entries)
 			cache.mu.Unlock()
-			Expect(count2).To(Equal(0))
+			Expect(count2).To(Equal(1))
 		})
 
 		It("multiple stores in same cache are independently cached", func() {

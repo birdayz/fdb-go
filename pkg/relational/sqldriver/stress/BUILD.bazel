@@ -3,10 +3,21 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "stress_test",
     timeout = "eternal",
-    srcs = ["stress_test.go"],
+    srcs = [
+        "raw_fdb_bench_test.go",
+        "recordlayer_bench_test.go",
+        "stress_test.go",
+    ],
     tags = ["stress"],
     deps = [
+        "//gen",
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
+        "@org_golang_google_protobuf//proto",
     ],
 )

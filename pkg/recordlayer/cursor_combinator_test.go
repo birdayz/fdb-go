@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"slices"
 
@@ -10,6 +11,117 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+// intEqual compares two ints for dedup equality.
+func intEqual(a, b int) bool { return a == b }
+
+// packInt serializes an int to 8 little-endian bytes.
+func packInt(v int) []byte {
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint64(b, uint64(v))
+	return b
+}
+
+// unpackInt deserializes an int from 8 little-endian bytes.
+func unpackInt(b []byte) (int, bool) {
+	if len(b) < 8 {
+		return 0, false
+	}
+	return int(binary.LittleEndian.Uint64(b)), true
+}
+
+// fakeOutOfBandCursor wraps a cursor and returns TimeLimitReached after limit
+// items. Matches Java's FakeOutOfBandCursor used in RecordCursorTest.
+func fakeOutOfBandCursor[T any](inner RecordCursor[T], limit int) RecordCursor[T] {
+	return &outOfBandCursor[T]{inner: inner, limit: limit}
+}
+
+type outOfBandCursor[T any] struct {
+	inner   RecordCursor[T]
+	limit   int
+	count   int
+	lastCon RecordCursorContinuation
+}
+
+func (c *outOfBandCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.count >= c.limit {
+		cont := c.lastCon
+		if cont == nil {
+			cont = &BytesContinuation{}
+		}
+		return NewResultNoNext[T](TimeLimitReached, cont), nil
+	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return result, err
+	}
+	if result.HasNext() {
+		c.count++
+		c.lastCon = result.GetContinuation()
+	}
+	return result, nil
+}
+
+func (c *outOfBandCursor[T]) Close() error   { return c.inner.Close() }
+func (c *outOfBandCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
+
+// collectUntilStop drains a cursor until it stops (exhaustion or limit),
+// returning items collected and the final continuation.
+func collectUntilStop(ctx context.Context, cursor RecordCursor[int]) ([]int, RecordCursorContinuation) {
+	var items []int
+	var lastCont RecordCursorContinuation
+	for {
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		if !r.HasNext() {
+			lastCont = r.GetContinuation()
+			break
+		}
+		items = append(items, r.GetValue())
+	}
+	cursor.Close()
+	return items, lastCont
+}
+
+// iterateGrid drives a FlatMap cursor through multiple continuation cycles
+// until SOURCE_EXHAUSTED, counting results and verifying monotonic ordering.
+// Port of Java's iterateGrid helper from RecordCursorTest.
+func iterateGrid(cursorFunc func(cont []byte) RecordCursor[[2]int]) int {
+	results := 0
+	leftSoFar := -1
+	rightSoFar := -1
+	var continuation []byte
+	for {
+		cursor := cursorFunc(continuation)
+		for {
+			r, err := cursor.OnNext(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				reason := r.GetNoNextReason()
+				if reason.IsSourceExhausted() {
+					cursor.Close()
+					return results
+				}
+				contBytes, contErr := r.GetContinuation().ToBytes()
+				Expect(contErr).NotTo(HaveOccurred())
+				Expect(contBytes).NotTo(BeEmpty())
+				continuation = contBytes
+				break
+			}
+			val := r.GetValue()
+			Expect(val[0]).To(BeNumerically(">", val[1]))
+			Expect(val[0]).To(BeNumerically(">=", leftSoFar))
+			if val[0] == leftSoFar {
+				Expect(val[1]).To(BeNumerically(">", rightSoFar))
+			} else {
+				leftSoFar = val[0]
+			}
+			rightSoFar = val[1]
+			results++
+		}
+		cursor.Close()
+	}
+}
 
 // populate10Orders saves 10 orders (IDs 1-10, prices 10-100) into the given subspace.
 func populate10Orders(ctx context.Context, metaData *RecordMetaData) {
@@ -652,6 +764,48 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(results).To(Equal([]int{11, 20, 21}))
 	})
 
+	It("FlatMapPipelined check value mismatch restarts inner", func() {
+		// When check value doesn't match on resume (simulating concurrent
+		// modification of the outer record), the inner cursor restarts
+		// from the beginning instead of using the saved inner continuation.
+		callCount := 0
+		makeOuter := func(cont []byte) RecordCursor[int] {
+			callCount++
+			if callCount == 1 {
+				return FromListWithContinuation([]int{1, 2}, cont)
+			}
+			// Second creation: outer list has changed (simulating concurrent mod)
+			return FromListWithContinuation([]int{99, 2}, cont)
+		}
+		makeInner := func(outer int, cont []byte) RecordCursor[int] {
+			return FromListWithContinuation([]int{outer * 10, outer*10 + 1}, cont)
+		}
+		checkFunc := func(outer int) []byte {
+			return []byte(fmt.Sprintf("id:%d", outer))
+		}
+
+		cursor := LimitRowsCursor(
+			FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, nil, 1),
+			1,
+		)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.GetValue()).To(Equal(10))
+
+		contBytes, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cursor.Close()).To(Succeed())
+
+		// Resume: outer now returns 99 instead of 1. Check value "id:99"
+		// doesn't match saved "id:1". Inner should restart from nil, not
+		// from the saved inner continuation.
+		cursor2 := FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, contBytes, 1)
+		results, err := AsList(ctx, cursor2)
+		Expect(err).NotTo(HaveOccurred())
+		// Inner for outer=99 starts fresh: [990, 991], then outer=2: [20, 21]
+		Expect(results).To(Equal([]int{990, 991, 20, 21}))
+	})
+
 	It("FlatMapPipelined with type transformation", func() {
 		// Outer: strings, Inner: ints (different types)
 		cursor := FlatMapPipelined(
@@ -666,6 +820,774 @@ var _ = Describe("CursorCombinators", func() {
 		result, err := AsList(ctx, cursor)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal([]int{1, 2, 3}))
+	})
+
+	// --- FlatMapPipelined TIME_LIMIT tests (Java RecordCursorTest alignment) ---
+
+	It("FlatMapPipelined testFlatMapReasons (5x5 grid, TIME_LIMIT every 3)", func() {
+		// Port of Java's testFlatMapReasons: 5×5 grid where the inner
+		// cursor fires TIME_LIMIT_REACHED every 3 items. Verifies 6
+		// continuation cycles produce the exact same item sequence.
+		list := []int{1, 2, 3, 4, 5}
+		outer := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(list, cont)
+		}
+		timedInner := func(outerVal int, cont []byte) RecordCursor[int] {
+			inner := make([]int, len(list))
+			for j, v := range list {
+				inner[j] = outerVal*10 + v
+			}
+			return fakeOutOfBandCursor(FromListWithContinuation(inner, cont), 3)
+		}
+
+		// Cycle 1: 11, 12, 13 → TIME_LIMIT
+		cursor := FlatMapPipelined(outer, timedInner, nil, 10)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{11, 12, 13}))
+		Expect(cont).NotTo(BeNil())
+
+		// Cycle 2: 14, 15, 21, 22, 23 → TIME_LIMIT
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{14, 15, 21, 22, 23}))
+
+		// Cycle 3: 24, 25, 31, 32, 33 → TIME_LIMIT
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{24, 25, 31, 32, 33}))
+
+		// Cycle 4: 34, 35, 41, 42, 43 → TIME_LIMIT
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{34, 35, 41, 42, 43}))
+
+		// Cycle 5: 44, 45, 51, 52, 53 → TIME_LIMIT
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{44, 45, 51, 52, 53}))
+
+		// Cycle 6: 54, 55 → SOURCE_EXHAUSTED
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = FlatMapPipelined(outer, timedInner, contBytes, 10)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{54, 55}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("FlatMapPipelined pipelineWithInnerLimits (out-of-band)", func() {
+		// Port of Java's pipelineWithInnerLimits: inner cursor hits
+		// TIME_LIMIT every 3 items, filter y < x. Verifies full N*(N-1)/2
+		// product across continuation cycles.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(ints, cont)
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := fakeOutOfBandCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		expectedResults := len(ints) * (len(ints) - 1) / 2
+		Expect(results).To(Equal(expectedResults))
+	})
+
+	It("FlatMapPipelined pipelineWithOuterLimits (out-of-band)", func() {
+		// Port of Java's pipelineWithOuterLimits: outer cursor hits
+		// TIME_LIMIT every 3 items, filtered to x in [7,9). Inner also
+		// limited to 3 items, filtered y < x.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			limited := fakeOutOfBandCursor(FromListWithContinuation(ints, cont), 3)
+			return &filterCursor[int]{inner: limited, predicate: func(x int) bool { return x >= 7 && x < 9 }}
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := fakeOutOfBandCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		// outer = {7, 8}, inner y < x: 7→{0..6}=7, 8→{0..7}=8 → total 15
+		Expect(results).To(Equal(15))
+	})
+
+	It("FlatMapPipelined pipelineWithInnerLimits (row-limit)", func() {
+		// Port of Java's pipelineWithInnerLimits with outOfBand=false:
+		// inner cursor uses LimitRowsCursor (RETURN_LIMIT) every 3 items,
+		// filter y < x. Verifies full N*(N-1)/2 product across continuation cycles.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(ints, cont)
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := LimitRowsCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		expectedResults := len(ints) * (len(ints) - 1) / 2
+		Expect(results).To(Equal(expectedResults))
+	})
+
+	It("FlatMapPipelined pipelineWithOuterLimits (row-limit)", func() {
+		// Port of Java's pipelineWithOuterLimits with outOfBand=false:
+		// outer cursor uses LimitRowsCursor (RETURN_LIMIT) every 3 items,
+		// filtered to x in [7,9). Inner also limited to 3 items via
+		// LimitRowsCursor, filtered y < x.
+		ints := make([]int, 10)
+		for i := range ints {
+			ints[i] = i
+		}
+		outerFunc := func(cont []byte) RecordCursor[int] {
+			limited := LimitRowsCursor(FromListWithContinuation(ints, cont), 3)
+			return &filterCursor[int]{inner: limited, predicate: func(x int) bool { return x >= 7 && x < 9 }}
+		}
+		innerFunc := func(x int, cont []byte) RecordCursor[[2]int] {
+			limited := LimitRowsCursor(FromListWithContinuation(ints, cont), 3)
+			mapped := MapCursor(limited, func(y int) [2]int { return [2]int{x, y} })
+			return &filterCursor[[2]int]{inner: mapped, predicate: func(pair [2]int) bool { return pair[1] < pair[0] }}
+		}
+
+		results := iterateGrid(func(cont []byte) RecordCursor[[2]int] {
+			return FlatMapPipelined(outerFunc, innerFunc, cont, 5)
+		})
+		// outer = {7, 8}, inner y < x: 7→{0..6}=7, 8→{0..7}=8 → total 15
+		Expect(results).To(Equal(15))
+	})
+
+	It("OrElse testOrElseReasons", func() {
+		// Port of Java's testOrElseReasons: primary has 5 items, all filtered
+		// out, with fakeOutOfBandCursor(limit=3). First cycle scans 3 items,
+		// all filtered → TIME_LIMIT. Resume: scans remaining 2, all filtered →
+		// SOURCE_EXHAUSTED → switches to alternative → emits [0].
+		list := []int{1, 2, 3, 4, 5}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return false }}
+		}
+		alternative := func(_ []byte) RecordCursor[int] {
+			return FromList([]int{0})
+		}
+
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT, no values
+		cursor := OrElseWithContinuation(primaryFactory, alternative, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume, primary scans [4,5], all filtered → SOURCE_EXHAUSTED
+		// → switches to alternative → emits [0] → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{0}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("OrElse orElseWithEventuallyNonEmptyInner", func() {
+		// Port of Java's orElseWithEventuallyNonEmptyInner: primary has 5
+		// items filtered by i > 4 (only 5 passes), with fakeOutOfBandCursor
+		// (limit=3). First cycle: scans [1,2,3], all filtered → TIME_LIMIT.
+		// Resume: scans [4,5], 5 passes → USE_INNER, emits [5] → SOURCE_EXHAUSTED.
+		list := []int{1, 2, 3, 4, 5}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return i > 4 }}
+		}
+		alternative := func(_ []byte) RecordCursor[int] {
+			return FromList([]int{0})
+		}
+
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT, no values
+		cursor := OrElseWithContinuation(primaryFactory, alternative, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume, primary scans [4,5], 5 passes filter → USE_INNER
+		// emits [5] → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{5}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("OrElse orElseContinueWithInnerBranchAfterDecision", func() {
+		// Port of Java's orElseContinueWithInnerBranchAfterDecision: primary
+		// has 18 items filtered by i > 10, fakeOutOfBandCursor(limit=3).
+		// Cycles 1-3 produce no values (scanning [1-9]). Cycle 4 finds items
+		// 11,12 then TIME_LIMIT. Cycles 5-6 drain [13-18].
+		list := make([]int, 18)
+		for i := range list {
+			list[i] = i + 1
+		}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return i > 10 }}
+		}
+		alternative := func(_ []byte) RecordCursor[int] {
+			return FromList([]int{0})
+		}
+
+		var allItems []int
+		var contBytes []byte
+
+		// Cycles 1-3: primary scans [1-3], [4-6], [7-9] — all filtered → TIME_LIMIT
+		for cycle := range 3 {
+			cursor := OrElseWithContinuation(primaryFactory, alternative, contBytes)
+			items, cont := collectUntilStop(ctx, cursor)
+			Expect(items).To(BeEmpty(), "cycle %d should emit nothing", cycle+1)
+			Expect(cont).NotTo(BeNil())
+			Expect(cont.IsEnd()).To(BeFalse())
+			var err error
+			contBytes, err = cont.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(contBytes).NotTo(BeEmpty())
+		}
+
+		// Cycle 4: scans [10,11,12], 11 and 12 pass → USE_INNER, emits [11,12] → TIME_LIMIT
+		cursor := OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{11, 12}))
+		allItems = append(allItems, items...)
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Continue resuming until SOURCE_EXHAUSTED
+		for {
+			cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+			items, cont = collectUntilStop(ctx, cursor)
+			allItems = append(allItems, items...)
+			if cont.IsEnd() {
+				break
+			}
+			contBytes, err = cont.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(contBytes).NotTo(BeEmpty())
+		}
+
+		Expect(allItems).To(Equal([]int{11, 12, 13, 14, 15, 16, 17, 18}))
+	})
+
+	It("OrElse orElseContinueWithElseBranchAfterDecision", func() {
+		// Port of Java's orElseContinueWithElseBranchAfterDecision: primary
+		// has 5 items, all filtered out, with fakeOutOfBandCursor(limit=3).
+		// Alternative is [-1,-2,-3,-4,-5] (no time limit).
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT.
+		// Cycle 2: primary scans [4,5], all filtered → SOURCE_EXHAUSTED →
+		// switches to alternative → emits [-1,-2,-3,-4,-5] → SOURCE_EXHAUSTED.
+		list := []int{1, 2, 3, 4, 5}
+
+		primaryFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			return &filterCursor[int]{inner: limited, predicate: func(i int) bool { return false }}
+		}
+		alternative := func(_ []byte) RecordCursor[int] {
+			return FromList([]int{-1, -2, -3, -4, -5})
+		}
+
+		// Cycle 1: primary scans [1,2,3], all filtered → TIME_LIMIT
+		cursor := OrElseWithContinuation(primaryFactory, alternative, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume, primary scans [4,5], all filtered → SOURCE_EXHAUSTED
+		// → switches to alternative → emits all 5 items → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = OrElseWithContinuation(primaryFactory, alternative, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{-1, -2, -3, -4, -5}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("asListWithContinuation iterates in chunks", func() {
+		// Port of Java's asListWithContinuationTest: creates [0..49], iterates
+		// in chunks of 10, verifying each chunk returns exactly the right items
+		// and the continuation correctly resumes. 5 chunks with data + 1 empty
+		// = 6 iterations total.
+		ints := make([]int, 50)
+		for i := range ints {
+			ints[i] = i
+		}
+
+		iterations := 0
+		var continuation []byte
+		for {
+			iterations++
+			items, cont, err := AsListWithContinuation(ctx,
+				LimitRowsCursor(FromListWithContinuation(ints, continuation), 10))
+			Expect(err).NotTo(HaveOccurred())
+
+			if len(items) > 0 {
+				Expect(items).To(HaveLen(10))
+				Expect(items[0]).To(Equal((iterations - 1) * 10))
+				// Should have a continuation (limit reached)
+				Expect(cont).NotTo(BeNil())
+			}
+			continuation = cont
+			if continuation == nil {
+				break
+			}
+		}
+
+		// 5 chunks with 10 items each + 1 final empty iteration = 6
+		Expect(iterations).To(Equal(6))
+	})
+
+	It("mapPipelinedContinuationWithTimeLimit", func() {
+		// Port of Java's mapPipelinedContinuationWithTimeLimit: MapCursor over
+		// a fakeOutOfBandCursor(limit=3). The inner cursor delivers 3 items
+		// then TIME_LIMIT. MapCursor should pass through the mapped values and
+		// the TIME_LIMIT stop reason with the correct continuation.
+		inner := fakeOutOfBandCursor(FromList([]int{0, 1, 2, 3}), 3)
+		cursor := MapCursor(inner, func(i int) int { return (i + 1) * 1000 })
+
+		// Should get 3 mapped items: 1000, 2000, 3000
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(1000))
+
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(2000))
+
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(3000))
+		lastCont := r.GetContinuation()
+
+		// Next call should hit TIME_LIMIT with the same continuation as the
+		// last returned result.
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(TimeLimitReached))
+
+		// Continuation from TIME_LIMIT stop should let us resume correctly.
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor2 := FromListWithContinuation([]int{0, 1, 2, 3}, contBytes)
+		resumed, err := cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resumed.HasNext()).To(BeTrue())
+		Expect(resumed.GetValue()).To(Equal(3))
+		Expect(cursor.Close()).To(Succeed())
+	})
+
+	It("mapPipelinedContinuationWithTimeLimitWithMoreToReturn", func() {
+		// Port of Java's variant: inner delivers 4 items then TIME_LIMIT.
+		// MapCursor returns all 4 mapped items, then TIME_LIMIT. Resume
+		// from last continuation should start at item index 4.
+		inner := fakeOutOfBandCursor(FromList([]int{0, 1, 2, 3, 4}), 4)
+		cursor := MapCursor(inner, func(i int) int { return (i + 1) * 1000 })
+
+		// Collect the 4 items
+		var lastCont RecordCursorContinuation
+		for i := range 4 {
+			r, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r.HasNext()).To(BeTrue())
+			Expect(r.GetValue()).To(Equal((i + 1) * 1000))
+			lastCont = r.GetContinuation()
+		}
+
+		// TIME_LIMIT after 4 items
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(TimeLimitReached))
+
+		// Resume from continuation of last returned item
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor2 := FromListWithContinuation([]int{0, 1, 2, 3, 4}, contBytes)
+		resumed, err := cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resumed.HasNext()).To(BeTrue())
+		Expect(resumed.GetValue()).To(Equal(4))
+		Expect(cursor.Close()).To(Succeed())
+	})
+
+	It("mapPipelinedContinuationWithTimeLimitBeforeFirstEntry", func() {
+		// Port of Java's variant: inner delivers 2 items then TIME_LIMIT.
+		// MapCursor returns both mapped items, then TIME_LIMIT. Resume from
+		// last continuation should start at item index 2.
+		inner := fakeOutOfBandCursor(FromList([]int{0, 1, 2}), 2)
+		cursor := MapCursor(inner, func(i int) int { return (i + 1) * 1000 })
+
+		// Get 2 items
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(1000))
+
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(2000))
+		lastCont := r.GetContinuation()
+
+		// TIME_LIMIT
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(TimeLimitReached))
+
+		// Resume
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor2 := FromListWithContinuation([]int{0, 1, 2}, contBytes)
+		resumed, err := cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resumed.HasNext()).To(BeTrue())
+		Expect(resumed.GetValue()).To(Equal(2))
+		Expect(cursor.Close()).To(Succeed())
+	})
+
+	It("ConcatCursors with TIME_LIMIT on first cursor", func() {
+		// First cursor: fakeOutOfBandCursor([1,2,3,4,5], limit=3).
+		// Second cursor: [6,7,8].
+		// Cycle 1: [1,2,3] + TIME_LIMIT.
+		// Cycle 2: resume → [4,5,6,7,8] + SOURCE_EXHAUSTED.
+		items1 := []int{1, 2, 3, 4, 5}
+		items2 := []int{6, 7, 8}
+		makeFirst := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items1, cont), 3)
+		}
+		makeSecond := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(items2, cont)
+		}
+
+		// Cycle 1: first cursor yields [1,2,3] then TIME_LIMIT
+		cursor := ConcatCursors(makeFirst, makeSecond, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume from continuation → first yields [4,5], exhausts,
+		// switches to second → [6,7,8] → SOURCE_EXHAUSTED
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{4, 5, 6, 7, 8}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("ConcatCursors with TIME_LIMIT on second cursor", func() {
+		// First cursor: [1,2]. Second cursor: fakeOutOfBandCursor([3,4,5,6], limit=2).
+		// Cycle 1: first exhausts [1,2], switches to second which yields [3,4] → TIME_LIMIT.
+		// Cycle 2: resume second, yields [5,6] → TIME_LIMIT (oob limit resets each cycle).
+		// Cycle 3: resume second, underlying exhausted → SOURCE_EXHAUSTED.
+		items1 := []int{1, 2}
+		items2 := []int{3, 4, 5, 6}
+		makeFirst := func(cont []byte) RecordCursor[int] {
+			return FromListWithContinuation(items1, cont)
+		}
+		makeSecond := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items2, cont), 2)
+		}
+
+		// Cycle 1: first [1,2] → SOURCE_EXHAUSTED → switch to second [3,4] → TIME_LIMIT
+		cursor := ConcatCursors(makeFirst, makeSecond, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2, 3, 4}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume second → [5,6] → TIME_LIMIT (oob counter resets)
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{5, 6}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 3: resume second → underlying exhausted → SOURCE_EXHAUSTED
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("ConcatCursors with TIME_LIMIT on both cursors", func() {
+		// First: fakeOutOfBandCursor([1,2,3], limit=2).
+		// Second: fakeOutOfBandCursor([4,5,6], limit=2).
+		// Cycle 1: first yields [1,2] → TIME_LIMIT.
+		// Cycle 2: resume first → [3], exhausts, switches to second → [4,5] → TIME_LIMIT.
+		// Cycle 3: resume second → [6] → SOURCE_EXHAUSTED.
+		items1 := []int{1, 2, 3}
+		items2 := []int{4, 5, 6}
+		makeFirst := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items1, cont), 2)
+		}
+		makeSecond := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items2, cont), 2)
+		}
+
+		// Cycle 1: first yields [1,2] → TIME_LIMIT
+		cursor := ConcatCursors(makeFirst, makeSecond, nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume first → [3], exhausts → switch to second → [4,5] → TIME_LIMIT
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{3, 4, 5}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 3: resume second → [6] → SOURCE_EXHAUSTED
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = ConcatCursors(makeFirst, makeSecond, contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{6}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	// --- DedupCursor TIME_LIMIT tests (Java DedupCursorTest alignment) ---
+
+	It("DedupCursor with TIME_LIMIT preserves last value across resume", func() {
+		// Adjacent duplicates that span the TIME_LIMIT boundary must be
+		// deduplicated because the continuation carries the last emitted value.
+		// Input: [1,1,2,2,3,4], fakeOutOfBandCursor(limit=4).
+		// Cycle 1: inner yields [1,1,2,2] (4 raw items) → dedup emits [1,2] + TIME_LIMIT.
+		// Cycle 2: resume with lastValue=2, inner yields [3,4] (2 items, below limit) →
+		//          dedup emits [3,4] + SOURCE_EXHAUSTED.
+		// Total: [1,2,3,4].
+		items := []int{1, 1, 2, 2, 3, 4}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items, cont), 4)
+		}
+
+		// Cycle 1
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		cycle1, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle1).To(Equal([]int{1, 2}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: resume — lastValue=2 carried in continuation
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contBytes).NotTo(BeEmpty())
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		cycle2, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle2).To(Equal([]int{3, 4}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("DedupCursor with TIME_LIMIT deduplicates across boundary", func() {
+		// The last value from cycle 1 spans into cycle 2: the continuation
+		// carries lastValue so duplicates at the boundary are removed.
+		// Input: [1,2,3,3,3,4], fakeOutOfBandCursor(limit=4).
+		// Cycle 1: inner yields [1,2,3,3] (4 raw items) → dedup emits [1,2,3] + TIME_LIMIT (lastValue=3).
+		// Cycle 2: resume, inner yields [3,4] (2 items, under limit) → dedup skips 3, emits [4] + SOURCE_EXHAUSTED.
+		items := []int{1, 2, 3, 3, 3, 4}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items, cont), 4)
+		}
+
+		// Cycle 1
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		cycle1, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle1).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: lastValue=3 carried in continuation; leading 3 is skipped.
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		cycle2, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle2).To(Equal([]int{4}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("DedupCursor with TIME_LIMIT all duplicates in second batch", func() {
+		// All items in the second batch are the same as the last emitted value
+		// from the first batch, so the second batch produces nothing.
+		// Input: [1,2,3,3,3], fakeOutOfBandCursor(limit=3).
+		// Cycle 1: inner yields [1,2,3] (3 raw items, hits limit) → dedup emits [1,2,3] + TIME_LIMIT.
+		// Cycle 2: resume with lastValue=3, inner yields [3,3] (2 items, under limit) →
+		//          all equal to lastValue=3, all skipped → inner exhausts → SOURCE_EXHAUSTED.
+		items := []int{1, 2, 3, 3, 3}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			return fakeOutOfBandCursor(FromListWithContinuation(items, cont), 3)
+		}
+
+		// Cycle 1
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		cycle1, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle1).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: all remaining [3,3] are duplicates of lastValue=3 → no output.
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		cycle2, cont := collectUntilStop(ctx, cursor)
+		Expect(cycle2).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	It("DedupCursor with TIME_LIMIT continuationsWithOutOfBand (Java port)", func() {
+		// Port of Java's DedupCursorTest.continuationsWithOutOfBandTest.
+		// Input: [1,1,1,1,2,3,4,5,5,5,5,6,8,8,10], filtered by !=1 && !=8,
+		// fakeOutOfBandCursor(limit=2). The dedup sees filter+oob output.
+		//
+		// Cycle 1: inner scans [1,1], both filtered → TIME_LIMIT, no output.
+		// Cycle 2: inner scans [1,1], both filtered → TIME_LIMIT, no output.
+		// Cycle 3: inner scans [2,3] → dedup emits [2,3] + TIME_LIMIT.
+		// Cycle 4: inner scans [4,5] → dedup emits [4,5] + TIME_LIMIT.
+		// Cycle 5: inner scans [5,5], both dupes of lastValue=5 → TIME_LIMIT, no output.
+		// Cycle 6: inner scans [5,6], 5 deduped, 6 new → dedup emits [6] + TIME_LIMIT.
+		// Cycle 7: inner scans [8,8], both filtered → TIME_LIMIT, no output.
+		// Cycle 8: inner scans [10] → dedup emits [10] + SOURCE_EXHAUSTED.
+		items := []int{1, 1, 1, 1, 2, 3, 4, 5, 5, 5, 5, 6, 8, 8, 10}
+
+		innerFactory := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(items, cont)
+			limited := fakeOutOfBandCursor(raw, 2)
+			return &filterCursor[int]{inner: limited, predicate: func(v int) bool { return v != 1 && v != 8 }}
+		}
+
+		var allItems []int
+		var contBytes []byte
+
+		// Cycle 1: [1,1] filtered → TIME_LIMIT
+		cursor := Dedup(innerFactory, intEqual, packInt, unpackInt, nil)
+		batch, cont := collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 2: [1,1] filtered → TIME_LIMIT
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 3: [2,3] → emits [2,3]
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{2, 3}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 4: [4,5] → emits [4,5]
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{4, 5}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 5: [5,5] dupes of lastValue=5 → TIME_LIMIT, no output
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 6: [5,6] → 5 deduped, emits [6]
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{6}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 7: [8,8] filtered → TIME_LIMIT, no output
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+		contBytes, err = cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cycle 8: [10] → emits [10] + SOURCE_EXHAUSTED
+		cursor = Dedup(innerFactory, intEqual, packInt, unpackInt, contBytes)
+		batch, cont = collectUntilStop(ctx, cursor)
+		Expect(batch).To(Equal([]int{10}))
+		allItems = append(allItems, batch...)
+		Expect(cont.IsEnd()).To(BeTrue())
+
+		// Total across all cycles
+		Expect(allItems).To(Equal([]int{2, 3, 4, 5, 6, 10}))
 	})
 
 	It("AutoContinuingCursor scans across transaction boundaries", func() {

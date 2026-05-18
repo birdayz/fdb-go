@@ -1052,6 +1052,10 @@ func executeFlatMap(
 		nestedProps,
 	)
 	cursor.initialInnerCont = innerCont
+	cursor.hasPendingInner = innerCont != nil
+	if innerCont != nil && outerCont != nil {
+		cursor.lastOuterContinuation = recordlayer.NewBytesContinuation(outerCont)
+	}
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 

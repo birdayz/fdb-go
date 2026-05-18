@@ -268,6 +268,10 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
+	if cmp := compareFlatMapJoinOrdering(a, b); cmp != 0 {
+		return cmp
+	}
+
 	// Fall back to the scalar cost model when all multi-criteria tie.
 	// This avoids the hash tiebreak picking semantically broken plans
 	// (see D-4 wiring investigation). The scalar model's per-operator
@@ -653,6 +657,34 @@ func intCompare(a, b int) int {
 		return 1
 	}
 	return 0
+}
+
+// compareFlatMapJoinOrdering implements Java's FlatMapJoinOrderingProperty
+// criterion: when both plans are FlatMap, prefer the one with smaller outer
+// cardinality (fewer inner loop executions).
+func compareFlatMapJoinOrdering(a, b expressions.RelationalExpression) int {
+	fmA, okA := a.(*physicalFlatMapWrapper)
+	fmB, okB := b.(*physicalFlatMapWrapper)
+	if !okA || !okB {
+		return 0
+	}
+	outerCardA := outerCardinality(fmA)
+	outerCardB := outerCardinality(fmB)
+	if outerCardA < outerCardB {
+		return -1
+	}
+	if outerCardA > outerCardB {
+		return 1
+	}
+	return 0
+}
+
+func outerCardinality(fm *physicalFlatMapWrapper) float64 {
+	ref := fm.outerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.LeafScanCardinality
+	}
+	return properties.EstimateCost(firstPhysicalChild(ref)).Cardinality
 }
 
 // firstPhysicalChild returns the first physical member of ref.

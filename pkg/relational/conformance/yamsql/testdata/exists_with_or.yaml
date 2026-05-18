@@ -1,0 +1,56 @@
+# exists_with_or.yaml
+#
+# EXISTS subqueries combined with OR predicates. Exercises the
+# interaction between NormalizePredicatesRule (which fires on all
+# SelectExpressions, including those containing EXISTS) and the
+# OR-to-UNION transformation path. Correlated EXISTS inside OR
+# arms must survive predicate normalization without losing the
+# outer-row binding.
+name: exists_with_or
+schema_template: |
+  CREATE TABLE items (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE tags (id BIGINT NOT NULL, item_id BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO items VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma'), (4, 'delta'), (5, 'epsilon')
+  - INSERT INTO tags VALUES (1, 1, 'hot'), (2, 2, 'new'), (3, 3, 'old')
+tests:
+  # OR inside a correlated EXISTS subquery — the inner predicate has
+  # an OR that could trigger union rewriting. Only items whose tag
+  # label is 'hot' or 'new' pass; item 3 has label 'old', items 4/5
+  # have no tags at all.
+  - query: |-
+      SELECT id FROM items
+      WHERE EXISTS (
+        SELECT 1 FROM tags
+        WHERE tags.item_id = items.id AND (tags.label = 'hot' OR tags.label = 'new')
+      )
+      ORDER BY id
+    rows:
+      - [1]
+      - [2]
+
+  # OR at the outer level with one arm being a correlated EXISTS.
+  # id > 2 captures items 3, 4, 5; EXISTS captures items 1, 2, 3
+  # (all items that have any tag). Union of both arms = all 5 items.
+  - query: |-
+      SELECT id FROM items
+      WHERE id > 2 OR EXISTS (SELECT 1 FROM tags WHERE tags.item_id = items.id)
+      ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # NOT EXISTS combined with OR — items without any tag (4, 5) plus
+  # item 1 via the id = 1 arm. Items 2 and 3 have tags and id != 1,
+  # so they are excluded.
+  - query: |-
+      SELECT id FROM items
+      WHERE NOT EXISTS (SELECT 1 FROM tags WHERE tags.item_id = items.id) OR id = 1
+      ORDER BY id
+    rows:
+      - [1]
+      - [4]
+      - [5]

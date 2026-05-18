@@ -147,7 +147,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		if ssErr != nil {
 			return nil, ssErr
 		}
-		store, storeErr := recordlayer.NewStoreBuilder().
+		store, storeErr := c.newStoreBuilder().
 			SetContext(rctx).
 			SetSubspace(ss).
 			SetMetaDataProvider(md).
@@ -296,7 +296,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 		if ssErr != nil {
 			return nil, ssErr
 		}
-		store, storeErr := recordlayer.NewStoreBuilder().
+		store, storeErr := c.newStoreBuilder().
 			SetContext(rctx).
 			SetSubspace(ss).
 			SetMetaDataProvider(md).

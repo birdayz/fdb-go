@@ -31,12 +31,14 @@ import (
 // Mirrors Java's BooleanPredicateNormalizer in CNF mode with a
 // default size limit of 1,000,000.
 type NormalizePredicatesRule struct {
-	matcher matching.BindingMatcher
+	matcher    matching.BindingMatcher
+	normalized map[*expressions.SelectExpression]struct{}
 }
 
 func NewNormalizePredicatesRule() *NormalizePredicatesRule {
 	return &NormalizePredicatesRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
+		matcher:    NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
+		normalized: make(map[*expressions.SelectExpression]struct{}),
 	}
 }
 
@@ -49,10 +51,8 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	for _, q := range sel.GetQuantifiers() {
-		if q.Kind() == expressions.QuantifierExistential {
-			return
-		}
+	if _, seen := r.normalized[sel]; seen {
+		return
 	}
 
 	// Step 1: AND all predicates together.
@@ -73,12 +73,15 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	cnfConjuncts := andConjuncts(cnf)
 
 	// Step 4: Yield with original quantifiers and metadata preserved.
-	call.Yield(expressions.NewSelectExpressionWithAliases(
+	result := expressions.NewSelectExpressionWithAliases(
 		sel.GetResultValue(),
 		sel.GetQuantifiers(),
 		cnfConjuncts,
 		sel.GetSourceAliases(),
-	))
+	)
+	r.normalized[sel] = struct{}{}
+	r.normalized[result] = struct{}{}
+	call.Yield(result)
 }
 
 // cnfSizeLimit is the maximum number of terms in the outer AND of the

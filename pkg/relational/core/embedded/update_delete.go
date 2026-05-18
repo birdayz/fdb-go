@@ -100,7 +100,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		if ssErr != nil {
 			return nil, ssErr
 		}
-		store, storeErr := recordlayer.NewStoreBuilder().
+		store, storeErr := c.newStoreBuilder().
 			SetContext(rctx).
 			SetSubspace(ss).
 			SetMetaDataProvider(md).
@@ -254,7 +254,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 		if ssErr != nil {
 			return nil, ssErr
 		}
-		store, storeErr := recordlayer.NewStoreBuilder().
+		store, storeErr := c.newStoreBuilder().
 			SetContext(rctx).
 			SetSubspace(ss).
 			SetMetaDataProvider(md).

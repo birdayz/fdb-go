@@ -90,8 +90,6 @@ func (s *fieldStep) packInto(a *tupleAppender, _ *FDBStoredRecord[proto.Message]
 	}
 	m := msg.ProtoReflect()
 
-	// No atomic needed: fieldStep is created per-batch in InsertBatch,
-	// not shared across goroutines (unlike FieldKeyExpression in metadata).
 	msgName := string(m.Descriptor().FullName())
 	fd := s.cachedFD
 	if s.cachedMsgName != msgName || fd == nil {

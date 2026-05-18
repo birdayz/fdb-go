@@ -342,6 +342,49 @@ func FuzzFlatMapContinuation(f *testing.F) {
 }
 
 // ---------------------------------------------------------------------------
+// FuzzOrElseContinuation — fuzz the OrElse cursor continuation deserializer.
+// Must never panic.
+// ---------------------------------------------------------------------------
+
+func FuzzOrElseContinuation(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff})
+	undecided := gen.OrElseContinuation_UNDECIDED
+	validUndecided, _ := (&gen.OrElseContinuation{
+		State:        &undecided,
+		Continuation: []byte{0x00, 0x00, 0x00, 0x01},
+	}).MarshalVT()
+	f.Add(validUndecided)
+	useInner := gen.OrElseContinuation_USE_INNER
+	validInner, _ := (&gen.OrElseContinuation{
+		State:        &useInner,
+		Continuation: []byte{0x00, 0x00, 0x00, 0x02},
+	}).MarshalVT()
+	f.Add(validInner)
+	useOther := gen.OrElseContinuation_USE_OTHER
+	validOther, _ := (&gen.OrElseContinuation{
+		State:        &useOther,
+		Continuation: []byte{0x00, 0x00, 0x00, 0x00},
+	}).MarshalVT()
+	f.Add(validOther)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		primary := func(_ []byte) RecordCursor[int] {
+			return FromList[int]([]int{1, 2, 3})
+		}
+		alt := func(_ []byte) RecordCursor[int] {
+			return FromList[int]([]int{4, 5})
+		}
+		cursor := OrElseWithContinuation(primary, alt, data)
+		result, err := cursor.OnNext(context.Background())
+		_ = result
+		_ = err
+		cursor.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
 // FuzzDedupContinuation — fuzz the Dedup cursor continuation deserializer.
 // Must never panic.
 // ---------------------------------------------------------------------------

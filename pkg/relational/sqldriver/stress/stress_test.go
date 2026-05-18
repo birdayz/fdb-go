@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	container, err := foundationdbtc.Run(ctx, "")
+	container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithStorageEngine("ssd"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stress: no Docker, skipping\n")
 		os.Exit(0)
@@ -50,11 +51,13 @@ func TestMain(m *testing.M) {
 }
 
 type stressHarness struct {
-	t         *testing.T
-	db        *sql.DB
-	dbPath    string
-	schema    string
-	batchSize int
+	t            *testing.T
+	db           *sql.DB
+	dbPath       string
+	schema       string
+	batchSize    int
+	workers      int
+	batchesPerTx int
 }
 
 func newStressHarness(t *testing.T, suffix string) *stressHarness {
@@ -79,6 +82,8 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
+	db.SetMaxOpenConns(32)
+	db.SetMaxIdleConns(32)
 	t.Cleanup(func() { db.Close() })
 
 	return &stressHarness{
@@ -87,6 +92,7 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 		dbPath:    dbPath,
 		schema:    "main",
 		batchSize: 500,
+		workers:   4,
 	}
 }
 
@@ -113,25 +119,83 @@ func (h *stressHarness) createSchema(template string) {
 
 func (h *stressHarness) bulkInsert(table string, n int, genRow func(i int) string) time.Duration {
 	h.t.Helper()
-	ctx := context.Background()
 	start := time.Now()
 
-	for offset := 0; offset < n; offset += h.batchSize {
-		end := offset + h.batchSize
-		if end > n {
-			end = n
-		}
-		var rows []string
-		for i := offset; i < end; i++ {
-			rows = append(rows, genRow(i))
-		}
-		stmt := fmt.Sprintf("INSERT INTO %s VALUES %s", table, strings.Join(rows, ", "))
-		if _, err := h.db.ExecContext(ctx, stmt); err != nil {
-			h.t.Fatalf("INSERT batch [%d..%d): %v", offset, end, err)
-		}
+	workers := h.workers
+	if workers == 0 {
+		workers = 1
 	}
+	chunkSize := (n + workers - 1) / workers
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+
+	for w := range workers {
+		wStart := w * chunkSize
+		wEnd := wStart + chunkSize
+		if wEnd > n {
+			wEnd = n
+		}
+		if wStart >= n {
+			break
+		}
+		wg.Add(1)
+		go func(from, to int) {
+			defer wg.Done()
+			batchesPerTx := h.batchesPerTx
+			if batchesPerTx <= 0 {
+				batchesPerTx = 1
+			}
+			for offset := from; offset < to; {
+				txEnd := offset + h.batchSize*batchesPerTx
+				if txEnd > to {
+					txEnd = to
+				}
+				var lastErr error
+				for attempt := range 5 {
+					lastErr = func() error {
+						tx, txErr := h.db.BeginTx(context.Background(), nil)
+						if txErr != nil {
+							return txErr
+						}
+						for batchOff := offset; batchOff < txEnd; batchOff += h.batchSize {
+							batchEnd := batchOff + h.batchSize
+							if batchEnd > txEnd {
+								batchEnd = txEnd
+							}
+							var rows []string
+							for i := batchOff; i < batchEnd; i++ {
+								rows = append(rows, genRow(i))
+							}
+							stmt := fmt.Sprintf("INSERT INTO %s VALUES %s", table, strings.Join(rows, ", "))
+							if _, execErr := tx.ExecContext(context.Background(), stmt); execErr != nil {
+								tx.Rollback()
+								return execErr
+							}
+						}
+						return tx.Commit()
+					}()
+					if lastErr == nil {
+						break
+					}
+					time.Sleep(time.Duration(attempt+1) * time.Second)
+				}
+				if lastErr != nil {
+					errCh <- fmt.Errorf("INSERT [%d..%d): %w", offset, txEnd, lastErr)
+					return
+				}
+				offset = txEnd
+			}
+		}(wStart, wEnd)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		h.t.Fatalf("bulkInsert: %v", err)
+	}
+
 	elapsed := time.Since(start)
-	h.t.Logf("bulkInsert %s: %d rows in %v (%.0f rows/s)", table, n, elapsed, float64(n)/elapsed.Seconds())
+	h.t.Logf("bulkInsert %s: %d rows in %v (%.0f rows/s, %d workers)", table, n, elapsed, float64(n)/elapsed.Seconds(), workers)
 	return elapsed
 }
 
@@ -216,6 +280,134 @@ func TestFDB_Stress_100K(t *testing.T) {
 func TestFDB_Stress_1M(t *testing.T) {
 	t.Parallel()
 	runStressSuite(t, "1m", 1_000_000)
+}
+
+func TestFDB_Stress_10M(t *testing.T) {
+	t.Skip("10M exceeds Docker FDB single-node throughput; run against a real cluster")
+	t.Parallel()
+	runStressSuite(t, "10m", 10_000_000)
+}
+
+func TestFDB_Ingest_Parallelism(t *testing.T) {
+	t.Parallel()
+
+	type config struct {
+		workers      int
+		batchSize    int
+		batchesPerTx int
+	}
+	configs := []config{
+		{1, 500, 1},
+		{1, 500, 4},
+		{4, 500, 4},
+		{8, 500, 4},
+		{16, 500, 4},
+	}
+	for _, cfg := range configs {
+		cfg := cfg
+		t.Run(fmt.Sprintf("w%d_b%d_tx%d", cfg.workers, cfg.batchSize, cfg.batchesPerTx), func(t *testing.T) {
+			n := 1_000_000
+			h := newStressHarness(t, fmt.Sprintf("par_w%d_b%d_tx%d", cfg.workers, cfg.batchSize, cfg.batchesPerTx))
+			h.workers = cfg.workers
+			h.batchSize = cfg.batchSize
+			h.batchesPerTx = cfg.batchesPerTx
+			h.createSchema(`
+				CREATE TABLE items (
+					id BIGINT NOT NULL,
+					val BIGINT NOT NULL,
+					PRIMARY KEY (id)
+				)
+			`)
+			dur := h.bulkInsert("items", n, func(i int) string {
+				return fmt.Sprintf("(%d, %d)", i, i*7)
+			})
+			t.Logf("w=%d b=%d tx=%d: %d rows in %v (%.0f rows/s)", cfg.workers, cfg.batchSize, cfg.batchesPerTx, n, dur, float64(n)/dur.Seconds())
+
+			var count int64
+			if err := h.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM items").Scan(&count); err != nil {
+				t.Fatalf("COUNT(*): %v", err)
+			}
+			if count != int64(n) {
+				t.Fatalf("COUNT(*) = %d, want %d", count, n)
+			}
+		})
+	}
+}
+
+func TestFDB_Ingest_10M(t *testing.T) {
+	t.Parallel()
+	h := newStressHarness(t, "ingest10m")
+
+	// Minimal schema: single PK, no secondary indexes.
+	h.createSchema(`
+		CREATE TABLE items (
+			id BIGINT NOT NULL,
+			val BIGINT NOT NULL,
+			PRIMARY KEY (id)
+		)
+	`)
+
+	n := 10_000_000
+	start := time.Now()
+	inserted := 0
+	batchSize := 500
+	lastLog := time.Now()
+
+	for offset := 0; offset < n; offset += batchSize {
+		end := offset + batchSize
+		if end > n {
+			end = n
+		}
+		var rows []string
+		for i := offset; i < end; i++ {
+			rows = append(rows, fmt.Sprintf("(%d, %d)", i, i*7))
+		}
+		stmt := fmt.Sprintf("INSERT INTO items VALUES %s", strings.Join(rows, ", "))
+
+		var lastErr error
+		for attempt := range 5 {
+			batchStart := time.Now()
+			if _, lastErr = h.db.ExecContext(context.Background(), stmt); lastErr == nil {
+				batchDur := time.Since(batchStart)
+				if batchDur > 3*time.Second {
+					t.Logf("  SLOW batch [%d..%d): %v", offset, end, batchDur)
+				}
+				break
+			}
+			t.Logf("  RETRY %d batch [%d..%d): %v", attempt+1, offset, end, lastErr)
+			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+		}
+		if lastErr != nil {
+			t.Fatalf("INSERT batch [%d..%d) failed after retries: %v (inserted %d/%d so far)", offset, end, lastErr, inserted, n)
+		}
+		inserted += end - offset
+
+		if time.Since(lastLog) > 10*time.Second {
+			elapsed := time.Since(start)
+			rate := float64(inserted) / elapsed.Seconds()
+			t.Logf("  progress: %d/%d (%.1f%%) in %v (%.0f rows/s)", inserted, n, float64(inserted)*100/float64(n), elapsed, rate)
+			lastLog = time.Now()
+		}
+	}
+
+	elapsed := time.Since(start)
+	t.Logf("INSERT complete: %d rows in %v (%.0f rows/s)", inserted, elapsed, float64(inserted)/elapsed.Seconds())
+
+	// Verify count.
+	var count int64
+	if err := h.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM items").Scan(&count); err != nil {
+		t.Fatalf("COUNT(*): %v", err)
+	}
+	if count != int64(n) {
+		t.Fatalf("COUNT(*) = %d, want %d", count, n)
+	}
+	t.Logf("COUNT(*) verified: %d", count)
+
+	// Needle in haystack: unindexed filter on val column.
+	r := h.timeQuery("SELECT id FROM items WHERE val + 0 = 35 ORDER BY id")
+	r.mustSucceed(t, "sparse filter val+0=35")
+	r.expectRows(t, "sparse filter val+0=35", 1) // only id=5 has val=35
+	t.Logf("sparse filter at 10M: %v", r.Duration)
 }
 
 func runStressSuite(t *testing.T, suffix string, n int) {
@@ -370,6 +562,57 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	t.Run("in_list", func(t *testing.T) {
 		r := h.timeQuery("SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id")
 		r.mustSucceed(t, "IN-list 5 values")
+	})
+
+	t.Run("needle_in_haystack_pk", func(t *testing.T) {
+		// PK lookup deep in the table — should be O(1) via scan comparisons.
+		target := n - 1
+		r := h.timeQuery("SELECT id, customer_id, amount, status FROM orders WHERE id = ?", target)
+		r.expectRows(t, fmt.Sprintf("PK needle id=%d", target), 1)
+		if r.Duration > 30*time.Second {
+			t.Errorf("PK needle took %v — point lookup should be fast", r.Duration)
+		}
+	})
+	t.Run("needle_in_haystack_filter", func(t *testing.T) {
+		// Filter that matches exactly 1 row. Uses PK equality (fast) but
+		// combined with a non-indexed filter to force the planner to prove
+		// the filter evaluates correctly even at scale.
+		target := n / 2
+		r := h.timeQuery("SELECT id, amount FROM orders WHERE id = ? AND status = 'pending'", target)
+		r.mustSucceed(t, fmt.Sprintf("PK+filter needle id=%d", target))
+		// id=n/2 has status=statuses[(n/2)%4]. If (n/2)%4==0 → 'pending'.
+		// For even n, n/2 is always divisible by 2 but not necessarily by 4.
+		// Don't assert exact count — just verify no error and no truncation.
+		t.Logf("  PK+filter needle: %d rows", r.RowCount)
+	})
+	t.Run("full_scan_sparse_filter", func(t *testing.T) {
+		// Full scan with a filter matching very few rows deep in the table.
+		// amount is indexed but we use an expression (amount + 0) to prevent
+		// index usage, forcing a full scan + filter across all pages.
+		// With amounts 1..10000 uniform, amount=9999 matches ~N/10000 rows.
+		query := "SELECT id FROM orders WHERE amount + 0 = 9999 ORDER BY id"
+
+		// Log the plan to prove no index is used.
+		rows, err := h.db.QueryContext(context.Background(), "EXPLAIN "+query)
+		if err == nil {
+			for rows.Next() {
+				var planText string
+				if scanErr := rows.Scan(&planText); scanErr == nil {
+					t.Logf("  EXPLAIN: %s", planText)
+					if strings.Contains(planText, "Index") || strings.Contains(planText, "INDEX") {
+						t.Error("EXPLAIN shows index usage — expected full scan")
+					}
+				}
+			}
+			rows.Close()
+		}
+
+		r := h.timeQuery(query)
+		r.mustSucceed(t, "full scan sparse filter")
+		if r.RowCount == 0 {
+			t.Error("sparse filter returned 0 rows — pagination may have truncated")
+		}
+		t.Logf("  sparse filter: found %d rows (expected ~%d)", r.RowCount, max(1, n/10000))
 	})
 
 	t.Run("update_by_index", func(t *testing.T) {

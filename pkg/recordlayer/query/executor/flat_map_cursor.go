@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
@@ -43,6 +42,7 @@ type flatMapCursor struct {
 	priorOuterContinuation recordlayer.RecordCursorContinuation
 	lastOuterContinuation  recordlayer.RecordCursorContinuation
 	initialInnerCont       []byte
+	hasPendingInner        bool
 }
 
 func newFlatMapCursor(
@@ -74,7 +74,7 @@ func newFlatMapCursor(
 
 func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
-		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
 
 	for {
@@ -149,9 +149,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		if !outerResult.HasNext() {
 			c.outerExhausted = true
 			reason := outerResult.GetNoNextReason()
-			return recordlayer.NewResultNoNext[QueryResult](
-				reason, outerResult.GetContinuation(),
-			), nil
+			cont := c.wrapOuterContinuation(outerResult.GetContinuation())
+			return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
 		}
 
 		outerRow := outerResult.GetValue()
@@ -168,6 +167,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		if c.initialInnerCont != nil {
 			innerContBytes = c.initialInnerCont
 			c.initialInnerCont = nil
+			c.hasPendingInner = false
 		}
 		innerCursor, err := ExecutePlan(ctx, c.innerPlan, c.store, correlatedCtx, innerContBytes, c.props)
 		if err != nil {
@@ -217,6 +217,27 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 		}
 	}
 
+	data, err := proto.Marshal(fmc)
+	if err != nil {
+		return nonEndContinuation
+	}
+	return recordlayer.NewBytesContinuation(data)
+}
+
+// wrapOuterContinuation wraps the outer cursor's continuation in a
+// FlatMapContinuation proto. Used when the outer cursor stops (e.g.,
+// TimeLimitReached) before producing a value.
+func (c *flatMapCursor) wrapOuterContinuation(outerCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
+	if outerCont != nil && outerCont.IsEnd() {
+		return &recordlayer.EndContinuation{}
+	}
+	fmc := &gen.FlatMapContinuation{}
+	if outerCont != nil {
+		fmc.OuterContinuation, _ = outerCont.ToBytes()
+	}
+	if c.hasPendingInner {
+		fmc.InnerContinuation = c.initialInnerCont
+	}
 	data, err := proto.Marshal(fmc)
 	if err != nil {
 		return nonEndContinuation
