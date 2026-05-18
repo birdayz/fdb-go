@@ -184,10 +184,10 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	// Cache derived subspace keys globally — same for every Open() on the same subspace.
 	ks := getCachedSubspaceKeys(store.subspace)
 
-	// Point-read the store info key (matches Java's loadRecordStoreInfoAsync which
-	// uses txn.get(subspace.pack(STORE_INFO_KEY_TUPLE))). A point Get generates a
-	// minimal read conflict range [key, key\x00) — unlike GetRange over the full
-	// subspace which conflicts with ALL record writes.
+	// Point-read the store info key. Java uses getRange(subspace.range(), 1) which
+	// generates a conflict range over the full subspace. We use a point Get instead
+	// to generate a minimal conflict range [key, key\x00), avoiding conflicts with
+	// concurrent record writes to the same subspace.
 	storeInfoFuture := tx.Get(ks.expectedInfoKey)
 	// Index states use snapshot isolation (no conflict).
 	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{})
