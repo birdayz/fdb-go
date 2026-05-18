@@ -1590,6 +1590,42 @@ func bareCol(field string) string {
 	return field
 }
 
+// splitNonExistsPredicatesFromWalked returns only the non-EXISTS parts
+// of a walked predicate tree. EXISTS and NOT(EXISTS) nodes are dropped.
+// Returns nil if there are no non-EXISTS predicates.
+func splitNonExistsPredicatesFromWalked(p predicates.QueryPredicate) predicates.QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	if _, ok := p.(*predicates.ExistsPredicate); ok {
+		return nil
+	}
+	if not, ok := p.(*predicates.NotPredicate); ok {
+		ch := not.Children()
+		if len(ch) == 1 {
+			if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
+				return nil
+			}
+		}
+	}
+	if and, ok := p.(*predicates.AndPredicate); ok {
+		var nonExists []predicates.QueryPredicate
+		for _, sub := range and.SubPredicates {
+			if ne := splitNonExistsPredicatesFromWalked(sub); ne != nil {
+				nonExists = append(nonExists, ne)
+			}
+		}
+		if len(nonExists) == 1 {
+			return nonExists[0]
+		}
+		if len(nonExists) > 1 {
+			return predicates.NewAnd(nonExists...)
+		}
+		return nil
+	}
+	return p
+}
+
 // stripNonExistsPredicates removes non-EXISTS predicates from an AND
 // tree, returning only the EXISTS (or NOT EXISTS) predicate. Returns
 // nil if no EXISTS predicate is found.
@@ -3397,10 +3433,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// so it's evaluated against the outer row (which has the correlated
 	// columns). The middle plan becomes an uncorrelated scan — the
 	// EXISTS just checks if the inner EXISTS's correlated match holds.
+	//
+	// KNOWN LIMITATION: this hoisting drops the middle-level correlation
+	// predicate when the inner WHERE has BOTH a correlation predicate
+	// (e.g., p.cat_id = c.id) AND a nested EXISTS. The middle-level
+	// predicate is lost. See TODO.md "Nested correlated EXISTS hoisting bug".
 	if len(nestedPlanner.subqueries) > 0 {
-		// Use the inner EXISTS's plan as *this* EXISTS's plan, and hoist
-		// its join predicate to this level. The middle query's scan is
-		// effectively replaced by the inner EXISTS scan.
 		innerESQ := nestedPlanner.subqueries[0]
 		p.lastJoinPredicate = innerESQ.JoinPredicate
 		return innerESQ.Plan, nil
