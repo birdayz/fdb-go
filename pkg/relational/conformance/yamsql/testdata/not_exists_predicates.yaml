@@ -1,0 +1,38 @@
+# not_exists_predicates.yaml — NOT EXISTS with various predicate shapes
+#
+# Exercises the predicate split for correlated NOT EXISTS: outer-only
+# predicates filter the outer plan, inner-referencing predicates
+# filter the inner plan. Tests both PK-match (FlatMap) and non-PK
+# (NLJ fallback) paths.
+name: not_exists_predicates
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, status STRING, customer_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE shipments (id BIGINT NOT NULL, order_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO orders VALUES (1, 'pending', 100), (2, 'shipped', 100), (3, 'pending', 200), (4, 'cancelled', 300)
+  - INSERT INTO shipments VALUES (10, 2), (20, 3)
+tests:
+  # Basic correlated NOT EXISTS
+  - query: SELECT o.id FROM orders o WHERE NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    result:
+      - [1]
+      - [4]
+
+  # NOT EXISTS + outer predicate (status filter)
+  - query: SELECT o.id FROM orders o WHERE o.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    result:
+      - [1]
+
+  # EXISTS + outer predicate
+  - query: SELECT o.id FROM orders o WHERE o.status = 'pending' AND EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    result:
+      - [3]
+
+  # NOT EXISTS with no matching inner rows at all
+  - query: SELECT o.id FROM orders o WHERE o.customer_id = 300 AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
+    result:
+      - [4]
+
+  # NOT EXISTS where all outer rows have matches (empty result)
+  - query: SELECT o.id FROM orders o WHERE o.id IN (2, 3) AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id)
+    rows: []
