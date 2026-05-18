@@ -89,7 +89,7 @@ func (c *EmbeddedConnection) tryFastInsert(ctx context.Context, sql string) (int
 			}
 			msgs = append(msgs, msg)
 		}
-		if err := store.InsertBatch(msgs); err != nil {
+		if _, err := store.SaveRecordBatch(msgs); err != nil {
 			return nil, err
 		}
 		totalRows = int64(len(msgs))
