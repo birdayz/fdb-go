@@ -1,0 +1,48 @@
+# join_complex_patterns.yaml — advanced join patterns
+#
+# Exercises: self-join, anti-join via NOT EXISTS, multi-condition ON,
+# join with ORDER BY on inner column, and join with expression in WHERE.
+name: join_complex_patterns
+schema_template: |
+  CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, parent_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO items VALUES (1, 'A', 100, NULL), (2, 'A', 200, 1), (3, 'B', 150, 1), (4, 'B', 300, NULL), (5, 'A', 50, 2)
+tests:
+  # Self-join: find parent-child pairs
+  - query: SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id ORDER BY p.id, c.id
+    result:
+      - [1, 2]
+      - [1, 3]
+      - [2, 5]
+
+  # Anti-join: items with no children (NOT EXISTS)
+  - query: SELECT i.id FROM items i WHERE NOT EXISTS (SELECT 1 FROM items c WHERE c.parent_id = i.id) ORDER BY i.id
+    result:
+      - [3]
+      - [4]
+      - [5]
+
+  # EXISTS: items that ARE parents
+  - query: SELECT i.id FROM items i WHERE EXISTS (SELECT 1 FROM items c WHERE c.parent_id = i.id) ORDER BY i.id
+    result:
+      - [1]
+      - [2]
+
+  # Self-join with additional predicate on inner
+  - query: SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price > 100 ORDER BY p.id, c.id
+    result:
+      - [1, 2]
+      - [1, 3]
+
+  # Join ordered by inner column
+  - query: SELECT p.id, c.price FROM items p, items c WHERE c.parent_id = p.id ORDER BY c.price
+    result:
+      - [2, 50]
+      - [1, 150]
+      - [1, 200]
+
+  # Join with expression in WHERE
+  - query: SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price + p.price > 250 ORDER BY c.id
+    result:
+      - [1, 2]
+      - [1, 3]

@@ -2809,3 +2809,182 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 	}
 	t.Logf("FlatMap + LIMIT 5 → %d rows ✓", limitCount)
 }
+
+func TestFDB_JoinAggregateNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/join_agg_null_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, name STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Setup data: 3 departments, 5 employees (one with NULL dept_id, one with NULL salary)
+	for _, q := range []string{
+		"INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Marketing'), (3, 'Sales')",
+		"INSERT INTO employees VALUES (10, 1, 100, 'Alice'), (11, 1, 120, 'Bob'), (12, 1, NULL, 'Charlie')",
+		"INSERT INTO employees VALUES (20, 2, 80, 'Dave')",
+		"INSERT INTO employees VALUES (30, NULL, 90, 'Eve')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	type testCase struct {
+		name   string
+		query  string
+		expect [][]any
+	}
+
+	tests := []testCase{
+		{
+			name:  "inner join group by count",
+			query: "SELECT d.name, COUNT(e.id) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(3)},
+				{"Marketing", int64(1)},
+			},
+		},
+		{
+			name:  "inner join sum with null salary",
+			query: "SELECT d.name, SUM(e.salary) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(220)},
+				{"Marketing", int64(80)},
+			},
+		},
+		{
+			name:  "left join count includes empty dept",
+			query: "SELECT d.name, COUNT(e.id) FROM departments d LEFT JOIN employees e ON e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(3)},
+				{"Marketing", int64(1)},
+				{"Sales", int64(0)},
+			},
+		},
+		{
+			name:  "left join sum null for empty dept",
+			query: "SELECT d.name, SUM(e.salary) FROM departments d LEFT JOIN employees e ON e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(220)},
+				{"Marketing", int64(80)},
+				{"Sales", nil},
+			},
+		},
+		{
+			name:  "having on join aggregate",
+			query: "SELECT d.name, COUNT(e.id) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name HAVING COUNT(e.id) > 1",
+			expect: [][]any{
+				{"Engineering", int64(3)},
+			},
+		},
+		{
+			name:  "multi-predicate join",
+			query: "SELECT d.name, e.name FROM departments d, employees e WHERE e.dept_id = d.id AND e.salary > 90 ORDER BY e.name",
+			expect: [][]any{
+				{"Engineering", "Alice"},
+				{"Engineering", "Bob"},
+			},
+		},
+		{
+			name:  "self-referential exists",
+			query: "SELECT d.name FROM departments d WHERE EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id) ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering"},
+				{"Marketing"},
+			},
+		},
+		{
+			name:  "not exists anti-join",
+			query: "SELECT d.name FROM departments d WHERE NOT EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id) ORDER BY d.name",
+			expect: [][]any{
+				{"Sales"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("query failed: %v", err)
+			}
+			defer rows.Close()
+
+			cols, _ := rows.Columns()
+			var got [][]any
+			for rows.Next() {
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				if err := rows.Scan(ptrs...); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				got = append(got, vals)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+
+			if len(got) != len(tc.expect) {
+				t.Fatalf("expected %d rows, got %d: %v", len(tc.expect), len(got), got)
+			}
+			for i, row := range got {
+				for j, val := range row {
+					exp := tc.expect[i][j]
+					if !valuesEqual(val, exp) {
+						t.Errorf("row[%d][%d]: expected %v (%T), got %v (%T)", i, j, exp, exp, val, val)
+					}
+				}
+			}
+		})
+	}
+}
+
+func valuesEqual(got, exp any) bool {
+	if got == nil && exp == nil {
+		return true
+	}
+	if got == nil || exp == nil {
+		return false
+	}
+	switch e := exp.(type) {
+	case int64:
+		switch g := got.(type) {
+		case int64:
+			return g == e
+		case int32:
+			return int64(g) == e
+		}
+	case string:
+		if g, ok := got.(string); ok {
+			return g == e
+		}
+	}
+	return fmt.Sprintf("%v", got) == fmt.Sprintf("%v", exp)
+}

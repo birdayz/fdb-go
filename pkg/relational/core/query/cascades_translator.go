@@ -185,10 +185,10 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		// Split the predicate into non-EXISTS parts (regular predicates
 		// like c.id < 10) and EXISTS parts (ExistsPredicate nodes).
 		// Regular predicates go into the SelectExpression's predicate list
-		// directly. EXISTS predicates are handled via the Existential
-		// quantifier — the ImplementNestedLoopJoinRule detects them by
-		// type. If they're buried inside an AND, the rule can't find them.
+		// directly. EXISTS predicates (ExistsPredicate or NOT(ExistsPredicate))
+		// must ALSO be included so the rule can detect EXISTS vs NOT EXISTS.
 		allPreds := splitNonExistsPredicates(f.Predicate)
+		allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 		for _, esq := range f.ExistsSubqueries {
 			subRef := t.translateRef(esq.Plan)
 			if subRef == nil {
@@ -678,6 +678,34 @@ func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.Query
 		return result
 	}
 	return []predicates.QueryPredicate{pred}
+}
+
+// extractExistsPredicates returns the EXISTS-related predicates that
+// splitNonExistsPredicates drops: bare ExistsPredicate or
+// NOT(ExistsPredicate). The rule's implementExistentialSelect needs
+// these to detect EXISTS vs NOT EXISTS.
+func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
+	if pred == nil {
+		return nil
+	}
+	if _, ok := pred.(*predicates.ExistsPredicate); ok {
+		return []predicates.QueryPredicate{pred}
+	}
+	if not, ok := pred.(*predicates.NotPredicate); ok {
+		if len(not.Children()) == 1 {
+			if _, ok := not.Children()[0].(*predicates.ExistsPredicate); ok {
+				return []predicates.QueryPredicate{pred}
+			}
+		}
+	}
+	if and, ok := pred.(*predicates.AndPredicate); ok {
+		var result []predicates.QueryPredicate
+		for _, sub := range and.SubPredicates {
+			result = append(result, extractExistsPredicates(sub)...)
+		}
+		return result
+	}
+	return nil
 }
 
 func sourceAlias(op logical.LogicalOperator) string {

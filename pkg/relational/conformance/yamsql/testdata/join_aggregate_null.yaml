@@ -1,0 +1,49 @@
+# join_aggregate_null.yaml — stress joins + aggregation + NULL handling
+#
+# Exercises the full pipeline: FlatMap correlated scan, GROUP BY on
+# join result, aggregate functions with NULLs, HAVING on join output,
+# and LEFT JOIN with NULL propagation through aggregates.
+name: join_aggregate_null
+schema_template: |
+  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Marketing'), (3, 'Sales')
+  - INSERT INTO employees VALUES (10, 1, 100, 'Alice'), (11, 1, 120, 'Bob'), (12, 1, NULL, 'Charlie'), (20, 2, 80, 'Dave'), (30, NULL, 90, 'Eve')
+tests:
+  # INNER JOIN + GROUP BY: count employees per department
+  - query: SELECT d.name, COUNT(e.id) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name
+    result:
+      - ["Engineering", 3]
+      - ["Marketing", 1]
+
+  # INNER JOIN + SUM with NULL: NULL salary excluded from SUM
+  - query: SELECT d.name, SUM(e.salary) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name
+    result:
+      - ["Engineering", 220]
+      - ["Marketing", 80]
+
+  # LEFT JOIN + COUNT: departments with no employees still appear
+  - query: SELECT d.name, COUNT(e.id) FROM departments d LEFT JOIN employees e ON e.dept_id = d.id GROUP BY d.name ORDER BY d.name
+    result:
+      - ["Engineering", 3]
+      - ["Marketing", 1]
+      - ["Sales", 0]
+
+  # LEFT JOIN + SUM with NULLs: unmatched departments get NULL sum
+  - query: SELECT d.name, SUM(e.salary) FROM departments d LEFT JOIN employees e ON e.dept_id = d.id GROUP BY d.name ORDER BY d.name
+    result:
+      - ["Engineering", 220]
+      - ["Marketing", 80]
+      - ["Sales", null]
+
+  # HAVING on join aggregate
+  - query: SELECT d.name, COUNT(e.id) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name HAVING COUNT(e.id) > 1
+    result:
+      - ["Engineering", 3]
+
+  # Multi-predicate join: dept_id match + salary filter
+  - query: SELECT d.name, e.name FROM departments d, employees e WHERE e.dept_id = d.id AND e.salary > 90 ORDER BY e.name
+    result:
+      - ["Engineering", "Alice"]
+      - ["Engineering", "Bob"]
