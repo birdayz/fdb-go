@@ -112,6 +112,10 @@ Two bugs fixed:
 1. Translator dropped NOT(ExistsPredicate) from predicate list → rule couldn't detect negation → NOT EXISTS acted as EXISTS.
 2. Outer-only WHERE predicates were pushed inside the inner plan (or passed as NLJ join predicates) → they never matched → wrong rows emitted.
 
+### Nested correlated EXISTS hoisting bug
+
+`buildCorrelatedExists` in `logical_predicate.go` hoists the innermost EXISTS plan to the current level when the inner WHERE contains nested EXISTS subqueries. This drops the middle-level correlation predicate. Example: `NOT EXISTS (products WHERE cat_id=c.id AND NOT EXISTS (reviews WHERE product_id=p.id))` — the `cat_id=c.id` correlation is lost because the hoisting replaces the products scan with the reviews scan. Fix requires restructuring the nested EXISTS planner to preserve the middle-level query and apply nested EXISTS as a filter on it. Workaround: rewrite as a join inside EXISTS.
+
 ### NormalizePredicatesRule existential guard — RESOLVED (swingshift-96)
 
 Fixed. Removed the existential quantifier guard and replaced with hash-based dedup to prevent the infinite normalization loop. Now fires on all SelectExpressions matching Java.
