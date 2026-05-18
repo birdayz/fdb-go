@@ -538,7 +538,10 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
+	resultValue := values.NewJoinMergeResultValue(
+		values.NamedCorrelationIdentifier(leftAlias),
+		values.NamedCorrelationIdentifier(rightAlias),
+	)
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
@@ -635,7 +638,10 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
+	resultValue := values.NewJoinMergeResultValue(
+		values.NamedCorrelationIdentifier(leftAlias),
+		values.NamedCorrelationIdentifier(rightAlias),
+	)
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		quantifiers,

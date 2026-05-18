@@ -482,11 +482,10 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		correlatedScan := innerScan.WithScanComparisons([]*predicates.ComparisonRange{mergeResult.Range})
 
 		innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
-		resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
 		flatMapPlan := plans.NewRecordQueryFlatMapPlan(
 			leftPlan, correlatedScan,
 			outerCorrelation, innerCorrelation,
-			resultVal, false,
+			sel.GetResultValue(), false,
 		)
 		switch joinType {
 		case plans.JoinLeftOuter:
@@ -598,11 +597,10 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			)
 
 			innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
-			resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
 			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
 				leftPlan, correlatedIndexScan,
 				outerCorrelation, innerCorrelation,
-				resultVal, false,
+				sel.GetResultValue(), false,
 			)
 			switch joinType {
 			case plans.JoinLeftOuter:
@@ -737,11 +735,10 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			}
 
 			innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
-			resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
 			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
 				outerPlan, innerWithFilter,
 				outerCorrelation, innerCorrelation,
-				resultVal, true,
+				sel.GetResultValue(), true,
 			)
 			switch joinType {
 			case plans.JoinExists:
@@ -803,11 +800,10 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	}
 
 	innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
-	resultVal := values.NewJoinMergeResultValue(outerCorrelation, innerCorrelation)
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
 		outerPlan, innerWithFilter,
 		outerCorrelation, innerCorrelation,
-		resultVal, true,
+		sel.GetResultValue(), true,
 	)
 	switch joinType {
 	case plans.JoinExists:
