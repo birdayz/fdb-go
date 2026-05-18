@@ -2966,6 +2966,67 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 	}
 }
 
+func TestFDB_NotExistsWithOR(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/ne_or_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE products (id BIGINT NOT NULL, name STRING, discontinued BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE inventory (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO products VALUES (1, 'Widget', 0), (2, 'Gadget', 1), (3, 'Doohickey', 0), (4, 'Thingamajig', 0)",
+		"INSERT INTO inventory VALUES (10, 1, 50), (20, 3, 10)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// AND + EXISTS: not discontinued AND has inventory
+	rows, err := db.QueryContext(ctx,
+		"SELECT p.name FROM products p WHERE p.discontinued = 0 AND EXISTS (SELECT 1 FROM inventory i WHERE i.product_id = p.id) ORDER BY p.name")
+	if err != nil {
+		t.Fatalf("AND+EXISTS query: %v", err)
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	rows.Close()
+	if len(names) != 2 || names[0] != "Doohickey" || names[1] != "Widget" {
+		t.Fatalf("AND+EXISTS: expected [Doohickey Widget], got %v", names)
+	}
+	t.Logf("AND + EXISTS → %v ✓", names)
+}
+
 func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
