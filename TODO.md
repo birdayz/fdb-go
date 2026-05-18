@@ -80,7 +80,8 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] EXISTS/NOT EXISTS FlatMap mode with multi-predicate support (alias-stripped inner filter)
 - [x] LEFT OUTER FlatMap with correct NULL row emission
 - [x] Outer-only predicate push-down below FlatMap (alias-stripped)
-- [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
+- [x] Result value ownership aligned with Java: translator creates JoinMergeResultValue, rule passes through sel.GetResultValue() (nightshift-97)
+- [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins — needs schema metadata at translation time)
 - [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions) (implemented in generic FlatMapPipelinedWithCheck; executor-level cursor does not use it — documented)
 
 ### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
@@ -104,6 +105,12 @@ Shipped. Parse in PlanVisitor.visitLimit → LogicalLimit in logical tree → Ca
 ### Bytes IN-list Ginkgo harness flake (491→492/492)
 
 1 remaining cross-engine conformance failure. `bytesAdvancedScenario` query #2: `SELECT id FROM t WHERE payload IN (X'DEADBEEF', X'CAFEBABE') ORDER BY id` returns 0 rows in the Ginkgo shared-container context. Same code passes in 4 independent test contexts. Needs Java conformance server to diagnose.
+
+### Correlated NOT EXISTS bugs — RESOLVED (nightshift-97)
+
+Two bugs fixed:
+1. Translator dropped NOT(ExistsPredicate) from predicate list → rule couldn't detect negation → NOT EXISTS acted as EXISTS.
+2. Outer-only WHERE predicates were pushed inside the inner plan (or passed as NLJ join predicates) → they never matched → wrong rows emitted.
 
 ### NormalizePredicatesRule existential guard — RESOLVED (swingshift-96)
 
