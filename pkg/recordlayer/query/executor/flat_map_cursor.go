@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
@@ -75,7 +74,7 @@ func newFlatMapCursor(
 
 func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
-		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
 
 	for {

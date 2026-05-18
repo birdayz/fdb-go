@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -617,7 +618,7 @@ func (c *flatMapCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResult[V]
 			// Validate check value if provided
 			if c.checkValueFunc != nil && c.pendingCheck != nil {
 				currentCheck := c.checkValueFunc(v)
-				if !bytesEqual(currentCheck, c.pendingCheck) {
+				if !bytes.Equal(currentCheck, c.pendingCheck) {
 					// Outer record changed — restart inner from beginning
 					innerCont = nil
 				} else {
@@ -632,18 +633,6 @@ func (c *flatMapCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResult[V]
 
 		c.inner = c.innerFactory(v, innerCont)
 	}
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *flatMapCursor[T, V]) wrapContinuation(innerCont RecordCursorContinuation) RecordCursorContinuation {

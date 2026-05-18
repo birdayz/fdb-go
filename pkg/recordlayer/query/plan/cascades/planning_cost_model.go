@@ -684,11 +684,7 @@ func outerCardinality(fm *physicalFlatMapWrapper) float64 {
 	if ref == nil {
 		return properties.LeafScanCardinality
 	}
-	cost := properties.EstimateCost(firstPhysicalChild(ref))
-	if cost.Cardinality == 0 {
-		return properties.LeafScanCardinality
-	}
-	return cost.Cardinality
+	return properties.EstimateCost(firstPhysicalChild(ref)).Cardinality
 }
 
 // firstPhysicalChild returns the first physical member of ref.
