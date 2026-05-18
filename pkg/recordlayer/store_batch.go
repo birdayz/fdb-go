@@ -224,20 +224,19 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		// Secondary indexes
 		var oldRecord *FDBStoredRecord[proto.Message]
 		if oldRecordExists {
-			oldMsg, err := store.deserializeRecord(oldValue, p.recordType)
-			if err == nil {
-				oldRecord = &FDBStoredRecord[proto.Message]{
-					PrimaryKey: p.primaryKey,
-					RecordType: p.recordType,
-					Record:     oldMsg,
-					Store:      store,
-				}
-				// Load old version for VERSION index cleanup on update.
-				// One FDB read per updated record — only when version indexes exist.
-				if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
-					if ver, verErr := store.LoadRecordVersion(p.primaryKey, false); verErr == nil {
-						oldRecord.Version = ver
-					}
+			oldRT, oldMsg, err := store.deserializeAndDiscover(oldValue)
+			if err != nil {
+				return nil, fmt.Errorf("record %d: deserialize old record: %w", i, err)
+			}
+			oldRecord = &FDBStoredRecord[proto.Message]{
+				PrimaryKey: p.primaryKey,
+				RecordType: oldRT,
+				Record:     oldMsg,
+				Store:      store,
+			}
+			if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
+				if ver, verErr := store.LoadRecordVersion(p.primaryKey, false); verErr == nil {
+					oldRecord.Version = ver
 				}
 			}
 		}
