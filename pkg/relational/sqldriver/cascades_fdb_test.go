@@ -2966,6 +2966,75 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 	}
 }
 
+func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/ne_nonpk_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE items (id BIGINT NOT NULL, category STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE tags (id BIGINT NOT NULL, item_id BIGINT, tag STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO items VALUES (1, 'A'), (2, 'B'), (3, 'A'), (4, 'A')",
+		"INSERT INTO tags VALUES (10, 1, 'x'), (20, 3, 'y')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// NOT EXISTS on non-PK column + outer predicate.
+	// Item 1: A, has tag → excluded by NOT EXISTS
+	// Item 2: B → excluded by category='A'
+	// Item 3: A, has tag → excluded by NOT EXISTS
+	// Item 4: A, no tag → INCLUDED
+	rows, err := db.QueryContext(ctx,
+		"SELECT i.id FROM items i WHERE i.category = 'A' AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.item_id = i.id) ORDER BY i.id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != 4 {
+		t.Fatalf("expected [4], got %v", ids)
+	}
+	t.Logf("NOT EXISTS non-PK + WHERE → %v ✓", ids)
+}
+
 func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
