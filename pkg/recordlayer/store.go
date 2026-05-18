@@ -87,22 +87,19 @@ func (e *StaleMetaDataVersionError) Error() string {
 // FDBRecordStore provides record storage operations within a transaction context.
 // This is the main struct for storing and retrieving records.
 type FDBRecordStore struct {
-	context              *FDBRecordContext
-	metaData             *RecordMetaData
-	subspace             subspace.Subspace
-	recordsSubspace      subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader          *gen.DataStoreInfo       // Cached store header, loaded on Open/Create or lazily
-	indexStates          map[string]IndexState    // Cached index states, loaded on Open/Create or lazily
-	indexRebuildPolicy   IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
-	storeStateCache      FDBRecordStoreStateCache // Cache for store state across transactions
-	stateMu              sync.RWMutex             // protects storeHeader + indexStates
-	stateLoadOnce        sync.Once                // ensures lazy store state load happens exactly once (Build() path)
-	stateLoadErr         error                    // error from lazy load (nil if loaded successfully or not yet attempted)
-	versionChanged       bool                     // true if checkPossiblyRebuild detected a version change
-	maintainerCache      sync.Map                 // string → IndexMaintainer, cached per-transaction
-	batchKeyBuf          *[]byte                  // shared buffer for batch key packing (InsertBatch only)
-	batchPacker          *tuple.Packer            // shared packer for InsertBatch — avoids pool churn
-	skipUniquenessChecks bool                     // true in InsertBatch — caller guarantees unique keys
+	context            *FDBRecordContext
+	metaData           *RecordMetaData
+	subspace           subspace.Subspace
+	recordsSubspace    subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
+	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create or lazily
+	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create or lazily
+	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
+	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
+	stateMu            sync.RWMutex             // protects storeHeader + indexStates
+	stateLoadOnce      sync.Once                // ensures lazy store state load happens exactly once (Build() path)
+	stateLoadErr       error                    // error from lazy load (nil if loaded successfully or not yet attempted)
+	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
+	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
 }
 
 // ensureStoreStateLoaded lazily loads store state (header + index states) from
@@ -1784,55 +1781,6 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	out = protowire.AppendTag(out, recordType.unionFieldNumber, protowire.BytesType)
 	out = protowire.AppendBytes(out, innerBytes)
 	return out, nil
-}
-
-// serializeUnionInto serializes a record into a shared buffer, returning a sub-slice.
-// The buffer grows as needed. Used by InsertBatch to avoid per-record allocations.
-func serializeUnionInto(record proto.Message, recordType *RecordType, buf *[]byte) ([]byte, error) {
-	if recordType.unionFieldNumber == 0 {
-		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
-	}
-
-	type sizer interface {
-		SizeVT() int
-		MarshalToSizedBufferVT([]byte) (int, error)
-	}
-	sv, ok := record.(sizer)
-	if !ok {
-		// Fallback to standard serializeUnion (allocates its own buffer).
-		return serializeUnion(record, recordType)
-	}
-
-	innerSize := sv.SizeVT()
-	tagSize := protowire.SizeTag(recordType.unionFieldNumber)
-	lenSize := protowire.SizeBytes(innerSize) - innerSize
-	totalSize := tagSize + lenSize + innerSize
-
-	// Grow shared buffer if needed.
-	b := *buf
-	start := len(b)
-	needed := start + totalSize
-	if needed > cap(b) {
-		newCap := max(2*cap(b), needed)
-		newBuf := make([]byte, start, newCap)
-		copy(newBuf, b)
-		b = newBuf
-	}
-	b = b[:needed]
-	out := b[start:needed]
-
-	// Write tag + length prefix.
-	header := protowire.AppendTag(out[:0], recordType.unionFieldNumber, protowire.BytesType)
-	header = protowire.AppendVarint(header, uint64(innerSize))
-	headerLen := len(header)
-
-	// Marshal directly into the shared buffer.
-	if _, err := sv.MarshalToSizedBufferVT(out[headerLen : headerLen+innerSize]); err != nil {
-		return nil, err
-	}
-
-	*buf = b
-	return out[:headerLen+innerSize], nil
 }
 
 // deserializeAndDiscover reads the union wire format tag to discover the record type,

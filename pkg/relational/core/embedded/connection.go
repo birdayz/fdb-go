@@ -276,10 +276,6 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 		return nil, err
 	}
 
-	if n, fastErr := c.tryFastInsert(ctx, substituted); fastErr == nil {
-		return driver.RowsAffected(n), nil
-	}
-
 	gen := &naiveGenerator{c: c}
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {

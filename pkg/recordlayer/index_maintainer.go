@@ -117,57 +117,36 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			// Avoids scalarToInterface boxing — handles both single-field and
 			// composite keys without going through any.
 			if dp, ok := m.index.RootExpression.(DirectPacker); ok {
-				// Use shared batch packer if available (InsertBatch path).
-				var pk *tuple.Packer
-				var ownedPk bool
-				if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchPacker != nil {
-					pk = s.batchPacker
-				} else {
-					pk = tuple.GetPacker()
-					ownedPk = true
-				}
+				pk := tuple.GetPacker()
 				pk.Reset()
 				if dp.PackDirect(pk, newRecord, newRecord.Record) {
 					trimmedPK, pkErr := m.index.TrimPrimaryKey(newRecord.PrimaryKey)
 					if pkErr == nil {
-						var keyBytes []byte
-						if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchKeyBuf != nil {
-							pk.EncodeTuple(trimmedPK)
-							keyBytes = pk.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes())
-						} else {
-							pk.EncodeTuple(trimmedPK)
-							var buf []byte
-							keyBytes = pk.AppendInto(&buf, m.indexSubspace.Bytes())
-						}
-						if ownedPk {
-							tuple.PutPacker(pk)
-						}
+						pk.EncodeTuple(trimmedPK)
+						var buf []byte
+						keyBytes := pk.AppendInto(&buf, m.indexSubspace.Bytes())
+						tuple.PutPacker(pk)
 						if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
 							return err
 						}
-						// Uniqueness check for UNIQUE indexes (unless InsertBatch skips it).
 						if m.index.IsUnique() {
-							if s, ok3 := m.store.(*FDBRecordStore); !ok3 || !s.skipUniquenessChecks {
-								keyTuple, uErr := fastSubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
-								if uErr != nil {
-									return fmt.Errorf("unpack index key for uniqueness check: %w", uErr)
-								}
-								colCount := m.index.RootExpression.ColumnSize()
-								if colCount > 0 && len(keyTuple) > colCount {
-									entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
-									if err := m.checkUniqueness(entry); err != nil {
-										return err
-									}
+							keyTuple, uErr := fastSubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
+							if uErr != nil {
+								return fmt.Errorf("unpack index key for uniqueness check: %w", uErr)
+							}
+							colCount := m.index.RootExpression.ColumnSize()
+							if colCount > 0 && len(keyTuple) > colCount {
+								entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+								if err := m.checkUniqueness(entry); err != nil {
+									return err
 								}
 							}
 						}
-						m.tx.SetBytes(keyBytes, emptyTuplePacked)
+						m.tx.Set(fdb.Key(keyBytes), emptyTuplePacked)
 						return nil
 					}
 				}
-				if ownedPk {
-					tuple.PutPacker(pk)
-				}
+				tuple.PutPacker(pk)
 			}
 			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
 				values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
@@ -267,13 +246,7 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 	}
 
 	var keyBytes []byte
-	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
-		if len(trimmedPK) == 0 {
-			keyBytes = tuple.PackInt64Into(s.batchKeyBuf, m.indexSubspace.Bytes(), val)
-		} else {
-			keyBytes = tuple.PackInt64ConcatInto(s.batchKeyBuf, m.indexSubspace.Bytes(), val, trimmedPK)
-		}
-	} else if len(trimmedPK) == 0 {
+	if len(trimmedPK) == 0 {
 		keyBytes = tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), val)
 	} else {
 		keyBytes = tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), val, trimmedPK)
@@ -284,37 +257,24 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 	}
 
 	if m.index.IsUnique() {
-		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
-			entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-			if err := m.checkUniqueness(entry); err != nil {
-				return err
-			}
+		entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
 		}
 	}
 
-	m.tx.SetBytes(keyBytes, emptyTuplePacked)
+	m.tx.Set(fdb.Key(keyBytes), emptyTuplePacked)
 	return nil
 }
 
-// insertScalarEntry handles inserting a VALUE index entry for a single-field
-// expression. Avoids allocating a tuple.Tuple for the key by packing the scalar
-// value directly alongside the trimmed primary key.
 func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRecord[proto.Message]) error {
 	trimmedPK, err := m.index.TrimPrimaryKey(record.PrimaryKey)
 	if err != nil {
 		return err
 	}
 
-	// Pack scalar value + trimmed PK directly — no intermediate tuple alloc.
-	// Use shared batch key buffer if available (InsertBatch path).
 	var keyBytes []byte
-	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
-		if len(trimmedPK) == 0 {
-			keyBytes = tuple.Pack1Into(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(val))
-		} else {
-			keyBytes = tuple.Pack1ConcatInto(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK)
-		}
-	} else if len(trimmedPK) == 0 {
+	if len(trimmedPK) == 0 {
 		keyBytes = tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val))
 	} else {
 		keyBytes = tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK)
@@ -325,17 +285,13 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 	}
 
 	if m.index.IsUnique() && val != nil {
-		// Skip uniqueness check when called from InsertBatch — caller guarantees
-		// unique keys, and the check does an FDB GetRange per entry.
-		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
-			entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-			if err := m.checkUniqueness(entry); err != nil {
-				return err
-			}
+		entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
 		}
 	}
 
-	m.tx.SetBytes(keyBytes, emptyTuplePacked)
+	m.tx.Set(fdb.Key(keyBytes), emptyTuplePacked)
 	return nil
 }
 
@@ -363,14 +319,12 @@ func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FD
 	}
 
 	if m.index.IsUnique() && !indexKeyContainsNull(entry.key) {
-		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
-			if err := m.checkUniqueness(entry); err != nil {
-				return err
-			}
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
 		}
 	}
 
-	m.tx.SetBytes(keyBytes, emptyTuplePacked)
+	m.tx.Set(keyBytes, emptyTuplePacked)
 	return nil
 }
 

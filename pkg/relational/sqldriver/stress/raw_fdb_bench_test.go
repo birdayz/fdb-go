@@ -398,6 +398,131 @@ func TestFDB_SaveRecordPerRowScaling(t *testing.T) {
 	}
 }
 
+func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+
+	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel0()
+	pureDB, err := purefdb.OpenDatabase(ctx0, clusterFilePath)
+	if err != nil {
+		t.Fatalf("OpenDatabase: %v", err)
+	}
+	defer pureDB.Close()
+
+	fdbDB := recordlayer.NewFDBDatabase(fdb.WrapDatabase(pureDB))
+	fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
+	md := buildBenchMD(t)
+
+	batchSize := 2000
+	totalRows := 20_000
+
+	// Create store
+	_, err = fdbDB.Run(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		ss := subspace.FromBytes(tuple.Tuple{"concurrent_vs_batch"}.Pack())
+		_, err := recordlayer.NewStoreBuilder().
+			SetContext(rctx).SetSubspace(ss).SetMetaDataProvider(md).
+			CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	type approach struct {
+		name string
+		fn   func(store *recordlayer.FDBRecordStore, offset, end int) error
+	}
+
+	approaches := []approach{
+		{
+			name: "sequential",
+			fn: func(store *recordlayer.FDBRecordStore, offset, end int) error {
+				for i := offset; i < end; i++ {
+					msg := &gen.Order{OrderId: protopkg.Int64(int64(i)), Price: protopkg.Int32(int32(i * 7))}
+					if _, err := store.SaveRecord(msg); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
+		{
+			name: "batch",
+			fn: func(store *recordlayer.FDBRecordStore, offset, end int) error {
+				msgs := make([]protopkg.Message, end-offset)
+				for i := offset; i < end; i++ {
+					msgs[i-offset] = &gen.Order{OrderId: protopkg.Int64(int64(i)), Price: protopkg.Int32(int32(i * 7))}
+				}
+				_, err := store.SaveRecordBatch(msgs)
+				return err
+			},
+		},
+	}
+
+	for _, maxInFlight := range []int{8, 32, 128, 512} {
+		n := maxInFlight
+		approaches = append(approaches, approach{
+			name: fmt.Sprintf("concurrent_%d", n),
+			fn: func(store *recordlayer.FDBRecordStore, offset, end int) error {
+				sem := make(chan struct{}, n)
+				var wg sync.WaitGroup
+				var firstErr atomic.Value
+				for i := offset; i < end; i++ {
+					if v := firstErr.Load(); v != nil {
+						break
+					}
+					sem <- struct{}{}
+					wg.Add(1)
+					go func(id int) {
+						defer func() { <-sem; wg.Done() }()
+						msg := &gen.Order{OrderId: protopkg.Int64(int64(id)), Price: protopkg.Int32(int32(id * 7))}
+						if _, err := store.SaveRecord(msg); err != nil {
+							firstErr.CompareAndSwap(nil, err)
+						}
+					}(i)
+				}
+				wg.Wait()
+				if v := firstErr.Load(); v != nil {
+					return v.(error)
+				}
+				return nil
+			},
+		})
+	}
+
+	for _, a := range approaches {
+		a := a
+		t.Run(a.name, func(t *testing.T) {
+			start := time.Now()
+			for offset := 0; offset < totalRows; offset += batchSize {
+				end := offset + batchSize
+				if end > totalRows {
+					end = totalRows
+				}
+				_, runErr := fdbDB.Run(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+					ss := subspace.FromBytes(tuple.Tuple{"concurrent_vs_batch"}.Pack())
+					store, err := recordlayer.NewStoreBuilder().
+						SetContext(rctx).SetSubspace(ss).SetMetaDataProvider(md).
+						SetSkipPossiblyRebuild(true).
+						Open()
+					if err != nil {
+						return nil, err
+					}
+					return nil, a.fn(store, offset, end)
+				})
+				if runErr != nil {
+					t.Fatalf("batch at offset %d: %v", offset, runErr)
+				}
+			}
+			elapsed := time.Since(start)
+			t.Logf("%s: %d rows in %v (%.0f rows/s)", a.name, totalRows, elapsed, float64(totalRows)/elapsed.Seconds())
+		})
+	}
+}
+
 func buildBenchMD(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
