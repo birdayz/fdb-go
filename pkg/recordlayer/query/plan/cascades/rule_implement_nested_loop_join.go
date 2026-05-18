@@ -219,16 +219,36 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 
 	// Fallback: NLJ with predicate filtering.
+	// Split predicates: inner-referencing go to NLJ (evaluated against
+	// merged outer+inner row), outer-only go as a filter on the outer
+	// plan (they're WHERE predicates, not join predicates).
+	var joinPreds []predicates.QueryPredicate
+	var outerOnlyPreds []predicates.QueryPredicate
+	for _, p := range regularPreds {
+		if predicateReferencesAlias(p, innerAlias) {
+			joinPreds = append(joinPreds, p)
+		} else {
+			outerOnlyPreds = append(outerOnlyPreds, p)
+		}
+	}
+
+	var nljOuter plans.RecordQueryPlan = outerPlan
+	if len(outerOnlyPreds) > 0 {
+		outerPrefix := strings.ToUpper(outerAlias) + "."
+		stripped := stripAliasFromPredicates(outerOnlyPreds, outerPrefix)
+		nljOuter = plans.NewRecordQueryPredicatesFilterPlan(outerPlan, stripped)
+	}
+
 	var nljInner plans.RecordQueryPlan
-	if len(regularPreds) > 0 {
+	if len(joinPreds) > 0 {
 		nljInner = innerPlan
 	} else {
 		nljInner = fodPlan
 	}
 
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		outerPlan, nljInner,
-		regularPreds,
+		nljOuter, nljInner,
+		joinPreds,
 		joinType,
 		outerAlias, innerAlias,
 	)
@@ -721,22 +741,35 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				recordTypes, innerScan.GetFlowedType(), false,
 			)
 
-			// Wrap residual predicates INSIDE the inner (filter inner rows).
-			var innerWithFilter plans.RecordQueryPlan = correlatedIndexScan
-			var residuals []predicates.QueryPredicate
+			// Split residual predicates: inner-referencing → filter inside
+			// inner plan. Outer-only → filter on the outer plan.
+			var innerResiduals, outerResiduals []predicates.QueryPredicate
 			for _, p := range preds {
-				if p != pred {
-					residuals = append(residuals, p)
+				if p == pred {
+					continue
+				}
+				if predicateReferencesAlias(p, innerAlias) {
+					innerResiduals = append(innerResiduals, p)
+				} else {
+					outerResiduals = append(outerResiduals, p)
 				}
 			}
-			if len(residuals) > 0 {
-				stripped := stripAliasFromPredicates(residuals, innerPrefix)
+
+			var innerWithFilter plans.RecordQueryPlan = correlatedIndexScan
+			if len(innerResiduals) > 0 {
+				stripped := stripAliasFromPredicates(innerResiduals, innerPrefix)
 				innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedIndexScan, stripped)
+			}
+
+			var outerWithFilter plans.RecordQueryPlan = outerPlan
+			if len(outerResiduals) > 0 {
+				stripped := stripAliasFromPredicates(outerResiduals, outerPrefix)
+				outerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(outerPlan, stripped)
 			}
 
 			innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
 			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-				outerPlan, innerWithFilter,
+				outerWithFilter, innerWithFilter,
 				outerCorrelation, innerCorrelation,
 				sel.GetResultValue(), true,
 			)
@@ -786,22 +819,35 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 
 	correlatedScan := innerScan.WithScanComparisons([]*predicates.ComparisonRange{mergeResult.Range})
 
-	// Wrap residual predicates INSIDE the inner plan (alias-stripped).
-	var innerWithFilter plans.RecordQueryPlan = correlatedScan
-	var residuals []predicates.QueryPredicate
+	// Split residual predicates: inner-referencing → filter inside inner
+	// plan (alias-stripped). Outer-only → filter on the outer plan.
+	var innerResiduals, outerResiduals []predicates.QueryPredicate
 	for _, p := range allPreds {
-		if p != matchedPred {
-			residuals = append(residuals, p)
+		if p == matchedPred {
+			continue
+		}
+		if predicateReferencesAlias(p, innerAlias) {
+			innerResiduals = append(innerResiduals, p)
+		} else {
+			outerResiduals = append(outerResiduals, p)
 		}
 	}
-	if len(residuals) > 0 {
-		stripped := stripAliasFromPredicates(residuals, innerPrefix)
+
+	var innerWithFilter plans.RecordQueryPlan = correlatedScan
+	if len(innerResiduals) > 0 {
+		stripped := stripAliasFromPredicates(innerResiduals, innerPrefix)
 		innerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(correlatedScan, stripped)
+	}
+
+	var outerWithFilter plans.RecordQueryPlan = outerPlan
+	if len(outerResiduals) > 0 {
+		stripped := stripAliasFromPredicates(outerResiduals, outerPrefix)
+		outerWithFilter = plans.NewRecordQueryPredicatesFilterPlan(outerPlan, stripped)
 	}
 
 	innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-		outerPlan, innerWithFilter,
+		outerWithFilter, innerWithFilter,
 		outerCorrelation, innerCorrelation,
 		sel.GetResultValue(), true,
 	)

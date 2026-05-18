@@ -2966,6 +2966,74 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 	}
 }
 
+func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/notexists_pred_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE shipments (id BIGINT NOT NULL, order_id BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO orders VALUES (1, 'pending'), (2, 'shipped'), (3, 'pending'), (4, 'cancelled')",
+		"INSERT INTO shipments VALUES (10, 2), (20, 3)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// NOT EXISTS with additional WHERE predicate: pending orders without shipments
+	rows, err := db.QueryContext(ctx,
+		"SELECT o.id FROM orders o WHERE o.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	// Order 1: pending + no shipment → included
+	// Order 3: pending + HAS shipment → excluded
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("expected [1], got %v", ids)
+	}
+	t.Logf("NOT EXISTS + WHERE predicate → %v ✓", ids)
+}
+
 func valuesEqual(got, exp any) bool {
 	if got == nil && exp == nil {
 		return true
