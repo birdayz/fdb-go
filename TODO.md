@@ -97,7 +97,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 ### Performance
 
 - [ ] **InJoin plan selection** — IN-list queries currently fall back to filter+scan (O(N)) because InJoinRule requires inner physical plans that aren't ready when it fires. Should be O(k) PK lookups. Cascades task ordering issue.
-- [ ] **Composite PK FlatMap** — FlatMap only matches FIRST PK column. Joins on non-first PK columns fall back to NLJ O(N×M). Should match all PK prefix columns.
+- [x] **Composite PK FlatMap** — Now matches ALL leading PK columns. For composite PKs like (customer_id, order_num), creates multi-column prefix scan instead of single-column match.
 - [ ] **Go-vs-Java SQL perf bench** — Go-side done, needs Java conformance server for comparison.
 
 ---
