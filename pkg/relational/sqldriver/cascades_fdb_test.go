@@ -3337,7 +3337,7 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 	t.Logf("NOT EXISTS + WHERE predicate → %v ✓", ids)
 }
 
-func TestFDB_InListDebug(t *testing.T) {
+func TestFDB_InListMultiValue(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
