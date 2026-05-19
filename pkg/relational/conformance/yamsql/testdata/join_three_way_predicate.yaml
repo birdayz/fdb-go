@@ -1,0 +1,55 @@
+# join_three_way_predicate.yaml — Three-way join with predicates
+#
+# Exercises three-table joins with predicates on each table, testing
+# predicate push-down and correct join ordering.
+name: join_three_way_predicate
+schema_template: |
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, name STRING, budget BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO dept VALUES (1, 'Engineering'), (2, 'Sales'), (3, 'HR')
+  - INSERT INTO emp VALUES (10, 1, 'Alice', 120), (20, 1, 'Bob', 100), (30, 2, 'Charlie', 80), (40, 3, 'Dave', 90)
+  - INSERT INTO project VALUES (100, 10, 'Alpha', 1000), (101, 10, 'Beta', 500), (102, 30, 'Gamma', 200)
+tests:
+  # Three-way inner join
+  - query: >
+      SELECT d.name, e.name, p.name
+      FROM dept d, emp e, project p
+      WHERE e.dept_id = d.id AND p.emp_id = e.id
+      ORDER BY p.name
+    rows:
+      - ["Engineering", "Alice", "Alpha"]
+      - ["Engineering", "Alice", "Beta"]
+      - ["Sales", "Charlie", "Gamma"]
+
+  # Three-way with filter on middle table
+  - query: >
+      SELECT d.name, e.name, p.name
+      FROM dept d, emp e, project p
+      WHERE e.dept_id = d.id AND p.emp_id = e.id AND e.salary > 90
+      ORDER BY p.name
+    rows:
+      - ["Engineering", "Alice", "Alpha"]
+      - ["Engineering", "Alice", "Beta"]
+
+  # Three-way with filter on innermost table
+  - query: >
+      SELECT d.name, e.name, p.name
+      FROM dept d, emp e, project p
+      WHERE e.dept_id = d.id AND p.emp_id = e.id AND p.budget > 300
+      ORDER BY p.name
+    rows:
+      - ["Engineering", "Alice", "Alpha"]
+      - ["Engineering", "Alice", "Beta"]
+
+  # Three-way with aggregate
+  - query: >
+      SELECT d.name, COUNT(p.id)
+      FROM dept d, emp e, project p
+      WHERE e.dept_id = d.id AND p.emp_id = e.id
+      GROUP BY d.name
+      ORDER BY d.name
+    rows:
+      - ["Engineering", 2]
+      - ["Sales", 1]

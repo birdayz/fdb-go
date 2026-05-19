@@ -1,0 +1,36 @@
+# subquery_scalar_in_where.yaml — Scalar subquery used in WHERE predicate
+#
+# Exercises uncorrelated scalar subqueries as WHERE operands:
+# comparison against scalar subquery, IS NULL check on empty subquery.
+name: subquery_scalar_in_where
+schema_template: |
+  CREATE TABLE config (id BIGINT NOT NULL, threshold BIGINT, PRIMARY KEY (id))
+  CREATE TABLE readings (id BIGINT NOT NULL, sensor STRING, value BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO config VALUES (1, 50)
+  - INSERT INTO readings VALUES (1, 'temp', 30), (2, 'temp', 60), (3, 'humidity', 45), (4, 'humidity', 80)
+tests:
+  # Scalar subquery as RHS of comparison
+  - query: >
+      SELECT sensor, value FROM readings
+      WHERE value > (SELECT threshold FROM config WHERE id = 1)
+      ORDER BY id
+    rows:
+      - ["temp", 60]
+      - ["humidity", 80]
+
+  # Scalar subquery with aggregate
+  - query: >
+      SELECT sensor, value FROM readings
+      WHERE value > (SELECT AVG(value) FROM readings)
+      ORDER BY id
+    rows:
+      - ["temp", 60]
+      - ["humidity", 80]
+
+  # Scalar subquery returning single row
+  - query: >
+      SELECT COUNT(*) FROM readings
+      WHERE value <= (SELECT MAX(value) FROM readings WHERE sensor = 'temp')
+    rows:
+      - [3]
