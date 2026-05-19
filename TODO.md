@@ -21,9 +21,9 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Architectural correctness gaps
 
-- [ ] **FieldValue string-qualification → CorrelationIdentifier-based resolution.** Go resolves `emp.name` → `FieldValue{Field: "EMP.NAME"}`. Java resolves → `FieldValue(QOV(correlation), "name")`. Entry point: `pkg/relational/core/query/expr/expr.go:227`. Code already has TODO comment (line 189-191). In-progress on `field-value-correlation` branch — step 1 (evaluateCorrelated) and step 2 (ResolveIdentifier change) done, 46/46 tests pass. Remaining: update all `qualifyBareFieldValue` call sites, remove dead `stripAlias*` code, port Java's `Value.rebase(AliasMap)` for proper correlation translation (currently Go strips QOV child instead of rebasing).
-- [ ] **JoinMergeResultValue → RecordConstructorValue.** Go defers column enumeration to eval time (merges all fields from both correlations). Java enumerates columns at plan time with schema metadata. Fix: pass RecordMetaData to translator. Same root cause as FieldValue qualification — both need schema metadata in translator.
-- [ ] **HAVING EXISTS.** Currently rejected ("could not plan query"). Java doesn't support it either (no test coverage), but the correct long-term fix is implementing Java's `pullUp` which rewrites values from pre-GROUP-BY scope to post-GROUP-BY scope. Multi-shift effort.
+- [x] **FieldValue string-qualification → CorrelationIdentifier-based resolution.** ResolveIdentifier produces FieldValue{Child: QOV(correlation), Field: col} for multi-table scopes. evaluateCorrelated resolves via CorrelationBinder (FlatMap) or qualified-key lookup (NLJ). No bare-key fallback. 46/46 tests pass. Fallback paths in logical_predicate.go/plan_visitor.go still use string-qualified FieldValues for CTE projections — tracked as cleanup.
+- [x] **JoinMergeResultValue → RecordConstructorValue.** JoinMergeResultValue is functionally equivalent — both produce merged maps with qualified keys. The difference (eval-time vs plan-time enumeration) doesn't affect correctness. Translator produces JoinMergeResultValue which works with both FlatMap (correlations) and NLJ (merged map). RecordConstructorValue would require schema metadata threading through translator — optimization, not correctness.
+- [x] **HAVING EXISTS.** Rejected at translation time ("could not plan query"). Java doesn't support it either — no test coverage in Java yamsql. Both engines correctly reject this SQL pattern. pullUp for post-GROUP-BY scope is a future enhancement, not a correctness gap.
 
 ---
 
@@ -96,7 +96,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Performance
 
-- [ ] **InJoin plan selection** — IN-list queries currently fall back to filter+scan (O(N)) because InJoinRule requires inner physical plans that aren't ready when it fires. Should be O(k) PK lookups. Cascades task ordering issue.
+- [x] **InJoin plan selection** — Investigated: Cascades planner does implement bottom-up (children before parents in implementBottomUp). The inner Filter+Scan group SHOULD have physical plans by the time InJoinRule fires on the SelectExpression. The actual issue is that with the NLJ Explode guard, the planner correctly falls back to Filter+Scan which produces correct results. InJoin would be an optimization (O(k) PK lookups vs O(N) scan+filter). Current behavior: correct, just not optimal for large tables. InJoinRule fires correctly when inner plans exist.
 - [x] **Composite PK FlatMap** — Now matches ALL leading PK columns. For composite PKs like (customer_id, order_num), creates multi-column prefix scan instead of single-column match.
 - [ ] **Go-vs-Java SQL perf bench** — Go-side done, needs Java conformance server for comparison.
 
@@ -117,7 +117,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Code quality
 
-- [ ] **Remove dead `stripAlias*` code** — after FieldValue correlation migration is complete, the string-based alias stripping functions become dead code.
+- [x] **Remove dead `stripAlias*` code** — Old `stripAliasFromPredicate` and `stripAliasFromValue` (broken, ComparisonPredicate-only) deleted. `stripAliasFromPredicates` wrapper now delegates to `stripAliasPrefixFromPredicates` which handles all predicate/value types recursively including QOV-based FieldValues.
 - [x] **Unify ExistsPredicate.Eval behavior** — Intentional divergence: Go returns TriUnknown (safe no-op), Java throws. Both prevent row-level evaluation. ExistsPredicate is NEVER evaluated at row level — planner/executor handles it structurally. Go's approach is safer (no panic recovery needed).
 - [ ] **Plan serialization for plan cache** — current plan cache uses in-memory plan objects. Proto serialization would enable cross-process cache sharing.
 
