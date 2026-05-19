@@ -1332,7 +1332,7 @@ func TestIsIndexOnly_RowNumberValue(t *testing.T) {
 
 func TestIsIndexOnly_DistanceRowNumberValue(t *testing.T) {
 	t.Parallel()
-	v := NewEuclideanDistanceRowNumberValue(nil, nil, nil, nil)
+	v := NewEuclideanDistanceRowNumberValue(nil, nil)
 	if !IsIndexOnly(v) {
 		t.Fatal("DistanceRowNumberValue should be IndexOnly")
 	}

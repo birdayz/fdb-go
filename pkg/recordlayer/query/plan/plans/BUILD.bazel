@@ -44,6 +44,7 @@ go_library(
         "translate_value_function.go",
         "typefilter.go",
         "union.go",
+        "unordered_pk_distinct.go",
         "unordered_union.go",
         "update.go",
         "values.go",

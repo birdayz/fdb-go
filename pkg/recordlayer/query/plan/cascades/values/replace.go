@@ -118,6 +118,14 @@ func withChildren(v Value, newChildren []Value) Value {
 		return vt.WithChildren(newChildren)
 	case *DistanceRowNumberValue:
 		return vt.WithChildren(newChildren)
+	case *CosineDistanceRowNumberValue:
+		return vt.WithChildren(newChildren)
+	case *DotProductDistanceRowNumberValue:
+		return vt.WithChildren(newChildren)
+	case *EuclideanDistanceRowNumberValue:
+		return vt.WithChildren(newChildren)
+	case *EuclideanSquareDistanceRowNumberValue:
+		return vt.WithChildren(newChildren)
 	case *FirstOrDefaultStreamingValue:
 		return vt.WithChildren(newChildren)
 

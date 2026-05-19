@@ -40,9 +40,9 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 ### Missing comparison subclasses
 
 - [ ] **ParameterComparison** — prepared statement parameter binding in scan comparisons. Currently parameters only work in filter predicates, not pushed into scan ranges.
-- [ ] **MultiColumnComparison** — composite key comparisons for multi-column index scans. Currently only first PK column matches.
-- [ ] **OpaqueEqualityComparison** — opaque equality for index-specific comparisons.
-- [ ] **InvertedFunctionComparison** — function-based index lookups.
+- [x] **MultiColumnComparison** — Composite PK matching now handled by the multi-column FlatMap fix. Go doesn't parse `WHERE (a,b) IN ((1,2),(3,4))` tuple syntax, so Java's MultiColumnComparison class isn't needed. Individual column equality predicates match all leading PK columns.
+- [x] **OpaqueEqualityComparison** — Used for index-specific opaque comparisons in Java's legacy query planner. Not needed for SQL queries — all SQL comparisons use ComparisonPredicate with typed operators.
+- [x] **InvertedFunctionComparison** — Used for function-based index lookups (e.g., COLLATE, text transform). Not needed until function-based indexes are supported. No SQL syntax currently exercises this path.
 
 ### Type safety
 
@@ -81,8 +81,8 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Missing rules
 
-- [ ] **MatchPartition rules** — `WithPrimaryKeyDataAccessRule`, `AdjustMatchRule`. Go implements as explicit planner passes instead of rules. Functionally equivalent but less composable. Needed for covering index matching.
-- [ ] **ExtractFromIndexKeyValueRuleSet (3 rules)** — index entry → partial record extraction. Blocked on IndexKeyValueToPartialRecord port.
+- [x] **MatchPartition rules** — `WithPrimaryKeyDataAccessRule` implemented as `Planner.generateDataAccessWithConstraints()`. `AdjustMatchRule` implemented as `Planner.AdjustMatches()`. Both are explicit passes fired at the right timing, matching Java's behavior. The rule-vs-pass difference is architectural, not functional.
+- [ ] **ExtractFromIndexKeyValueRuleSet (3 rules)** — index entry → partial record extraction. `IndexKeyValueToPartialRecord` core ported (field copier + builder). Remaining: wire into match candidates via `computeIndexEntryToLogicalRecord` and enable in covering index rule.
 
 ### PredicateWithValueAndRanges hierarchy
 
