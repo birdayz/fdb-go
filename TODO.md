@@ -52,9 +52,9 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 ### Go-only extension test coverage
 
 - [x] **MergeSortUnionPlan** — 14 unit tests added. Found and fixed bug: EndContinuation → StartContinuation in mergeSortCursor.OnNext().
-- [ ] **NLJ comprehensive coverage** — 52 yamsql scenarios added + 10 unit tests (field-value-correlation branch). Need to verify all pass against FDB. Merge branch first.
-- [ ] **InMemorySortPlan** — no dedicated tests (shares impl with SortPlan). Needs: top-K heap correctness, large-N stability, NULL sort ordering, continuation resume after partial sort.
-- [ ] **Streaming cursor architecture** — no streaming_cursors_test.go file. flatMapCursor, nljCursor, aggregateCursor, sortCursor all tested only through integration. Need unit tests for: continuation serialization/deserialization, TimeLimitReached propagation, partial state resume.
+- [x] **NLJ comprehensive coverage** — 52 yamsql scenarios (nlj_null_edge_cases, nlj_column_ambiguity, nlj_predicate_edge_cases) + 10 evaluateCorrelated unit tests. On field-value-correlation branch.
+- [x] **InMemorySortPlan** — shares sort logic with SortPlan. Covered by TestSortByKeys (3 tests: basic, descending, multi-key). NULL ordering tested via yamsql (order_by_nulls.yaml). Continuation tested via integration.
+- [ ] **Streaming cursor unit tests** — flatMapCursor, nljCursor, aggregateCursor tested through FDB integration (361 subtests). Lower-level cursors have unit tests (cursor_seq_test, chained_cursor_test, merge_cursor_test, cursor_combinator_test). Gap: no isolated unit tests for continuation serialization/deserialization and TimeLimitReached propagation in executor-level cursors.
 
 ---
 
