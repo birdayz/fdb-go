@@ -1,0 +1,30 @@
+# union_with_aggregate.yaml — UNION combined with aggregates
+#
+# Exercises UNION where individual branches use aggregation.
+name: union_with_aggregate
+schema_template: |
+  CREATE TABLE sales_2024 (id BIGINT NOT NULL, product STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sales_2025 (id BIGINT NOT NULL, product STRING, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales_2024 VALUES (1, 'Widget', 100), (2, 'Gadget', 200), (3, 'Widget', 150)
+  - INSERT INTO sales_2025 VALUES (10, 'Widget', 300), (20, 'Doohickey', 50)
+tests:
+  # UNION ALL of individual aggregates
+  - query: >
+      SELECT '2024', SUM(amount) FROM sales_2024
+      UNION ALL
+      SELECT '2025', SUM(amount) FROM sales_2025
+      ORDER BY 1
+    rows:
+      - ["2024", 450]
+      - ["2025", 350]
+
+  # Aggregate over UNION ALL result (via derived table)
+  - query: >
+      SELECT SUM(sq.total) FROM (
+        SELECT SUM(amount) AS total FROM sales_2024
+        UNION ALL
+        SELECT SUM(amount) FROM sales_2025
+      ) sq
+    rows:
+      - [800]
