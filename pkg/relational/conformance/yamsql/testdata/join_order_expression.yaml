@@ -1,0 +1,33 @@
+# join_order_expression.yaml — ORDER BY on join results with expressions
+#
+# Exercises ORDER BY on columns from both sides of a join, including
+# ORDER BY on inner columns (which requires correct column qualification).
+name: join_order_expression
+schema_template: |
+  CREATE TABLE teams (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE players (id BIGINT NOT NULL, team_id BIGINT, name STRING, score BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO teams VALUES (1, 'Alpha'), (2, 'Beta')
+  - INSERT INTO players VALUES (10, 1, 'Alice', 95), (11, 1, 'Bob', 85), (12, 2, 'Charlie', 90), (13, 2, 'Diana', 88)
+tests:
+  # ORDER BY inner column (player score descending)
+  - query: SELECT t.name, p.name, p.score FROM teams t, players p WHERE p.team_id = t.id ORDER BY p.score
+    result:
+      - ["Alpha", "Bob", 85]
+      - ["Beta", "Diana", 88]
+      - ["Beta", "Charlie", 90]
+      - ["Alpha", "Alice", 95]
+
+  # ORDER BY outer column then inner column
+  - query: SELECT t.name, p.name FROM teams t, players p WHERE p.team_id = t.id ORDER BY t.name, p.name
+    result:
+      - ["Alpha", "Alice"]
+      - ["Alpha", "Bob"]
+      - ["Beta", "Charlie"]
+      - ["Beta", "Diana"]
+
+  # ORDER BY with LIMIT on join
+  - query: SELECT p.name FROM teams t, players p WHERE p.team_id = t.id ORDER BY p.score LIMIT 2
+    result:
+      - ["Bob"]
+      - ["Diana"]
