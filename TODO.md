@@ -8,6 +8,10 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ## CRITICAL
 
+### Architectural misalignment
+
+- [ ] **Column identity as flat strings → structured (table, column) tuples.** The entire execution layer carries column identity as `"TABLE.COLUMN"` flat strings and reverse-engineers qualification with `strings.LastIndex(name, ".")` / `strings.Split(tableName, ".")` at 50+ sites across 15+ files (aggregate.go, join.go, cte_scan.go, scope.go, select_query_full.go, order_by.go, eval_map.go, eval_proto.go, covering_index.go, logical_builder.go, logical_predicate.go, projection_fold.go, select_dispatch.go, select_helpers.go, where_extractors.go). Java resolves to `FieldValue(QOV(correlationId), "column")` — qualification is structural, not a string prefix. This misalignment is the root cause of the `ambiguousColumnMarker` pattern, the `stripAlias*` functions, the qualified-key fallback chains, and at least 4 bugs fixed this session. A quoted identifier like `"weird.name"` would be misclassified as qualified. Fix: introduce `ColumnRef struct { Table, Column string }` (or equivalent) in `selectQuery`, `aggCol`, `joinClause`, `orderByClause`, and all map-row evaluation paths. Thread it through the entire execution layer. Replace every `strings.LastIndex(name, ".")` with structured access.
+
 ### Correctness bugs
 
 - [x] Aggregate ambiguity bugs (3 sites in aggregate.go) — (1) bare-column fallback at line 309 skipped ambiguousColumnMarker check, silently corrupting accumulators; (2) ungrouped-column check at line 131 returned 42803 instead of 42702 for ambiguous columns; (3) outExpr check at lines 190-192 same issue. Java resolves ambiguity BEFORE grouping checks (SemanticAnalyzer.resolveIdentifier). All 3 now check ambiguousColumnMarker and return 42702 before falling through to 42803.
