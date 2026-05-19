@@ -1,0 +1,38 @@
+# cte_join.yaml — CTE used in JOIN
+#
+# Exercises CTEs referenced in FROM clause with joins.
+name: cte_join
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 10, 100), (2, 'Bob', 10, 120), (3, 'Charlie', 20, 80), (4, 'Dave', 20, 90)
+  - INSERT INTO dept VALUES (10, 'Engineering'), (20, 'Sales')
+tests:
+  # CTE in simple select
+  - query: >
+      WITH high_earners AS (SELECT id, name, dept_id FROM emp WHERE salary > 90)
+      SELECT name FROM high_earners ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+
+  # CTE joined with another table
+  - query: >
+      WITH dept_emp AS (SELECT e.name AS ename, e.dept_id FROM emp e WHERE salary > 90)
+      SELECT d.name, dept_emp.ename
+      FROM dept d, dept_emp
+      WHERE dept_emp.dept_id = d.id
+      ORDER BY dept_emp.ename
+    rows:
+      - ["Engineering", "Alice"]
+      - ["Engineering", "Bob"]
+
+  # Multiple CTEs
+  - query: >
+      WITH eng_dept AS (SELECT id FROM dept WHERE name = 'Engineering'),
+           eng_emp AS (SELECT name FROM emp e, eng_dept ed WHERE e.dept_id = ed.id)
+      SELECT name FROM eng_emp ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]

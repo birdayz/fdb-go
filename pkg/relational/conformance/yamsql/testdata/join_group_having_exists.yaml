@@ -1,0 +1,83 @@
+# join_group_having_exists.yaml — complex pipeline: JOIN + GROUP BY + HAVING + EXISTS
+#
+# Exercises the full pipeline: FlatMap join, streaming aggregation on
+# join result, HAVING filter, EXISTS subquery in WHERE. Each test
+# builds on the previous, stressing different code paths.
+name: join_group_having_exists
+schema_template: |
+  CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT NOT NULL, rating BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Books'), (3, 'Clothing')
+  - INSERT INTO products VALUES (10, 1, 999), (11, 1, 499), (12, 2, 29), (13, 2, 19), (14, 3, 49)
+  - INSERT INTO reviews VALUES (100, 10, 5), (101, 10, 4), (102, 11, 3), (103, 12, 5), (104, 14, 2)
+tests:
+  # JOIN + GROUP BY: average price per category
+  - query: >
+      SELECT c.name, COUNT(p.id) FROM categories c, products p
+      WHERE p.cat_id = c.id GROUP BY c.name ORDER BY c.name
+    rows:
+      - ["Books", 2]
+      - ["Clothing", 1]
+      - ["Electronics", 2]
+
+  # JOIN + GROUP BY + HAVING: categories with >1 product
+  - query: >
+      SELECT c.name FROM categories c, products p
+      WHERE p.cat_id = c.id
+      GROUP BY c.name HAVING COUNT(p.id) > 1
+      ORDER BY c.name
+    rows:
+      - ["Books"]
+      - ["Electronics"]
+
+  # JOIN + GROUP BY + SUM: total price per category
+  - query: >
+      SELECT c.name, SUM(p.price) FROM categories c, products p
+      WHERE p.cat_id = c.id GROUP BY c.name ORDER BY c.name
+    rows:
+      - ["Books", 48]
+      - ["Clothing", 49]
+      - ["Electronics", 1498]
+
+  # EXISTS: categories with reviewed products
+  - query: >
+      SELECT c.name FROM categories c
+      WHERE EXISTS (
+        SELECT 1 FROM products p
+        WHERE p.cat_id = c.id
+        AND EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id)
+      )
+      ORDER BY c.name
+    rows:
+      - ["Books"]
+      - ["Clothing"]
+      - ["Electronics"]
+
+  # EXISTS with correlated predicate + value filter
+  - query: >
+      SELECT c.name FROM categories c
+      WHERE EXISTS (
+        SELECT 1 FROM products p
+        WHERE p.cat_id = c.id AND p.price > 100
+      )
+      ORDER BY c.name
+    rows:
+      - ["Electronics"]
+
+  # Nested NOT EXISTS: categories where ALL products are reviewed
+  # Electronics: products 10,11 both reviewed → INCLUDE
+  # Books: product 13 NOT reviewed → EXCLUDE
+  # Clothing: product 14 reviewed → INCLUDE
+  - query: >
+      SELECT c.name FROM categories c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM products p
+        WHERE p.cat_id = c.id
+        AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id)
+      )
+      ORDER BY c.name
+    rows:
+      - ["Clothing"]
+      - ["Electronics"]

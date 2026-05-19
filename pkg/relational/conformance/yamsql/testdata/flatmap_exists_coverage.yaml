@@ -12,14 +12,14 @@ setup:
 tests:
   # EXISTS: users WITH sessions (Alice, Charlie)
   - query: SELECT u.name FROM users u WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id) ORDER BY u.name
-    result:
+    rows:
       - ["Alice"]
       - ["Charlie"]
   # NOT EXISTS: users WITHOUT sessions (Bob)
   - query: SELECT u.name FROM users u WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id) ORDER BY u.name
-    result:
+    rows:
       - ["Bob"]
   # EXISTS + LIMIT
   - query: SELECT u.name FROM users u WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id) ORDER BY u.name LIMIT 1
-    result:
+    rows:
       - ["Alice"]

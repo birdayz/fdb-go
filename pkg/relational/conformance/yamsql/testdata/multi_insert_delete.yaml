@@ -1,0 +1,33 @@
+# multi_insert_delete.yaml — Multiple INSERT/DELETE/UPDATE operations
+#
+# Exercises a sequence of DML operations and verifies the final state.
+name: multi_insert_delete
+schema_template: |
+  CREATE TABLE inventory (id BIGINT NOT NULL, product STRING, qty BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO inventory VALUES (1, 'Widget', 100), (2, 'Gadget', 50), (3, 'Doohickey', 75)
+tests:
+  # Update quantities
+  - query: UPDATE inventory SET qty = qty + 25 WHERE product = 'Widget'
+    rows: []
+  - query: SELECT product, qty FROM inventory WHERE id = 1
+    rows:
+      - ["Widget", 125]
+
+  # Delete a row
+  - query: DELETE FROM inventory WHERE id = 2
+    rows: []
+  - query: SELECT COUNT(*) FROM inventory
+    rows:
+      - [2]
+
+  # Insert new row
+  - query: INSERT INTO inventory VALUES (4, 'Thingamajig', 200)
+    rows: []
+
+  # Verify final state
+  - query: SELECT id, product, qty FROM inventory ORDER BY id
+    rows:
+      - [1, "Widget", 125]
+      - [3, "Doohickey", 75]
+      - [4, "Thingamajig", 200]

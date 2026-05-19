@@ -1,0 +1,37 @@
+# like_patterns.yaml — LIKE pattern matching
+#
+# Exercises LIKE with various patterns: wildcards, prefix, suffix, contains.
+name: like_patterns
+schema_template: |
+  CREATE TABLE docs (id BIGINT NOT NULL, title STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO docs VALUES (1, 'Hello World'), (2, 'Help Me'), (3, 'World Peace'), (4, 'Testing'), (5, 'Hello')
+tests:
+  # Prefix LIKE
+  - query: SELECT id FROM docs WHERE title LIKE 'Hel%' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [5]
+
+  # Suffix LIKE
+  - query: SELECT id FROM docs WHERE title LIKE '%World' ORDER BY id
+    rows:
+      - [1]
+
+  # Contains LIKE
+  - query: SELECT id FROM docs WHERE title LIKE '%lo%' ORDER BY id
+    rows:
+      - [1]
+      - [5]
+
+  # Exact LIKE (no wildcards)
+  - query: SELECT id FROM docs WHERE title LIKE 'Testing'
+    rows:
+      - [4]
+
+  # NOT LIKE
+  - query: SELECT id FROM docs WHERE title NOT LIKE 'Hel%' ORDER BY id
+    rows:
+      - [3]
+      - [4]

@@ -1,0 +1,40 @@
+# where_complex_predicates.yaml — Complex WHERE predicate combinations
+#
+# Exercises AND/OR/NOT combinations, parenthesized precedence,
+# and mixed predicate types.
+name: where_complex_predicates
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b STRING, c BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'x', 100), (2, 20, 'y', 200), (3, 30, 'x', 300), (4, 40, 'y', 400), (5, 50, 'z', 500)
+tests:
+  # AND + OR precedence
+  - query: SELECT id FROM t WHERE a > 20 AND b = 'x' OR c = 200 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+
+  # Parenthesized OR
+  - query: SELECT id FROM t WHERE a > 20 AND (b = 'x' OR b = 'z') ORDER BY id
+    rows:
+      - [3]
+      - [5]
+
+  # NOT with comparison
+  - query: SELECT id FROM t WHERE NOT (a < 30) ORDER BY id
+    rows:
+      - [3]
+      - [4]
+      - [5]
+
+  # Multiple ANDs
+  - query: SELECT id FROM t WHERE a >= 20 AND b = 'y' AND c < 300 ORDER BY id
+    rows:
+      - [2]
+
+  # BETWEEN equivalent
+  - query: SELECT id FROM t WHERE a BETWEEN 20 AND 40 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]

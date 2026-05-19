@@ -1,0 +1,40 @@
+# update_comprehensive.yaml — Comprehensive UPDATE patterns
+#
+# Exercises UPDATE with various SET expressions, WHERE conditions,
+# and verification queries.
+name: update_comprehensive
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, score BIGINT, status STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'Alice', 85, 'active'), (2, 'Bob', 92, 'active'), (3, 'Charlie', 78, 'inactive'), (4, 'Dave', 65, 'active')
+tests:
+  # UPDATE single column
+  - query: UPDATE t SET score = 95 WHERE id = 1
+    rows: []
+  - query: SELECT score FROM t WHERE id = 1
+    rows:
+      - [95]
+
+  # UPDATE with expression
+  - query: UPDATE t SET score = score + 5 WHERE status = 'active'
+    rows: []
+  - query: SELECT id, score FROM t WHERE status = 'active' ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 97]
+      - [4, 70]
+
+  # UPDATE multiple columns
+  - query: UPDATE t SET status = 'promoted', score = 100 WHERE score >= 95
+    rows: []
+  - query: SELECT id, score, status FROM t WHERE status = 'promoted' ORDER BY id
+    rows:
+      - [1, 100, "promoted"]
+      - [2, 100, "promoted"]
+
+  # UPDATE with no matching rows (no-op)
+  - query: UPDATE t SET score = 0 WHERE id = 999
+    rows: []
+  - query: SELECT COUNT(*) FROM t WHERE score = 0
+    rows:
+      - [0]

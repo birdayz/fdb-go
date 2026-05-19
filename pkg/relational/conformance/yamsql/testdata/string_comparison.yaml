@@ -1,0 +1,38 @@
+# string_comparison.yaml — String comparison edge cases
+#
+# Exercises string comparison: lexicographic ordering,
+# case sensitivity, empty strings, Unicode.
+name: string_comparison
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'apple'), (2, 'banana'), (3, 'Apple'), (4, ''), (5, 'BANANA')
+tests:
+  # Equality is case-sensitive
+  - query: SELECT id FROM t WHERE s = 'apple'
+    rows:
+      - [1]
+
+  # Case-sensitive not equal
+  - query: SELECT id FROM t WHERE s = 'Apple'
+    rows:
+      - [3]
+
+  # Lexicographic ordering
+  - query: SELECT id, s FROM t ORDER BY s
+    rows:
+      - [4, ""]
+      - [5, "BANANA"]
+      - [3, "Apple"]
+      - [1, "apple"]
+      - [2, "banana"]
+
+  # Greater than comparison
+  - query: SELECT id FROM t WHERE s > 'apple' ORDER BY id
+    rows:
+      - [2]
+
+  # LIKE case-sensitive
+  - query: SELECT id FROM t WHERE s LIKE 'a%' ORDER BY id
+    rows:
+      - [1]

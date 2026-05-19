@@ -1,0 +1,30 @@
+# join_left_right_symmetry.yaml — LEFT/RIGHT join symmetry
+#
+# Exercises LEFT JOIN and verifies that swapping the tables
+# and using RIGHT JOIN produces equivalent results.
+name: join_left_right_symmetry
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, tag STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 'x'), (2, 'y'), (3, 'z')
+  - INSERT INTO b VALUES (10, 1, 'alpha'), (20, 1, 'beta'), (30, 2, 'gamma')
+tests:
+  # LEFT JOIN: all rows from a, matching from b
+  - query: >
+      SELECT a.val, b.tag FROM a LEFT JOIN b ON b.a_id = a.id
+      ORDER BY a.val, b.tag
+    rows:
+      - ["x", "alpha"]
+      - ["x", "beta"]
+      - ["y", "gamma"]
+      - ["z", null]
+
+  # Count with LEFT JOIN
+  - query: >
+      SELECT a.val, COUNT(b.id) FROM a LEFT JOIN b ON b.a_id = a.id
+      GROUP BY a.val ORDER BY a.val
+    rows:
+      - ["x", 2]
+      - ["y", 1]
+      - ["z", 0]

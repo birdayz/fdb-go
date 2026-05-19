@@ -1,0 +1,61 @@
+# in_list_comprehensive.yaml — Comprehensive IN-list tests
+#
+# Regression tests for the IN-list fix (NLJ Explode guard).
+# Tests IN with PK columns, non-PK columns, combined predicates,
+# NOT IN, nested IN, and IN with various value counts.
+name: in_list_comprehensive
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept STRING, salary BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 'Eng', 100), (2, 'Bob', 'Eng', 120), (3, 'Charlie', 'Sales', 80), (4, 'Dave', 'HR', 90), (5, 'Eve', 'Eng', 110)
+tests:
+  # IN on PK with 2 values
+  - query: SELECT name FROM emp WHERE id IN (1, 3) ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Charlie"]
+
+  # IN on PK with 3 values
+  - query: SELECT name FROM emp WHERE id IN (2, 4, 5) ORDER BY name
+    rows:
+      - ["Bob"]
+      - ["Dave"]
+      - ["Eve"]
+
+  # IN on PK with 4 values
+  - query: SELECT name FROM emp WHERE id IN (1, 2, 3, 4) ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Charlie"]
+      - ["Dave"]
+
+  # IN on string column
+  - query: SELECT name FROM emp WHERE dept IN ('Eng', 'HR') ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Dave"]
+      - ["Eve"]
+
+  # IN combined with other predicate
+  - query: SELECT name FROM emp WHERE id IN (1, 2, 3, 5) AND salary > 100 ORDER BY name
+    rows:
+      - ["Bob"]
+      - ["Eve"]
+
+  # NOT IN on PK
+  - query: SELECT name FROM emp WHERE id NOT IN (1, 2, 3) ORDER BY name
+    rows:
+      - ["Dave"]
+      - ["Eve"]
+
+  # IN with single value (should be optimized to equality)
+  - query: SELECT name FROM emp WHERE id IN (3)
+    rows:
+      - ["Charlie"]
+
+  # IN with all values
+  - query: SELECT COUNT(*) FROM emp WHERE id IN (1, 2, 3, 4, 5)
+    rows:
+      - [5]

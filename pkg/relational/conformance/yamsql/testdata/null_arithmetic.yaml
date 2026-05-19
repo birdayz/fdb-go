@@ -1,0 +1,46 @@
+# null_arithmetic.yaml — NULL propagation in arithmetic expressions
+#
+# Exercises NULL propagation through arithmetic operators:
+# any arithmetic with NULL produces NULL.
+name: null_arithmetic
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 5), (2, null, 5), (3, 10, null), (4, null, null)
+tests:
+  # Addition with NULL
+  - query: SELECT id, a + b FROM t ORDER BY id
+    rows:
+      - [1, 15]
+      - [2, null]
+      - [3, null]
+      - [4, null]
+
+  # Subtraction with NULL
+  - query: SELECT id, a - b FROM t ORDER BY id
+    rows:
+      - [1, 5]
+      - [2, null]
+      - [3, null]
+      - [4, null]
+
+  # Multiplication with NULL
+  - query: SELECT id, a * b FROM t ORDER BY id
+    rows:
+      - [1, 50]
+      - [2, null]
+      - [3, null]
+      - [4, null]
+
+  # NULL in WHERE arithmetic expression
+  - query: SELECT id FROM t WHERE a + b > 10 ORDER BY id
+    rows:
+      - [1]
+
+  # COALESCE to replace NULL arithmetic
+  - query: SELECT id, COALESCE(a + b, -1) FROM t ORDER BY id
+    rows:
+      - [1, 15]
+      - [2, -1]
+      - [3, -1]
+      - [4, -1]

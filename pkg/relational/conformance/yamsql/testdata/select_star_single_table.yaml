@@ -1,0 +1,33 @@
+# select_star_single_table.yaml — SELECT * from single table
+#
+# Exercises SELECT * with various WHERE, ORDER BY combinations.
+name: select_star_single_table
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'Alice', 100), (2, 'Bob', 200), (3, 'Charlie', 300)
+tests:
+  # SELECT * all rows
+  - query: SELECT * FROM t ORDER BY id
+    rows:
+      - [1, "Alice", 100]
+      - [2, "Bob", 200]
+      - [3, "Charlie", 300]
+
+  # SELECT * with WHERE
+  - query: SELECT * FROM t WHERE val > 150 ORDER BY id
+    rows:
+      - [2, "Bob", 200]
+      - [3, "Charlie", 300]
+
+  # SELECT * ORDER BY non-PK
+  - query: SELECT * FROM t ORDER BY name
+    rows:
+      - [1, "Alice", 100]
+      - [2, "Bob", 200]
+      - [3, "Charlie", 300]
+
+  # SELECT * with COUNT subquery
+  - query: SELECT * FROM t WHERE id = (SELECT MIN(id) FROM t)
+    rows:
+      - [1, "Alice", 100]

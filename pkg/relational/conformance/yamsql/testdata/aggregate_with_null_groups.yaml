@@ -1,0 +1,28 @@
+# aggregate_with_null_groups.yaml — Aggregates with NULL in group keys
+#
+# Exercises aggregation where the GROUP BY column has NULL values,
+# creating a NULL group.
+name: aggregate_with_null_groups
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'East', 100), (2, 'East', 200), (3, 'West', 150), (4, null, 50), (5, null, 75)
+tests:
+  # NULL group key aggregation
+  - query: >
+      SELECT region, COUNT(*), SUM(amount) FROM t
+      GROUP BY region ORDER BY region
+    rows:
+      - ["East", 2, 300]
+      - ["West", 1, 150]
+      - [null, 2, 125]
+
+  # HAVING on NULL group
+  - query: >
+      SELECT region, SUM(amount) FROM t
+      GROUP BY region HAVING SUM(amount) > 100
+      ORDER BY region
+    rows:
+      - ["East", 300]
+      - ["West", 150]
+      - [null, 125]

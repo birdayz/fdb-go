@@ -1,0 +1,34 @@
+# aggregate_case_expression.yaml — Aggregates over CASE expressions
+#
+# Exercises SUM/COUNT/AVG over CASE WHEN expressions — a common
+# pattern for conditional counting and pivoting.
+name: aggregate_case_expression
+schema_template: |
+  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, product STRING, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales VALUES (1, 'east', 'A', 100), (2, 'east', 'B', 200), (3, 'west', 'A', 150), (4, 'west', 'B', 50), (5, 'east', 'A', 300)
+tests:
+  # COUNT with CASE — conditional count
+  - query: >
+      SELECT region,
+        SUM(CASE WHEN product = 'A' THEN amount ELSE 0 END),
+        SUM(CASE WHEN product = 'B' THEN amount ELSE 0 END)
+      FROM sales GROUP BY region ORDER BY region
+    rows:
+      - ["east", 400, 200]
+      - ["west", 150, 50]
+
+  # COUNT CASE (conditional row counting)
+  - query: >
+      SELECT region,
+        SUM(CASE WHEN amount > 100 THEN 1 ELSE 0 END)
+      FROM sales GROUP BY region ORDER BY region
+    rows:
+      - ["east", 2]
+      - ["west", 1]
+
+  # AVG over CASE — only average high-value sales
+  - query: >
+      SELECT AVG(CASE WHEN amount >= 100 THEN amount ELSE null END) FROM sales
+    rows:
+      - [187.5]

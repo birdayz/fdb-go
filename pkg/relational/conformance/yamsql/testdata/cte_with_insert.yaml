@@ -1,0 +1,20 @@
+# cte_with_insert.yaml — CTE used in INSERT ... SELECT
+#
+# Exercises CTEs that feed into INSERT statements.
+name: cte_with_insert
+schema_template: |
+  CREATE TABLE source (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dest (id BIGINT NOT NULL, doubled_val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO source VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # CTE feeding INSERT
+  - query: >
+      WITH doubled AS (SELECT id, val * 2 AS dval FROM source)
+      INSERT INTO dest SELECT id, dval FROM doubled
+    rows: []
+  - query: SELECT id, doubled_val FROM dest ORDER BY id
+    rows:
+      - [1, 20]
+      - [2, 40]
+      - [3, 60]

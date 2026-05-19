@@ -1,0 +1,29 @@
+# upstream_bug_distinct_compound.yaml — Compound DISTINCT (Java upstream bug)
+#
+# Java fails to deduplicate SELECT DISTINCT a, b correctly.
+# Go handles it correctly. Pin Go's correct behavior.
+name: upstream_bug_distinct_compound
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'x'), (2, 10, 'x'), (3, 10, 'y'), (4, 20, 'x'), (5, 20, 'x')
+tests:
+  # Compound DISTINCT should dedup (10,'x') and (20,'x')
+  - query: SELECT DISTINCT a, b FROM t ORDER BY a, b
+    rows:
+      - [10, "x"]
+      - [10, "y"]
+      - [20, "x"]
+
+  # Single-column DISTINCT
+  - query: SELECT DISTINCT a FROM t ORDER BY a
+    rows:
+      - [10]
+      - [20]
+
+  # DISTINCT with expression
+  - query: SELECT DISTINCT a + 1, b FROM t ORDER BY a + 1, b
+    rows:
+      - [11, "x"]
+      - [11, "y"]
+      - [21, "x"]

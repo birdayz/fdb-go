@@ -1,0 +1,47 @@
+# in_expression_types.yaml — IN predicate with various expression types
+#
+# Exercises IN lists with arithmetic, function calls, and mixed types.
+name: in_expression_types
+schema_template: |
+  CREATE TABLE items (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO items VALUES (1, 'apple', 10), (2, 'banana', 20), (3, 'cherry', 30), (4, 'date', 40), (5, 'elderberry', 50)
+tests:
+  # Basic IN with literals
+  - query: SELECT name FROM items WHERE id IN (1, 3, 5) ORDER BY name
+    rows:
+      - ["apple"]
+      - ["cherry"]
+      - ["elderberry"]
+
+  # IN with arithmetic expressions
+  - query: SELECT name FROM items WHERE id IN (1 + 0, 2 + 1) ORDER BY name
+    rows:
+      - ["apple"]
+      - ["cherry"]
+
+  # NOT IN
+  - query: SELECT name FROM items WHERE id NOT IN (1, 2, 3) ORDER BY name
+    rows:
+      - ["date"]
+      - ["elderberry"]
+
+  # IN with single value
+  - query: SELECT name FROM items WHERE id IN (3)
+    rows:
+      - ["cherry"]
+
+  # IN on string column
+  - query: SELECT id FROM items WHERE name IN ('apple', 'cherry') ORDER BY id
+    rows:
+      - [1]
+      - [3]
+
+  # IN combined with other predicates
+  - query: >
+      SELECT name FROM items WHERE id IN (1, 2, 3, 4) AND price > 15
+      ORDER BY name
+    rows:
+      - ["banana"]
+      - ["cherry"]
+      - ["date"]

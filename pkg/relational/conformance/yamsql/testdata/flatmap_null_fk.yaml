@@ -13,12 +13,12 @@ setup:
 tests:
   # INNER JOIN: NULL parent_id → no match → excluded.
   - query: SELECT c.id, p.name FROM children c, parents p WHERE c.parent_id = p.id ORDER BY c.id
-    result:
+    rows:
       - [10, "Alice"]
       - [30, "Bob"]
   # LEFT JOIN: NULL parent_id → no match → outer row with NULL name.
   - query: SELECT c.id, p.name FROM children c LEFT JOIN parents p ON c.parent_id = p.id ORDER BY c.id
-    result:
+    rows:
       - [10, "Alice"]
       - [20, null]
       - [30, "Bob"]

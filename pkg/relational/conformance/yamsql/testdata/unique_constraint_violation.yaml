@@ -1,0 +1,24 @@
+# unique_constraint_violation.yaml — Unique constraint error handling
+#
+# Exercises unique PK and index violation error codes.
+name: unique_constraint_violation
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+  CREATE UNIQUE INDEX idx_val ON t (val)
+setup:
+  - INSERT INTO t VALUES (1, 'first'), (2, 'second')
+tests:
+  # PK violation
+  - query: INSERT INTO t VALUES (1, 'duplicate-pk')
+    error_code: "23505"
+
+  # Unique index violation
+  - query: INSERT INTO t VALUES (3, 'first')
+    error_code: "23505"
+
+  # Non-conflicting insert succeeds
+  - query: INSERT INTO t VALUES (3, 'third')
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]

@@ -486,7 +486,7 @@ func executeFilter(
 	}
 
 	preds := p.GetPredicates()
-	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
+	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (keep bool) {
@@ -1206,7 +1206,7 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 		return true
 	}
 	var rowCtx any = combined.Datum
-	if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 {
+	if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 {
 		if m, ok := combined.Datum.(map[string]any); ok {
 			rowCtx = evalCtx.RowContext(m)
 		}
@@ -1268,6 +1268,8 @@ func toFloat64(v any) float64 {
 	case int:
 		return float64(n)
 	case int32:
+		return float64(n)
+	case float32:
 		return float64(n)
 	default:
 		return math.NaN()
@@ -2130,6 +2132,12 @@ func compareAny(a, b any) int {
 	}
 	if b == nil {
 		return 1
+	}
+	if f, ok := a.(float32); ok {
+		a = float64(f)
+	}
+	if f, ok := b.(float32); ok {
+		b = float64(f)
 	}
 	switch av := a.(type) {
 	case int64:

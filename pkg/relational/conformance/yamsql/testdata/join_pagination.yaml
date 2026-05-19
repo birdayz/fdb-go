@@ -13,7 +13,7 @@ setup:
 tests:
   # Full result (reference)
   - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id
-    result:
+    rows:
       - ["Alice", "Eng"]
       - ["Bob", "Eng"]
       - ["Carol", "Eng"]
@@ -22,30 +22,30 @@ tests:
       - ["Frank", "HR"]
   # Page 1: LIMIT 2 OFFSET 0
   - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2
-    result:
+    rows:
       - ["Alice", "Eng"]
       - ["Bob", "Eng"]
   # Page 2: LIMIT 2 OFFSET 2
   - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 2
-    result:
+    rows:
       - ["Carol", "Eng"]
       - ["Dave", "Sales"]
   # Page 3: LIMIT 2 OFFSET 4
   - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 4
-    result:
+    rows:
       - ["Eve", "Sales"]
       - ["Frank", "HR"]
   # Page 4: LIMIT 2 OFFSET 6 (past end)
   - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.id LIMIT 2 OFFSET 6
-    result: []
+    rows: []
   # LEFT JOIN pagination
   - query: SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON e.dept_id = d.id ORDER BY d.name, e.name LIMIT 3
-    result:
+    rows:
       - ["Eng", "Alice"]
       - ["Eng", "Bob"]
       - ["Eng", "Carol"]
   - query: SELECT d.name, e.name FROM departments d LEFT JOIN employees e ON e.dept_id = d.id ORDER BY d.name, e.name LIMIT 3 OFFSET 3
-    result:
+    rows:
       - ["HR", "Frank"]
       - ["Sales", "Dave"]
       - ["Sales", "Eve"]

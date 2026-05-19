@@ -1,0 +1,27 @@
+# having_avg.yaml — HAVING with AVG aggregate
+#
+# Exercises HAVING with AVG function to test floating-point
+# comparison in HAVING predicates.
+name: having_avg
+schema_template: |
+  CREATE TABLE scores (id BIGINT NOT NULL, subject STRING, score BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO scores VALUES (1, 'Math', 90), (2, 'Math', 80), (3, 'Science', 95), (4, 'Science', 85), (5, 'History', 70), (6, 'History', 60)
+tests:
+  # HAVING AVG > threshold
+  - query: >
+      SELECT subject, AVG(score) FROM scores
+      GROUP BY subject HAVING AVG(score) >= 85.0
+      ORDER BY subject
+    rows:
+      - ["Math", 85.0]
+      - ["Science", 90.0]
+
+  # HAVING with multiple aggregates
+  - query: >
+      SELECT subject, COUNT(*), AVG(score) FROM scores
+      GROUP BY subject HAVING COUNT(*) >= 2 AND AVG(score) > 80
+      ORDER BY subject
+    rows:
+      - ["Math", 2, 85.0]
+      - ["Science", 2, 90.0]

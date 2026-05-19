@@ -1,0 +1,40 @@
+# count_star_vs_col.yaml — COUNT(*) vs COUNT(col) semantics
+#
+# COUNT(*) counts all rows including NULLs.
+# COUNT(col) only counts non-NULL values in that column.
+name: count_star_vs_col
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'a'), (2, null, 'b'), (3, 30, null), (4, null, null)
+tests:
+  # COUNT(*) includes all rows
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [4]
+
+  # COUNT(col) skips NULLs
+  - query: SELECT COUNT(val) FROM t
+    rows:
+      - [2]
+
+  # COUNT(different_col) skips its NULLs independently
+  - query: SELECT COUNT(name) FROM t
+    rows:
+      - [2]
+
+  # Both COUNTs in same query
+  - query: SELECT COUNT(*), COUNT(val), COUNT(name) FROM t
+    rows:
+      - [4, 2, 2]
+
+  # GROUP BY with COUNT(*) vs COUNT(col)
+  - query: >
+      SELECT CASE WHEN val IS NULL THEN 'null' ELSE 'non-null' END,
+        COUNT(*), COUNT(val), COUNT(name)
+      FROM t
+      GROUP BY CASE WHEN val IS NULL THEN 'null' ELSE 'non-null' END
+      ORDER BY CASE WHEN val IS NULL THEN 'null' ELSE 'non-null' END
+    rows:
+      - ["non-null", 2, 2, 1]
+      - ["null", 2, 0, 1]

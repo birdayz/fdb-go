@@ -1,0 +1,32 @@
+# group_by_count_star.yaml — GROUP BY with COUNT(*) edge cases
+#
+# Exercises COUNT(*) in GROUP BY: empty groups, single-row groups,
+# and mixed with other aggregates.
+name: group_by_count_star
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, cat STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'A'), (2, 'A'), (3, 'A'), (4, 'B'), (5, 'C'), (6, 'C')
+tests:
+  # Basic COUNT(*)
+  - query: SELECT cat, COUNT(*) FROM t GROUP BY cat ORDER BY cat
+    rows:
+      - ["A", 3]
+      - ["B", 1]
+      - ["C", 2]
+
+  # COUNT(*) without GROUP BY
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [6]
+
+  # COUNT(*) with WHERE
+  - query: SELECT COUNT(*) FROM t WHERE cat = 'A'
+    rows:
+      - [3]
+
+  # COUNT(*) with HAVING
+  - query: SELECT cat, COUNT(*) FROM t GROUP BY cat HAVING COUNT(*) > 1 ORDER BY cat
+    rows:
+      - ["A", 3]
+      - ["C", 2]

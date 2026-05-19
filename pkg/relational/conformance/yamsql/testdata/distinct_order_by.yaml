@@ -1,0 +1,31 @@
+# distinct_order_by.yaml — DISTINCT with ORDER BY
+#
+# Exercises SELECT DISTINCT with ORDER BY: the ORDER BY columns
+# must be in the SELECT list (SQL standard requirement for DISTINCT).
+name: distinct_order_by
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, category STRING, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 10), (5, 'B', 20)
+tests:
+  # DISTINCT with ORDER BY on same column
+  - query: SELECT DISTINCT category FROM t ORDER BY category
+    rows:
+      - ["A"]
+      - ["B"]
+      - ["C"]
+
+  # DISTINCT with ORDER BY on different column (both in SELECT)
+  - query: SELECT DISTINCT category, val FROM t ORDER BY val, category
+    rows:
+      - ["A", 10]
+      - ["C", 10]
+      - ["B", 20]
+      - ["A", 30]
+
+  # DISTINCT single column
+  - query: SELECT DISTINCT val FROM t ORDER BY val
+    rows:
+      - [10]
+      - [20]
+      - [30]

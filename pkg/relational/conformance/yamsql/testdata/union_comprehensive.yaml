@@ -1,0 +1,59 @@
+# union_comprehensive.yaml — Comprehensive UNION tests
+#
+# Exercises UNION ALL, UNION (dedup), with ORDER BY, with aggregates
+# in subqueries, and multi-column UNIONs.
+name: union_comprehensive
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE t2 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO t2 VALUES (2, 'Bob'), (3, 'Charlie'), (4, 'Dave')
+tests:
+  # UNION ALL — includes duplicates
+  - query: >
+      SELECT name FROM t1
+      UNION ALL
+      SELECT name FROM t2
+      ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Bob"]
+      - ["Charlie"]
+      - ["Charlie"]
+      - ["Dave"]
+
+  # UNION — deduplicates
+  - query: >
+      SELECT name FROM t1
+      UNION
+      SELECT name FROM t2
+      ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Charlie"]
+      - ["Dave"]
+
+  # UNION ALL with WHERE
+  - query: >
+      SELECT name FROM t1 WHERE id <= 2
+      UNION ALL
+      SELECT name FROM t2 WHERE id >= 3
+      ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Charlie"]
+      - ["Dave"]
+
+  # Multi-column UNION
+  - query: >
+      SELECT id, name FROM t1 WHERE id = 1
+      UNION ALL
+      SELECT id, name FROM t2 WHERE id = 4
+      ORDER BY id
+    rows:
+      - [1, "Alice"]
+      - [4, "Dave"]

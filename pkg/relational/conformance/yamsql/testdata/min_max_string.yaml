@@ -1,0 +1,29 @@
+# min_max_string.yaml — MIN/MAX on string columns
+#
+# Exercises MIN/MAX with string values (lexicographic comparison).
+name: min_max_string
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'Charlie'), (2, 'Alice'), (3, 'Bob'), (4, 'Dave')
+tests:
+  # MIN on string
+  - query: SELECT MIN(name) FROM t
+    rows:
+      - ["Alice"]
+
+  # MAX on string
+  - query: SELECT MAX(name) FROM t
+    rows:
+      - ["Dave"]
+
+  # MIN/MAX in GROUP BY
+  - query: >
+      SELECT CASE WHEN id <= 2 THEN 'first' ELSE 'second' END,
+        MIN(name), MAX(name)
+      FROM t
+      GROUP BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END
+      ORDER BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END
+    rows:
+      - ["first", "Alice", "Charlie"]
+      - ["second", "Bob", "Dave"]

@@ -1,0 +1,23 @@
+# update_where_in.yaml — UPDATE with IN-list WHERE condition
+#
+# Exercises UPDATE targeting multiple rows via IN predicate.
+name: update_where_in
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, status STRING, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'pending', 10), (2, 'pending', 20), (3, 'done', 30), (4, 'pending', 40), (5, 'done', 50)
+tests:
+  # UPDATE with IN on PK
+  - query: UPDATE t SET status = 'cancelled' WHERE id IN (1, 4)
+    rows: []
+  - query: SELECT id, status FROM t WHERE id IN (1, 4) ORDER BY id
+    rows:
+      - [1, "cancelled"]
+      - [4, "cancelled"]
+
+  # Unchanged rows
+  - query: SELECT id, status FROM t WHERE id NOT IN (1, 4) ORDER BY id
+    rows:
+      - [2, "pending"]
+      - [3, "done"]
+      - [5, "done"]

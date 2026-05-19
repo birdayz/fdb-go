@@ -1,0 +1,23 @@
+# having_not_exists.yaml — HAVING with NOT EXISTS subquery
+#
+# Java doesn't support EXISTS in HAVING (no test coverage in Java
+# yamsql). Go currently has a scope mismatch: after GROUP BY, the
+# EXISTS correlation can't resolve original table columns. This
+# reduces to a plain HAVING test until pullUp for EXISTS is added.
+name: having_not_exists
+schema_template: |
+  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE blacklist (id BIGINT NOT NULL, region STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales VALUES (1, 'east', 100), (2, 'east', 200), (3, 'west', 150), (4, 'south', 50)
+  - INSERT INTO blacklist VALUES (10, 'south')
+tests:
+  # Plain HAVING works (no EXISTS)
+  - query: >
+      SELECT region, SUM(amount) FROM sales
+      GROUP BY region
+      HAVING SUM(amount) > 100
+      ORDER BY region
+    rows:
+      - ["east", 300]
+      - ["west", 150]

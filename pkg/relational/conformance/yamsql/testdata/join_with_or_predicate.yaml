@@ -1,0 +1,29 @@
+# join_with_or_predicate.yaml — JOIN with OR predicates
+#
+# Exercises joins where the WHERE clause uses OR between conditions
+# from different tables.
+name: join_with_or_predicate
+schema_template: |
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO dept VALUES (1, 'Eng'), (2, 'Sales'), (3, 'HR')
+  - INSERT INTO emp VALUES (10, 1, 'Alice', 120), (20, 2, 'Bob', 80), (30, 3, 'Charlie', 90)
+tests:
+  # JOIN with OR on different tables
+  - query: >
+      SELECT e.name, d.name FROM emp e, dept d
+      WHERE e.dept_id = d.id AND (d.name = 'Eng' OR e.salary > 85)
+      ORDER BY e.name
+    rows:
+      - ["Alice", "Eng"]
+      - ["Charlie", "HR"]
+
+  # JOIN with all predicates combined
+  - query: >
+      SELECT e.name FROM emp e, dept d
+      WHERE e.dept_id = d.id AND e.salary >= 90
+      ORDER BY e.name
+    rows:
+      - ["Alice"]
+      - ["Charlie"]

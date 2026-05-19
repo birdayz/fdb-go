@@ -1,0 +1,53 @@
+# index_scan_order.yaml — Index scan ordering (ASC/DESC)
+#
+# Exercises ORDER BY on indexed columns: PK natural order,
+# secondary index order, and reverse scans.
+name: index_scan_order
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE INDEX idx_val ON t (val)
+setup:
+  - INSERT INTO t VALUES (1, 30, 'c'), (2, 10, 'a'), (3, 50, 'e'), (4, 20, 'b'), (5, 40, 'd')
+tests:
+  # PK order ASC (natural)
+  - query: SELECT id FROM t ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # PK order DESC (reverse scan)
+  - query: SELECT id FROM t ORDER BY id DESC
+    rows:
+      - [5]
+      - [4]
+      - [3]
+      - [2]
+      - [1]
+
+  # Index order ASC
+  - query: SELECT id, val FROM t ORDER BY val
+    rows:
+      - [2, 10]
+      - [4, 20]
+      - [1, 30]
+      - [5, 40]
+      - [3, 50]
+
+  # Index order DESC
+  - query: SELECT id, val FROM t ORDER BY val DESC
+    rows:
+      - [3, 50]
+      - [5, 40]
+      - [1, 30]
+      - [4, 20]
+      - [2, 10]
+
+  # Index scan with WHERE filter
+  - query: SELECT id, val FROM t WHERE val > 25 ORDER BY val
+    rows:
+      - [1, 30]
+      - [5, 40]
+      - [3, 50]

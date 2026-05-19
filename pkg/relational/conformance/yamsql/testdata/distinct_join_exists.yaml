@@ -1,0 +1,36 @@
+# distinct_join_exists.yaml — DISTINCT with JOIN and EXISTS
+#
+# Exercises SELECT DISTINCT on join results and DISTINCT combined
+# with EXISTS subqueries.
+name: distinct_join_exists
+schema_template: |
+  CREATE TABLE authors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE books (id BIGINT NOT NULL, author_id BIGINT, genre STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO authors VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO books VALUES (10, 1, 'fiction'), (11, 1, 'science'), (12, 2, 'fiction'), (13, 2, 'fiction'), (14, 3, 'history')
+tests:
+  # DISTINCT genre from join
+  - query: SELECT DISTINCT b.genre FROM authors a, books b WHERE b.author_id = a.id ORDER BY b.genre
+    rows:
+      - ["fiction"]
+      - ["history"]
+      - ["science"]
+
+  # DISTINCT author names with EXISTS (authors who wrote fiction)
+  - query: >
+      SELECT DISTINCT a.name FROM authors a
+      WHERE EXISTS (SELECT 1 FROM books b WHERE b.author_id = a.id AND b.genre = 'fiction')
+      ORDER BY a.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+
+  # COUNT books per author via join
+  - query: >
+      SELECT a.name, COUNT(b.id) FROM authors a, books b
+      WHERE b.author_id = a.id GROUP BY a.name ORDER BY a.name
+    rows:
+      - ["Alice", 2]
+      - ["Bob", 2]
+      - ["Charlie", 1]

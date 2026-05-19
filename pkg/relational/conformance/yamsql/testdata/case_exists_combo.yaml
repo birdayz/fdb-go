@@ -1,0 +1,30 @@
+# case_exists_combo.yaml — CASE WHEN + EXISTS combinations
+#
+# Exercises CASE expressions alongside EXISTS subqueries in WHERE.
+name: case_exists_combo
+schema_template: |
+  CREATE TABLE employees (id BIGINT NOT NULL, name STRING, dept STRING, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE bonuses (id BIGINT NOT NULL, emp_id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO employees VALUES (1, 'Alice', 'eng', 100), (2, 'Bob', 'eng', 80), (3, 'Charlie', 'sales', 120), (4, 'Diana', 'sales', 90)
+  - INSERT INTO bonuses VALUES (10, 1, 20), (20, 3, 30)
+tests:
+  # CASE in SELECT with EXISTS
+  - query: >
+      SELECT e.name,
+        CASE WHEN e.salary > 100 THEN 'high' ELSE 'normal' END
+      FROM employees e
+      WHERE EXISTS (SELECT 1 FROM bonuses b WHERE b.emp_id = e.id)
+      ORDER BY e.name
+    rows:
+      - ["Alice", "normal"]
+      - ["Charlie", "high"]
+
+  # CASE in WHERE clause
+  - query: >
+      SELECT e.name FROM employees e
+      WHERE CASE WHEN e.dept = 'eng' THEN e.salary > 90 ELSE e.salary > 100 END
+      ORDER BY e.name
+    rows:
+      - ["Alice"]
+      - ["Charlie"]

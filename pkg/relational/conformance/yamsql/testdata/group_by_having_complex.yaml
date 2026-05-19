@@ -1,0 +1,46 @@
+# group_by_having_complex.yaml — Complex GROUP BY + HAVING patterns
+#
+# Exercises GROUP BY with HAVING using various predicate types.
+name: group_by_having_complex
+schema_template: |
+  CREATE TABLE sales (id BIGINT NOT NULL, rep STRING, region STRING, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales VALUES (1, 'Alice', 'East', 100), (2, 'Alice', 'East', 200), (3, 'Bob', 'West', 50), (4, 'Bob', 'West', 150), (5, 'Charlie', 'East', 300), (6, 'Dave', 'West', 25)
+tests:
+  # HAVING with SUM
+  - query: >
+      SELECT rep, SUM(amount) FROM sales
+      GROUP BY rep HAVING SUM(amount) > 100
+      ORDER BY rep
+    rows:
+      - ["Alice", 300]
+      - ["Bob", 200]
+      - ["Charlie", 300]
+
+  # HAVING with COUNT
+  - query: >
+      SELECT region, COUNT(*) FROM sales
+      GROUP BY region HAVING COUNT(*) > 2
+      ORDER BY region
+    rows:
+      - ["East", 3]
+      - ["West", 3]
+
+  # HAVING with multiple conditions
+  - query: >
+      SELECT rep, SUM(amount), COUNT(*) FROM sales
+      GROUP BY rep HAVING SUM(amount) > 100 AND COUNT(*) >= 2
+      ORDER BY rep
+    rows:
+      - ["Alice", 300, 2]
+      - ["Bob", 200, 2]
+
+  # GROUP BY two columns + HAVING
+  - query: >
+      SELECT rep, region, SUM(amount) FROM sales
+      GROUP BY rep, region HAVING SUM(amount) > 100
+      ORDER BY rep, region
+    rows:
+      - ["Alice", "East", 300]
+      - ["Bob", "West", 200]
+      - ["Charlie", "East", 300]

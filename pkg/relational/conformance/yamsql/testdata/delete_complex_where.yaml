@@ -1,0 +1,37 @@
+# delete_complex_where.yaml — DELETE with complex WHERE predicates
+#
+# Exercises DELETE with various WHERE condition patterns.
+name: delete_complex_where
+schema_template: |
+  CREATE TABLE logs (id BIGINT NOT NULL, level STRING, ts BIGINT, msg STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO logs VALUES (1, 'INFO', 100, 'start'), (2, 'WARN', 200, 'slow'), (3, 'ERROR', 300, 'crash'), (4, 'INFO', 400, 'ok'), (5, 'ERROR', 500, 'timeout')
+tests:
+  # DELETE with equality
+  - query: DELETE FROM logs WHERE level = 'ERROR'
+    rows: []
+  - query: SELECT id FROM logs ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]
+
+  # DELETE with range
+  - query: DELETE FROM logs WHERE ts > 300
+    rows: []
+  - query: SELECT id FROM logs ORDER BY id
+    rows:
+      - [1]
+      - [2]
+
+  # DELETE with IN
+  - query: DELETE FROM logs WHERE id IN (1)
+    rows: []
+  - query: SELECT COUNT(*) FROM logs
+    rows:
+      - [1]
+
+  # Verify final state
+  - query: SELECT id, level, msg FROM logs
+    rows:
+      - [2, "WARN", "slow"]

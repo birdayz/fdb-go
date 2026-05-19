@@ -1,0 +1,24 @@
+# cte_multi_reference.yaml — CTE referenced multiple times
+#
+# Exercises a CTE that is referenced in multiple places in the query.
+name: cte_multi_reference
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)
+tests:
+  # CTE referenced in two subqueries
+  - query: >
+      WITH stats AS (SELECT MIN(val) AS lo, MAX(val) AS hi FROM t)
+      SELECT lo, hi FROM stats
+    rows:
+      - [10, 50]
+
+  # CTE used in both a join
+  - query: >
+      WITH top3 AS (SELECT id, val FROM t WHERE val >= 30)
+      SELECT a.id, b.id FROM top3 a, top3 b WHERE a.id < b.id ORDER BY a.id, b.id
+    rows:
+      - [3, 4]
+      - [3, 5]
+      - [4, 5]

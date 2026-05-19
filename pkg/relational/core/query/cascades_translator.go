@@ -185,10 +185,10 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		// Split the predicate into non-EXISTS parts (regular predicates
 		// like c.id < 10) and EXISTS parts (ExistsPredicate nodes).
 		// Regular predicates go into the SelectExpression's predicate list
-		// directly. EXISTS predicates are handled via the Existential
-		// quantifier — the ImplementNestedLoopJoinRule detects them by
-		// type. If they're buried inside an AND, the rule can't find them.
+		// directly. EXISTS predicates (ExistsPredicate or NOT(ExistsPredicate))
+		// must ALSO be included so the rule can detect EXISTS vs NOT EXISTS.
 		allPreds := splitNonExistsPredicates(f.Predicate)
+		allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 		for _, esq := range f.ExistsSubqueries {
 			subRef := t.translateRef(esq.Plan)
 			if subRef == nil {
@@ -417,30 +417,14 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	}
 	groupByRef := expressions.InitialOf(groupBy)
 
-	// When HAVING carries EXISTS subqueries, build a SelectExpression
-	// with existential quantifiers — same pattern as translateFilter.
+	// HAVING with EXISTS subqueries is not supported — the correlation
+	// references pre-GROUP-BY scope (table columns) but the HAVING
+	// evaluates in post-GROUP-BY scope (group keys + aggregates).
+	// Java doesn't support this either (no test coverage). Return nil
+	// so the planner produces "could not plan query" instead of
+	// silently returning wrong results.
 	if len(a.HavingExistsSubqueries) > 0 {
-		outerQ := expressions.ForEachQuantifier(groupByRef)
-		quantifiers := []expressions.Quantifier{outerQ}
-		allPreds := []predicates.QueryPredicate{a.HavingPredicate}
-		for _, esq := range a.HavingExistsSubqueries {
-			subRef := t.translateRef(esq.Plan)
-			if subRef == nil {
-				return nil
-			}
-			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-			quantifiers = append(quantifiers, existQ)
-			if esq.JoinPredicate != nil {
-				allPreds = append(allPreds, esq.JoinPredicate)
-			}
-		}
-		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
-		return expressions.NewSelectExpressionWithAliases(
-			resultValue,
-			quantifiers,
-			allPreds,
-			nil,
-		)
+		return nil
 	}
 
 	return expressions.NewLogicalFilterExpression(
@@ -538,7 +522,10 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
+	resultValue := values.NewJoinMergeResultValue(
+		values.NamedCorrelationIdentifier(leftAlias),
+		values.NamedCorrelationIdentifier(rightAlias),
+	)
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
@@ -635,7 +622,10 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewQuantifiedObjectValue(leftQ.GetAlias())
+	resultValue := values.NewJoinMergeResultValue(
+		values.NamedCorrelationIdentifier(leftAlias),
+		values.NamedCorrelationIdentifier(rightAlias),
+	)
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		quantifiers,
@@ -672,6 +662,34 @@ func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.Query
 		return result
 	}
 	return []predicates.QueryPredicate{pred}
+}
+
+// extractExistsPredicates returns the EXISTS-related predicates that
+// splitNonExistsPredicates drops: bare ExistsPredicate or
+// NOT(ExistsPredicate). The rule's implementExistentialSelect needs
+// these to detect EXISTS vs NOT EXISTS.
+func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
+	if pred == nil {
+		return nil
+	}
+	if _, ok := pred.(*predicates.ExistsPredicate); ok {
+		return []predicates.QueryPredicate{pred}
+	}
+	if not, ok := pred.(*predicates.NotPredicate); ok {
+		if len(not.Children()) == 1 {
+			if _, ok := not.Children()[0].(*predicates.ExistsPredicate); ok {
+				return []predicates.QueryPredicate{pred}
+			}
+		}
+	}
+	if and, ok := pred.(*predicates.AndPredicate); ok {
+		var result []predicates.QueryPredicate
+		for _, sub := range and.SubPredicates {
+			result = append(result, extractExistsPredicates(sub)...)
+		}
+		return result
+	}
+	return nil
 }
 
 func sourceAlias(op logical.LogicalOperator) string {

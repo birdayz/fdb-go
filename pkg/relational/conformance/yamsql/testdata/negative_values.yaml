@@ -1,0 +1,46 @@
+# negative_values.yaml — Negative numbers and zero edge cases
+#
+# Exercises arithmetic and comparisons with negative numbers and zero.
+name: negative_values
+schema_template: |
+  CREATE TABLE accounts (id BIGINT NOT NULL, balance BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO accounts VALUES (1, 100), (2, -50), (3, 0), (4, -200), (5, 50)
+tests:
+  # Negative literal in WHERE
+  - query: SELECT id FROM accounts WHERE balance < 0 ORDER BY balance
+    rows:
+      - [4]
+      - [2]
+
+  # Zero comparison
+  - query: SELECT id FROM accounts WHERE balance = 0
+    rows:
+      - [3]
+
+  # Arithmetic with negatives
+  - query: SELECT id, balance * -1 FROM accounts WHERE balance < 0 ORDER BY id
+    rows:
+      - [2, 50]
+      - [4, 200]
+
+  # ABS equivalent via CASE
+  - query: >
+      SELECT id, CASE WHEN balance < 0 THEN balance * -1 ELSE balance END
+      FROM accounts ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 50]
+      - [3, 0]
+      - [4, 200]
+      - [5, 50]
+
+  # SUM with negatives
+  - query: SELECT SUM(balance) FROM accounts
+    rows:
+      - [-100]
+
+  # MIN/MAX with negatives
+  - query: SELECT MIN(balance), MAX(balance) FROM accounts
+    rows:
+      - [-200, 100]

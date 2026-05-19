@@ -1,0 +1,59 @@
+# empty_table_operations.yaml — Operations on empty tables
+#
+# Exercises queries against empty tables: SELECT, JOIN, EXISTS,
+# aggregate, DELETE (no-op).
+name: empty_table_operations
+schema_template: |
+  CREATE TABLE empty_t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE other_t (id BIGINT NOT NULL, ref_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO other_t VALUES (1, 10), (2, 20)
+tests:
+  # SELECT from empty table
+  - query: SELECT * FROM empty_t
+    rows: []
+
+  # COUNT from empty table
+  - query: SELECT COUNT(*) FROM empty_t
+    rows:
+      - [0]
+
+  # JOIN with empty table — inner join produces no rows
+  - query: >
+      SELECT o.id FROM other_t o, empty_t e WHERE e.id = o.ref_id
+    rows: []
+
+  # LEFT JOIN with empty right side
+  - query: >
+      SELECT o.id, e.val FROM other_t o
+      LEFT JOIN empty_t e ON e.id = o.ref_id
+      ORDER BY o.id
+    rows:
+      - [1, null]
+      - [2, null]
+
+  # EXISTS against empty table — always false
+  - query: >
+      SELECT id FROM other_t
+      WHERE EXISTS (SELECT 1 FROM empty_t)
+    rows: []
+
+  # NOT EXISTS against empty table — always true
+  - query: >
+      SELECT id FROM other_t
+      WHERE NOT EXISTS (SELECT 1 FROM empty_t)
+      ORDER BY id
+    rows:
+      - [1]
+      - [2]
+
+  # DELETE from empty table — no-op
+  - query: DELETE FROM empty_t WHERE id > 0
+    rows: []
+
+  # INSERT into empty table then verify
+  - query: INSERT INTO empty_t VALUES (1, 100)
+    rows: []
+  - query: SELECT * FROM empty_t
+    rows:
+      - [1, 100]

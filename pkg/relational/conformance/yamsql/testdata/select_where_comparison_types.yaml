@@ -1,0 +1,36 @@
+# select_where_comparison_types.yaml — WHERE with all comparison operators
+#
+# Exercises all comparison operators: =, !=, <, >, <=, >=.
+name: select_where_comparison_types
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)
+tests:
+  - query: SELECT id FROM t WHERE val = 30
+    rows:
+      - [3]
+  - query: SELECT id FROM t WHERE val != 30 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]
+      - [5]
+  - query: SELECT id FROM t WHERE val < 30 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT id FROM t WHERE val > 30 ORDER BY id
+    rows:
+      - [4]
+      - [5]
+  - query: SELECT id FROM t WHERE val <= 30 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: SELECT id FROM t WHERE val >= 30 ORDER BY id
+    rows:
+      - [3]
+      - [4]
+      - [5]

@@ -1,0 +1,49 @@
+# e2e_order_management.yaml — End-to-end order management
+#
+# Real-world scenario: customers, orders, line items with
+# business logic queries.
+name: e2e_order_management
+schema_template: |
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, tier STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, status STRING, created_at BIGINT, PRIMARY KEY (id))
+  CREATE TABLE line_items (id BIGINT NOT NULL, order_id BIGINT, product STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Alice', 'gold'), (2, 'Bob', 'silver'), (3, 'Charlie', 'bronze')
+  - INSERT INTO orders VALUES (10, 1, 'shipped', 1000), (20, 1, 'pending', 2000), (30, 2, 'shipped', 1500), (40, 3, 'cancelled', 1200)
+  - INSERT INTO line_items VALUES (100, 10, 'Widget', 2, 50), (101, 10, 'Gadget', 1, 200), (102, 20, 'Widget', 5, 50), (103, 30, 'Doohickey', 3, 30), (104, 40, 'Widget', 1, 50)
+tests:
+  # Order totals
+  - query: >
+      SELECT o.id, SUM(li.qty * li.price) FROM orders o, line_items li
+      WHERE li.order_id = o.id
+      GROUP BY o.id ORDER BY o.id
+    rows:
+      - [10, 300]
+      - [20, 250]
+      - [30, 90]
+      - [40, 50]
+
+  # Revenue per customer (shipped only)
+  - query: >
+      SELECT c.name, SUM(li.qty * li.price)
+      FROM customers c, orders o, line_items li
+      WHERE o.customer_id = c.id AND li.order_id = o.id AND o.status = 'shipped'
+      GROUP BY c.name ORDER BY c.name
+    rows:
+      - ["Alice", 300]
+      - ["Bob", 90]
+
+  # Customers with pending orders
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending')
+    rows:
+      - ["Alice"]
+
+  # Cancel pending orders
+  - query: UPDATE orders SET status = 'cancelled' WHERE status = 'pending'
+    rows: []
+  - query: SELECT id, status FROM orders WHERE customer_id = 1 ORDER BY id
+    rows:
+      - [10, "shipped"]
+      - [20, "cancelled"]

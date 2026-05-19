@@ -1,0 +1,19 @@
+# not_in_null_behavior.yaml — NOT IN with NULL values edge cases
+#
+# SQL three-valued logic: NOT IN with a NULL in the list always returns
+# UNKNOWN (not TRUE), so zero rows should match.
+name: not_in_null_behavior
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # NOT IN with no NULLs — works normally
+  - query: SELECT id FROM t WHERE val NOT IN (10, 20) ORDER BY id
+    rows:
+      - [3]
+
+  # NOT IN with column containing NULL
+  - query: SELECT id FROM t WHERE id NOT IN (1, 2) ORDER BY id
+    rows:
+      - [3]

@@ -1590,6 +1590,42 @@ func bareCol(field string) string {
 	return field
 }
 
+// splitNonExistsPredicatesFromWalked returns only the non-EXISTS parts
+// of a walked predicate tree. EXISTS and NOT(EXISTS) nodes are dropped.
+// Returns nil if there are no non-EXISTS predicates.
+func splitNonExistsPredicatesFromWalked(p predicates.QueryPredicate) predicates.QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	if _, ok := p.(*predicates.ExistsPredicate); ok {
+		return nil
+	}
+	if not, ok := p.(*predicates.NotPredicate); ok {
+		ch := not.Children()
+		if len(ch) == 1 {
+			if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
+				return nil
+			}
+		}
+	}
+	if and, ok := p.(*predicates.AndPredicate); ok {
+		var nonExists []predicates.QueryPredicate
+		for _, sub := range and.SubPredicates {
+			if ne := splitNonExistsPredicatesFromWalked(sub); ne != nil {
+				nonExists = append(nonExists, ne)
+			}
+		}
+		if len(nonExists) == 1 {
+			return nonExists[0]
+		}
+		if len(nonExists) > 1 {
+			return predicates.NewAnd(nonExists...)
+		}
+		return nil
+	}
+	return p
+}
+
 // stripNonExistsPredicates removes non-EXISTS predicates from an AND
 // tree, returning only the EXISTS (or NOT EXISTS) predicate. Returns
 // nil if no EXISTS predicate is found.
@@ -3343,6 +3379,21 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	}
 	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
 
+	// Build join tree from inner FROM clause (handles multi-table EXISTS).
+	for _, j := range sq.joins {
+		right := logical.LogicalOperator(logical.NewScan(j.tableName, j.alias))
+		var kind logical.JoinKind
+		switch j.joinType {
+		case "LEFT":
+			kind = logical.JoinLeft
+		case "RIGHT":
+			kind = logical.JoinRight
+		default:
+			kind = logical.JoinInner
+		}
+		op = logical.NewJoinWithPredicate(op, right, kind, nil)
+	}
+
 	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
 		return op, nil
 	}
@@ -3364,6 +3415,22 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
 	})
+
+	// Add join tables to scope so the resolver can resolve their columns.
+	for _, j := range sq.joins {
+		jAlias := j.alias
+		if jAlias == "" {
+			jAlias = j.tableName
+		}
+		jTbl, jErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(j.tableName, "."), false))
+		if jErr != nil {
+			return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve join table %q: %v", j.tableName, jErr), Cause: jErr}
+		}
+		jAliasID := semantic.NewUnquoted(jAlias)
+		_ = innerScope.AddSource(semantic.ScopeSource{
+			Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
+		})
+	}
 
 	resolver := expr.New(analyzer, innerScope)
 
@@ -3391,16 +3458,30 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: walk predicate: %v", walkErr), Cause: walkErr}
 	}
 
-	// If the nested planner collected EXISTS subqueries, the inner WHERE
-	// has its own EXISTS that may be correlated with an even-outer scope.
-	// Hoist the nested EXISTS's correlated join predicate to this level
-	// so it's evaluated against the outer row (which has the correlated
-	// columns). The middle plan becomes an uncorrelated scan — the
-	// EXISTS just checks if the inner EXISTS's correlated match holds.
+	// If the nested planner collected EXISTS subqueries, check whether
+	// the middle level has its own correlation predicate (non-EXISTS).
 	if len(nestedPlanner.subqueries) > 0 {
-		// Use the inner EXISTS's plan as *this* EXISTS's plan, and hoist
-		// its join predicate to this level. The middle query's scan is
-		// effectively replaced by the inner EXISTS scan.
+		innerCorr := strings.ToUpper(aliasID.Name())
+		nonExistsPred := splitNonExistsPredicatesFromWalked(pred)
+
+		if nonExistsPred != nil {
+			// Case 1: middle has BOTH correlation + nested EXISTS.
+			// Build a proper LogicalFilter preserving the middle level.
+			existsPred := stripNonExistsPredicates(pred)
+			qualifyBareFields(nonExistsPred, innerCorr)
+			p.lastJoinPredicate = predicates.SimplifyPredicateValues(nonExistsPred)
+			filter := &logical.LogicalFilter{
+				Input:            op,
+				Predicate:        existsPred,
+				ExistsSubqueries: nestedPlanner.subqueries,
+			}
+			return filter, nil
+		}
+
+		// Case 2: middle has ONLY EXISTS (no own correlation).
+		// The inner correlation spans multiple levels (innermost →
+		// outermost). Hoist the inner plan to this level so the
+		// correlation binds against the outer row directly.
 		innerESQ := nestedPlanner.subqueries[0]
 		p.lastJoinPredicate = innerESQ.JoinPredicate
 		return innerESQ.Plan, nil

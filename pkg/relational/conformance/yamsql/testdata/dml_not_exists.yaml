@@ -1,0 +1,39 @@
+# dml_not_exists.yaml — DML with correlated NOT EXISTS + WHERE predicates
+#
+# Exercises the predicate split for NOT EXISTS in DML context:
+# outer-only WHERE predicates must filter rows correctly in UPDATE/DELETE.
+name: dml_not_exists
+schema_template: |
+  CREATE TABLE tasks (id BIGINT NOT NULL, status STRING, assignee_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE completions (id BIGINT NOT NULL, task_id BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO tasks VALUES (1, 'open', 100), (2, 'open', 200), (3, 'closed', 100), (4, 'open', 300)
+  - INSERT INTO completions VALUES (10, 2), (20, 4)
+tests:
+  # Baseline: open tasks without completions
+  - query: SELECT t.id FROM tasks t WHERE t.status = 'open' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = t.id) ORDER BY t.id
+    rows:
+      - [1]
+
+  # UPDATE open tasks without completions → mark as stale
+  - query: UPDATE tasks SET status = 'stale' WHERE status = 'open' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = tasks.id)
+    rows: []
+
+  # Verify: task 1 is now stale, others unchanged
+  - query: SELECT id, status FROM tasks ORDER BY id
+    rows:
+      - [1, "stale"]
+      - [2, "open"]
+      - [3, "closed"]
+      - [4, "open"]
+
+  # DELETE closed tasks that have no completions (task 3)
+  - query: DELETE FROM tasks WHERE status = 'closed' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = tasks.id)
+    rows: []
+
+  # Verify: task 3 deleted
+  - query: SELECT id FROM tasks ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]

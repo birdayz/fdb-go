@@ -13,7 +13,7 @@ setup:
 tests:
   # Join on first PK column — should return all employees per department.
   - query: SELECT d.name, e.name FROM departments d, employees e WHERE d.id = e.dept_id ORDER BY d.name, e.name
-    result:
+    rows:
       - ["Engineering", "Alice"]
       - ["Engineering", "Bob"]
       - ["Sales", "Charlie"]

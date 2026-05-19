@@ -1,0 +1,41 @@
+# multi_predicate_push.yaml — Multiple predicates with push-down
+#
+# Exercises predicate push-down through joins: outer-only predicates
+# should be pushed to the outer scan, inner-only to the inner scan,
+# and cross-table predicates stay as join conditions.
+name: multi_predicate_push
+schema_template: |
+  CREATE TABLE users (id BIGINT NOT NULL, name STRING, active BIGINT, PRIMARY KEY (id))
+  CREATE TABLE logs (id BIGINT NOT NULL, user_id BIGINT, action STRING, ts BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 0), (3, 'Charlie', 1)
+  - INSERT INTO logs VALUES (10, 1, 'login', 100), (11, 1, 'view', 200), (12, 2, 'login', 150), (13, 3, 'login', 300)
+tests:
+  # Outer + inner + join predicates
+  - query: >
+      SELECT u.name, l.action FROM users u, logs l
+      WHERE l.user_id = u.id
+      AND u.active = 1
+      AND l.action = 'login'
+      ORDER BY u.name
+    rows:
+      - ["Alice", "login"]
+      - ["Charlie", "login"]
+
+  # Only outer predicate (all join rows with active users)
+  - query: >
+      SELECT u.name, l.action FROM users u, logs l
+      WHERE l.user_id = u.id AND u.active = 1
+      ORDER BY u.name, l.action
+    rows:
+      - ["Alice", "login"]
+      - ["Alice", "view"]
+      - ["Charlie", "login"]
+
+  # Only inner predicate (all users' login events)
+  - query: >
+      SELECT u.name FROM users u, logs l
+      WHERE l.user_id = u.id AND l.ts > 200
+      ORDER BY u.name
+    rows:
+      - ["Charlie"]

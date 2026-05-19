@@ -1,0 +1,36 @@
+# order_by_complex.yaml — Complex ORDER BY patterns
+#
+# Exercises ORDER BY with various expression types, multiple columns,
+# and mixed directions.
+name: order_by_complex
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, score BIGINT, grade STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'Alice', 85, 'B'), (2, 'Bob', 92, 'A'), (3, 'Charlie', 78, 'C'), (4, 'Dave', 92, 'A'), (5, 'Eve', 85, 'B')
+tests:
+  # ORDER BY two columns same direction
+  - query: SELECT name FROM t ORDER BY score DESC, name ASC
+    rows:
+      - ["Bob"]
+      - ["Dave"]
+      - ["Alice"]
+      - ["Eve"]
+      - ["Charlie"]
+
+  # ORDER BY with tie-breaking
+  - query: SELECT name, score FROM t ORDER BY grade, name
+    rows:
+      - ["Bob", 92]
+      - ["Dave", 92]
+      - ["Alice", 85]
+      - ["Eve", 85]
+      - ["Charlie", 78]
+
+  # ORDER BY column not in SELECT (single column)
+  - query: SELECT name FROM t ORDER BY id DESC
+    rows:
+      - ["Eve"]
+      - ["Dave"]
+      - ["Charlie"]
+      - ["Bob"]
+      - ["Alice"]

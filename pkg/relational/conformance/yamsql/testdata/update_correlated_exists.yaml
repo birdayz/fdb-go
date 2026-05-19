@@ -1,0 +1,38 @@
+# update_correlated_exists.yaml — UPDATE with correlated EXISTS
+#
+# Exercises UPDATE ... SET ... WHERE EXISTS with correlation.
+name: update_correlated_exists
+schema_template: |
+  CREATE TABLE accounts (id BIGINT NOT NULL, balance BIGINT, tier STRING, PRIMARY KEY (id))
+  CREATE TABLE transactions (id BIGINT NOT NULL, account_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO accounts VALUES (1, 1000, 'basic'), (2, 500, 'basic'), (3, 200, 'basic')
+  - INSERT INTO transactions VALUES (10, 1, 500), (20, 1, 300), (30, 2, 100)
+tests:
+  # UPDATE accounts with total transactions > 300 to premium
+  - query: >
+      UPDATE accounts SET tier = 'premium'
+      WHERE EXISTS (
+        SELECT 1 FROM transactions t
+        WHERE t.account_id = accounts.id AND t.amount > 300
+      )
+    rows: []
+  # Only account 1 has a transaction > 300
+  - query: SELECT id, tier FROM accounts ORDER BY id
+    rows:
+      - [1, "premium"]
+      - [2, "basic"]
+      - [3, "basic"]
+
+  # UPDATE with NOT EXISTS: mark inactive accounts (no transactions)
+  - query: >
+      UPDATE accounts SET tier = 'inactive'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM transactions t WHERE t.account_id = accounts.id
+      )
+    rows: []
+  - query: SELECT id, tier FROM accounts ORDER BY id
+    rows:
+      - [1, "premium"]
+      - [2, "basic"]
+      - [3, "inactive"]

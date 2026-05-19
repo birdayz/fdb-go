@@ -1,0 +1,60 @@
+# flatmap_regression.yaml — FlatMap regression tests
+#
+# Exercises the FlatMap execution path to verify the RowEvalContext
+# CorrelationBinder addition doesn't break existing FlatMap behavior.
+name: flatmap_regression
+schema_template: |
+  CREATE TABLE parent (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO parent VALUES (1, 'Alpha'), (2, 'Beta'), (3, 'Gamma')
+  - INSERT INTO child VALUES (10, 1, 100), (20, 1, 200), (30, 2, 150), (40, 2, 250)
+tests:
+  # Basic equi-join (should use FlatMap if PK matches)
+  - query: >
+      SELECT p.name, c.val FROM parent p, child c
+      WHERE c.parent_id = p.id
+      ORDER BY p.name, c.val
+    rows:
+      - ["Alpha", 100]
+      - ["Alpha", 200]
+      - ["Beta", 150]
+      - ["Beta", 250]
+
+  # EXISTS subquery (FlatMap EXISTS mode)
+  - query: >
+      SELECT p.name FROM parent p
+      WHERE EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id AND c.val > 100)
+      ORDER BY p.name
+    rows:
+      - ["Alpha"]
+      - ["Beta"]
+
+  # NOT EXISTS (FlatMap NOT EXISTS mode)
+  - query: >
+      SELECT p.name FROM parent p
+      WHERE NOT EXISTS (SELECT 1 FROM child c WHERE c.parent_id = p.id)
+      ORDER BY p.name
+    rows:
+      - ["Gamma"]
+
+  # LEFT JOIN (FlatMap LEFT OUTER mode)
+  - query: >
+      SELECT p.name, c.val FROM parent p
+      LEFT JOIN child c ON c.parent_id = p.id
+      ORDER BY p.name, c.val
+    rows:
+      - ["Alpha", 100]
+      - ["Alpha", 200]
+      - ["Beta", 150]
+      - ["Beta", 250]
+      - ["Gamma", null]
+
+  # Join with aggregate
+  - query: >
+      SELECT p.name, SUM(c.val) FROM parent p, child c
+      WHERE c.parent_id = p.id
+      GROUP BY p.name ORDER BY p.name
+    rows:
+      - ["Alpha", 300]
+      - ["Beta", 400]

@@ -1,0 +1,50 @@
+# go_extensions_group_by.yaml — Go extensions: GROUP BY (Java rejects)
+#
+# Exercises GROUP BY features that Go supports but Java rejects.
+# These are Go-only tests — no Java conformance reference.
+name: go_extensions_group_by
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, product STRING, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO orders VALUES (1, 10, 'Widget', 100), (2, 10, 'Gadget', 200), (3, 20, 'Widget', 50), (4, 20, 'Widget', 150), (5, 30, 'Gadget', 300)
+tests:
+  # Basic GROUP BY with multiple aggregates
+  - query: >
+      SELECT product, COUNT(*), SUM(amount), MIN(amount), MAX(amount)
+      FROM orders GROUP BY product ORDER BY product
+    rows:
+      - ["Gadget", 2, 500, 200, 300]
+      - ["Widget", 3, 300, 50, 150]
+
+  # GROUP BY with HAVING
+  - query: >
+      SELECT customer_id, SUM(amount) FROM orders
+      GROUP BY customer_id HAVING SUM(amount) > 200
+      ORDER BY customer_id
+    rows:
+      - [10, 300]
+      - [30, 300]
+
+  # GROUP BY multiple columns
+  - query: >
+      SELECT customer_id, product, COUNT(*) FROM orders
+      GROUP BY customer_id, product
+      ORDER BY customer_id, product
+    rows:
+      - [10, "Gadget", 1]
+      - [10, "Widget", 1]
+      - [20, "Widget", 2]
+      - [30, "Gadget", 1]
+
+  # GROUP BY with expression in SELECT
+  - query: >
+      SELECT product, SUM(amount) * 2 FROM orders
+      GROUP BY product ORDER BY product
+    rows:
+      - ["Gadget", 1000]
+      - ["Widget", 600]
+
+  # Aggregate without GROUP BY (whole-table aggregate)
+  - query: SELECT COUNT(*), SUM(amount), AVG(amount) FROM orders
+    rows:
+      - [5, 800, 160.0]

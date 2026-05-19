@@ -1,0 +1,34 @@
+# join_four_tables.yaml — Four-table join
+#
+# Exercises joining four tables with various conditions.
+name: join_four_tables
+schema_template: |
+  CREATE TABLE company (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE department (id BIGINT NOT NULL, company_id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employee (id BIGINT NOT NULL, dept_id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO company VALUES (1, 'Acme')
+  - INSERT INTO department VALUES (10, 1, 'Eng'), (20, 1, 'Sales')
+  - INSERT INTO employee VALUES (100, 10, 'Alice'), (200, 10, 'Bob'), (300, 20, 'Charlie')
+  - INSERT INTO project VALUES (1000, 100, 'Alpha'), (2000, 100, 'Beta'), (3000, 300, 'Gamma')
+tests:
+  # Full four-table join
+  - query: >
+      SELECT c.name, d.name, e.name, p.name
+      FROM company c, department d, employee e, project p
+      WHERE d.company_id = c.id AND e.dept_id = d.id AND p.emp_id = e.id
+      ORDER BY p.name
+    rows:
+      - ["Acme", "Eng", "Alice", "Alpha"]
+      - ["Acme", "Eng", "Alice", "Beta"]
+      - ["Acme", "Sales", "Charlie", "Gamma"]
+
+  # Four-table join with aggregate
+  - query: >
+      SELECT d.name, COUNT(p.id) FROM department d, employee e, project p
+      WHERE e.dept_id = d.id AND p.emp_id = e.id
+      GROUP BY d.name ORDER BY d.name
+    rows:
+      - ["Eng", 2]
+      - ["Sales", 1]

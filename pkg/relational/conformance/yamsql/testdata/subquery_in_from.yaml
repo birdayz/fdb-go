@@ -1,0 +1,32 @@
+# subquery_in_from.yaml — Subquery in FROM clause (derived table)
+#
+# Exercises subqueries used as derived tables.
+name: subquery_in_from
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, cat STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'A'), (2, 20, 'A'), (3, 30, 'B'), (4, 40, 'B')
+tests:
+  # Simple derived table
+  - query: SELECT sq.id FROM (SELECT id FROM t WHERE val > 15) sq ORDER BY sq.id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+
+  # Derived table with alias
+  - query: >
+      SELECT sq.cat, sq.total FROM (
+        SELECT cat, SUM(val) AS total FROM t GROUP BY cat
+      ) sq ORDER BY sq.cat
+    rows:
+      - ["A", 30]
+      - ["B", 70]
+
+  # Derived table with filter
+  - query: >
+      SELECT sq.cat FROM (
+        SELECT cat, SUM(val) AS total FROM t GROUP BY cat
+      ) sq WHERE sq.total > 50
+    rows:
+      - ["B"]

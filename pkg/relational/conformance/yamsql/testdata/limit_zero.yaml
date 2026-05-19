@@ -8,8 +8,8 @@ setup:
   - INSERT INTO data VALUES (1, 'a'), (2, 'b'), (3, 'c')
 tests:
   - query: SELECT id FROM data LIMIT 0
-    result: []
+    rows: []
   - query: SELECT id FROM data ORDER BY id LIMIT 0
-    result: []
+    rows: []
   - query: SELECT COUNT(*) FROM data LIMIT 0
-    result: []
+    rows: []

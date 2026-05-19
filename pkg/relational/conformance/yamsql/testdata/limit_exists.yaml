@@ -14,7 +14,7 @@ tests:
       SELECT m.name FROM managers m
       WHERE EXISTS (SELECT 1 FROM reports r WHERE r.mgr_id = m.id)
       ORDER BY m.name LIMIT 2
-    result:
+    rows:
       - ["Alice"]
       - ["Bob"]
   # NOT EXISTS + LIMIT: managers without reports
@@ -22,5 +22,5 @@ tests:
       SELECT m.name FROM managers m
       WHERE NOT EXISTS (SELECT 1 FROM reports r WHERE r.mgr_id = m.id)
       ORDER BY m.name LIMIT 1
-    result:
+    rows:
       - ["Diana"]

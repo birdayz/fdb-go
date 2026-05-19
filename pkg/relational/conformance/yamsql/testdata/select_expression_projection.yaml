@@ -1,0 +1,41 @@
+# select_expression_projection.yaml — Computed columns in SELECT
+#
+# Exercises SELECT with arithmetic expressions, CASE, function calls,
+# and concatenation in the projection list.
+name: select_expression_projection
+schema_template: |
+  CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, tax_rate BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO products VALUES (1, 'Widget', 100, 10), (2, 'Gadget', 200, 20), (3, 'Doohickey', 50, 5)
+tests:
+  # Arithmetic expression
+  - query: SELECT id, price + price * tax_rate / 100 FROM products ORDER BY id
+    rows:
+      - [1, 110]
+      - [2, 240]
+      - [3, 52]
+
+  # CASE in projection
+  - query: >
+      SELECT id, CASE WHEN price > 100 THEN 'expensive' ELSE 'affordable' END
+      FROM products ORDER BY id
+    rows:
+      - [1, "affordable"]
+      - [2, "expensive"]
+      - [3, "affordable"]
+
+  # Function in projection
+  - query: SELECT id, UPPER(name) FROM products ORDER BY id
+    rows:
+      - [1, "WIDGET"]
+      - [2, "GADGET"]
+      - [3, "DOOHICKEY"]
+
+  # Multiple computed columns
+  - query: >
+      SELECT id, price * 2, UPPER(name), CASE WHEN tax_rate > 10 THEN 'high' ELSE 'low' END
+      FROM products ORDER BY id
+    rows:
+      - [1, 200, "WIDGET", "low"]
+      - [2, 400, "GADGET", "high"]
+      - [3, 100, "DOOHICKEY", "low"]

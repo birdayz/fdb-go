@@ -1,0 +1,20 @@
+# aggregate_distinct_count.yaml — COUNT with DISTINCT values
+#
+# Go extension: COUNT(DISTINCT col) uses hash-based deduplication.
+# Java rejects this. Pin Go's correct behavior.
+name: aggregate_distinct_count
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, category STRING, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'A', 10), (2, 'A', 20), (3, 'B', 10), (4, 'B', 30), (5, 'A', 10)
+tests:
+  # Total distinct categories
+  - query: SELECT COUNT(DISTINCT category) FROM t
+    rows:
+      - [2]
+
+  # Distinct values per category
+  - query: SELECT category, COUNT(DISTINCT val) FROM t GROUP BY category ORDER BY category
+    rows:
+      - ["A", 2]
+      - ["B", 2]

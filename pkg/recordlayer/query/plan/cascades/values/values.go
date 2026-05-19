@@ -649,12 +649,14 @@ type CorrelationBinder interface {
 }
 
 // RowEvalContext is a composite evaluation context for Value.Evaluate
-// that satisfies both FieldValue (datum map) and ParameterValue
-// (ParameterBinder). Pass this when evaluating expressions that mix
-// field references and prepared-statement parameters.
+// that satisfies FieldValue (datum map), ParameterValue
+// (ParameterBinder), and CorrelationBinder. Pass this when evaluating
+// expressions that mix field references, prepared-statement parameters,
+// and correlation bindings (e.g. InJoin explode aliases).
 type RowEvalContext struct {
 	Datum            map[string]any
 	Binder           ParameterBinder
+	Correlations     CorrelationBinder
 	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
 }
 
@@ -663,6 +665,13 @@ func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
 		return nil, false
 	}
 	return r.Binder.BindParameter(ordinal, name)
+}
+
+func (r *RowEvalContext) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
+	if r.Correlations == nil {
+		return nil, false
+	}
+	return r.Correlations.GetCorrelationBinding(id)
 }
 
 func (*ParameterValue) Children() []Value { return []Value{} }
@@ -2156,6 +2165,13 @@ func (q *QuantifiedObjectValue) Evaluate(evalCtx any) any {
 	switch ctx := evalCtx.(type) {
 	case map[CorrelationIdentifier]map[string]any:
 		return ctx[q.Correlation]
+	case *RowEvalContext:
+		if ctx.Correlations != nil {
+			if val, ok := ctx.Correlations.GetCorrelationBinding(q.Correlation); ok {
+				return val
+			}
+		}
+		return ctx.Datum
 	case map[string]any:
 		return ctx
 	case CorrelationBinder:

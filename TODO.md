@@ -80,7 +80,8 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] EXISTS/NOT EXISTS FlatMap mode with multi-predicate support (alias-stripped inner filter)
 - [x] LEFT OUTER FlatMap with correct NULL row emission
 - [x] Outer-only predicate push-down below FlatMap (alias-stripped)
-- [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins)
+- [x] Result value ownership aligned with Java: translator creates JoinMergeResultValue, rule passes through sel.GetResultValue() (nightshift-97)
+- [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins — needs schema metadata at translation time)
 - [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions) (implemented in generic FlatMapPipelinedWithCheck; executor-level cursor does not use it — documented)
 
 ### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
@@ -88,6 +89,7 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] **Multi-step FlatMap continuation under TIME_LIMIT**: testFlatMapReasons (5×5 grid, 6 cycles), pipelineWithInnerLimits, pipelineWithOuterLimits — both out-of-band and row-limit variants. Fixed two continuation bugs: priorOuterCont nil on resume, pending inner dropped on outer stop. (swingshift-96)
 - [x] **OrElse (NOT EXISTS) under TIME_LIMIT**: Ported all 4 Java tests. Added OrElseWithContinuation with OrElseContinuation proto serialization. (swingshift-96)
 - [x] **Inner/outer limit grid tests**: Both out-of-band (TimeLimitReached) and in-band (ReturnLimitReached) variants ported via iterateGrid helper. (swingshift-96)
+- [x] **testFakeTimeLimitReasons, testFilteredMapAsyncReasons1/3, testMapAsyncScanLimitReasons**: Ported from Java RecordCursorTest. (nightshift-97)
 - [ ] **JOIN continuation resume at SQL level**: Requires EXECUTE CONTINUATION implementation (parsed but not wired). Multi-shift effort.
 - [x] **EXISTS + 3-way join + ORDER BY plan shape**: (covered by join_exists_self.yaml, correlated_exists_advanced.yaml, flatmap_exists_coverage.yaml, exists.yaml, correlated_subquery_probes.yaml + TestFDB_CorrelatedExistsCrossJoin, TestFDB_NestedCorrelatedExists)
 
@@ -101,9 +103,19 @@ Shipped. Parse in PlanVisitor.visitLimit → LogicalLimit in logical tree → Ca
 
 ## Active work
 
-### Bytes IN-list Ginkgo harness flake (491→492/492)
+### Bytes IN-list Ginkgo harness flake (491→492/492) — LIKELY RESOLVED (nightshift-97)
 
-1 remaining cross-engine conformance failure. `bytesAdvancedScenario` query #2: `SELECT id FROM t WHERE payload IN (X'DEADBEEF', X'CAFEBABE') ORDER BY id` returns 0 rows in the Ginkgo shared-container context. Same code passes in 4 independent test contexts. Needs Java conformance server to diagnose.
+Was caused by the NLJ-Explode bug: multi-value IN-list queries used an NLJ plan that couldn't merge scalar Explode outer datums with map inner datums, returning 0 rows. Fix: prevent NLJ from handling Explode quantifiers (guard in ImplementNestedLoopJoinRule). The fix resolves all multi-value IN-list queries (PK and non-PK). Needs re-verification in the Ginkgo shared-container context.
+
+### Correlated NOT EXISTS bugs — RESOLVED (nightshift-97)
+
+Two bugs fixed:
+1. Translator dropped NOT(ExistsPredicate) from predicate list → rule couldn't detect negation → NOT EXISTS acted as EXISTS.
+2. Outer-only WHERE predicates were pushed inside the inner plan (or passed as NLJ join predicates) → they never matched → wrong rows emitted.
+
+### Nested correlated EXISTS hoisting bug — RESOLVED (nightshift-97)
+
+Fixed. When the middle level has BOTH correlation predicates AND nested EXISTS, the fix builds a proper LogicalFilter preserving both levels. When the middle has ONLY EXISTS (cross-level correlation), the old hoisting is preserved. The distinction is whether `splitNonExistsPredicatesFromWalked(pred)` returns non-nil.
 
 ### NormalizePredicatesRule existential guard — RESOLVED (swingshift-96)
 
@@ -139,4 +151,4 @@ Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord
 
 ## Completed (summary)
 
-All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,568+ tests, 106 fuzz targets, 491/492 cross-engine conformance specs, 1754 yamsql scenarios.
+All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,568+ tests, 106 fuzz targets, 491/492 cross-engine conformance specs, 241+ yamsql scenarios, 361 FDB subtests.

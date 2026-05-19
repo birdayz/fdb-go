@@ -2512,6 +2512,26 @@ func TestEvaluationContext_RowContext(t *testing.T) {
 	}
 }
 
+func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
+	t.Parallel()
+	id := values.NamedCorrelationIdentifier("explode_q1")
+	ec := EmptyEvaluationContext().WithBinding(id, int64(42))
+	datum := map[string]any{"col": "hello"}
+	rc := ec.RowContext(datum)
+	if rc.Correlations == nil {
+		t.Fatal("RowContext should pass through correlation binder")
+	}
+	v, ok := rc.Correlations.GetCorrelationBinding(id)
+	if !ok || v != int64(42) {
+		t.Fatalf("expected correlation binding 42, got %v (ok=%v)", v, ok)
+	}
+	qov := values.NewQuantifiedObjectValue(id)
+	result := qov.Evaluate(rc)
+	if result != int64(42) {
+		t.Fatalf("QOV.Evaluate(RowEvalContext) = %v, want 42", result)
+	}
+}
+
 // ----- TempTable (additional coverage) --------------------------------------
 
 func TestTempTable_AddAndGetList(t *testing.T) {

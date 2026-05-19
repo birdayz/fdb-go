@@ -1,0 +1,36 @@
+# between_edge_cases.yaml — BETWEEN edge cases
+#
+# Exercises BETWEEN with various value types and boundary conditions.
+name: between_edge_cases
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'alpha'), (2, 20, 'beta'), (3, 30, 'gamma'), (4, 40, 'delta'), (5, 50, 'epsilon')
+tests:
+  # BETWEEN inclusive on both ends
+  - query: SELECT id FROM t WHERE val BETWEEN 20 AND 40 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+
+  # BETWEEN with equal bounds (single value)
+  - query: SELECT id FROM t WHERE val BETWEEN 30 AND 30
+    rows:
+      - [3]
+
+  # BETWEEN with inverted bounds (no results)
+  - query: SELECT id FROM t WHERE val BETWEEN 40 AND 20
+    rows: []
+
+  # NOT BETWEEN
+  - query: SELECT id FROM t WHERE val NOT BETWEEN 20 AND 40 ORDER BY id
+    rows:
+      - [1]
+      - [5]
+
+  # BETWEEN on string column (lexicographic)
+  - query: SELECT id FROM t WHERE name BETWEEN 'beta' AND 'delta' ORDER BY id
+    rows:
+      - [2]
+      - [4]

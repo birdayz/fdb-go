@@ -33,12 +33,17 @@ func unpackInt(b []byte) (int, bool) {
 // fakeOutOfBandCursor wraps a cursor and returns TimeLimitReached after limit
 // items. Matches Java's FakeOutOfBandCursor used in RecordCursorTest.
 func fakeOutOfBandCursor[T any](inner RecordCursor[T], limit int) RecordCursor[T] {
-	return &outOfBandCursor[T]{inner: inner, limit: limit}
+	return &outOfBandCursor[T]{inner: inner, limit: limit, reason: TimeLimitReached}
+}
+
+func fakeOutOfBandCursorWithReason[T any](inner RecordCursor[T], limit int, reason NoNextReason) RecordCursor[T] {
+	return &outOfBandCursor[T]{inner: inner, limit: limit, reason: reason}
 }
 
 type outOfBandCursor[T any] struct {
 	inner   RecordCursor[T]
 	limit   int
+	reason  NoNextReason
 	count   int
 	lastCon RecordCursorContinuation
 }
@@ -49,7 +54,7 @@ func (c *outOfBandCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T],
 		if cont == nil {
 			cont = &BytesContinuation{}
 		}
-		return NewResultNoNext[T](TimeLimitReached, cont), nil
+		return NewResultNoNext[T](c.reason, cont), nil
 	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
@@ -1784,5 +1789,126 @@ var _ = Describe("CursorCombinators", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// Port of Java's testFakeTimeLimitReasons: basic TIME_LIMIT with
+	// continuation resume on a simple list cursor.
+	It("testFakeTimeLimitReasons", func() {
+		list := []int{1, 2, 3, 4, 5}
+		cursor := fakeOutOfBandCursor(FromList(list), 3)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = fakeOutOfBandCursor(FromListWithContinuation(list, contBytes), 3)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{4, 5}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	// Port of Java's testMapAsyncScanLimitReasons: MapCursor with
+	// ScanLimitReached instead of TimeLimitReached. No special handling
+	// needed — scan limits pass through like time limits.
+	It("testMapAsyncScanLimitReasons", func() {
+		list := []int{1, 2, 3, 4, 5}
+		cursor := MapCursor(fakeOutOfBandCursorWithReason(FromList(list), 3, ScanLimitReached), func(i int) int { return i })
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = MapCursor(fakeOutOfBandCursorWithReason(FromListWithContinuation(list, contBytes), 3, ScanLimitReached), func(i int) int { return i })
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{4, 5}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	// Port of Java's testFilteredMapAsyncReasons1: filter(even) +
+	// mapPipelined with fakeOutOfBandCursor(limit=1). Each cycle scans
+	// 1 element; only even elements pass the filter.
+	It("testFilteredMapAsyncReasons1", func() {
+		list := []int{1, 2, 3, 4, 5}
+		isEven := func(i int) bool { return i%2 == 0 }
+
+		makeCursor := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 1)
+			filtered := &filterCursor[int]{inner: limited, predicate: isEven}
+			return MapCursor(filtered, func(i int) int { return i })
+		}
+
+		// Cycle 1: scans [1], filtered out → TIME_LIMIT, empty
+		cursor := makeCursor(nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: scans [2], passes → [2], TIME_LIMIT
+		contBytes, _ := cont.ToBytes()
+		cursor = makeCursor(contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{2}))
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 3: scans [3], filtered out → TIME_LIMIT, empty
+		contBytes, _ = cont.ToBytes()
+		cursor = makeCursor(contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 4: scans [4], passes → [4], TIME_LIMIT
+		contBytes, _ = cont.ToBytes()
+		cursor = makeCursor(contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{4}))
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 5: scans [5], filtered out → TIME_LIMIT, empty
+		contBytes, _ = cont.ToBytes()
+		cursor = makeCursor(contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 6: source exhausted
+		contBytes, _ = cont.ToBytes()
+		cursor = makeCursor(contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(BeEmpty())
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	// Port of Java's testFilteredMapAsyncReasons3: filter(even) +
+	// mapPipelined with fakeOutOfBandCursor(limit=3). Each cycle scans
+	// 3 elements.
+	It("testFilteredMapAsyncReasons3", func() {
+		list := []int{1, 2, 3, 4, 5}
+		isEven := func(i int) bool { return i%2 == 0 }
+
+		makeCursor := func(cont []byte) RecordCursor[int] {
+			raw := FromListWithContinuation(list, cont)
+			limited := fakeOutOfBandCursor(raw, 3)
+			filtered := &filterCursor[int]{inner: limited, predicate: isEven}
+			return MapCursor(filtered, func(i int) int { return i })
+		}
+
+		// Cycle 1: scans [1,2,3], 2 passes → [2], TIME_LIMIT
+		cursor := makeCursor(nil)
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{2}))
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		// Cycle 2: scans [4,5], 4 passes → [4], SOURCE_EXHAUSTED
+		contBytes, _ := cont.ToBytes()
+		cursor = makeCursor(contBytes)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{4}))
+		Expect(cont.IsEnd()).To(BeTrue())
 	})
 })

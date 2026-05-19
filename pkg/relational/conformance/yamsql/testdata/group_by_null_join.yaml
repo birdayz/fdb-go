@@ -1,0 +1,39 @@
+# group_by_null_join.yaml — GROUP BY on nullable JOIN column
+#
+# Exercises GROUP BY on a column that can be NULL (e.g., a LEFT JOIN
+# result where unmatched rows have NULL inner values).
+name: group_by_null_join
+schema_template: |
+  CREATE TABLE regions (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE stores (id BIGINT NOT NULL, region_id BIGINT, revenue BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO regions VALUES (1, 'East'), (2, 'West'), (3, 'North')
+  - INSERT INTO stores VALUES (10, 1, 100), (11, 1, 200), (12, 2, 150), (13, NULL, 50)
+tests:
+  # INNER JOIN + GROUP BY: revenue by region (NULL region excluded)
+  - query: >
+      SELECT r.name, SUM(s.revenue) FROM regions r, stores s
+      WHERE s.region_id = r.id GROUP BY r.name ORDER BY r.name
+    rows:
+      - ["East", 300]
+      - ["West", 150]
+
+  # LEFT JOIN + GROUP BY: all regions including those with no stores
+  - query: >
+      SELECT r.name, COUNT(s.id) FROM regions r
+      LEFT JOIN stores s ON s.region_id = r.id
+      GROUP BY r.name ORDER BY r.name
+    rows:
+      - ["East", 2]
+      - ["North", 0]
+      - ["West", 1]
+
+  # LEFT JOIN + GROUP BY + HAVING
+  - query: >
+      SELECT r.name, SUM(s.revenue) FROM regions r
+      LEFT JOIN stores s ON s.region_id = r.id
+      GROUP BY r.name HAVING SUM(s.revenue) > 100
+      ORDER BY r.name
+    rows:
+      - ["East", 300]
+      - ["West", 150]

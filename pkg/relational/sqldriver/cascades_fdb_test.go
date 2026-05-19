@@ -2809,3 +2809,701 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 	}
 	t.Logf("FlatMap + LIMIT 5 → %d rows ✓", limitCount)
 }
+
+func TestFDB_JoinAggregateNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/join_agg_null_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, name STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Setup data: 3 departments, 5 employees (one with NULL dept_id, one with NULL salary)
+	for _, q := range []string{
+		"INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Marketing'), (3, 'Sales')",
+		"INSERT INTO employees VALUES (10, 1, 100, 'Alice'), (11, 1, 120, 'Bob'), (12, 1, NULL, 'Charlie')",
+		"INSERT INTO employees VALUES (20, 2, 80, 'Dave')",
+		"INSERT INTO employees VALUES (30, NULL, 90, 'Eve')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	type testCase struct {
+		name   string
+		query  string
+		expect [][]any
+	}
+
+	tests := []testCase{
+		{
+			name:  "inner join group by count",
+			query: "SELECT d.name, COUNT(e.id) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(3)},
+				{"Marketing", int64(1)},
+			},
+		},
+		{
+			name:  "inner join sum with null salary",
+			query: "SELECT d.name, SUM(e.salary) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(220)},
+				{"Marketing", int64(80)},
+			},
+		},
+		{
+			name:  "left join count includes empty dept",
+			query: "SELECT d.name, COUNT(e.id) FROM departments d LEFT JOIN employees e ON e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(3)},
+				{"Marketing", int64(1)},
+				{"Sales", int64(0)},
+			},
+		},
+		{
+			name:  "left join sum null for empty dept",
+			query: "SELECT d.name, SUM(e.salary) FROM departments d LEFT JOIN employees e ON e.dept_id = d.id GROUP BY d.name ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering", int64(220)},
+				{"Marketing", int64(80)},
+				{"Sales", nil},
+			},
+		},
+		{
+			name:  "having on join aggregate",
+			query: "SELECT d.name, COUNT(e.id) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name HAVING COUNT(e.id) > 1",
+			expect: [][]any{
+				{"Engineering", int64(3)},
+			},
+		},
+		{
+			name:  "multi-predicate join",
+			query: "SELECT d.name, e.name FROM departments d, employees e WHERE e.dept_id = d.id AND e.salary > 90 ORDER BY e.name",
+			expect: [][]any{
+				{"Engineering", "Alice"},
+				{"Engineering", "Bob"},
+			},
+		},
+		{
+			name:  "self-referential exists",
+			query: "SELECT d.name FROM departments d WHERE EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id) ORDER BY d.name",
+			expect: [][]any{
+				{"Engineering"},
+				{"Marketing"},
+			},
+		},
+		{
+			name:  "not exists anti-join",
+			query: "SELECT d.name FROM departments d WHERE NOT EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id) ORDER BY d.name",
+			expect: [][]any{
+				{"Sales"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("query failed: %v", err)
+			}
+			defer rows.Close()
+
+			cols, _ := rows.Columns()
+			var got [][]any
+			for rows.Next() {
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				if err := rows.Scan(ptrs...); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				got = append(got, vals)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+
+			if len(got) != len(tc.expect) {
+				t.Fatalf("expected %d rows, got %d: %v", len(tc.expect), len(got), got)
+			}
+			for i, row := range got {
+				for j, val := range row {
+					exp := tc.expect[i][j]
+					if !valuesEqual(val, exp) {
+						t.Errorf("row[%d][%d]: expected %v (%T), got %v (%T)", i, j, exp, exp, val, val)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestFDB_NestedNotExists(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/nested_ne_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, price BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT NOT NULL, rating BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Books'), (3, 'Clothing')",
+		"INSERT INTO products VALUES (10, 1, 999), (11, 1, 499), (12, 2, 29), (13, 2, 19), (14, 3, 49)",
+		"INSERT INTO reviews VALUES (100, 10, 5), (101, 10, 4), (102, 11, 3), (103, 12, 5), (104, 14, 2)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	type testCase struct {
+		name   string
+		query  string
+		expect []string
+	}
+
+	tests := []testCase{
+		{
+			name:   "join group by count",
+			query:  "SELECT c.name, COUNT(p.id) FROM categories c, products p WHERE p.cat_id = c.id GROUP BY c.name ORDER BY c.name",
+			expect: []string{"Books", "Clothing", "Electronics"},
+		},
+		{
+			name:   "exists with products",
+			query:  "SELECT c.name FROM categories c WHERE EXISTS (SELECT 1 FROM products p WHERE p.cat_id = c.id AND p.price > 100) ORDER BY c.name",
+			expect: []string{"Electronics"},
+		},
+		{
+			name:   "nested NOT EXISTS: categories with all products reviewed",
+			query:  "SELECT c.name FROM categories c WHERE NOT EXISTS (SELECT 1 FROM products p WHERE p.cat_id = c.id AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id)) ORDER BY c.name",
+			expect: []string{"Clothing", "Electronics"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			defer rows.Close()
+
+			var names []string
+			for rows.Next() {
+				cols, _ := rows.Columns()
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				if err := rows.Scan(ptrs...); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				if name, ok := vals[0].(string); ok {
+					names = append(names, name)
+				}
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+
+			if len(names) != len(tc.expect) {
+				t.Fatalf("expected %v, got %v", tc.expect, names)
+			}
+			for i, name := range names {
+				if name != tc.expect[i] {
+					t.Fatalf("row[%d]: expected %q, got %q", i, tc.expect[i], name)
+				}
+			}
+		})
+	}
+}
+
+func TestFDB_ExistsWithJoinInside(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/exists_join_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Books'), (3, 'Empty')",
+		"INSERT INTO products VALUES (10, 1), (20, 2)",
+		"INSERT INTO reviews VALUES (100, 10, 5), (101, 20, 3)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// EXISTS with join inside: categories that have reviewed products
+	rows, err := db.QueryContext(ctx,
+		"SELECT c.name FROM categories c WHERE EXISTS (SELECT 1 FROM reviews r, products p WHERE r.product_id = p.id AND p.cat_id = c.id) ORDER BY c.name")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	if len(names) != 2 || names[0] != "Books" || names[1] != "Electronics" {
+		t.Fatalf("expected [Books Electronics], got %v", names)
+	}
+	t.Logf("EXISTS with join inside → %v ✓", names)
+}
+
+func TestFDB_NotExistsWithOR(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/ne_or_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE products (id BIGINT NOT NULL, name STRING, discontinued BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE inventory (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO products VALUES (1, 'Widget', 0), (2, 'Gadget', 1), (3, 'Doohickey', 0), (4, 'Thingamajig', 0)",
+		"INSERT INTO inventory VALUES (10, 1, 50), (20, 3, 10)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// AND + EXISTS: not discontinued AND has inventory
+	rows, err := db.QueryContext(ctx,
+		"SELECT p.name FROM products p WHERE p.discontinued = 0 AND EXISTS (SELECT 1 FROM inventory i WHERE i.product_id = p.id) ORDER BY p.name")
+	if err != nil {
+		t.Fatalf("AND+EXISTS query: %v", err)
+	}
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	rows.Close()
+	if len(names) != 2 || names[0] != "Doohickey" || names[1] != "Widget" {
+		t.Fatalf("AND+EXISTS: expected [Doohickey Widget], got %v", names)
+	}
+	t.Logf("AND + EXISTS → %v ✓", names)
+}
+
+func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/ne_nonpk_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE items (id BIGINT NOT NULL, category STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE tags (id BIGINT NOT NULL, item_id BIGINT, tag STRING, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO items VALUES (1, 'A'), (2, 'B'), (3, 'A'), (4, 'A')",
+		"INSERT INTO tags VALUES (10, 1, 'x'), (20, 3, 'y')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// NOT EXISTS on non-PK column + outer predicate.
+	// Item 1: A, has tag → excluded by NOT EXISTS
+	// Item 2: B → excluded by category='A'
+	// Item 3: A, has tag → excluded by NOT EXISTS
+	// Item 4: A, no tag → INCLUDED
+	rows, err := db.QueryContext(ctx,
+		"SELECT i.id FROM items i WHERE i.category = 'A' AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.item_id = i.id) ORDER BY i.id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != 4 {
+		t.Fatalf("expected [4], got %v", ids)
+	}
+	t.Logf("NOT EXISTS non-PK + WHERE → %v ✓", ids)
+}
+
+func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/notexists_pred_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE shipments (id BIGINT NOT NULL, order_id BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO orders VALUES (1, 'pending'), (2, 'shipped'), (3, 'pending'), (4, 'cancelled')",
+		"INSERT INTO shipments VALUES (10, 2), (20, 3)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// NOT EXISTS with additional WHERE predicate: pending orders without shipments
+	rows, err := db.QueryContext(ctx,
+		"SELECT o.id FROM orders o WHERE o.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	// Order 1: pending + no shipment → included
+	// Order 3: pending + HAS shipment → excluded
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("expected [1], got %v", ids)
+	}
+	t.Logf("NOT EXISTS + WHERE predicate → %v ✓", ids)
+}
+
+func TestFDB_NestedAggregateRejection(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/nest_agg_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_na_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, g BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10, 1), (2, 20, 1), (3, 30, 2)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"SUM(MAX(v))", "SELECT SUM(MAX(v)) FROM t GROUP BY g"},
+		{"MAX(SUM(COUNT(*)))", "SELECT MAX(SUM(COUNT(*))) FROM t GROUP BY g"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := db.QueryContext(ctx, tc.query)
+			if err == nil {
+				t.Fatal("expected error for nested aggregate, got nil")
+			}
+			if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "nested aggregate") {
+				t.Fatalf("expected 0A000 or nested aggregate error, got: %v", err)
+			}
+		})
+	}
+
+	// Non-nested aggregates work fine
+	rows, err := db.QueryContext(ctx, "SELECT SUM(v) FROM t GROUP BY g ORDER BY g")
+	if err != nil {
+		t.Fatalf("non-nested aggregate failed: %v", err)
+	}
+	defer rows.Close()
+	var results []int64
+	for rows.Next() {
+		var sum int64
+		if err := rows.Scan(&sum); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		results = append(results, sum)
+	}
+	if len(results) != 2 || results[0] != 30 || results[1] != 30 {
+		t.Fatalf("expected [30, 30], got %v", results)
+	}
+}
+
+func TestFDB_InListMultiValue(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/in_dbg_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_in_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE items (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO items VALUES (1, 'apple', 10), (2, 'banana', 20), (3, 'cherry', 30), (4, 'date', 40), (5, 'elderberry', 50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		query  string
+		expect int
+	}{
+		{"all items", "SELECT id FROM items ORDER BY id", 5},
+		{"IN single", "SELECT id FROM items WHERE id IN (1)", 1},
+		{"IN two", "SELECT id FROM items WHERE id IN (1, 2)", 2},
+		{"IN three non-contiguous", "SELECT id FROM items WHERE id IN (1, 3, 5)", 3},
+		{"IN with AND", "SELECT id FROM items WHERE id IN (1, 2, 3, 4) AND price > 15", 3},
+		{"NOT IN", "SELECT id FROM items WHERE id NOT IN (1, 2, 3)", 2},
+		{"string IN", "SELECT id FROM items WHERE name IN ('apple', 'cherry')", 2},
+		{"= comparison", "SELECT id FROM items WHERE id = 3", 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("query failed: %v", err)
+			}
+			defer rows.Close()
+			var count int
+			for rows.Next() {
+				count++
+				var id int64
+				if err := rows.Scan(&id); err != nil {
+					// multi-col queries
+					vals := make([]any, 10)
+					ptrs := make([]any, 10)
+					for i := range vals {
+						ptrs[i] = &vals[i]
+					}
+				}
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+			if count != tc.expect {
+				t.Errorf("expected %d rows, got %d", tc.expect, count)
+			}
+		})
+	}
+}
+
+func valuesEqual(got, exp any) bool {
+	if got == nil && exp == nil {
+		return true
+	}
+	if got == nil || exp == nil {
+		return false
+	}
+	switch e := exp.(type) {
+	case int64:
+		switch g := got.(type) {
+		case int64:
+			return g == e
+		case int32:
+			return int64(g) == e
+		}
+	case string:
+		if g, ok := got.(string); ok {
+			return g == e
+		}
+	}
+	return fmt.Sprintf("%v", got) == fmt.Sprintf("%v", exp)
+}

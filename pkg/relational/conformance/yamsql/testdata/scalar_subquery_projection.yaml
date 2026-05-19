@@ -1,0 +1,38 @@
+# scalar_subquery_projection.yaml — Scalar subquery in SELECT projection
+#
+# Exercises uncorrelated scalar subqueries used directly in the
+# SELECT list, including with aggregates and constants.
+name: scalar_subquery_projection
+schema_template: |
+  CREATE TABLE settings (id BIGINT NOT NULL, max_val BIGINT, PRIMARY KEY (id))
+  CREATE TABLE data (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO settings VALUES (1, 100)
+  - INSERT INTO data VALUES (1, 10), (2, 50), (3, 90)
+tests:
+  # Scalar subquery returning constant in projection
+  - query: >
+      SELECT id, val, (SELECT max_val FROM settings WHERE id = 1) FROM data
+      ORDER BY id
+    rows:
+      - [1, 10, 100]
+      - [2, 50, 100]
+      - [3, 90, 100]
+
+  # Scalar subquery with aggregate in projection
+  - query: >
+      SELECT id, val, (SELECT COUNT(*) FROM data) FROM data
+      ORDER BY id
+    rows:
+      - [1, 10, 3]
+      - [2, 50, 3]
+      - [3, 90, 3]
+
+  # Scalar subquery as arithmetic operand
+  - query: >
+      SELECT id, val - (SELECT MIN(val) FROM data) FROM data
+      ORDER BY id
+    rows:
+      - [1, 0]
+      - [2, 40]
+      - [3, 80]

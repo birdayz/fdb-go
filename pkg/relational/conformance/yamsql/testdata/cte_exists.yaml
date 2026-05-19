@@ -1,0 +1,19 @@
+# cte_exists.yaml — CTE combined with EXISTS
+#
+# Exercises WITH ... AS ... followed by EXISTS referencing the CTE.
+name: cte_exists
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO orders VALUES (1, 10, 100), (2, 10, 200), (3, 20, 50)
+  - INSERT INTO customers VALUES (10, 'Alice'), (20, 'Bob'), (30, 'Charlie')
+tests:
+  # CTE defines big orders; EXISTS checks if customer has any
+  - query: >
+      WITH big_orders AS (SELECT customer_id FROM orders WHERE total > 100)
+      SELECT c.name FROM customers c
+      WHERE EXISTS (SELECT 1 FROM big_orders bo WHERE bo.customer_id = c.id)
+      ORDER BY c.name
+    rows:
+      - ["Alice"]

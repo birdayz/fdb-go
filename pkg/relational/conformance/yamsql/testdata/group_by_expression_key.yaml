@@ -1,0 +1,27 @@
+# group_by_expression_key.yaml — GROUP BY with expression-based keys
+#
+# Exercises GROUP BY on computed expressions, not just column names.
+name: group_by_expression_key
+schema_template: |
+  CREATE TABLE events (id BIGINT NOT NULL, ts BIGINT, category STRING, value BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO events VALUES (1, 1000, 'A', 10), (2, 1500, 'B', 20), (3, 2000, 'A', 30), (4, 2500, 'B', 40), (5, 3000, 'C', 50)
+tests:
+  # GROUP BY with CASE expression
+  - query: >
+      SELECT CASE WHEN ts < 2000 THEN 'early' ELSE 'late' END, SUM(value)
+      FROM events
+      GROUP BY CASE WHEN ts < 2000 THEN 'early' ELSE 'late' END
+      ORDER BY CASE WHEN ts < 2000 THEN 'early' ELSE 'late' END
+    rows:
+      - ["early", 30]
+      - ["late", 120]
+
+  # GROUP BY with arithmetic expression
+  - query: >
+      SELECT ts / 1000, COUNT(*) FROM events
+      GROUP BY ts / 1000 ORDER BY ts / 1000
+    rows:
+      - [1, 2]
+      - [2, 2]
+      - [3, 1]

@@ -1,0 +1,57 @@
+# e2e_inventory.yaml — End-to-end inventory management scenario
+#
+# Simulates a typical inventory management workflow:
+# products, warehouses, stock levels, restocking.
+name: e2e_inventory
+schema_template: |
+  CREATE TABLE products (id BIGINT NOT NULL, name STRING, min_stock BIGINT, PRIMARY KEY (id))
+  CREATE TABLE warehouses (id BIGINT NOT NULL, city STRING, PRIMARY KEY (id))
+  CREATE TABLE stock (product_id BIGINT NOT NULL, warehouse_id BIGINT NOT NULL, quantity BIGINT, PRIMARY KEY (product_id, warehouse_id))
+setup:
+  - INSERT INTO products VALUES (1, 'Widget', 10), (2, 'Gadget', 5), (3, 'Doohickey', 20)
+  - INSERT INTO warehouses VALUES (10, 'NYC'), (20, 'LA'), (30, 'Chicago')
+  - INSERT INTO stock VALUES (1, 10, 50), (1, 20, 3), (2, 10, 8), (2, 30, 2), (3, 10, 25)
+tests:
+  # Total stock per product
+  - query: >
+      SELECT p.name, SUM(s.quantity) FROM products p, stock s
+      WHERE s.product_id = p.id
+      GROUP BY p.name ORDER BY p.name
+    rows:
+      - ["Doohickey", 25]
+      - ["Gadget", 10]
+      - ["Widget", 53]
+
+  # Products below minimum stock in any warehouse
+  - query: >
+      SELECT DISTINCT p.name FROM products p, stock s
+      WHERE s.product_id = p.id AND s.quantity < p.min_stock
+      ORDER BY p.name
+    rows:
+      - ["Gadget"]
+      - ["Widget"]
+
+  # Warehouses with no stock for product 3
+  - query: >
+      SELECT w.city FROM warehouses w
+      WHERE NOT EXISTS (
+        SELECT 1 FROM stock s WHERE s.warehouse_id = w.id AND s.product_id = 3
+      )
+      ORDER BY w.city
+    rows:
+      - ["Chicago"]
+      - ["LA"]
+
+  # Restock low-inventory items
+  - query: >
+      UPDATE stock SET quantity = quantity + 20
+      WHERE quantity < 5
+    rows: []
+  - query: >
+      SELECT product_id, warehouse_id, quantity FROM stock
+      WHERE product_id IN (1, 2) ORDER BY product_id, warehouse_id
+    rows:
+      - [1, 10, 50]
+      - [1, 20, 23]
+      - [2, 10, 8]
+      - [2, 30, 22]

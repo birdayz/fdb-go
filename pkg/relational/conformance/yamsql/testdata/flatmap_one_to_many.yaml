@@ -12,7 +12,7 @@ setup:
 tests:
   # 1:N join — Tolkien has 3 books, Asimov has 2.
   - query: SELECT a.name, b.title FROM authors a, books b WHERE b.author_id = a.id ORDER BY a.name, b.title
-    result:
+    rows:
       - ["Asimov", "Foundation"]
       - ["Asimov", "I Robot"]
       - ["Tolkien", "Hobbit"]
@@ -25,12 +25,12 @@ tests:
       WHERE b.author_id = a.id
       GROUP BY a.name
       ORDER BY a.name
-    result:
+    rows:
       - ["Asimov", 2]
       - ["Tolkien", 3]
   # LIMIT on 1:N join.
   - query: SELECT a.name, b.title FROM authors a, books b WHERE b.author_id = a.id ORDER BY b.title LIMIT 3
-    result:
+    rows:
       - ["Asimov", "Foundation"]
       - ["Tolkien", "Hobbit"]
       - ["Asimov", "I Robot"]

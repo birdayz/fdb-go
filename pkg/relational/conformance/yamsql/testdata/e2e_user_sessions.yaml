@@ -1,0 +1,54 @@
+# e2e_user_sessions.yaml — End-to-end user session tracking
+#
+# Real-world scenario: user sessions with login/logout events,
+# active sessions, session duration tracking.
+name: e2e_user_sessions
+schema_template: |
+  CREATE TABLE users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE sessions (id BIGINT NOT NULL, user_id BIGINT, start_ts BIGINT, end_ts BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO sessions VALUES (10, 1, 1000, 2000), (20, 1, 3000, null), (30, 2, 1500, 1800), (40, 2, 2000, 2500), (50, 3, 500, 600)
+tests:
+  # Users with active sessions (end_ts IS NULL)
+  - query: >
+      SELECT u.name FROM users u
+      WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id AND s.end_ts IS NULL)
+    rows:
+      - ["Alice"]
+
+  # Session count per user
+  - query: >
+      SELECT u.name, COUNT(s.id) FROM users u, sessions s
+      WHERE s.user_id = u.id
+      GROUP BY u.name ORDER BY u.name
+    rows:
+      - ["Alice", 2]
+      - ["Bob", 2]
+      - ["Charlie", 1]
+
+  # Total session duration per user (NULL end_ts excluded)
+  - query: >
+      SELECT u.name, SUM(s.end_ts - s.start_ts) FROM users u, sessions s
+      WHERE s.user_id = u.id AND s.end_ts IS NOT NULL
+      GROUP BY u.name ORDER BY u.name
+    rows:
+      - ["Alice", 1000]
+      - ["Bob", 800]
+      - ["Charlie", 100]
+
+  # Users with no sessions
+  - query: >
+      SELECT u.name FROM users u
+      WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id AND s.start_ts > 2000)
+      ORDER BY u.name
+    rows:
+      - ["Charlie"]
+
+  # Close Alice's active session
+  - query: UPDATE sessions SET end_ts = 4000 WHERE id = 20
+    rows: []
+  - query: SELECT id, end_ts FROM sessions WHERE user_id = 1 ORDER BY id
+    rows:
+      - [10, 2000]
+      - [20, 4000]

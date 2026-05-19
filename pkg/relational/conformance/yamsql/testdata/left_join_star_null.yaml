@@ -1,0 +1,27 @@
+# left_join_star_null.yaml — SELECT * with LEFT JOIN NULL propagation
+#
+# Exercises SELECT * on a LEFT JOIN where unmatched outer rows produce
+# NULL values for all inner columns. Verifies the column derivation
+# correctly handles the full column set from both sides.
+name: left_join_star_null
+schema_template: |
+  CREATE TABLE parent (id BIGINT NOT NULL, pname STRING, PRIMARY KEY (id))
+  CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT, cname STRING, extra BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO parent VALUES (1, 'A'), (2, 'B'), (3, 'C')
+  - INSERT INTO child VALUES (10, 1, 'x', 100), (20, 1, 'y', 200)
+tests:
+  # LEFT JOIN: parent 2,3 have no children → NULL for all child columns
+  - query: SELECT p.id, p.pname, c.cname, c.extra FROM parent p LEFT JOIN child c ON c.parent_id = p.id ORDER BY p.id, c.id
+    rows:
+      - [1, "A", "x", 100]
+      - [1, "A", "y", 200]
+      - [2, "B", null, null]
+      - [3, "C", null, null]
+
+  # LEFT JOIN with aggregate: count children per parent
+  - query: SELECT p.pname, COUNT(c.id), SUM(c.extra) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY p.pname ORDER BY p.pname
+    rows:
+      - ["A", 2, 300]
+      - ["B", 0, null]
+      - ["C", 0, null]

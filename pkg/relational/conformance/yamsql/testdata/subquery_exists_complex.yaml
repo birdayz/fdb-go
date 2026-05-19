@@ -1,0 +1,54 @@
+# subquery_exists_complex.yaml — Complex EXISTS subquery patterns
+#
+# Exercises EXISTS with multiple conditions, combined with
+# AND/OR predicates, and nested EXISTS patterns.
+name: subquery_exists_complex
+schema_template: |
+  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, budget BIGINT, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT NOT NULL, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO departments VALUES (1, 'Eng', 1000), (2, 'Sales', 500), (3, 'HR', 300)
+  - INSERT INTO employees VALUES (10, 1, 'Alice', 120), (20, 1, 'Bob', 100), (30, 2, 'Charlie', 80), (40, 3, 'Dave', 90)
+tests:
+  # EXISTS with multiple conditions in subquery
+  - query: >
+      SELECT d.name FROM departments d
+      WHERE EXISTS (
+        SELECT 1 FROM employees e
+        WHERE e.dept_id = d.id AND e.salary > 100
+      )
+      ORDER BY d.name
+    rows:
+      - ["Eng"]
+
+  # NOT EXISTS — departments with no high-salary employees
+  - query: >
+      SELECT d.name FROM departments d
+      WHERE NOT EXISTS (
+        SELECT 1 FROM employees e
+        WHERE e.dept_id = d.id AND e.salary > 100
+      )
+      ORDER BY d.name
+    rows:
+      - ["HR"]
+      - ["Sales"]
+
+  # EXISTS combined with regular predicate
+  - query: >
+      SELECT d.name FROM departments d
+      WHERE d.budget > 400
+        AND EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id)
+      ORDER BY d.name
+    rows:
+      - ["Eng"]
+      - ["Sales"]
+
+  # EXISTS as the only WHERE condition
+  - query: >
+      SELECT d.name FROM departments d
+      WHERE EXISTS (SELECT 1 FROM employees e WHERE e.dept_id = d.id)
+      ORDER BY d.name
+    rows:
+      - ["Eng"]
+      - ["HR"]
+      - ["Sales"]

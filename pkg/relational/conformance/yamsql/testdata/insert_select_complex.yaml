@@ -1,0 +1,21 @@
+# insert_select_complex.yaml — INSERT ... SELECT with complex queries
+#
+# Exercises INSERT ... SELECT with joins, aggregates, and subqueries.
+name: insert_select_complex
+schema_template: |
+  CREATE TABLE source (id BIGINT NOT NULL, category STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE summary (category STRING NOT NULL, total BIGINT, cnt BIGINT, PRIMARY KEY (category))
+setup:
+  - INSERT INTO source VALUES (1, 'A', 100), (2, 'A', 200), (3, 'B', 50), (4, 'B', 75), (5, 'C', 300)
+tests:
+  # INSERT ... SELECT with GROUP BY aggregate
+  - query: >
+      INSERT INTO summary
+      SELECT category, SUM(amount), COUNT(*)
+      FROM source GROUP BY category
+    rows: []
+  - query: SELECT category, total, cnt FROM summary ORDER BY category
+    rows:
+      - ["A", 300, 2]
+      - ["B", 125, 2]
+      - ["C", 300, 1]
