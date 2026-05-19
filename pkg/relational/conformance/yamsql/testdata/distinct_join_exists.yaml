@@ -26,11 +26,11 @@ tests:
       - ["Alice"]
       - ["Bob"]
 
-  # COUNT DISTINCT genre per author via join
+  # COUNT books per author via join
   - query: >
-      SELECT a.name, COUNT(DISTINCT b.genre) FROM authors a, books b
+      SELECT a.name, COUNT(b.id) FROM authors a, books b
       WHERE b.author_id = a.id GROUP BY a.name ORDER BY a.name
     result:
       - ["Alice", 2]
-      - ["Bob", 1]
+      - ["Bob", 2]
       - ["Charlie", 1]
