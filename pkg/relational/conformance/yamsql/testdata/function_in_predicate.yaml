@@ -1,0 +1,35 @@
+# function_in_predicate.yaml — Functions used in WHERE predicates
+#
+# Exercises scalar functions as operands in WHERE predicates:
+# UPPER, LOWER, LENGTH, SUBSTRING used in comparisons.
+name: function_in_predicate
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'Alice', 10), (2, 'bob', 20), (3, 'CHARLIE', 30), (4, 'Dave', 40)
+tests:
+  # UPPER in WHERE
+  - query: SELECT id FROM t WHERE UPPER(name) = 'BOB'
+    rows:
+      - [2]
+
+  # LOWER in WHERE
+  - query: SELECT id FROM t WHERE LOWER(name) = 'charlie'
+    rows:
+      - [3]
+
+  # CHARACTER_LENGTH in WHERE
+  - query: SELECT id FROM t WHERE CHARACTER_LENGTH(name) = 3 ORDER BY id
+    rows:
+      - [2]
+
+  # SUBSTRING in WHERE
+  - query: SELECT id FROM t WHERE SUBSTRING(name, 1, 1) = 'A' ORDER BY id
+    rows:
+      - [1]
+
+  # Function in projection + WHERE
+  - query: SELECT id, UPPER(name) FROM t WHERE val > 20 ORDER BY id
+    rows:
+      - [3, "CHARLIE"]
+      - [4, "DAVE"]

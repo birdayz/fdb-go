@@ -1,0 +1,29 @@
+# empty_result_aggregate.yaml — Aggregates over empty result sets
+#
+# Exercises aggregate behavior when the WHERE filters out all rows:
+# COUNT(*) = 0, SUM/AVG/MIN/MAX = NULL.
+name: empty_result_aggregate
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # No rows match WHERE → aggregate over empty set
+  - query: SELECT COUNT(*), SUM(val), AVG(val), MIN(val), MAX(val) FROM t WHERE id > 100
+    rows:
+      - [0, null, null, null, null]
+
+  # Empty table aggregate
+  - query: SELECT COUNT(*) FROM t WHERE val < 0
+    rows:
+      - [0]
+
+  # GROUP BY with no matching groups → no rows
+  - query: SELECT val, COUNT(*) FROM t WHERE id > 100 GROUP BY val
+    rows: []
+
+  # Aggregate with GROUP BY where only some groups match
+  - query: SELECT val, COUNT(*) FROM t WHERE val > 15 GROUP BY val ORDER BY val
+    rows:
+      - [20, 1]
+      - [30, 1]
