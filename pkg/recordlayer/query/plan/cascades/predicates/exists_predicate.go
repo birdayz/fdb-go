@@ -51,6 +51,14 @@ func (p *ExistsPredicate) Eval(_ any) TriBool { return TriUnknown }
 // Children returns the empty slice — leaf.
 func (*ExistsPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 
+// GetCorrelatedTo returns the singleton set containing the
+// existential alias — the subquery reference this predicate binds.
+func (p *ExistsPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{
+		p.ExistentialAlias: {},
+	}
+}
+
 // HashCodeWithoutChildren hashes the predicate kind + alias.
 func (p *ExistsPredicate) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
