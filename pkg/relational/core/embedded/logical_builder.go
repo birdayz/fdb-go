@@ -241,9 +241,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		}
 		var kind logical.JoinKind
 		switch j.joinType {
-		case "LEFT":
+		case joinTypeLeft:
 			kind = logical.JoinLeft
-		case "RIGHT":
+		case joinTypeRight:
 			kind = logical.JoinRight
 		default:
 			kind = logical.JoinInner
@@ -284,6 +284,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		var aggs, aggAliases []string
+		hasDistinct := false
 		keys := make([]string, len(sq.groupBy))
 		for i, k := range sq.groupBy {
 			keys[i] = strip(k)
@@ -305,6 +306,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					distinctPfx := ""
 					if ac.aggDistinct {
 						distinctPfx = "DISTINCT "
+						hasDistinct = true
 					}
 					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
 					aggAliases = append(aggAliases, ac.outName)
@@ -315,7 +317,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		if sq.havingExpr != nil {
 			having = canonicalTextOf(sq.havingExpr)
 		}
-		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
+		aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
+		aggOp.HasDistinctAggregate = hasDistinct
+		op = aggOp
 
 		// Post-aggregation projection for mixed SELECT lists that contain
 		// both aggregates and computed expressions / constants. When outExpr

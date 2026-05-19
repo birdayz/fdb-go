@@ -948,6 +948,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			extraSortFields = append(extraSortFields, outField{name: sentinel, expr: ob.expr})
 			sq.orderBy[obIdx].colName = sentinel
 			sq.orderBy[obIdx].expr = nil
+			sq.orderBy[obIdx].isSyntheticExpr = true
 		}
 		if sq.projCols == nil {
 			// SELECT * — all fields in descriptor order.
@@ -1301,7 +1302,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// `ob.expr`. Detect the sentinel by name to surface
 				// "arbitrary expression" in the error message rather
 				// than the synthetic identifier.
-				if ob.expr != nil || strings.HasPrefix(ob.colName, "__orderby_expr_") {
+				if ob.expr != nil || ob.isSyntheticExpr {
 					hasExpr = true
 					continue
 				}

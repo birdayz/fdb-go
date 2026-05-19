@@ -811,9 +811,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		}
 		var kind logical.JoinKind
 		switch j.joinType {
-		case "LEFT":
+		case joinTypeLeft:
 			kind = logical.JoinLeft
-		case "RIGHT":
+		case joinTypeRight:
 			kind = logical.JoinRight
 		default:
 			kind = logical.JoinInner
@@ -876,6 +876,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	}
 
 	var aggs, aggAliases []string
+	hasDistinct := false
 	keys := make([]string, len(cls.groupBy))
 	for i, k := range cls.groupBy {
 		keys[i] = strip(k)
@@ -897,19 +898,20 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 				distinctPfx := ""
 				if ac.aggDistinct {
 					distinctPfx = "DISTINCT "
+					hasDistinct = true
 				}
 				aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
 				aggAliases = append(aggAliases, ac.outName)
 			}
 		}
 	}
-	// Go extension: Java's fdb-relational 4.11.1.0 does not support HAVING;
-	// its AstNormalizer rejects it with UNSUPPORTED_QUERY.
 	having := ""
 	if cls.havingExpr != nil {
 		having = canonicalTextOf(cls.havingExpr)
 	}
-	op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
+	aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
+	aggOp.HasDistinctAggregate = hasDistinct
+	op = aggOp
 
 	// Post-aggregation projection for mixed SELECT lists that contain
 	// both aggregates and computed expressions / constants.
@@ -966,6 +968,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		}
 		var visibleProj []string
 		var visibleAliases []string
+		hasAggAlias := false
 		for _, ac := range cls.aggCols {
 			if !ac.visible {
 				continue
@@ -984,6 +987,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 				alias := ""
 				if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
 					alias = ac.outName
+					hasAggAlias = true
 				}
 				visibleAliases = append(visibleAliases, alias)
 			} else if ac.groupCol != "" {
@@ -996,13 +1000,6 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			}
 		}
 		totalOutput := len(keys) + len(aggs)
-		hasAggAlias := false
-		for i, a := range visibleAliases {
-			if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
-				hasAggAlias = true
-				break
-			}
-		}
 		needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
 		if needsStrip {
 			if hasNonVisible {

@@ -145,7 +145,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			// rows had at least one match so the unmatched-right step
 			// doesn't have to re-evaluate the ON predicate a second time.
 			var matchedRight []bool
-			if jc.joinType == "RIGHT" {
+			if jc.joinType == joinTypeRight {
 				matchedRight = make([]bool, len(rightRows))
 			}
 			for _, left := range joined {
@@ -180,7 +180,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					next = append(next, combined)
 				}
 				// LEFT JOIN: emit left row with NULLs if no right match.
-				if jc.joinType == "LEFT" && !matched {
+				if jc.joinType == joinTypeLeft && !matched {
 					// Build null right side. Populate right-side column keys
 					// (both `alias.col` and bare `col`) with NULL, derived
 					// from metadata, so downstream evaluators can find
@@ -210,7 +210,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 			}
 			// RIGHT JOIN: also emit right rows that had no left match (null left side).
-			if jc.joinType == "RIGHT" {
+			if jc.joinType == joinTypeRight {
 				// Derive left-side column keys from metadata (record
 				// type descriptor, or CTE column list) for each source
 				// that has been merged into `joined` so far. Using

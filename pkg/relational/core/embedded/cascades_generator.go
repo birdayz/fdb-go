@@ -1309,13 +1309,8 @@ func findDistinctAggregate(op logical.LogicalOperator) string {
 	if op == nil {
 		return ""
 	}
-	if agg, ok := op.(*logical.LogicalAggregate); ok {
-		for _, a := range agg.Aggregates {
-			upper := strings.ToUpper(a)
-			if strings.Contains(upper, "DISTINCT ") {
-				return "DISTINCT aggregates are not supported"
-			}
-		}
+	if agg, ok := op.(*logical.LogicalAggregate); ok && agg.HasDistinctAggregate {
+		return "DISTINCT aggregates are not supported"
 	}
 	for _, ch := range op.Children() {
 		if msg := findDistinctAggregate(ch); msg != "" {

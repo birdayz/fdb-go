@@ -126,6 +126,10 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [x] **Document `&&`/`||`/`XOR` as Go extensions** — Java's SqlFunctionCatalogImpl only registers `and`/`or`/`not`; symbolic `&&`, `||`, and keyword `XOR` throw UNSUPPORTED_QUERY in Java. Go accepts all five forms as a Go-only extension. Documented in DIVERGENCES.md.
 - [x] **ArrayConstructor scalar subquery gap** — `walkScalarSubqueriesAtom` now recurses into `ArrayConstructorExpressionAtomContext`, preventing cache-miss fallback for `ARRAY[(SELECT ...)]`.
 - [x] **Remove dead t.Skip() calls** — `options_test.go` pointer-identity guard (Build() always returns new pointer) and `logical_predicate_test.go` nil-op guard (builder always returns a result for self-join) replaced with Fatal assertions.
+- [x] **DISTINCT aggregate detection via string hack** — `findDistinctAggregate` used `strings.Contains(upper, "DISTINCT ")` on serialized aggregate text. Replaced with typed `HasDistinctAggregate` field on `LogicalAggregate`, set structurally at construction.
+- [x] **Aggregate alias detection via `"("` hack** — `plan_visitor.go:1001` used `strings.Contains(visibleProj[i], "(")` to detect aggregates. Replaced with structural tracking: `hasAggAlias` set inside the aggFunc loop where the type is already known.
+- [x] **ORDER BY sentinel string hack** — `__orderby_expr_` prefix matching via `strings.HasPrefix` replaced with `isSyntheticExpr bool` field on `orderByClause`.
+- [x] **Join type string literals** — `"INNER"`, `"LEFT"`, `"RIGHT"` string comparisons scattered across 6 files replaced with typed constants `joinTypeInner`, `joinTypeLeft`, `joinTypeRight`.
 
 ---
 

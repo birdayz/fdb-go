@@ -3384,9 +3384,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		right := logical.LogicalOperator(logical.NewScan(j.tableName, j.alias))
 		var kind logical.JoinKind
 		switch j.joinType {
-		case "LEFT":
+		case joinTypeLeft:
 			kind = logical.JoinLeft
-		case "RIGHT":
+		case joinTypeRight:
 			kind = logical.JoinRight
 		default:
 			kind = logical.JoinInner
