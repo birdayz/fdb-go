@@ -3025,6 +3025,11 @@ func TestFDB_NestedNotExists(t *testing.T) {
 			query:  "SELECT c.name FROM categories c WHERE EXISTS (SELECT 1 FROM products p WHERE p.cat_id = c.id AND p.price > 100) ORDER BY c.name",
 			expect: []string{"Electronics"},
 		},
+		{
+			name:   "nested NOT EXISTS: categories with all products reviewed",
+			query:  "SELECT c.name FROM categories c WHERE NOT EXISTS (SELECT 1 FROM products p WHERE p.cat_id = c.id AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id)) ORDER BY c.name",
+			expect: []string{"Clothing", "Electronics"},
+		},
 	}
 
 	for _, tc := range tests {

@@ -3427,18 +3427,30 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: walk predicate: %v", walkErr), Cause: walkErr}
 	}
 
-	// If the nested planner collected EXISTS subqueries, the inner WHERE
-	// has its own EXISTS that may be correlated with an even-outer scope.
-	// Hoist the nested EXISTS's correlated join predicate to this level
-	// so it's evaluated against the outer row (which has the correlated
-	// columns). The middle plan becomes an uncorrelated scan — the
-	// EXISTS just checks if the inner EXISTS's correlated match holds.
-	//
-	// KNOWN LIMITATION: this hoisting drops the middle-level correlation
-	// predicate when the inner WHERE has BOTH a correlation predicate
-	// (e.g., p.cat_id = c.id) AND a nested EXISTS. The middle-level
-	// predicate is lost. See TODO.md "Nested correlated EXISTS hoisting bug".
+	// If the nested planner collected EXISTS subqueries, check whether
+	// the middle level has its own correlation predicate (non-EXISTS).
 	if len(nestedPlanner.subqueries) > 0 {
+		innerCorr := strings.ToUpper(aliasID.Name())
+		nonExistsPred := splitNonExistsPredicatesFromWalked(pred)
+
+		if nonExistsPred != nil {
+			// Case 1: middle has BOTH correlation + nested EXISTS.
+			// Build a proper LogicalFilter preserving the middle level.
+			existsPred := stripNonExistsPredicates(pred)
+			qualifyBareFields(nonExistsPred, innerCorr)
+			p.lastJoinPredicate = predicates.SimplifyPredicateValues(nonExistsPred)
+			filter := &logical.LogicalFilter{
+				Input:            op,
+				Predicate:        existsPred,
+				ExistsSubqueries: nestedPlanner.subqueries,
+			}
+			return filter, nil
+		}
+
+		// Case 2: middle has ONLY EXISTS (no own correlation).
+		// The inner correlation spans multiple levels (innermost →
+		// outermost). Hoist the inner plan to this level so the
+		// correlation binds against the outer row directly.
 		innerESQ := nestedPlanner.subqueries[0]
 		p.lastJoinPredicate = innerESQ.JoinPredicate
 		return innerESQ.Plan, nil

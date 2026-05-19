@@ -65,3 +65,19 @@ tests:
       ORDER BY c.name
     result:
       - ["Electronics"]
+
+  # Nested NOT EXISTS: categories where ALL products are reviewed
+  # Electronics: products 10,11 both reviewed → INCLUDE
+  # Books: product 13 NOT reviewed → EXCLUDE
+  # Clothing: product 14 reviewed → INCLUDE
+  - query: >
+      SELECT c.name FROM categories c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM products p
+        WHERE p.cat_id = c.id
+        AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.product_id = p.id)
+      )
+      ORDER BY c.name
+    result:
+      - ["Clothing"]
+      - ["Electronics"]
