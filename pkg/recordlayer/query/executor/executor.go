@@ -1269,6 +1269,8 @@ func toFloat64(v any) float64 {
 		return float64(n)
 	case int32:
 		return float64(n)
+	case float32:
+		return float64(n)
 	default:
 		return math.NaN()
 	}
@@ -2130,6 +2132,12 @@ func compareAny(a, b any) int {
 	}
 	if b == nil {
 		return 1
+	}
+	if f, ok := a.(float32); ok {
+		a = float64(f)
+	}
+	if f, ok := b.(float32); ok {
+		b = float64(f)
 	}
 	switch av := a.(type) {
 	case int64:
