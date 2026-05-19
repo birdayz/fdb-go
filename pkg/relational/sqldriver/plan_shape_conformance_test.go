@@ -693,3 +693,53 @@ func TestFDB_PlanShapeTimestampIndexRange(t *testing.T) {
 		t.Errorf("expected 1 row after 2023, got %d", count)
 	}
 }
+
+func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/ps_exists_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	_, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	_, err = setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE parent (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, PRIMARY KEY (id))", tmpl))
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl))
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Non-PK correlated EXISTS → NLJ(EXISTS) fallback.
+	plan := planExplainVia(t, ctx, db,
+		"SELECT id FROM parent WHERE EXISTS (SELECT 1 FROM child WHERE child.parent_id = parent.id)")
+	t.Logf("Non-PK EXISTS plan:\n%s", plan)
+	if !strings.Contains(plan, "EXISTS") {
+		t.Errorf("expected EXISTS in plan, got:\n%s", plan)
+	}
+
+	// PK-matching correlated EXISTS → FlatMap(EXISTS).
+	plan = planExplainVia(t, ctx, db,
+		"SELECT id FROM child WHERE EXISTS (SELECT 1 FROM parent WHERE parent.id = child.parent_id)")
+	t.Logf("PK EXISTS plan:\n%s", plan)
+	if !strings.Contains(plan, "FlatMap") && !strings.Contains(plan, "EXISTS") {
+		t.Errorf("expected FlatMap or EXISTS in plan, got:\n%s", plan)
+	}
+}
