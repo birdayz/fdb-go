@@ -181,24 +181,22 @@ func flipComparisonOp(op string) string {
 }
 
 // extractPKUserFields returns the ordered list of user field names
-// making up the primary key when pushdown is safe, or nil otherwise.
-//
-// Only CompositeKeyExpression is supported today: SQL DDL's default
-// (non-intermingled) path emits `Concat(RecordTypeKey, Field(col)…)`,
-// and the RecordTypeKey prefix in the range tuple naturally scopes
-// the FDB scan to the right record type. The bare FieldKeyExpression
-// branch — which SQL DDL only emits for `SetIntermingleTables(true)`
-// schemas — has NO type filter; an intermingled multi-table schema
-// where different types share a PK column space could return a
-// wrong-typed record at the same key. We bail on that shape until
-// a type-filtering wrapper is added; the scan path still handles
-// intermingled tables correctly.
+// making up the primary key, or nil for unrecognised key expression
+// types. Handles both CompositeKeyExpression (default SQL DDL path:
+// `Concat(RecordTypeKey, Field(col)…)`) and bare FieldKeyExpression
+// (intermingled-table path: `Field(col)` with no RecordTypeKey
+// prefix). Callers like UPDATE's PK-modification guard and pushdown
+// use the returned names; pushdown callers additionally check for
+// the RecordTypeKey prefix in their own scan-range construction.
 func extractPKUserFields(pk recordlayer.KeyExpression) []string {
 	if e, ok := pk.(*recordlayer.CompositeKeyExpression); ok {
 		// FieldNames() on a CompositeKeyExpression returns just the
 		// Field children, not the RecordTypeKey (which contributes no
 		// named column). That's exactly the user field list.
 		return e.FieldNames()
+	}
+	if f, ok := pk.(*recordlayer.FieldKeyExpression); ok {
+		return f.FieldNames()
 	}
 	return nil
 }
