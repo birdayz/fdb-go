@@ -33,12 +33,17 @@ func unpackInt(b []byte) (int, bool) {
 // fakeOutOfBandCursor wraps a cursor and returns TimeLimitReached after limit
 // items. Matches Java's FakeOutOfBandCursor used in RecordCursorTest.
 func fakeOutOfBandCursor[T any](inner RecordCursor[T], limit int) RecordCursor[T] {
-	return &outOfBandCursor[T]{inner: inner, limit: limit}
+	return &outOfBandCursor[T]{inner: inner, limit: limit, reason: TimeLimitReached}
+}
+
+func fakeOutOfBandCursorWithReason[T any](inner RecordCursor[T], limit int, reason NoNextReason) RecordCursor[T] {
+	return &outOfBandCursor[T]{inner: inner, limit: limit, reason: reason}
 }
 
 type outOfBandCursor[T any] struct {
 	inner   RecordCursor[T]
 	limit   int
+	reason  NoNextReason
 	count   int
 	lastCon RecordCursorContinuation
 }
@@ -49,7 +54,7 @@ func (c *outOfBandCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T],
 		if cont == nil {
 			cont = &BytesContinuation{}
 		}
-		return NewResultNoNext[T](TimeLimitReached, cont), nil
+		return NewResultNoNext[T](c.reason, cont), nil
 	}
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
@@ -1799,6 +1804,25 @@ var _ = Describe("CursorCombinators", func() {
 		contBytes, err := cont.ToBytes()
 		Expect(err).NotTo(HaveOccurred())
 		cursor = fakeOutOfBandCursor(FromListWithContinuation(list, contBytes), 3)
+		items, cont = collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{4, 5}))
+		Expect(cont.IsEnd()).To(BeTrue())
+	})
+
+	// Port of Java's testMapAsyncScanLimitReasons: MapCursor with
+	// ScanLimitReached instead of TimeLimitReached. No special handling
+	// needed — scan limits pass through like time limits.
+	It("testMapAsyncScanLimitReasons", func() {
+		list := []int{1, 2, 3, 4, 5}
+		cursor := MapCursor(fakeOutOfBandCursorWithReason(FromList(list), 3, ScanLimitReached), func(i int) int { return i })
+		items, cont := collectUntilStop(ctx, cursor)
+		Expect(items).To(Equal([]int{1, 2, 3}))
+		Expect(cont).NotTo(BeNil())
+		Expect(cont.IsEnd()).To(BeFalse())
+
+		contBytes, err := cont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor = MapCursor(fakeOutOfBandCursorWithReason(FromListWithContinuation(list, contBytes), 3, ScanLimitReached), func(i int) int { return i })
 		items, cont = collectUntilStop(ctx, cursor)
 		Expect(items).To(Equal([]int{4, 5}))
 		Expect(cont.IsEnd()).To(BeTrue())
