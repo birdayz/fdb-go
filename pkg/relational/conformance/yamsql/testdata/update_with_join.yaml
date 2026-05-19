@@ -1,0 +1,22 @@
+# update_with_join.yaml — UPDATE with subquery-based conditions
+#
+# Exercises UPDATE ... WHERE with subqueries that reference other tables.
+name: update_with_join
+schema_template: |
+  CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, category STRING, PRIMARY KEY (id))
+  CREATE TABLE discounts (id BIGINT NOT NULL, category STRING, pct BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO products VALUES (1, 'Widget', 100, 'A'), (2, 'Gadget', 200, 'B'), (3, 'Doohickey', 50, 'A'), (4, 'Thingamajig', 300, 'C')
+  - INSERT INTO discounts VALUES (10, 'A', 20)
+tests:
+  # UPDATE products with a discount-matching category
+  - query: >
+      UPDATE products SET price = price - 10
+      WHERE EXISTS (SELECT 1 FROM discounts d WHERE d.category = products.category)
+    rows: []
+  - query: SELECT id, name, price FROM products ORDER BY id
+    rows:
+      - [1, "Widget", 90]
+      - [2, "Gadget", 200]
+      - [3, "Doohickey", 40]
+      - [4, "Thingamajig", 300]

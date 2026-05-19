@@ -1,0 +1,39 @@
+# order_by_aggregate.yaml — ORDER BY aggregate expressions
+#
+# Exercises ORDER BY with aggregate functions, which requires
+# the ORDER BY to reference the aggregated output.
+name: order_by_aggregate
+schema_template: |
+  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales VALUES (1, 'east', 100), (2, 'east', 200), (3, 'west', 50), (4, 'north', 150), (5, 'north', 100), (6, 'north', 50)
+tests:
+  # ORDER BY SUM descending
+  - query: >
+      SELECT region, SUM(amount) FROM sales
+      GROUP BY region
+      ORDER BY SUM(amount) DESC
+    rows:
+      - ["east", 300]
+      - ["north", 300]
+      - ["west", 50]
+
+  # ORDER BY COUNT
+  - query: >
+      SELECT region, COUNT(*) FROM sales
+      GROUP BY region
+      ORDER BY COUNT(*)
+    rows:
+      - ["east", 2]
+      - ["west", 1]
+      - ["north", 3]
+
+  # ORDER BY alias
+  - query: >
+      SELECT region, SUM(amount) AS total FROM sales
+      GROUP BY region
+      ORDER BY total
+    rows:
+      - ["west", 50]
+      - ["east", 300]
+      - ["north", 300]
