@@ -1,0 +1,43 @@
+# multi_feature_join_agg_exists.yaml — Combined JOIN + aggregate + EXISTS
+#
+# Exercises complex queries combining multiple SQL features.
+name: multi_feature_join_agg_exists
+schema_template: |
+  CREATE TABLE stores (id BIGINT NOT NULL, name STRING, city STRING, PRIMARY KEY (id))
+  CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))
+  CREATE TABLE inventory (store_id BIGINT NOT NULL, product_id BIGINT NOT NULL, qty BIGINT, PRIMARY KEY (store_id, product_id))
+setup:
+  - INSERT INTO stores VALUES (1, 'Downtown', 'NYC'), (2, 'Mall', 'NYC'), (3, 'Outlet', 'LA')
+  - INSERT INTO products VALUES (10, 'Widget', 100), (20, 'Gadget', 200), (30, 'Doohickey', 50)
+  - INSERT INTO inventory VALUES (1, 10, 50), (1, 20, 30), (2, 10, 20), (2, 30, 100), (3, 10, 10), (3, 20, 5)
+tests:
+  # Stores with total inventory value
+  - query: >
+      SELECT s.name, SUM(p.price * i.qty) FROM stores s, inventory i, products p
+      WHERE i.store_id = s.id AND i.product_id = p.id
+      GROUP BY s.name ORDER BY s.name
+    rows:
+      - ["Downtown", 11000]
+      - ["Mall", 7000]
+      - ["Outlet", 2000]
+
+  # Stores carrying the most expensive product
+  - query: >
+      SELECT s.name FROM stores s
+      WHERE EXISTS (
+        SELECT 1 FROM inventory i
+        WHERE i.store_id = s.id AND i.product_id = 20
+      )
+      ORDER BY s.name
+    rows:
+      - ["Downtown"]
+      - ["Outlet"]
+
+  # NYC stores product count
+  - query: >
+      SELECT s.name, COUNT(i.product_id) FROM stores s, inventory i
+      WHERE i.store_id = s.id AND s.city = 'NYC'
+      GROUP BY s.name ORDER BY s.name
+    rows:
+      - ["Downtown", 2]
+      - ["Mall", 2]
