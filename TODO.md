@@ -130,6 +130,8 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [x] **Aggregate alias detection via `"("` hack** — `plan_visitor.go:1001` used `strings.Contains(visibleProj[i], "(")` to detect aggregates. Replaced with structural tracking: `hasAggAlias` set inside the aggFunc loop where the type is already known.
 - [x] **ORDER BY sentinel string hack** — `__orderby_expr_` prefix matching via `strings.HasPrefix` replaced with `isSyntheticExpr bool` field on `orderByClause`.
 - [x] **Join type string literals** — `"INNER"`, `"LEFT"`, `"RIGHT"` string comparisons scattered across 6 files replaced with typed constants `joinTypeInner`, `joinTypeLeft`, `joinTypeRight`.
+- [x] **INSERT/UPDATE type mismatch error code** — `proto_value.go:269` used ErrCodeInvalidParameter (22023) for type mismatch at proto field assignment. Java's SemanticException maps to CANNOT_CONVERT_TYPE (22000). Fixed + test expectation updated.
+- [x] **Review fixes** — `classifyComparisonOp` DISTINCT guard, `extractColOpLiteral` pushdown operator allowlist restored, null→UNKNOWN comment restored.
 
 ---
 
