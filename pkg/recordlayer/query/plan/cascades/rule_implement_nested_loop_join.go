@@ -461,56 +461,64 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		return false
 	}
 
-	// Find an equality predicate that matches: outer.X = inner.PK[0].
-	// Residual predicates are wrapped in a Filter above the FlatMap.
+	// Find equality predicates matching leading PK columns. For composite
+	// PKs like (customer_id, order_num), match as many leading columns as
+	// have equality predicates. Unmatched trailing PK columns become
+	// residual filters. This turns O(N×M) NLJ into O(N×logM) prefix scan.
 	preds := flattenAndPredicates(sel.GetPredicates())
 	innerPrefix := strings.ToUpper(rightAlias) + "."
 	outerPrefix := strings.ToUpper(leftAlias) + "."
-	pkCol := strings.ToUpper(pkCols[0])
+	outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
 
-	for _, pred := range preds {
-		cp, ok := pred.(*predicates.ComparisonPredicate)
-		if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
-			continue
+	var matchedRanges []*predicates.ComparisonRange
+	matchedPreds := make(map[int]bool)
+	for _, pkColRaw := range pkCols {
+		pkCol := strings.ToUpper(pkColRaw)
+		found := false
+		for pi, pred := range preds {
+			if matchedPreds[pi] {
+				continue
+			}
+			cp, ok := pred.(*predicates.ComparisonPredicate)
+			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
+				continue
+			}
+			if cp.Operand == nil || cp.Comparison.Operand == nil {
+				continue
+			}
+			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
+			if outerVal == nil {
+				continue
+			}
+			bareField := outerVal.Field
+			if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+				bareField = bareField[len(outerPrefix):]
+			}
+			correlatedOperand := values.NewFieldValue(
+				values.NewQuantifiedObjectValue(outerCorrelation),
+				bareField, outerVal.Typ,
+			)
+			correlatedComp := &predicates.Comparison{
+				Type:    predicates.ComparisonEquals,
+				Operand: correlatedOperand,
+			}
+			cr := predicates.EmptyComparisonRange()
+			mergeResult := cr.Merge(correlatedComp)
+			if !mergeResult.Ok {
+				continue
+			}
+			matchedRanges = append(matchedRanges, mergeResult.Range)
+			matchedPreds[pi] = true
+			found = true
+			break
 		}
-		if cp.Operand == nil || cp.Comparison.Operand == nil {
-			continue
+		if !found {
+			break
 		}
+	}
 
-		// Check both directions: LHS=outer.FK, RHS=inner.PK or vice versa.
-		outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
-		if outerVal == nil {
-			continue
-		}
-
-		// Build correlated inner scan: the PK comparison operand is a
-		// FieldValue with a QuantifiedObjectValue child referencing the
-		// outer correlation. When evaluated, it extracts the FK field
-		// from the correlated outer row.
-		//
-		// Strip the alias prefix — the raw outer row has unqualified keys
-		// (e.g. "CUSTOMER_ID"), not qualified ("ORDERS.CUSTOMER_ID").
-		outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
-		bareField := outerVal.Field
-		if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
-			bareField = bareField[len(outerPrefix):]
-		}
-		correlatedOperand := values.NewFieldValue(
-			values.NewQuantifiedObjectValue(outerCorrelation),
-			bareField, outerVal.Typ,
-		)
-
-		correlatedComp := &predicates.Comparison{
-			Type:    predicates.ComparisonEquals,
-			Operand: correlatedOperand,
-		}
-		cr := predicates.EmptyComparisonRange()
-		mergeResult := cr.Merge(correlatedComp)
-		if !mergeResult.Ok {
-			continue
-		}
-
-		correlatedScan := innerScan.WithScanComparisons([]*predicates.ComparisonRange{mergeResult.Range})
+	if len(matchedRanges) > 0 {
+		correlatedScan := innerScan.WithScanComparisons(matchedRanges)
 
 		innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
 		flatMapPlan := plans.NewRecordQueryFlatMapPlan(
@@ -527,12 +535,9 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			flatMapPlan.SetNotExists(true)
 		}
 
-		// Split residual predicates: outer-only → push below FlatMap
-		// (with alias prefix stripped so they match raw scan keys).
-		// Cross-table → stay above.
 		var outerPreds, abovePreds []predicates.QueryPredicate
-		for _, p := range preds {
-			if p == pred {
+		for pi, p := range preds {
+			if matchedPreds[pi] {
 				continue
 			}
 			if predicateReferencesAlias(p, rightAlias) {
