@@ -200,13 +200,11 @@ type QueryPredicate interface {
 	// debug + plan-diff output.
 	Explain() string
 
-	// GetCorrelatedTo returns the set of CorrelationIdentifiers
-	// this predicate references, NOT including descendants. Each
-	// concrete type contributes its own correlations: Values
-	// carried by the predicate, existential aliases, parameter
-	// aliases, etc. Compound predicates (And/Or/Not) union their
-	// children's correlations. Mirrors Java's
-	// QueryPredicate.getCorrelatedTo().
+	// GetCorrelatedTo returns the transitive set of CorrelationIdentifiers
+	// this predicate and all its descendants reference. Each concrete
+	// type contributes its own correlations (Values, existential aliases,
+	// parameter aliases) plus the union of all children's correlations.
+	// Mirrors Java's QueryPredicate.getCorrelatedTo() which is transitive.
 	GetCorrelatedTo() map[values.CorrelationIdentifier]struct{}
 }
 

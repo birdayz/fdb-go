@@ -607,7 +607,7 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 
 			outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
 			bareField := outerVal.Field
-			if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+			if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
 				bareField = bareField[len(outerPrefix):]
 			}
 			correlatedOperand := values.NewFieldValue(
@@ -738,7 +738,7 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			// Build correlated index scan.
 			outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
 			bareField := outerVal.Field
-			if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+			if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
 				bareField = bareField[len(outerPrefix):]
 			}
 			correlatedOperand := values.NewFieldValue(
@@ -819,7 +819,7 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 ) bool {
 	outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
 	bareField := outerVal.Field
-	if strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
+	if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
 		bareField = bareField[len(outerPrefix):]
 	}
 	correlatedOperand := values.NewFieldValue(

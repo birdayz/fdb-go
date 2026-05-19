@@ -19,8 +19,9 @@ import (
 //
 // Go simplification: no async pipelining (Java uses pipeline depth 5
 // for overlapping FDB I/O). Continuation: Go uses FlatMapContinuation
-// proto (outer+inner); check_value not populated (no concurrent-
-// modification detection).
+// proto (outer+inner+check_value). check_value stores the outer row's
+// PK bytes; on resume, verifies the outer row hasn't changed between
+// transactions (concurrent-modification detection).
 type flatMapCursor struct {
 	outerCursor   recordlayer.RecordCursor[QueryResult]
 	innerPlan     plans.RecordQueryPlan
