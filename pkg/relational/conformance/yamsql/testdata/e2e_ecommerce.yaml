@@ -1,0 +1,63 @@
+# e2e_ecommerce.yaml — end-to-end ecommerce scenario
+#
+# Exercises the full SQL pipeline with a realistic ecommerce schema:
+# JOINs, EXISTS, NOT EXISTS, GROUP BY, HAVING, ORDER BY, LIMIT,
+# INSERT SELECT, UPDATE WHERE, DELETE WHERE.
+name: e2e_ecommerce
+schema_template: |
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, tier STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, total BIGINT, status STRING, PRIMARY KEY (id))
+  CREATE TABLE order_items (id BIGINT NOT NULL, order_id BIGINT NOT NULL, product STRING, qty BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Alice', 'gold'), (2, 'Bob', 'silver'), (3, 'Charlie', 'gold'), (4, 'Diana', 'bronze')
+  - INSERT INTO orders VALUES (100, 1, 500, 'shipped'), (101, 1, 200, 'pending'), (102, 2, 300, 'shipped'), (103, 3, 100, 'cancelled')
+  - INSERT INTO order_items VALUES (1000, 100, 'Widget', 2), (1001, 100, 'Gadget', 1), (1002, 101, 'Widget', 5), (1003, 102, 'Doohickey', 3)
+tests:
+  # Basic join: orders with customer names
+  - query: SELECT c.name, o.total FROM customers c, orders o WHERE o.customer_id = c.id ORDER BY o.total
+    result:
+      - ["Charlie", 100]
+      - ["Alice", 200]
+      - ["Bob", 300]
+      - ["Alice", 500]
+
+  # Aggregate: total revenue per customer
+  - query: SELECT c.name, SUM(o.total) FROM customers c, orders o WHERE o.customer_id = c.id GROUP BY c.name ORDER BY c.name
+    result:
+      - ["Alice", 700]
+      - ["Bob", 300]
+      - ["Charlie", 100]
+
+  # HAVING: customers with > 1 order
+  - query: SELECT c.name FROM customers c, orders o WHERE o.customer_id = c.id GROUP BY c.name HAVING COUNT(o.id) > 1
+    result:
+      - ["Alice"]
+
+  # EXISTS: customers who have shipped orders
+  - query: SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped') ORDER BY c.name
+    result:
+      - ["Alice"]
+      - ["Bob"]
+
+  # NOT EXISTS: customers with no orders at all
+  - query: SELECT c.name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY c.name
+    result:
+      - ["Diana"]
+
+  # NOT EXISTS + WHERE: gold customers with no shipped orders
+  - query: SELECT c.name FROM customers c WHERE c.tier = 'gold' AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped') ORDER BY c.name
+    result:
+      - ["Charlie"]
+
+  # LIMIT on join
+  - query: SELECT c.name, o.total FROM customers c, orders o WHERE o.customer_id = c.id ORDER BY o.total DESC LIMIT 2
+    result:
+      - ["Alice", 500]
+      - ["Bob", 300]
+
+  # UPDATE: mark cancelled orders as archived
+  - query: UPDATE orders SET status = 'archived' WHERE status = 'cancelled'
+    rows: []
+  - query: SELECT id, status FROM orders WHERE id = 103
+    result:
+      - [103, "archived"]
