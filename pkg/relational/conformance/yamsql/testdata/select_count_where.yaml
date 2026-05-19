@@ -1,0 +1,37 @@
+# select_count_where.yaml — COUNT with various WHERE predicates
+#
+# Exercises COUNT(*) and COUNT(col) with different filter conditions.
+name: select_count_where
+schema_template: |
+  CREATE TABLE events (id BIGINT NOT NULL, type STRING, severity BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO events VALUES (1, 'error', 3), (2, 'warn', 2), (3, 'error', 3), (4, 'info', 1), (5, 'warn', 2), (6, 'error', 1)
+tests:
+  # COUNT with equality filter
+  - query: SELECT COUNT(*) FROM events WHERE type = 'error'
+    rows:
+      - [3]
+
+  # COUNT with inequality filter
+  - query: SELECT COUNT(*) FROM events WHERE severity >= 2
+    rows:
+      - [4]
+
+  # COUNT with IN filter
+  - query: SELECT COUNT(*) FROM events WHERE type IN ('error', 'warn')
+    rows:
+      - [5]
+
+  # COUNT with LIKE filter
+  - query: SELECT COUNT(*) FROM events WHERE type LIKE 'e%'
+    rows:
+      - [3]
+
+  # GROUP BY with COUNT and filter
+  - query: >
+      SELECT type, COUNT(*) FROM events
+      WHERE severity > 1
+      GROUP BY type ORDER BY type
+    rows:
+      - ["error", 2]
+      - ["warn", 2]
