@@ -868,47 +868,13 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	return true
 }
 
-// stripAliasFromPredicates creates copies of predicates with the alias
-// prefix stripped from FieldValue.Field names. E.g. "O.ID" → "ID" when
-// prefix is "O.". Used when pushing predicates below the FlatMap to the
-// raw scan output which has unqualified keys.
+// stripAliasFromPredicates delegates to stripAliasPrefixFromPredicates
+// (rule_push_filter_below_join.go) which correctly recurses into all
+// predicate types (AND/OR/NOT/Value) and all value types (Arithmetic,
+// Cast, ScalarFunction, etc.) via values.MapFieldValues.
 func stripAliasFromPredicates(preds []predicates.QueryPredicate, prefix string) []predicates.QueryPredicate {
-	out := make([]predicates.QueryPredicate, len(preds))
-	for i, p := range preds {
-		out[i] = stripAliasFromPredicate(p, prefix)
-	}
-	return out
-}
-
-func stripAliasFromPredicate(p predicates.QueryPredicate, prefix string) predicates.QueryPredicate {
-	cp, ok := p.(*predicates.ComparisonPredicate)
-	if !ok {
-		return p
-	}
-	newOp := stripAliasFromValue(cp.Operand, prefix)
-	newCompOp := stripAliasFromValue(cp.Comparison.Operand, prefix)
-	return &predicates.ComparisonPredicate{
-		Operand: newOp,
-		Comparison: predicates.Comparison{
-			Type:    cp.Comparison.Type,
-			Operand: newCompOp,
-		},
-	}
-}
-
-func stripAliasFromValue(v values.Value, prefix string) values.Value {
-	if v == nil {
-		return nil
-	}
-	fv, ok := v.(*values.FieldValue)
-	if !ok {
-		return v
-	}
-	field := fv.Field
-	if strings.HasPrefix(strings.ToUpper(field), prefix) {
-		field = field[len(prefix):]
-	}
-	return &values.FieldValue{Field: field, Typ: fv.Typ, Child: fv.Child}
+	alias := strings.TrimSuffix(prefix, ".")
+	return stripAliasPrefixFromPredicates(preds, alias)
 }
 
 // matchJoinPKPredicate checks if a comparison predicate matches the
