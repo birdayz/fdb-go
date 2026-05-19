@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
@@ -43,6 +45,7 @@ type flatMapCursor struct {
 	lastOuterContinuation  recordlayer.RecordCursorContinuation
 	initialInnerCont       []byte
 	hasPendingInner        bool
+	pendingCheckValue      []byte
 }
 
 func newFlatMapCursor(
@@ -159,6 +162,15 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		c.priorOuterContinuation = c.lastOuterContinuation
 		c.lastOuterContinuation = outerResult.GetContinuation()
 
+		if len(c.pendingCheckValue) > 0 && outerRow.PrimaryKey != nil {
+			currentCheck := outerRow.PrimaryKey.Pack()
+			if !bytes.Equal(currentCheck, c.pendingCheckValue) {
+				return recordlayer.RecordCursorResult[QueryResult]{},
+					fmt.Errorf("flatMap: outer row changed between transactions (check_value mismatch)")
+			}
+			c.pendingCheckValue = nil
+		}
+
 		// Bind the outer row as a correlation and execute the inner plan.
 		// Use initialInnerCont for the first outer row on resume.
 		outerDatum, _ := outerRow.Datum.(map[string]any)
@@ -205,6 +217,10 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 	}
 
 	fmc := &gen.FlatMapContinuation{}
+
+	if c.currentOuter != nil && c.currentOuter.PrimaryKey != nil {
+		fmc.CheckValue = c.currentOuter.PrimaryKey.Pack()
+	}
 
 	if innerTimeLimited && innerCont != nil && !innerCont.IsEnd() {
 		if c.priorOuterContinuation != nil && !c.priorOuterContinuation.IsEnd() {
