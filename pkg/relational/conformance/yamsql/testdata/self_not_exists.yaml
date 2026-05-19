@@ -1,0 +1,39 @@
+# self_not_exists.yaml — NOT EXISTS on the same table (self-referential)
+#
+# Exercises correlated NOT EXISTS where the inner table is the same
+# as the outer table (different alias). This tests self-referential
+# queries like "employees who manage no one."
+name: self_not_exists
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, manager_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'CEO', NULL), (2, 'VP', 1), (3, 'Dir', 2), (4, 'Eng', 3), (5, 'Eng2', 3)
+tests:
+  # Employees who are NOT managers (no one reports to them)
+  - query: >
+      SELECT e.name FROM emp e
+      WHERE NOT EXISTS (SELECT 1 FROM emp sub WHERE sub.manager_id = e.id)
+      ORDER BY e.name
+    result:
+      - ["Eng"]
+      - ["Eng2"]
+
+  # Employees who ARE managers
+  - query: >
+      SELECT e.name FROM emp e
+      WHERE EXISTS (SELECT 1 FROM emp sub WHERE sub.manager_id = e.id)
+      ORDER BY e.name
+    result:
+      - ["CEO"]
+      - ["Dir"]
+      - ["VP"]
+
+  # Leaf employees (not managers) with a specific manager
+  - query: >
+      SELECT e.name FROM emp e
+      WHERE e.manager_id = 3
+      AND NOT EXISTS (SELECT 1 FROM emp sub WHERE sub.manager_id = e.id)
+      ORDER BY e.name
+    result:
+      - ["Eng"]
+      - ["Eng2"]
