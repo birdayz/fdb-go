@@ -3337,6 +3337,77 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 	t.Logf("NOT EXISTS + WHERE predicate → %v ✓", ids)
 }
 
+func TestFDB_NestedAggregateRejection(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/nest_agg_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_na_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, g BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10, 1), (2, 20, 1), (3, 30, 2)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"SUM(MAX(v))", "SELECT SUM(MAX(v)) FROM t GROUP BY g"},
+		{"MAX(SUM(COUNT(*)))", "SELECT MAX(SUM(COUNT(*))) FROM t GROUP BY g"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := db.QueryContext(ctx, tc.query)
+			if err == nil {
+				t.Fatal("expected error for nested aggregate, got nil")
+			}
+			if !strings.Contains(err.Error(), "0A000") && !strings.Contains(err.Error(), "nested aggregate") {
+				t.Fatalf("expected 0A000 or nested aggregate error, got: %v", err)
+			}
+		})
+	}
+
+	// Non-nested aggregates work fine
+	rows, err := db.QueryContext(ctx, "SELECT SUM(v) FROM t GROUP BY g ORDER BY g")
+	if err != nil {
+		t.Fatalf("non-nested aggregate failed: %v", err)
+	}
+	defer rows.Close()
+	var results []int64
+	for rows.Next() {
+		var sum int64
+		if err := rows.Scan(&sum); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		results = append(results, sum)
+	}
+	if len(results) != 2 || results[0] != 30 || results[1] != 30 {
+		t.Fatalf("expected [30, 30], got %v", results)
+	}
+}
+
 func TestFDB_InListMultiValue(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
