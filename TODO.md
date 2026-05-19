@@ -1,179 +1,183 @@
 # TODOs
 
-Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
+FoundationDB Record Layer — Go Port. Java version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
+
+Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 34 plan types, 48 value types, 9 predicate types.
 
 ---
 
-## CRITICAL — Streaming cursor architecture (DONE)
+## CRITICAL
 
-**Resolved.** Replaced `CollectAll`-based blocking operators with Java-aligned streaming cursors. Every blocking operator (aggregation, sort, NLJ) is now a cursor that processes records one-by-one, propagates `TimeLimitReached`, and serializes partial state into protobuf continuations (`AggregateCursorContinuation`, `MemorySortContinuation`). The pagination layer recreates the cursor hierarchy per transaction from the composite continuation. Hash aggregation removed — streaming only (Java-aligned). 10K: 22/22 tests pass. 100K: 16/19 pass (3 remaining are intermittent FDB Docker issues + planner limitation).
+### Correctness bugs
 
-Go's blocking operators call `CollectAll(ctx, innerCursor)` which drains the cursor into a `[]QueryResult` and **discards the stop reason**. When the leaf cursor hits the 4s time limit, `CollectAll` gets partial rows, doesn't know they're partial, and the operator produces wrong results. The `TimeLimitReached` signal is swallowed at the `CollectAll` boundary.
+- [x] IN-list returning 0 rows — NLJ matched ExplodeExpression quantifiers, couldn't merge scalar outer with map inner. Fix: Explode guard in ImplementNestedLoopJoinRule.
+- [x] Nested aggregates panic — SUM(MAX(v)) reached executor, panicked. Fix: parse-time ANTLR tree walk rejection.
+- [x] HAVING EXISTS silently wrong — correlation references pre-GROUP-BY scope. Fix: reject at translation time.
+- [x] NLJ NULL-key ambiguity — bare-key fallback in evaluateCorrelated returned wrong table's value. Fix: qualified-key-only lookup, no fallback.
+- [x] NOT EXISTS returned EXISTS results — translator dropped NOT(ExistsPredicate) from predicate list.
+- [x] EXISTS outer-only predicates pushed to inner plan — all residuals went to inner/join instead of splitting outer-only.
+- [x] Nested NOT EXISTS dropped middle-level correlation — hoisting replaced middle plan with innermost.
+- [x] stripAliasFromPredicate only handled ComparisonPredicate — silently passed OR/AND/NOT unchanged. Fix: delegate to recursive stripAliasPredicate.
 
-**What Java does per operator:**
+### Architectural correctness gaps
 
-| Operator | Java cursor | State in continuation |
-|---|---|---|
-| Streaming aggregation | `AggregateCursor` | partial accumulator (running SUM, current group key) |
-| Sort | `MemorySortCursor` | all buffered records + inner continuation |
-| FlatMap/NLJ | `FlatMapPipelinedCursor` | outer position + inner continuation + correlation bindings |
-
-Each processes records one-by-one, detects `TimeLimitReached` from the inner cursor, serializes partial state, and returns `TimeLimitReached` to the caller. Zero data loss.
-
-**Fix:** Replace `CollectAll`-based blocking operators with cursor implementations that:
-1. Process inner records incrementally (not drain-then-process)
-2. Detect `TimeLimitReached` from the inner cursor after each record
-3. Serialize partial operator state (accumulator, sorted buffer) into the continuation
-4. On resume: deserialize state, resume inner cursor, continue processing
-
-**Affected operators and their Java equivalents:**
-- `executeAggregation` → port `AggregateCursor` + `StreamGrouping` with `PartialAggregationResult` proto
-- `executeSort` / `executeInMemorySort` → port `MemorySortCursor` with buffered-records continuation
-- `executeNestedLoopJoin` → port `FlatMapPipelinedCursor` with outer+inner dual continuation
-- `executeIntersection` → port incremental intersection with per-side continuations
-
-See `RFC_TRANSACTION_PAGINATION.md` and `STRESS_RELATIONAL.md` for full analysis.
-
-### Fixed: silent FDB timeout truncation
-
-~~Queries return partial results without errors when the 5s FDB transaction limit is hit.~~
-
-**FIXED.** `keyValueCursor.nextKV()` now propagates FDB errors. `paginatingRows` replaces the single-transaction `cascadesRows` with cross-transaction pagination (`TimeLimit=4s` per page, continuation-based resume). Leaf scans (SELECT, ORDER BY PK, index scans) now paginate correctly at 100K+. Blocking operators still get partial input — see above.
-
-### Fixed: PK lookups scale O(N)
-
-~~Single-row PK lookup: 250ms at 10K, 6 seconds at 100K.~~
-
-**FIXED.** Registered `PrimaryScanMatchCandidate` in `GetMatchCandidates()`. Fixed `ImplementIndexScanRule` to handle `RecordQueryScanPlan`. Fixed `ToScanPlan()` to use `queriedRecordTypes`. PK lookup at 100K: **1ms** (was 6s).
-
-### NLJ JOIN predicates not pushed into plan
-
-`SELECT ... FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10` takes **42s** at 10K. The Cascades planner produces `Filter(predicates, NLJ(Scan, Scan))` — the NLJ has **zero predicates** and materializes the full cross-product (10M pairs). Join conditions live in a separate Filter above the NLJ.
-
-**Fix:** `ImplementNestedLoopJoinRule` must absorb predicates from the parent `LogicalFilterExpression` into the NLJ plan. Then the existing hash join infrastructure in the executor activates (equi-join key extraction, hash index build). Port Java's `FlatMapPlan` with correlation bindings for correlated joins (EXISTS subqueries).
+- [ ] **FieldValue string-qualification → CorrelationIdentifier-based resolution.** Go resolves `emp.name` → `FieldValue{Field: "EMP.NAME"}`. Java resolves → `FieldValue(QOV(correlation), "name")`. Entry point: `pkg/relational/core/query/expr/expr.go:227`. Code already has TODO comment (line 189-191). In-progress on `field-value-correlation` branch — step 1 (evaluateCorrelated) and step 2 (ResolveIdentifier change) done, 46/46 tests pass. Remaining: update all `qualifyBareFieldValue` call sites, remove dead `stripAlias*` code, port Java's `Value.rebase(AliasMap)` for proper correlation translation (currently Go strips QOV child instead of rebasing).
+- [ ] **JoinMergeResultValue → RecordConstructorValue.** Go defers column enumeration to eval time (merges all fields from both correlations). Java enumerates columns at plan time with schema metadata. Fix: pass RecordMetaData to translator. Same root cause as FieldValue qualification — both need schema metadata in translator.
+- [ ] **HAVING EXISTS.** Currently rejected ("could not plan query"). Java doesn't support it either (no test coverage), but the correct long-term fix is implementing Java's `pullUp` which rewrites values from pre-GROUP-BY scope to post-GROUP-BY scope. Multi-shift effort.
 
 ---
 
-## CRITICAL — FlatMap Java alignment (MOSTLY DONE)
+## HIGH
 
-Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT how Java does it. Java evaluates a `resultValue` expression with both outer and inner bound as correlations. The `mergeRows` hack breaks for same-column-name joins and doesn't match Java's data flow.
+### Missing Java infrastructure
 
-**What Java does (RecordQueryFlatMapPlan.executePlan):**
-1. Binds outer result as `CORRELATION` under `outerQuantifier.getAlias()`
-2. Executes inner plan with correlated context + innerContinuation
-3. For each inner result: binds BOTH outer AND inner as correlations → evaluates `resultValue` → produces output row
-4. `resultValue` is a Value tree (RecordConstructorValue) that explicitly selects fields from both correlations
+- [ ] **Correlated.rebase(AliasMap)** — Java rebases all correlation references when moving predicates/values between scopes. Go uses string-stripping (stripAliasFromPredicates) which is fragile. Needed for correct predicate push-down through arbitrary plan trees.
+- [ ] **getCorrelatedTo() on all predicates** — Java uses `predicate.getCorrelatedTo()` (Set<CorrelationIdentifier>) for predicate classification in join rules. Go uses `predicateReferencesAlias()` walker with string matching. Functional equivalent exists (`GetCorrelatedToOfPredicate`) but not wired to the interface. Should be a method on QueryPredicate.
+- [ ] **Plan proto serialization** — Java serializes plans to protobuf for continuation tokens and plan cache. Go plans are not serializable. Blocks cross-transaction plan reuse and wire-compatible continuation tokens.
+- [ ] **Value type proto serialization** — Same as above for Value trees.
+- [ ] **Covering index for SQL** — Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord`, `CollapseRecordConstructorOverFieldsToStar`. Planner infrastructure exists but unreachable from SQL because projections prevent `IsFinalNeeded()=false`.
 
-**What Go currently does (wrong):**
-1. Binds outer datum as correlation ✓
-2. Executes inner plan ✓
-3. Calls `mergeRows(outer, inner, aliases)` — Go-specific hack that breaks for ambiguous columns
+### Missing comparison subclasses
 
-**Fix (must be done as a unit, no intermediate states):**
-- [x] `RecordQueryFlatMapPlan` carries `resultValue values.Value` + `inheritOuterRecordProperties`
-- [x] `flatMapCursor` binds BOTH outer and inner as correlations, evaluates `resultValue` — no `mergeRows`
-- [x] `JoinMergeResultValue` produces merged map with qualified keys from both correlation bindings
-- [x] Multi-predicate support: absorb equi-join into correlated scan, residual predicates above or inside inner
-- [x] Same-column-name joins — `deriveColumnsFromFlatMap` handles qualified keys
-- [x] `FlatMapContinuation` proto: wired (outer + inner position serialized/deserialized)
-- [x] Secondary index FlatMap: correlated index scans via MatchCandidate
-- [x] EXISTS/NOT EXISTS FlatMap mode with multi-predicate support (alias-stripped inner filter)
-- [x] LEFT OUTER FlatMap with correct NULL row emission
-- [x] Outer-only predicate push-down below FlatMap (alias-stripped)
-- [x] Result value ownership aligned with Java: translator creates JoinMergeResultValue, rule passes through sel.GetResultValue() (nightshift-97)
-- [ ] Replace `JoinMergeResultValue` with proper `RecordConstructorValue` (requires translator to produce field-level resultValue for joins — needs schema metadata at translation time)
-- [ ] `check_value` field in FlatMapContinuation (concurrent-modification detection between transactions) (implemented in generic FlatMapPipelinedWithCheck; executor-level cursor does not use it — documented)
+- [ ] **ParameterComparison** — prepared statement parameter binding in scan comparisons. Currently parameters only work in filter predicates, not pushed into scan ranges.
+- [ ] **MultiColumnComparison** — composite key comparisons for multi-column index scans. Currently only first PK column matches.
+- [ ] **OpaqueEqualityComparison** — opaque equality for index-specific comparisons.
+- [ ] **InvertedFunctionComparison** — function-based index lookups.
 
-### Test coverage gaps vs Java (from audit of RecordCursorTest.java + JoinWithLimitTest.java)
+### Type safety
 
-- [x] **Multi-step FlatMap continuation under TIME_LIMIT**: testFlatMapReasons (5×5 grid, 6 cycles), pipelineWithInnerLimits, pipelineWithOuterLimits — both out-of-band and row-limit variants. Fixed two continuation bugs: priorOuterCont nil on resume, pending inner dropped on outer stop. (swingshift-96)
-- [x] **OrElse (NOT EXISTS) under TIME_LIMIT**: Ported all 4 Java tests. Added OrElseWithContinuation with OrElseContinuation proto serialization. (swingshift-96)
-- [x] **Inner/outer limit grid tests**: Both out-of-band (TimeLimitReached) and in-band (ReturnLimitReached) variants ported via iterateGrid helper. (swingshift-96)
-- [x] **testFakeTimeLimitReasons, testFilteredMapAsyncReasons1/3, testMapAsyncScanLimitReasons**: Ported from Java RecordCursorTest. (nightshift-97)
-- [ ] **JOIN continuation resume at SQL level**: Requires EXECUTE CONTINUATION implementation (parsed but not wired). Multi-shift effort.
-- [x] **EXISTS + 3-way join + ORDER BY plan shape**: (covered by join_exists_self.yaml, correlated_exists_advanced.yaml, flatmap_exists_coverage.yaml, exists.yaml, correlated_subquery_probes.yaml + TestFDB_CorrelatedExistsCrossJoin, TestFDB_NestedCorrelatedExists)
+- [ ] **ArithmeticValue plan-time type validation** — Java has 75 PhysicalOperator variants (`ADD_II`, `ADD_IL`, `ADD_IF`) that catch type mismatches at plan time. Go uses runtime promotion — invalid ops like `"text" + 5` silently return NULL instead of erroring. Should validate operand types during encapsulate/plan-build.
+- [ ] **Compile-time type mismatch detection** — Java's SemanticAnalyzer catches type mismatches before execution. Go catches at eval time via panic recovery. Same SQLSTATE (42804) but different error locality. Port SemanticAnalyzer type-checking for earlier, clearer errors.
+
+### Go-only extension test coverage
+
+- [ ] **MergeSortUnionPlan** — 0 unit test references. Only tested indirectly via ordered UNION SQL queries. Needs dedicated unit tests for: merge correctness, dedup, reverse order, continuation, empty inputs, single-input passthrough.
+- [ ] **NLJ comprehensive coverage** — 52 yamsql scenarios added + 10 unit tests (field-value-correlation branch). Need to verify all pass against FDB. Merge branch first.
+- [ ] **InMemorySortPlan** — no dedicated tests (shares impl with SortPlan). Needs: top-K heap correctness, large-N stability, NULL sort ordering, continuation resume after partial sort.
+- [ ] **Streaming cursor architecture** — no streaming_cursors_test.go file. flatMapCursor, nljCursor, aggregateCursor, sortCursor all tested only through integration. Need unit tests for: continuation serialization/deserialization, TimeLimitReached propagation, partial state resume.
 
 ---
 
-## DONE — SQL LIMIT/OFFSET extension (swingshift-95)
+## MEDIUM
 
-Shipped. Parse in PlanVisitor.visitLimit → LogicalLimit in logical tree → Cascades translator skips it → paginatingRows applies post-execution. Tests: LIMIT 3, LIMIT 2 OFFSET 1, yamsql offset.yaml.
+### Missing Java plan types
 
----
+- [ ] **RecordQueryTextIndexPlan** — full-text search. Not in scope unless text indexes are needed.
+- [ ] **RecordQueryAggregateIndexPlan** — pre-aggregated index scans. Would enable index-only GROUP BY.
+- [ ] **RecordQueryLoadByKeysPlan** — direct key-based batch load. Subsumed by scan+filter but less efficient.
+- [ ] **RecordQueryMultiIntersectionOnValuesPlan** — N-way intersection (current impl handles 2-way only).
+- [ ] **RecordQueryUnorderedPrimaryKeyDistinctPlan** — PK-based dedup optimization. Covered by generic DistinctPlan but less efficient.
+- [ ] **RecordQueryComparatorPlan** — comparator-based ranking.
+- [ ] **RecordQueryScoreForRankPlan** — score-based ranking.
+- [ ] **RecordQuerySelectorPlan** — selector-based filtering (internal planner use).
 
-## Active work
+### Missing value types
 
-### Bytes IN-list Ginkgo harness flake (491→492/492) — LIKELY RESOLVED (nightshift-97)
+- [ ] **CosineDistanceRowNumberValue** — vector similarity search.
+- [ ] **DotProductDistanceRowNumberValue** — vector similarity search.
+- [ ] **EuclideanDistanceRowNumberValue** — vector similarity search.
+- [ ] **EuclideanSquareDistanceRowNumberValue** — vector similarity search.
+- [ ] **LiteralValue** — Java's wrapper around constants. Go folds into ConstantValue (functional equivalent, structural divergence).
 
-Was caused by the NLJ-Explode bug: multi-value IN-list queries used an NLJ plan that couldn't merge scalar Explode outer datums with map inner datums, returning 0 rows. Fix: prevent NLJ from handling Explode quantifiers (guard in ImplementNestedLoopJoinRule). The fix resolves all multi-value IN-list queries (PK and non-PK). Needs re-verification in the Ginkgo shared-container context.
+### Missing rules
 
-### Correlated NOT EXISTS bugs — RESOLVED (nightshift-97)
+- [ ] **MatchPartition rules** — `WithPrimaryKeyDataAccessRule`, `AdjustMatchRule`. Go implements as explicit planner passes instead of rules. Functionally equivalent but less composable. Needed for covering index matching.
+- [ ] **ExtractFromIndexKeyValueRuleSet (3 rules)** — index entry → partial record extraction. Blocked on IndexKeyValueToPartialRecord port.
 
-Two bugs fixed:
-1. Translator dropped NOT(ExistsPredicate) from predicate list → rule couldn't detect negation → NOT EXISTS acted as EXISTS.
-2. Outer-only WHERE predicates were pushed inside the inner plan (or passed as NLJ join predicates) → they never matched → wrong rows emitted.
+### PredicateWithValueAndRanges hierarchy
 
-### Nested correlated EXISTS hoisting bug — RESOLVED (nightshift-97)
+- [ ] **Make PredicateWithValueAndRanges a QueryPredicate** — Java treats it as a QueryPredicate subclass (extends AbstractQueryPredicate). Go treats it as a separate non-predicate type. May cause issues if rules expect it in predicate trees.
 
-Fixed. When the middle level has BOTH correlation predicates AND nested EXISTS, the fix builds a proper LogicalFilter preserving both levels. When the middle has ONLY EXISTS (cross-level correlation), the old hoisting is preserved. The distinction is whether `splitNonExistsPredicatesFromWalked(pred)` returns non-nil.
+### Wire compatibility
 
-### NormalizePredicatesRule existential guard — RESOLVED (swingshift-96)
+- [ ] **EXECUTE CONTINUATION** — SQL-level continuation resume. Parsed but not wired to executor. Requires plan + continuation token serialization.
+- [ ] **check_value field in FlatMapContinuation** — concurrent-modification detection between transactions. Implemented in generic FlatMapPipelinedWithCheck but executor cursor doesn't use it.
+- [ ] **Catalog wire format reverse direction** — Go reads Java catalogs; Java reading Go catalogs untested. Needs Java conformance server.
 
-Fixed. Removed the existential quantifier guard and replaced with hash-based dedup to prevent the infinite normalization loop. Now fires on all SelectExpressions matching Java.
+### Performance
 
-### DecorrelateValuesRule — RESOLVED (swingshift-96)
-
-Push-down-into-child infrastructure added. All 29/29 Java tests ported (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations).
-
-### String-qualified FieldValues → CorrelationIdentifier-based resolution (architectural)
-
-**The problem:** Go's translator resolves `emp.name` → `FieldValue{Field: "EMP.NAME"}` — a string-qualified flat field. When predicates need to move between scopes (outer → inner in EXISTS, FlatMap outer-only push-down), Go has to string-strip the alias prefix via `stripAliasFromPredicate`. This function:
-- Only handled `ComparisonPredicate` until nightshift-97 (silently passed OR/AND/NOT through unchanged → wrong results for `WHERE (status='active' OR priority>5) AND EXISTS (...)`)
-- Was extended to recurse into AND/OR/NOT (stashed on master, not yet committed)
-- Is fundamentally the wrong approach — it's string-manipulating what should be structural
-
-**How Java does it:** Java NEVER stores qualified names in predicates. Java resolves `emp.name` → `FieldValue(QuantifiedObjectValue(emp_correlation), "NAME")`. The correlation is a `CorrelationIdentifier` object, not a string prefix. When moving between scopes, Java uses `Value.rebase(AliasMap)` to retarget correlations — no string matching. `stripAliasFromPredicate` doesn't exist in Java because it doesn't need to.
-
-**What needs to change in Go:**
-1. **Entry point:** `pkg/relational/core/query/expr/expr.go:227-233` (`ResolveIdentifier`): change `field = corr + "." + field` → `FieldValue{Child: QOV(correlationId), Field: field}`. The code already has a comment (line 189-191) acknowledging this is the intended direction.
-2. **Predicate evaluation:** `FieldValue.Evaluate` already handles child-based resolution (`f.Child.Evaluate(evalCtx)` → resolve field on result) — no change needed.
-3. **Executor:** `mergeRows` / NLJ executor: bind outer/inner as correlations (already partially done with `CorrelationBinder` on `RowEvalContext`).
-4. **Delete dead code:** Remove `stripAliasFromPredicate`, `stripAliasFromValue`, `stripAliasFromPredicates` (6 call sites in `rule_implement_nested_loop_join.go`) — they become unnecessary.
-5. **Column derivation:** `deriveColumnsFromFlatMap` / `deriveColumnsFromPlan` needs to work with correlation-based values.
-
-**Blocked on:** `JoinMergeResultValue → RecordConstructorValue` (same root cause — translator needs schema metadata to produce field-level resultValues). These are the same fix.
-
-**Symptoms of the current approach (silent wrong results):**
-- OR predicates in EXISTS outer WHERE → unstripped alias → field lookup returns nil → row dropped
-- Complex predicates (AND of OR, nested NOT) in outer-only position → same failure
-- Any new predicate type added without updating `stripAliasFromPredicate` → same failure
-
-**Interim mitigation (stashed, not committed):** `stripAliasFromPredicate` extended to recurse into AND/OR/NOT/Constant/Exists. Handles all current predicate types but still fundamentally wrong — it's a band-aid on an architectural gap.
-
-### Covering index for SQL (multi-shift)
-
-Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord`, `CollapseRecordConstructorOverFieldsToStar`. Root cause fully mapped in DIVERGENCES.md.
+- [ ] **InJoin plan selection** — IN-list queries currently fall back to filter+scan (O(N)) because InJoinRule requires inner physical plans that aren't ready when it fires. Should be O(k) PK lookups. Cascades task ordering issue.
+- [ ] **Composite PK FlatMap** — FlatMap only matches FIRST PK column. Joins on non-first PK columns fall back to NLJ O(N×M). Should match all PK prefix columns.
+- [ ] **Go-vs-Java SQL perf bench** — Go-side done, needs Java conformance server for comparison.
 
 ---
 
-## Remaining TODO items
+## LOW
 
-### Phase 5 — DDL + cache + driver completion
+### DDL + driver
 
-- [ ] **#29** D1 DDL action types — Go-only extension, not in Java 4.11.1.0. Low priority.
-- [ ] **#30** D3 Online indexer integration via DDL. Gate: #29.
-- [ ] **#33** D5 driver adapter gaps — custom Scanner/Valuer for Struct/Array/Versionstamp/Continuation. Low priority.
-- [ ] **#34** E1 Go-vs-Java SQL perf bench — Go-side done, needs Java conformance server.
+- [ ] **DDL action types** — Go-only extension, not in Java 4.11.1.0.
+- [ ] **Online indexer integration via DDL** — gate: DDL action types.
+- [ ] **Driver adapter gaps** — custom Scanner/Valuer for Struct/Array/Versionstamp/Continuation.
 
-### Phase 6 — Cross-language verification + perf
+### Cross-language verification
 
-- [ ] **#35** A4 INFORMATION_SCHEMA cross-engine byte-equivalence. Gate: upstream.
-- [ ] **#36** Catalog wire format reverse direction. Needs Java conformance server.
-- [ ] **#37** E2 ANTLR parser DoS hardening. Gate: upstream ticket.
-- [ ] **#39** Go-only GROUP BY — keep as Go extension.
+- [ ] **INFORMATION_SCHEMA cross-engine byte-equivalence** — gate: upstream.
+- [ ] **ANTLR parser DoS hardening** — gate: upstream ticket.
+
+### Code quality
+
+- [ ] **Remove dead `stripAlias*` code** — after FieldValue correlation migration is complete, the string-based alias stripping functions become dead code.
+- [ ] **Unify ExistsPredicate.Eval behavior** — Go returns TriUnknown, Java throws RecordCoreException. Both prevent row-level evaluation; Go's approach is arguably cleaner but diverges from Java.
+- [ ] **Plan serialization for plan cache** — current plan cache uses in-memory plan objects. Proto serialization would enable cross-process cache sharing.
 
 ---
 
-## Completed (summary)
+## Completed
 
-All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,568+ tests, 106 fuzz targets, 491/492 cross-engine conformance specs, 241+ yamsql scenarios, 361 FDB subtests.
+### Cascades planner (fully ported)
+- [x] ~65 PlannerRuleSet rule instances
+- [x] 5/5 RewritingRuleSet rules
+- [x] 34/34 physical plan types (+ 9 Go-only extensions)
+- [x] 48/48 value types (+ 5 Go-only extensions)
+- [x] 18/18 properties
+- [x] 12/12 match candidate types
+- [x] 24/24 comparison operators
+- [x] 9/9 predicate types
+- [x] 16/16 PlanningCostModelLess criteria
+- [x] 4/4 RewritingCostModelLess criteria
+- [x] 12/12 predicate simplification rules
+- [x] SimplifyValue + SimplifyValueWithContext (two-tier)
+
+### Streaming cursor architecture
+- [x] AggregateCursor with PartialAggregationResult proto continuation
+- [x] MemorySortCursor with buffered-records continuation
+- [x] FlatMapPipelinedCursor with outer+inner dual continuation
+- [x] OrElse (NOT EXISTS) with OrElseContinuation proto
+- [x] TimeLimitReached propagation through all cursor types
+
+### SQL features
+- [x] SELECT, INSERT, UPDATE, DELETE
+- [x] JOIN (INNER, LEFT, CROSS) via FlatMap + NLJ fallback
+- [x] EXISTS / NOT EXISTS via FlatMap EXISTS mode
+- [x] GROUP BY + HAVING with streaming aggregation
+- [x] ORDER BY with index scan + in-memory sort fallback
+- [x] LIMIT / OFFSET (Go extension)
+- [x] SELECT DISTINCT
+- [x] UNION / UNION ALL
+- [x] CTE (WITH) + recursive CTE
+- [x] Scalar subqueries in SELECT and WHERE
+- [x] IN-list decomposition (InComparisonToExplodeRule → InJoinRule)
+- [x] Secondary index scans + correlated index probes
+- [x] LIKE with prefix pushdown to index
+- [x] CAST between INT/STRING/BOOLEAN/DOUBLE
+- [x] CASE WHEN (searched form)
+- [x] COALESCE / NULLIF
+- [x] BETWEEN
+- [x] IS [NOT] DISTINCT FROM
+- [x] IS [NOT] NULL
+- [x] 50+ scalar functions (UPPER, LOWER, SUBSTRING, ABS, etc.)
+- [x] Date/time functions (Go extension)
+- [x] INFORMATION_SCHEMA (Go extension)
+- [x] Nested aggregate rejection (parse-time)
+- [x] NOT NULL constraint (Go extension)
+
+### Wire compatibility
+- [x] FDB tuple encoding (key construction)
+- [x] Protobuf record format (Apple's protos)
+- [x] Record store header + format version
+- [x] Split records (100KB chunks)
+- [x] Record version storage (inline at pk + -1)
+- [x] Continuation tokens (proto-wrapped, magic 6773487359078157740)
+- [x] Index entry format
+- [x] Subspace constants
