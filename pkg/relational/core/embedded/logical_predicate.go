@@ -1957,6 +1957,8 @@ func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.
 			rewritten[i] = rewriteAggregateRefsInPredicate(sub)
 		}
 		return predicates.NewOr(rewritten...)
+	case *predicates.NotPredicate:
+		return predicates.NewNot(rewriteAggregateRefsInPredicate(p.Child))
 	}
 	return pred
 }
