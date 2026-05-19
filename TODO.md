@@ -32,7 +32,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 ### Missing Java infrastructure
 
 - [ ] **Correlated.rebase(AliasMap)** — Java rebases all correlation references when moving predicates/values between scopes. Go uses string-stripping (stripAliasFromPredicates) which is fragile. Needed for correct predicate push-down through arbitrary plan trees.
-- [ ] **getCorrelatedTo() on all predicates** — Java uses `predicate.getCorrelatedTo()` (Set<CorrelationIdentifier>) for predicate classification in join rules. Go uses `predicateReferencesAlias()` walker with string matching. Functional equivalent exists (`GetCorrelatedToOfPredicate`) but not wired to the interface. Should be a method on QueryPredicate.
+- [x] **getCorrelatedTo() on all predicates** — Added `GetCorrelatedTo()` method to QueryPredicate interface. Implemented on all 10 concrete types. 8 unit tests.
 - [ ] **Plan proto serialization** — Java serializes plans to protobuf for continuation tokens and plan cache. Go plans are not serializable. Blocks cross-transaction plan reuse and wire-compatible continuation tokens.
 - [ ] **Value type proto serialization** — Same as above for Value trees.
 - [ ] **Covering index for SQL** — Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord`, `CollapseRecordConstructorOverFieldsToStar`. Planner infrastructure exists but unreachable from SQL because projections prevent `IsFinalNeeded()=false`.
@@ -51,7 +51,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Go-only extension test coverage
 
-- [ ] **MergeSortUnionPlan** — 0 unit test references. Only tested indirectly via ordered UNION SQL queries. Needs dedicated unit tests for: merge correctness, dedup, reverse order, continuation, empty inputs, single-input passthrough.
+- [x] **MergeSortUnionPlan** — 14 unit tests added. Found and fixed bug: EndContinuation → StartContinuation in mergeSortCursor.OnNext().
 - [ ] **NLJ comprehensive coverage** — 52 yamsql scenarios added + 10 unit tests (field-value-correlation branch). Need to verify all pass against FDB. Merge branch first.
 - [ ] **InMemorySortPlan** — no dedicated tests (shares impl with SortPlan). Needs: top-K heap correctness, large-N stability, NULL sort ordering, continuation resume after partial sort.
 - [ ] **Streaming cursor architecture** — no streaming_cursors_test.go file. flatMapCursor, nljCursor, aggregateCursor, sortCursor all tested only through integration. Need unit tests for: continuation serialization/deserialization, TimeLimitReached propagation, partial state resume.
