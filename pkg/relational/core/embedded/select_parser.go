@@ -1244,6 +1244,10 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		}
 		var newAggs []aggSelectCol
 		for _, hexpr := range harvestExprs {
+			if hasNestedAggregateInTree(hexpr) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"unsupported nested aggregate(s)")
+			}
 			for _, ac := range harvestAggregates(hexpr) {
 				if _, ok := existing[ac.outName]; ok {
 					continue
@@ -1764,6 +1768,26 @@ func containsNestedAggregateInSelectElement(e *antlrgen.SelectExpressionElementC
 	}
 	if fa := awf.FunctionArg(); fa != nil {
 		return containsNestedAggregate(fa)
+	}
+	return false
+}
+
+func hasNestedAggregateInTree(tree antlr.Tree) bool {
+	if tree == nil {
+		return false
+	}
+	if agg, ok := tree.(*antlrgen.AggregateFunctionCallContext); ok {
+		for i := 0; i < agg.GetChildCount(); i++ {
+			if containsNestedAggregate(agg.GetChild(i)) {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i < tree.GetChildCount(); i++ {
+		if hasNestedAggregateInTree(tree.GetChild(i)) {
+			return true
+		}
 	}
 	return false
 }
