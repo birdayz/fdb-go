@@ -89,6 +89,7 @@ Current `flatMapCursor` uses `mergeRows` to combine outer+inner — this is NOT 
 - [x] **Multi-step FlatMap continuation under TIME_LIMIT**: testFlatMapReasons (5×5 grid, 6 cycles), pipelineWithInnerLimits, pipelineWithOuterLimits — both out-of-band and row-limit variants. Fixed two continuation bugs: priorOuterCont nil on resume, pending inner dropped on outer stop. (swingshift-96)
 - [x] **OrElse (NOT EXISTS) under TIME_LIMIT**: Ported all 4 Java tests. Added OrElseWithContinuation with OrElseContinuation proto serialization. (swingshift-96)
 - [x] **Inner/outer limit grid tests**: Both out-of-band (TimeLimitReached) and in-band (ReturnLimitReached) variants ported via iterateGrid helper. (swingshift-96)
+- [x] **testFakeTimeLimitReasons, testFilteredMapAsyncReasons1/3, testMapAsyncScanLimitReasons**: Ported from Java RecordCursorTest. (nightshift-97)
 - [ ] **JOIN continuation resume at SQL level**: Requires EXECUTE CONTINUATION implementation (parsed but not wired). Multi-shift effort.
 - [x] **EXISTS + 3-way join + ORDER BY plan shape**: (covered by join_exists_self.yaml, correlated_exists_advanced.yaml, flatmap_exists_coverage.yaml, exists.yaml, correlated_subquery_probes.yaml + TestFDB_CorrelatedExistsCrossJoin, TestFDB_NestedCorrelatedExists)
 
