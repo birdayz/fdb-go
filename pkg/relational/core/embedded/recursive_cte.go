@@ -248,6 +248,11 @@ func (c *EmbeddedConnection) recursiveCTEDFS(
 			}
 		}
 		if !preorder {
+			if len(cumulative) >= recursiveCTEIterationLimit {
+				return api.NewErrorf(api.ErrCodeExecutionLimitReached,
+					"recursive CTE %q exceeded emit limit of %d — possible cycle or an unbounded result set; use UNION (DISTINCT) or a depth predicate",
+					cteName, recursiveCTEIterationLimit)
+			}
 			cumulative = append(cumulative, row)
 		}
 		return nil
