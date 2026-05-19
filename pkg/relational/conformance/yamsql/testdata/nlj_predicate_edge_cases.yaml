@@ -1,0 +1,265 @@
+# nlj_predicate_edge_cases.yaml — NLJ predicate edge cases
+#
+# Exercises predicate edge cases in nested-loop join execution:
+# OR predicates, AND+OR combos, NOT, BETWEEN, LIKE, IS NULL,
+# CASE WHEN, function calls, arithmetic, LEFT JOIN filter
+# semantics, anti-join, cross join, inequality, multi-predicate.
+name: nlj_predicate_edge_cases
+schema_template: |
+  CREATE TABLE products (id BIGINT NOT NULL, name STRING, category STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT NOT NULL, product_id BIGINT, customer STRING, total BIGINT, priority BIGINT, status STRING, PRIMARY KEY (id))
+  CREATE TABLE tags (id BIGINT NOT NULL, product_id BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - >
+    INSERT INTO products VALUES
+    (1, 'Widget', 'hardware', 10, 100),
+    (2, 'Gadget', 'electronics', 25, 40),
+    (3, 'Sprocket', 'hardware', 5, 200),
+    (4, 'Gizmo', 'electronics', 50, 0),
+    (5, 'Doohickey', 'misc', 15, null)
+  - >
+    INSERT INTO orders VALUES
+    (101, 1, 'Alice', 1000, 3, 'active'),
+    (102, 2, 'Bob', 500, 7, 'active'),
+    (103, 1, 'Charlie', 200, 1, 'closed'),
+    (104, 3, 'Alice', 1500, 8, 'active'),
+    (105, null, 'Dave', 0, 5, 'pending')
+  - >
+    INSERT INTO tags VALUES
+    (201, 1, 'sale'),
+    (202, 1, 'popular'),
+    (203, 2, 'new'),
+    (204, 4, 'clearance'),
+    (205, null, 'orphan')
+tests:
+  # ---------------------------------------------------------------
+  # 1. Join with OR predicate
+  # ---------------------------------------------------------------
+  # Rows match if product_id equals OR customer matches product name
+  # (via a simpler OR: match on product_id OR on priority threshold).
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id OR o.priority > 7
+      ORDER BY p.name, o.customer, o.id
+    rows:
+      - ["Doohickey", "Alice"]
+      - ["Gadget", "Alice"]
+      - ["Gadget", "Bob"]
+      - ["Gizmo", "Alice"]
+      - ["Sprocket", "Alice"]
+      - ["Widget", "Alice"]
+      - ["Widget", "Alice"]
+      - ["Widget", "Charlie"]
+
+  # ---------------------------------------------------------------
+  # 2. Join with AND + OR combined
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND (o.status = 'active' OR o.priority > 5)
+      ORDER BY p.name, o.customer
+    rows:
+      - ["Gadget", "Bob"]
+      - ["Sprocket", "Alice"]
+      - ["Widget", "Alice"]
+
+  # ---------------------------------------------------------------
+  # 3. Join with NOT
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND NOT (o.total < 500)
+      ORDER BY p.name, o.customer
+    rows:
+      - ["Gadget", "Bob"]
+      - ["Sprocket", "Alice"]
+      - ["Widget", "Alice"]
+
+  # ---------------------------------------------------------------
+  # 4. Join with BETWEEN alongside join condition
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND o.total BETWEEN 200 AND 1000
+      ORDER BY p.name, o.customer
+    rows:
+      - ["Gadget", "Bob"]
+      - ["Widget", "Alice"]
+      - ["Widget", "Charlie"]
+
+  # ---------------------------------------------------------------
+  # 5. Join with LIKE on columns from both tables
+  # ---------------------------------------------------------------
+  # Product name LIKE 'G%' AND customer LIKE '%o%' — cross product
+  # filtered by LIKE on both sides.
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND p.name LIKE 'G%' AND o.customer LIKE '%o%'
+      ORDER BY p.name
+    rows:
+      - ["Gadget", "Bob"]
+
+  # ---------------------------------------------------------------
+  # 6. IS NULL check on one side + equi-join on other
+  # ---------------------------------------------------------------
+  # Products with null qty that have orders.
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND p.qty IS NULL
+      ORDER BY o.customer
+    rows: []
+
+  # Orders with null product_id joined with products — no match
+  # because NULL = anything is UNKNOWN.
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND o.total IS NULL
+      ORDER BY p.name
+    rows: []
+
+  # Tags with non-null product_id joined, but filter for null label.
+  - query: >
+      SELECT p.name, t.label
+      FROM products p, tags t
+      WHERE t.product_id = p.id AND t.label IS NULL
+      ORDER BY p.name
+    rows: []
+
+  # ---------------------------------------------------------------
+  # 7. CASE WHEN in WHERE predicate
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id
+      AND CASE WHEN o.total > 1000 THEN 'big' ELSE 'small' END = 'big'
+      ORDER BY p.name
+    rows:
+      - ["Sprocket", "Alice"]
+
+  # ---------------------------------------------------------------
+  # 8. Function call in predicate: UPPER
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND UPPER(o.status) = 'ACTIVE'
+      ORDER BY p.name, o.customer
+    rows:
+      - ["Gadget", "Bob"]
+      - ["Sprocket", "Alice"]
+      - ["Widget", "Alice"]
+
+  # ---------------------------------------------------------------
+  # 9. Arithmetic in predicate
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id AND p.price * p.qty = o.total
+      ORDER BY p.name
+    rows:
+      - ["Widget", "Alice"]
+
+  # ---------------------------------------------------------------
+  # 10. LEFT JOIN with WHERE filter on inner table
+  #     (effectively converts to inner join)
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p LEFT JOIN orders o ON o.product_id = p.id
+      WHERE o.status = 'active'
+      ORDER BY p.name, o.customer
+    rows:
+      - ["Gadget", "Bob"]
+      - ["Sprocket", "Alice"]
+      - ["Widget", "Alice"]
+
+  # ---------------------------------------------------------------
+  # 11. LEFT JOIN with WHERE IS NULL on inner (anti-join pattern)
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name
+      FROM products p LEFT JOIN orders o ON o.product_id = p.id
+      WHERE o.id IS NULL
+      ORDER BY p.name
+    rows:
+      - ["Doohickey"]
+      - ["Gizmo"]
+
+  # ---------------------------------------------------------------
+  # 12. Cross join with no predicate — full Cartesian product
+  # ---------------------------------------------------------------
+  # 5 products x 5 orders = 25 rows. Verify count.
+  - query: >
+      SELECT COUNT(*) FROM products p, orders o
+    rows:
+      - [25]
+
+  # Verify a few specific rows from the Cartesian product.
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      ORDER BY p.name, o.customer
+      LIMIT 5
+    rows:
+      - ["Doohickey", "Alice"]
+      - ["Doohickey", "Alice"]
+      - ["Doohickey", "Bob"]
+      - ["Doohickey", "Charlie"]
+      - ["Doohickey", "Dave"]
+
+  # ---------------------------------------------------------------
+  # 13. Join with inequality predicate
+  # ---------------------------------------------------------------
+  # All product-order pairs where the order is NOT for that product.
+  - query: >
+      SELECT p.name, o.id
+      FROM products p, orders o
+      WHERE o.product_id IS NOT NULL AND p.id != o.product_id
+      AND p.id <= 3
+      ORDER BY p.name, o.id
+    rows:
+      - ["Gadget", 101]
+      - ["Gadget", 103]
+      - ["Gadget", 104]
+      - ["Sprocket", 101]
+      - ["Sprocket", 102]
+      - ["Sprocket", 103]
+      - ["Widget", 102]
+      - ["Widget", 104]
+
+  # ---------------------------------------------------------------
+  # 14. Multi-predicate join: 3+ conditions in WHERE
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT p.name, o.customer, o.total
+      FROM products p, orders o
+      WHERE o.product_id = p.id
+      AND p.category = 'hardware'
+      AND o.status = 'active'
+      AND o.total > 500
+      ORDER BY o.total
+    rows:
+      - ["Widget", "Alice", 1000]
+      - ["Sprocket", "Alice", 1500]
+
+  # Four conditions including range and string match.
+  - query: >
+      SELECT p.name, o.customer
+      FROM products p, orders o
+      WHERE o.product_id = p.id
+      AND p.price BETWEEN 5 AND 25
+      AND o.priority >= 3
+      AND o.customer LIKE 'A%'
+      ORDER BY p.name
+    rows:
+      - ["Sprocket", "Alice"]
+      - ["Widget", "Alice"]
