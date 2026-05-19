@@ -1,0 +1,40 @@
+# cross_join_filter.yaml — Cross join with various filter patterns
+#
+# Exercises cross join (no ON clause) with WHERE predicates to
+# create filtered Cartesian products.
+name: cross_join_filter
+schema_template: |
+  CREATE TABLE sizes (id BIGINT NOT NULL, label STRING, PRIMARY KEY (id))
+  CREATE TABLE colors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sizes VALUES (1, 'S'), (2, 'M'), (3, 'L')
+  - INSERT INTO colors VALUES (10, 'Red'), (20, 'Blue'), (30, 'Green')
+tests:
+  # Full cross join
+  - query: SELECT s.label, c.name FROM sizes s, colors c ORDER BY s.label, c.name
+    rows:
+      - ["L", "Blue"]
+      - ["L", "Green"]
+      - ["L", "Red"]
+      - ["M", "Blue"]
+      - ["M", "Green"]
+      - ["M", "Red"]
+      - ["S", "Blue"]
+      - ["S", "Green"]
+      - ["S", "Red"]
+
+  # Cross join with filter
+  - query: >
+      SELECT s.label, c.name FROM sizes s, colors c
+      WHERE s.id <= 2 AND c.id >= 20
+      ORDER BY s.label, c.name
+    rows:
+      - ["M", "Blue"]
+      - ["M", "Green"]
+      - ["S", "Blue"]
+      - ["S", "Green"]
+
+  # Cross join count
+  - query: SELECT COUNT(*) FROM sizes, colors
+    rows:
+      - [9]
