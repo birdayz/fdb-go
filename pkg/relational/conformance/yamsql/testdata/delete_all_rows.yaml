@@ -1,0 +1,31 @@
+# delete_all_rows.yaml — DELETE all rows from table
+#
+# Exercises DELETE without WHERE (or with always-true WHERE).
+name: delete_all_rows
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+tests:
+  # Verify initial state
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+
+  # DELETE with always-true condition
+  - query: DELETE FROM t WHERE id > 0
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [0]
+
+  # Table is now empty — SELECT returns no rows
+  - query: SELECT * FROM t
+    rows: []
+
+  # Re-insert works
+  - query: INSERT INTO t VALUES (10, 'new')
+    rows: []
+  - query: SELECT * FROM t
+    rows:
+      - [10, "new"]
