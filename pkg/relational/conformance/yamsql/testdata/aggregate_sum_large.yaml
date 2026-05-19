@@ -1,0 +1,23 @@
+# aggregate_sum_large.yaml — SUM with large values
+#
+# Exercises SUM aggregation with values near integer limits.
+name: aggregate_sum_large
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 1000000000), (2, 2000000000), (3, 3000000000), (4, 4000000000)
+tests:
+  # SUM of large values
+  - query: SELECT SUM(val) FROM t
+    rows:
+      - [10000000000]
+
+  # SUM with GROUP BY
+  - query: >
+      SELECT CASE WHEN id <= 2 THEN 'first' ELSE 'second' END, SUM(val)
+      FROM t
+      GROUP BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END
+      ORDER BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END
+    rows:
+      - ["first", 3000000000]
+      - ["second", 7000000000]
