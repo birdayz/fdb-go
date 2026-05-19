@@ -91,7 +91,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 ### Wire compatibility
 
 - [ ] **EXECUTE CONTINUATION** — SQL-level continuation resume. Parsed but not wired to executor. Requires plan + continuation token serialization.
-- [ ] **check_value field in FlatMapContinuation** — concurrent-modification detection between transactions. Implemented in generic FlatMapPipelinedWithCheck but executor cursor doesn't use it.
+- [x] **check_value field in FlatMapContinuation** — Wired: flatMapCursor writes outer PK as check_value, verifies on resume. Errors on mismatch (concurrent modification).
 - [ ] **Catalog wire format reverse direction** — Go reads Java catalogs; Java reading Go catalogs untested. Needs Java conformance server.
 
 ### Performance
