@@ -151,14 +151,26 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 // The check walks the predicate's entire Value tree looking for
 // FieldValue nodes whose Field starts with "ALIAS." (dot-separated).
 func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) int {
-	prefix0 := strings.ToUpper(alias0) + "."
-	prefix1 := strings.ToUpper(alias1) + "."
+	upper0 := strings.ToUpper(alias0)
+	upper1 := strings.ToUpper(alias1)
+	prefix0 := upper0 + "."
+	prefix1 := upper1 + "."
 
 	refs0, refs1 := false, false
 	foundAnyField := false
 
 	walkPredicateFieldValues(pred, func(fv *values.FieldValue) {
 		foundAnyField = true
+		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+			corrUpper := strings.ToUpper(qov.Correlation.String())
+			if corrUpper == upper0 {
+				refs0 = true
+			}
+			if corrUpper == upper1 {
+				refs1 = true
+			}
+			return
+		}
 		upper := strings.ToUpper(fv.Field)
 		if strings.HasPrefix(upper, prefix0) {
 			refs0 = true
@@ -169,7 +181,7 @@ func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) 
 	})
 
 	if !foundAnyField {
-		return -1 // conservative: no field references → keep on join
+		return -1
 	}
 	if refs0 && !refs1 {
 		return 0
@@ -177,7 +189,7 @@ func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) 
 	if refs1 && !refs0 {
 		return 1
 	}
-	return -1 // both or neither
+	return -1
 }
 
 // walkPredicateFieldValues walks all Value trees reachable from a
@@ -268,7 +280,14 @@ func stripAliasValue(v values.Value, prefix string) values.Value {
 	if v == nil {
 		return nil
 	}
+	upperAlias := strings.TrimSuffix(prefix, ".")
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
+		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+			if strings.EqualFold(qov.Correlation.String(), upperAlias) {
+				return &values.FieldValue{Field: fv.Field, Typ: fv.Typ}
+			}
+			return fv
+		}
 		upper := strings.ToUpper(fv.Field)
 		if strings.HasPrefix(upper, prefix) {
 			return &values.FieldValue{

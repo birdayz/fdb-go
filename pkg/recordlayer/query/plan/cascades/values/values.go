@@ -251,10 +251,7 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		}
 		return nil
 	case map[string]any:
-		if v, ok := ctx[qualKey]; ok {
-			return v
-		}
-		return ctx[f.Field]
+		return ctx[qualKey]
 	}
 	return nil
 }

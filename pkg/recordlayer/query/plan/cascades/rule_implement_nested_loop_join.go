@@ -414,9 +414,16 @@ func predicateReferencesAlias(p predicates.QueryPredicate, alias string) bool {
 	if alias == "" {
 		return false
 	}
-	prefix := strings.ToUpper(alias) + "."
+	upperAlias := strings.ToUpper(alias)
+	prefix := upperAlias + "."
 	found := false
 	walkPredicateFieldValues(p, func(fv *values.FieldValue) {
+		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+			if strings.ToUpper(qov.Correlation.String()) == upperAlias {
+				found = true
+			}
+			return
+		}
 		if strings.HasPrefix(strings.ToUpper(fv.Field), prefix) {
 			found = true
 		}
@@ -890,26 +897,35 @@ func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 		return nil, ""
 	}
 
-	lhsField := strings.ToUpper(lhsFV.Field)
-	rhsField := strings.ToUpper(rhsFV.Field)
+	lhsAlias, lhsCol := fieldValueAliasAndCol(lhsFV)
+	rhsAlias, rhsCol := fieldValueAliasAndCol(rhsFV)
 
-	// LHS = outer.FK, RHS = inner.PK
-	if strings.HasPrefix(lhsField, outerPrefix) && strings.HasPrefix(rhsField, innerPrefix) {
-		innerCol := strings.TrimPrefix(rhsField, innerPrefix)
-		if innerCol == pkCol {
-			return lhsFV, innerCol
+	outerAlias := strings.TrimSuffix(outerPrefix, ".")
+	innerAlias := strings.TrimSuffix(innerPrefix, ".")
+
+	if lhsAlias == outerAlias && rhsAlias == innerAlias {
+		if rhsCol == pkCol {
+			return lhsFV, rhsCol
 		}
 	}
-
-	// LHS = inner.PK, RHS = outer.FK
-	if strings.HasPrefix(lhsField, innerPrefix) && strings.HasPrefix(rhsField, outerPrefix) {
-		innerCol := strings.TrimPrefix(lhsField, innerPrefix)
-		if innerCol == pkCol {
-			return rhsFV, innerCol
+	if lhsAlias == innerAlias && rhsAlias == outerAlias {
+		if lhsCol == pkCol {
+			return rhsFV, lhsCol
 		}
 	}
 
 	return nil, ""
+}
+
+func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
+	if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+		return strings.ToUpper(qov.Correlation.String()), strings.ToUpper(fv.Field)
+	}
+	upper := strings.ToUpper(fv.Field)
+	if dot := strings.IndexByte(upper, '.'); dot >= 0 {
+		return upper[:dot], upper[dot+1:]
+	}
+	return "", upper
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)

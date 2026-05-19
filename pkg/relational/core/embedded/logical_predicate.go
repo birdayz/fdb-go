@@ -3527,6 +3527,9 @@ func qualifyBareFields(p predicates.QueryPredicate, qualifier string) {
 func qualifyBareFieldValue(v values.Value, qualifier string) {
 	values.WalkValue(v, func(node values.Value) bool {
 		if fv, ok := node.(*values.FieldValue); ok {
+			if fv.Child != nil {
+				return false
+			}
 			if !strings.Contains(fv.Field, ".") {
 				fv.Field = qualifier + "." + fv.Field
 			}

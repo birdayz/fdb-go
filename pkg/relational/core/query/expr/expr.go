@@ -225,7 +225,12 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		}
 	}
 	if src.CorrelationName != "" && needsQualification {
-		field = src.CorrelationName + "." + field
+		corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
+		return values.NewFieldValue(
+			values.NewQuantifiedObjectValue(corrID),
+			field,
+			sqlTypeToCascadesType(col.Type),
+		), nil
 	}
 	return &values.FieldValue{
 		Field: field,
