@@ -1,0 +1,24 @@
+# insert_default_values.yaml — INSERT with NULL for optional columns
+#
+# Exercises INSERT where optional (non-PK) columns are set to NULL.
+name: insert_default_values
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, score BIGINT, PRIMARY KEY (id))
+setup: []
+tests:
+  # Insert with explicit NULL
+  - query: INSERT INTO t VALUES (1, null, null)
+    rows: []
+  - query: SELECT id, name, score FROM t WHERE id = 1
+    rows:
+      - [1, null, null]
+
+  # Insert with values
+  - query: INSERT INTO t VALUES (2, 'Alice', 100)
+    rows: []
+
+  # Verify both
+  - query: SELECT id, name FROM t ORDER BY id
+    rows:
+      - [1, null]
+      - [2, "Alice"]
