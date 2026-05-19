@@ -1,0 +1,36 @@
+# type_coercion_comparison.yaml — Type coercion in comparisons
+#
+# Exercises implicit type coercion: integer vs float comparisons,
+# and mixed-type ORDER BY.
+name: type_coercion_comparison
+schema_template: |
+  CREATE TABLE prices (id BIGINT NOT NULL, int_price BIGINT, float_price DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO prices VALUES (1, 100, 99.99), (2, 100, 100.0), (3, 100, 100.01), (4, 50, 50.0)
+tests:
+  # Integer = Float comparison
+  - query: SELECT id FROM prices WHERE int_price = float_price ORDER BY id
+    rows:
+      - [2]
+      - [4]
+
+  # Integer < Float comparison
+  - query: SELECT id FROM prices WHERE int_price < float_price ORDER BY id
+    rows:
+      - [3]
+
+  # Integer > Float comparison
+  - query: SELECT id FROM prices WHERE int_price > float_price ORDER BY id
+    rows:
+      - [1]
+
+  # Float literal in WHERE
+  - query: SELECT id FROM prices WHERE float_price >= 100.0 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+
+  # Integer + Float arithmetic
+  - query: SELECT id, int_price + float_price FROM prices WHERE id = 1
+    rows:
+      - [1, 199.99]
