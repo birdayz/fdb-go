@@ -151,4 +151,4 @@ Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord
 
 ## Completed (summary)
 
-All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,568+ tests, 106 fuzz targets, 491/492 cross-engine conformance specs, 227 yamsql scenarios, 361 FDB subtests.
+All Cascades planner subsystems ported: ~65 rules, 34 plan types, 48 value types, 18 properties, 12 match candidates, 24 comparison operators, 9 predicates. Phase 1–4 complete. Partial Phase 5 (#26–#28, #31–#32) and Phase 6 (#38, #99). 6,568+ tests, 106 fuzz targets, 491/492 cross-engine conformance specs, 241+ yamsql scenarios, 361 FDB subtests.
