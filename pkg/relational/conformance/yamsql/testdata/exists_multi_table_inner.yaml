@@ -1,0 +1,37 @@
+# exists_multi_table_inner.yaml — EXISTS with multi-table inner query
+#
+# Exercises correlated EXISTS where the inner subquery contains a JOIN
+# (multiple tables in FROM clause). Previously unsupported; now works
+# via join tree building in buildCorrelatedExists.
+name: exists_multi_table_inner
+schema_template: |
+  CREATE TABLE authors (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE books (id BIGINT NOT NULL, author_id BIGINT, genre STRING, PRIMARY KEY (id))
+  CREATE TABLE awards (id BIGINT NOT NULL, book_id BIGINT, award_name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO authors VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO books VALUES (10, 1, 'fiction'), (11, 2, 'science'), (12, 3, 'history')
+  - INSERT INTO awards VALUES (100, 10, 'Hugo'), (101, 11, 'Nebula')
+tests:
+  # EXISTS with join inside: authors who have an awarded book
+  - query: >
+      SELECT a.name FROM authors a
+      WHERE EXISTS (
+        SELECT 1 FROM books b, awards w
+        WHERE b.author_id = a.id AND w.book_id = b.id
+      )
+      ORDER BY a.name
+    result:
+      - ["Alice"]
+      - ["Bob"]
+
+  # NOT EXISTS with join inside: authors with NO awarded books
+  - query: >
+      SELECT a.name FROM authors a
+      WHERE NOT EXISTS (
+        SELECT 1 FROM books b, awards w
+        WHERE b.author_id = a.id AND w.book_id = b.id
+      )
+      ORDER BY a.name
+    result:
+      - ["Charlie"]
