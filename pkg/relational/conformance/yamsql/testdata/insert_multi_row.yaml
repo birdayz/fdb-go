@@ -1,0 +1,37 @@
+# insert_multi_row.yaml — Multi-row INSERT variations
+#
+# Exercises INSERT with various numbers of rows, column ordering,
+# and expression values.
+name: insert_multi_row
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+setup: []
+tests:
+  # Single row INSERT
+  - query: INSERT INTO t VALUES (1, 'Alice', 100)
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [1]
+
+  # Multi-row INSERT
+  - query: INSERT INTO t VALUES (2, 'Bob', 200), (3, 'Charlie', 300)
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+
+  # INSERT with expression
+  - query: INSERT INTO t VALUES (4, 'Dave', 100 + 200 + 300)
+    rows: []
+  - query: SELECT val FROM t WHERE id = 4
+    rows:
+      - [600]
+
+  # Verify all rows
+  - query: SELECT id, name FROM t ORDER BY id
+    rows:
+      - [1, "Alice"]
+      - [2, "Bob"]
+      - [3, "Charlie"]
+      - [4, "Dave"]
