@@ -1,0 +1,31 @@
+# exists_with_aggregate.yaml — EXISTS subquery with aggregate
+#
+# Exercises EXISTS where the inner subquery uses GROUP BY/HAVING.
+name: exists_with_aggregate
+schema_template: |
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50)
+tests:
+  # Customers with total orders > 150
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE EXISTS (
+        SELECT 1 FROM orders o
+        WHERE o.customer_id = c.id
+        GROUP BY o.customer_id
+        HAVING SUM(o.amount) > 150
+      )
+    rows:
+      - ["Alice"]
+
+  # Simple EXISTS (any order)
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
+      ORDER BY c.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
