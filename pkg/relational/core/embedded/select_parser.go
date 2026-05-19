@@ -76,16 +76,20 @@ type selectQuery struct {
 	projConstFolded []projectionFold
 }
 
+// joinType mirrors ANTLR's rule alternatives: InnerJoinContext vs
+// OuterJoinContext + ctx.LEFT()/ctx.RIGHT().
+type joinType int
+
 const (
-	joinTypeInner = "INNER"
-	joinTypeLeft  = "LEFT"
-	joinTypeRight = "RIGHT"
+	joinTypeInner joinType = iota
+	joinTypeLeft
+	joinTypeRight
 )
 
 // joinClause describes a single JOIN part in a SELECT query.
 type joinClause struct {
 	tableName string
-	joinType  string
+	joinType  joinType
 	alias     string
 	onExpr    antlrgen.IExpressionContext
 	// derivedQuery is set when the join's right-hand source is a
@@ -1608,7 +1612,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
 	// InnerJoinContext to a LEFT/RIGHT join.
 	leftAlias := ""
-	promotedJoinType := ""
+	var promotedJoinType joinType = -1
 	// Grammar is `tableName (AS? alias=uid)?` — AS optional.
 	// Pick up implicit aliases via GetAlias() (was previously
 	// gated on AS being present, which lost `FROM Order o` etc).
@@ -1633,8 +1637,10 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 				(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
 		if atomItem.AS() == nil && !isQuoted {
 			up := strings.ToUpper(aliasTxt)
-			if up == joinTypeLeft || up == joinTypeRight {
-				promotedJoinType = up
+			if up == "LEFT" {
+				promotedJoinType = joinTypeLeft
+			} else if up == "RIGHT" {
+				promotedJoinType = joinTypeRight
 			} else {
 				leftAlias = aliasTxt
 			}
@@ -1656,7 +1662,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		joins = append(joins, jc)
 	}
 	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == joinTypeInner {
+	if promotedJoinType >= 0 && len(joins) > 0 && joins[0].joinType == joinTypeInner {
 		joins[0].joinType = promotedJoinType
 	}
 	// Implicit cross joins from comma-separated FROM sources run last; the
