@@ -128,7 +128,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					continue
 				}
 			}
-			if _, defined := filtered[0][ac.groupCol]; defined {
+			if v, defined := filtered[0][ac.groupCol]; defined {
+				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"column reference %q is ambiguous", m.Col)
+				}
 				return nil, nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
 					ac.groupCol)
@@ -186,9 +190,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				if groupByNames[ref] || groupByNames[bare] {
 					continue
 				}
-				// Not grouped — check if the column is defined in source.
-				_, definedQual := filtered[0][ref]
-				_, definedBare := filtered[0][bare]
+				vQual, definedQual := filtered[0][ref]
+				vBare, definedBare := filtered[0][bare]
+				if m, isAmb := vQual.(ambiguousColumnMarker); definedQual && isAmb {
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"column reference %q is ambiguous", m.Col)
+				}
+				if m, isAmb := vBare.(ambiguousColumnMarker); definedBare && isAmb {
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"column reference %q is ambiguous", m.Col)
+				}
 				if definedQual || definedBare {
 					return nil, nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 						"column %q must appear in the GROUP BY clause or be used in an aggregate function",

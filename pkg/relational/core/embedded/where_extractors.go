@@ -31,8 +31,6 @@ func classifyComparisonOp(op antlrgen.IComparisonOperatorContext) string {
 	hasLt := c.LESS_SYMBOL() != nil
 	hasBang := c.EXCLAMATION_SYMBOL() != nil
 	switch {
-	case hasLt && hasEq && hasGt:
-		return "<=>"
 	case hasBang && hasEq:
 		return "!="
 	case hasLt && hasGt:

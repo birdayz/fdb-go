@@ -442,18 +442,24 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		return triFalse, nil
 	}
 
-	// Fallback: interpret as binary comparison (the predicate part has = / <> / < / > / <= / >=).
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if ok {
 		rightVal, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 		if err != nil {
 			return triFalse, err
 		}
+		opText := classifyComparisonOp(bcp.ComparisonOperator())
+		switch opText {
+		case "IS DISTINCT FROM":
+			return triFromBool(!nullSafeEqual(fieldVal, rightVal)), nil
+		case "IS NOT DISTINCT FROM":
+			return triFromBool(nullSafeEqual(fieldVal, rightVal)), nil
+		}
 		if fieldVal == nil || rightVal == nil {
 			return triNull, nil
 		}
 		cmp := functions.CompareValues(fieldVal, rightVal)
-		switch classifyComparisonOp(bcp.ComparisonOperator()) {
+		switch opText {
 		case "=":
 			return triFromBool(cmp == 0), nil
 		case "!=", "<>":
