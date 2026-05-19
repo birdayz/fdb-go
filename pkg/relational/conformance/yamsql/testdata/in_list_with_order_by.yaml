@@ -1,0 +1,29 @@
+# in_list_with_order_by.yaml — IN-list combined with ORDER BY
+#
+# Regression test for the IN-list fix: verifies correct results
+# when IN-list is combined with ORDER BY.
+name: in_list_with_order_by
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'Alice', 30), (2, 'Bob', 10), (3, 'Charlie', 20), (4, 'Dave', 40), (5, 'Eve', 50)
+tests:
+  # IN with ORDER BY ASC
+  - query: SELECT name FROM t WHERE id IN (1, 3, 5) ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Charlie"]
+      - ["Eve"]
+
+  # IN with ORDER BY DESC
+  - query: SELECT name FROM t WHERE id IN (2, 4) ORDER BY name DESC
+    rows:
+      - ["Dave"]
+      - ["Bob"]
+
+  # IN with ORDER BY on different column
+  - query: SELECT name FROM t WHERE id IN (1, 2, 3) ORDER BY val
+    rows:
+      - ["Bob"]
+      - ["Charlie"]
+      - ["Alice"]
