@@ -1,0 +1,37 @@
+# self_join_advanced.yaml — Advanced self-join patterns
+#
+# Exercises self-joins with various conditions: same table joined
+# to itself with different aliases, finding pairs and hierarchies.
+name: self_join_advanced
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, manager_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'CEO', null, 300), (2, 'VP', 1, 200), (3, 'Director', 1, 180), (4, 'Manager', 2, 150), (5, 'Engineer', 4, 120)
+tests:
+  # Manager-report pairs
+  - query: >
+      SELECT m.name, e.name FROM emp e, emp m
+      WHERE e.manager_id = m.id
+      ORDER BY m.name, e.name
+    rows:
+      - ["CEO", "Director"]
+      - ["CEO", "VP"]
+      - ["Manager", "Engineer"]
+      - ["VP", "Manager"]
+
+  # Employees who earn more than their manager
+  - query: >
+      SELECT e.name, e.salary, m.name, m.salary
+      FROM emp e, emp m
+      WHERE e.manager_id = m.id AND e.salary > m.salary
+    rows: []
+
+  # Count of direct reports per manager
+  - query: >
+      SELECT m.name, COUNT(e.id) FROM emp m, emp e
+      WHERE e.manager_id = m.id
+      GROUP BY m.name ORDER BY m.name
+    rows:
+      - ["CEO", 2]
+      - ["Manager", 1]
+      - ["VP", 1]
