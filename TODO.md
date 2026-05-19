@@ -31,7 +31,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Missing Java infrastructure
 
-- [ ] **Correlated.rebase(AliasMap)** — Java rebases all correlation references when moving predicates/values between scopes. Go uses string-stripping (stripAliasFromPredicates) which is fragile. Needed for correct predicate push-down through arbitrary plan trees.
+- [x] **Correlated.rebase(AliasMap)** — Already implemented: `values.RebaseValue()` + `predicates.RebasePredicate()` + `values.AliasMap`. Used by PushDistinctBelowFilterRule, ImplementSimpleSelectRule. NLJ's stripAlias should migrate to rebase (tracked under FieldValue correlation).
 - [x] **getCorrelatedTo() on all predicates** — Added `GetCorrelatedTo()` method to QueryPredicate interface. Implemented on all 10 concrete types. 8 unit tests.
 - [ ] **Plan proto serialization** — Java serializes plans to protobuf for continuation tokens and plan cache. Go plans are not serializable. Blocks cross-transaction plan reuse and wire-compatible continuation tokens.
 - [ ] **Value type proto serialization** — Same as above for Value trees.
