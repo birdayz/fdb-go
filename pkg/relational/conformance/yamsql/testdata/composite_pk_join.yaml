@@ -1,0 +1,37 @@
+# composite_pk_join.yaml — Joins on composite primary key tables
+#
+# Exercises joins where one or both tables have composite PKs.
+name: composite_pk_join
+schema_template: |
+  CREATE TABLE orders (customer_id BIGINT NOT NULL, order_num BIGINT NOT NULL, total BIGINT, PRIMARY KEY (customer_id, order_num))
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')
+  - INSERT INTO orders VALUES (1, 1, 100), (1, 2, 200), (2, 1, 150)
+tests:
+  # Join on first PK component
+  - query: >
+      SELECT c.name, o.order_num, o.total
+      FROM customers c, orders o
+      WHERE o.customer_id = c.id
+      ORDER BY c.name, o.order_num
+    rows:
+      - ["Alice", 1, 100]
+      - ["Alice", 2, 200]
+      - ["Bob", 1, 150]
+
+  # Aggregate on composite PK join
+  - query: >
+      SELECT c.name, SUM(o.total)
+      FROM customers c, orders o
+      WHERE o.customer_id = c.id
+      GROUP BY c.name
+      ORDER BY c.name
+    rows:
+      - ["Alice", 300]
+      - ["Bob", 150]
+
+  # Filter on both PK components
+  - query: SELECT total FROM orders WHERE customer_id = 1 AND order_num = 2
+    rows:
+      - [200]
