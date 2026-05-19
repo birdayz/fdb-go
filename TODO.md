@@ -62,21 +62,21 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Missing Java plan types
 
-- [ ] **RecordQueryTextIndexPlan** — full-text search. Not in scope unless text indexes are needed.
-- [ ] **RecordQueryAggregateIndexPlan** — pre-aggregated index scans. Would enable index-only GROUP BY.
-- [ ] **RecordQueryLoadByKeysPlan** — direct key-based batch load. Subsumed by scan+filter but less efficient.
-- [ ] **RecordQueryMultiIntersectionOnValuesPlan** — N-way intersection (current impl handles 2-way only).
-- [ ] **RecordQueryUnorderedPrimaryKeyDistinctPlan** — PK-based dedup optimization. Covered by generic DistinctPlan but less efficient.
-- [ ] **RecordQueryComparatorPlan** — comparator-based ranking.
-- [ ] **RecordQueryScoreForRankPlan** — score-based ranking.
-- [ ] **RecordQuerySelectorPlan** — selector-based filtering (internal planner use).
+- [x] **RecordQueryTextIndexPlan** — full-text search. Not in scope unless text indexes are needed.
+- [x] **RecordQueryAggregateIndexPlan** — pre-aggregated index scans. Would enable index-only GROUP BY.
+- [x] **RecordQueryLoadByKeysPlan** — direct key-based batch load. Subsumed by scan+filter but less efficient.
+- [x] **RecordQueryMultiIntersectionOnValuesPlan** — N-way intersection (current impl handles 2-way only).
+- [x] **RecordQueryUnorderedPrimaryKeyDistinctPlan** — PK-based dedup optimization. Covered by generic DistinctPlan but less efficient.
+- [x] **RecordQueryComparatorPlan** — comparator-based ranking.
+- [x] **RecordQueryScoreForRankPlan** — score-based ranking.
+- [x] **RecordQuerySelectorPlan** — selector-based filtering (internal planner use).
 
 ### Missing value types
 
-- [ ] **CosineDistanceRowNumberValue** — vector similarity search.
-- [ ] **DotProductDistanceRowNumberValue** — vector similarity search.
-- [ ] **EuclideanDistanceRowNumberValue** — vector similarity search.
-- [ ] **EuclideanSquareDistanceRowNumberValue** — vector similarity search.
+- [x] **CosineDistanceRowNumberValue** — vector similarity search.
+- [x] **DotProductDistanceRowNumberValue** — vector similarity search.
+- [x] **EuclideanDistanceRowNumberValue** — vector similarity search.
+- [x] **EuclideanSquareDistanceRowNumberValue** — vector similarity search.
 - [x] **LiteralValue** — Go's ConstantValue is the functional equivalent. No structural change needed — Java's LiteralValue is just an indirection layer around constants.
 
 ### Missing rules
