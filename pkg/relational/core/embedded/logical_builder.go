@@ -608,9 +608,7 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		col := functions.FullIdToName(el.FullColumnName().FullId())
 		// Strip the table-qualifier if present — UPDATE SET uses bare
 		// col names at the logical level.
-		if dot := strings.LastIndex(col, "."); dot >= 0 {
-			col = col[dot+1:]
-		}
+		col = parseColRef(col).bare()
 		sets = append(sets, logical.Assignment{
 			Column: col,
 			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),

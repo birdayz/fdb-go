@@ -987,14 +987,14 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	cols := make([]executor.ColumnDef, 0, len(firstCols)+len(secondCols))
 	for _, c := range firstCols {
 		qual := c
-		if firstAlias != "" && !strings.Contains(c.Name, ".") {
+		if firstAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}
 	for _, c := range secondCols {
 		qual := c
-		if secondAlias != "" && !strings.Contains(c.Name, ".") {
+		if secondAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
@@ -1015,14 +1015,14 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
 	for _, c := range outerCols {
 		qual := c
-		if outerAlias != "" && !strings.Contains(c.Name, ".") {
+		if outerAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = outerAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}
 	for _, c := range innerCols {
 		qual := c
-		if innerAlias != "" && !strings.Contains(c.Name, ".") {
+		if innerAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = innerAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)

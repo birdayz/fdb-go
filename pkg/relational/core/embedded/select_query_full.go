@@ -622,10 +622,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					// only one source is in scope on the proto path, so
 					// any qualifier that's not garbage is the table or
 					// its alias.
-					bare := ac.aggArg
-					if dot := strings.LastIndex(bare, "."); dot >= 0 {
-						bare = bare[dot+1:]
-					}
+					bare := parseColRef(ac.aggArg).bare()
 					fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -822,10 +819,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// aggregateMapRows) so qualified GROUP BY keys resolve
 				// against unqualified SELECT-list references.
 				// First-wins on bare collision; see aggregateMapRows.
-				if dot := strings.LastIndex(col, "."); dot >= 0 {
-					bare := col[dot+1:]
-					if _, exists := groupColIdx[bare]; !exists {
-						groupColIdx[bare] = i
+				if ref := parseColRef(col); ref.isQualified() {
+					if _, exists := groupColIdx[ref.bare()]; !exists {
+						groupColIdx[ref.bare()] = i
 					}
 				}
 			}
@@ -862,9 +858,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
 						if !ok {
-							if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
-								idx, ok = groupColIdx[ac.groupCol[dot+1:]]
-							}
+							idx, ok = groupColIdx[parseColRef(ac.groupCol).bare()]
 						}
 						if ok {
 							fullVals[i] = gs.groupVals[idx]
@@ -1007,10 +1001,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// a.* FROM a`, which collapse to equal names only
 				// after qualifier stripping.
 				lookupName := colName
-				if dot := strings.LastIndex(colName, "."); dot >= 0 {
-					qual := strings.ToUpper(colName[:dot])
+				if ref := parseColRef(colName); ref.isQualified() {
+					qual := strings.ToUpper(ref.table)
 					if strings.EqualFold(qual, sq.tableName) || (sq.tableAlias != "" && strings.EqualFold(qual, sq.tableAlias)) {
-						lookupName = colName[dot+1:]
+						lookupName = ref.bare()
 					}
 				}
 				fd := allFields.ByName(protoreflect.Name(lookupName))

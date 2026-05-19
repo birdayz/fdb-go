@@ -282,10 +282,7 @@ func buildDerivedTableSource(
 	columns := make([]semantic.Column, 0, len(projCols))
 	var colAliasMap map[string]string
 	for i, col := range projCols {
-		bareName := col
-		if dot := strings.LastIndex(col, "."); dot >= 0 {
-			bareName = col[dot+1:]
-		}
+		bareName := parseColRef(col).bare()
 		innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
 		if !found {
 			return semantic.ScopeSource{}, false
@@ -566,10 +563,7 @@ func buildCTEColumnSource(
 		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
 		for i, col := range innerSQ.projCols {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
-			bareName := col
-			if dot := strings.LastIndex(col, "."); dot >= 0 {
-				bareName = col[dot+1:]
-			}
+			bareName := parseColRef(col).bare()
 			outName := bareName
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
@@ -896,7 +890,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if err := resolveColumnName(resolver, col); err != nil {
 				return nil, err
 			}
-			if strings.Contains(col, ".") && proj != nil {
+			if parseColRef(col).isQualified() && proj != nil {
 				if proj.ProjectedValues == nil {
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
@@ -1584,10 +1578,7 @@ func extractComparisonFieldPairs(p predicates.QueryPredicate) [][2]string {
 // bareCol extracts the unqualified column name from a potentially
 // qualified field reference (e.g. "E.ID" → "ID").
 func bareCol(field string) string {
-	if dot := strings.LastIndexByte(field, '.'); dot >= 0 {
-		return field[dot+1:]
-	}
-	return field
+	return parseColRef(field).bare()
 }
 
 // splitNonExistsPredicatesFromWalked returns only the non-EXISTS parts
@@ -2060,9 +2051,10 @@ func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
 func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) error {
 	groupBySet := make(map[string]bool, len(sq.groupBy))
 	for _, gb := range sq.groupBy {
+		ref := parseColRef(gb)
 		groupBySet[strings.ToUpper(gb)] = true
-		if dot := strings.LastIndex(gb, "."); dot >= 0 {
-			groupBySet[strings.ToUpper(gb[dot+1:])] = true
+		if ref.isQualified() {
+			groupBySet[strings.ToUpper(ref.bare())] = true
 		}
 	}
 
@@ -2080,10 +2072,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 
 	checkColumn := func(col string) error {
 		upper := strings.ToUpper(col)
-		bare := upper
-		if dot := strings.LastIndex(bare, "."); dot >= 0 {
-			bare = bare[dot+1:]
-		}
+		bare := parseColRef(upper).bare()
 		if tableFields != nil && !tableFields[bare] {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q does not exist", col)
@@ -3204,10 +3193,7 @@ func resolveProjectionTypes(op logical.LogicalOperator, md *recordlayer.RecordMe
 		if i < len(proj.IsComputed) && proj.IsComputed[i] {
 			continue
 		}
-		bare := col
-		if dot := strings.LastIndex(col, "."); dot >= 0 {
-			bare = col[dot+1:]
-		}
+		bare := parseColRef(col).bare()
 		fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(bare)))
 		if fd == nil {
 			fd = desc.Fields().ByName(protoreflect.Name(bare))
@@ -3530,7 +3516,7 @@ func qualifyBareFieldValue(v values.Value, qualifier string) {
 			if fv.Child != nil {
 				return false
 			}
-			if !strings.Contains(fv.Field, ".") {
+			if !parseColRef(fv.Field).isQualified() {
 				fv.Field = qualifier + "." + fv.Field
 			}
 		}

@@ -395,11 +395,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						// type-inference lands.
 						continue
 					}
-					bare := projCol
-					if dot := strings.LastIndex(projCol, "."); dot >= 0 {
-						bare = projCol[dot+1:]
-					}
-					colTypes[i] = typeBySource[bare]
+					colTypes[i] = typeBySource[parseColRef(projCol).bare()]
 				}
 			}
 
@@ -450,16 +446,15 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 									"column reference %q is ambiguous", m.Col)
 							}
 							vals[i] = v
-						} else if dot := strings.LastIndex(col, "."); dot >= 0 {
+						} else if ref := parseColRef(col); ref.isQualified() {
 							// Qualified reference whose qualified key is NOT
 							// in the row. Before falling back to the bare
 							// column (which silently returned whichever source
 							// wrote it last), check that the qualifier names a
 							// valid FROM-clause source. If not → 42F01.
-							qual := col[:dot]
-							if !validQualifiers[strings.ToUpper(qual)] {
+							if !validQualifiers[strings.ToUpper(ref.table)] {
 								return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-									"column reference %q names unknown table/alias %q", col, qual)
+									"column reference %q names unknown table/alias %q", col, ref.table)
 							}
 							// Valid qualifier but the column isn't there —
 							// fall through to the bare-name lookup (matches
@@ -468,7 +463,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 							// on real rows so this path only fires when a
 							// future map producer doesn't populate the
 							// qualified form).
-							v := row[col[dot+1:]]
+							v := row[ref.bare()]
 							if m, isAmb := v.(ambiguousColumnMarker); isAmb {
 								return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 									"column reference %q is ambiguous", m.Col)
@@ -570,8 +565,8 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					// "alias.col" → strip qualifier and re-check (the
 					// JOIN row map populates both forms, but only the
 					// qualified form for sources that aren't the left).
-					if dot := strings.LastIndex(ob.colName, "."); dot >= 0 {
-						if _, present := filtered[0][ob.colName[dot+1:]]; present {
+					if ref := parseColRef(ob.colName); ref.isQualified() {
+						if _, present := filtered[0][ref.bare()]; present {
 							continue
 						}
 					}
@@ -608,10 +603,9 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						a = filtered[i][ob.colName]
 						b = filtered[j][ob.colName]
 						if a == nil && b == nil {
-							if dot := strings.LastIndex(ob.colName, "."); dot >= 0 {
-								bare := ob.colName[dot+1:]
-								a = filtered[i][bare]
-								b = filtered[j][bare]
+							if ref := parseColRef(ob.colName); ref.isQualified() {
+								a = filtered[i][ref.bare()]
+								b = filtered[j][ref.bare()]
 							}
 						}
 					} else {

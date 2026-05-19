@@ -117,12 +117,9 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		// `emp.id` in an inner `FROM project` would silently resolve to
 		// `project.id`. Unqualified `col` prefers inner; falls through
 		// only on miss.
-		bare := colName
-		qual := ""
-		if dot := strings.LastIndex(colName, "."); dot >= 0 {
-			qual = strings.ToUpper(colName[:dot])
-			bare = colName[dot+1:]
-		}
+		ref := parseColRef(colName)
+		bare := ref.bare()
+		qual := strings.ToUpper(ref.table)
 		if msg != nil {
 			// Inner qualifier match: accept the descriptor name always;
 			// also accept any SQL-level alias declared by the current

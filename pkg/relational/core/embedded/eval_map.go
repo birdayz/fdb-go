@@ -39,43 +39,41 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		return v, nil
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		name := functions.FullIdToName(a.FullColumnName().FullId())
+		ref := parseColRef(name)
 		v, found := row[name]
-		if !found {
+		if !found && ref.isQualified() {
 			// Try unqualified: "Order.amount" → "amount".
-			if dot := strings.LastIndex(name, "."); dot >= 0 {
-				qual := name[:dot]
-				qualUpper := strings.ToUpper(qual)
-				// When a JOIN scope is active, reject a qualified
-				// reference whose qualifier isn't a valid FROM source
-				// alias — symmetric with the SELECT projection check.
-				// Fires before the bare-column fallback so wrong
-				// qualifiers error 42F01 instead of silently picking
-				// whichever source populated the bare key.
-				//
-				// Correlated subquery exception: if the qualifier matches
-				// an outer-scope alias, skip the reject and let the outer
-				// fallback below resolve it.
-				if conn != nil && conn.validQualifiers != nil && !conn.validQualifiers[qualUpper] {
-					if !outerScopesContainQualifier(conn, qualUpper) {
-						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-							"column reference %q names unknown table/alias %q", name, qual)
-					}
-					// Outer qualifier in JOIN scope: leave found=false
-					// so the `if !found` block below routes to the
-					// outer-scope walk via resolveOuterColumn.
-				} else if conn != nil && outerScopesContainQualifier(conn, qualUpper) {
-					// CTE / single-source path (validQualifiers nil) with
-					// an active outer scope whose alias matches the
-					// qualifier — defer to the outer-scope walk below
-					// (leave found=false). Without this, `big.gid =
-					// a.gid` inside `EXISTS (SELECT 1 FROM big WHERE …)`
-					// would silently resolve `a.gid` to big's bare `gid`
-					// column, making the predicate `big.gid = big.gid`
-					// (tautology). Outer-scope wins iff the qualifier
-					// names an outer source.
-				} else {
-					v, found = row[name[dot+1:]]
+			qualUpper := strings.ToUpper(ref.table)
+			// When a JOIN scope is active, reject a qualified
+			// reference whose qualifier isn't a valid FROM source
+			// alias — symmetric with the SELECT projection check.
+			// Fires before the bare-column fallback so wrong
+			// qualifiers error 42F01 instead of silently picking
+			// whichever source populated the bare key.
+			//
+			// Correlated subquery exception: if the qualifier matches
+			// an outer-scope alias, skip the reject and let the outer
+			// fallback below resolve it.
+			if conn != nil && conn.validQualifiers != nil && !conn.validQualifiers[qualUpper] {
+				if !outerScopesContainQualifier(conn, qualUpper) {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+						"column reference %q names unknown table/alias %q", name, ref.table)
 				}
+				// Outer qualifier in JOIN scope: leave found=false
+				// so the `if !found` block below routes to the
+				// outer-scope walk via resolveOuterColumn.
+			} else if conn != nil && outerScopesContainQualifier(conn, qualUpper) {
+				// CTE / single-source path (validQualifiers nil) with
+				// an active outer scope whose alias matches the
+				// qualifier — defer to the outer-scope walk below
+				// (leave found=false). Without this, `big.gid =
+				// a.gid` inside `EXISTS (SELECT 1 FROM big WHERE …)`
+				// would silently resolve `a.gid` to big's bare `gid`
+				// column, making the predicate `big.gid = big.gid`
+				// (tautology). Outer-scope wins iff the qualifier
+				// names an outer source.
+			} else {
+				v, found = row[ref.bare()]
 			}
 		}
 		if !found {

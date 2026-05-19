@@ -30,10 +30,7 @@ import (
 // to chain through multiple staticRows wrappers (CTE → SELECT, UNION
 // over already-transformed sources).
 func jdbcColumnName(name string, position int) string {
-	base := name
-	if dot := strings.LastIndex(name, "."); dot >= 0 {
-		base = name[dot+1:]
-	}
+	base := parseColRef(name).bare()
 	if isSimpleIdentifier(base) {
 		return strings.ToUpper(base)
 	}
@@ -159,11 +156,8 @@ func inferAtomJDBCType(atom antlrgen.IExpressionAtomContext, msgDesc protoreflec
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		colName := functions.FullIdToName(a.FullColumnName().FullId())
 		// Strip qualifier for the field lookup, same as the SELECT-path
-		// projection-binding does at line 853 of select_query_full.go.
-		bare := colName
-		if dot := strings.LastIndex(colName, "."); dot >= 0 {
-			bare = colName[dot+1:]
-		}
+		// projection-binding does in select_query_full.go.
+		bare := parseColRef(colName).bare()
 		if msgDesc != nil {
 			fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 			if fd != nil {
@@ -409,10 +403,7 @@ func convertedDataTypeToJDBC(text string) string {
 func aggregateResultJDBCType(ac aggSelectCol, msgDesc protoreflect.MessageDescriptor) string {
 	// GROUP BY column: type comes from the underlying field.
 	if ac.groupCol != "" {
-		bare := ac.groupCol
-		if dot := strings.LastIndex(bare, "."); dot >= 0 {
-			bare = bare[dot+1:]
-		}
+		bare := parseColRef(ac.groupCol).bare()
 		if msgDesc != nil {
 			if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
 				return jdbcTypeNameForFD(fd)
@@ -437,10 +428,7 @@ func aggregateResultJDBCType(ac aggSelectCol, msgDesc protoreflect.MessageDescri
 		// argument → look up the FieldDescriptor. Expression arg
 		// (SUM(qty * price)) walks the expression AST.
 		if ac.aggArg != "" {
-			bare := ac.aggArg
-			if dot := strings.LastIndex(bare, "."); dot >= 0 {
-				bare = bare[dot+1:]
-			}
+			bare := parseColRef(ac.aggArg).bare()
 			if msgDesc != nil {
 				if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
 					return jdbcTypeNameForFD(fd)

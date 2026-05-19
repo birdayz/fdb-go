@@ -2,7 +2,6 @@ package embedded
 
 import (
 	"context"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -290,7 +289,7 @@ func extractColumnRef(atom antlrgen.IExpressionAtomContext) (string, bool) {
 		return "", false
 	}
 	name := functions.FullIdToName(fcn.FullColumnName().FullId())
-	return name[strings.LastIndex(name, ".")+1:], true
+	return parseColRef(name).bare(), true
 }
 
 // evalConstantAtom attempts to evaluate an expression atom without a

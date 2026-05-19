@@ -79,8 +79,8 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			t = cte.colTypes[i]
 		}
 		cteTypeByCol[col] = t
-		if dot := strings.LastIndex(col, "."); dot >= 0 {
-			cteTypeByCol[col[dot+1:]] = t
+		if ref := parseColRef(col); ref.isQualified() {
+			cteTypeByCol[ref.bare()] = t
 		}
 	}
 
@@ -120,11 +120,7 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			if j < len(sq.projExprs) && sq.projExprs[j] != nil {
 				continue
 			}
-			bare := col
-			if dot := strings.LastIndex(col, "."); dot >= 0 {
-				bare = col[dot+1:]
-			}
-			colTypes[j] = cteTypeByCol[bare]
+			colTypes[j] = cteTypeByCol[parseColRef(col).bare()]
 		}
 		// Java alignment (cte.yamsql line 111,114): when a WITH rename
 		// renames the CTE columns (e.g. `WITH c1(w, z) AS (SELECT id,
@@ -146,11 +142,7 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			if col == "" {
 				continue // qualifier-star sentinel; handled elsewhere
 			}
-			bare := col
-			if dot := strings.LastIndex(col, "."); dot >= 0 {
-				bare = col[dot+1:]
-			}
-			if !cteColSet[bare] {
+			if bare := parseColRef(col).bare(); !cteColSet[bare] {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"column %q not found in CTE %q", col, sq.tableName)
 			}

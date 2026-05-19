@@ -442,7 +442,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			if err := resolveColumnName(resolver, col); err != nil {
 				return nil, err
 			}
-			if strings.Contains(col, ".") && proj != nil {
+			if parseColRef(col).isQualified() && proj != nil {
 				if proj.ProjectedValues == nil {
 					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 				}
