@@ -422,7 +422,8 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	if len(a.HavingExistsSubqueries) > 0 {
 		outerQ := expressions.ForEachQuantifier(groupByRef)
 		quantifiers := []expressions.Quantifier{outerQ}
-		allPreds := []predicates.QueryPredicate{a.HavingPredicate}
+		allPreds := splitNonExistsPredicates(a.HavingPredicate)
+		allPreds = append(allPreds, extractExistsPredicates(a.HavingPredicate)...)
 		for _, esq := range a.HavingExistsSubqueries {
 			subRef := t.translateRef(esq.Plan)
 			if subRef == nil {
