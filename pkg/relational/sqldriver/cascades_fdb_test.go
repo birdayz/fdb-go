@@ -3071,6 +3071,74 @@ func TestFDB_NestedNotExists(t *testing.T) {
 	}
 }
 
+func TestFDB_ExistsWithJoinInside(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/exists_join_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE reviews (id BIGINT NOT NULL, product_id BIGINT, rating BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, q := range []string{
+		"INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Books'), (3, 'Empty')",
+		"INSERT INTO products VALUES (10, 1), (20, 2)",
+		"INSERT INTO reviews VALUES (100, 10, 5), (101, 20, 3)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// EXISTS with join inside: categories that have reviewed products
+	rows, err := db.QueryContext(ctx,
+		"SELECT c.name FROM categories c WHERE EXISTS (SELECT 1 FROM reviews r, products p WHERE r.product_id = p.id AND p.cat_id = c.id) ORDER BY c.name")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+
+	if len(names) != 2 || names[0] != "Books" || names[1] != "Electronics" {
+		t.Fatalf("expected [Books Electronics], got %v", names)
+	}
+	t.Logf("EXISTS with join inside → %v ✓", names)
+}
+
 func TestFDB_NotExistsWithOR(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

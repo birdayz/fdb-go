@@ -3379,6 +3379,21 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	}
 	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
 
+	// Build join tree from inner FROM clause (handles multi-table EXISTS).
+	for _, j := range sq.joins {
+		right := logical.LogicalOperator(logical.NewScan(j.tableName, j.alias))
+		var kind logical.JoinKind
+		switch j.joinType {
+		case "LEFT":
+			kind = logical.JoinLeft
+		case "RIGHT":
+			kind = logical.JoinRight
+		default:
+			kind = logical.JoinInner
+		}
+		op = logical.NewJoinWithPredicate(op, right, kind, nil)
+	}
+
 	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
 		return op, nil
 	}
@@ -3400,6 +3415,22 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
 	})
+
+	// Add join tables to scope so the resolver can resolve their columns.
+	for _, j := range sq.joins {
+		jAlias := j.alias
+		if jAlias == "" {
+			jAlias = j.tableName
+		}
+		jTbl, jErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(j.tableName, "."), false))
+		if jErr != nil {
+			return nil, &CorrelatedExistsError{Message: fmt.Sprintf("correlated EXISTS: resolve join table %q: %v", j.tableName, jErr), Cause: jErr}
+		}
+		jAliasID := semantic.NewUnquoted(jAlias)
+		_ = innerScope.AddSource(semantic.ScopeSource{
+			Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
+		})
+	}
 
 	resolver := expr.New(analyzer, innerScope)
 
