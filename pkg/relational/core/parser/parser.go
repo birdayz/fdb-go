@@ -28,13 +28,47 @@ import (
 // QueryParser.parse(): Java reports only the FIRST syntax error and runs
 // ParseHelpers.underlineParsingError to produce the underline. Downstream
 // errors after a syntax failure are usually cascade noise.
-func Parse(sql string) (antlrgen.IRootContext, error) {
+func Parse(sql string) (ctx antlrgen.IRootContext, err error) {
+	if maxNesting(sql) > 500 {
+		return nil, &api.Error{
+			Code:    api.ErrCodeSyntaxError,
+			Message: "syntax error: expression nesting exceeds maximum depth (500)",
+		}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			ctx = nil
+			err = &api.Error{
+				Code:    api.ErrCodeSyntaxError,
+				Message: fmt.Sprintf("parse panic: %v", r),
+			}
+		}
+	}()
 	p, listener := newParser(sql, nil)
 	root := p.Root()
 	if len(listener.errs) > 0 {
 		return nil, buildSyntaxError(listener.errs[0])
 	}
 	return root, nil
+}
+
+// maxNesting returns the maximum parenthesis nesting depth in sql.
+func maxNesting(sql string) int {
+	max, cur := 0, 0
+	for _, c := range sql {
+		switch c {
+		case '(':
+			cur++
+			if cur > max {
+				max = cur
+			}
+		case ')':
+			if cur > 0 {
+				cur--
+			}
+		}
+	}
+	return max
 }
 
 // ParseFunction parses a CREATE FUNCTION ... statement and returns
