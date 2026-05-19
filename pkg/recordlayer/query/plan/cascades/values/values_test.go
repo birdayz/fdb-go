@@ -179,11 +179,18 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 		t.Fatalf("NULL rhs: got %v", got)
 	}
 
-	// Type mismatch returns nil.
+	// Type mismatch panics with ScalarTypeMismatchError (Java-aligned).
 	tm := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	if got := tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)}); got != nil {
-		t.Fatalf("type mismatch: got %v", got)
-	}
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("type mismatch: expected panic")
+			} else if _, ok := r.(*ScalarTypeMismatchError); !ok {
+				t.Fatalf("type mismatch: expected *ScalarTypeMismatchError, got %T: %v", r, r)
+			}
+		}()
+		tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)})
+	}()
 
 	// Float arithmetic returns nil per the seed contract — int-only
 	// Evaluate, full coercion waits on the Phase 4.0 Type hierarchy
@@ -1325,7 +1332,7 @@ func TestIsIndexOnly_RowNumberValue(t *testing.T) {
 
 func TestIsIndexOnly_DistanceRowNumberValue(t *testing.T) {
 	t.Parallel()
-	v := NewEuclideanDistanceRowNumberValue(nil, nil, nil, nil)
+	v := NewEuclideanDistanceRowNumberValue(nil, nil)
 	if !IsIndexOnly(v) {
 		t.Fatal("DistanceRowNumberValue should be IndexOnly")
 	}
@@ -1352,4 +1359,173 @@ func TestIsIndexOnly_NilValue(t *testing.T) {
 	if IsIndexOnly(nil) {
 		t.Fatal("nil should NOT be IndexOnly")
 	}
+}
+
+// --- evaluateCorrelated unit tests ---
+
+func TestFieldValue_QOV_CorrelationBinder(t *testing.T) {
+	t.Parallel()
+	corrA := NamedCorrelationIdentifier("A")
+	corrB := NamedCorrelationIdentifier("B")
+	fv := NewFieldValue(NewQuantifiedObjectValue(corrA), "NAME", UnknownType)
+
+	rc := &RowEvalContext{
+		Datum: map[string]any{"irrelevant": "data"},
+		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
+			corrA: map[string]any{"NAME": "Alice", "ID": int64(1)},
+			corrB: map[string]any{"NAME": "Bob", "ID": int64(2)},
+		}},
+	}
+	got := fv.Evaluate(rc)
+	if got != "Alice" {
+		t.Fatalf("expected Alice, got %v", got)
+	}
+}
+
+func TestFieldValue_QOV_CorrelationBinder_OtherTable(t *testing.T) {
+	t.Parallel()
+	corrB := NamedCorrelationIdentifier("B")
+	fv := NewFieldValue(NewQuantifiedObjectValue(corrB), "NAME", UnknownType)
+
+	rc := &RowEvalContext{
+		Datum: map[string]any{"NAME": "wrong"},
+		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
+			NamedCorrelationIdentifier("A"): map[string]any{"NAME": "Alice"},
+			corrB:                           map[string]any{"NAME": "Bob"},
+		}},
+	}
+	got := fv.Evaluate(rc)
+	if got != "Bob" {
+		t.Fatalf("expected Bob, got %v", got)
+	}
+}
+
+func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
+	t.Parallel()
+	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("EMP")), "NAME", UnknownType)
+
+	merged := map[string]any{
+		"NAME":      "wrong-bare",
+		"EMP.NAME":  "Alice",
+		"DEPT.NAME": "Engineering",
+	}
+	got := fv.Evaluate(merged)
+	if got != "Alice" {
+		t.Fatalf("expected Alice from EMP.NAME, got %v", got)
+	}
+}
+
+func TestFieldValue_QOV_FlatMap_NoFallbackToBareKey(t *testing.T) {
+	t.Parallel()
+	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("A")), "K", UnknownType)
+
+	merged := map[string]any{
+		"K":   int64(99),
+		"B.K": int64(99),
+	}
+	got := fv.Evaluate(merged)
+	if got != nil {
+		t.Fatalf("expected nil (A.K not in map), got %v — bare key fallback must not happen", got)
+	}
+}
+
+func TestFieldValue_QOV_NullKeyDisambiguation(t *testing.T) {
+	t.Parallel()
+	fvA := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("A")), "K", UnknownType)
+	fvB := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("B")), "K", UnknownType)
+
+	merged := map[string]any{
+		"A.K": int64(10),
+		"B.K": int64(20),
+		"K":   int64(10),
+	}
+	gotA := fvA.Evaluate(merged)
+	gotB := fvB.Evaluate(merged)
+	if gotA != int64(10) {
+		t.Errorf("A.K: expected 10, got %v", gotA)
+	}
+	if gotB != int64(20) {
+		t.Errorf("B.K: expected 20, got %v", gotB)
+	}
+}
+
+func TestFieldValue_QOV_NullFK_NoMatch(t *testing.T) {
+	t.Parallel()
+	fvA := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("A")), "K", UnknownType)
+	fvB := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("B")), "K", UnknownType)
+
+	merged := map[string]any{
+		"B.K": int64(10),
+		"K":   int64(10),
+	}
+	gotA := fvA.Evaluate(merged)
+	gotB := fvB.Evaluate(merged)
+	if gotA != nil {
+		t.Fatalf("A.K absent from map → must be nil, got %v", gotA)
+	}
+	if gotB != int64(10) {
+		t.Fatalf("B.K expected 10, got %v", gotB)
+	}
+}
+
+func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
+	t.Parallel()
+	corrE := NamedCorrelationIdentifier("EMP")
+	fv := NewFieldValue(NewQuantifiedObjectValue(corrE), "SALARY", UnknownType)
+
+	ctx := map[CorrelationIdentifier]map[string]any{
+		corrE:                              {"SALARY": int64(100), "NAME": "Alice"},
+		NamedCorrelationIdentifier("DEPT"): {"NAME": "Eng"},
+	}
+	got := fv.Evaluate(ctx)
+	if got != int64(100) {
+		t.Fatalf("expected 100, got %v", got)
+	}
+}
+
+func TestFieldValue_QOV_MissingCorrelation_ReturnsNil(t *testing.T) {
+	t.Parallel()
+	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("MISSING")), "COL", UnknownType)
+
+	rc := &RowEvalContext{
+		Datum: map[string]any{"COL": "should-not-return"},
+		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
+			NamedCorrelationIdentifier("OTHER"): map[string]any{"COL": "other"},
+		}},
+	}
+	got := fv.Evaluate(rc)
+	if got != nil {
+		t.Fatalf("missing correlation should return nil, got %v", got)
+	}
+}
+
+func TestFieldValue_NoChild_BackwardCompat(t *testing.T) {
+	t.Parallel()
+	fv := &FieldValue{Field: "NAME", Typ: UnknownType}
+
+	row := map[string]any{"NAME": "Alice"}
+	got := fv.Evaluate(row)
+	if got != "Alice" {
+		t.Fatalf("backward compat: expected Alice, got %v", got)
+	}
+}
+
+func TestFieldValue_NoChild_QualifiedString_BackwardCompat(t *testing.T) {
+	t.Parallel()
+	fv := &FieldValue{Field: "EMP.NAME", Typ: UnknownType}
+
+	row := map[string]any{"EMP.NAME": "Alice", "NAME": "wrong"}
+	got := fv.Evaluate(row)
+	if got != "Alice" {
+		t.Fatalf("backward compat qualified: expected Alice, got %v", got)
+	}
+}
+
+type testCorrelationBinder struct {
+	bindings map[CorrelationIdentifier]any
+}
+
+func (b *testCorrelationBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
+	v, ok := b.bindings[id]
+	return v, ok
 }

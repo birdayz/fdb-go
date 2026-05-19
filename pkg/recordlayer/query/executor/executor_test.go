@@ -3259,3 +3259,1440 @@ func TestMergeRows_DerivedTableAlias(t *testing.T) {
 		t.Errorf("B.IDB = %v, want 4", v)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// mergeSortCursor tests
+// ---------------------------------------------------------------------------
+
+// qr is a shorthand to build a QueryResult with a map datum.
+func qr(kvs ...any) QueryResult {
+	m := make(map[string]any, len(kvs)/2)
+	for i := 0; i < len(kvs)-1; i += 2 {
+		m[kvs[i].(string)] = kvs[i+1]
+	}
+	return QueryResult{Datum: m}
+}
+
+// collectMergeSortCursor drains a mergeSortCursor and returns all results.
+func collectMergeSortCursor(t *testing.T, c *mergeSortCursor) []QueryResult {
+	t.Helper()
+	ctx := context.Background()
+	var out []QueryResult
+	for {
+		r, err := c.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("OnNext error: %v", err)
+		}
+		if !r.HasNext() {
+			break
+		}
+		out = append(out, r.GetValue())
+	}
+	return out
+}
+
+// fieldVal returns the int64 at key k from a QueryResult datum.
+func fieldVal(t *testing.T, r QueryResult, k string) int64 {
+	t.Helper()
+	m, ok := r.Datum.(map[string]any)
+	if !ok {
+		t.Fatalf("datum type %T, want map[string]any", r.Datum)
+	}
+	v, ok := m[k]
+	if !ok {
+		t.Fatalf("key %q missing from datum %v", k, m)
+	}
+	n, ok := v.(int64)
+	if !ok {
+		t.Fatalf("key %q = %T, want int64", k, v)
+	}
+	return n
+}
+
+func newMergeSortCursor(
+	cursors []recordlayer.RecordCursor[QueryResult],
+	compKeys []values.Value,
+	reverse bool,
+	dedup bool,
+) *mergeSortCursor {
+	return &mergeSortCursor{
+		cursors:   cursors,
+		compKeys:  compKeys,
+		reverse:   reverse,
+		dedup:     dedup,
+		peeked:    make([]QueryResult, len(cursors)),
+		hasPeeked: make([]bool, len(cursors)),
+		exhausted: make([]bool, len(cursors)),
+	}
+}
+
+func TestMergeSortCursor_TwoSortedInputs(t *testing.T) {
+	t.Parallel()
+
+	// Left:  id=1, id=3, id=5
+	// Right: id=2, id=4, id=6
+	// Expected merged ASC: 1,2,3,4,5,6
+	left := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(3)),
+		qr("id", int64(5)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(2)),
+		qr("id", int64(4)),
+		qr("id", int64(6)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false, // ascending
+		false, // no dedup
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 6 {
+		t.Fatalf("got %d results, want 6", len(results))
+	}
+	expected := []int64{1, 2, 3, 4, 5, 6}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_Deduplication(t *testing.T) {
+	t.Parallel()
+
+	// Both inputs have overlapping keys: 1,2,3 and 2,3,4
+	// With dedup, should produce 1,2,3,4
+	left := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+		qr("id", int64(3)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(2)),
+		qr("id", int64(3)),
+		qr("id", int64(4)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false, // ascending
+		true,  // dedup
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4; values: %v", len(results), results)
+	}
+	expected := []int64{1, 2, 3, 4}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_Reverse(t *testing.T) {
+	t.Parallel()
+
+	// Left:  id=5, id=3, id=1 (descending)
+	// Right: id=6, id=4, id=2 (descending)
+	// Expected merged DESC: 6,5,4,3,2,1
+	left := recordlayer.FromList([]QueryResult{
+		qr("id", int64(5)),
+		qr("id", int64(3)),
+		qr("id", int64(1)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(6)),
+		qr("id", int64(4)),
+		qr("id", int64(2)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		true,  // reverse (descending)
+		false, // no dedup
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 6 {
+		t.Fatalf("got %d results, want 6", len(results))
+	}
+	expected := []int64{6, 5, 4, 3, 2, 1}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_EmptyInputs(t *testing.T) {
+	t.Parallel()
+
+	// Both inputs empty.
+	left := recordlayer.FromList([]QueryResult{})
+	right := recordlayer.FromList([]QueryResult{})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestMergeSortCursor_ZeroCursors(t *testing.T) {
+	t.Parallel()
+
+	// No cursors at all.
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		nil,
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestMergeSortCursor_SingleInputPassthrough(t *testing.T) {
+	t.Parallel()
+
+	// Single input: should just pass through in order.
+	input := recordlayer.FromList([]QueryResult{
+		qr("id", int64(10)),
+		qr("id", int64(20)),
+		qr("id", int64(30)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{input},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	expected := []int64{10, 20, 30}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_NullComparisonKeys(t *testing.T) {
+	t.Parallel()
+
+	// NULL values in the comparison key. compareValues treats nil < non-nil.
+	// Left:  id=nil, id=3
+	// Right: id=1, id=nil (note: not properly sorted but tests nil handling)
+	//
+	// With ascending: nil < 1 < 3 < nil-second
+	// Since nil < any, left's nil comes first, then right's 1,
+	// then left's 3, then right's nil.
+	// But right's second nil is NOT less than 3 (nil < 3 = true),
+	// so it should come before 3? Let's trace carefully.
+	//
+	// Actually left=[nil, 3], right=[1, nil]
+	// Peek: left=nil, right=1. isBetter(nil, 1): compareValues(nil, 1)=-1, cmp<0 → true → pick left(nil)
+	// Peek: left=3, right=1. isBetter(3, 1): compareValues(3, 1)=1, cmp<0 → false → pick right(1)
+	// Peek: left=3, right=nil. isBetter(3, nil): compareValues(3, nil)=1, cmp<0 → false.
+	//   isBetter(nil, 3): compareValues(nil, 3)=-1, cmp<0 → true → pick right(nil)
+	// Peek: left=3, right exhausted. Pick left(3).
+	// Result: nil, 1, nil, 3
+	left := recordlayer.FromList([]QueryResult{
+		qr("id", nil),
+		qr("id", int64(3)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", nil),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4", len(results))
+	}
+
+	// Verify nil values come first and non-nil values are ordered.
+	// Expected order: nil, 1, nil, 3
+	m0 := results[0].Datum.(map[string]any)
+	if m0["id"] != nil {
+		t.Errorf("results[0].id = %v, want nil", m0["id"])
+	}
+	if fieldVal(t, results[1], "id") != 1 {
+		t.Errorf("results[1].id = %v, want 1", results[1].Datum)
+	}
+	m2 := results[2].Datum.(map[string]any)
+	if m2["id"] != nil {
+		t.Errorf("results[2].id = %v, want nil", m2["id"])
+	}
+	if fieldVal(t, results[3], "id") != 3 {
+		t.Errorf("results[3].id = %v, want 3", results[3].Datum)
+	}
+}
+
+func TestMergeSortCursor_UnequalLengthInputs(t *testing.T) {
+	t.Parallel()
+
+	// Left:  id=1, id=5
+	// Right: id=2, id=3, id=4, id=6, id=7
+	// Expected merged ASC: 1,2,3,4,5,6,7
+	left := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(5)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(2)),
+		qr("id", int64(3)),
+		qr("id", int64(4)),
+		qr("id", int64(6)),
+		qr("id", int64(7)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 7 {
+		t.Fatalf("got %d results, want 7", len(results))
+	}
+	expected := []int64{1, 2, 3, 4, 5, 6, 7}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_DedupWithAllDuplicates(t *testing.T) {
+	t.Parallel()
+
+	// Both inputs have the same keys: 1,2,3
+	// With dedup, should produce 1,2,3
+	left := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+		qr("id", int64(3)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+		qr("id", int64(3)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false,
+		true, // dedup
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3; values: %v", len(results), results)
+	}
+	expected := []int64{1, 2, 3}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_ThreeInputs(t *testing.T) {
+	t.Parallel()
+
+	// Three sorted inputs merged.
+	a := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(4)),
+		qr("id", int64(7)),
+	})
+	b := recordlayer.FromList([]QueryResult{
+		qr("id", int64(2)),
+		qr("id", int64(5)),
+		qr("id", int64(8)),
+	})
+	ch := recordlayer.FromList([]QueryResult{
+		qr("id", int64(3)),
+		qr("id", int64(6)),
+		qr("id", int64(9)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{a, b, ch},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 9 {
+		t.Fatalf("got %d results, want 9", len(results))
+	}
+	for i := 0; i < 9; i++ {
+		want := int64(i + 1)
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_MultipleComparisonKeys(t *testing.T) {
+	t.Parallel()
+
+	// Sort by (group ASC, id ASC). Both inputs sorted by (group, id).
+	left := recordlayer.FromList([]QueryResult{
+		qr("group", int64(1), "id", int64(1)),
+		qr("group", int64(1), "id", int64(3)),
+		qr("group", int64(2), "id", int64(1)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("group", int64(1), "id", int64(2)),
+		qr("group", int64(2), "id", int64(2)),
+		qr("group", int64(3), "id", int64(1)),
+	})
+
+	compKeys := []values.Value{
+		values.NewFlatFieldValue("group", values.TypeInt),
+		values.NewFlatFieldValue("id", values.TypeInt),
+	}
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		compKeys,
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 6 {
+		t.Fatalf("got %d results, want 6", len(results))
+	}
+
+	type pair struct{ group, id int64 }
+	expected := []pair{
+		{1, 1}, {1, 2}, {1, 3}, {2, 1}, {2, 2}, {3, 1},
+	}
+	for i, want := range expected {
+		gotG := fieldVal(t, results[i], "group")
+		gotI := fieldVal(t, results[i], "id")
+		if gotG != want.group || gotI != want.id {
+			t.Errorf("results[%d] = (%d,%d), want (%d,%d)", i, gotG, gotI, want.group, want.id)
+		}
+	}
+}
+
+func TestMergeSortCursor_OneEmptyOneNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	// Left is empty, right has data.
+	left := recordlayer.FromList([]QueryResult{})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if fieldVal(t, results[0], "id") != 1 {
+		t.Errorf("results[0].id = %d, want 1", fieldVal(t, results[0], "id"))
+	}
+	if fieldVal(t, results[1], "id") != 2 {
+		t.Errorf("results[1].id = %d, want 2", fieldVal(t, results[1], "id"))
+	}
+}
+
+func TestMergeSortCursor_StringComparisonKeys(t *testing.T) {
+	t.Parallel()
+
+	// Sort by string comparison key.
+	left := recordlayer.FromList([]QueryResult{
+		qr("name", "alice"),
+		qr("name", "charlie"),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("name", "bob"),
+		qr("name", "dave"),
+	})
+
+	compKey := values.NewFlatFieldValue("name", values.TypeString)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4", len(results))
+	}
+	expectedNames := []string{"alice", "bob", "charlie", "dave"}
+	for i, want := range expectedNames {
+		m := results[i].Datum.(map[string]any)
+		got := m["name"].(string)
+		if got != want {
+			t.Errorf("results[%d].name = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestMergeSortCursor_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	input := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{input},
+		[]values.Value{compKey},
+		false,
+		false,
+	)
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if !c.IsClosed() {
+		t.Error("IsClosed = false after Close")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestMergeSortCursor_ReverseDedup(t *testing.T) {
+	t.Parallel()
+
+	// Reverse + dedup. Inputs sorted descending with overlaps.
+	// Left:  id=5, id=3, id=1
+	// Right: id=4, id=3, id=2
+	// Merged DESC without dedup: 5,4,3,3,2,1
+	// With dedup: 5,4,3,2,1
+	left := recordlayer.FromList([]QueryResult{
+		qr("id", int64(5)),
+		qr("id", int64(3)),
+		qr("id", int64(1)),
+	})
+	right := recordlayer.FromList([]QueryResult{
+		qr("id", int64(4)),
+		qr("id", int64(3)),
+		qr("id", int64(2)),
+	})
+
+	compKey := values.NewFlatFieldValue("id", values.TypeInt)
+	c := newMergeSortCursor(
+		[]recordlayer.RecordCursor[QueryResult]{left, right},
+		[]values.Value{compKey},
+		true, // reverse
+		true, // dedup
+	)
+	defer c.Close()
+
+	results := collectMergeSortCursor(t, c)
+	if len(results) != 5 {
+		t.Fatalf("got %d results, want 5; values: %v", len(results), results)
+	}
+	expected := []int64{5, 4, 3, 2, 1}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// collectCursor drains any RecordCursor[QueryResult] and returns all results.
+// ---------------------------------------------------------------------------
+
+func collectCursor(t *testing.T, c recordlayer.RecordCursor[QueryResult]) []QueryResult {
+	t.Helper()
+	ctx := context.Background()
+	var out []QueryResult
+	for {
+		r, err := c.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("OnNext error: %v", err)
+		}
+		if !r.HasNext() {
+			break
+		}
+		out = append(out, r.GetValue())
+	}
+	return out
+}
+
+// ===========================================================================
+// aggregateCursor continuation round-trip
+// ===========================================================================
+
+func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
+	t.Parallel()
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.TypeInt)},
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
+	}
+
+	gs := &groupState{
+		keyVals: []any{int64(42), "group-a"},
+		count:   7,
+		counts:  []int64{5, 7},
+		sums:    []float64{123.5, 0},
+		sumsI:   []int64{100, 0},
+		allInt:  []bool{false, true},
+		mins:    []any{int64(1), nil},
+		maxs:    []any{int64(50), nil},
+	}
+
+	innerCont := recordlayer.NewBytesContinuation([]byte{0xDE, 0xAD})
+	groupKey := "test-group-key"
+
+	encoded, err := encodeAggregateContinuation(innerCont, groupKey, gs.keyVals, gs, aggs)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !bytes.Equal(gotInner, []byte{0xDE, 0xAD}) {
+		t.Errorf("innerContinuation = %x, want dead", gotInner)
+	}
+	if gotGroupKey != groupKey {
+		t.Errorf("groupKey = %q, want %q", gotGroupKey, groupKey)
+	}
+	if gotGS == nil {
+		t.Fatal("decoded groupState is nil")
+	}
+	if gotGS.count != 7 {
+		t.Errorf("count = %d, want 7", gotGS.count)
+	}
+	if gotGS.counts[0] != 5 || gotGS.counts[1] != 7 {
+		t.Errorf("counts = %v, want [5, 7]", gotGS.counts)
+	}
+	if gotGS.sums[0] != 123.5 {
+		t.Errorf("sums[0] = %f, want 123.5", gotGS.sums[0])
+	}
+	if gotGS.sumsI[0] != 100 {
+		t.Errorf("sumsI[0] = %d, want 100", gotGS.sumsI[0])
+	}
+	if gotGS.allInt[0] != false || gotGS.allInt[1] != true {
+		t.Errorf("allInt = %v, want [false, true]", gotGS.allInt)
+	}
+	if gotGS.mins[0] != int64(1) {
+		t.Errorf("mins[0] = %v, want 1", gotGS.mins[0])
+	}
+	if gotGS.maxs[0] != int64(50) {
+		t.Errorf("maxs[0] = %v, want 50", gotGS.maxs[0])
+	}
+
+	// keyVals: JSON round-trips int64 through float64; the decoder
+	// converts back to int64 when lossless.
+	if len(gotGS.keyVals) != 2 {
+		t.Fatalf("keyVals len = %d, want 2", len(gotGS.keyVals))
+	}
+	if gotGS.keyVals[0] != int64(42) {
+		t.Errorf("keyVals[0] = %v (%T), want int64(42)", gotGS.keyVals[0], gotGS.keyVals[0])
+	}
+	if gotGS.keyVals[1] != "group-a" {
+		t.Errorf("keyVals[1] = %v, want \"group-a\"", gotGS.keyVals[1])
+	}
+}
+
+func TestAggregateContinuation_NilGroupState(t *testing.T) {
+	t.Parallel()
+
+	innerCont := recordlayer.NewBytesContinuation([]byte{0x01})
+	encoded, err := encodeAggregateContinuation(innerCont, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, 0)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !bytes.Equal(gotInner, []byte{0x01}) {
+		t.Errorf("innerContinuation = %x, want 01", gotInner)
+	}
+	if gotGroupKey != "" {
+		t.Errorf("groupKey = %q, want empty", gotGroupKey)
+	}
+	if gotGS != nil {
+		t.Errorf("expected nil groupState, got %+v", gotGS)
+	}
+}
+
+func TestAggregateContinuation_FloatMinMax(t *testing.T) {
+	t.Parallel()
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("price", values.TypeFloat)},
+	}
+	gs := &groupState{
+		keyVals: []any{"x"},
+		count:   3,
+		counts:  []int64{3},
+		sums:    []float64{9.75},
+		sumsI:   []int64{0},
+		allInt:  []bool{false},
+		mins:    []any{float64(1.25)},
+		maxs:    []any{float64(5.0)},
+	}
+
+	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, 1)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if fmt.Sprintf("%v", gotGS.mins[0]) != "1.25" {
+		t.Errorf("mins[0] = %v, want 1.25", gotGS.mins[0])
+	}
+	if fmt.Sprintf("%v", gotGS.maxs[0]) != "5" && fmt.Sprintf("%v", gotGS.maxs[0]) != "5.0" {
+		t.Errorf("maxs[0] = %v, want 5 or 5.0", gotGS.maxs[0])
+	}
+}
+
+// ===========================================================================
+// memorySortCursor continuation round-trip
+// ===========================================================================
+
+func TestSortContinuation_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	buf := []QueryResult{
+		qr("name", "alice", "age", int64(30)),
+		qr("name", "bob", "age", int64(25)),
+		qr("name", "carol", "age", int64(35)),
+	}
+	// Give the second entry a PrimaryKey to verify PK round-trip.
+	buf[1].PrimaryKey = tuple.Tuple{"pk", int64(2)}
+
+	innerCont := recordlayer.NewBytesContinuation([]byte{0xCA, 0xFE})
+
+	encoded, err := encodeSortContinuation(innerCont, buf)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !bytes.Equal(gotInner, []byte{0xCA, 0xFE}) {
+		t.Errorf("innerContinuation = %x, want cafe", gotInner)
+	}
+	if len(gotBuf) != 3 {
+		t.Fatalf("buf len = %d, want 3", len(gotBuf))
+	}
+
+	// Check datum values.
+	for i, want := range []string{"alice", "bob", "carol"} {
+		m := gotBuf[i].Datum.(map[string]any)
+		if m["name"] != want {
+			t.Errorf("buf[%d].name = %v, want %q", i, m["name"], want)
+		}
+	}
+	// Ages: JSON round-trips through float64 → int64 conversion.
+	for i, want := range []int64{30, 25, 35} {
+		m := gotBuf[i].Datum.(map[string]any)
+		if m["age"] != want {
+			t.Errorf("buf[%d].age = %v (%T), want %d", i, m["age"], m["age"], want)
+		}
+	}
+
+	// PrimaryKey round-trip.
+	if gotBuf[1].PrimaryKey == nil {
+		t.Fatal("buf[1].PrimaryKey is nil after round-trip")
+	}
+	if len(gotBuf[1].PrimaryKey) != 2 {
+		t.Fatalf("buf[1].PrimaryKey len = %d, want 2", len(gotBuf[1].PrimaryKey))
+	}
+	if gotBuf[1].PrimaryKey[0] != "pk" {
+		t.Errorf("buf[1].PrimaryKey[0] = %v, want \"pk\"", gotBuf[1].PrimaryKey[0])
+	}
+}
+
+func TestSortContinuation_EmptyBuffer(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := encodeSortContinuation(nil, nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if gotInner != nil {
+		t.Errorf("innerContinuation = %x, want nil", gotInner)
+	}
+	if len(gotBuf) != 0 {
+		t.Errorf("buf len = %d, want 0", len(gotBuf))
+	}
+}
+
+// ===========================================================================
+// nljCursor — Close safety
+// ===========================================================================
+
+func TestNLJCursor_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+	})
+	inner := []QueryResult{qr("val", int64(10))}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+
+	if c.IsClosed() {
+		t.Fatal("cursor should not be closed before Close()")
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if !c.IsClosed() {
+		t.Fatal("cursor should be closed after Close()")
+	}
+
+	// Second close must not panic or error.
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if !c.IsClosed() {
+		t.Fatal("cursor should remain closed")
+	}
+}
+
+func TestNLJCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
+	inner := []QueryResult{qr("val", int64(10))}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Errorf("error = %q, want it to mention 'closed'", err)
+	}
+}
+
+// ===========================================================================
+// nljCursor — empty inner
+// ===========================================================================
+
+func TestNLJCursor_EmptyInner_InnerJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+		qr("id", int64(3)),
+	})
+
+	c := newNLJCursor(outer, nil, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("INNER join with empty inner: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyInner_LeftJoin(t *testing.T) {
+	t.Parallel()
+
+	outerRows := []QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+	}
+	outer := recordlayer.FromList(outerRows)
+
+	c := newNLJCursor(outer, nil, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("LEFT join with empty inner: got %d results, want 2", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyInner_NotExists(t *testing.T) {
+	t.Parallel()
+
+	outerRows := []QueryResult{
+		qr("id", int64(10)),
+		qr("id", int64(20)),
+	}
+	outer := recordlayer.FromList(outerRows)
+
+	c := newNLJCursor(outer, nil, plans.JoinNotExists, "O", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("NOT EXISTS with empty inner: got %d results, want 2", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyInner_Exists(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+	})
+
+	c := newNLJCursor(outer, nil, plans.JoinExists, "O", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("EXISTS with empty inner: got %d results, want 0", len(results))
+	}
+}
+
+// ===========================================================================
+// nljCursor — empty outer
+// ===========================================================================
+
+func TestNLJCursor_EmptyOuter_InnerJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("INNER join with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_LeftJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1))}
+
+	c := newNLJCursor(outer, inner, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("LEFT join with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_CrossJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
+
+	c := newNLJCursor(outer, inner, plans.JoinCross, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("CROSS join with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_Exists(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1))}
+
+	c := newNLJCursor(outer, inner, plans.JoinExists, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("EXISTS with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_NotExists(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1))}
+
+	c := newNLJCursor(outer, inner, plans.JoinNotExists, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("NOT EXISTS with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+// ===========================================================================
+// nljCursor — basic INNER join producing correct cross product
+// ===========================================================================
+
+func TestNLJCursor_InnerJoin_CrossProduct(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("a", int64(1)),
+		qr("a", int64(2)),
+	})
+	inner := []QueryResult{
+		qr("b", int64(10)),
+		qr("b", int64(20)),
+	}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	// 2 outer x 2 inner = 4 results (no predicate filtering).
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4", len(results))
+	}
+}
+
+func TestNLJCursor_InnerJoin_PredicateFilters(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("x", int64(1)),
+		qr("x", int64(2)),
+	})
+	inner := []QueryResult{
+		qr("y", int64(10)),
+		qr("y", int64(20)),
+	}
+
+	// Predicate that always rejects: INNER join should produce 0 rows.
+	preds := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)}
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", preds, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0 (predicate rejects all)", len(results))
+	}
+}
+
+// ===========================================================================
+// concatCursor
+// ===========================================================================
+
+func TestConcatCursor_MultipleCursors(t *testing.T) {
+	t.Parallel()
+
+	c1 := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+	})
+	c2 := recordlayer.FromList([]QueryResult{
+		qr("id", int64(3)),
+	})
+	c3 := recordlayer.FromList([]QueryResult{
+		qr("id", int64(4)),
+		qr("id", int64(5)),
+	})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2, c3})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 5 {
+		t.Fatalf("got %d results, want 5", len(results))
+	}
+	for i, want := range []int64{1, 2, 3, 4, 5} {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestConcatCursor_EmptyFirst(t *testing.T) {
+	t.Parallel()
+
+	empty := recordlayer.FromList([]QueryResult{})
+	nonempty := recordlayer.FromList([]QueryResult{
+		qr("id", int64(7)),
+		qr("id", int64(8)),
+	})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{empty, nonempty})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if fieldVal(t, results[0], "id") != 7 {
+		t.Errorf("results[0].id = %d, want 7", fieldVal(t, results[0], "id"))
+	}
+}
+
+func TestConcatCursor_AllEmpty(t *testing.T) {
+	t.Parallel()
+
+	e1 := recordlayer.FromList([]QueryResult{})
+	e2 := recordlayer.FromList([]QueryResult{})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{e1, e2})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestConcatCursor_NoCursors(t *testing.T) {
+	t.Parallel()
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestConcatCursor_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	c1 := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
+	c2 := recordlayer.FromList([]QueryResult{qr("id", int64(2))})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2})
+
+	if cc.IsClosed() {
+		t.Fatal("should not be closed initially")
+	}
+	if err := cc.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if !cc.IsClosed() {
+		t.Fatal("should be closed after Close()")
+	}
+	if err := cc.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// ===========================================================================
+// memorySortCursor — end-to-end via constructor
+// ===========================================================================
+
+func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("NAME", "carol", "AGE", int64(35)),
+		qr("NAME", "alice", "AGE", int64(30)),
+		qr("NAME", "bob", "AGE", int64(25)),
+	})
+
+	c := newMemorySortCursor(inner, []string{"AGE"}, []bool{false}) // ASC
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	expected := []int64{25, 30, 35}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "AGE")
+		if got != want {
+			t.Errorf("results[%d].AGE = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMemorySortCursor_SortsDescending(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("X", int64(1)),
+		qr("X", int64(3)),
+		qr("X", int64(2)),
+	})
+
+	c := newMemorySortCursor(inner, []string{"X"}, []bool{true}) // DESC
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	expected := []int64{3, 2, 1}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "X")
+		if got != want {
+			t.Errorf("results[%d].X = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMemorySortCursor_EmptyInput(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{})
+	c := newMemorySortCursor(inner, []string{"x"}, nil)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestMemorySortCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
+	c := newMemorySortCursor(inner, []string{"x"}, nil)
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+}
+
+// ===========================================================================
+// aggregateCursor — end-to-end with real data
+// ===========================================================================
+
+func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("v", int64(10)),
+		qr("v", int64(20)),
+		qr("v", int64(30)),
+	})
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
+	}
+	c := newAggregateCursor(inner, nil, aggs) // nil groupingKeys → scalar mode
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	m := results[0].Datum.(map[string]any)
+	if m["COUNT(*)"] != int64(3) {
+		t.Errorf("COUNT(*) = %v, want 3", m["COUNT(*)"])
+	}
+}
+
+func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{})
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}},
+	}
+	c := newAggregateCursor(inner, nil, aggs)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 1 {
+		t.Fatalf("scalar aggregate on empty input: got %d results, want 1", len(results))
+	}
+	m := results[0].Datum.(map[string]any)
+	if m["COUNT(*)"] != int64(0) {
+		t.Errorf("COUNT(*) on empty = %v, want 0", m["COUNT(*)"])
+	}
+}
+
+func TestAggregateCursor_GroupedSum(t *testing.T) {
+	t.Parallel()
+
+	// Two groups: dept "A" (values 10, 20) and dept "B" (values 30).
+	// Input MUST be sorted by grouping key.
+	inner := recordlayer.FromList([]QueryResult{
+		qr("dept", "A", "amount", int64(10)),
+		qr("dept", "A", "amount", int64(20)),
+		qr("dept", "B", "amount", int64(30)),
+	})
+
+	groupKeys := []values.Value{values.NewFlatFieldValue("dept", values.TypeString)}
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.TypeInt)},
+	}
+	c := newAggregateCursor(inner, groupKeys, aggs)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("got %d groups, want 2", len(results))
+	}
+
+	m0 := results[0].Datum.(map[string]any)
+	if m0["DEPT"] != "A" {
+		t.Errorf("group 0 key = %v, want A", m0["DEPT"])
+	}
+	if m0["SUM(AMOUNT)"] != int64(30) {
+		t.Errorf("group 0 SUM = %v, want 30", m0["SUM(AMOUNT)"])
+	}
+
+	m1 := results[1].Datum.(map[string]any)
+	if m1["DEPT"] != "B" {
+		t.Errorf("group 1 key = %v, want B", m1["DEPT"])
+	}
+	if m1["SUM(AMOUNT)"] != int64(30) {
+		t.Errorf("group 1 SUM = %v, want 30", m1["SUM(AMOUNT)"])
+	}
+}
+
+func TestAggregateCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
+	c := newAggregateCursor(inner, nil, nil)
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+}
+
+// ===========================================================================
+// customSortCursor — pluggable comparator
+// ===========================================================================
+
+func TestCustomSortCursor_ReverseSort(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("N", int64(1)),
+		qr("N", int64(3)),
+		qr("N", int64(2)),
+	})
+
+	sortFn := func(buf []QueryResult) {
+		sortByKeys(buf, []string{"N"}, []bool{true})
+	}
+	c := newCustomSortCursor(inner, sortFn)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	for i, want := range []int64{3, 2, 1} {
+		got := fieldVal(t, results[i], "N")
+		if got != want {
+			t.Errorf("results[%d].N = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestCustomSortCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{qr("n", int64(1))})
+	c := newCustomSortCursor(inner, func([]QueryResult) {})
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+}

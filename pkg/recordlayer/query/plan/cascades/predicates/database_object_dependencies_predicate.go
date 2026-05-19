@@ -49,6 +49,12 @@ func (*DatabaseObjectDependenciesPredicate) Children() []QueryPredicate {
 	return []QueryPredicate{}
 }
 
+// GetCorrelatedTo returns the empty set — database object dependency
+// predicates reference no quantifier aliases.
+func (*DatabaseObjectDependenciesPredicate) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
+	return map[CorrelationIdentifier]struct{}{}
+}
+
 // Eval returns TriTrue. Plan-cache index validation is not yet
 // ported; this predicate exists for structural conformance.
 func (*DatabaseObjectDependenciesPredicate) Eval(_ any) TriBool {

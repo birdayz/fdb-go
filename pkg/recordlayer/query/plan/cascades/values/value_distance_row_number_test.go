@@ -83,40 +83,8 @@ func TestDistanceRowNumberValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	}
 }
 
-func TestEuclideanDistanceRowNumberValue_Sugar(t *testing.T) {
-	t.Parallel()
-	v := NewEuclideanDistanceRowNumberValue(nil, nil, nil, nil)
-	if v.Metric != DistanceEuclidean {
-		t.Fatalf("Metric = %v, want DistanceEuclidean", v.Metric)
-	}
-	if v.Name() != "euclidean_distance_row_number" {
-		t.Fatalf("Name = %q", v.Name())
-	}
-}
-
-func TestCosineDistanceRowNumberValue_Sugar(t *testing.T) {
-	t.Parallel()
-	v := NewCosineDistanceRowNumberValue(nil, nil, nil, nil)
-	if v.Metric != DistanceCosine {
-		t.Fatalf("Metric = %v, want DistanceCosine", v.Metric)
-	}
-}
-
-func TestEuclideanSquareDistanceRowNumberValue_Sugar(t *testing.T) {
-	t.Parallel()
-	v := NewEuclideanSquareDistanceRowNumberValue(nil, nil, nil, nil)
-	if v.Metric != DistanceEuclideanSquare {
-		t.Fatalf("Metric = %v, want DistanceEuclideanSquare", v.Metric)
-	}
-}
-
-func TestDotProductDistanceRowNumberValue_Sugar(t *testing.T) {
-	t.Parallel()
-	v := NewDotProductDistanceRowNumberValue(nil, nil, nil, nil)
-	if v.Metric != DistanceDotProduct {
-		t.Fatalf("Metric = %v, want DistanceDotProduct", v.Metric)
-	}
-}
+// The per-metric concrete types (CosineDistanceRowNumberValue, etc.)
+// are tested in value_concrete_distance_row_number_test.go.
 
 func TestDistanceRowNumberValue_WithChildrenPreservesMetricAndConfig(t *testing.T) {
 	t.Parallel()

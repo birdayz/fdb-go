@@ -98,39 +98,4 @@ func (v *DistanceRowNumberValue) WithChildren(newChildren []Value) *DistanceRowN
 	return NewDistanceRowNumberValue(v.Metric, partition, argument, v.EfSearch, v.IsReturningVectors)
 }
 
-// Convenience constructors mirroring Java's class-per-metric naming
-// (EuclideanDistanceRowNumberValue, etc.). Construct from the unified
-// DistanceRowNumberValue type with the metric pre-set; useful for
-// callers that want to express "K-NN by Euclidean distance" without
-// passing the DistanceOperator parameter explicitly.
-//
-// Java's planner has separate concrete classes for each metric; the
-// Go-side equivalent is matching on `v.Metric` instead.
-
-// NewEuclideanDistanceRowNumberValue is sugar for the Euclidean
-// metric. Mirrors Java's `EuclideanDistanceRowNumberValue` constructor.
-func NewEuclideanDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
-	return NewDistanceRowNumberValue(DistanceEuclidean, partition, args, efSearch, isReturningVectors)
-}
-
-// NewEuclideanSquareDistanceRowNumberValue is sugar for the squared
-// Euclidean metric (cheaper than Euclidean for KNN since it avoids
-// the sqrt; same ordering). Mirrors Java's
-// `EuclideanSquareDistanceRowNumberValue` constructor.
-func NewEuclideanSquareDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
-	return NewDistanceRowNumberValue(DistanceEuclideanSquare, partition, args, efSearch, isReturningVectors)
-}
-
-// NewCosineDistanceRowNumberValue is sugar for the cosine metric.
-// Mirrors Java's `CosineDistanceRowNumberValue` constructor.
-func NewCosineDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
-	return NewDistanceRowNumberValue(DistanceCosine, partition, args, efSearch, isReturningVectors)
-}
-
-// NewDotProductDistanceRowNumberValue is sugar for the dot-product
-// metric. Mirrors Java's `DotProductDistanceRowNumberValue` constructor.
-func NewDotProductDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
-	return NewDistanceRowNumberValue(DistanceDotProduct, partition, args, efSearch, isReturningVectors)
-}
-
 var _ IndexOnly = (*DistanceRowNumberValue)(nil)

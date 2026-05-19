@@ -271,7 +271,7 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 			m.lastKey = key
 		}
 
-		return recordlayer.NewResultWithValue(result, &recordlayer.EndContinuation{}), nil
+		return recordlayer.NewResultWithValue(result, &recordlayer.StartContinuation{}), nil
 	}
 }
 

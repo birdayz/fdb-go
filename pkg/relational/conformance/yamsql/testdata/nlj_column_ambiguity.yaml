@@ -1,0 +1,218 @@
+# nlj_column_ambiguity.yaml — NLJ merged-row column ambiguity
+#
+# When the Nested Loop Join executor merges rows from multiple tables,
+# same-named columns collide. Every test here uses DIFFERENT values for
+# identically-named columns across tables so a mix-up is caught: if the
+# engine returns the wrong table's value, the assertion fails.
+name: nlj_column_ambiguity
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, budget BIGINT, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT NOT NULL, name STRING, lead_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 100, 70), (2, 'Bob', 200, 80), (3, 'Carol', 100, 90)
+  - INSERT INTO dept VALUES (100, 'Engineering', 5000), (200, 'Sales', 3000)
+  - INSERT INTO project VALUES (1000, 'Alpha', 1), (2000, 'Beta', 2)
+tests:
+  # ---------------------------------------------------------------
+  # 1. Both tables have "name" — qualified SELECT returns correct values
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT e.name, d.name
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      ORDER BY e.id
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Sales"]
+      - ["Carol", "Engineering"]
+
+  # ---------------------------------------------------------------
+  # 2. Both tables have "id" — qualified SELECT on join keys
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT e.id, d.id
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      ORDER BY e.id
+    rows:
+      - [1, 100]
+      - [2, 200]
+      - [3, 100]
+
+  # ---------------------------------------------------------------
+  # 3. Self-join — same table twice, same column names everywhere
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT a.id, a.name, b.id, b.name
+      FROM emp a, emp b
+      WHERE a.dept_id = b.dept_id AND a.id < b.id
+      ORDER BY a.id, b.id
+    rows:
+      - [1, "Alice", 3, "Carol"]
+
+  # Self-join: each employee paired with their department-mates,
+  # verifying both aliases resolve independently.
+  - query: >
+      SELECT a.name, b.name, a.salary, b.salary
+      FROM emp a INNER JOIN emp b ON a.dept_id = b.dept_id
+      WHERE a.id <> b.id
+      ORDER BY a.id, b.id
+    rows:
+      - ["Alice", "Carol", 70, 90]
+      - ["Carol", "Alice", 90, 70]
+
+  # ---------------------------------------------------------------
+  # 4. Three tables all with "id" and "name" — SELECT a.id, b.id, c.id
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT e.id, d.id, p.id
+      FROM emp e, dept d, project p
+      WHERE e.dept_id = d.id AND p.lead_id = e.id
+      ORDER BY e.id
+    rows:
+      - [1, 100, 1000]
+      - [2, 200, 2000]
+
+  # Three tables: all three "name" columns must resolve to different values
+  - query: >
+      SELECT e.name, d.name, p.name
+      FROM emp e, dept d, project p
+      WHERE e.dept_id = d.id AND p.lead_id = e.id
+      ORDER BY e.id
+    rows:
+      - ["Alice", "Engineering", "Alpha"]
+      - ["Bob", "Sales", "Beta"]
+
+  # ---------------------------------------------------------------
+  # 5. SELECT * from a two-table join — column order must be
+  #    left-table columns then right-table columns, deterministic.
+  #    emp(id, name, dept_id, salary) then dept(id, name, budget)
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT * FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      ORDER BY e.id
+    rows:
+      - [1, "Alice", 100, 70, 100, "Engineering", 5000]
+      - [2, "Bob", 200, 80, 200, "Sales", 3000]
+      - [3, "Carol", 100, 90, 100, "Engineering", 5000]
+
+  # ---------------------------------------------------------------
+  # 6. WHERE predicate on ambiguous column with table qualifier
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT e.id, d.name
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id AND e.name = 'Alice'
+    rows:
+      - [1, "Engineering"]
+
+  # WHERE on the other table's identically-named column
+  - query: >
+      SELECT e.id, e.name
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id AND d.name = 'Sales'
+    rows:
+      - [2, "Bob"]
+
+  # ---------------------------------------------------------------
+  # 7. ORDER BY on ambiguous column with qualifier
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT e.id, e.name, d.name
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      ORDER BY e.name
+    rows:
+      - [1, "Alice", "Engineering"]
+      - [2, "Bob", "Sales"]
+      - [3, "Carol", "Engineering"]
+
+  # ORDER BY the other table's "name"
+  - query: >
+      SELECT e.id, e.name, d.name
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      ORDER BY d.name, e.name
+    rows:
+      - [1, "Alice", "Engineering"]
+      - [3, "Carol", "Engineering"]
+      - [2, "Bob", "Sales"]
+
+  # ---------------------------------------------------------------
+  # 8. GROUP BY + aggregate on qualified columns from different tables
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT d.name, COUNT(e.id), SUM(e.salary)
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      GROUP BY d.name
+      ORDER BY d.name
+    rows:
+      - ["Engineering", 2, 160]
+      - ["Sales", 1, 80]
+
+  # GROUP BY on left-table column, aggregate on right-table column
+  - query: >
+      SELECT e.name, SUM(d.budget)
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      GROUP BY e.name
+      ORDER BY e.name
+    rows:
+      - ["Alice", 5000]
+      - ["Bob", 3000]
+      - ["Carol", 5000]
+
+  # ---------------------------------------------------------------
+  # 9. CASE WHEN on qualified columns from different tables
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT e.name,
+        CASE WHEN d.name = 'Engineering' THEN 'tech'
+             WHEN d.name = 'Sales' THEN 'biz'
+             ELSE 'other' END
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      ORDER BY e.id
+    rows:
+      - ["Alice", "tech"]
+      - ["Bob", "biz"]
+      - ["Carol", "tech"]
+
+  # CASE WHEN comparing columns from both sides
+  - query: >
+      SELECT e.id,
+        CASE WHEN e.salary > 75 THEN e.name
+             ELSE d.name END
+      FROM emp e, dept d
+      WHERE e.dept_id = d.id
+      ORDER BY e.id
+    rows:
+      - [1, "Engineering"]
+      - [2, "Bob"]
+      - [3, "Carol"]
+
+  # ---------------------------------------------------------------
+  # 10. COALESCE across tables with qualified columns
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT e.name, COALESCE(p.name, 'no-project')
+      FROM emp e LEFT JOIN project p ON p.lead_id = e.id
+      ORDER BY e.id
+    rows:
+      - ["Alice", "Alpha"]
+      - ["Bob", "Beta"]
+      - ["Carol", "no-project"]
+
+  # COALESCE picking from different tables' same-named columns
+  # when one side is NULL (via LEFT JOIN)
+  - query: >
+      SELECT COALESCE(p.name, e.name)
+      FROM emp e LEFT JOIN project p ON p.lead_id = e.id
+      ORDER BY e.id
+    rows:
+      - ["Alpha"]
+      - ["Beta"]
+      - ["Carol"]

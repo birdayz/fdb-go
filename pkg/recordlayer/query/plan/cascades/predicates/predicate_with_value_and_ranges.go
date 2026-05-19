@@ -2,6 +2,7 @@ package predicates
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -118,5 +119,14 @@ func (p *PredicateWithValueAndRanges) IsCompileTime() bool {
 func (p *PredicateWithValueAndRanges) Children() []QueryPredicate { return nil }
 
 func (p *PredicateWithValueAndRanges) Eval(_ any) TriBool { return TriUnknown }
+
+func (p *PredicateWithValueAndRanges) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("predwithvalueandranges|"))
+	if p.value != nil {
+		h.Write([]byte(values.ExplainValue(p.value)))
+	}
+	return h.Sum64()
+}
 
 var _ QueryPredicate = (*PredicateWithValueAndRanges)(nil)

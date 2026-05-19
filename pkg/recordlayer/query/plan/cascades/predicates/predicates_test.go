@@ -543,6 +543,225 @@ func TestPredicateEquals_UnaryIgnoresOperand(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GetCorrelatedTo — interface method tests
+// ---------------------------------------------------------------------------
+
+func TestConstantPredicate_GetCorrelatedTo_Empty(t *testing.T) {
+	t.Parallel()
+	corr := NewConstantPredicate(TriTrue).GetCorrelatedTo()
+	if len(corr) != 0 {
+		t.Fatalf("ConstantPredicate.GetCorrelatedTo() len = %d, want 0", len(corr))
+	}
+}
+
+func TestComparisonPredicate_GetCorrelatedTo_LHSAndRHS(t *testing.T) {
+	t.Parallel()
+	lhsAlias := values.NamedCorrelationIdentifier("q_lhs")
+	rhsAlias := values.NamedCorrelationIdentifier("q_rhs")
+
+	lhs := &values.FieldValue{Field: "col", Typ: values.TypeInt, Child: values.NewQuantifiedObjectValue(lhsAlias)}
+	rhs := values.NewQuantifiedObjectValue(rhsAlias)
+
+	pred := NewComparisonPredicate(lhs, Comparison{
+		Type:    ComparisonEquals,
+		Operand: rhs,
+	})
+
+	corr := pred.GetCorrelatedTo()
+	if _, ok := corr[lhsAlias]; !ok {
+		t.Fatal("missing LHS correlation")
+	}
+	if _, ok := corr[rhsAlias]; !ok {
+		t.Fatal("missing RHS correlation")
+	}
+	if len(corr) != 2 {
+		t.Fatalf("GetCorrelatedTo() len = %d, want 2", len(corr))
+	}
+}
+
+func TestComparisonPredicate_GetCorrelatedTo_UnaryEmpty(t *testing.T) {
+	t.Parallel()
+	// IS NULL with a plain FieldValue (no QOV) — empty correlations.
+	pred := NewComparisonPredicate(
+		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		Comparison{Type: ComparisonIsNull},
+	)
+	corr := pred.GetCorrelatedTo()
+	if len(corr) != 0 {
+		t.Fatalf("unary IS NULL on non-correlated field: len = %d, want 0", len(corr))
+	}
+}
+
+func TestAndPredicate_GetCorrelatedTo_Union(t *testing.T) {
+	t.Parallel()
+	alias1 := values.NamedCorrelationIdentifier("q1")
+	alias2 := values.NamedCorrelationIdentifier("q2")
+
+	pred := NewAnd(
+		NewComparisonPredicate(
+			values.NewQuantifiedObjectValue(alias1),
+			NewLiteralComparison(ComparisonEquals, int64(5)),
+		),
+		NewComparisonPredicate(
+			values.NewQuantifiedObjectValue(alias2),
+			NewLiteralComparison(ComparisonEquals, int64(10)),
+		),
+	)
+
+	corr := pred.GetCorrelatedTo()
+	if _, ok := corr[alias1]; !ok {
+		t.Fatal("missing alias1")
+	}
+	if _, ok := corr[alias2]; !ok {
+		t.Fatal("missing alias2")
+	}
+	if len(corr) != 2 {
+		t.Fatalf("GetCorrelatedTo() len = %d, want 2", len(corr))
+	}
+}
+
+func TestAndPredicate_GetCorrelatedTo_Empty(t *testing.T) {
+	t.Parallel()
+	pred := NewAnd(
+		NewConstantPredicate(TriTrue),
+		NewConstantPredicate(TriFalse),
+	)
+	corr := pred.GetCorrelatedTo()
+	if len(corr) != 0 {
+		t.Fatalf("AND of constants: len = %d, want 0", len(corr))
+	}
+}
+
+func TestOrPredicate_GetCorrelatedTo_Union(t *testing.T) {
+	t.Parallel()
+	alias1 := values.NamedCorrelationIdentifier("q1")
+	alias2 := values.NamedCorrelationIdentifier("q2")
+
+	pred := NewOr(
+		NewComparisonPredicate(
+			values.NewQuantifiedObjectValue(alias1),
+			NewLiteralComparison(ComparisonEquals, int64(5)),
+		),
+		NewComparisonPredicate(
+			values.NewQuantifiedObjectValue(alias2),
+			NewLiteralComparison(ComparisonEquals, int64(10)),
+		),
+	)
+
+	corr := pred.GetCorrelatedTo()
+	if _, ok := corr[alias1]; !ok {
+		t.Fatal("missing alias1")
+	}
+	if _, ok := corr[alias2]; !ok {
+		t.Fatal("missing alias2")
+	}
+}
+
+func TestNotPredicate_GetCorrelatedTo(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("q_sub")
+	pred := NewNot(NewExistsPredicate(alias))
+	corr := pred.GetCorrelatedTo()
+	if _, ok := corr[alias]; !ok {
+		t.Fatal("NOT(EXISTS) should contain the existential alias")
+	}
+	if len(corr) != 1 {
+		t.Fatalf("GetCorrelatedTo() len = %d, want 1", len(corr))
+	}
+}
+
+func TestNotPredicate_GetCorrelatedTo_NilChild(t *testing.T) {
+	t.Parallel()
+	pred := &NotPredicate{Child: nil}
+	corr := pred.GetCorrelatedTo()
+	if len(corr) != 0 {
+		t.Fatalf("NOT(nil) should return empty set, got len %d", len(corr))
+	}
+}
+
+func TestExistsPredicate_GetCorrelatedTo(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("exists_q")
+	pred := NewExistsPredicate(alias)
+	corr := pred.GetCorrelatedTo()
+	if _, ok := corr[alias]; !ok {
+		t.Fatal("ExistsPredicate should contain its alias")
+	}
+	if len(corr) != 1 {
+		t.Fatalf("GetCorrelatedTo() len = %d, want 1", len(corr))
+	}
+}
+
+func TestValuePredicate_GetCorrelatedTo(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("q_val")
+	pred := NewValuePredicate(values.NewQuantifiedObjectValue(alias))
+	corr := pred.GetCorrelatedTo()
+	if _, ok := corr[alias]; !ok {
+		t.Fatal("ValuePredicate should contain the QOV correlation")
+	}
+}
+
+func TestValuePredicate_GetCorrelatedTo_NilValue(t *testing.T) {
+	t.Parallel()
+	pred := &ValuePredicate{Value: nil}
+	corr := pred.GetCorrelatedTo()
+	if len(corr) != 0 {
+		t.Fatalf("nil Value: len = %d, want 0", len(corr))
+	}
+}
+
+func TestDatabaseObjectDependenciesPredicate_GetCorrelatedTo(t *testing.T) {
+	t.Parallel()
+	pred := NewDatabaseObjectDependenciesPredicate([]UsedIndex{{Name: "idx", LastModifiedVersion: 1}})
+	corr := pred.GetCorrelatedTo()
+	if len(corr) != 0 {
+		t.Fatalf("DatabaseObjectDependenciesPredicate: len = %d, want 0", len(corr))
+	}
+}
+
+func TestCompatibleTypeEvolutionPredicate_GetCorrelatedTo(t *testing.T) {
+	t.Parallel()
+	pred := NewCompatibleTypeEvolutionPredicate(map[string]*FieldAccessTrieNode{
+		"MyRecord": {FieldName: "name", Ordinal: 1},
+	})
+	corr := pred.GetCorrelatedTo()
+	if len(corr) != 0 {
+		t.Fatalf("CompatibleTypeEvolutionPredicate: len = %d, want 0", len(corr))
+	}
+}
+
+// TestGetCorrelatedTo_MatchesGetCorrelatedToOfPredicate verifies that the
+// new interface method returns the same result as the standalone walk function
+// for a compound tree.
+func TestGetCorrelatedTo_MatchesGetCorrelatedToOfPredicate(t *testing.T) {
+	t.Parallel()
+	alias1 := values.NamedCorrelationIdentifier("q1")
+	alias2 := values.NamedCorrelationIdentifier("q_exists")
+
+	tree := NewAnd(
+		NewComparisonPredicate(
+			values.NewQuantifiedObjectValue(alias1),
+			NewLiteralComparison(ComparisonEquals, int64(42)),
+		),
+		NewExistsPredicate(alias2),
+		NewConstantPredicate(TriTrue),
+	)
+
+	fromMethod := tree.GetCorrelatedTo()
+	fromWalk := GetCorrelatedToOfPredicate(tree)
+
+	if len(fromMethod) != len(fromWalk) {
+		t.Fatalf("method len = %d, walk len = %d", len(fromMethod), len(fromWalk))
+	}
+	for k := range fromWalk {
+		if _, ok := fromMethod[k]; !ok {
+			t.Fatalf("method missing alias %s present in walk", k.Name())
+		}
+	}
+}
+
 // PredicateEquals must consider Comparison.Escape — two LIKE
 // predicates with the same LHS / pattern but different escape runes
 // are distinct. Pin both halves: same-escape → equal,

@@ -118,6 +118,14 @@ func MapFieldValues(v Value, transform func(*FieldValue) Value) Value {
 		return cv.WithChildren(newChildren)
 	case *DistanceRowNumberValue:
 		return cv.WithChildren(newChildren)
+	case *CosineDistanceRowNumberValue:
+		return cv.WithChildren(newChildren)
+	case *DotProductDistanceRowNumberValue:
+		return cv.WithChildren(newChildren)
+	case *EuclideanDistanceRowNumberValue:
+		return cv.WithChildren(newChildren)
+	case *EuclideanSquareDistanceRowNumberValue:
+		return cv.WithChildren(newChildren)
 
 	default:
 		// Unknown composite type — return unchanged. Won't corrupt, but
@@ -416,6 +424,18 @@ func EqualsWithoutChildren(a, b Value) bool {
 		return ok
 	case *DistanceRowNumberValue:
 		_, ok := b.(*DistanceRowNumberValue)
+		return ok
+	case *CosineDistanceRowNumberValue:
+		_, ok := b.(*CosineDistanceRowNumberValue)
+		return ok
+	case *DotProductDistanceRowNumberValue:
+		_, ok := b.(*DotProductDistanceRowNumberValue)
+		return ok
+	case *EuclideanDistanceRowNumberValue:
+		_, ok := b.(*EuclideanDistanceRowNumberValue)
+		return ok
+	case *EuclideanSquareDistanceRowNumberValue:
+		_, ok := b.(*EuclideanSquareDistanceRowNumberValue)
 		return ok
 	case *RowNumberValue:
 		_, ok := b.(*RowNumberValue)

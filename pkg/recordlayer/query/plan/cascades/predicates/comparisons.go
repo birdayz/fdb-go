@@ -637,6 +637,19 @@ func NewComparisonPredicate(operand values.Value, cmp Comparison) *ComparisonPre
 
 func (*ComparisonPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 
+// GetCorrelatedTo returns the union of correlations from the LHS
+// operand Value and the RHS comparison operand Value.
+func (p *ComparisonPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for k := range values.GetCorrelatedToOfValue(p.Operand) {
+		out[k] = struct{}{}
+	}
+	for k := range values.GetCorrelatedToOfValue(p.Comparison.Operand) {
+		out[k] = struct{}{}
+	}
+	return out
+}
+
 func (p *ComparisonPredicate) Eval(evalCtx any) TriBool {
 	if p.Operand == nil {
 		return TriUnknown

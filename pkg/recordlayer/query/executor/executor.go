@@ -1030,12 +1030,13 @@ func executeFlatMap(
 	nestedProps := props.ClearSkipAndLimit()
 
 	// Parse FlatMapContinuation if resuming.
-	var outerCont, innerCont []byte
+	var outerCont, innerCont, checkValue []byte
 	if len(continuation) > 0 {
 		var fmc gen.FlatMapContinuation
 		if err := proto.Unmarshal(continuation, &fmc); err == nil {
 			outerCont = fmc.OuterContinuation
 			innerCont = fmc.InnerContinuation
+			checkValue = fmc.CheckValue
 		}
 	}
 
@@ -1053,6 +1054,7 @@ func executeFlatMap(
 	)
 	cursor.initialInnerCont = innerCont
 	cursor.hasPendingInner = innerCont != nil
+	cursor.pendingCheckValue = checkValue
 	if innerCont != nil && outerCont != nil {
 		cursor.lastOuterContinuation = recordlayer.NewBytesContinuation(outerCont)
 	}

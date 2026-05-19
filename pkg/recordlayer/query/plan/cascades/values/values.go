@@ -202,6 +202,9 @@ func (f *FieldValue) Type() Type {
 
 func (f *FieldValue) Evaluate(evalCtx any) any {
 	if f.Child != nil {
+		if qov, isQOV := f.Child.(*QuantifiedObjectValue); isQOV {
+			return f.evaluateCorrelated(qov, evalCtx)
+		}
 		evalCtx = f.Child.Evaluate(evalCtx)
 	}
 	if evalCtx == nil {
@@ -212,6 +215,43 @@ func (f *FieldValue) Evaluate(evalCtx any) any {
 	}
 	if rc, ok := evalCtx.(*RowEvalContext); ok && rc.Datum != nil {
 		return rc.Datum[f.Field]
+	}
+	return nil
+}
+
+func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) any {
+	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(f.Field)
+	switch ctx := evalCtx.(type) {
+	case *RowEvalContext:
+		if ctx.Correlations != nil {
+			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
+				if bm, ok := bound.(map[string]any); ok {
+					return bm[f.Field]
+				}
+				return bound
+			}
+		}
+		if ctx.Datum != nil {
+			if v, ok := ctx.Datum[qualKey]; ok {
+				return v
+			}
+		}
+		return nil
+	case CorrelationBinder:
+		if bound, ok := ctx.GetCorrelationBinding(qov.Correlation); ok {
+			if bm, ok := bound.(map[string]any); ok {
+				return bm[f.Field]
+			}
+			return bound
+		}
+		return nil
+	case map[CorrelationIdentifier]map[string]any:
+		if sub, ok := ctx[qov.Correlation]; ok {
+			return sub[f.Field]
+		}
+		return nil
+	case map[string]any:
+		return ctx[qualKey]
 	}
 	return nil
 }
@@ -1544,12 +1584,16 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		if lNum && rNum {
 			return a.evalFloat(l, r)
 		}
-		return nil
+		panic(&ScalarTypeMismatchError{
+			Message: fmt.Sprintf("arithmetic type mismatch: %T %s %T", l, a.Op.Symbol(), r),
+		})
 	}
 	li, lok := toInt64ForArith(l)
 	ri, rok := toInt64ForArith(r)
 	if !lok || !rok {
-		return nil
+		panic(&ScalarTypeMismatchError{
+			Message: fmt.Sprintf("arithmetic type mismatch: %T %s %T", l, a.Op.Symbol(), r),
+		})
 	}
 	switch a.Op {
 	case OpAdd:

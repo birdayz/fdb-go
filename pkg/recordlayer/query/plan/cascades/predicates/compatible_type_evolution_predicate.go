@@ -60,6 +60,12 @@ func (*CompatibleTypeEvolutionPredicate) Children() []QueryPredicate {
 	return []QueryPredicate{}
 }
 
+// GetCorrelatedTo returns the empty set — type evolution predicates
+// reference no quantifier aliases.
+func (*CompatibleTypeEvolutionPredicate) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
+	return map[CorrelationIdentifier]struct{}{}
+}
+
 // Eval returns TriTrue. Plan-cache schema validation is not yet
 // ported; this predicate exists for structural conformance.
 func (*CompatibleTypeEvolutionPredicate) Eval(_ any) TriBool {

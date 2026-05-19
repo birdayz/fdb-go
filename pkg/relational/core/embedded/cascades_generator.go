@@ -883,7 +883,11 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	for i, v := range proj.GetProjections() {
 		var name string
 		if fv, ok := v.(*values.FieldValue); ok {
-			name = fv.Field
+			if fv.Child != nil {
+				name = values.ExplainValue(v)
+			} else {
+				name = fv.Field
+			}
 		} else {
 			name = values.ExplainValue(v)
 		}

@@ -1,0 +1,253 @@
+# nlj_null_edge_cases.yaml — NLJ (Nested Loop Join) NULL edge cases
+#
+# SQL three-valued logic: NULL = NULL evaluates to UNKNOWN, which is
+# treated as FALSE in join predicates and WHERE clauses. These tests
+# pin that contract across INNER JOIN, LEFT JOIN, EXISTS, NOT EXISTS,
+# multi-way joins, and aggregation over NULL-producing joins.
+name: nlj_null_edge_cases
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, name STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, region STRING, PRIMARY KEY (id))
+  CREATE TABLE shipments (id BIGINT NOT NULL, order_id BIGINT, carrier STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Acme Corp', 'west'), (2, 'Globex', 'east'), (3, 'Initech', null)
+  - INSERT INTO orders VALUES (10, 1, 'Widget', 500), (20, 1, 'Gadget', null), (30, 2, 'Sprocket', 300), (40, null, 'Gizmo', 100), (50, null, 'Doohickey', 200)
+  - INSERT INTO shipments VALUES (100, 10, 'FedEx'), (101, 30, 'UPS'), (102, null, 'DHL')
+tests:
+  # ---------------------------------------------------------------
+  # 1. INNER JOIN where FK is NULL on one side — NULL=NULL must NOT match.
+  #    orders.id=40 has customer_id=NULL; it must not match any customer,
+  #    not even customer id=NULL (there is none, but the point is the
+  #    NULL FK itself disqualifies the row).
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT o.name, c.name
+      FROM orders o INNER JOIN customers c ON o.customer_id = c.id
+      ORDER BY o.id
+    rows:
+      - ["Widget", "Acme Corp"]
+      - ["Gadget", "Acme Corp"]
+      - ["Sprocket", "Globex"]
+
+  # ---------------------------------------------------------------
+  # 2. INNER JOIN where FK is NULL on BOTH sides — still must NOT match.
+  #    Both tables have rows with NULL in the join column. NULL = NULL
+  #    is UNKNOWN, so zero matches from the NULL-keyed rows.
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT o.id, s.id
+      FROM orders o INNER JOIN shipments s ON o.id = s.order_id
+      ORDER BY o.id
+    rows:
+      - [10, 100]
+      - [30, 101]
+
+  # Verify explicitly: the NULL-FK orders (40, 50) and the NULL-FK
+  # shipment (102) do NOT appear in the INNER JOIN result.
+  - query: >
+      SELECT COUNT(*)
+      FROM orders o INNER JOIN shipments s ON o.id = s.order_id
+      WHERE o.id IN (40, 50) OR s.id = 102
+    rows:
+      - [0]
+
+  # ---------------------------------------------------------------
+  # 3. LEFT JOIN where FK is NULL — outer row preserved with NULL inner cols.
+  #    orders with NULL customer_id still appear; customer columns are NULL.
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT o.id, o.name, c.name
+      FROM orders o LEFT JOIN customers c ON o.customer_id = c.id
+      ORDER BY o.id
+    rows:
+      - [10, "Widget", "Acme Corp"]
+      - [20, "Gadget", "Acme Corp"]
+      - [30, "Sprocket", "Globex"]
+      - [40, "Gizmo", null]
+      - [50, "Doohickey", null]
+
+  # ---------------------------------------------------------------
+  # 4. Same-name columns in both tables (both have "name") with NULL
+  #    values — must disambiguate correctly via table qualifier.
+  #    customer id=3 (Initech) has no orders, but we're doing LEFT JOIN
+  #    from customers, so Initech appears with NULL order name.
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT c.name, o.name
+      FROM customers c LEFT JOIN orders o ON o.customer_id = c.id
+      ORDER BY c.id, o.id
+    rows:
+      - ["Acme Corp", "Widget"]
+      - ["Acme Corp", "Gadget"]
+      - ["Globex", "Sprocket"]
+      - ["Initech", null]
+
+  # Reverse direction: orders LEFT JOIN customers. NULL-FK orders get
+  # NULL customer name. Both columns called "name" — qualifier required.
+  - query: >
+      SELECT o.name, c.name
+      FROM orders o LEFT JOIN customers c ON o.customer_id = c.id
+      ORDER BY o.id
+    rows:
+      - ["Widget", "Acme Corp"]
+      - ["Gadget", "Acme Corp"]
+      - ["Sprocket", "Globex"]
+      - ["Gizmo", null]
+      - ["Doohickey", null]
+
+  # ---------------------------------------------------------------
+  # 5. NULL in non-join columns — should not affect join matching.
+  #    orders.id=20 has amount=NULL, customers.id=3 has region=NULL.
+  #    These NULLs are in non-join columns and must not interfere
+  #    with the equi-join on customer_id = id.
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT o.id, o.amount, c.region
+      FROM orders o INNER JOIN customers c ON o.customer_id = c.id
+      ORDER BY o.id
+    rows:
+      - [10, 500, "west"]
+      - [20, null, "west"]
+      - [30, 300, "east"]
+
+  # ---------------------------------------------------------------
+  # 6. JOIN on column where ALL values are NULL — zero matches for
+  #    INNER, all outer rows preserved for LEFT.
+  #    We use region (which is NULL for Initech) joined against itself
+  #    in a pattern where all join keys are NULL.
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT o.id, s.id
+      FROM orders o INNER JOIN shipments s ON o.customer_id = s.order_id
+      WHERE o.customer_id IS NULL AND s.order_id IS NULL
+    rows: []
+
+  # LEFT JOIN variant: all NULL-FK orders appear, shipment cols are NULL.
+  - query: >
+      SELECT o.id, o.name, s.carrier
+      FROM orders o LEFT JOIN shipments s ON o.customer_id = s.order_id
+      WHERE o.customer_id IS NULL
+      ORDER BY o.id
+    rows:
+      - [40, "Gizmo", null]
+      - [50, "Doohickey", null]
+
+  # ---------------------------------------------------------------
+  # 7. Three-way join with NULLs propagating through.
+  #    orders -> customers (on customer_id) -> shipments (on order_id).
+  #    NULL customer_id breaks the first link; NULL order_id on shipment
+  #    102 breaks the second link. Only fully-connected triples survive.
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT o.name, c.name, s.carrier
+      FROM orders o
+      INNER JOIN customers c ON o.customer_id = c.id
+      INNER JOIN shipments s ON s.order_id = o.id
+      ORDER BY o.id
+    rows:
+      - ["Widget", "Acme Corp", "FedEx"]
+      - ["Sprocket", "Globex", "UPS"]
+
+  # Three-way with LEFT JOINs: NULLs propagate but outer rows survive.
+  - query: >
+      SELECT o.name, c.name, s.carrier
+      FROM orders o
+      LEFT JOIN customers c ON o.customer_id = c.id
+      LEFT JOIN shipments s ON s.order_id = o.id
+      ORDER BY o.id
+    rows:
+      - ["Widget", "Acme Corp", "FedEx"]
+      - ["Gadget", "Acme Corp", null]
+      - ["Sprocket", "Globex", "UPS"]
+      - ["Gizmo", null, null]
+      - ["Doohickey", null, null]
+
+  # ---------------------------------------------------------------
+  # 8. JOIN with NULL + aggregate: COUNT counts non-NULL only,
+  #    SUM of NULLs = NULL (SQL standard).
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT c.name, COUNT(o.amount), SUM(o.amount)
+      FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id
+      GROUP BY c.name
+      ORDER BY c.name
+    rows:
+      - ["Acme Corp", 1, 500]
+      - ["Globex", 1, 300]
+      - ["Initech", 0, null]
+
+  # COUNT(*) vs COUNT(column) with NULLs: COUNT(*) counts all rows
+  # including those with NULLs; COUNT(o.amount) skips NULLs.
+  - query: >
+      SELECT c.name, COUNT(*), COUNT(o.amount)
+      FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id
+      GROUP BY c.name
+      ORDER BY c.name
+    rows:
+      - ["Acme Corp", 2, 1]
+      - ["Globex", 1, 1]
+      - ["Initech", 1, 0]
+
+  # ---------------------------------------------------------------
+  # 9. NOT EXISTS with NULL FK — NULL correlation should not match.
+  #    "Find customers with no orders." Initech (id=3) has none.
+  #    Orders 40,50 have customer_id=NULL which does NOT correlate
+  #    with any customer.id (NULL = 3 is UNKNOWN), so Initech is
+  #    correctly found by NOT EXISTS.
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT c.name
+      FROM customers c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM orders o WHERE o.customer_id = c.id
+      )
+      ORDER BY c.name
+    rows:
+      - ["Initech"]
+
+  # NOT EXISTS from the order side: "orders with no shipment."
+  # Shipment 102 has order_id=NULL which never matches any order.id
+  # (NULL = 10 is UNKNOWN), so it doesn't count as a match.
+  - query: >
+      SELECT o.name
+      FROM orders o
+      WHERE NOT EXISTS (
+        SELECT 1 FROM shipments s WHERE s.order_id = o.id
+      )
+      ORDER BY o.id
+    rows:
+      - ["Gadget"]
+      - ["Gizmo"]
+      - ["Doohickey"]
+
+  # ---------------------------------------------------------------
+  # 10. EXISTS with NULL FK — NULL correlation should not match.
+  #     "Find customers who have at least one order." NULL customer_id
+  #     in orders 40,50 does NOT match any customer.id via EXISTS
+  #     correlation (NULL = c.id is UNKNOWN -> FALSE).
+  # ---------------------------------------------------------------
+  - query: >
+      SELECT c.name
+      FROM customers c
+      WHERE EXISTS (
+        SELECT 1 FROM orders o WHERE o.customer_id = c.id
+      )
+      ORDER BY c.name
+    rows:
+      - ["Acme Corp"]
+      - ["Globex"]
+
+  # EXISTS from the order side: "orders that have a shipment."
+  # Shipment 102 (order_id=NULL) does NOT match any order via EXISTS.
+  - query: >
+      SELECT o.name
+      FROM orders o
+      WHERE EXISTS (
+        SELECT 1 FROM shipments s WHERE s.order_id = o.id
+      )
+      ORDER BY o.id
+    rows:
+      - ["Widget"]
+      - ["Sprocket"]

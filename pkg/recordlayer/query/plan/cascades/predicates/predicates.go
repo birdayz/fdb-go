@@ -199,6 +199,13 @@ type QueryPredicate interface {
 	// Explain renders a parenthesised textual form suitable for
 	// debug + plan-diff output.
 	Explain() string
+
+	// GetCorrelatedTo returns the transitive set of CorrelationIdentifiers
+	// this predicate and all its descendants reference. Each concrete
+	// type contributes its own correlations (Values, existential aliases,
+	// parameter aliases) plus the union of all children's correlations.
+	// Mirrors Java's QueryPredicate.getCorrelatedTo() which is transitive.
+	GetCorrelatedTo() map[values.CorrelationIdentifier]struct{}
 }
 
 // IsTautology reports whether the predicate always evaluates to TRUE.
@@ -235,6 +242,13 @@ func NewConstantPredicate(v TriBool) *ConstantPredicate {
 
 func (*ConstantPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 func (p *ConstantPredicate) Eval(any) TriBool         { return p.Value }
+
+// GetCorrelatedTo returns the empty set — constants reference no
+// quantifier aliases.
+func (*ConstantPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
 func (p *ConstantPredicate) Explain() string {
 	switch {
 	case p.Value == TriTrue:
@@ -261,6 +275,17 @@ func NewAnd(preds ...QueryPredicate) *AndPredicate {
 }
 
 func (p *AndPredicate) Children() []QueryPredicate { return p.SubPredicates }
+
+// GetCorrelatedTo returns the union of all children's correlations.
+func (p *AndPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, child := range p.SubPredicates {
+		for k := range child.GetCorrelatedTo() {
+			out[k] = struct{}{}
+		}
+	}
+	return out
+}
 
 func (p *AndPredicate) Eval(evalCtx any) TriBool {
 	// Kleene AND: TRUE ∧ x = x; FALSE ∧ x = FALSE; UNKNOWN ∧ TRUE
@@ -307,6 +332,17 @@ func NewOr(preds ...QueryPredicate) *OrPredicate {
 }
 
 func (p *OrPredicate) Children() []QueryPredicate { return p.SubPredicates }
+
+// GetCorrelatedTo returns the union of all children's correlations.
+func (p *OrPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, child := range p.SubPredicates {
+		for k := range child.GetCorrelatedTo() {
+			out[k] = struct{}{}
+		}
+	}
+	return out
+}
 
 func (p *OrPredicate) Eval(evalCtx any) TriBool {
 	// Kleene OR: FALSE ∨ x = x; TRUE ∨ x = TRUE; UNKNOWN ∨ FALSE
@@ -361,6 +397,18 @@ func NewValuePredicate(v values.Value) *ValuePredicate {
 
 func (*ValuePredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 
+// GetCorrelatedTo returns the correlations from the carried Value.
+func (p *ValuePredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	if p.Value == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	out := values.GetCorrelatedToOfValue(p.Value)
+	if out == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	return out
+}
+
 func (p *ValuePredicate) Eval(evalCtx any) TriBool {
 	if p.Value == nil {
 		return TriUnknown
@@ -404,6 +452,14 @@ func NewNot(child QueryPredicate) *NotPredicate {
 }
 
 func (p *NotPredicate) Children() []QueryPredicate { return []QueryPredicate{p.Child} }
+
+// GetCorrelatedTo returns the child's correlations.
+func (p *NotPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	if p.Child == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	return p.Child.GetCorrelatedTo()
+}
 
 func (p *NotPredicate) Eval(evalCtx any) TriBool {
 	switch p.Child.Eval(evalCtx) {
