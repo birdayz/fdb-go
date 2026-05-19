@@ -1,0 +1,44 @@
+# secondary_index_join.yaml — Secondary index used in JOIN
+#
+# Exercises joins where the join predicate matches a secondary index
+# on the inner table, enabling FlatMap with correlated index scan.
+name: secondary_index_join
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+  CREATE INDEX idx_customer ON orders (customer_id)
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+  - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 150), (40, 3, 50), (50, 3, 75)
+tests:
+  # Join on indexed column
+  - query: >
+      SELECT c.name, o.total FROM customers c, orders o
+      WHERE o.customer_id = c.id
+      ORDER BY c.name, o.total
+    rows:
+      - ["Alice", 100]
+      - ["Alice", 200]
+      - ["Bob", 150]
+      - ["Charlie", 50]
+      - ["Charlie", 75]
+
+  # Aggregate on indexed join
+  - query: >
+      SELECT c.name, COUNT(*), SUM(o.total)
+      FROM customers c, orders o
+      WHERE o.customer_id = c.id
+      GROUP BY c.name ORDER BY c.name
+    rows:
+      - ["Alice", 2, 300]
+      - ["Bob", 1, 150]
+      - ["Charlie", 2, 125]
+
+  # EXISTS with indexed subquery
+  - query: >
+      SELECT c.name FROM customers c
+      WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.total > 100)
+      ORDER BY c.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
