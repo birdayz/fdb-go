@@ -1,0 +1,35 @@
+# join_aggregate_having.yaml — JOIN + aggregate + HAVING combined
+#
+# Exercises the full pipeline: JOIN → GROUP BY → HAVING → ORDER BY.
+name: join_aggregate_having
+schema_template: |
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO dept VALUES (1, 'Eng'), (2, 'Sales'), (3, 'HR')
+  - INSERT INTO emp VALUES (10, 1, 100), (20, 1, 120), (30, 1, 110), (40, 2, 80), (50, 3, 90)
+tests:
+  # Departments with average salary > 100
+  - query: >
+      SELECT d.name, AVG(e.salary) FROM dept d, emp e
+      WHERE e.dept_id = d.id
+      GROUP BY d.name HAVING AVG(e.salary) > 100
+    rows:
+      - ["Eng", 110.0]
+
+  # Departments with 2+ employees
+  - query: >
+      SELECT d.name, COUNT(*) FROM dept d, emp e
+      WHERE e.dept_id = d.id
+      GROUP BY d.name HAVING COUNT(*) >= 2
+    rows:
+      - ["Eng", 3]
+
+  # Full pipeline
+  - query: >
+      SELECT d.name, COUNT(*), SUM(e.salary) FROM dept d, emp e
+      WHERE e.dept_id = d.id
+      GROUP BY d.name HAVING SUM(e.salary) > 100
+      ORDER BY d.name
+    rows:
+      - ["Eng", 3, 330]
