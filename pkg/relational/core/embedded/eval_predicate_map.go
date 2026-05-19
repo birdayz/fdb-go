@@ -467,6 +467,8 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			return triFromBool(cmp <= 0), nil
 		case ">=":
 			return triFromBool(cmp >= 0), nil
+		default:
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 		}
 	}
 	return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported predicate type %T in map eval", pred.Predicate())
@@ -585,6 +587,8 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 				return triFromBool(cmp <= 0), nil
 			case ">=":
 				return triFromBool(cmp >= 0), nil
+			default:
+				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 			}
 		}
 		v, err := evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
