@@ -1,0 +1,30 @@
+# derived_table_join.yaml — Derived tables (subqueries in FROM) with joins
+#
+# Exercises subqueries used as derived tables in FROM clause.
+name: derived_table_join
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+  CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO orders VALUES (1, 10, 100), (2, 10, 200), (3, 20, 150), (4, 30, 300)
+  - INSERT INTO customers VALUES (10, 'Alice'), (20, 'Bob'), (30, 'Charlie')
+tests:
+  # Simple derived table
+  - query: >
+      SELECT sq.total FROM (SELECT total FROM orders WHERE total > 150) sq
+      ORDER BY sq.total
+    rows:
+      - [200]
+      - [300]
+
+  # Derived table joined with base table
+  - query: >
+      SELECT c.name, sq.order_count
+      FROM customers c,
+        (SELECT customer_id, COUNT(*) AS order_count FROM orders GROUP BY customer_id) sq
+      WHERE sq.customer_id = c.id
+      ORDER BY c.name
+    rows:
+      - ["Alice", 2]
+      - ["Bob", 1]
+      - ["Charlie", 1]
