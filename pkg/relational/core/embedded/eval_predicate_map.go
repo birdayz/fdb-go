@@ -407,24 +407,14 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"IN requires a parenthesized expression list or subquery")
 		}
-		var hadNullElement bool
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
-			// Match the proto path (evalInPredicateTri at
-			// eval_predicate.go:289): IN-list elements are arbitrary
-			// expressions — `b IN (1+0, foo(), CASE WHEN ... THEN ... END)` —
-			// not just bare predicated atoms. Use evalExprOnMap which
-			// dispatches PredicatedExpression / LogicalExpression / atom
-			// uniformly. Pre-fix the map path called evalExprAtomOnMap on
-			// just the .ExpressionAtom() of a PredicatedExpression, which
-			// silently dropped arithmetic / function-call elements.
 			litVal, litErr := evalExprOnMap(ctx, conn, row, inExpr)
 			if litErr != nil {
 				return triFalse, litErr
 			}
 			if litVal == nil {
-				// See evalInPredicateTri: NULL list element contributes UNKNOWN.
-				hadNullElement = true
-				continue
+				return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+					"NULL values are not allowed in the IN list")
 			}
 			if !valuesComparable(fieldVal, litVal) {
 				return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
@@ -436,9 +426,6 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				}
 				return triTrue, nil
 			}
-		}
-		if hadNullElement {
-			return triNull, nil
 		}
 		if p.NOT() != nil {
 			return triTrue, nil

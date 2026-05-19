@@ -349,15 +349,14 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			"IN requires a parenthesized expression list or subquery")
 	}
 	exprs := exprsCtx.AllExpression()
-	hadNull := false
 	for _, expr := range exprs {
 		litVal, err := evalExpr(ctx, conn, msg, expr)
 		if err != nil {
 			return triFalse, err
 		}
 		if litVal == nil {
-			hadNull = true
-			continue
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"NULL values are not allowed in the IN list")
 		}
 		if !valuesComparable(fieldVal, litVal) {
 			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
@@ -369,9 +368,6 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			}
 			return triTrue, nil
 		}
-	}
-	if hadNull {
-		return triNull, nil
 	}
 	if in.NOT() != nil {
 		return triTrue, nil
