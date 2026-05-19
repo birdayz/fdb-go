@@ -1,0 +1,34 @@
+# left_join_exists_combo.yaml — LEFT JOIN combined with EXISTS filter
+#
+# Exercises the 3-quantifier path: LEFT JOIN (2 ForEach) + EXISTS
+# (1 Existential). This tests the implementJoinWithExistential rule.
+name: left_join_exists_combo
+schema_template: |
+  CREATE TABLE companies (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE employees (id BIGINT NOT NULL, company_id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE projects (id BIGINT NOT NULL, company_id BIGINT, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO companies VALUES (1, 'Acme'), (2, 'Beta'), (3, 'Gamma')
+  - INSERT INTO employees VALUES (10, 1, 'Alice'), (20, 1, 'Bob'), (30, 2, 'Charlie')
+  - INSERT INTO projects VALUES (100, 1, 'P1'), (200, 3, 'P2')
+tests:
+  # LEFT JOIN: all companies with employee count (Gamma has 0)
+  - query: >
+      SELECT c.name, COUNT(e.id) FROM companies c
+      LEFT JOIN employees e ON e.company_id = c.id
+      GROUP BY c.name ORDER BY c.name
+    result:
+      - ["Acme", 2]
+      - ["Beta", 1]
+      - ["Gamma", 0]
+
+  # INNER JOIN + EXISTS: companies that have employees AND projects
+  - query: >
+      SELECT c.name FROM companies c, employees e
+      WHERE e.company_id = c.id
+      AND EXISTS (SELECT 1 FROM projects p WHERE p.company_id = c.id)
+      ORDER BY c.name
+    unordered: true
+    result:
+      - ["Acme"]
+      - ["Acme"]
