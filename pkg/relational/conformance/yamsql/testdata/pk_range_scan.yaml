@@ -1,0 +1,57 @@
+# pk_range_scan.yaml — PK range scan with comparison operators
+#
+# Exercises PK-based range scans: the planner should push PK
+# comparisons into the scan range for efficient execution.
+name: pk_range_scan
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e'), (6, 'f'), (7, 'g'), (8, 'h'), (9, 'i'), (10, 'j')
+tests:
+  # PK equality
+  - query: SELECT val FROM t WHERE id = 5
+    rows:
+      - ["e"]
+
+  # PK range: >
+  - query: SELECT id FROM t WHERE id > 7 ORDER BY id
+    rows:
+      - [8]
+      - [9]
+      - [10]
+
+  # PK range: >=
+  - query: SELECT id FROM t WHERE id >= 8 ORDER BY id
+    rows:
+      - [8]
+      - [9]
+      - [10]
+
+  # PK range: <
+  - query: SELECT id FROM t WHERE id < 3 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+
+  # PK range: <=
+  - query: SELECT id FROM t WHERE id <= 3 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # PK range: BETWEEN
+  - query: SELECT id FROM t WHERE id BETWEEN 3 AND 7 ORDER BY id
+    rows:
+      - [3]
+      - [4]
+      - [5]
+      - [6]
+      - [7]
+
+  # PK combined with non-PK predicate
+  - query: SELECT id, val FROM t WHERE id > 5 AND val > 'g' ORDER BY id
+    rows:
+      - [8, "h"]
+      - [9, "i"]
+      - [10, "j"]
