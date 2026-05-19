@@ -249,6 +249,10 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	if leftVal == nil || rightVal == nil {
 		return triNull, nil
 	}
+	if !valuesComparable(leftVal, rightVal) {
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+			"The operands of a comparison operator are not compatible.")
+	}
 	cmp := functions.CompareValues(leftVal, rightVal)
 	switch opText {
 	case "=":
@@ -571,6 +575,10 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			}
 			if left == nil || right == nil {
 				return triNull, nil
+			}
+			if !valuesComparable(left, right) {
+				return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
 			}
 			cmp := functions.CompareValues(left, right)
 			switch opText {
