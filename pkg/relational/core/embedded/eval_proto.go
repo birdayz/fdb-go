@@ -170,7 +170,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		return functions.ApplyMathOp(left, right, a.MathOperator().GetText())
+		return functions.ApplyMathOp(left, right, classifyMathOp(a.MathOperator()))
 	case *antlrgen.BitExpressionAtomContext:
 		// Grammar: bitOperator : '<' '<' | '>' '>' | '&' | '^' | '|'
 		// Java registers bitand/bitor/bitxor + shifts in SqlFunctionCatalog.
@@ -182,7 +182,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
+		return functions.ApplyBitOp(left, right, classifyBitOp(a.BitOperator()))
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
 	case *antlrgen.RecordConstructorExpressionAtomContext:

@@ -207,7 +207,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			if rErr != nil {
 				return nil, rErr
 			}
-			return functions.ApplyMathOp(left, right, a.MathOperator().GetText())
+			return functions.ApplyMathOp(left, right, classifyMathOp(a.MathOperator()))
 		case *antlrgen.BitExpressionAtomContext:
 			// Same shape as MathExpression but with bitwise ops. HAVING on
 			// bitwise expressions (`COUNT(*) & 1`) is unusual but valid and
@@ -220,7 +220,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			if rErr != nil {
 				return nil, rErr
 			}
-			return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
+			return functions.ApplyBitOp(left, right, classifyBitOp(a.BitOperator()))
 		case *antlrgen.SubqueryExpressionAtomContext:
 			// HAVING `agg <op> (SELECT ... )` — uncorrelated subquery
 			// pre-evaluated before the outer query started. Look up the

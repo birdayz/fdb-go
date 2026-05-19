@@ -49,6 +49,60 @@ func classifyComparisonOp(op antlrgen.IComparisonOperatorContext) string {
 	}
 }
 
+// classifyMathOp returns a canonical string for arithmetic operators
+// using typed ANTLR terminal nodes (no GetText()).
+func classifyMathOp(op antlrgen.IMathOperatorContext) string {
+	if op == nil {
+		return ""
+	}
+	m, ok := op.(*antlrgen.MathOperatorContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case m.PLUS() != nil:
+		return "+"
+	case m.MINUS() != nil:
+		return "-"
+	case m.STAR() != nil:
+		return "*"
+	case m.DIVIDE() != nil:
+		return "/"
+	case m.DIV() != nil:
+		return "DIV"
+	case m.MODULE() != nil:
+		return "%"
+	case m.MOD() != nil:
+		return "MOD"
+	}
+	return ""
+}
+
+// classifyBitOp returns a canonical string for bitwise operators
+// using typed ANTLR terminal nodes (no GetText()).
+func classifyBitOp(op antlrgen.IBitOperatorContext) string {
+	if op == nil {
+		return ""
+	}
+	b, ok := op.(*antlrgen.BitOperatorContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case b.BIT_AND_OP() != nil:
+		return "&"
+	case b.BIT_OR_OP() != nil:
+		return "|"
+	case b.BIT_XOR_OP() != nil:
+		return "^"
+	case len(b.AllLESS_SYMBOL()) >= 2:
+		return "<<"
+	case len(b.AllGREATER_SYMBOL()) >= 2:
+		return ">>"
+	}
+	return ""
+}
+
 // Pushdown-path predicate extractors.
 //
 // Thin parse-tree-aware helpers that every pushdown shape in

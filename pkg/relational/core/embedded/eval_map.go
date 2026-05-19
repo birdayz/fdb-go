@@ -145,7 +145,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		return applyArithmeticOp(left, right, a.MathOperator().GetText())
+		return applyArithmeticOp(left, right, classifyMathOp(a.MathOperator()))
 	case *antlrgen.BitExpressionAtomContext:
 		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
 		if err != nil {
@@ -155,7 +155,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
+		return functions.ApplyBitOp(left, right, classifyBitOp(a.BitOperator()))
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		// Aggregate function calls inside a row-map expression evaluate
 		// by looking up the reconstructed aggregate name in the row map.
