@@ -1,0 +1,40 @@
+# cte_recursive_tree.yaml — Recursive CTE tree traversal
+#
+# Exercises recursive CTE for tree/hierarchy traversal:
+# parent-child relationships, depth tracking.
+name: cte_recursive_tree
+schema_template: |
+  CREATE TABLE tree (id BIGINT NOT NULL, parent_id BIGINT, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO tree VALUES (1, null, 'Root'), (2, 1, 'A'), (3, 1, 'B'), (4, 2, 'A1'), (5, 2, 'A2'), (6, 3, 'B1')
+tests:
+  # All descendants of Root (id=1)
+  - query: >
+      WITH RECURSIVE descendants AS (
+        SELECT id, name FROM tree WHERE parent_id = 1
+        UNION ALL
+        SELECT t.id, t.name FROM tree t, descendants d WHERE t.parent_id = d.id
+      )
+      SELECT name FROM descendants ORDER BY name
+    rows:
+      - ["A"]
+      - ["A1"]
+      - ["A2"]
+      - ["B"]
+      - ["B1"]
+
+  # Direct children only
+  - query: SELECT name FROM tree WHERE parent_id = 1 ORDER BY name
+    rows:
+      - ["A"]
+      - ["B"]
+
+  # Leaf nodes (no children)
+  - query: >
+      SELECT t.name FROM tree t
+      WHERE NOT EXISTS (SELECT 1 FROM tree c WHERE c.parent_id = t.id)
+      ORDER BY t.name
+    rows:
+      - ["A1"]
+      - ["A2"]
+      - ["B1"]
