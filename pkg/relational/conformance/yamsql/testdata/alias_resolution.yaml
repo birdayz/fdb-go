@@ -1,0 +1,45 @@
+# alias_resolution.yaml — Alias resolution edge cases
+#
+# Exercises SQL alias handling: table aliases, column aliases,
+# qualified column names vs aliases, alias reuse across scopes.
+name: alias_resolution
+schema_template: |
+  CREATE TABLE employees (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE departments (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO employees VALUES (1, 'Alice', 10), (2, 'Bob', 20)
+  - INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales')
+tests:
+  # Table alias in SELECT
+  - query: SELECT e.name FROM employees e ORDER BY e.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+
+  # Column alias in ORDER BY
+  - query: SELECT name AS emp_name FROM employees ORDER BY emp_name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+
+  # Qualified column name without alias
+  - query: SELECT employees.name FROM employees ORDER BY employees.id
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+
+  # Same column name in different tables — qualified access
+  - query: >
+      SELECT e.name, d.name FROM employees e, departments d
+      WHERE e.dept_id = d.id ORDER BY e.name
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Sales"]
+
+  # Column alias in GROUP BY
+  - query: >
+      SELECT dept_id AS dept, COUNT(*) AS cnt
+      FROM employees GROUP BY dept_id ORDER BY dept
+    rows:
+      - [10, 1]
+      - [20, 1]
