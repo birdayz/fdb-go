@@ -12,19 +12,19 @@ setup:
 tests:
   # LEFT JOIN: order 40 has customer_id=99 (no match) → NULL name
   - query: SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id
-    result:
+    rows:
       - [10, "Alice"]
       - [20, "Alice"]
       - [30, "Bob"]
       - [40, null]
   # LEFT JOIN with filter on outer: only high-value orders
   - query: SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.amount > 60 ORDER BY o.id
-    result:
+    rows:
       - [10, "Alice"]
       - [20, "Alice"]
       - [40, null]
   # LEFT JOIN + LIMIT
   - query: SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id ORDER BY o.id LIMIT 2
-    result:
+    rows:
       - [10, "Alice"]
       - [20, "Alice"]

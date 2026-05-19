@@ -17,7 +17,7 @@ tests:
       SELECT c.name, COUNT(e.id) FROM companies c
       LEFT JOIN employees e ON e.company_id = c.id
       GROUP BY c.name ORDER BY c.name
-    result:
+    rows:
       - ["Acme", 2]
       - ["Beta", 1]
       - ["Gamma", 0]
@@ -29,6 +29,6 @@ tests:
       AND EXISTS (SELECT 1 FROM projects p WHERE p.company_id = c.id)
       ORDER BY c.name
     unordered: true
-    result:
+    rows:
       - ["Acme"]
       - ["Acme"]

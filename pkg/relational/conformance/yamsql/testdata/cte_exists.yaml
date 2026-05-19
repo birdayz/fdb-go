@@ -15,5 +15,5 @@ tests:
       SELECT c.name FROM customers c
       WHERE EXISTS (SELECT 1 FROM big_orders bo WHERE bo.customer_id = c.id)
       ORDER BY c.name
-    result:
+    rows:
       - ["Alice"]

@@ -13,7 +13,7 @@ setup:
 tests:
   # LEFT JOIN: parent 2,3 have no children → NULL for all child columns
   - query: SELECT p.id, p.pname, c.cname, c.extra FROM parent p LEFT JOIN child c ON c.parent_id = p.id ORDER BY p.id, c.id
-    result:
+    rows:
       - [1, "A", "x", 100]
       - [1, "A", "y", 200]
       - [2, "B", null, null]
@@ -21,7 +21,7 @@ tests:
 
   # LEFT JOIN with aggregate: count children per parent
   - query: SELECT p.pname, COUNT(c.id), SUM(c.extra) FROM parent p LEFT JOIN child c ON c.parent_id = p.id GROUP BY p.pname ORDER BY p.pname
-    result:
+    rows:
       - ["A", 2, 300]
       - ["B", 0, null]
       - ["C", 0, null]

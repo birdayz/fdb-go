@@ -18,7 +18,7 @@ tests:
       AND u.active = 1
       AND l.action = 'login'
       ORDER BY u.name
-    result:
+    rows:
       - ["Alice", "login"]
       - ["Charlie", "login"]
 
@@ -27,7 +27,7 @@ tests:
       SELECT u.name, l.action FROM users u, logs l
       WHERE l.user_id = u.id AND u.active = 1
       ORDER BY u.name, l.action
-    result:
+    rows:
       - ["Alice", "login"]
       - ["Alice", "view"]
       - ["Charlie", "login"]
@@ -37,5 +37,5 @@ tests:
       SELECT u.name FROM users u, logs l
       WHERE l.user_id = u.id AND l.ts > 200
       ORDER BY u.name
-    result:
+    rows:
       - ["Charlie"]

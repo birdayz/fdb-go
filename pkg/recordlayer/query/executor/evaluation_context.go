@@ -50,6 +50,7 @@ func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalCon
 	return &values.RowEvalContext{
 		Datum:            datum,
 		Binder:           ec,
+		Correlations:     ec,
 		ScalarSubqueries: ec.scalarSubqueries,
 	}
 }

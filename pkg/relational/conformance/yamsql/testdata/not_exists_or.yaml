@@ -21,7 +21,7 @@ tests:
       WHERE p.discontinued = 1
          OR NOT EXISTS (SELECT 1 FROM inventory i WHERE i.product_id = p.id)
       ORDER BY p.name
-    result:
+    rows:
       - ["Gadget"]
       - ["Thingamajig"]
 
@@ -35,6 +35,6 @@ tests:
       WHERE p.discontinued = 0
         AND EXISTS (SELECT 1 FROM inventory i WHERE i.product_id = p.id)
       ORDER BY p.name
-    result:
+    rows:
       - ["Doohickey"]
       - ["Widget"]

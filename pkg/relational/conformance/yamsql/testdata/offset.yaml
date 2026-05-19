@@ -10,32 +10,32 @@ setup:
 tests:
   # LIMIT + OFFSET combinations.
   - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 1
-    result:
+    rows:
       - [2]
       - [3]
   - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 100
-    result: []
+    rows: []
   - query: SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 0
-    result:
+    rows:
       - [1]
       - [2]
       - [3]
   - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 3
-    result:
+    rows:
       - [4]
       - [5]
   # Bare LIMIT.
   - query: SELECT id FROM t ORDER BY id LIMIT 0
-    result: []
+    rows: []
   - query: SELECT id FROM t ORDER BY id LIMIT 5
-    result:
+    rows:
       - [1]
       - [2]
       - [3]
       - [4]
       - [5]
   - query: SELECT id FROM t ORDER BY id LIMIT 100
-    result:
+    rows:
       - [1]
       - [2]
       - [3]

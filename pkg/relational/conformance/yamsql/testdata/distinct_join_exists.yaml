@@ -12,7 +12,7 @@ setup:
 tests:
   # DISTINCT genre from join
   - query: SELECT DISTINCT b.genre FROM authors a, books b WHERE b.author_id = a.id ORDER BY b.genre
-    result:
+    rows:
       - ["fiction"]
       - ["history"]
       - ["science"]
@@ -22,7 +22,7 @@ tests:
       SELECT DISTINCT a.name FROM authors a
       WHERE EXISTS (SELECT 1 FROM books b WHERE b.author_id = a.id AND b.genre = 'fiction')
       ORDER BY a.name
-    result:
+    rows:
       - ["Alice"]
       - ["Bob"]
 
@@ -30,7 +30,7 @@ tests:
   - query: >
       SELECT a.name, COUNT(b.id) FROM authors a, books b
       WHERE b.author_id = a.id GROUP BY a.name ORDER BY a.name
-    result:
+    rows:
       - ["Alice", 2]
       - ["Bob", 2]
       - ["Charlie", 1]

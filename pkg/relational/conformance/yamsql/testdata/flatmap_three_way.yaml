@@ -18,7 +18,7 @@ tests:
       FROM regions r, stores s, products p
       WHERE s.region_id = r.id AND p.store_id = s.id
       ORDER BY r.name, s.name, p.name
-    result:
+    rows:
       - ["North", "Store_A", "Gadget"]
       - ["North", "Store_A", "Widget"]
       - ["North", "Store_B", "Doohickey"]

@@ -1,0 +1,68 @@
+# aggregate_null_edge.yaml — Aggregate NULL edge cases
+#
+# Exercises aggregate behavior with NULL values: COUNT(*) vs COUNT(col),
+# SUM/AVG/MIN/MAX over NULLs, empty groups, single-row groups.
+name: aggregate_null_edge
+schema_template: |
+  CREATE TABLE scores (id BIGINT NOT NULL, player STRING, score BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO scores VALUES (1, 'Alice', 100), (2, 'Alice', null), (3, 'Bob', 50), (4, 'Bob', null), (5, 'Bob', null), (6, null, 200)
+tests:
+  # COUNT(*) counts all rows including NULLs, COUNT(col) skips NULLs
+  - query: >
+      SELECT player, COUNT(*), COUNT(score) FROM scores
+      WHERE player IS NOT NULL
+      GROUP BY player ORDER BY player
+    rows:
+      - ["Alice", 2, 1]
+      - ["Bob", 3, 1]
+
+  # SUM of mix of NULL and non-NULL
+  - query: >
+      SELECT player, SUM(score) FROM scores
+      WHERE player IS NOT NULL
+      GROUP BY player ORDER BY player
+    rows:
+      - ["Alice", 100]
+      - ["Bob", 50]
+
+  # AVG skips NULLs — Alice has 1 score, Bob has 1 score
+  - query: >
+      SELECT player, AVG(score) FROM scores
+      WHERE player IS NOT NULL
+      GROUP BY player ORDER BY player
+    rows:
+      - ["Alice", 100.0]
+      - ["Bob", 50.0]
+
+  # MIN/MAX skip NULLs
+  - query: >
+      SELECT player, MIN(score), MAX(score) FROM scores
+      WHERE player IS NOT NULL
+      GROUP BY player ORDER BY player
+    rows:
+      - ["Alice", 100, 100]
+      - ["Bob", 50, 50]
+
+  # All-NULL group: SUM/AVG/MIN/MAX return NULL, COUNT(col)=0, COUNT(*)=N
+  - query: >
+      SELECT COUNT(*), COUNT(score), SUM(score), MIN(score), MAX(score)
+      FROM scores WHERE score IS NULL
+    rows:
+      - [3, 0, null, null, null]
+
+  # Empty table result: aggregates over zero rows
+  - query: >
+      SELECT COUNT(*), COUNT(score), SUM(score), MIN(score), MAX(score)
+      FROM scores WHERE id > 1000
+    rows:
+      - [0, 0, null, null, null]
+
+  # GROUP BY on nullable column — NULL group sorts last
+  - query: >
+      SELECT player, SUM(score) FROM scores
+      GROUP BY player ORDER BY player
+    rows:
+      - ["Alice", 100]
+      - ["Bob", 50]
+      - [null, 200]

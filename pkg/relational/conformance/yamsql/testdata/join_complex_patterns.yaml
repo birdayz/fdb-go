@@ -10,39 +10,39 @@ setup:
 tests:
   # Self-join: find parent-child pairs
   - query: SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id ORDER BY p.id, c.id
-    result:
+    rows:
       - [1, 2]
       - [1, 3]
       - [2, 5]
 
   # Anti-join: items with no children (NOT EXISTS)
   - query: SELECT i.id FROM items i WHERE NOT EXISTS (SELECT 1 FROM items c WHERE c.parent_id = i.id) ORDER BY i.id
-    result:
+    rows:
       - [3]
       - [4]
       - [5]
 
   # EXISTS: items that ARE parents
   - query: SELECT i.id FROM items i WHERE EXISTS (SELECT 1 FROM items c WHERE c.parent_id = i.id) ORDER BY i.id
-    result:
+    rows:
       - [1]
       - [2]
 
   # Self-join with additional predicate on inner
   - query: SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price > 100 ORDER BY p.id, c.id
-    result:
+    rows:
       - [1, 2]
       - [1, 3]
 
   # Join ordered by inner column
   - query: SELECT p.id, c.price FROM items p, items c WHERE c.parent_id = p.id ORDER BY c.price
-    result:
+    rows:
       - [2, 50]
       - [1, 150]
       - [1, 200]
 
   # Join with expression in WHERE
   - query: SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price + p.price > 250 ORDER BY c.id
-    result:
+    rows:
       - [1, 2]
       - [1, 3]

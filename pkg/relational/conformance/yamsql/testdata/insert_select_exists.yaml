@@ -15,7 +15,7 @@ tests:
   - query: INSERT INTO dst SELECT id, val FROM src WHERE EXISTS (SELECT 1 FROM filter_set WHERE filter_set.k = src.id)
     rows: []
   - query: SELECT id, val FROM dst ORDER BY id
-    result:
+    rows:
       - [1, 10]
       - [3, 30]
 
@@ -25,6 +25,6 @@ tests:
   - query: INSERT INTO dst SELECT id, val FROM src WHERE NOT EXISTS (SELECT 1 FROM filter_set WHERE filter_set.k = src.id)
     rows: []
   - query: SELECT id, val FROM dst ORDER BY id
-    result:
+    rows:
       - [2, 20]
       - [4, 40]

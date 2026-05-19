@@ -21,7 +21,7 @@ tests:
         WHERE b.author_id = a.id AND w.book_id = b.id
       )
       ORDER BY a.name
-    result:
+    rows:
       - ["Alice"]
       - ["Bob"]
 
@@ -33,5 +33,5 @@ tests:
         WHERE b.author_id = a.id AND w.book_id = b.id
       )
       ORDER BY a.name
-    result:
+    rows:
       - ["Charlie"]

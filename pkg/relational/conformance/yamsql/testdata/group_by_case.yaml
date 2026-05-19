@@ -15,6 +15,6 @@ tests:
       FROM items
       GROUP BY CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END
       ORDER BY CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END
-    result:
+    rows:
       - ["cheap", 2]
       - ["expensive", 3]

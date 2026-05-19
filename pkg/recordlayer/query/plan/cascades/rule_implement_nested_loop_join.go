@@ -69,6 +69,10 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	if getExplodeExpression(leftRef) != nil || getExplodeExpression(rightRef) != nil {
+		return
+	}
+
 	leftPlan := findPhysicalPlan(leftRef)
 	rightPlan := findPhysicalPlan(rightRef)
 	if leftPlan == nil || rightPlan == nil {

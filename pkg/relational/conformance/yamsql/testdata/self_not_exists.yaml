@@ -14,7 +14,7 @@ tests:
       SELECT e.name FROM emp e
       WHERE NOT EXISTS (SELECT 1 FROM emp sub WHERE sub.manager_id = e.id)
       ORDER BY e.name
-    result:
+    rows:
       - ["Eng"]
       - ["Eng2"]
 
@@ -23,7 +23,7 @@ tests:
       SELECT e.name FROM emp e
       WHERE EXISTS (SELECT 1 FROM emp sub WHERE sub.manager_id = e.id)
       ORDER BY e.name
-    result:
+    rows:
       - ["CEO"]
       - ["Dir"]
       - ["VP"]
@@ -34,6 +34,6 @@ tests:
       WHERE e.manager_id = 3
       AND NOT EXISTS (SELECT 1 FROM emp sub WHERE sub.manager_id = e.id)
       ORDER BY e.name
-    result:
+    rows:
       - ["Eng"]
       - ["Eng2"]

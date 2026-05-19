@@ -49,7 +49,7 @@ func executePredicatesFilter(
 		return nil, err
 	}
 	preds := p.GetPredicates()
-	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0)
+	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0)
 	return &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) bool {
@@ -175,6 +175,7 @@ func executeInJoin(
 	if len(cursors) == 1 {
 		return cursors[0], nil
 	}
+
 	return newConcatCursor(cursors), nil
 }
 

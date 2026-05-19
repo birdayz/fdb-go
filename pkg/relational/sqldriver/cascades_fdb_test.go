@@ -3337,6 +3337,83 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 	t.Logf("NOT EXISTS + WHERE predicate → %v ✓", ids)
 }
 
+func TestFDB_InListDebug(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/in_dbg_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("tmpl_in_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE items (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO items VALUES (1, 'apple', 10), (2, 'banana', 20), (3, 'cherry', 30), (4, 'date', 40), (5, 'elderberry', 50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		query  string
+		expect int
+	}{
+		{"all items", "SELECT id FROM items ORDER BY id", 5},
+		{"IN single", "SELECT id FROM items WHERE id IN (1)", 1},
+		{"IN two", "SELECT id FROM items WHERE id IN (1, 2)", 2},
+		{"IN three non-contiguous", "SELECT id FROM items WHERE id IN (1, 3, 5)", 3},
+		{"IN with AND", "SELECT id FROM items WHERE id IN (1, 2, 3, 4) AND price > 15", 3},
+		{"NOT IN", "SELECT id FROM items WHERE id NOT IN (1, 2, 3)", 2},
+		{"string IN", "SELECT id FROM items WHERE name IN ('apple', 'cherry')", 2},
+		{"= comparison", "SELECT id FROM items WHERE id = 3", 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatalf("query failed: %v", err)
+			}
+			defer rows.Close()
+			var count int
+			for rows.Next() {
+				count++
+				var id int64
+				if err := rows.Scan(&id); err != nil {
+					// multi-col queries
+					vals := make([]any, 10)
+					ptrs := make([]any, 10)
+					for i := range vals {
+						ptrs[i] = &vals[i]
+					}
+				}
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+			if count != tc.expect {
+				t.Errorf("expected %d rows, got %d", tc.expect, count)
+			}
+		})
+	}
+}
+
 func valuesEqual(got, exp any) bool {
 	if got == nil && exp == nil {
 		return true

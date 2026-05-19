@@ -1,0 +1,69 @@
+# join_on_syntax.yaml — JOIN ... ON ... syntax variants
+#
+# Exercises explicit JOIN ON syntax (vs comma+WHERE) with various
+# predicate shapes, including multi-condition ON, ON with functions,
+# and mixed ON+WHERE.
+name: join_on_syntax
+schema_template: |
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO dept VALUES (1, 'Engineering'), (2, 'Sales'), (3, 'HR')
+  - INSERT INTO emp VALUES (10, 1, 'Alice', 100), (20, 1, 'Bob', 150), (30, 2, 'Charlie', 80), (40, null, 'Dave', 90)
+tests:
+  # Basic INNER JOIN ON
+  - query: >
+      SELECT e.name, d.name FROM emp e INNER JOIN dept d ON e.dept_id = d.id
+      ORDER BY e.name
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Engineering"]
+      - ["Charlie", "Sales"]
+
+  # LEFT JOIN ON — unmatched rows get NULLs
+  - query: >
+      SELECT e.name, d.name FROM emp e LEFT JOIN dept d ON e.dept_id = d.id
+      ORDER BY e.name
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Engineering"]
+      - ["Charlie", "Sales"]
+      - ["Dave", null]
+
+  # JOIN ON with additional WHERE filter
+  - query: >
+      SELECT e.name, d.name FROM emp e INNER JOIN dept d ON e.dept_id = d.id
+      WHERE e.salary > 90
+      ORDER BY e.name
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Engineering"]
+
+  # Multi-condition ON clause
+  - query: >
+      SELECT e.name FROM emp e INNER JOIN dept d
+      ON e.dept_id = d.id AND d.name = 'Engineering'
+      ORDER BY e.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+
+  # LEFT JOIN ON with WHERE on outer table only
+  - query: >
+      SELECT e.name, d.name FROM emp e LEFT JOIN dept d ON e.dept_id = d.id
+      WHERE e.salary >= 90
+      ORDER BY e.name
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Engineering"]
+      - ["Dave", null]
+
+  # LEFT JOIN ON with WHERE filtering NULLs (inner table filter)
+  - query: >
+      SELECT e.name, d.name FROM emp e LEFT JOIN dept d ON e.dept_id = d.id
+      WHERE d.name IS NOT NULL
+      ORDER BY e.name
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Engineering"]
+      - ["Charlie", "Sales"]

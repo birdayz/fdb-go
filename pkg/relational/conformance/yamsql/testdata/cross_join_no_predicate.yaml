@@ -12,7 +12,7 @@ setup:
 tests:
   # CROSS JOIN: 2 colors × 3 sizes = 6 rows.
   - query: SELECT c.name, s.label FROM colors c, sizes s ORDER BY c.name, s.label
-    result:
+    rows:
       - ["Blue", "L"]
       - ["Blue", "M"]
       - ["Blue", "S"]
@@ -21,7 +21,7 @@ tests:
       - ["Red", "S"]
   # CROSS JOIN with LIMIT.
   - query: SELECT c.name, s.label FROM colors c, sizes s ORDER BY c.name, s.label LIMIT 3
-    result:
+    rows:
       - ["Blue", "L"]
       - ["Blue", "M"]
       - ["Blue", "S"]

@@ -14,7 +14,7 @@ tests:
   - query: >
       SELECT r.name, SUM(s.revenue) FROM regions r, stores s
       WHERE s.region_id = r.id GROUP BY r.name ORDER BY r.name
-    result:
+    rows:
       - ["East", 300]
       - ["West", 150]
 
@@ -23,7 +23,7 @@ tests:
       SELECT r.name, COUNT(s.id) FROM regions r
       LEFT JOIN stores s ON s.region_id = r.id
       GROUP BY r.name ORDER BY r.name
-    result:
+    rows:
       - ["East", 2]
       - ["North", 0]
       - ["West", 1]
@@ -34,6 +34,6 @@ tests:
       LEFT JOIN stores s ON s.region_id = r.id
       GROUP BY r.name HAVING SUM(s.revenue) > 100
       ORDER BY r.name
-    result:
+    rows:
       - ["East", 300]
       - ["West", 150]

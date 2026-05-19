@@ -16,7 +16,7 @@ tests:
       FROM employees e
       WHERE EXISTS (SELECT 1 FROM bonuses b WHERE b.emp_id = e.id)
       ORDER BY e.name
-    result:
+    rows:
       - ["Alice", "normal"]
       - ["Charlie", "high"]
 
@@ -25,6 +25,6 @@ tests:
       SELECT e.name FROM employees e
       WHERE CASE WHEN e.dept = 'eng' THEN e.salary > 90 ELSE e.salary > 100 END
       ORDER BY e.name
-    result:
+    rows:
       - ["Alice"]
       - ["Charlie"]

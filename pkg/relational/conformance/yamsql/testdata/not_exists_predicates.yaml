@@ -14,23 +14,23 @@ setup:
 tests:
   # Basic correlated NOT EXISTS
   - query: SELECT o.id FROM orders o WHERE NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-    result:
+    rows:
       - [1]
       - [4]
 
   # NOT EXISTS + outer predicate (status filter)
   - query: SELECT o.id FROM orders o WHERE o.status = 'pending' AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-    result:
+    rows:
       - [1]
 
   # EXISTS + outer predicate
   - query: SELECT o.id FROM orders o WHERE o.status = 'pending' AND EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-    result:
+    rows:
       - [3]
 
   # NOT EXISTS with no matching inner rows at all
   - query: SELECT o.id FROM orders o WHERE o.customer_id = 300 AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id) ORDER BY o.id
-    result:
+    rows:
       - [4]
 
   # NOT EXISTS where all outer rows have matches (empty result)

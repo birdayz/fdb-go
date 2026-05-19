@@ -19,7 +19,7 @@ tests:
     rows: []
   # Only account 1 has a transaction > 300
   - query: SELECT id, tier FROM accounts ORDER BY id
-    result:
+    rows:
       - [1, "premium"]
       - [2, "basic"]
       - [3, "basic"]
@@ -32,7 +32,7 @@ tests:
       )
     rows: []
   - query: SELECT id, tier FROM accounts ORDER BY id
-    result:
+    rows:
       - [1, "premium"]
       - [2, "basic"]
       - [3, "inactive"]

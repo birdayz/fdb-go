@@ -16,7 +16,7 @@ tests:
       FROM teams t LEFT JOIN scores s ON t.id = s.team_id
       GROUP BY t.name
       ORDER BY t.name
-    result:
+    rows:
       - ["Alpha", 2]
       - ["Beta", 1]
       - ["Gamma", 0]

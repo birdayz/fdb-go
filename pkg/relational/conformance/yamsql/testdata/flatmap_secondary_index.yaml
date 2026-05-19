@@ -13,7 +13,7 @@ setup:
 tests:
   # Join via secondary index: categories.id = items.cat_id (cat_id has index)
   - query: SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id ORDER BY c.name, i.title
-    result:
+    rows:
       - ["Books", "Novel"]
       - ["Books", "Textbook"]
       - ["Electronics", "Laptop"]
@@ -21,7 +21,7 @@ tests:
       - ["Electronics", "Tablet"]
   # LEFT JOIN: category 'Empty' has no items → NULL title
   - query: SELECT c.name, i.title FROM categories c LEFT JOIN items i ON c.id = i.cat_id ORDER BY c.name, i.title
-    result:
+    rows:
       - ["Books", "Novel"]
       - ["Books", "Textbook"]
       - ["Electronics", "Laptop"]
@@ -30,7 +30,7 @@ tests:
       - ["Empty", null]
   # With filter: only Electronics items
   - query: SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id AND c.name = 'Electronics' ORDER BY i.title
-    result:
+    rows:
       - ["Electronics", "Laptop"]
       - ["Electronics", "Phone"]
       - ["Electronics", "Tablet"]

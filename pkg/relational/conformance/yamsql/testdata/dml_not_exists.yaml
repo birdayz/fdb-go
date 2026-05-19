@@ -12,7 +12,7 @@ setup:
 tests:
   # Baseline: open tasks without completions
   - query: SELECT t.id FROM tasks t WHERE t.status = 'open' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = t.id) ORDER BY t.id
-    result:
+    rows:
       - [1]
 
   # UPDATE open tasks without completions → mark as stale
@@ -21,7 +21,7 @@ tests:
 
   # Verify: task 1 is now stale, others unchanged
   - query: SELECT id, status FROM tasks ORDER BY id
-    result:
+    rows:
       - [1, "stale"]
       - [2, "open"]
       - [3, "closed"]
@@ -33,7 +33,7 @@ tests:
 
   # Verify: task 3 deleted
   - query: SELECT id FROM tasks ORDER BY id
-    result:
+    rows:
       - [1]
       - [2]
       - [4]
