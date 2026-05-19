@@ -215,14 +215,12 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 	}
 }
 
-// TestArithmeticValue_TypeMismatch_NotPanics pins the seed contract:
-// ArithmeticValue silently returns nil on a type mismatch (string +
-// int, etc.) rather than panicking. This is the boundary between
-// "row data we received" (which could be anything) and "value we can
-// arithmetic on". Once Phase 4.0 lands typed comparisons, the
-// behaviour shifts to a typed error at parse time; the runtime still
-// must not panic.
-func TestArithmeticValue_TypeMismatch_NotPanics(t *testing.T) {
+// TestArithmeticValue_TypeMismatch_Panics verifies that ArithmeticValue
+// panics with ScalarTypeMismatchError on type mismatches (string + int,
+// bool + int). Java-aligned: Java's SemanticAnalyzer catches this at
+// compile time; Go catches it at eval time via panic recovery, mapped
+// to SQLSTATE 42804 by the executor.
+func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 	t.Parallel()
 	a := &FieldValue{Field: "a", Typ: TypeInt}
 	b := &FieldValue{Field: "b", Typ: TypeInt}
@@ -238,15 +236,19 @@ func TestArithmeticValue_TypeMismatch_NotPanics(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			defer func() {
-				if r := recover(); r != nil {
-					t.Fatalf("ArithmeticValue.Evaluate panicked on %v: %v", tc.row, r)
-				}
+			func() {
+				defer func() {
+					r := recover()
+					if r == nil {
+						t.Fatalf("type mismatch %v: expected panic", tc.row)
+					}
+					if _, ok := r.(*ScalarTypeMismatchError); !ok {
+						t.Fatalf("type mismatch %v: expected *ScalarTypeMismatchError, got %T: %v", tc.row, r, r)
+					}
+				}()
+				av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+				av.Evaluate(tc.row)
 			}()
-			av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-			if got := av.Evaluate(tc.row); got != nil {
-				t.Fatalf("type mismatch %v: got %v, want nil", tc.row, got)
-			}
 		})
 	}
 }

@@ -3871,3 +3871,828 @@ func TestMergeSortCursor_ReverseDedup(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// collectCursor drains any RecordCursor[QueryResult] and returns all results.
+// ---------------------------------------------------------------------------
+
+func collectCursor(t *testing.T, c recordlayer.RecordCursor[QueryResult]) []QueryResult {
+	t.Helper()
+	ctx := context.Background()
+	var out []QueryResult
+	for {
+		r, err := c.OnNext(ctx)
+		if err != nil {
+			t.Fatalf("OnNext error: %v", err)
+		}
+		if !r.HasNext() {
+			break
+		}
+		out = append(out, r.GetValue())
+	}
+	return out
+}
+
+// ===========================================================================
+// aggregateCursor continuation round-trip
+// ===========================================================================
+
+func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
+	t.Parallel()
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.TypeInt)},
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
+	}
+
+	gs := &groupState{
+		keyVals: []any{int64(42), "group-a"},
+		count:   7,
+		counts:  []int64{5, 7},
+		sums:    []float64{123.5, 0},
+		sumsI:   []int64{100, 0},
+		allInt:  []bool{false, true},
+		mins:    []any{int64(1), nil},
+		maxs:    []any{int64(50), nil},
+	}
+
+	innerCont := recordlayer.NewBytesContinuation([]byte{0xDE, 0xAD})
+	groupKey := "test-group-key"
+
+	encoded, err := encodeAggregateContinuation(innerCont, groupKey, gs.keyVals, gs, aggs)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !bytes.Equal(gotInner, []byte{0xDE, 0xAD}) {
+		t.Errorf("innerContinuation = %x, want dead", gotInner)
+	}
+	if gotGroupKey != groupKey {
+		t.Errorf("groupKey = %q, want %q", gotGroupKey, groupKey)
+	}
+	if gotGS == nil {
+		t.Fatal("decoded groupState is nil")
+	}
+	if gotGS.count != 7 {
+		t.Errorf("count = %d, want 7", gotGS.count)
+	}
+	if gotGS.counts[0] != 5 || gotGS.counts[1] != 7 {
+		t.Errorf("counts = %v, want [5, 7]", gotGS.counts)
+	}
+	if gotGS.sums[0] != 123.5 {
+		t.Errorf("sums[0] = %f, want 123.5", gotGS.sums[0])
+	}
+	if gotGS.sumsI[0] != 100 {
+		t.Errorf("sumsI[0] = %d, want 100", gotGS.sumsI[0])
+	}
+	if gotGS.allInt[0] != false || gotGS.allInt[1] != true {
+		t.Errorf("allInt = %v, want [false, true]", gotGS.allInt)
+	}
+	if gotGS.mins[0] != int64(1) {
+		t.Errorf("mins[0] = %v, want 1", gotGS.mins[0])
+	}
+	if gotGS.maxs[0] != int64(50) {
+		t.Errorf("maxs[0] = %v, want 50", gotGS.maxs[0])
+	}
+
+	// keyVals: JSON round-trips int64 through float64; the decoder
+	// converts back to int64 when lossless.
+	if len(gotGS.keyVals) != 2 {
+		t.Fatalf("keyVals len = %d, want 2", len(gotGS.keyVals))
+	}
+	if gotGS.keyVals[0] != int64(42) {
+		t.Errorf("keyVals[0] = %v (%T), want int64(42)", gotGS.keyVals[0], gotGS.keyVals[0])
+	}
+	if gotGS.keyVals[1] != "group-a" {
+		t.Errorf("keyVals[1] = %v, want \"group-a\"", gotGS.keyVals[1])
+	}
+}
+
+func TestAggregateContinuation_NilGroupState(t *testing.T) {
+	t.Parallel()
+
+	innerCont := recordlayer.NewBytesContinuation([]byte{0x01})
+	encoded, err := encodeAggregateContinuation(innerCont, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, 0)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !bytes.Equal(gotInner, []byte{0x01}) {
+		t.Errorf("innerContinuation = %x, want 01", gotInner)
+	}
+	if gotGroupKey != "" {
+		t.Errorf("groupKey = %q, want empty", gotGroupKey)
+	}
+	if gotGS != nil {
+		t.Errorf("expected nil groupState, got %+v", gotGS)
+	}
+}
+
+func TestAggregateContinuation_FloatMinMax(t *testing.T) {
+	t.Parallel()
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggMin, Operand: values.NewFlatFieldValue("price", values.TypeFloat)},
+	}
+	gs := &groupState{
+		keyVals: []any{"x"},
+		count:   3,
+		counts:  []int64{3},
+		sums:    []float64{9.75},
+		sumsI:   []int64{0},
+		allInt:  []bool{false},
+		mins:    []any{float64(1.25)},
+		maxs:    []any{float64(5.0)},
+	}
+
+	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, 1)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if fmt.Sprintf("%v", gotGS.mins[0]) != "1.25" {
+		t.Errorf("mins[0] = %v, want 1.25", gotGS.mins[0])
+	}
+	if fmt.Sprintf("%v", gotGS.maxs[0]) != "5" && fmt.Sprintf("%v", gotGS.maxs[0]) != "5.0" {
+		t.Errorf("maxs[0] = %v, want 5 or 5.0", gotGS.maxs[0])
+	}
+}
+
+// ===========================================================================
+// memorySortCursor continuation round-trip
+// ===========================================================================
+
+func TestSortContinuation_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	buf := []QueryResult{
+		qr("name", "alice", "age", int64(30)),
+		qr("name", "bob", "age", int64(25)),
+		qr("name", "carol", "age", int64(35)),
+	}
+	// Give the second entry a PrimaryKey to verify PK round-trip.
+	buf[1].PrimaryKey = tuple.Tuple{"pk", int64(2)}
+
+	innerCont := recordlayer.NewBytesContinuation([]byte{0xCA, 0xFE})
+
+	encoded, err := encodeSortContinuation(innerCont, buf)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !bytes.Equal(gotInner, []byte{0xCA, 0xFE}) {
+		t.Errorf("innerContinuation = %x, want cafe", gotInner)
+	}
+	if len(gotBuf) != 3 {
+		t.Fatalf("buf len = %d, want 3", len(gotBuf))
+	}
+
+	// Check datum values.
+	for i, want := range []string{"alice", "bob", "carol"} {
+		m := gotBuf[i].Datum.(map[string]any)
+		if m["name"] != want {
+			t.Errorf("buf[%d].name = %v, want %q", i, m["name"], want)
+		}
+	}
+	// Ages: JSON round-trips through float64 → int64 conversion.
+	for i, want := range []int64{30, 25, 35} {
+		m := gotBuf[i].Datum.(map[string]any)
+		if m["age"] != want {
+			t.Errorf("buf[%d].age = %v (%T), want %d", i, m["age"], m["age"], want)
+		}
+	}
+
+	// PrimaryKey round-trip.
+	if gotBuf[1].PrimaryKey == nil {
+		t.Fatal("buf[1].PrimaryKey is nil after round-trip")
+	}
+	if len(gotBuf[1].PrimaryKey) != 2 {
+		t.Fatalf("buf[1].PrimaryKey len = %d, want 2", len(gotBuf[1].PrimaryKey))
+	}
+	if gotBuf[1].PrimaryKey[0] != "pk" {
+		t.Errorf("buf[1].PrimaryKey[0] = %v, want \"pk\"", gotBuf[1].PrimaryKey[0])
+	}
+}
+
+func TestSortContinuation_EmptyBuffer(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := encodeSortContinuation(nil, nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	gotInner, gotBuf, err := decodeSortContinuation(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if gotInner != nil {
+		t.Errorf("innerContinuation = %x, want nil", gotInner)
+	}
+	if len(gotBuf) != 0 {
+		t.Errorf("buf len = %d, want 0", len(gotBuf))
+	}
+}
+
+// ===========================================================================
+// nljCursor — Close safety
+// ===========================================================================
+
+func TestNLJCursor_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+	})
+	inner := []QueryResult{qr("val", int64(10))}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+
+	if c.IsClosed() {
+		t.Fatal("cursor should not be closed before Close()")
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if !c.IsClosed() {
+		t.Fatal("cursor should be closed after Close()")
+	}
+
+	// Second close must not panic or error.
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if !c.IsClosed() {
+		t.Fatal("cursor should remain closed")
+	}
+}
+
+func TestNLJCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
+	inner := []QueryResult{qr("val", int64(10))}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Errorf("error = %q, want it to mention 'closed'", err)
+	}
+}
+
+// ===========================================================================
+// nljCursor — empty inner
+// ===========================================================================
+
+func TestNLJCursor_EmptyInner_InnerJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+		qr("id", int64(3)),
+	})
+
+	c := newNLJCursor(outer, nil, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("INNER join with empty inner: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyInner_LeftJoin(t *testing.T) {
+	t.Parallel()
+
+	outerRows := []QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+	}
+	outer := recordlayer.FromList(outerRows)
+
+	c := newNLJCursor(outer, nil, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("LEFT join with empty inner: got %d results, want 2", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyInner_NotExists(t *testing.T) {
+	t.Parallel()
+
+	outerRows := []QueryResult{
+		qr("id", int64(10)),
+		qr("id", int64(20)),
+	}
+	outer := recordlayer.FromList(outerRows)
+
+	c := newNLJCursor(outer, nil, plans.JoinNotExists, "O", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("NOT EXISTS with empty inner: got %d results, want 2", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyInner_Exists(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+	})
+
+	c := newNLJCursor(outer, nil, plans.JoinExists, "O", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("EXISTS with empty inner: got %d results, want 0", len(results))
+	}
+}
+
+// ===========================================================================
+// nljCursor — empty outer
+// ===========================================================================
+
+func TestNLJCursor_EmptyOuter_InnerJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("INNER join with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_LeftJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1))}
+
+	c := newNLJCursor(outer, inner, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("LEFT join with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_CrossJoin(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
+
+	c := newNLJCursor(outer, inner, plans.JoinCross, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("CROSS join with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_Exists(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1))}
+
+	c := newNLJCursor(outer, inner, plans.JoinExists, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("EXISTS with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+func TestNLJCursor_EmptyOuter_NotExists(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{})
+	inner := []QueryResult{qr("val", int64(1))}
+
+	c := newNLJCursor(outer, inner, plans.JoinNotExists, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("NOT EXISTS with empty outer: got %d results, want 0", len(results))
+	}
+}
+
+// ===========================================================================
+// nljCursor — basic INNER join producing correct cross product
+// ===========================================================================
+
+func TestNLJCursor_InnerJoin_CrossProduct(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("a", int64(1)),
+		qr("a", int64(2)),
+	})
+	inner := []QueryResult{
+		qr("b", int64(10)),
+		qr("b", int64(20)),
+	}
+
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	// 2 outer x 2 inner = 4 results (no predicate filtering).
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4", len(results))
+	}
+}
+
+func TestNLJCursor_InnerJoin_PredicateFilters(t *testing.T) {
+	t.Parallel()
+
+	outer := recordlayer.FromList([]QueryResult{
+		qr("x", int64(1)),
+		qr("x", int64(2)),
+	})
+	inner := []QueryResult{
+		qr("y", int64(10)),
+		qr("y", int64(20)),
+	}
+
+	// Predicate that always rejects: INNER join should produce 0 rows.
+	preds := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)}
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", preds, EmptyEvaluationContext())
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0 (predicate rejects all)", len(results))
+	}
+}
+
+// ===========================================================================
+// concatCursor
+// ===========================================================================
+
+func TestConcatCursor_MultipleCursors(t *testing.T) {
+	t.Parallel()
+
+	c1 := recordlayer.FromList([]QueryResult{
+		qr("id", int64(1)),
+		qr("id", int64(2)),
+	})
+	c2 := recordlayer.FromList([]QueryResult{
+		qr("id", int64(3)),
+	})
+	c3 := recordlayer.FromList([]QueryResult{
+		qr("id", int64(4)),
+		qr("id", int64(5)),
+	})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2, c3})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 5 {
+		t.Fatalf("got %d results, want 5", len(results))
+	}
+	for i, want := range []int64{1, 2, 3, 4, 5} {
+		got := fieldVal(t, results[i], "id")
+		if got != want {
+			t.Errorf("results[%d].id = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestConcatCursor_EmptyFirst(t *testing.T) {
+	t.Parallel()
+
+	empty := recordlayer.FromList([]QueryResult{})
+	nonempty := recordlayer.FromList([]QueryResult{
+		qr("id", int64(7)),
+		qr("id", int64(8)),
+	})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{empty, nonempty})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if fieldVal(t, results[0], "id") != 7 {
+		t.Errorf("results[0].id = %d, want 7", fieldVal(t, results[0], "id"))
+	}
+}
+
+func TestConcatCursor_AllEmpty(t *testing.T) {
+	t.Parallel()
+
+	e1 := recordlayer.FromList([]QueryResult{})
+	e2 := recordlayer.FromList([]QueryResult{})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{e1, e2})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestConcatCursor_NoCursors(t *testing.T) {
+	t.Parallel()
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{})
+	defer cc.Close()
+
+	results := collectCursor(t, cc)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestConcatCursor_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	c1 := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
+	c2 := recordlayer.FromList([]QueryResult{qr("id", int64(2))})
+
+	cc := newConcatCursor([]recordlayer.RecordCursor[QueryResult]{c1, c2})
+
+	if cc.IsClosed() {
+		t.Fatal("should not be closed initially")
+	}
+	if err := cc.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if !cc.IsClosed() {
+		t.Fatal("should be closed after Close()")
+	}
+	if err := cc.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// ===========================================================================
+// memorySortCursor — end-to-end via constructor
+// ===========================================================================
+
+func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("NAME", "carol", "AGE", int64(35)),
+		qr("NAME", "alice", "AGE", int64(30)),
+		qr("NAME", "bob", "AGE", int64(25)),
+	})
+
+	c := newMemorySortCursor(inner, []string{"AGE"}, []bool{false}) // ASC
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	expected := []int64{25, 30, 35}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "AGE")
+		if got != want {
+			t.Errorf("results[%d].AGE = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMemorySortCursor_SortsDescending(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("X", int64(1)),
+		qr("X", int64(3)),
+		qr("X", int64(2)),
+	})
+
+	c := newMemorySortCursor(inner, []string{"X"}, []bool{true}) // DESC
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	expected := []int64{3, 2, 1}
+	for i, want := range expected {
+		got := fieldVal(t, results[i], "X")
+		if got != want {
+			t.Errorf("results[%d].X = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestMemorySortCursor_EmptyInput(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{})
+	c := newMemorySortCursor(inner, []string{"x"}, nil)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestMemorySortCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
+	c := newMemorySortCursor(inner, []string{"x"}, nil)
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+}
+
+// ===========================================================================
+// aggregateCursor — end-to-end with real data
+// ===========================================================================
+
+func TestAggregateCursor_SingleGroup_CountStar(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("v", int64(10)),
+		qr("v", int64(20)),
+		qr("v", int64(30)),
+	})
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
+	}
+	c := newAggregateCursor(inner, nil, aggs) // nil groupingKeys → scalar mode
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	m := results[0].Datum.(map[string]any)
+	if m["COUNT(*)"] != int64(3) {
+		t.Errorf("COUNT(*) = %v, want 3", m["COUNT(*)"])
+	}
+}
+
+func TestAggregateCursor_ScalarOnEmpty(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{})
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}},
+	}
+	c := newAggregateCursor(inner, nil, aggs)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 1 {
+		t.Fatalf("scalar aggregate on empty input: got %d results, want 1", len(results))
+	}
+	m := results[0].Datum.(map[string]any)
+	if m["COUNT(*)"] != int64(0) {
+		t.Errorf("COUNT(*) on empty = %v, want 0", m["COUNT(*)"])
+	}
+}
+
+func TestAggregateCursor_GroupedSum(t *testing.T) {
+	t.Parallel()
+
+	// Two groups: dept "A" (values 10, 20) and dept "B" (values 30).
+	// Input MUST be sorted by grouping key.
+	inner := recordlayer.FromList([]QueryResult{
+		qr("dept", "A", "amount", int64(10)),
+		qr("dept", "A", "amount", int64(20)),
+		qr("dept", "B", "amount", int64(30)),
+	})
+
+	groupKeys := []values.Value{values.NewFlatFieldValue("dept", values.TypeString)}
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggSum, Operand: values.NewFlatFieldValue("amount", values.TypeInt)},
+	}
+	c := newAggregateCursor(inner, groupKeys, aggs)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 2 {
+		t.Fatalf("got %d groups, want 2", len(results))
+	}
+
+	m0 := results[0].Datum.(map[string]any)
+	if m0["DEPT"] != "A" {
+		t.Errorf("group 0 key = %v, want A", m0["DEPT"])
+	}
+	if m0["SUM(AMOUNT)"] != int64(30) {
+		t.Errorf("group 0 SUM = %v, want 30", m0["SUM(AMOUNT)"])
+	}
+
+	m1 := results[1].Datum.(map[string]any)
+	if m1["DEPT"] != "B" {
+		t.Errorf("group 1 key = %v, want B", m1["DEPT"])
+	}
+	if m1["SUM(AMOUNT)"] != int64(30) {
+		t.Errorf("group 1 SUM = %v, want 30", m1["SUM(AMOUNT)"])
+	}
+}
+
+func TestAggregateCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
+	c := newAggregateCursor(inner, nil, nil)
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+}
+
+// ===========================================================================
+// customSortCursor — pluggable comparator
+// ===========================================================================
+
+func TestCustomSortCursor_ReverseSort(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{
+		qr("N", int64(1)),
+		qr("N", int64(3)),
+		qr("N", int64(2)),
+	})
+
+	sortFn := func(buf []QueryResult) {
+		sortByKeys(buf, []string{"N"}, []bool{true})
+	}
+	c := newCustomSortCursor(inner, sortFn)
+	defer c.Close()
+
+	results := collectCursor(t, c)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	for i, want := range []int64{3, 2, 1} {
+		got := fieldVal(t, results[i], "N")
+		if got != want {
+			t.Errorf("results[%d].N = %d, want %d", i, got, want)
+		}
+	}
+}
+
+func TestCustomSortCursor_OnNextAfterClose(t *testing.T) {
+	t.Parallel()
+
+	inner := recordlayer.FromList([]QueryResult{qr("n", int64(1))})
+	c := newCustomSortCursor(inner, func([]QueryResult) {})
+	c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected error from OnNext after Close")
+	}
+}

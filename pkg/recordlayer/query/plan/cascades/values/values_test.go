@@ -179,11 +179,18 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 		t.Fatalf("NULL rhs: got %v", got)
 	}
 
-	// Type mismatch returns nil.
+	// Type mismatch panics with ScalarTypeMismatchError (Java-aligned).
 	tm := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	if got := tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)}); got != nil {
-		t.Fatalf("type mismatch: got %v", got)
-	}
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("type mismatch: expected panic")
+			} else if _, ok := r.(*ScalarTypeMismatchError); !ok {
+				t.Fatalf("type mismatch: expected *ScalarTypeMismatchError, got %T: %v", r, r)
+			}
+		}()
+		tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)})
+	}()
 
 	// Float arithmetic returns nil per the seed contract — int-only
 	// Evaluate, full coercion waits on the Phase 4.0 Type hierarchy

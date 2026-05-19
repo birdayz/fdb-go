@@ -1584,12 +1584,16 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		if lNum && rNum {
 			return a.evalFloat(l, r)
 		}
-		return nil
+		panic(&ScalarTypeMismatchError{
+			Message: fmt.Sprintf("arithmetic type mismatch: %T %s %T", l, a.Op.Symbol(), r),
+		})
 	}
 	li, lok := toInt64ForArith(l)
 	ri, rok := toInt64ForArith(r)
 	if !lok || !rok {
-		return nil
+		panic(&ScalarTypeMismatchError{
+			Message: fmt.Sprintf("arithmetic type mismatch: %T %s %T", l, a.Op.Symbol(), r),
+		})
 	}
 	switch a.Op {
 	case OpAdd:
