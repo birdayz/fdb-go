@@ -20,7 +20,7 @@ func classifyComparisonOp(op antlrgen.IComparisonOperatorContext) string {
 	if !ok {
 		return ""
 	}
-	if c.IS() != nil {
+	if c.IS() != nil && c.DISTINCT() != nil {
 		if c.NOT() != nil {
 			return "IS NOT DISTINCT FROM"
 		}
@@ -106,7 +106,9 @@ func extractColOpLiteral(
 		return "", "", nil, false
 	}
 	opText := classifyComparisonOp(opC)
-	if opText == "" {
+	switch opText {
+	case "=", ">", ">=", "<", "<=":
+	default:
 		return "", "", nil, false
 	}
 	// Column-on-left, literal-on-right.

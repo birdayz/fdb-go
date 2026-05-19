@@ -162,12 +162,9 @@ func TestFDB_Errors_TypeMismatchInsert(t *testing.T) {
 	if got == nil {
 		t.Fatalf("error is not *api.Error: %v", err)
 	}
-	// Engine surfaces this as ErrCodeInvalidParameter rather than
-	// ErrCodeCannotConvertType — the proto-field setter rejects the
-	// conversion at parameter-validation time, not at the type-coerce
-	// layer. Pin the actual contract so a future change is visible.
-	if got.Code != api.ErrCodeInvalidParameter {
-		t.Fatalf("error code = %q, want %q (full: %v)", got.Code, api.ErrCodeInvalidParameter, err)
+	// Java's SemanticException for INSERT type mismatch → CANNOT_CONVERT_TYPE (22000).
+	if got.Code != api.ErrCodeCannotConvertType {
+		t.Fatalf("error code = %q, want %q (full: %v)", got.Code, api.ErrCodeCannotConvertType, err)
 	}
 }
 

@@ -252,16 +252,19 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	if err != nil {
 		return triFalse, err
 	}
+	// IS [NOT] DISTINCT FROM is null-safe — always 2-valued; branch before null-guard.
 	switch opText {
 	case "IS DISTINCT FROM":
 		return triFromBool(!nullSafeEqual(left, right)), nil
 	case "IS NOT DISTINCT FROM":
 		return triFromBool(nullSafeEqual(left, right)), nil
 	}
+	// SQL 3-valued logic: any comparison involving NULL → UNKNOWN.
 	if left == nil || right == nil {
 		return triNull, nil
 	}
 
+	// Java's PromoteValue.isPromotionNeeded → SQLSTATE 42804.
 	if !valuesComparable(left, right) {
 		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
