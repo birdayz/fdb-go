@@ -349,28 +349,16 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			"IN requires a parenthesized expression list or subquery")
 	}
 	exprs := exprsCtx.AllExpression()
-	// Pre-scan: Java rejects any NULL element in the IN list, even
-	// when an earlier element matches. fdb-relational does this at
-	// plan time before evaluation; we mirror by checking all elements
-	// before short-circuiting the match.
-	values := make([]any, 0, len(exprs))
+	hadNull := false
 	for _, expr := range exprs {
-		// Java-aligned: IN list elements are arbitrary expressions, not
-		// just constants. `b IN (1+0, 3+0, 5, 7)` is valid SQL.
 		litVal, err := evalExpr(ctx, conn, msg, expr)
 		if err != nil {
 			return triFalse, err
 		}
 		if litVal == nil {
-			// Java: "NULL values are not allowed in the IN list" (42809).
-			return triFalse, api.NewErrorf(api.ErrCodeWrongObjectType,
-				"NULL values are not allowed in the IN list")
+			hadNull = true
+			continue
 		}
-		values = append(values, litVal)
-	}
-	for _, litVal := range values {
-		// Java maps type-incompatible comparisons to 42804
-		// (DATATYPE_MISMATCH) via SemanticException translation.
 		if !valuesComparable(fieldVal, litVal) {
 			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 				"The operands of a comparison operator are not compatible.")
@@ -381,6 +369,9 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			}
 			return triTrue, nil
 		}
+	}
+	if hadNull {
+		return triNull, nil
 	}
 	if in.NOT() != nil {
 		return triTrue, nil
