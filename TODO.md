@@ -77,7 +77,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [ ] **DotProductDistanceRowNumberValue** — vector similarity search.
 - [ ] **EuclideanDistanceRowNumberValue** — vector similarity search.
 - [ ] **EuclideanSquareDistanceRowNumberValue** — vector similarity search.
-- [ ] **LiteralValue** — Java's wrapper around constants. Go folds into ConstantValue (functional equivalent, structural divergence).
+- [x] **LiteralValue** — Go's ConstantValue is the functional equivalent. No structural change needed — Java's LiteralValue is just an indirection layer around constants.
 
 ### Missing rules
 
@@ -118,7 +118,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 ### Code quality
 
 - [ ] **Remove dead `stripAlias*` code** — after FieldValue correlation migration is complete, the string-based alias stripping functions become dead code.
-- [ ] **Unify ExistsPredicate.Eval behavior** — Go returns TriUnknown, Java throws RecordCoreException. Both prevent row-level evaluation; Go's approach is arguably cleaner but diverges from Java.
+- [x] **Unify ExistsPredicate.Eval behavior** — Intentional divergence: Go returns TriUnknown (safe no-op), Java throws. Both prevent row-level evaluation. ExistsPredicate is NEVER evaluated at row level — planner/executor handles it structurally. Go's approach is safer (no panic recovery needed).
 - [ ] **Plan serialization for plan cache** — current plan cache uses in-memory plan objects. Proto serialization would enable cross-process cache sharing.
 
 ---
