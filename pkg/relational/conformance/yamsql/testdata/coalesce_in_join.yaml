@@ -1,0 +1,32 @@
+# coalesce_in_join.yaml — COALESCE in JOIN and aggregate contexts
+#
+# Exercises COALESCE to handle NULL FK values in joins
+# and NULL aggregate results.
+name: coalesce_in_join
+schema_template: |
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO dept VALUES (1, 'Engineering'), (2, 'Sales')
+  - INSERT INTO emp VALUES (10, 'Alice', 1), (20, 'Bob', 2), (30, 'Charlie', null)
+tests:
+  # COALESCE in projection
+  - query: >
+      SELECT e.name, COALESCE(d.name, 'Unassigned')
+      FROM emp e LEFT JOIN dept d ON d.id = e.dept_id
+      ORDER BY e.name
+    rows:
+      - ["Alice", "Engineering"]
+      - ["Bob", "Sales"]
+      - ["Charlie", "Unassigned"]
+
+  # COALESCE with aggregate
+  - query: >
+      SELECT COALESCE(d.name, 'None'), COUNT(*)
+      FROM emp e LEFT JOIN dept d ON d.id = e.dept_id
+      GROUP BY d.name
+      ORDER BY d.name
+    rows:
+      - ["Engineering", 1]
+      - ["Sales", 1]
+      - ["None", 1]
