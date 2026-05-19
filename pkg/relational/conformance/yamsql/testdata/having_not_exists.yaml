@@ -1,0 +1,22 @@
+# having_not_exists.yaml — HAVING with NOT EXISTS subquery
+#
+# Exercises the HAVING EXISTS predicate split fix: the HAVING path
+# must split EXISTS predicates like translateFilter does.
+name: having_not_exists
+schema_template: |
+  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id))
+  CREATE TABLE blacklist (id BIGINT NOT NULL, region STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales VALUES (1, 'east', 100), (2, 'east', 200), (3, 'west', 150), (4, 'south', 50)
+  - INSERT INTO blacklist VALUES (10, 'south')
+tests:
+  # HAVING with EXISTS: regions whose total > 200 AND not blacklisted
+  - query: >
+      SELECT region, SUM(amount) FROM sales
+      GROUP BY region
+      HAVING SUM(amount) > 100
+        AND NOT EXISTS (SELECT 1 FROM blacklist bl WHERE bl.region = sales.region)
+      ORDER BY region
+    result:
+      - ["east", 300]
+      - ["west", 150]
