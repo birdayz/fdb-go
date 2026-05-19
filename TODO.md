@@ -125,6 +125,31 @@ Fixed. Removed the existential quantifier guard and replaced with hash-based ded
 
 Push-down-into-child infrastructure added. All 29/29 Java tests ported (pushIntoChildSelect, pushIntoChildFilter, partitionValuesByChild, pushIntoExpressionsWithVariations).
 
+### String-qualified FieldValues → CorrelationIdentifier-based resolution (architectural)
+
+**The problem:** Go's translator resolves `emp.name` → `FieldValue{Field: "EMP.NAME"}` — a string-qualified flat field. When predicates need to move between scopes (outer → inner in EXISTS, FlatMap outer-only push-down), Go has to string-strip the alias prefix via `stripAliasFromPredicate`. This function:
+- Only handled `ComparisonPredicate` until nightshift-97 (silently passed OR/AND/NOT through unchanged → wrong results for `WHERE (status='active' OR priority>5) AND EXISTS (...)`)
+- Was extended to recurse into AND/OR/NOT (stashed on master, not yet committed)
+- Is fundamentally the wrong approach — it's string-manipulating what should be structural
+
+**How Java does it:** Java NEVER stores qualified names in predicates. Java resolves `emp.name` → `FieldValue(QuantifiedObjectValue(emp_correlation), "NAME")`. The correlation is a `CorrelationIdentifier` object, not a string prefix. When moving between scopes, Java uses `Value.rebase(AliasMap)` to retarget correlations — no string matching. `stripAliasFromPredicate` doesn't exist in Java because it doesn't need to.
+
+**What needs to change in Go:**
+1. Translator: resolve `emp.name` → `FieldValue(QOV(emp_corr), "name")` instead of `FieldValue{Field: "EMP.NAME"}`
+2. Predicate evaluation: `FieldValue.Evaluate` already handles child-based resolution (`f.Child.Evaluate(evalCtx)` → resolve field on result)
+3. `mergeRows` / NLJ executor: bind outer/inner as correlations (already partially done with `CorrelationBinder` on `RowEvalContext`)
+4. Remove `stripAliasFromPredicate`, `stripAliasFromValue`, `stripAliasFromPredicates` entirely
+5. Column derivation: `deriveColumnsFromFlatMap` / `deriveColumnsFromPlan` needs to work with correlation-based values
+
+**Blocked on:** `JoinMergeResultValue → RecordConstructorValue` (same root cause — translator needs schema metadata to produce field-level resultValues). These are the same fix.
+
+**Symptoms of the current approach (silent wrong results):**
+- OR predicates in EXISTS outer WHERE → unstripped alias → field lookup returns nil → row dropped
+- Complex predicates (AND of OR, nested NOT) in outer-only position → same failure
+- Any new predicate type added without updating `stripAliasFromPredicate` → same failure
+
+**Interim mitigation (stashed, not committed):** `stripAliasFromPredicate` extended to recurse into AND/OR/NOT/Constant/Exists. Handles all current predicate types but still fundamentally wrong — it's a band-aid on an architectural gap.
+
 ### Covering index for SQL (multi-shift)
 
 Port `IndexKeyValueToPartialRecord` (826 LOC), `computeIndexEntryToLogicalRecord`, `CollapseRecordConstructorOverFieldsToStar`. Root cause fully mapped in DIVERGENCES.md.

@@ -59,6 +59,16 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 Correctness improvement — ensures ORDER BY works even when no index satisfies it.
 
+### FieldValue: string-qualified names vs CorrelationIdentifier-based resolution (CORRECTNESS GAP)
+
+**Java:** Column references resolve to `FieldValue(QuantifiedObjectValue(correlationId), "column")`. The table qualification is a structural `CorrelationIdentifier`, not a string prefix. When predicates move between scopes, Java calls `Value.rebase(AliasMap)` to retarget correlations. No string manipulation.
+
+**Go:** Column references resolve to `FieldValue{Field: "TABLE.COLUMN"}` — a string-qualified flat field. When predicates move between scopes (EXISTS outer push-down, FlatMap), Go uses `stripAliasFromPredicate` to string-strip the table prefix. This is fragile: it only handles predicate types it knows about, and silently passes unknown types through unchanged — producing wrong results when the unstripped qualification doesn't match the row's unqualified keys.
+
+**Impact:** OR predicates in EXISTS outer WHERE silently drop rows. Any compound predicate (AND of OR, nested NOT) in outer-only position fails the same way. `stripAliasFromPredicate` was extended to handle AND/OR/NOT (nightshift-97 stash), but the function is fundamentally a band-aid.
+
+**Fix:** Align with Java — resolve to `FieldValue(QOV(correlation), "column")` in the translator. Remove `stripAliasFromPredicate` entirely. Same root cause as `JoinMergeResultValue → RecordConstructorValue`: translator needs schema metadata to produce correlation-based field references.
+
 ### FieldValue: composition vs multi-step FieldPath
 
 **Java:** `FieldValue` contains `FieldPath` — a list of `ResolvedAccessor` objects for nested field traversal in a single node. Supports `getFieldPathNames()`, `getFieldOrdinals()`, `stripFieldPrefixMaybe()`, `ofFieldsAndFuseIfPossible()`.
