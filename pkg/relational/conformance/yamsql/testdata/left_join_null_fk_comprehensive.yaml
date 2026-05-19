@@ -1,0 +1,54 @@
+# left_join_null_fk_comprehensive.yaml — LEFT JOIN with NULL FK comprehensive
+#
+# Exercises LEFT JOIN where the FK column is NULL, causing no match
+# on the right side. Tests various column projections and aggregations
+# over LEFT JOIN with NULL FK values.
+name: left_join_null_fk_comprehensive
+schema_template: |
+  CREATE TABLE parent (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT, value BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO parent VALUES (1, 'Alpha'), (2, 'Beta'), (3, 'Gamma')
+  - INSERT INTO child VALUES (10, 1, 100), (20, 1, 200), (30, 2, 150), (40, null, 50)
+tests:
+  # LEFT JOIN — parent with no children gets NULLs
+  - query: >
+      SELECT p.name, c.value FROM parent p
+      LEFT JOIN child c ON c.parent_id = p.id
+      ORDER BY p.name, c.value
+    rows:
+      - ["Alpha", 100]
+      - ["Alpha", 200]
+      - ["Beta", 150]
+      - ["Gamma", null]
+
+  # LEFT JOIN with COUNT — parent with no children gets 0
+  - query: >
+      SELECT p.name, COUNT(c.id) FROM parent p
+      LEFT JOIN child c ON c.parent_id = p.id
+      GROUP BY p.name ORDER BY p.name
+    rows:
+      - ["Alpha", 2]
+      - ["Beta", 1]
+      - ["Gamma", 0]
+
+  # LEFT JOIN with SUM — parent with no children gets NULL
+  - query: >
+      SELECT p.name, SUM(c.value) FROM parent p
+      LEFT JOIN child c ON c.parent_id = p.id
+      GROUP BY p.name ORDER BY p.name
+    rows:
+      - ["Alpha", 300]
+      - ["Beta", 150]
+      - ["Gamma", null]
+
+  # Child with NULL FK — unmatched in join
+  - query: >
+      SELECT c.id, p.name FROM child c
+      LEFT JOIN parent p ON p.id = c.parent_id
+      ORDER BY c.id
+    rows:
+      - [10, "Alpha"]
+      - [20, "Alpha"]
+      - [30, "Beta"]
+      - [40, null]
