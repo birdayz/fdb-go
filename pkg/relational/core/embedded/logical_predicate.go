@@ -903,10 +903,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 					}
 				} else {
 					var qualifier semantic.Identifier
-					id := semantic.NewUnquoted(col)
-					if dot := strings.IndexByte(col, '.'); dot >= 0 {
-						qualifier = semantic.NewUnquoted(col[:dot])
-						id = semantic.NewUnquoted(col[dot+1:])
+					ref := parseColRef(col)
+					id := semantic.NewUnquoted(ref.bare())
+					if ref.isQualified() {
+						qualifier = semantic.NewUnquoted(ref.table)
 					}
 					if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {
@@ -1293,10 +1293,10 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 		return nil
 	}
 	var qualifier semantic.Identifier
-	id := semantic.NewUnquoted(col)
-	if dot := strings.IndexByte(col, '.'); dot >= 0 {
-		qualifier = semantic.NewUnquoted(col[:dot])
-		id = semantic.NewUnquoted(col[dot+1:])
+	ref := parseColRef(col)
+	id := semantic.NewUnquoted(ref.bare())
+	if ref.isQualified() {
+		qualifier = semantic.NewUnquoted(ref.table)
 	}
 	_, err := resolver.ResolveIdentifier(qualifier, id)
 	if err != nil {

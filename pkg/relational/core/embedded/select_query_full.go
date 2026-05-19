@@ -560,7 +560,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"GROUP BY column %q not found in table %q", col, sq.tableName)
 				}
 				groupFDs[i] = fd
@@ -1065,16 +1065,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// source SELECT — the qualifier resolves to either the
 				// table name or its alias; both refer to the same source.
 				// nightshift-60.
-				if dot := strings.Index(obName, "."); dot >= 0 {
-					prefix := obName[:dot]
-					if strings.EqualFold(prefix, sq.tableName) ||
-						(sq.tableAlias != "" && strings.EqualFold(prefix, sq.tableAlias)) {
-						obName = obName[dot+1:]
+				if ref := parseColRef(obName); ref.isQualified() {
+					if strings.EqualFold(ref.table, sq.tableName) ||
+						(sq.tableAlias != "" && strings.EqualFold(ref.table, sq.tableAlias)) {
+						obName = ref.bare()
 					}
 				}
 				fd := allFields.ByName(protoreflect.Name(obName))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"ORDER BY column %q not found in table %q", ob.colName, sq.tableName)
 				}
 				extraSortFields = append(extraSortFields, outField{name: obName, fd: fd})

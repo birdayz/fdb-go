@@ -455,10 +455,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 					}
 				} else {
 					var qualifier semantic.Identifier
-					id := semantic.NewUnquoted(col)
-					if dot := strings.IndexByte(col, '.'); dot >= 0 {
-						qualifier = semantic.NewUnquoted(col[:dot])
-						id = semantic.NewUnquoted(col[dot+1:])
+					ref := parseColRef(col)
+					id := semantic.NewUnquoted(ref.bare())
+					if ref.isQualified() {
+						qualifier = semantic.NewUnquoted(ref.table)
 					}
 					if rv, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
 						if i < len(proj.ProjectedValues) {

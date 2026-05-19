@@ -1270,28 +1270,7 @@ func (r *cascadesRows) ColumnTypePrecisionScale(index int) (precision, scale int
 func (r *cascadesRows) Next(dest []driver.Value) error {
 	if !r.rs.Next() {
 		if err := r.rs.Err(); err != nil {
-			var divZero *values.ArithmeticDivisionByZeroError
-			if errors.As(err, &divZero) {
-				return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
-			}
-			var overflow *values.ArithmeticOverflowError
-			if errors.As(err, &overflow) {
-				return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
-			}
-			var scalarMismatch *values.ScalarTypeMismatchError
-			if errors.As(err, &scalarMismatch) {
-				return api.NewError(api.ErrCodeCannotConvertType, scalarMismatch.Error())
-			}
-			var castErr *values.InvalidCastError
-			if errors.As(err, &castErr) {
-				return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
-			}
-			var typeMismatch *predicates.TypeMismatchError
-			if errors.As(err, &typeMismatch) {
-				return api.NewError(api.ErrCodeDatatypeMismatch,
-					"The operands of a comparison operator are not compatible.")
-			}
-			return err
+			return translateExecError(err)
 		}
 		return io.EOF
 	}
@@ -1393,8 +1372,9 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						continue
 					}
 					upper := strings.ToUpper(col)
-					if dot := strings.IndexByte(upper, '.'); dot >= 0 {
-						qual := upper[:dot]
+					ref := parseColRef(upper)
+					if ref.isQualified() {
+						qual := ref.table
 						scanName := strings.ToUpper(scan.Table)
 						if scan.Alias != "" {
 							scanName = strings.ToUpper(scan.Alias)
@@ -1403,7 +1383,7 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 							return api.NewErrorf(api.ErrCodeUndefinedColumn,
 								"column reference with qualifier %q cannot be resolved", qual)
 						}
-						upper = upper[dot+1:]
+						upper = ref.bare()
 					}
 					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
 						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
