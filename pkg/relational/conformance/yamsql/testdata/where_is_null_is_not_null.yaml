@@ -1,0 +1,49 @@
+# where_is_null_is_not_null.yaml — IS NULL / IS NOT NULL predicates
+#
+# Comprehensive tests for NULL testing predicates across different
+# column types and combinations.
+name: where_is_null_is_not_null
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b STRING, c DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'x', 1.5), (2, null, 'y', 2.5), (3, 30, null, 3.5), (4, null, null, null), (5, 50, 'z', null)
+tests:
+  # IS NULL on integer
+  - query: SELECT id FROM t WHERE a IS NULL ORDER BY id
+    rows:
+      - [2]
+      - [4]
+
+  # IS NOT NULL on integer
+  - query: SELECT id FROM t WHERE a IS NOT NULL ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [5]
+
+  # IS NULL on string
+  - query: SELECT id FROM t WHERE b IS NULL ORDER BY id
+    rows:
+      - [3]
+      - [4]
+
+  # IS NULL on double
+  - query: SELECT id FROM t WHERE c IS NULL ORDER BY id
+    rows:
+      - [4]
+      - [5]
+
+  # Combined IS NULL + IS NOT NULL
+  - query: SELECT id FROM t WHERE a IS NULL AND b IS NOT NULL ORDER BY id
+    rows:
+      - [2]
+
+  # All three columns NULL
+  - query: SELECT id FROM t WHERE a IS NULL AND b IS NULL AND c IS NULL
+    rows:
+      - [4]
+
+  # No NULLs in any column
+  - query: SELECT id FROM t WHERE a IS NOT NULL AND b IS NOT NULL AND c IS NOT NULL ORDER BY id
+    rows:
+      - [1]
