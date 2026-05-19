@@ -4,6 +4,12 @@
 
 **NEVER use t.Skip() to defer a failing test.** If a test fails, FIX IT. Immediately. No matter how long it takes, no matter how deep the rabbit hole goes. Skipping is forbidden. The only acceptable t.Skip is the runtime Docker check (`FDB not available (no Docker)`). Every other skip is a bug you're hiding. Hunt it down. Fix it. Principles first.
 
+## NO EXCUSES — DO THE WORK
+
+**Nothing is "gated," "blocked," or "multi-shift."** If a TODO exists, DO IT. Now. No matter how long it takes. Don't rationalize deferral with "needs Java conformance server," "blocked on upstream," or "multi-shift effort." Those are excuses. Read the Java source, understand the algorithm, port it, test it, ship it. If it takes 826 lines, write 826 lines. If it takes all night, work all night. The TODO list is a list of things TO DO, not a list of things to punt.
+
+**100% Java alignment or it's a bug.** Every component must match Java's behavior exactly. Go-only extensions are fine, but they need DEEP test coverage. If Java has it and Go doesn't, that's not "low priority" — it's missing functionality. Port it.
+
 ## DFS, NOT BFS — GO ALL IN ON EVERY PROBLEM
 
 **When you discover a problem, go ALL IN.** Dig into the rabbit hole. Fix it completely. No matter how long it takes, no matter how deep it goes. Don't "skip this and look for quick wins" — that's BFS thinking and it produces shallow, fragile work. DFS: pick the problem, understand it fully by reading Java first, then fix it properly in Go. One problem at a time, fixed to completion.
