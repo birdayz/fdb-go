@@ -369,7 +369,7 @@ func evalSpecificFunctionCore(
 		if val == nil {
 			return nil, nil // CAST(NULL AS type) = NULL
 		}
-		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
+		typeName := classifyPrimitiveType(c.ConvertedDataType())
 		return functions.CastValue(val, typeName)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T", sf)

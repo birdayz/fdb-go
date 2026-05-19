@@ -305,7 +305,7 @@ func inferSpecificFunctionJDBCType(sf antlrgen.ISpecificFunctionContext, msgDesc
 		// CAST(expr AS dataType). Pull the target type's text and
 		// canonicalise to a JDBC name.
 		if cdt := sf.ConvertedDataType(); cdt != nil {
-			return convertedDataTypeToJDBC(cdt.GetText())
+			return classifyConvertedDataTypeJDBC(cdt)
 		}
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: each WHEN-clause has THEN expr; optional ELSE expr.
@@ -363,31 +363,73 @@ func inferFunctionArgJDBCType(arg antlrgen.IFunctionArgContext, msgDesc protoref
 	return ""
 }
 
-// convertedDataTypeToJDBC maps the parser's ConvertedDataType text
-// (the type-name appearing in `CAST(expr AS T)`) to the JDBC type
-// name fdb-relational reports for the result. The parser preserves
-// case, so we upper-case before matching.
-func convertedDataTypeToJDBC(text string) string {
-	switch strings.ToUpper(strings.TrimSpace(text)) {
-	case "INTEGER", "INT":
+// classifyPrimitiveType returns the canonical upper-case SQL type name
+// from a ConvertedDataType parse node using typed ANTLR terminals.
+func classifyPrimitiveType(cdt antlrgen.IConvertedDataTypeContext) string {
+	pt := cdt.PrimitiveType()
+	if pt == nil {
+		return ""
+	}
+	p, ok := pt.(*antlrgen.PrimitiveTypeContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case p.INTEGER() != nil:
 		return "INTEGER"
-	case "BIGINT", "LONG":
+	case p.BIGINT() != nil:
 		return "BIGINT"
-	case "FLOAT":
+	case p.FLOAT() != nil:
 		return "FLOAT"
-	case "DOUBLE", "DOUBLEPRECISION", "DOUBLE PRECISION":
+	case p.DOUBLE() != nil:
 		return "DOUBLE"
-	case "STRING", "VARCHAR", "CHAR", "TEXT":
+	case p.STRING() != nil:
 		return "STRING"
-	case "BOOLEAN", "BOOL":
+	case p.BOOLEAN() != nil:
 		return "BOOLEAN"
-	case "BYTES":
-		return "BINARY"
-	case "UUID":
-		return "OTHER"
-	case "DATE":
+	case p.BYTES() != nil:
+		return "BYTES"
+	case p.UUID() != nil:
+		return "UUID"
+	case p.DATE() != nil:
 		return "DATE"
-	case "TIMESTAMP":
+	case p.TIMESTAMP() != nil:
+		return "TIMESTAMP"
+	}
+	return ""
+}
+
+// classifyConvertedDataTypeJDBC maps a ConvertedDataType parse node to
+// the JDBC type name using typed ANTLR terminals (no GetText()).
+func classifyConvertedDataTypeJDBC(cdt antlrgen.IConvertedDataTypeContext) string {
+	pt := cdt.PrimitiveType()
+	if pt == nil {
+		return ""
+	}
+	p, ok := pt.(*antlrgen.PrimitiveTypeContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case p.INTEGER() != nil:
+		return "INTEGER"
+	case p.BIGINT() != nil:
+		return "BIGINT"
+	case p.FLOAT() != nil:
+		return "FLOAT"
+	case p.DOUBLE() != nil:
+		return "DOUBLE"
+	case p.STRING() != nil:
+		return "STRING"
+	case p.BOOLEAN() != nil:
+		return "BOOLEAN"
+	case p.BYTES() != nil:
+		return "BINARY"
+	case p.UUID() != nil:
+		return "OTHER"
+	case p.DATE() != nil:
+		return "DATE"
+	case p.TIMESTAMP() != nil:
 		return "TIMESTAMP"
 	}
 	return ""

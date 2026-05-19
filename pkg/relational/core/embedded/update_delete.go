@@ -167,24 +167,21 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				pending = append(pending, pendingUpdate{fd: fd, colName: colName, val: val})
 			}
 			for _, p := range pending {
+				if _, isPK := pkSet[p.colName]; isPK {
+					if p.val == nil {
+						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+							"NULL value in column %q violates NOT NULL constraint", p.colName)
+					}
+					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+						"record does not exist")
+				}
 				if p.val == nil {
-					// UPDATE SET col = NULL on a NOT NULL column must reject
-					// with ErrCodeNotNullViolation (23502), matching Java.
 					if p.fd.Cardinality() == protoreflect.Required {
 						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
 							"NULL value in column %q violates NOT NULL constraint", p.colName)
 					}
 					clonedRefl.Clear(p.fd)
 					continue
-				}
-				// Java alignment : UPDATE on a PK column
-				// with a non-NULL value is rejected with verbatim
-				// 'record does not exist' (Java's RecordDoesNotExist
-				// from the in-place save lookup). NULL case already
-				// handled above (NotNullViolation, more specific).
-				if _, isPK := pkSet[p.colName]; isPK {
-					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-						"record does not exist")
 				}
 				protoVal, convErr := functions.ConvertToProtoValue(p.fd, p.val)
 				if convErr != nil {

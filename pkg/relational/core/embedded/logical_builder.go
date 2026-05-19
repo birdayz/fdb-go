@@ -383,6 +383,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			}
 			var visibleProj []string
 			var visibleAliases []string
+			hasAggAlias := false
 			for _, ac := range sq.aggCols {
 				if !ac.visible {
 					continue
@@ -401,6 +402,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					alias := ""
 					if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
 						alias = ac.outName
+						hasAggAlias = true
 					}
 					visibleAliases = append(visibleAliases, alias)
 				} else if ac.groupCol != "" {
@@ -413,13 +415,6 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				}
 			}
 			totalOutput := len(keys) + len(aggs)
-			hasAggAlias := false
-			for i, a := range visibleAliases {
-				if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
-					hasAggAlias = true
-					break
-				}
-			}
 			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
 			if needsStrip {
 				if hasNonVisible {

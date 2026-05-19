@@ -164,7 +164,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			name := functions.FullIdToName(a.FullColumnName().FullId())
 			v, found := row[name]
 			if !found {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING column %q not in SELECT list", name)
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "HAVING column %q not in SELECT list", name)
 			}
 			return v, nil
 		case *antlrgen.FunctionCallExpressionAtomContext:
@@ -190,7 +190,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			}
 			v, found := row[lookupName]
 			if !found {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING aggregate %q not in SELECT list", lookupName)
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "HAVING aggregate %q not in SELECT list", lookupName)
 			}
 			return v, nil
 		case *antlrgen.MathExpressionAtomContext:
@@ -461,6 +461,10 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		}
 		if fieldVal == nil || rightVal == nil {
 			return triNull, nil
+		}
+		if !valuesComparable(fieldVal, rightVal) {
+			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
 		}
 		cmp := functions.CompareValues(fieldVal, rightVal)
 		switch opText {
