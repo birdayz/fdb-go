@@ -135,11 +135,11 @@ Push-down-into-child infrastructure added. All 29/29 Java tests ported (pushInto
 **How Java does it:** Java NEVER stores qualified names in predicates. Java resolves `emp.name` → `FieldValue(QuantifiedObjectValue(emp_correlation), "NAME")`. The correlation is a `CorrelationIdentifier` object, not a string prefix. When moving between scopes, Java uses `Value.rebase(AliasMap)` to retarget correlations — no string matching. `stripAliasFromPredicate` doesn't exist in Java because it doesn't need to.
 
 **What needs to change in Go:**
-1. Translator: resolve `emp.name` → `FieldValue(QOV(emp_corr), "name")` instead of `FieldValue{Field: "EMP.NAME"}`
-2. Predicate evaluation: `FieldValue.Evaluate` already handles child-based resolution (`f.Child.Evaluate(evalCtx)` → resolve field on result)
-3. `mergeRows` / NLJ executor: bind outer/inner as correlations (already partially done with `CorrelationBinder` on `RowEvalContext`)
-4. Remove `stripAliasFromPredicate`, `stripAliasFromValue`, `stripAliasFromPredicates` entirely
-5. Column derivation: `deriveColumnsFromFlatMap` / `deriveColumnsFromPlan` needs to work with correlation-based values
+1. **Entry point:** `pkg/relational/core/query/expr/expr.go:227-233` (`ResolveIdentifier`): change `field = corr + "." + field` → `FieldValue{Child: QOV(correlationId), Field: field}`. The code already has a comment (line 189-191) acknowledging this is the intended direction.
+2. **Predicate evaluation:** `FieldValue.Evaluate` already handles child-based resolution (`f.Child.Evaluate(evalCtx)` → resolve field on result) — no change needed.
+3. **Executor:** `mergeRows` / NLJ executor: bind outer/inner as correlations (already partially done with `CorrelationBinder` on `RowEvalContext`).
+4. **Delete dead code:** Remove `stripAliasFromPredicate`, `stripAliasFromValue`, `stripAliasFromPredicates` (6 call sites in `rule_implement_nested_loop_join.go`) — they become unnecessary.
+5. **Column derivation:** `deriveColumnsFromFlatMap` / `deriveColumnsFromPlan` needs to work with correlation-based values.
 
 **Blocked on:** `JoinMergeResultValue → RecordConstructorValue` (same root cause — translator needs schema metadata to produce field-level resultValues). These are the same fix.
 
