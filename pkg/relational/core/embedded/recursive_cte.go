@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
@@ -73,11 +72,7 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 		return nil, nil, api.NewErrorf(api.ErrCodeInvalidRecursion,
 			"recursive CTE %q requires UNION in the body", cteName)
 	}
-	quantifier := ""
-	if q := setQ.GetQuantifier(); q != nil {
-		quantifier = strings.ToUpper(q.GetText())
-	}
-	distinct := quantifier != "ALL"
+	distinct := setQ.ALL() == nil
 
 	// Evaluate the seed with cteName unbound. A stray self-reference in
 	// the seed surfaces as a normal table-not-found error — standard SQL

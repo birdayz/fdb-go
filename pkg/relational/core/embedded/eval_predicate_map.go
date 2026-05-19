@@ -77,9 +77,8 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			return triFalse, err
 		}
 		op := le.LogicalOperator()
-		opText := strings.ReplaceAll(strings.ToUpper(op.GetText()), " ", "")
-		isAnd := op.AND() != nil || opText == "&&"
-		isOr := op.OR() != nil || opText == "||"
+		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
+		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil
 		if isXor {
 			right, err := evalHavingTri(ctx, conn, row, le.Expression(1))
@@ -240,15 +239,13 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	if err != nil {
 		return triFalse, err
 	}
-	opText := compPred.ComparisonOperator().GetText()
-	// Null-safe equality (mirror of proto path) — branch before NULL→UNKNOWN.
+	opText := classifyComparisonOp(compPred.ComparisonOperator())
 	switch opText {
-	case "ISDISTINCTFROM":
+	case "IS DISTINCT FROM":
 		return triFromBool(!nullSafeEqual(leftVal, rightVal)), nil
-	case "ISNOTDISTINCTFROM":
+	case "IS NOT DISTINCT FROM":
 		return triFromBool(nullSafeEqual(leftVal, rightVal)), nil
 	}
-	// SQL 3-valued logic: NULL comparison → UNKNOWN.
 	if leftVal == nil || rightVal == nil {
 		return triNull, nil
 	}
@@ -456,7 +453,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			return triNull, nil
 		}
 		cmp := functions.CompareValues(fieldVal, rightVal)
-		switch bcp.ComparisonOperator().GetText() {
+		switch classifyComparisonOp(bcp.ComparisonOperator()) {
 		case "=":
 			return triFromBool(cmp == 0), nil
 		case "!=", "<>":
@@ -503,15 +500,8 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			return triFalse, err
 		}
 		op := e.LogicalOperator()
-		// Grammar: AND | '&' '&' | XOR | OR | '|' '|'. op.AND()/OR()/XOR()
-		// are only non-nil for the keyword forms; the symbolic `&&` and
-		// `||` forms need text-based detection. Pre-fix this branch fell
-		// through to triOr unconditionally for `&&` (silent AND→OR misfire
-		// in JOIN/CTE WHERE) and ignored XOR — round-5 review caught the
-		// divergence from the proto path.
-		opText := strings.ReplaceAll(op.GetText(), " ", "")
-		isAnd := op.AND() != nil || opText == "&&"
-		isOr := op.OR() != nil || opText == "||"
+		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
+		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil
 		switch {
 		case isAnd:
@@ -566,13 +556,11 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			if err != nil {
 				return triFalse, err
 			}
-			opText := bcp.ComparisonOperator().GetText()
-			// IS [NOT] DISTINCT FROM is null-safe — always 2-valued;
-			// branch before the any-NULL → UNKNOWN fallback.
+			opText := classifyComparisonOp(bcp.ComparisonOperator())
 			switch opText {
-			case "ISDISTINCTFROM":
+			case "IS DISTINCT FROM":
 				return triFromBool(!nullSafeEqual(left, right)), nil
-			case "ISNOTDISTINCTFROM":
+			case "IS NOT DISTINCT FROM":
 				return triFromBool(nullSafeEqual(left, right)), nil
 			}
 			if left == nil || right == nil {

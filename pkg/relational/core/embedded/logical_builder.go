@@ -85,7 +85,7 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 	if setQ == nil {
 		return nil
 	}
-	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
+	if setQ.ALL() == nil {
 		return nil
 	}
 	left := buildLogicalPlanForQueryBody(setQ.GetLeft())

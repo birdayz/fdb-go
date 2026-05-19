@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -133,12 +132,8 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 			return triFalse, err
 		}
 		op := e.LogicalOperator()
-		// Grammar: AND | '&' '&' | XOR | OR | '|' '|'. op.AND()/OR()/XOR()
-		// are only non-nil for the keyword forms; the symbolic `&&` and
-		// `||` forms need text-based detection.
-		opText := strings.ReplaceAll(op.GetText(), " ", "")
-		isAnd := op.AND() != nil || opText == "&&"
-		isOr := op.OR() != nil || opText == "||"
+		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
+		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil
 		switch {
 		case isAnd:
@@ -247,7 +242,7 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 		}
 		return triFromBool(functions.IsTruthy(v)), nil
 	}
-	opText := bcp.ComparisonOperator().GetText()
+	opText := classifyComparisonOp(bcp.ComparisonOperator())
 
 	left, err := evalExprAtom(ctx, conn, msg, bcp.GetLeft())
 	if err != nil {
@@ -257,32 +252,17 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	if err != nil {
 		return triFalse, err
 	}
-	// SQL `IS [NOT] DISTINCT FROM` is null-safe equality — it always
-	// returns TRUE or FALSE, never UNKNOWN, even when operands are NULL.
-	// Grammar joins tokens without whitespace: `IS DISTINCT FROM` →
-	// "ISDISTINCTFROM", `IS NOT DISTINCT FROM` → "ISNOTDISTINCTFROM".
-	// Must branch BEFORE the any-NULL → UNKNOWN fallback below.
 	switch opText {
-	case "ISDISTINCTFROM":
+	case "IS DISTINCT FROM":
 		return triFromBool(!nullSafeEqual(left, right)), nil
-	case "ISNOTDISTINCTFROM":
+	case "IS NOT DISTINCT FROM":
 		return triFromBool(nullSafeEqual(left, right)), nil
 	}
-	// SQL 3-valued logic: any other comparison involving NULL is UNKNOWN.
-	// Use IS NULL / IS NOT NULL for explicit NULL tests.
 	if left == nil || right == nil {
 		return triNull, nil
 	}
 
-	// Java alignment: Java's PromoteValue.isPromotionNeeded errors with
-	// SemanticException(INCOMPATIBLE_TYPE) → SQLSTATE 22000
-	// (CANNOT_CONVERT_TYPE) when the two operands have non-promotable
-	// types (e.g. STRING vs BIGINT). Pre-fix Go silently returned
-	// FALSE for these comparisons → empty result set, the dangerous
-	// kind of bug. Now we error to match Java.
 	if !valuesComparable(left, right) {
-		// Java maps SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES →
-		// ErrorCode.DATATYPE_MISMATCH (42804).
 		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}

@@ -2630,7 +2630,7 @@ func buildLogicalPlanForUnionWithCTECatalog(
 		return nil, nil
 	}
 	distinct := false
-	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
+	if setQ.ALL() == nil {
 		if !allowDistinct {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "only UNION ALL is supported")
 		}
@@ -3228,7 +3228,7 @@ func buildLogicalPlanForUnionWithCatalog(
 	if setQ == nil {
 		return nil, nil
 	}
-	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
+	if setQ.ALL() == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "only UNION ALL is supported")
 	}
 	left, err := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetLeft(), md)

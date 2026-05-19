@@ -254,18 +254,11 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		op := a.ComparisonOperator().GetText()
-		// IS [NOT] DISTINCT FROM is NULL-safe — must be handled before
-		// the generic NULL → UNKNOWN short-circuit below, since two
-		// NULLs are NOT distinct (returns true for NOT DISTINCT FROM,
-		// false for DISTINCT FROM). Mirrors the tri-predicate path
-		// at line 7731. Pre-fix the value-eval path fell through to
-		// "unsupported comparison operator" errors for
-		// `SELECT (col IS DISTINCT FROM NULL)` projections.
+		op := classifyComparisonOp(a.ComparisonOperator())
 		switch op {
-		case "ISDISTINCTFROM":
+		case "IS DISTINCT FROM":
 			return !nullSafeEqual(left, right), nil
-		case "ISNOTDISTINCTFROM":
+		case "IS NOT DISTINCT FROM":
 			return nullSafeEqual(left, right), nil
 		}
 		if left == nil || right == nil {

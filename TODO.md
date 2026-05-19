@@ -10,6 +10,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Correctness bugs
 
+- [x] Aggregate ambiguity bug in JOIN context — `aggregateMapRows` bare-column fallback at `aggregate.go:309` skipped the `ambiguousColumnMarker` check. `SUM(b.amount)` with ambiguous bare `amount` silently passed the sentinel into the accumulator instead of erroring 42702. Fixed: mirrors GROUP BY's pattern (lines 246-252).
 - [x] IN-list returning 0 rows — NLJ matched ExplodeExpression quantifiers, couldn't merge scalar outer with map inner. Fix: Explode guard in ImplementNestedLoopJoinRule.
 - [x] Nested aggregates panic — SUM(MAX(v)) reached executor, panicked. Fix: parse-time ANTLR tree walk rejection.
 - [x] HAVING EXISTS silently wrong — correlation references pre-GROUP-BY scope. Fix: reject at translation time.
@@ -120,6 +121,9 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [x] **Remove dead `stripAlias*` code** — Old `stripAliasFromPredicate` and `stripAliasFromValue` (broken, ComparisonPredicate-only) deleted. `stripAliasFromPredicates` wrapper now delegates to `stripAliasPrefixFromPredicates` which handles all predicate/value types recursively including QOV-based FieldValues.
 - [x] **Unify ExistsPredicate.Eval behavior** — Intentional divergence: Go returns TriUnknown (safe no-op), Java throws. Both prevent row-level evaluation. ExistsPredicate is NEVER evaluated at row level — planner/executor handles it structurally. Go's approach is safer (no panic recovery needed).
 - [x] **Plan serialization for plan cache** — In-memory `PlanCache` (LRU, 256 entries) works for single-process deployments. Plans are keyed by SQL hash and cached as compiled Go objects. Cross-process sharing would need proto serialization, but Go services typically run one process per pod — the in-memory cache is production-grade for that model.
+- [x] **Eliminate GetText() for semantic decisions** — Replaced all `GetText()`-based operator classification with typed ANTLR terminal node checks. `classifyComparisonOp()` uses `EQUAL_SYMBOL`, `GREATER_SYMBOL`, `LESS_SYMBOL`, `EXCLAMATION_SYMBOL`, `IS`, `NOT`, `DISTINCT`, `FROM` terminal methods. Logical operators use `AllBIT_AND_OP()`/`AllBIT_OR_OP()` for `&&`/`||`. UNION quantifier uses `ALL()`. Bit-shift detection uses `AllLESS_SYMBOL()`/`AllGREATER_SYMBOL()`. 14 files, 7 evaluation paths fixed. The old `ISDISTINCTFROM`/`ISNOTDISTINCTFROM` GetText() concatenation hack is gone.
+- [x] **ArrayConstructor scalar subquery gap** — `walkScalarSubqueriesAtom` now recurses into `ArrayConstructorExpressionAtomContext`, preventing cache-miss fallback for `ARRAY[(SELECT ...)]`.
+- [x] **Remove dead t.Skip() calls** — `options_test.go` pointer-identity guard (Build() always returns new pointer) and `logical_predicate_test.go` nil-op guard (builder always returns a result for self-join) replaced with Fatal assertions.
 
 ---
 

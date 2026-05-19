@@ -105,13 +105,11 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		opText := a.ComparisonOperator().GetText()
-		// IS [NOT] DISTINCT FROM is null-safe equality — always 2-valued.
-		// Must branch BEFORE the any-NULL → nil fallback below.
+		opText := classifyComparisonOp(a.ComparisonOperator())
 		switch opText {
-		case "ISDISTINCTFROM":
+		case "IS DISTINCT FROM":
 			return !nullSafeEqual(left, right), nil
-		case "ISNOTDISTINCTFROM":
+		case "IS NOT DISTINCT FROM":
 			return nullSafeEqual(left, right), nil
 		}
 		// Java-aligned SQL 3-valued logic: NULL comparison → UNKNOWN

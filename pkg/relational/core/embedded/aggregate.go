@@ -306,7 +306,12 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					}
 					colVal = v
 				} else if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
-					colVal = row[ac.aggArg[dot+1:]]
+					bareVal := row[ac.aggArg[dot+1:]]
+					if m, isAmb := bareVal.(ambiguousColumnMarker); isAmb {
+						return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+							"aggregate argument %q is ambiguous", m.Col)
+					}
+					colVal = bareVal
 				}
 			}
 			hasArg := ac.aggArg != "" || ac.aggExpr != nil

@@ -1533,9 +1533,12 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 		}
 	case *antlrgen.BitExpressionAtomContext:
 		if bo := n.BitOperator(); bo != nil {
-			opText := bo.GetText()
-			if opText == "<<" || opText == ">>" {
-				return opText
+			boc, _ := bo.(*antlrgen.BitOperatorContext)
+			if boc != nil && len(boc.AllLESS_SYMBOL()) >= 2 {
+				return "<<"
+			}
+			if boc != nil && len(boc.AllGREATER_SYMBOL()) >= 2 {
+				return ">>"
 			}
 		}
 	}

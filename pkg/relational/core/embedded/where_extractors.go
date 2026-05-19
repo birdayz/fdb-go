@@ -9,6 +9,49 @@ import (
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
+// classifyComparisonOp returns a canonical string for comparison operators
+// using typed ANTLR terminal nodes (no GetText()). Returns "" for
+// unrecognized operators.
+func classifyComparisonOp(op antlrgen.IComparisonOperatorContext) string {
+	if op == nil {
+		return ""
+	}
+	c, ok := op.(*antlrgen.ComparisonOperatorContext)
+	if !ok {
+		return ""
+	}
+	if c.IS() != nil {
+		if c.NOT() != nil {
+			return "IS NOT DISTINCT FROM"
+		}
+		return "IS DISTINCT FROM"
+	}
+	hasEq := c.EQUAL_SYMBOL() != nil
+	hasGt := c.GREATER_SYMBOL() != nil
+	hasLt := c.LESS_SYMBOL() != nil
+	hasBang := c.EXCLAMATION_SYMBOL() != nil
+	switch {
+	case hasLt && hasEq && hasGt:
+		return "<=>"
+	case hasBang && hasEq:
+		return "!="
+	case hasLt && hasGt:
+		return "<>"
+	case hasGt && hasEq:
+		return ">="
+	case hasLt && hasEq:
+		return "<="
+	case hasEq && !hasGt && !hasLt:
+		return "="
+	case hasGt && !hasEq:
+		return ">"
+	case hasLt && !hasEq && !hasGt:
+		return "<"
+	default:
+		return ""
+	}
+}
+
 // Pushdown-path predicate extractors.
 //
 // Thin parse-tree-aware helpers that every pushdown shape in
@@ -64,10 +107,8 @@ func extractColOpLiteral(
 	if opC == nil {
 		return "", "", nil, false
 	}
-	opText := strings.ReplaceAll(opC.GetText(), " ", "")
-	switch opText {
-	case "=", ">", ">=", "<", "<=":
-	default:
+	opText := classifyComparisonOp(opC)
+	if opText == "" {
 		return "", "", nil, false
 	}
 	// Column-on-left, literal-on-right.
@@ -188,8 +229,7 @@ func flattenAndPredicates(expr antlrgen.IExpressionContext) ([]antlrgen.IExpress
 		return []antlrgen.IExpressionContext{expr}, true
 	}
 	op := le.LogicalOperator()
-	opText := strings.ReplaceAll(op.GetText(), " ", "")
-	isAnd := op.AND() != nil || opText == "&&"
+	isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
 	if !isAnd {
 		return nil, false
 	}
@@ -224,8 +264,7 @@ func extractColEqualsLiteral(
 	if !ok {
 		return "", nil, false
 	}
-	op := bcp.ComparisonOperator()
-	if op == nil || strings.ReplaceAll(op.GetText(), " ", "") != "=" {
+	if classifyComparisonOp(bcp.ComparisonOperator()) != "=" {
 		return "", nil, false
 	}
 	// One side must be a column ref; the other must evaluate to a
