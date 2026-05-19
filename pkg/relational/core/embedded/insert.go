@@ -58,6 +58,10 @@ func wrapSaveRecordError(err error) error {
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
 			"record already exists")
 	}
+	var notExistErr *recordlayer.RecordDoesNotExistError
+	if errors.As(err, &notExistErr) {
+		return api.WrapErrorf(err, api.ErrCodeUnknown, "record does not exist")
+	}
 	var keySizeErr *recordlayer.IndexKeySizeError
 	if errors.As(err, &keySizeErr) {
 		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,

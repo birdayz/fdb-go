@@ -444,7 +444,7 @@ func evalLikePredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 	}
 	s, ok2 := rawVal.(string)
 	if !ok2 {
-		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string expression, got %T", rawVal)
+		return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter, "LIKE requires a string expression, got %T", rawVal)
 	}
 
 	// Pattern is the first STRING_LITERAL token; strip surrounding quotes.
