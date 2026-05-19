@@ -103,9 +103,9 @@ Shipped. Parse in PlanVisitor.visitLimit → LogicalLimit in logical tree → Ca
 
 ## Active work
 
-### Bytes IN-list Ginkgo harness flake (491→492/492)
+### Bytes IN-list Ginkgo harness flake (491→492/492) — LIKELY RESOLVED (nightshift-97)
 
-1 remaining cross-engine conformance failure. `bytesAdvancedScenario` query #2: `SELECT id FROM t WHERE payload IN (X'DEADBEEF', X'CAFEBABE') ORDER BY id` returns 0 rows in the Ginkgo shared-container context. Same code passes in 4 independent test contexts. Needs Java conformance server to diagnose.
+Was caused by the NLJ-Explode bug: multi-value IN-list queries used an NLJ plan that couldn't merge scalar Explode outer datums with map inner datums, returning 0 rows. Fix: prevent NLJ from handling Explode quantifiers (guard in ImplementNestedLoopJoinRule). The fix resolves all multi-value IN-list queries (PK and non-PK). Needs re-verification in the Ginkgo shared-container context.
 
 ### Correlated NOT EXISTS bugs — RESOLVED (nightshift-97)
 
