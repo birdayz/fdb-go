@@ -417,31 +417,14 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	}
 	groupByRef := expressions.InitialOf(groupBy)
 
-	// When HAVING carries EXISTS subqueries, build a SelectExpression
-	// with existential quantifiers — same pattern as translateFilter.
+	// HAVING with EXISTS subqueries is not supported — the correlation
+	// references pre-GROUP-BY scope (table columns) but the HAVING
+	// evaluates in post-GROUP-BY scope (group keys + aggregates).
+	// Java doesn't support this either (no test coverage). Return nil
+	// so the planner produces "could not plan query" instead of
+	// silently returning wrong results.
 	if len(a.HavingExistsSubqueries) > 0 {
-		outerQ := expressions.ForEachQuantifier(groupByRef)
-		quantifiers := []expressions.Quantifier{outerQ}
-		allPreds := splitNonExistsPredicates(a.HavingPredicate)
-		allPreds = append(allPreds, extractExistsPredicates(a.HavingPredicate)...)
-		for _, esq := range a.HavingExistsSubqueries {
-			subRef := t.translateRef(esq.Plan)
-			if subRef == nil {
-				return nil
-			}
-			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-			quantifiers = append(quantifiers, existQ)
-			if esq.JoinPredicate != nil {
-				allPreds = append(allPreds, esq.JoinPredicate)
-			}
-		}
-		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
-		return expressions.NewSelectExpressionWithAliases(
-			resultValue,
-			quantifiers,
-			allPreds,
-			nil,
-		)
+		return nil
 	}
 
 	return expressions.NewLogicalFilterExpression(
