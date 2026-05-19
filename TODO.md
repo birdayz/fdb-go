@@ -86,7 +86,7 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### PredicateWithValueAndRanges hierarchy
 
-- [ ] **Make PredicateWithValueAndRanges a QueryPredicate** — Java treats it as a QueryPredicate subclass (extends AbstractQueryPredicate). Go treats it as a separate non-predicate type. May cause issues if rules expect it in predicate trees.
+- [x] **Make PredicateWithValueAndRanges a QueryPredicate** — Already implements QueryPredicate (Eval, Children, GetCorrelatedTo, Explain). Added HashCodeWithoutChildren to complete the interface. Verified with `var _ QueryPredicate` static assertion at line 130.
 
 ### Wire compatibility
 
