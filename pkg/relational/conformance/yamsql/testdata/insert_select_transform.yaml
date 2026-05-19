@@ -1,0 +1,19 @@
+# insert_select_transform.yaml — INSERT ... SELECT with transformations
+#
+# Exercises INSERT ... SELECT where the SELECT transforms data.
+name: insert_select_transform
+schema_template: |
+  CREATE TABLE source (id BIGINT NOT NULL, name STRING, score BIGINT, PRIMARY KEY (id))
+  CREATE TABLE target (id BIGINT NOT NULL, upper_name STRING, doubled_score BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO source VALUES (1, 'Alice', 85), (2, 'Bob', 92), (3, 'Charlie', 78)
+tests:
+  # INSERT ... SELECT with UPPER and arithmetic
+  - query: >
+      INSERT INTO target SELECT id, UPPER(name), score * 2 FROM source
+    rows: []
+  - query: SELECT id, upper_name, doubled_score FROM target ORDER BY id
+    rows:
+      - [1, "ALICE", 170]
+      - [2, "BOB", 184]
+      - [3, "CHARLIE", 156]
