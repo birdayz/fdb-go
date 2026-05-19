@@ -1,0 +1,45 @@
+# multiple_where_predicates.yaml — Multiple WHERE predicates
+#
+# Exercises queries with many WHERE conditions combined with AND/OR,
+# testing the predicate push-down through plan nodes.
+name: multiple_where_predicates
+schema_template: |
+  CREATE TABLE products (id BIGINT NOT NULL, name STRING, category STRING, price BIGINT, stock BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO products VALUES (1, 'Widget', 'A', 100, 50), (2, 'Gadget', 'B', 200, 0), (3, 'Doohickey', 'A', 50, 30), (4, 'Thingamajig', 'C', 300, 10), (5, 'Whatsit', 'B', 150, 20)
+tests:
+  # Three AND conditions
+  - query: >
+      SELECT name FROM products
+      WHERE category = 'A' AND price > 60 AND stock > 0
+      ORDER BY name
+    rows:
+      - ["Widget"]
+
+  # Two OR conditions
+  - query: >
+      SELECT name FROM products
+      WHERE category = 'A' OR category = 'C'
+      ORDER BY name
+    rows:
+      - ["Doohickey"]
+      - ["Thingamajig"]
+      - ["Widget"]
+
+  # Mixed AND/OR with parentheses
+  - query: >
+      SELECT name FROM products
+      WHERE (category = 'A' OR category = 'B') AND price >= 100 AND stock > 0
+      ORDER BY name
+    rows:
+      - ["Whatsit"]
+      - ["Widget"]
+
+  # Four conditions
+  - query: >
+      SELECT name FROM products
+      WHERE category IN ('A', 'B') AND price BETWEEN 50 AND 200 AND stock > 10 AND name LIKE 'W%'
+      ORDER BY name
+    rows:
+      - ["Whatsit"]
+      - ["Widget"]
