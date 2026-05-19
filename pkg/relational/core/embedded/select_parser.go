@@ -536,6 +536,10 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
 					}
 				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
+					if containsNestedAggregateInSelectElement(e, argExpr) {
+						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+							"unsupported nested aggregate(s)")
+					}
 					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct, visible: true})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
@@ -1729,4 +1733,52 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported JOIN type %T; only INNER JOIN and LEFT/RIGHT OUTER JOIN are supported", jp)
 	}
+}
+
+func containsNestedAggregateInSelectElement(e *antlrgen.SelectExpressionElementContext, argExpr antlrgen.IExpressionContext) bool {
+	if argExpr != nil {
+		return containsNestedAggregate(argExpr)
+	}
+	pred, ok := e.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return false
+	}
+	fc, ok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
+	if !ok {
+		return false
+	}
+	agg, ok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+	if !ok {
+		return false
+	}
+	awf, ok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+	if !ok {
+		return false
+	}
+	if fa := awf.FunctionArgs(); fa != nil {
+		for _, arg := range fa.AllFunctionArg() {
+			if containsNestedAggregate(arg) {
+				return true
+			}
+		}
+	}
+	if fa := awf.FunctionArg(); fa != nil {
+		return containsNestedAggregate(fa)
+	}
+	return false
+}
+
+func containsNestedAggregate(tree antlr.Tree) bool {
+	if tree == nil {
+		return false
+	}
+	if _, ok := tree.(*antlrgen.AggregateFunctionCallContext); ok {
+		return true
+	}
+	for i := 0; i < tree.GetChildCount(); i++ {
+		if containsNestedAggregate(tree.GetChild(i)) {
+			return true
+		}
+	}
+	return false
 }
