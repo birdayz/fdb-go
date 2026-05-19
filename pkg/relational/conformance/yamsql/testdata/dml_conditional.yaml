@@ -1,0 +1,39 @@
+# dml_conditional.yaml — Conditional DML operations
+#
+# Exercises UPDATE with CASE WHEN, conditional DELETE,
+# and INSERT with expressions.
+name: dml_conditional
+schema_template: |
+  CREATE TABLE accounts (id BIGINT NOT NULL, name STRING, balance BIGINT, status STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO accounts VALUES (1, 'Alice', 1000, 'active'), (2, 'Bob', 50, 'active'), (3, 'Charlie', 0, 'active'), (4, 'Dave', -100, 'active')
+tests:
+  # UPDATE with CASE WHEN — set status based on balance
+  - query: >
+      UPDATE accounts SET status = CASE
+        WHEN balance >= 100 THEN 'premium'
+        WHEN balance > 0 THEN 'basic'
+        ELSE 'overdrawn'
+      END
+    rows: []
+  - query: SELECT name, status FROM accounts ORDER BY id
+    rows:
+      - ["Alice", "premium"]
+      - ["Bob", "basic"]
+      - ["Charlie", "overdrawn"]
+      - ["Dave", "overdrawn"]
+
+  # DELETE with WHERE on computed condition
+  - query: DELETE FROM accounts WHERE balance <= 0
+    rows: []
+  - query: SELECT name FROM accounts ORDER BY name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+
+  # UPDATE with arithmetic expression
+  - query: UPDATE accounts SET balance = balance * 2 WHERE name = 'Alice'
+    rows: []
+  - query: SELECT name, balance FROM accounts WHERE name = 'Alice'
+    rows:
+      - ["Alice", 2000]
