@@ -30,10 +30,7 @@ import (
 // to chain through multiple staticRows wrappers (CTE → SELECT, UNION
 // over already-transformed sources).
 func jdbcColumnName(name string, position int) string {
-	base := name
-	if dot := strings.LastIndex(name, "."); dot >= 0 {
-		base = name[dot+1:]
-	}
+	base := parseColRef(name).bare()
 	if isSimpleIdentifier(base) {
 		return strings.ToUpper(base)
 	}
@@ -159,11 +156,8 @@ func inferAtomJDBCType(atom antlrgen.IExpressionAtomContext, msgDesc protoreflec
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		colName := functions.FullIdToName(a.FullColumnName().FullId())
 		// Strip qualifier for the field lookup, same as the SELECT-path
-		// projection-binding does at line 853 of select_query_full.go.
-		bare := colName
-		if dot := strings.LastIndex(colName, "."); dot >= 0 {
-			bare = colName[dot+1:]
-		}
+		// projection-binding does in select_query_full.go.
+		bare := parseColRef(colName).bare()
 		if msgDesc != nil {
 			fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 			if fd != nil {
@@ -311,7 +305,7 @@ func inferSpecificFunctionJDBCType(sf antlrgen.ISpecificFunctionContext, msgDesc
 		// CAST(expr AS dataType). Pull the target type's text and
 		// canonicalise to a JDBC name.
 		if cdt := sf.ConvertedDataType(); cdt != nil {
-			return convertedDataTypeToJDBC(cdt.GetText())
+			return classifyConvertedDataTypeJDBC(cdt)
 		}
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: each WHEN-clause has THEN expr; optional ELSE expr.
@@ -349,8 +343,9 @@ func inferCaseBranchesJDBCType(alts []antlrgen.ICaseFuncAlternativeContext, else
 		if resultType == "" {
 			resultType = t
 		} else if t != "" {
-			if max := jdbcTypeMax(resultType, t); max != "" {
-				resultType = max
+			resultType = jdbcTypeMax(resultType, t)
+			if resultType == "" {
+				return ""
 			}
 		}
 	}
@@ -369,31 +364,73 @@ func inferFunctionArgJDBCType(arg antlrgen.IFunctionArgContext, msgDesc protoref
 	return ""
 }
 
-// convertedDataTypeToJDBC maps the parser's ConvertedDataType text
-// (the type-name appearing in `CAST(expr AS T)`) to the JDBC type
-// name fdb-relational reports for the result. The parser preserves
-// case, so we upper-case before matching.
-func convertedDataTypeToJDBC(text string) string {
-	switch strings.ToUpper(strings.TrimSpace(text)) {
-	case "INTEGER", "INT":
+// classifyPrimitiveType returns the canonical upper-case SQL type name
+// from a ConvertedDataType parse node using typed ANTLR terminals.
+func classifyPrimitiveType(cdt antlrgen.IConvertedDataTypeContext) string {
+	pt := cdt.PrimitiveType()
+	if pt == nil {
+		return ""
+	}
+	p, ok := pt.(*antlrgen.PrimitiveTypeContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case p.INTEGER() != nil:
 		return "INTEGER"
-	case "BIGINT", "LONG":
+	case p.BIGINT() != nil:
 		return "BIGINT"
-	case "FLOAT":
+	case p.FLOAT() != nil:
 		return "FLOAT"
-	case "DOUBLE", "DOUBLEPRECISION", "DOUBLE PRECISION":
+	case p.DOUBLE() != nil:
 		return "DOUBLE"
-	case "STRING", "VARCHAR", "CHAR", "TEXT":
+	case p.STRING() != nil:
 		return "STRING"
-	case "BOOLEAN", "BOOL":
+	case p.BOOLEAN() != nil:
 		return "BOOLEAN"
-	case "BYTES":
-		return "BINARY"
-	case "UUID":
-		return "OTHER"
-	case "DATE":
+	case p.BYTES() != nil:
+		return "BYTES"
+	case p.UUID() != nil:
+		return "UUID"
+	case p.DATE() != nil:
 		return "DATE"
-	case "TIMESTAMP":
+	case p.TIMESTAMP() != nil:
+		return "TIMESTAMP"
+	}
+	return ""
+}
+
+// classifyConvertedDataTypeJDBC maps a ConvertedDataType parse node to
+// the JDBC type name using typed ANTLR terminals (no GetText()).
+func classifyConvertedDataTypeJDBC(cdt antlrgen.IConvertedDataTypeContext) string {
+	pt := cdt.PrimitiveType()
+	if pt == nil {
+		return ""
+	}
+	p, ok := pt.(*antlrgen.PrimitiveTypeContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case p.INTEGER() != nil:
+		return "INTEGER"
+	case p.BIGINT() != nil:
+		return "BIGINT"
+	case p.FLOAT() != nil:
+		return "FLOAT"
+	case p.DOUBLE() != nil:
+		return "DOUBLE"
+	case p.STRING() != nil:
+		return "STRING"
+	case p.BOOLEAN() != nil:
+		return "BOOLEAN"
+	case p.BYTES() != nil:
+		return "BINARY"
+	case p.UUID() != nil:
+		return "OTHER"
+	case p.DATE() != nil:
+		return "DATE"
+	case p.TIMESTAMP() != nil:
 		return "TIMESTAMP"
 	}
 	return ""
@@ -409,10 +446,7 @@ func convertedDataTypeToJDBC(text string) string {
 func aggregateResultJDBCType(ac aggSelectCol, msgDesc protoreflect.MessageDescriptor) string {
 	// GROUP BY column: type comes from the underlying field.
 	if ac.groupCol != "" {
-		bare := ac.groupCol
-		if dot := strings.LastIndex(bare, "."); dot >= 0 {
-			bare = bare[dot+1:]
-		}
+		bare := parseColRef(ac.groupCol).bare()
 		if msgDesc != nil {
 			if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
 				return jdbcTypeNameForFD(fd)
@@ -437,10 +471,7 @@ func aggregateResultJDBCType(ac aggSelectCol, msgDesc protoreflect.MessageDescri
 		// argument → look up the FieldDescriptor. Expression arg
 		// (SUM(qty * price)) walks the expression AST.
 		if ac.aggArg != "" {
-			bare := ac.aggArg
-			if dot := strings.LastIndex(bare, "."); dot >= 0 {
-				bare = bare[dot+1:]
-			}
+			bare := parseColRef(ac.aggArg).bare()
 			if msgDesc != nil {
 				if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
 					return jdbcTypeNameForFD(fd)

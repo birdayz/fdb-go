@@ -914,7 +914,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		nullable := api.ColumnNullable
 		if desc != nil {
-			if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() == protoreflect.Required {
+			if fd := desc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
 				nullable = api.ColumnNoNulls
 			}
 		}
@@ -987,14 +987,14 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	cols := make([]executor.ColumnDef, 0, len(firstCols)+len(secondCols))
 	for _, c := range firstCols {
 		qual := c
-		if firstAlias != "" && !strings.Contains(c.Name, ".") {
+		if firstAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}
 	for _, c := range secondCols {
 		qual := c
-		if secondAlias != "" && !strings.Contains(c.Name, ".") {
+		if secondAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
@@ -1015,14 +1015,14 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
 	for _, c := range outerCols {
 		qual := c
-		if outerAlias != "" && !strings.Contains(c.Name, ".") {
+		if outerAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = outerAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
 	}
 	for _, c := range innerCols {
 		qual := c
-		if innerAlias != "" && !strings.Contains(c.Name, ".") {
+		if innerAlias != "" && !parseColRef(c.Name).isQualified() {
 			qual.Name = innerAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
@@ -1044,7 +1044,7 @@ func buildAggColumns(
 		}
 		nullable := api.ColumnNullable
 		if desc != nil {
-			if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() == protoreflect.Required {
+			if fd := desc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
 				nullable = api.ColumnNoNulls
 			}
 		}
@@ -1158,7 +1158,7 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
 	fields := desc.Fields()
-	fd := fields.ByName(protoreflect.Name(name))
+	fd := fields.ByName(protoreflect.Name(parseColRef(name).bare()))
 	if fd != nil {
 		return protoKindToTypeName(fd.Kind())
 	}
@@ -1270,28 +1270,7 @@ func (r *cascadesRows) ColumnTypePrecisionScale(index int) (precision, scale int
 func (r *cascadesRows) Next(dest []driver.Value) error {
 	if !r.rs.Next() {
 		if err := r.rs.Err(); err != nil {
-			var divZero *values.ArithmeticDivisionByZeroError
-			if errors.As(err, &divZero) {
-				return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
-			}
-			var overflow *values.ArithmeticOverflowError
-			if errors.As(err, &overflow) {
-				return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
-			}
-			var scalarMismatch *values.ScalarTypeMismatchError
-			if errors.As(err, &scalarMismatch) {
-				return api.NewError(api.ErrCodeCannotConvertType, scalarMismatch.Error())
-			}
-			var castErr *values.InvalidCastError
-			if errors.As(err, &castErr) {
-				return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
-			}
-			var typeMismatch *predicates.TypeMismatchError
-			if errors.As(err, &typeMismatch) {
-				return api.NewError(api.ErrCodeDatatypeMismatch,
-					"The operands of a comparison operator are not compatible.")
-			}
-			return err
+			return translateExecError(err)
 		}
 		return io.EOF
 	}
@@ -1309,13 +1288,8 @@ func findDistinctAggregate(op logical.LogicalOperator) string {
 	if op == nil {
 		return ""
 	}
-	if agg, ok := op.(*logical.LogicalAggregate); ok {
-		for _, a := range agg.Aggregates {
-			upper := strings.ToUpper(a)
-			if strings.Contains(upper, "DISTINCT ") {
-				return "DISTINCT aggregates are not supported"
-			}
-		}
+	if agg, ok := op.(*logical.LogicalAggregate); ok && agg.HasDistinctAggregate {
+		return "DISTINCT aggregates are not supported"
 	}
 	for _, ch := range op.Children() {
 		if msg := findDistinctAggregate(ch); msg != "" {
@@ -1398,8 +1372,9 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						continue
 					}
 					upper := strings.ToUpper(col)
-					if dot := strings.IndexByte(upper, '.'); dot >= 0 {
-						qual := upper[:dot]
+					ref := parseColRef(upper)
+					if ref.isQualified() {
+						qual := ref.table
 						scanName := strings.ToUpper(scan.Table)
 						if scan.Alias != "" {
 							scanName = strings.ToUpper(scan.Alias)
@@ -1408,7 +1383,7 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 							return api.NewErrorf(api.ErrCodeUndefinedColumn,
 								"column reference with qualifier %q cannot be resolved", qual)
 						}
-						upper = upper[dot+1:]
+						upper = ref.bare()
 					}
 					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil {
 						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
@@ -1533,9 +1508,12 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 		}
 	case *antlrgen.BitExpressionAtomContext:
 		if bo := n.BitOperator(); bo != nil {
-			opText := bo.GetText()
-			if opText == "<<" || opText == ">>" {
-				return opText
+			boc, _ := bo.(*antlrgen.BitOperatorContext)
+			if boc != nil && len(boc.AllLESS_SYMBOL()) >= 2 {
+				return "<<"
+			}
+			if boc != nil && len(boc.AllGREATER_SYMBOL()) >= 2 {
+				return ">>"
 			}
 		}
 	}

@@ -17,7 +17,7 @@ tests:
       - [200]
       - [300]
 
-  # Derived table joined with base table
+  # Derived table with GROUP BY + COUNT(*) joined to base table.
   - query: >
       SELECT c.name, sq.order_count
       FROM customers c,
@@ -28,3 +28,15 @@ tests:
       - ["Alice", 2]
       - ["Bob", 1]
       - ["Charlie", 1]
+
+  # Derived table with SUM aggregate joined to base table.
+  - query: >
+      SELECT c.name, sq.sum_total
+      FROM customers c,
+        (SELECT customer_id, SUM(total) AS sum_total FROM orders GROUP BY customer_id) sq
+      WHERE sq.customer_id = c.id
+      ORDER BY sq.sum_total DESC
+    rows:
+      - ["Charlie", 300]
+      - ["Alice", 300]
+      - ["Bob", 150]

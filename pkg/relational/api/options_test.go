@@ -227,9 +227,6 @@ func TestEqualStructuralParent(t *testing.T) {
 	// distinct-pointer-but-structurally-equal parents are Equal.
 	parentA := NewOptionsBuilder().Set(OptMaxRows, 10).Build()
 	parentB := NewOptionsBuilder().Set(OptMaxRows, 10).Build()
-	if parentA == parentB {
-		t.Skip("builders returned same pointer — test setup invalid")
-	}
 	if !parentA.Equal(parentB) {
 		t.Fatal("structurally-equal parents should be Equal")
 	}

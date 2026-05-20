@@ -558,9 +558,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
 					continue
 				}
-				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
+				fd := msgDesc.Fields().ByName(protoreflect.Name(parseColRef(col).bare()))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"GROUP BY column %q not found in table %q", col, sq.tableName)
 				}
 				groupFDs[i] = fd
@@ -585,7 +585,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// can enforce SQL §7.10 GR1 — a projected bare column that isn't
 			// in GROUP BY (and isn't an aggregate argument) is 42803. Pre-
 			// dayshift-40 the emission loop silently NULL-filled instead.
-			groupByNames := make(map[string]bool, len(sq.groupBy))
+			groupByNames := make(map[string]bool, len(sq.groupBy)*2)
 			for i, gn := range sq.groupBy {
 				// Expression-based GROUP BY (e.g. `GROUP BY a + b`) is keyed
 				// by the raw expression text as a synthetic display name —
@@ -594,6 +594,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					continue
 				}
 				groupByNames[gn] = true
+				if ref := parseColRef(gn); ref.isQualified() {
+					groupByNames[ref.bare()] = true
+				}
 			}
 			aggArgFDs := make([]protoreflect.FieldDescriptor, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
@@ -601,7 +604,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if groupExprByName[ac.groupCol] {
 						continue
 					}
-					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.groupCol))
+					fd := msgDesc.Fields().ByName(protoreflect.Name(parseColRef(ac.groupCol).bare()))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q not found in table %q", ac.groupCol, sq.tableName)
@@ -609,7 +612,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					// Java-aligned 42803. The fd-exists check above fired
 					// first so undefined columns still surface as 42703,
 					// matching Java's error order.
-					if !groupByNames[ac.groupCol] {
+					if !groupByNames[ac.groupCol] && !groupByNames[parseColRef(ac.groupCol).bare()] {
 						return nil, api.NewErrorf(api.ErrCodeGroupingError,
 							"column %q must appear in the GROUP BY clause or be used in an aggregate function",
 							ac.groupCol)
@@ -622,10 +625,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					// only one source is in scope on the proto path, so
 					// any qualifier that's not garbage is the table or
 					// its alias.
-					bare := ac.aggArg
-					if dot := strings.LastIndex(bare, "."); dot >= 0 {
-						bare = bare[dot+1:]
-					}
+					bare := parseColRef(ac.aggArg).bare()
 					fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -822,10 +822,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// aggregateMapRows) so qualified GROUP BY keys resolve
 				// against unqualified SELECT-list references.
 				// First-wins on bare collision; see aggregateMapRows.
-				if dot := strings.LastIndex(col, "."); dot >= 0 {
-					bare := col[dot+1:]
-					if _, exists := groupColIdx[bare]; !exists {
-						groupColIdx[bare] = i
+				if ref := parseColRef(col); ref.isQualified() {
+					if _, exists := groupColIdx[ref.bare()]; !exists {
+						groupColIdx[ref.bare()] = i
 					}
 				}
 			}
@@ -862,9 +861,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
 						if !ok {
-							if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
-								idx, ok = groupColIdx[ac.groupCol[dot+1:]]
-							}
+							idx, ok = groupColIdx[parseColRef(ac.groupCol).bare()]
 						}
 						if ok {
 							fullVals[i] = gs.groupVals[idx]
@@ -900,6 +897,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						}
 					}
 					rowMap[ac.outName] = fullVals[i]
+				}
+				for i, gname := range sq.groupBy {
+					if i >= len(gs.groupVals) {
+						break
+					}
+					if _, seen := rowMap[gname]; !seen {
+						rowMap[gname] = gs.groupVals[i]
+					}
+					if ref := parseColRef(gname); ref.isQualified() {
+						if _, seen := rowMap[ref.bare()]; !seen {
+							rowMap[ref.bare()] = gs.groupVals[i]
+						}
+					}
 				}
 				for i, ac := range sq.aggCols {
 					if ac.outExpr == nil {
@@ -948,6 +958,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			extraSortFields = append(extraSortFields, outField{name: sentinel, expr: ob.expr})
 			sq.orderBy[obIdx].colName = sentinel
 			sq.orderBy[obIdx].expr = nil
+			sq.orderBy[obIdx].isSyntheticExpr = true
 		}
 		if sq.projCols == nil {
 			// SELECT * — all fields in descriptor order.
@@ -1006,10 +1017,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// a.* FROM a`, which collapse to equal names only
 				// after qualifier stripping.
 				lookupName := colName
-				if dot := strings.LastIndex(colName, "."); dot >= 0 {
-					qual := strings.ToUpper(colName[:dot])
+				if ref := parseColRef(colName); ref.isQualified() {
+					qual := strings.ToUpper(ref.table)
 					if strings.EqualFold(qual, sq.tableName) || (sq.tableAlias != "" && strings.EqualFold(qual, sq.tableAlias)) {
-						lookupName = colName[dot+1:]
+						lookupName = ref.bare()
 					}
 				}
 				fd := allFields.ByName(protoreflect.Name(lookupName))
@@ -1070,16 +1081,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// source SELECT — the qualifier resolves to either the
 				// table name or its alias; both refer to the same source.
 				// nightshift-60.
-				if dot := strings.Index(obName, "."); dot >= 0 {
-					prefix := obName[:dot]
-					if strings.EqualFold(prefix, sq.tableName) ||
-						(sq.tableAlias != "" && strings.EqualFold(prefix, sq.tableAlias)) {
-						obName = obName[dot+1:]
+				if ref := parseColRef(obName); ref.isQualified() {
+					if strings.EqualFold(ref.table, sq.tableName) ||
+						(sq.tableAlias != "" && strings.EqualFold(ref.table, sq.tableAlias)) {
+						obName = ref.bare()
 					}
 				}
 				fd := allFields.ByName(protoreflect.Name(obName))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"ORDER BY column %q not found in table %q", ob.colName, sq.tableName)
 				}
 				extraSortFields = append(extraSortFields, outField{name: obName, fd: fd})
@@ -1301,7 +1311,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// `ob.expr`. Detect the sentinel by name to surface
 				// "arbitrary expression" in the error message rather
 				// than the synthetic identifier.
-				if ob.expr != nil || strings.HasPrefix(ob.colName, "__orderby_expr_") {
+				if ob.expr != nil || ob.isSyntheticExpr {
 					hasExpr = true
 					continue
 				}

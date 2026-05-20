@@ -229,6 +229,7 @@ type LogicalAggregate struct {
 	Aggregates             []string       // e.g. "SUM(a)", "COUNT(*)"
 	Aliases                []string       // parallel to Aggregates
 	AggregateOperands      []values.Value // resolved operand Values (parallel to Aggregates); nil slot = use text
+	HasDistinctAggregate   bool           // true when any aggregate uses DISTINCT (e.g. COUNT(DISTINCT x))
 	Having                 string         // canonical HAVING predicate, "" when absent
 	HavingPredicate        predicates.QueryPredicate
 	HavingExistsSubqueries []ExistsSubquery // EXISTS subquery plans inside HAVING

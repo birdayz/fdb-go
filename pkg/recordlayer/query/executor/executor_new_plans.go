@@ -22,9 +22,10 @@ func executeUnorderedUnion(
 	if len(inners) == 0 {
 		return recordlayer.Empty[QueryResult](), nil
 	}
+	childProps := props.ClearSkipAndLimit()
 	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
 	for _, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props)
+		c, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, childProps)
 		if err != nil {
 			for _, prev := range cursors {
 				_ = prev.Close()
@@ -33,7 +34,7 @@ func executeUnorderedUnion(
 		}
 		cursors = append(cursors, c)
 	}
-	return newConcatResultCursor(cursors), nil
+	return applySkipLimit(newConcatResultCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executePredicatesFilter(

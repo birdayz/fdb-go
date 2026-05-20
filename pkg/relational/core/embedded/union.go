@@ -50,8 +50,7 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	// so plain UNION (implicit DISTINCT) is rejected outright. Per
 	// project conformance principle, Go aligns at parse time. Aligned
 	// .
-	q := setQ.GetQuantifier()
-	if q == nil || strings.ToUpper(q.GetText()) != "ALL" {
+	if setQ.ALL() == nil {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"only UNION ALL is supported")
 	}

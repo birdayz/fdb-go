@@ -85,7 +85,7 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 	if setQ == nil {
 		return nil
 	}
-	if q := setQ.GetQuantifier(); q == nil || !strings.EqualFold(q.GetText(), "ALL") {
+	if setQ.ALL() == nil {
 		return nil
 	}
 	left := buildLogicalPlanForQueryBody(setQ.GetLeft())
@@ -241,9 +241,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		}
 		var kind logical.JoinKind
 		switch j.joinType {
-		case "LEFT":
+		case joinTypeLeft:
 			kind = logical.JoinLeft
-		case "RIGHT":
+		case joinTypeRight:
 			kind = logical.JoinRight
 		default:
 			kind = logical.JoinInner
@@ -284,6 +284,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	//     entries with outName.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		var aggs, aggAliases []string
+		hasDistinct := false
 		keys := make([]string, len(sq.groupBy))
 		for i, k := range sq.groupBy {
 			keys[i] = strip(k)
@@ -305,6 +306,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					distinctPfx := ""
 					if ac.aggDistinct {
 						distinctPfx = "DISTINCT "
+						hasDistinct = true
 					}
 					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
 					aggAliases = append(aggAliases, ac.outName)
@@ -315,7 +317,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		if sq.havingExpr != nil {
 			having = canonicalTextOf(sq.havingExpr)
 		}
-		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
+		aggOp := logical.NewAggregate(op, keys, aggs, aggAliases, having)
+		aggOp.HasDistinctAggregate = hasDistinct
+		op = aggOp
 
 		// Post-aggregation projection for mixed SELECT lists that contain
 		// both aggregates and computed expressions / constants. When outExpr
@@ -379,6 +383,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			}
 			var visibleProj []string
 			var visibleAliases []string
+			hasAggAlias := false
 			for _, ac := range sq.aggCols {
 				if !ac.visible {
 					continue
@@ -397,6 +402,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					alias := ""
 					if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
 						alias = ac.outName
+						hasAggAlias = true
 					}
 					visibleAliases = append(visibleAliases, alias)
 				} else if ac.groupCol != "" {
@@ -409,13 +415,6 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				}
 			}
 			totalOutput := len(keys) + len(aggs)
-			hasAggAlias := false
-			for i, a := range visibleAliases {
-				if a != "" && i < len(visibleProj) && strings.Contains(strings.ToUpper(visibleProj[i]), "(") {
-					hasAggAlias = true
-					break
-				}
-			}
 			needsStrip := len(visibleProj) < totalOutput || hasAggAlias || hasNonVisible
 			if needsStrip {
 				if hasNonVisible {
@@ -604,9 +603,7 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		col := functions.FullIdToName(el.FullColumnName().FullId())
 		// Strip the table-qualifier if present — UPDATE SET uses bare
 		// col names at the logical level.
-		if dot := strings.LastIndex(col, "."); dot >= 0 {
-			col = col[dot+1:]
-		}
+		col = parseColRef(col).bare()
 		sets = append(sets, logical.Assignment{
 			Column: col,
 			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),

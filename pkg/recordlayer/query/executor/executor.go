@@ -625,7 +625,12 @@ func distinctKey(qr QueryResult) string {
 		}
 		sb.WriteString(k)
 		sb.WriteByte('=')
-		sb.WriteString(fmt.Sprintf("%v", m[k]))
+		v := m[k]
+		if v == nil {
+			sb.WriteString("\x00NULL\x00")
+		} else {
+			sb.WriteString(fmt.Sprintf("%v", v))
+		}
 	}
 	return sb.String()
 }
@@ -2335,7 +2340,12 @@ func queryResultKeyForCols(qr QueryResult, cols []string) string {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		sb.WriteString(fmt.Sprintf("%v", m[col]))
+		v := m[col]
+		if v == nil {
+			sb.WriteString("\x00NULL\x00")
+		} else {
+			sb.WriteString(fmt.Sprintf("%v", v))
+		}
 	}
 	return sb.String()
 }
@@ -2360,7 +2370,12 @@ func queryResultKey(qr QueryResult) string {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		sb.WriteString(fmt.Sprintf("%v", m[k]))
+		v := m[k]
+		if v == nil {
+			sb.WriteString("\x00NULL\x00")
+		} else {
+			sb.WriteString(fmt.Sprintf("%v", v))
+		}
 	}
 	return sb.String()
 }

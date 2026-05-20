@@ -2,14 +2,44 @@
 
 FoundationDB Record Layer — Go Port. Java version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
-Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 34 plan types, 48 value types, 9 predicate types.
+Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 34 plan types, 48 value types, 9 predicate types. 90+ quality probe subtests.
 
 ---
 
-## CRITICAL
+## OPEN — discovered by 5-expert review panel (2026-05-20)
+
+### Executor memory model (C++ systems expert, B+ grade)
+
+- [ ] **Unbounded memory in sort/union/intersection executors.** `CollectAll()` drains entire cursors into slices. UNION, INTERSECTION, JOIN, recursive CTE, and general ORDER BY all buffer all rows in memory. No spill-to-disk or streaming merge. A 10M-row UNION will allocate 10M `QueryResult` structs. Top-K heap exists for LIMIT queries, but general sort materializes everything. Fix: implement spill-to-disk for sort buffers exceeding a configurable threshold, and streaming merge-join for intersection.
+- [ ] **Scan-then-buffer pattern in intersection.** `executeIntersection` collects all first-branch rows, then scans the second branch filtering. A 1M-row branch buffers 1M rows while second branch is scanned. Fix: streaming merge-intersection using sorted inputs.
+- [ ] **No client-side FDB constraint warnings.** No proactive checks for 5s tx timeout (cursor drain can exceed silently), 100KB value size (split records handle this, but individual KV pairs not validated pre-write), or 10MB tx size (only `GetApproximateTransactionSize()` available, no automatic batching). FDB enforces server-side, but late errors are confusing. Fix: add client-side size tracking with configurable warnings/errors.
+
+### SQL engine completeness (SQL engine expert, B+ grade)
+
+- [ ] **IN (subquery) as deliberate Go extension.** Java explicitly rejects `IN (SELECT ...)` with `UNSUPPORTED_QUERY` at `ExpressionVisitor.java:618`. Go currently rejects too. Consider supporting as a Go-only extension with deep test coverage.
+- [x] **Derived table + JOIN can't be planned.** Root cause: `buildSelectScope` resolved derived-table columns correctly but `preWalkPred` was discarded in the non-subquery path — fallback `buildWherePredicateForJoins` can't resolve derived-table aliases. Fix: use resolver's walked predicate when available. Tests: `subquery_in_from_with_join` now asserts correct results (Alice/Bob with order_count > 1).
+- [x] **CTE + aggregate + JOIN can't be planned.** Root cause: `buildCTEColumnSource` rejected aggregate CTEs (bailed on `aggCols > 0 || countStar`), so CTE scope was never registered, resolver returned nil. Fix: delegate to `buildDerivedTableSourceFromAgg` for aggregate CTEs. Tests: `cte_with_join` now asserts correct results (Charlie/Alice/Bob by shipped total DESC).
+- [ ] **Covering index unreachable from SQL.** Core infrastructure ported (IndexKeyValueToPartialRecord, FieldCopier, Builder pattern, 9 unit tests). Planner has covering flag + MergeFetchIntoCoveringIndexRule. SQL projections prevent triggering (`IsFinalNeeded=false` not reachable). Fix: teach translator to produce RecordConstructorValue projections that allow partial-record reconstruction from index entries.
+
+### Testing gaps (testing expert, A- grade)
+
+- [ ] **No network partition simulation.** Chaos tests inject FDB-level faults (commit-unknown, conflict, timeout) but not link failures. testcontainers can introduce `tc` filter delays — not used. Fix: add partition/slow-link injection via tc or iptables in chaos test harness.
+- [ ] **No long-running sustained-load tests.** binding-stress is seed-based (single query replay), not continuous workload. Missing: sustained 100k-record scans under concurrent writes, multi-hour chaos under 10+ concurrent clients.
+- [ ] **No schema migration tests.** No upgrade-compatibility tests (add column, change index type, rename table). Tests assume static schema. Fix: add test suite that evolves schema across multiple transactions and verifies data integrity.
+- [x] **Audit high t.Skip counts.** Audited: all 27 skips in cascades_fdb_test.go and all 9 in plan_shape_conformance_test.go are the legitimate Docker check (`FDB not available (no Docker)`). Broader codebase audit: fuzz tests skip invalid inputs (standard), conformance gap gate currently has zero entries hitting it, benchmarks are env-gated. No hidden failures behind any skip.
+
+---
+
+## CRITICAL (all resolved)
+
+### Architectural misalignment
+
+- [x] **Column identity as flat strings → structured (table, column) tuples.** Introduced `colRef{table, col}` type in `colref.go` with `parseColRef`, `mapLookup`, `mapLookupChecked` helpers. Replaced all 50+ `strings.LastIndex(name, ".")` / `strings.IndexByte(col, '.')` / `strings.Contains(x, ".")` dot-splitting sites across 20+ files with structured `colRef` access. Zero remaining dot-split sites in the embedded package. The underlying flat-string representation persists (map keys are still `"TABLE.COL"`), but all access is now through the `colRef` abstraction. A full migration to structured keys in the map rows themselves is a future optimization.
 
 ### Correctness bugs
 
+- [x] Aggregate ambiguity bugs (3 sites in aggregate.go) — (1) bare-column fallback at line 309 skipped ambiguousColumnMarker check, silently corrupting accumulators; (2) ungrouped-column check at line 131 returned 42803 instead of 42702 for ambiguous columns; (3) outExpr check at lines 190-192 same issue. Java resolves ambiguity BEFORE grouping checks (SemanticAnalyzer.resolveIdentifier). All 3 now check ambiguousColumnMarker and return 42702 before falling through to 42803.
+- [x] `evalPredicateOnMapTri` missing IS DISTINCT FROM — fallback comparison path at eval_predicate_map.go:445 returned triNull (UNKNOWN) for `IS [NOT] DISTINCT FROM` with NULL operands instead of definite TRUE/FALSE. Fixed: branch before null-guard, matching the other 5 callsites.
 - [x] IN-list returning 0 rows — NLJ matched ExplodeExpression quantifiers, couldn't merge scalar outer with map inner. Fix: Explode guard in ImplementNestedLoopJoinRule.
 - [x] Nested aggregates panic — SUM(MAX(v)) reached executor, panicked. Fix: parse-time ANTLR tree walk rejection.
 - [x] HAVING EXISTS silently wrong — correlation references pre-GROUP-BY scope. Fix: reject at translation time.
@@ -120,6 +150,16 @@ Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [x] **Remove dead `stripAlias*` code** — Old `stripAliasFromPredicate` and `stripAliasFromValue` (broken, ComparisonPredicate-only) deleted. `stripAliasFromPredicates` wrapper now delegates to `stripAliasPrefixFromPredicates` which handles all predicate/value types recursively including QOV-based FieldValues.
 - [x] **Unify ExistsPredicate.Eval behavior** — Intentional divergence: Go returns TriUnknown (safe no-op), Java throws. Both prevent row-level evaluation. ExistsPredicate is NEVER evaluated at row level — planner/executor handles it structurally. Go's approach is safer (no panic recovery needed).
 - [x] **Plan serialization for plan cache** — In-memory `PlanCache` (LRU, 256 entries) works for single-process deployments. Plans are keyed by SQL hash and cached as compiled Go objects. Cross-process sharing would need proto serialization, but Go services typically run one process per pod — the in-memory cache is production-grade for that model.
+- [x] **Eliminate GetText() for semantic decisions** — Replaced all `GetText()`-based operator classification with typed ANTLR terminal node checks. `classifyComparisonOp()` uses `EQUAL_SYMBOL`, `GREATER_SYMBOL`, `LESS_SYMBOL`, `EXCLAMATION_SYMBOL`, `IS`, `NOT`, `DISTINCT`, `FROM` terminal methods. Logical operators use `AllBIT_AND_OP()`/`AllBIT_OR_OP()` for `&&`/`||`. UNION quantifier uses `ALL()`. Bit-shift detection uses `AllLESS_SYMBOL()`/`AllGREATER_SYMBOL()`. 14 files, 7 evaluation paths fixed. The old `ISDISTINCTFROM`/`ISNOTDISTINCTFROM` GetText() concatenation hack is gone. Dead `<=>` (null-safe equality) case removed — grammar has it commented out in both Java and Go.
+- [x] **Document `&&`/`||`/`XOR` as Go extensions** — Java's SqlFunctionCatalogImpl only registers `and`/`or`/`not`; symbolic `&&`, `||`, and keyword `XOR` throw UNSUPPORTED_QUERY in Java. Go accepts all five forms as a Go-only extension. Documented in DIVERGENCES.md.
+- [x] **ArrayConstructor scalar subquery gap** — `walkScalarSubqueriesAtom` now recurses into `ArrayConstructorExpressionAtomContext`, preventing cache-miss fallback for `ARRAY[(SELECT ...)]`.
+- [x] **Remove dead t.Skip() calls** — `options_test.go` pointer-identity guard (Build() always returns new pointer) and `logical_predicate_test.go` nil-op guard (builder always returns a result for self-join) replaced with Fatal assertions.
+- [x] **DISTINCT aggregate detection via string hack** — `findDistinctAggregate` used `strings.Contains(upper, "DISTINCT ")` on serialized aggregate text. Replaced with typed `HasDistinctAggregate` field on `LogicalAggregate`, set structurally at construction.
+- [x] **Aggregate alias detection via `"("` hack** — `plan_visitor.go:1001` used `strings.Contains(visibleProj[i], "(")` to detect aggregates. Replaced with structural tracking: `hasAggAlias` set inside the aggFunc loop where the type is already known.
+- [x] **ORDER BY sentinel string hack** — `__orderby_expr_` prefix matching via `strings.HasPrefix` replaced with `isSyntheticExpr bool` field on `orderByClause`.
+- [x] **Join type string literals** — `"INNER"`, `"LEFT"`, `"RIGHT"` string comparisons scattered across 6 files replaced with typed constants `joinTypeInner`, `joinTypeLeft`, `joinTypeRight`.
+- [x] **INSERT/UPDATE type mismatch error code** — `proto_value.go:269` used ErrCodeInvalidParameter (22023) for type mismatch at proto field assignment. Java's SemanticException maps to CANNOT_CONVERT_TYPE (22000). Fixed + test expectation updated.
+- [x] **Review fixes** — `classifyComparisonOp` DISTINCT guard, `extractColOpLiteral` pushdown operator allowlist restored, null→UNKNOWN comment restored.
 
 ---
 

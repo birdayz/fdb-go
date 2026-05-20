@@ -175,13 +175,14 @@ func walkScalarSubqueriesAtom(atom antlrgen.IExpressionAtomContext, cb func(antl
 				walkScalarSubqueries(f.Expression(), cb)
 			}
 		}
-	// TODO: ArrayConstructorExpressionAtomContext is not yet handled
-	// here — a subquery nested inside an array literal (e.g.
-	// `ARRAY[(SELECT v FROM t)]`) will not be pre-evaluated and
-	// evalScalarSubquery will hit the cache-miss fallback. Low-
-	// priority because array literals with subqueries aren't in the
-	// yamsql corpus today; if they show up, add a recursion branch
-	// here mirroring RecordConstructorExpressionAtomContext.
+	case *antlrgen.ArrayConstructorExpressionAtomContext:
+		if ac := a.ArrayConstructor(); ac != nil {
+			if exprs := ac.Expressions(); exprs != nil {
+				for _, e := range exprs.AllExpression() {
+					walkScalarSubqueries(e, cb)
+				}
+			}
+		}
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		// Function arguments may contain scalar subqueries (e.g.
 		// UPPER((SELECT name FROM t WHERE id = 1))). Recurse into each.

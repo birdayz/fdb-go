@@ -93,16 +93,17 @@ func TestExtractPKUserFields_Composite(t *testing.T) {
 	}
 }
 
-// TestExtractPKUserFields_BareField pins the documented gap: a bare
-// FieldKeyExpression PK (intermingled-table form) returns nil.
-// Pushdown then bails to scan, which is correct — see the comment in
-// where_extractors.go pinning the "intermingled tables correctly"
-// invariant.
+// TestExtractPKUserFields_BareField verifies that a bare
+// FieldKeyExpression PK (intermingled-table form) returns the single
+// field name. Previously returned nil (documented gap); now returns
+// the field so callers like UPDATE's PK-modification guard work for
+// intermingled single-field PKs.
 func TestExtractPKUserFields_BareField(t *testing.T) {
 	t.Parallel()
 	pk := recordlayer.Field("id") // bare FieldKeyExpression
-	if got := extractPKUserFields(pk); got != nil {
-		t.Fatalf("bare FieldKeyExpression PK: got %v, want nil", got)
+	got := extractPKUserFields(pk)
+	if len(got) != 1 || got[0] != "id" {
+		t.Fatalf("bare FieldKeyExpression PK: got %v, want [id]", got)
 	}
 }
 

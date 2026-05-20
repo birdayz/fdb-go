@@ -2,12 +2,106 @@ package embedded
 
 import (
 	"context"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
+
+// classifyComparisonOp returns a canonical string for comparison operators
+// using typed ANTLR terminal nodes (no GetText()). Returns "" for
+// unrecognized operators.
+func classifyComparisonOp(op antlrgen.IComparisonOperatorContext) string {
+	if op == nil {
+		return ""
+	}
+	c, ok := op.(*antlrgen.ComparisonOperatorContext)
+	if !ok {
+		return ""
+	}
+	if c.IS() != nil && c.DISTINCT() != nil {
+		if c.NOT() != nil {
+			return "IS NOT DISTINCT FROM"
+		}
+		return "IS DISTINCT FROM"
+	}
+	hasEq := c.EQUAL_SYMBOL() != nil
+	hasGt := c.GREATER_SYMBOL() != nil
+	hasLt := c.LESS_SYMBOL() != nil
+	hasBang := c.EXCLAMATION_SYMBOL() != nil
+	switch {
+	case hasBang && hasEq:
+		return "!="
+	case hasLt && hasGt:
+		return "<>"
+	case hasGt && hasEq:
+		return ">="
+	case hasLt && hasEq:
+		return "<="
+	case hasEq && !hasGt && !hasLt:
+		return "="
+	case hasGt && !hasEq:
+		return ">"
+	case hasLt && !hasEq && !hasGt:
+		return "<"
+	default:
+		return ""
+	}
+}
+
+// classifyMathOp returns a canonical string for arithmetic operators
+// using typed ANTLR terminal nodes (no GetText()).
+func classifyMathOp(op antlrgen.IMathOperatorContext) string {
+	if op == nil {
+		return ""
+	}
+	m, ok := op.(*antlrgen.MathOperatorContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case m.PLUS() != nil:
+		return "+"
+	case m.MINUS() != nil:
+		return "-"
+	case m.STAR() != nil:
+		return "*"
+	case m.DIVIDE() != nil:
+		return "/"
+	case m.DIV() != nil:
+		return "DIV"
+	case m.MODULE() != nil:
+		return "%"
+	case m.MOD() != nil:
+		return "MOD"
+	}
+	return ""
+}
+
+// classifyBitOp returns a canonical string for bitwise operators
+// using typed ANTLR terminal nodes (no GetText()).
+func classifyBitOp(op antlrgen.IBitOperatorContext) string {
+	if op == nil {
+		return ""
+	}
+	b, ok := op.(*antlrgen.BitOperatorContext)
+	if !ok {
+		return ""
+	}
+	switch {
+	case b.BIT_AND_OP() != nil:
+		return "&"
+	case b.BIT_OR_OP() != nil:
+		return "|"
+	case b.BIT_XOR_OP() != nil:
+		return "^"
+	case len(b.AllLESS_SYMBOL()) >= 2:
+		return "<<"
+	case len(b.AllGREATER_SYMBOL()) >= 2:
+		return ">>"
+	}
+	return ""
+}
 
 // Pushdown-path predicate extractors.
 //
@@ -64,7 +158,7 @@ func extractColOpLiteral(
 	if opC == nil {
 		return "", "", nil, false
 	}
-	opText := strings.ReplaceAll(opC.GetText(), " ", "")
+	opText := classifyComparisonOp(opC)
 	switch opText {
 	case "=", ">", ">=", "<", "<=":
 	default:
@@ -141,24 +235,22 @@ func flipComparisonOp(op string) string {
 }
 
 // extractPKUserFields returns the ordered list of user field names
-// making up the primary key when pushdown is safe, or nil otherwise.
-//
-// Only CompositeKeyExpression is supported today: SQL DDL's default
-// (non-intermingled) path emits `Concat(RecordTypeKey, Field(col)…)`,
-// and the RecordTypeKey prefix in the range tuple naturally scopes
-// the FDB scan to the right record type. The bare FieldKeyExpression
-// branch — which SQL DDL only emits for `SetIntermingleTables(true)`
-// schemas — has NO type filter; an intermingled multi-table schema
-// where different types share a PK column space could return a
-// wrong-typed record at the same key. We bail on that shape until
-// a type-filtering wrapper is added; the scan path still handles
-// intermingled tables correctly.
+// making up the primary key, or nil for unrecognised key expression
+// types. Handles both CompositeKeyExpression (default SQL DDL path:
+// `Concat(RecordTypeKey, Field(col)…)`) and bare FieldKeyExpression
+// (intermingled-table path: `Field(col)` with no RecordTypeKey
+// prefix). Callers like UPDATE's PK-modification guard and pushdown
+// use the returned names; pushdown callers additionally check for
+// the RecordTypeKey prefix in their own scan-range construction.
 func extractPKUserFields(pk recordlayer.KeyExpression) []string {
 	if e, ok := pk.(*recordlayer.CompositeKeyExpression); ok {
 		// FieldNames() on a CompositeKeyExpression returns just the
 		// Field children, not the RecordTypeKey (which contributes no
 		// named column). That's exactly the user field list.
 		return e.FieldNames()
+	}
+	if f, ok := pk.(*recordlayer.FieldKeyExpression); ok {
+		return f.FieldNames()
 	}
 	return nil
 }
@@ -188,8 +280,10 @@ func flattenAndPredicates(expr antlrgen.IExpressionContext) ([]antlrgen.IExpress
 		return []antlrgen.IExpressionContext{expr}, true
 	}
 	op := le.LogicalOperator()
-	opText := strings.ReplaceAll(op.GetText(), " ", "")
-	isAnd := op.AND() != nil || opText == "&&"
+	if op == nil {
+		return nil, false
+	}
+	isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
 	if !isAnd {
 		return nil, false
 	}
@@ -224,8 +318,7 @@ func extractColEqualsLiteral(
 	if !ok {
 		return "", nil, false
 	}
-	op := bcp.ComparisonOperator()
-	if op == nil || strings.ReplaceAll(op.GetText(), " ", "") != "=" {
+	if classifyComparisonOp(bcp.ComparisonOperator()) != "=" {
 		return "", nil, false
 	}
 	// One side must be a column ref; the other must evaluate to a
@@ -251,7 +344,7 @@ func extractColumnRef(atom antlrgen.IExpressionAtomContext) (string, bool) {
 		return "", false
 	}
 	name := functions.FullIdToName(fcn.FullColumnName().FullId())
-	return name[strings.LastIndex(name, ".")+1:], true
+	return parseColRef(name).bare(), true
 }
 
 // evalConstantAtom attempts to evaluate an expression atom without a

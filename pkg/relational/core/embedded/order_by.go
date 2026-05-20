@@ -95,7 +95,7 @@ func naturalOrderSatisfiesDir(orderBy []orderByClause, naturalOrder []string, eq
 			if underlying, isAlias := aliasToUnderlying[strings.ToUpper(c)]; isAlias {
 				c = underlying
 			}
-			if equatedCols[strings.ToUpper(c)] {
+			if equatedCols[strings.ToUpper(parseColRef(c).bare())] {
 				continue
 			}
 			ob = append(ob, obc)
@@ -157,10 +157,8 @@ func naturalOrderSatisfiesDir(orderBy []orderByClause, naturalOrder []string, eq
 		// for comparison with the bare natural-order col list. The
 		// scan loop populates the row map with both qualified and bare
 		// forms; the natural-order check is bare-col-keyed so we
-		// follow that convention. nightshift-60.
-		if dot := strings.LastIndex(obCol, "."); dot >= 0 {
-			obCol = obCol[dot+1:]
-		}
+		// follow that convention.
+		obCol = parseColRef(obCol).bare()
 		if !strings.EqualFold(obCol, na[i]) {
 			return false
 		}
@@ -184,10 +182,7 @@ func allOrderByEquated(orderBy []orderByClause, equatedCols map[string]bool, ali
 		}
 		// Strip table-qualifier prefix to match the bare-keyed
 		// equatedCols. Same convention as naturalOrderSatisfiesDir.
-		// nightshift-60.
-		if dot := strings.LastIndex(c, "."); dot >= 0 {
-			c = c[dot+1:]
-		}
+		c = parseColRef(c).bare()
 		if !equatedCols[strings.ToUpper(c)] {
 			return false
 		}

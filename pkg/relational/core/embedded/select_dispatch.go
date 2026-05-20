@@ -85,11 +85,7 @@ func (c *EmbeddedConnection) execQueryBodyRows(ctx context.Context, body antlrge
 func stripCTEColumnQualifiers(cols []string) []string {
 	out := make([]string, len(cols))
 	for i, col := range cols {
-		if dot := strings.LastIndex(col, "."); dot >= 0 {
-			out[i] = col[dot+1:]
-		} else {
-			out[i] = col
-		}
+		out[i] = parseColRef(col).bare()
 	}
 	return out
 }
@@ -191,11 +187,7 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		if len(cols) > 1 {
 			seen := make(map[string]bool, len(cols))
 			for _, col := range cols {
-				key := col
-				if dot := strings.LastIndex(col, "."); dot >= 0 {
-					key = col[dot+1:]
-				}
-				key = strings.ToUpper(key)
+				key := strings.ToUpper(parseColRef(col).bare())
 				if seen[key] {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"derived table %q has duplicate column %q", sq.tableName, col)

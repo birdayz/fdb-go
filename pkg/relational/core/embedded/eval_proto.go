@@ -96,13 +96,8 @@ func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, 
 // False negatives are OK — they just fall through to the value path
 // which handles non-boolean atoms correctly.
 func looksBoolean(atom antlrgen.IExpressionAtomContext) bool {
-	switch atom.(type) {
-	case *antlrgen.BinaryComparisonPredicateContext:
-		return true
-	case *antlrgen.RecordConstructorExpressionAtomContext:
-		return true
-	}
-	return false
+	_, ok := atom.(*antlrgen.BinaryComparisonPredicateContext)
+	return ok
 }
 
 func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
@@ -117,12 +112,9 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		// `emp.id` in an inner `FROM project` would silently resolve to
 		// `project.id`. Unqualified `col` prefers inner; falls through
 		// only on miss.
-		bare := colName
-		qual := ""
-		if dot := strings.LastIndex(colName, "."); dot >= 0 {
-			qual = strings.ToUpper(colName[:dot])
-			bare = colName[dot+1:]
-		}
+		ref := parseColRef(colName)
+		bare := ref.bare()
+		qual := strings.ToUpper(ref.table)
 		if msg != nil {
 			// Inner qualifier match: accept the descriptor name always;
 			// also accept any SQL-level alias declared by the current
@@ -173,7 +165,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		return functions.ApplyMathOp(left, right, a.MathOperator().GetText())
+		return functions.ApplyMathOp(left, right, classifyMathOp(a.MathOperator()))
 	case *antlrgen.BitExpressionAtomContext:
 		// Grammar: bitOperator : '<' '<' | '>' '>' | '&' | '^' | '|'
 		// Java registers bitand/bitor/bitxor + shifts in SqlFunctionCatalog.
@@ -185,7 +177,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
+		return functions.ApplyBitOp(left, right, classifyBitOp(a.BitOperator()))
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
 	case *antlrgen.RecordConstructorExpressionAtomContext:
@@ -254,26 +246,19 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		op := a.ComparisonOperator().GetText()
-		// IS [NOT] DISTINCT FROM is NULL-safe — must be handled before
-		// the generic NULL → UNKNOWN short-circuit below, since two
-		// NULLs are NOT distinct (returns true for NOT DISTINCT FROM,
-		// false for DISTINCT FROM). Mirrors the tri-predicate path
-		// at line 7731. Pre-fix the value-eval path fell through to
-		// "unsupported comparison operator" errors for
-		// `SELECT (col IS DISTINCT FROM NULL)` projections.
+		op := classifyComparisonOp(a.ComparisonOperator())
 		switch op {
-		case "ISDISTINCTFROM":
+		case "IS DISTINCT FROM":
 			return !nullSafeEqual(left, right), nil
-		case "ISNOTDISTINCTFROM":
+		case "IS NOT DISTINCT FROM":
 			return nullSafeEqual(left, right), nil
 		}
 		if left == nil || right == nil {
 			return nil, nil
 		}
 		if !valuesComparable(left, right) {
-			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"cannot compare %T with %T", left, right)
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
 		}
 		cmp := functions.CompareValues(left, right)
 		switch op {

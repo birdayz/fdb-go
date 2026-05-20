@@ -787,10 +787,7 @@ func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FallsBackToText(t *tes
 		"SELECT * FROM Order JOIN Order ON Order.order_id = Order.order_id WHERE price > 5")
 	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md)
 	if op == nil {
-		// Parser may reject the duplicate name before reaching the builder;
-		// in that case `parseSelect` would have already failed. If we get
-		// here with a nil op, the builder declined for a different reason.
-		t.Skip("builder returned nil — parser likely rejected duplicate name")
+		t.Fatal("buildLogicalPlanForSelectWithCatalog returned nil for self-join without alias")
 	}
 	var filter *logical.LogicalFilter
 	for cur := op; cur != nil; {

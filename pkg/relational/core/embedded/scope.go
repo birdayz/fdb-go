@@ -142,8 +142,9 @@ func outerScopeFromMapRow(row map[string]driver.Value) outerScope {
 	}
 	quals := make(map[string]bool)
 	for k := range row {
-		if dot := strings.LastIndex(k, "."); dot >= 0 {
-			quals[strings.ToUpper(k[:dot])] = true
+		ref := parseColRef(k)
+		if ref.isQualified() {
+			quals[strings.ToUpper(ref.table)] = true
 		}
 	}
 	return outerScope{row: row, qualifiers: quals}
@@ -180,12 +181,9 @@ func outerScopesContainQualifier(c *EmbeddedConnection, qualUpper string) bool {
 // will miss (matches the rest of this evaluator's case-sensitive
 // column semantics).
 func (c *EmbeddedConnection) resolveOuterColumn(colName string) (driver.Value, bool, error) {
-	qual := ""
-	bare := colName
-	if dot := strings.LastIndex(colName, "."); dot >= 0 {
-		qual = strings.ToUpper(colName[:dot])
-		bare = colName[dot+1:]
-	}
+	ref := parseColRef(colName)
+	qual := strings.ToUpper(ref.table)
+	bare := ref.bare()
 	for i := len(c.outerScopes) - 1; i >= 0; i-- {
 		s := c.outerScopes[i]
 		if qual != "" && !s.qualifiers[qual] {
@@ -212,11 +210,11 @@ func (c *EmbeddedConnection) resolveOuterColumn(colName string) (driver.Value, b
 				// set and lookup qual are uppercased. Do a case-
 				// insensitive prefix match so `E.id` → `e.id`.
 				for k, v := range s.row {
-					dot := strings.LastIndex(k, ".")
-					if dot < 0 {
+					kr := parseColRef(k)
+					if !kr.isQualified() {
 						continue
 					}
-					if strings.EqualFold(k[:dot], qual) && k[dot+1:] == bare {
+					if strings.EqualFold(kr.table, qual) && kr.bare() == bare {
 						if _, isAmb := v.(ambiguousColumnMarker); isAmb {
 							return nil, false, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 								"correlated column reference %q is ambiguous", colName)

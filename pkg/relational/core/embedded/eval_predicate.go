@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -133,12 +132,11 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 			return triFalse, err
 		}
 		op := e.LogicalOperator()
-		// Grammar: AND | '&' '&' | XOR | OR | '|' '|'. op.AND()/OR()/XOR()
-		// are only non-nil for the keyword forms; the symbolic `&&` and
-		// `||` forms need text-based detection.
-		opText := strings.ReplaceAll(op.GetText(), " ", "")
-		isAnd := op.AND() != nil || opText == "&&"
-		isOr := op.OR() != nil || opText == "||"
+		if op == nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "missing logical operator")
+		}
+		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
+		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil
 		switch {
 		case isAnd:
@@ -247,7 +245,7 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 		}
 		return triFromBool(functions.IsTruthy(v)), nil
 	}
-	opText := bcp.ComparisonOperator().GetText()
+	opText := classifyComparisonOp(bcp.ComparisonOperator())
 
 	left, err := evalExprAtom(ctx, conn, msg, bcp.GetLeft())
 	if err != nil {
@@ -257,32 +255,20 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	if err != nil {
 		return triFalse, err
 	}
-	// SQL `IS [NOT] DISTINCT FROM` is null-safe equality — it always
-	// returns TRUE or FALSE, never UNKNOWN, even when operands are NULL.
-	// Grammar joins tokens without whitespace: `IS DISTINCT FROM` →
-	// "ISDISTINCTFROM", `IS NOT DISTINCT FROM` → "ISNOTDISTINCTFROM".
-	// Must branch BEFORE the any-NULL → UNKNOWN fallback below.
+	// IS [NOT] DISTINCT FROM is null-safe — always 2-valued; branch before null-guard.
 	switch opText {
-	case "ISDISTINCTFROM":
+	case "IS DISTINCT FROM":
 		return triFromBool(!nullSafeEqual(left, right)), nil
-	case "ISNOTDISTINCTFROM":
+	case "IS NOT DISTINCT FROM":
 		return triFromBool(nullSafeEqual(left, right)), nil
 	}
-	// SQL 3-valued logic: any other comparison involving NULL is UNKNOWN.
-	// Use IS NULL / IS NOT NULL for explicit NULL tests.
+	// SQL 3-valued logic: any comparison involving NULL → UNKNOWN.
 	if left == nil || right == nil {
 		return triNull, nil
 	}
 
-	// Java alignment: Java's PromoteValue.isPromotionNeeded errors with
-	// SemanticException(INCOMPATIBLE_TYPE) → SQLSTATE 22000
-	// (CANNOT_CONVERT_TYPE) when the two operands have non-promotable
-	// types (e.g. STRING vs BIGINT). Pre-fix Go silently returned
-	// FALSE for these comparisons → empty result set, the dangerous
-	// kind of bug. Now we error to match Java.
+	// Java's PromoteValue.isPromotionNeeded → SQLSTATE 42804.
 	if !valuesComparable(left, right) {
-		// Java maps SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES →
-		// ErrorCode.DATATYPE_MISMATCH (42804).
 		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 			"The operands of a comparison operator are not compatible.")
 	}
@@ -312,7 +298,8 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() so unset optionals (SQL NULL) yield UNKNOWN.
 		colName := functions.FullIdToName(colAtom.FullColumnName().FullId())
-		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+		bare := parseColRef(colName).bare()
+		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
 		if fd == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}
@@ -366,28 +353,15 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			"IN requires a parenthesized expression list or subquery")
 	}
 	exprs := exprsCtx.AllExpression()
-	// Pre-scan: Java rejects any NULL element in the IN list, even
-	// when an earlier element matches. fdb-relational does this at
-	// plan time before evaluation; we mirror by checking all elements
-	// before short-circuiting the match.
-	values := make([]any, 0, len(exprs))
 	for _, expr := range exprs {
-		// Java-aligned: IN list elements are arbitrary expressions, not
-		// just constants. `b IN (1+0, 3+0, 5, 7)` is valid SQL.
 		litVal, err := evalExpr(ctx, conn, msg, expr)
 		if err != nil {
 			return triFalse, err
 		}
 		if litVal == nil {
-			// Java: "NULL values are not allowed in the IN list" (42809).
-			return triFalse, api.NewErrorf(api.ErrCodeWrongObjectType,
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
 				"NULL values are not allowed in the IN list")
 		}
-		values = append(values, litVal)
-	}
-	for _, litVal := range values {
-		// Java maps type-incompatible comparisons to 42804
-		// (DATATYPE_MISMATCH) via SemanticException translation.
 		if !valuesComparable(fieldVal, litVal) {
 			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 				"The operands of a comparison operator are not compatible.")
@@ -412,7 +386,8 @@ func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg prot
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() to distinguish NULL (unset optional) from zero.
 		colName := functions.FullIdToName(colAtom.FullColumnName().FullId())
-		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+		bare := parseColRef(colName).bare()
+		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
 		if fd == nil {
 			return false, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}
@@ -470,7 +445,7 @@ func evalLikePredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 	}
 	s, ok2 := rawVal.(string)
 	if !ok2 {
-		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string expression, got %T", rawVal)
+		return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter, "LIKE requires a string expression, got %T", rawVal)
 	}
 
 	// Pattern is the first STRING_LITERAL token; strip surrounding quotes.

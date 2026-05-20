@@ -33,6 +33,7 @@ go_test(
         "having_probe_test.go",
         "plan_cache_bench_test.go",
         "plan_shape_conformance_test.go",
+        "quality_probes_test.go",
         "rcte_crossjoin_probe_test.go",
         "recursive_cte_rename_probe_test.go",
         "scalar_subquery_cte_test.go",

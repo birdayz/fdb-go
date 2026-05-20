@@ -39,43 +39,41 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		return v, nil
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		name := functions.FullIdToName(a.FullColumnName().FullId())
+		ref := parseColRef(name)
 		v, found := row[name]
-		if !found {
+		if !found && ref.isQualified() {
 			// Try unqualified: "Order.amount" → "amount".
-			if dot := strings.LastIndex(name, "."); dot >= 0 {
-				qual := name[:dot]
-				qualUpper := strings.ToUpper(qual)
-				// When a JOIN scope is active, reject a qualified
-				// reference whose qualifier isn't a valid FROM source
-				// alias — symmetric with the SELECT projection check.
-				// Fires before the bare-column fallback so wrong
-				// qualifiers error 42F01 instead of silently picking
-				// whichever source populated the bare key.
-				//
-				// Correlated subquery exception: if the qualifier matches
-				// an outer-scope alias, skip the reject and let the outer
-				// fallback below resolve it.
-				if conn != nil && conn.validQualifiers != nil && !conn.validQualifiers[qualUpper] {
-					if !outerScopesContainQualifier(conn, qualUpper) {
-						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-							"column reference %q names unknown table/alias %q", name, qual)
-					}
-					// Outer qualifier in JOIN scope: leave found=false
-					// so the `if !found` block below routes to the
-					// outer-scope walk via resolveOuterColumn.
-				} else if conn != nil && outerScopesContainQualifier(conn, qualUpper) {
-					// CTE / single-source path (validQualifiers nil) with
-					// an active outer scope whose alias matches the
-					// qualifier — defer to the outer-scope walk below
-					// (leave found=false). Without this, `big.gid =
-					// a.gid` inside `EXISTS (SELECT 1 FROM big WHERE …)`
-					// would silently resolve `a.gid` to big's bare `gid`
-					// column, making the predicate `big.gid = big.gid`
-					// (tautology). Outer-scope wins iff the qualifier
-					// names an outer source.
-				} else {
-					v, found = row[name[dot+1:]]
+			qualUpper := strings.ToUpper(ref.table)
+			// When a JOIN scope is active, reject a qualified
+			// reference whose qualifier isn't a valid FROM source
+			// alias — symmetric with the SELECT projection check.
+			// Fires before the bare-column fallback so wrong
+			// qualifiers error 42F01 instead of silently picking
+			// whichever source populated the bare key.
+			//
+			// Correlated subquery exception: if the qualifier matches
+			// an outer-scope alias, skip the reject and let the outer
+			// fallback below resolve it.
+			if conn != nil && conn.validQualifiers != nil && !conn.validQualifiers[qualUpper] {
+				if !outerScopesContainQualifier(conn, qualUpper) {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+						"column reference %q names unknown table/alias %q", name, ref.table)
 				}
+				// Outer qualifier in JOIN scope: leave found=false
+				// so the `if !found` block below routes to the
+				// outer-scope walk via resolveOuterColumn.
+			} else if conn != nil && outerScopesContainQualifier(conn, qualUpper) {
+				// CTE / single-source path (validQualifiers nil) with
+				// an active outer scope whose alias matches the
+				// qualifier — defer to the outer-scope walk below
+				// (leave found=false). Without this, `big.gid =
+				// a.gid` inside `EXISTS (SELECT 1 FROM big WHERE …)`
+				// would silently resolve `a.gid` to big's bare `gid`
+				// column, making the predicate `big.gid = big.gid`
+				// (tautology). Outer-scope wins iff the qualifier
+				// names an outer source.
+			} else {
+				v, found = row[ref.bare()]
 			}
 		}
 		if !found {
@@ -105,13 +103,11 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		opText := a.ComparisonOperator().GetText()
-		// IS [NOT] DISTINCT FROM is null-safe equality — always 2-valued.
-		// Must branch BEFORE the any-NULL → nil fallback below.
+		opText := classifyComparisonOp(a.ComparisonOperator())
 		switch opText {
-		case "ISDISTINCTFROM":
+		case "IS DISTINCT FROM":
 			return !nullSafeEqual(left, right), nil
-		case "ISNOTDISTINCTFROM":
+		case "IS NOT DISTINCT FROM":
 			return nullSafeEqual(left, right), nil
 		}
 		// Java-aligned SQL 3-valued logic: NULL comparison → UNKNOWN
@@ -149,7 +145,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		return applyArithmeticOp(left, right, a.MathOperator().GetText())
+		return applyArithmeticOp(left, right, classifyMathOp(a.MathOperator()))
 	case *antlrgen.BitExpressionAtomContext:
 		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
 		if err != nil {
@@ -159,7 +155,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
+		return functions.ApplyBitOp(left, right, classifyBitOp(a.BitOperator()))
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		// Aggregate function calls inside a row-map expression evaluate
 		// by looking up the reconstructed aggregate name in the row map.

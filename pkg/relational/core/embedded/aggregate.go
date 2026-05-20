@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -109,8 +108,8 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			// Also store the bare form so `GROUP BY x.col1` matches
 			// a `col1` reference in SELECT-list expressions, and vice
 			// versa. scanTableToMaps / cteRowsToMaps populate both.
-			if dot := strings.LastIndex(gn, "."); dot >= 0 {
-				groupByNames[gn[dot+1:]] = true
+			if ref := parseColRef(gn); ref.isQualified() {
+				groupByNames[ref.bare()] = true
 			}
 		}
 		for _, ac := range sq.aggCols {
@@ -123,12 +122,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			// Qualified SELECT-list ref against an unqualified GROUP
 			// BY (or vice versa): check the bare last-segment too, so
 			// `SELECT x.col1 FROM ... GROUP BY col1` passes.
-			if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
-				if groupByNames[ac.groupCol[dot+1:]] {
+			if ref := parseColRef(ac.groupCol); ref.isQualified() {
+				if groupByNames[ref.bare()] {
 					continue
 				}
 			}
-			if _, defined := filtered[0][ac.groupCol]; defined {
+			if v, defined := filtered[0][ac.groupCol]; defined {
+				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"column reference %q is ambiguous", m.Col)
+				}
 				return nil, nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
 					ac.groupCol)
@@ -142,13 +145,8 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if ac.aggArg == "" || ac.aggExpr != nil {
 				continue
 			}
-			if _, defined := filtered[0][ac.aggArg]; defined {
+			if _, found := mapLookupStr(filtered[0], ac.aggArg); found {
 				continue
-			}
-			if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
-				if _, defined := filtered[0][ac.aggArg[dot+1:]]; defined {
-					continue
-				}
 			}
 			return nil, nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q not found", ac.aggArg)
@@ -179,16 +177,23 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				continue
 			}
 			for _, ref := range harvestColumnRefs(ac.outExpr) {
-				bare := ref
-				if dot := strings.LastIndex(ref, "."); dot >= 0 {
-					bare = ref[dot+1:]
-				}
-				if groupByNames[ref] || groupByNames[bare] {
+				cr := parseColRef(ref)
+				if groupByNames[ref] || groupByNames[cr.bare()] {
 					continue
 				}
-				// Not grouped — check if the column is defined in source.
-				_, definedQual := filtered[0][ref]
-				_, definedBare := filtered[0][bare]
+				// Check both qualified and bare forms for ambiguity and
+				// definition, using the structured colRef to avoid manual
+				// dot-splitting.
+				vQual, definedQual := filtered[0][ref]
+				vBare, definedBare := filtered[0][cr.bare()]
+				if m, isAmb := vQual.(ambiguousColumnMarker); definedQual && isAmb {
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"column reference %q is ambiguous", m.Col)
+				}
+				if m, isAmb := vBare.(ambiguousColumnMarker); definedBare && isAmb {
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"column reference %q is ambiguous", m.Col)
+				}
 				if definedQual || definedBare {
 					return nil, nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 						"column %q must appear in the GROUP BY clause or be used in an aggregate function",
@@ -232,25 +237,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				gVals[gi] = v
 				continue
 			}
-			if v, ok := row[gcol]; ok {
-				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-						"GROUP BY column reference %q is ambiguous", m.Col)
-				}
-				gVals[gi] = v
-			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
-				// Fallback: strip table prefix and retry bare. If the
-				// qualified form wasn't populated (e.g. qualifier doesn't
-				// match any source) and the bare key is ambiguous, still
-				// trip 42702 instead of silently using the sentinel as a
-				// group-key value.
-				v := row[gcol[dot+1:]]
-				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-						"GROUP BY column reference %q is ambiguous", m.Col)
-				}
-				gVals[gi] = v
+			v, lookupErr := mapLookupStrChecked(row, gcol)
+			if lookupErr != nil {
+				return nil, nil, nil, lookupErr
 			}
+			gVals[gi] = v
 		}
 		key := groupByKey(gVals)
 		if !hasGroups {
@@ -298,16 +289,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				// exactly the nightshift-36 bug but for aggregates. Only
 				// fall through to the bare column when the qualified key
 				// is absent from the row.
-				v, ok := row[ac.aggArg]
-				if ok {
-					if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-						return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-							"aggregate argument %q is ambiguous", m.Col)
-					}
-					colVal = v
-				} else if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
-					colVal = row[ac.aggArg[dot+1:]]
+				resolved, lookupErr := mapLookupStrChecked(row, ac.aggArg)
+				if lookupErr != nil {
+					return nil, nil, nil, lookupErr
 				}
+				colVal = resolved
 			}
 			hasArg := ac.aggArg != "" || ac.aggExpr != nil
 			// COUNT(*) (no arg) counts every row, including all-NULL.
@@ -324,7 +310,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			case "SUM", "AVG":
 				fv, ok := functions.ToFloat64(colVal)
 				if !ok {
-					return nil, nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 						"unable to encapsulate aggregate operation due to type mismatch(es)")
 				}
 				if ac.aggFunc == "SUM" {
@@ -404,10 +390,9 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		// the same bare name (`GROUP BY x.col1, y.col1`), the first
 		// takes the bare slot; queries like `SELECT col1` over such a
 		// group are ambiguous to begin with.
-		if dot := strings.LastIndex(col, "."); dot >= 0 {
-			bare := col[dot+1:]
-			if _, exists := groupColIdx[bare]; !exists {
-				groupColIdx[bare] = i
+		if ref := parseColRef(col); ref.isQualified() {
+			if _, exists := groupColIdx[ref.bare()]; !exists {
+				groupColIdx[ref.bare()] = i
 			}
 		}
 	}
@@ -461,8 +446,8 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					// Qualified SELECT against unqualified GROUP BY:
 					// try the bare last-segment too. Symmetric with
 					// the validation loop above.
-					if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
-						idx, ok = groupColIdx[ac.groupCol[dot+1:]]
+					if ref := parseColRef(ac.groupCol); ref.isQualified() {
+						idx, ok = groupColIdx[ref.bare()]
 					}
 				}
 				if ok {
@@ -516,10 +501,9 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if _, seen := rowMap[gname]; !seen {
 				rowMap[gname] = gs.groupVals[i]
 			}
-			if dot := strings.LastIndex(gname, "."); dot >= 0 {
-				bare := gname[dot+1:]
-				if _, seen := rowMap[bare]; !seen {
-					rowMap[bare] = gs.groupVals[i]
+			if ref := parseColRef(gname); ref.isQualified() {
+				if _, seen := rowMap[ref.bare()]; !seen {
+					rowMap[ref.bare()] = gs.groupVals[i]
 				}
 			}
 		}

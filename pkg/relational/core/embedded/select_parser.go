@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"database/sql/driver"
+	"fmt"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -76,10 +77,20 @@ type selectQuery struct {
 	projConstFolded []projectionFold
 }
 
+// joinType enumerates the three join flavours; used to dispatch
+// LEFT/RIGHT null-padding in execSelectJoin.
+type joinType int
+
+const (
+	joinTypeInner joinType = iota
+	joinTypeLeft
+	joinTypeRight
+)
+
 // joinClause describes a single JOIN part in a SELECT query.
 type joinClause struct {
 	tableName string
-	joinType  string // "INNER", "LEFT", "RIGHT"
+	joinType  joinType
 	alias     string
 	onExpr    antlrgen.IExpressionContext
 	// derivedQuery is set when the join's right-hand source is a
@@ -116,6 +127,9 @@ type orderByClause struct {
 	// `ORDER BY SUM(v)` where colName resolved to "SUM(v)" and expr was
 	// left nil because the expression was a bare aggregate).
 	rawExpr antlrgen.IExpressionContext
+	// isSyntheticExpr is true when colName holds a synthetic sentinel
+	// (set during extraSortFields setup for expression-based ORDER BY).
+	isSyntheticExpr bool
 }
 
 // orderByLess returns true iff value `a` sorts before value `b` under the
@@ -1264,15 +1278,22 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		// wrapping expression. Inner aggregates were harvested above so
 		// the rowMap at outExpr eval time has them available. Clear
 		// colName so the Value-based sort resolver picks up rawExpr.
+		obAggIdx := 0
 		for obIdx, ob := range cls.orderBy {
 			if ob.expr == nil || len(harvestAggregates(ob.expr)) == 0 {
 				continue
 			}
+			outName := ""
+			if obAggIdx > 0 {
+				outName = fmt.Sprintf("__ob_agg_%d__", obAggIdx)
+			}
 			newAggs = append(newAggs, aggSelectCol{
 				outExpr: ob.expr,
+				outName: outName,
 			})
-			cls.orderBy[obIdx].colName = ""
+			cls.orderBy[obIdx].colName = outName
 			cls.orderBy[obIdx].expr = nil
+			obAggIdx++
 		}
 		if len(newAggs) > 0 {
 			if len(cls.aggCols) == 0 && len(projCols) > 0 {
@@ -1535,7 +1556,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			}
 			extraCrossJoins = append(extraCrossJoins, joinClause{
 				tableName: tblName,
-				joinType:  "INNER",
+				joinType:  joinTypeInner,
 				alias:     alias,
 				onExpr:    nil,
 			})
@@ -1550,7 +1571,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			}
 			extraCrossJoins = append(extraCrossJoins, joinClause{
 				tableName:    alias,
-				joinType:     "INNER",
+				joinType:     joinTypeInner,
 				alias:        alias,
 				onExpr:       nil,
 				derivedQuery: item.Query(),
@@ -1599,7 +1620,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
 	// InnerJoinContext to a LEFT/RIGHT join.
 	leftAlias := ""
-	promotedJoinType := ""
+	var promotedJoinType joinType = -1
 	// Grammar is `tableName (AS? alias=uid)?` — AS optional.
 	// Pick up implicit aliases via GetAlias() (was previously
 	// gated on AS being present, which lost `FROM Order o` etc).
@@ -1624,8 +1645,10 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 				(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
 		if atomItem.AS() == nil && !isQuoted {
 			up := strings.ToUpper(aliasTxt)
-			if up == "LEFT" || up == "RIGHT" {
-				promotedJoinType = up
+			if up == "LEFT" {
+				promotedJoinType = joinTypeLeft
+			} else if up == "RIGHT" {
+				promotedJoinType = joinTypeRight
 			} else {
 				leftAlias = aliasTxt
 			}
@@ -1647,7 +1670,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		joins = append(joins, jc)
 	}
 	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
+	if promotedJoinType >= 0 && len(joins) > 0 && joins[0].joinType == joinTypeInner {
 		joins[0].joinType = promotedJoinType
 	}
 	// Implicit cross joins from comma-separated FROM sources run last; the
@@ -1704,7 +1727,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if j.Expression() != nil {
 			onExpr = j.Expression()
 		}
-		return joinClause{tableName: tblName, joinType: "INNER", alias: alias, onExpr: onExpr}, nil
+		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr}, nil
 
 	case *antlrgen.OuterJoinContext:
 		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
@@ -1723,9 +1746,9 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if atomItem.GetAlias() != nil {
 			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 		}
-		jt := "LEFT"
+		jt := joinTypeLeft
 		if j.RIGHT() != nil {
-			jt = "RIGHT"
+			jt = joinTypeRight
 		}
 		var onExpr antlrgen.IExpressionContext
 		if j.Expression() != nil {

@@ -77,9 +77,11 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			return triFalse, err
 		}
 		op := le.LogicalOperator()
-		opText := strings.ReplaceAll(strings.ToUpper(op.GetText()), " ", "")
-		isAnd := op.AND() != nil || opText == "&&"
-		isOr := op.OR() != nil || opText == "||"
+		if op == nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "missing logical operator")
+		}
+		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
+		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil
 		if isXor {
 			right, err := evalHavingTri(ctx, conn, row, le.Expression(1))
@@ -165,7 +167,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			name := functions.FullIdToName(a.FullColumnName().FullId())
 			v, found := row[name]
 			if !found {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING column %q not in SELECT list", name)
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "HAVING column %q not in SELECT list", name)
 			}
 			return v, nil
 		case *antlrgen.FunctionCallExpressionAtomContext:
@@ -191,7 +193,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			}
 			v, found := row[lookupName]
 			if !found {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING aggregate %q not in SELECT list", lookupName)
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "HAVING aggregate %q not in SELECT list", lookupName)
 			}
 			return v, nil
 		case *antlrgen.MathExpressionAtomContext:
@@ -208,7 +210,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			if rErr != nil {
 				return nil, rErr
 			}
-			return functions.ApplyMathOp(left, right, a.MathOperator().GetText())
+			return functions.ApplyMathOp(left, right, classifyMathOp(a.MathOperator()))
 		case *antlrgen.BitExpressionAtomContext:
 			// Same shape as MathExpression but with bitwise ops. HAVING on
 			// bitwise expressions (`COUNT(*) & 1`) is unusual but valid and
@@ -221,7 +223,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			if rErr != nil {
 				return nil, rErr
 			}
-			return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
+			return functions.ApplyBitOp(left, right, classifyBitOp(a.BitOperator()))
 		case *antlrgen.SubqueryExpressionAtomContext:
 			// HAVING `agg <op> (SELECT ... )` — uncorrelated subquery
 			// pre-evaluated before the outer query started. Look up the
@@ -240,17 +242,19 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	if err != nil {
 		return triFalse, err
 	}
-	opText := compPred.ComparisonOperator().GetText()
-	// Null-safe equality (mirror of proto path) — branch before NULL→UNKNOWN.
+	opText := classifyComparisonOp(compPred.ComparisonOperator())
 	switch opText {
-	case "ISDISTINCTFROM":
+	case "IS DISTINCT FROM":
 		return triFromBool(!nullSafeEqual(leftVal, rightVal)), nil
-	case "ISNOTDISTINCTFROM":
+	case "IS NOT DISTINCT FROM":
 		return triFromBool(nullSafeEqual(leftVal, rightVal)), nil
 	}
-	// SQL 3-valued logic: NULL comparison → UNKNOWN.
 	if leftVal == nil || rightVal == nil {
 		return triNull, nil
+	}
+	if !valuesComparable(leftVal, rightVal) {
+		return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+			"The operands of a comparison operator are not compatible.")
 	}
 	cmp := functions.CompareValues(leftVal, rightVal)
 	switch opText {
@@ -406,24 +410,14 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"IN requires a parenthesized expression list or subquery")
 		}
-		var hadNullElement bool
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
-			// Match the proto path (evalInPredicateTri at
-			// eval_predicate.go:289): IN-list elements are arbitrary
-			// expressions — `b IN (1+0, foo(), CASE WHEN ... THEN ... END)` —
-			// not just bare predicated atoms. Use evalExprOnMap which
-			// dispatches PredicatedExpression / LogicalExpression / atom
-			// uniformly. Pre-fix the map path called evalExprAtomOnMap on
-			// just the .ExpressionAtom() of a PredicatedExpression, which
-			// silently dropped arithmetic / function-call elements.
 			litVal, litErr := evalExprOnMap(ctx, conn, row, inExpr)
 			if litErr != nil {
 				return triFalse, litErr
 			}
 			if litVal == nil {
-				// See evalInPredicateTri: NULL list element contributes UNKNOWN.
-				hadNullElement = true
-				continue
+				return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+					"NULL values are not allowed in the IN list")
 			}
 			if !valuesComparable(fieldVal, litVal) {
 				return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
@@ -436,27 +430,34 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				return triTrue, nil
 			}
 		}
-		if hadNullElement {
-			return triNull, nil
-		}
 		if p.NOT() != nil {
 			return triTrue, nil
 		}
 		return triFalse, nil
 	}
 
-	// Fallback: interpret as binary comparison (the predicate part has = / <> / < / > / <= / >=).
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if ok {
 		rightVal, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 		if err != nil {
 			return triFalse, err
 		}
+		opText := classifyComparisonOp(bcp.ComparisonOperator())
+		switch opText {
+		case "IS DISTINCT FROM":
+			return triFromBool(!nullSafeEqual(fieldVal, rightVal)), nil
+		case "IS NOT DISTINCT FROM":
+			return triFromBool(nullSafeEqual(fieldVal, rightVal)), nil
+		}
 		if fieldVal == nil || rightVal == nil {
 			return triNull, nil
 		}
+		if !valuesComparable(fieldVal, rightVal) {
+			return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
 		cmp := functions.CompareValues(fieldVal, rightVal)
-		switch bcp.ComparisonOperator().GetText() {
+		switch opText {
 		case "=":
 			return triFromBool(cmp == 0), nil
 		case "!=", "<>":
@@ -469,6 +470,8 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			return triFromBool(cmp <= 0), nil
 		case ">=":
 			return triFromBool(cmp >= 0), nil
+		default:
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 		}
 	}
 	return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported predicate type %T in map eval", pred.Predicate())
@@ -503,15 +506,11 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			return triFalse, err
 		}
 		op := e.LogicalOperator()
-		// Grammar: AND | '&' '&' | XOR | OR | '|' '|'. op.AND()/OR()/XOR()
-		// are only non-nil for the keyword forms; the symbolic `&&` and
-		// `||` forms need text-based detection. Pre-fix this branch fell
-		// through to triOr unconditionally for `&&` (silent AND→OR misfire
-		// in JOIN/CTE WHERE) and ignored XOR — round-5 review caught the
-		// divergence from the proto path.
-		opText := strings.ReplaceAll(op.GetText(), " ", "")
-		isAnd := op.AND() != nil || opText == "&&"
-		isOr := op.OR() != nil || opText == "||"
+		if op == nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "missing logical operator")
+		}
+		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
+		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil
 		switch {
 		case isAnd:
@@ -566,17 +565,19 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			if err != nil {
 				return triFalse, err
 			}
-			opText := bcp.ComparisonOperator().GetText()
-			// IS [NOT] DISTINCT FROM is null-safe — always 2-valued;
-			// branch before the any-NULL → UNKNOWN fallback.
+			opText := classifyComparisonOp(bcp.ComparisonOperator())
 			switch opText {
-			case "ISDISTINCTFROM":
+			case "IS DISTINCT FROM":
 				return triFromBool(!nullSafeEqual(left, right)), nil
-			case "ISNOTDISTINCTFROM":
+			case "IS NOT DISTINCT FROM":
 				return triFromBool(nullSafeEqual(left, right)), nil
 			}
 			if left == nil || right == nil {
 				return triNull, nil
+			}
+			if !valuesComparable(left, right) {
+				return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+					"The operands of a comparison operator are not compatible.")
 			}
 			cmp := functions.CompareValues(left, right)
 			switch opText {
@@ -592,6 +593,8 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 				return triFromBool(cmp <= 0), nil
 			case ">=":
 				return triFromBool(cmp >= 0), nil
+			default:
+				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 			}
 		}
 		v, err := evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())

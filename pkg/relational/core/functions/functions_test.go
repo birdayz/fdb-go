@@ -691,6 +691,13 @@ func TestCastValue(t *testing.T) {
 		assertEq(t, got, "3.14")
 	})
 
+	t.Run("float64_whole_to_STRING", func(t *testing.T) {
+		t.Parallel()
+		got, err := CastValue(float64(1.0), "STRING")
+		assertNoErr(t, err)
+		assertEq(t, got, "1.0")
+	})
+
 	// bool → STRING.
 	t.Run("bool_true_to_STRING", func(t *testing.T) {
 		t.Parallel()

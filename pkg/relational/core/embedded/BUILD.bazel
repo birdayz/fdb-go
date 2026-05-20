@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "aggregate.go",
         "cascades_generator.go",
+        "colref.go",
         "connection.go",
         "covering_index.go",
         "cte_scan.go",

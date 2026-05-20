@@ -151,40 +151,38 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			pending := make([]pendingUpdate, 0, len(updatedElems))
 			for _, elem := range updatedElems {
 				colName := functions.FullIdToName(elem.FullColumnName().FullId())
-				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
+				bare := parseColRef(colName).bare()
+				fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 				if fd == nil {
 					// Java verbatim: 'Attempting to query non existing
 					// column NAME' (uppercased identifier). Aligned
 					//  to match the SELECT path's same
 					// alignment.
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"Attempting to query non existing column %s", strings.ToUpper(colName))
+						"Attempting to query non existing column %s", strings.ToUpper(bare))
 				}
 				val, evalErr := evalExpr(ctx, c, rec.Record, elem.Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
-				pending = append(pending, pendingUpdate{fd: fd, colName: colName, val: val})
+				pending = append(pending, pendingUpdate{fd: fd, colName: bare, val: val})
 			}
 			for _, p := range pending {
+				if _, isPK := pkSet[p.colName]; isPK {
+					if p.val == nil {
+						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+							"NULL value in column %q violates NOT NULL constraint", p.colName)
+					}
+					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+						"record does not exist")
+				}
 				if p.val == nil {
-					// UPDATE SET col = NULL on a NOT NULL column must reject
-					// with ErrCodeNotNullViolation (23502), matching Java.
 					if p.fd.Cardinality() == protoreflect.Required {
 						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
 							"NULL value in column %q violates NOT NULL constraint", p.colName)
 					}
 					clonedRefl.Clear(p.fd)
 					continue
-				}
-				// Java alignment : UPDATE on a PK column
-				// with a non-NULL value is rejected with verbatim
-				// 'record does not exist' (Java's RecordDoesNotExist
-				// from the in-place save lookup). NULL case already
-				// handled above (NotNullViolation, more specific).
-				if _, isPK := pkSet[p.colName]; isPK {
-					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-						"record does not exist")
 				}
 				protoVal, convErr := functions.ConvertToProtoValue(p.fd, p.val)
 				if convErr != nil {

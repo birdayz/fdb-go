@@ -35,3 +35,16 @@ tests:
       - [1, 2, 102]
       - [2, 1, 201]
       - [2, 2, 202]
+  # outExpr referencing a GROUP BY column that has no bare groupCol entry
+  # in the SELECT list. Before the fix, the proto-path rowMap was missing
+  # the GROUP BY column seed, causing 42703 for the a+1 expression.
+  - query: SELECT SUM(c), a + 1 FROM t GROUP BY a ORDER BY a + 1
+    rows:
+      - [30, 2]
+      - [150, 3]
+  - query: SELECT a + b, MAX(c) FROM t GROUP BY a, b ORDER BY a + b
+    rows:
+      - [2, 20]
+      - [3, 30]
+      - [3, 50]
+      - [4, 60]

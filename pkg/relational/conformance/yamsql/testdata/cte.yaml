@@ -189,3 +189,13 @@ tests:
            )
       SELECT * FROM c1, c2
     error_code: "42F01"
+  # CTE with aggregate (GROUP BY + SUM) joined to base table.
+  - query: |-
+      WITH sums AS (SELECT id, SUM(v) AS total FROM t GROUP BY id)
+      SELECT t.id, s.total
+      FROM t, sums s
+      WHERE t.id = s.id AND s.total >= 30
+      ORDER BY t.id
+    rows:
+      - [3, 30]
+      - [4, 40]

@@ -1969,6 +1969,34 @@ func TestFDB_SelectWhereIsNull(t *testing.T) {
 	}
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids2).To(gomega.Equal([]int64{1}))
+
+	// Regression: qualified column names (Item.val) must work in IS NULL
+	// and IN predicates. Before the fix, ByName("Item.val") failed because
+	// proto field descriptors use bare names.
+	rows3, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE Item.val IS NULL ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows3.Close()
+	var ids3 []int64
+	for rows3.Next() {
+		var id int64
+		g.Expect(rows3.Scan(&id)).To(gomega.Succeed())
+		ids3 = append(ids3, id)
+	}
+	g.Expect(rows3.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids3).To(gomega.Equal([]int64{2}))
+
+	// Qualified IN predicate.
+	rows4, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE Item.val IN (42) ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows4.Close()
+	var ids4 []int64
+	for rows4.Next() {
+		var id int64
+		g.Expect(rows4.Scan(&id)).To(gomega.Succeed())
+		ids4 = append(ids4, id)
+	}
+	g.Expect(rows4.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids4).To(gomega.Equal([]int64{1}))
 }
 
 func TestFDB_SelectWhereLike(t *testing.T) {
