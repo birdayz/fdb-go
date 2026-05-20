@@ -38,6 +38,7 @@ package embedded
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -2632,15 +2633,15 @@ func buildLogicalPlanForUnionWithCTECatalog(
 		return nil, err
 	}
 
-	// The grammar attaches a trailing ORDER BY to the rightmost
-	// simpleTable. For a UNION, that ORDER BY applies to the combined
-	// result (SQL standard), NOT to the right branch alone. Strip it
-	// from the right branch before building (so column validation
-	// doesn't reject LEFT-branch column names against the right table)
-	// and lift it to wrap the whole UNION.
-	var liftedSortKeys []logical.SortKey
+	// The grammar attaches a trailing ORDER BY / LIMIT / OFFSET to
+	// the rightmost simpleTable. For a UNION, those clauses apply to
+	// the combined result (SQL standard), NOT to the right branch
+	// alone. Strip them from the right branch before building (so
+	// column validation doesn't reject LEFT-branch column names
+	// against the right table) and lift them to wrap the whole UNION.
+	var lifted unionLiftedClauses
 	var right logical.LogicalOperator
-	right, liftedSortKeys, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, cteScopes)
+	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, cteScopes)
 	if err != nil {
 		return nil, err
 	}
@@ -2651,13 +2652,13 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	// Legacy fallback: if the right branch's sort wasn't stripped at
 	// the selectQuery level (e.g. nested UNION), peel it off the
 	// logical plan tree.
-	if len(liftedSortKeys) == 0 {
+	if len(lifted.sortKeys) == 0 {
 		if s, ok := right.(*logical.LogicalSort); ok {
-			liftedSortKeys = s.Keys
+			lifted.sortKeys = s.Keys
 			right = s.Input
 		} else if p, ok := right.(*logical.LogicalProject); ok {
 			if s, ok := p.Input.(*logical.LogicalSort); ok {
-				liftedSortKeys = s.Keys
+				lifted.sortKeys = s.Keys
 				p.Input = s.Input
 			}
 		}
@@ -2673,47 +2674,61 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if err := validateUnionColumnTypes(inputs, md); err != nil {
 		return nil, err
 	}
-	if len(liftedSortKeys) > 0 {
-		liftedSort := &logical.LogicalSort{Keys: liftedSortKeys}
+	if len(lifted.sortKeys) > 0 {
+		liftedSort := &logical.LogicalSort{Keys: lifted.sortKeys}
 		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
 			return nil, err
 		}
 	}
 	var result logical.LogicalOperator = logical.NewUnion(inputs, distinct)
-	if len(liftedSortKeys) > 0 {
-		result = logical.NewSort(result, liftedSortKeys)
+	if len(lifted.sortKeys) > 0 {
+		result = logical.NewSort(result, lifted.sortKeys)
+	}
+	if lifted.limit >= 0 || lifted.offset > 0 {
+		result = logical.NewLimit(result, lifted.limit, lifted.offset)
 	}
 	return result, nil
 }
 
+// unionLiftedClauses holds ORDER BY / LIMIT / OFFSET stripped from a
+// UNION's right branch so the caller can re-attach them to the
+// combined result.
+type unionLiftedClauses struct {
+	sortKeys []logical.SortKey
+	limit    int64 // <0 means no limit
+	offset   int64
+}
+
 // buildUnionRightBranchStrippingOrderBy builds the right branch of a
-// UNION, stripping any trailing ORDER BY from the simpleTable before
-// building the logical plan. Returns the built plan and the stripped
-// sort keys (empty if there was no ORDER BY). For non-simpleTable
+// UNION, stripping any trailing ORDER BY and LIMIT/OFFSET from the
+// simpleTable before building the logical plan. Returns the built
+// plan and the stripped clauses (empty if none). For non-simpleTable
 // right branches (e.g. nested UNION), falls through to the normal
-// builder and returns empty sort keys.
+// builder and returns empty clauses.
 func buildUnionRightBranchStrippingOrderBy(
 	body antlrgen.IQueryExpressionBodyContext,
 	md *recordlayer.RecordMetaData,
 	cteScopes map[string]semantic.ScopeSource,
-) (logical.LogicalOperator, []logical.SortKey, error) {
+) (logical.LogicalOperator, unionLiftedClauses, error) {
 	qtd, ok := body.(*antlrgen.QueryTermDefaultContext)
 	if !ok {
 		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, cteScopes)
-		return op, nil, err
+		return op, unionLiftedClauses{limit: -1}, err
 	}
 	simpleTable, ok := qtd.QueryTerm().(*antlrgen.SimpleTableContext)
 	if !ok {
 		op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, cteScopes)
-		return op, nil, err
+		return op, unionLiftedClauses{limit: -1}, err
 	}
 	sq, err := extractFromSimpleTable(simpleTable)
 	if err != nil {
-		return nil, nil, err
+		return nil, unionLiftedClauses{limit: -1}, err
 	}
 
+	var lifted unionLiftedClauses
+	lifted.limit = -1
+
 	// Save and strip ORDER BY.
-	var sortKeys []logical.SortKey
 	if len(sq.orderBy) > 0 {
 		for _, ob := range sq.orderBy {
 			e := ob.colName
@@ -2728,22 +2743,50 @@ func buildUnionRightBranchStrippingOrderBy(
 			if ob.nullsFirst != nil {
 				nullsFirst = *ob.nullsFirst
 			}
-			sortKeys = append(sortKeys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
+			lifted.sortKeys = append(lifted.sortKeys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
 		}
 		sq.orderBy = nil
 	}
 
+	// Parse LIMIT/OFFSET directly from the ANTLR context — sq.limit is
+	// always -1 because extractFromSimpleTable doesn't populate it.
+	if limitClauseCtx := simpleTable.LimitClause(); limitClauseCtx != nil {
+		if offsetCtx := limitClauseCtx.GetOffset(); offsetCtx != nil {
+			if val, err := strconv.ParseInt(offsetCtx.GetText(), 10, 64); err == nil {
+				lifted.offset = val
+			}
+		}
+		if limitCtx := limitClauseCtx.GetLimit(); limitCtx != nil {
+			if val, err := strconv.ParseInt(limitCtx.GetText(), 10, 64); err == nil {
+				lifted.limit = val
+			}
+		}
+		atoms := limitClauseCtx.AllLimitClauseAtom()
+		if lifted.limit < 0 && lifted.offset == 0 && len(atoms) == 2 {
+			if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
+				lifted.offset = val
+			}
+			if val, err := strconv.ParseInt(atoms[1].GetText(), 10, 64); err == nil {
+				lifted.limit = val
+			}
+		} else if lifted.limit < 0 && lifted.offset == 0 && len(atoms) == 1 {
+			if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
+				lifted.limit = val
+			}
+		}
+	}
+
 	if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-		return nil, nil, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
+		return nil, lifted, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
 	}
 	if err := validateQualifiedStarSources(sq, md); err != nil {
-		return nil, nil, err
+		return nil, lifted, err
 	}
 	op, err := buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
 	if err != nil {
-		return nil, nil, err
+		return nil, lifted, err
 	}
-	return op, sortKeys, nil
+	return op, lifted, nil
 }
 
 // upgradeSortKeyValues walks the logical plan's LogicalSort and resolves
@@ -3229,12 +3272,10 @@ func buildLogicalPlanForUnionWithCatalog(
 		return nil, err
 	}
 
-	// Same ORDER BY stripping as the CTE-catalog variant: strip the
-	// trailing ORDER BY from the right branch before building so
-	// column validation doesn't reject LEFT-branch names.
-	var liftedSortKeys []logical.SortKey
+	// Same ORDER BY / LIMIT stripping as the CTE-catalog variant.
+	var lifted unionLiftedClauses
 	var right logical.LogicalOperator
-	right, liftedSortKeys, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, nil)
+	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -3242,13 +3283,13 @@ func buildLogicalPlanForUnionWithCatalog(
 		return nil, nil
 	}
 
-	if len(liftedSortKeys) == 0 {
+	if len(lifted.sortKeys) == 0 {
 		if s, ok := right.(*logical.LogicalSort); ok {
-			liftedSortKeys = s.Keys
+			lifted.sortKeys = s.Keys
 			right = s.Input
 		} else if p, ok := right.(*logical.LogicalProject); ok {
 			if s, ok := p.Input.(*logical.LogicalSort); ok {
-				liftedSortKeys = s.Keys
+				lifted.sortKeys = s.Keys
 				p.Input = s.Input
 			}
 		}
@@ -3264,15 +3305,18 @@ func buildLogicalPlanForUnionWithCatalog(
 	if err := validateUnionColumnTypes(inputs, md); err != nil {
 		return nil, err
 	}
-	if len(liftedSortKeys) > 0 {
-		liftedSort := &logical.LogicalSort{Keys: liftedSortKeys}
+	if len(lifted.sortKeys) > 0 {
+		liftedSort := &logical.LogicalSort{Keys: lifted.sortKeys}
 		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
 			return nil, err
 		}
 	}
 	var result logical.LogicalOperator = logical.NewUnion(inputs, false)
-	if len(liftedSortKeys) > 0 {
-		result = logical.NewSort(result, liftedSortKeys)
+	if len(lifted.sortKeys) > 0 {
+		result = logical.NewSort(result, lifted.sortKeys)
+	}
+	if lifted.limit >= 0 || lifted.offset > 0 {
+		result = logical.NewLimit(result, lifted.limit, lifted.offset)
 	}
 	return result, nil
 }
