@@ -343,8 +343,9 @@ func inferCaseBranchesJDBCType(alts []antlrgen.ICaseFuncAlternativeContext, else
 		if resultType == "" {
 			resultType = t
 		} else if t != "" {
-			if max := jdbcTypeMax(resultType, t); max != "" {
-				resultType = max
+			resultType = jdbcTypeMax(resultType, t)
+			if resultType == "" {
+				return ""
 			}
 		}
 	}

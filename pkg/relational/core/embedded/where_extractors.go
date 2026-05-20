@@ -280,6 +280,9 @@ func flattenAndPredicates(expr antlrgen.IExpressionContext) ([]antlrgen.IExpress
 		return []antlrgen.IExpressionContext{expr}, true
 	}
 	op := le.LogicalOperator()
+	if op == nil {
+		return nil, false
+	}
 	isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
 	if !isAnd {
 		return nil, false

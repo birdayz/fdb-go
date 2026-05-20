@@ -240,32 +240,34 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 			continue
 		}
 		gs.counts[i]++
-		if agg.Function == expressions.AggSum || agg.Function == expressions.AggAvg {
+		switch agg.Function {
+		case expressions.AggSum, expressions.AggAvg:
 			if !isNumeric(val) {
 				return fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
 			}
-		}
-		num := toFloat64(val)
-		gs.sums[i] += num
-		if intVal, ok := val.(int64); ok {
-			s := gs.sumsI[i] + intVal
-			if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
-				return &SumOverflowError{}
+			num := toFloat64(val)
+			gs.sums[i] += num
+			if intVal, ok := val.(int64); ok {
+				s := gs.sumsI[i] + intVal
+				if (gs.sumsI[i]^intVal) >= 0 && (gs.sumsI[i]^s) < 0 {
+					return &SumOverflowError{}
+				}
+				gs.sumsI[i] = s
+			} else {
+				gs.allInt[i] = false
 			}
-			gs.sumsI[i] = s
-		} else {
-			gs.allInt[i] = false
-		}
-		if !isNumeric(val) {
-			return &AggregateTypeMismatchError{
-				Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
+		case expressions.AggMin, expressions.AggMax:
+			if !isNumeric(val) {
+				return &AggregateTypeMismatchError{
+					Message: "unable to encapsulate aggregate operation due to type mismatch(es)",
+				}
 			}
-		}
-		if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
-			gs.mins[i] = val
-		}
-		if gs.maxs[i] == nil || compareAny(val, gs.maxs[i]) > 0 {
-			gs.maxs[i] = val
+			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
+				gs.mins[i] = val
+			}
+			if gs.maxs[i] == nil || compareAny(val, gs.maxs[i]) > 0 {
+				gs.maxs[i] = val
+			}
 		}
 	}
 	return nil

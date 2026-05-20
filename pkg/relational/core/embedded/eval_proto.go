@@ -96,13 +96,8 @@ func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, 
 // False negatives are OK — they just fall through to the value path
 // which handles non-boolean atoms correctly.
 func looksBoolean(atom antlrgen.IExpressionAtomContext) bool {
-	switch atom.(type) {
-	case *antlrgen.BinaryComparisonPredicateContext:
-		return true
-	case *antlrgen.RecordConstructorExpressionAtomContext:
-		return true
-	}
-	return false
+	_, ok := atom.(*antlrgen.BinaryComparisonPredicateContext)
+	return ok
 }
 
 func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {

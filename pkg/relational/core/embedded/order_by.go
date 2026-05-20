@@ -95,7 +95,7 @@ func naturalOrderSatisfiesDir(orderBy []orderByClause, naturalOrder []string, eq
 			if underlying, isAlias := aliasToUnderlying[strings.ToUpper(c)]; isAlias {
 				c = underlying
 			}
-			if equatedCols[strings.ToUpper(c)] {
+			if equatedCols[strings.ToUpper(parseColRef(c).bare())] {
 				continue
 			}
 			ob = append(ob, obc)

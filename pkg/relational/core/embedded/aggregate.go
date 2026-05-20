@@ -310,7 +310,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			case "SUM", "AVG":
 				fv, ok := functions.ToFloat64(colVal)
 				if !ok {
-					return nil, nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 						"unable to encapsulate aggregate operation due to type mismatch(es)")
 				}
 				if ac.aggFunc == "SUM" {
