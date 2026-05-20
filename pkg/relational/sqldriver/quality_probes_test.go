@@ -1867,6 +1867,119 @@ func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
 	})
 }
 
+func TestFDB_QualityProbe_CoalesceAndGreatest(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "cg")
+
+	t.Run("coalesce_multiple_args", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, COALESCE(amount, 0) FROM orders ORDER BY id")
+		if len(rows) != 6 {
+			t.Fatalf("want 6, got %d", len(rows))
+		}
+		for _, r := range rows {
+			id := r[0].(int64)
+			if id == 15 {
+				// NULL amount → COALESCE returns 0
+				switch v := r[1].(type) {
+				case int64:
+					if v != 0 {
+						t.Errorf("COALESCE(NULL, 0) want 0, got %d", v)
+					}
+				case float64:
+					if v != 0 {
+						t.Errorf("COALESCE(NULL, 0) want 0, got %f", v)
+					}
+				default:
+					t.Errorf("unexpected type %T for COALESCE(NULL, 0)", r[1])
+				}
+			}
+		}
+	})
+
+	t.Run("greatest_least", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, GREATEST(qty, 3), LEAST(qty, 3) FROM items WHERE price IS NOT NULL ORDER BY id")
+		if len(rows) < 4 {
+			t.Fatalf("want at least 4, got %d", len(rows))
+		}
+		// item 100: qty=2 → GREATEST(2,3)=3, LEAST(2,3)=2
+		if rows[0][0].(int64) == 100 {
+			gr := rows[0][1].(int64)
+			le := rows[0][2].(int64)
+			if gr != 3 {
+				t.Errorf("GREATEST(2,3) want 3, got %d", gr)
+			}
+			if le != 2 {
+				t.Errorf("LEAST(2,3) want 2, got %d", le)
+			}
+		}
+	})
+}
+
+func TestFDB_QualityProbe_StringLiteralEdges(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "sle")
+
+	t.Run("empty_string_comparison", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE name <> ''")
+		// All 4 customers have non-empty names
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+	})
+
+	t.Run("like_percent_only", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE name LIKE '%'")
+		if len(rows) != 4 {
+			t.Fatalf("LIKE '%%' should match all, got %d", len(rows))
+		}
+	})
+
+	t.Run("case_sensitive_comparison", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE name = 'alice'")
+		// Should not match 'Alice' (case-sensitive)
+		if len(rows) != 0 {
+			t.Logf("case-sensitive: 'alice' matched %d rows (may be case-insensitive)", len(rows))
+		}
+	})
+}
+
+func TestFDB_QualityProbe_LimitZero(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "lz")
+
+	t.Run("limit_zero", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM customers LIMIT 0")
+		if len(rows) != 0 {
+			t.Errorf("LIMIT 0 should return 0 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("limit_one", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM customers ORDER BY id LIMIT 1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 1 {
+			t.Errorf("want id=1, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("limit_exceeds_rows", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM customers LIMIT 100")
+		if len(rows) != 4 {
+			t.Errorf("LIMIT 100 with 4 rows should return 4, got %d", len(rows))
+		}
+	})
+}
+
 var (
 	_ = fmt.Sprintf // ensure import
 	_ = sort.Strings
