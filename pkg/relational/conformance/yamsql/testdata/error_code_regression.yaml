@@ -33,9 +33,9 @@ tests:
   # 42701 — duplicate ORDER BY column.
   - query: SELECT n FROM t ORDER BY n, n
     error_code: "42701"
-  # 42809 — NULL in IN list.
+  # 22000 — NULL in IN list (Java uses 22000 / CANNOT_CONVERT_TYPE).
   - query: SELECT id FROM t WHERE n IN (10, NULL)
-    error_code: "42809"
+    error_code: "22000"
   # 42804 — comparison type mismatch.
   - query: SELECT id FROM t WHERE n = 'text'
     error_code: "42804"

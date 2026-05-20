@@ -151,7 +151,8 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			pending := make([]pendingUpdate, 0, len(updatedElems))
 			for _, elem := range updatedElems {
 				colName := functions.FullIdToName(elem.FullColumnName().FullId())
-				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
+				bare := parseColRef(colName).bare()
+				fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 				if fd == nil {
 					// Java verbatim: 'Attempting to query non existing
 					// column NAME' (uppercased identifier). Aligned
@@ -164,7 +165,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				if evalErr != nil {
 					return nil, evalErr
 				}
-				pending = append(pending, pendingUpdate{fd: fd, colName: colName, val: val})
+				pending = append(pending, pendingUpdate{fd: fd, colName: bare, val: val})
 			}
 			for _, p := range pending {
 				if _, isPK := pkSet[p.colName]; isPK {

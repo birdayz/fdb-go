@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"database/sql/driver"
+	"fmt"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -1277,15 +1278,22 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		// wrapping expression. Inner aggregates were harvested above so
 		// the rowMap at outExpr eval time has them available. Clear
 		// colName so the Value-based sort resolver picks up rawExpr.
+		obAggIdx := 0
 		for obIdx, ob := range cls.orderBy {
 			if ob.expr == nil || len(harvestAggregates(ob.expr)) == 0 {
 				continue
 			}
+			outName := ""
+			if obAggIdx > 0 {
+				outName = fmt.Sprintf("__ob_agg_%d__", obAggIdx)
+			}
 			newAggs = append(newAggs, aggSelectCol{
 				outExpr: ob.expr,
+				outName: outName,
 			})
-			cls.orderBy[obIdx].colName = ""
+			cls.orderBy[obIdx].colName = outName
 			cls.orderBy[obIdx].expr = nil
+			obAggIdx++
 		}
 		if len(newAggs) > 0 {
 			if len(cls.aggCols) == 0 && len(projCols) > 0 {

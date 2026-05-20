@@ -295,7 +295,8 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() so unset optionals (SQL NULL) yield UNKNOWN.
 		colName := functions.FullIdToName(colAtom.FullColumnName().FullId())
-		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+		bare := parseColRef(colName).bare()
+		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
 		if fd == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}
@@ -382,7 +383,8 @@ func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg prot
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() to distinguish NULL (unset optional) from zero.
 		colName := functions.FullIdToName(colAtom.FullColumnName().FullId())
-		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+		bare := parseColRef(colName).bare()
+		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
 		if fd == nil {
 			return false, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}

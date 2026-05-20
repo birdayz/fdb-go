@@ -558,7 +558,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
 					continue
 				}
-				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
+				fd := msgDesc.Fields().ByName(protoreflect.Name(parseColRef(col).bare()))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"GROUP BY column %q not found in table %q", col, sq.tableName)
@@ -601,7 +601,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if groupExprByName[ac.groupCol] {
 						continue
 					}
-					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.groupCol))
+					fd := msgDesc.Fields().ByName(protoreflect.Name(parseColRef(ac.groupCol).bare()))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q not found in table %q", ac.groupCol, sq.tableName)

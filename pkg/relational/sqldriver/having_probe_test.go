@@ -60,4 +60,19 @@ func TestFDB_OrderByAggregateExpression(t *testing.T) {
 		got := scanGroups("SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 10 ORDER BY SUM(v) * 2 DESC")
 		g.Expect(got).To(gomega.Equal([]string{"b", "a"}))
 	})
+
+	t.Run("two_order_by_agg_exprs_no_collision", func(t *testing.T) {
+		// Regression: before the outName collision fix, multiple ORDER BY
+		// aggregate expressions all mapped to rowMap[""], so the last one
+		// overwrote earlier values. The sort then used the wrong column
+		// for the primary key.
+		//
+		// Data: a→SUM=30,MIN=10  b→SUM=35,MIN=5  c→SUM=null,MIN=null
+		// SUM*2 ASC: c(null), a(60), b(70)
+		// MIN+0 ASC: c(null), b(5), a(10)
+		// Correct ORDER BY SUM(v)*2, MIN(v)+0 → c, a, b
+		// Buggy (collision, both read MIN+0) → c, b, a
+		got := scanGroups("SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) * 2, MIN(v) + 0")
+		g.Expect(got).To(gomega.Equal([]string{"c", "a", "b"}))
+	})
 }
