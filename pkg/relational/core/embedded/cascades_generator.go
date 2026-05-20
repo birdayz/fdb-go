@@ -914,7 +914,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		nullable := api.ColumnNullable
 		if desc != nil {
-			if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() == protoreflect.Required {
+			if fd := desc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
 				nullable = api.ColumnNoNulls
 			}
 		}
@@ -1044,7 +1044,7 @@ func buildAggColumns(
 		}
 		nullable := api.ColumnNullable
 		if desc != nil {
-			if fd := desc.Fields().ByName(protoreflect.Name(name)); fd != nil && fd.Cardinality() == protoreflect.Required {
+			if fd := desc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
 				nullable = api.ColumnNoNulls
 			}
 		}
@@ -1158,7 +1158,7 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
 	fields := desc.Fields()
-	fd := fields.ByName(protoreflect.Name(name))
+	fd := fields.ByName(protoreflect.Name(parseColRef(name).bare()))
 	if fd != nil {
 		return protoKindToTypeName(fd.Kind())
 	}

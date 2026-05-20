@@ -1749,7 +1749,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				continue
 			}
 			if groupKeyExplains != nil {
-				projText := strings.ToUpper(strings.TrimSpace(e.GetText()))
+				projText := strings.ToUpper(strings.TrimSpace(canonicalTextOf(e)))
 				if ref, ok := groupKeyExplains[projText]; ok {
 					vals[i] = ref
 					continue
@@ -2718,7 +2718,7 @@ func buildUnionRightBranchStrippingOrderBy(
 		for _, ob := range sq.orderBy {
 			e := ob.colName
 			if e == "" && ob.rawExpr != nil {
-				e = ob.rawExpr.GetText()
+				e = canonicalTextOf(ob.rawExpr)
 			}
 			dir := logical.SortAsc
 			if !ob.ascending {
