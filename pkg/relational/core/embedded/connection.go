@@ -341,9 +341,14 @@ func (c *EmbeddedConnection) newStoreBuilder() *recordlayer.StoreBuilder {
 	return recordlayer.NewStoreBuilder().SetDatabase(c.sess.DB)
 }
 
-// Close marks the connection as closed.
+// Close marks the connection as closed and cancels any open FDB transaction.
 func (c *EmbeddedConnection) Close() error {
 	c.closed.Store(true)
+	if c.activeTx != nil {
+		tx := c.activeTx
+		c.activeTx = nil
+		tx.rctx.Cancel()
+	}
 	return nil
 }
 
@@ -415,6 +420,9 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 		tx.rctx.Cancel()
 	}
 	c.ctes = nil
+	c.outerScopes = nil
+	c.validQualifiers = nil
+	c.currentSourceAliases = nil
 	// Drop any cached scalar-subquery results from the last statement.
 	// Cache entries key off parse-tree pointers that belong to the
 	// caller's freshly-parsed statement; retaining them across pool
