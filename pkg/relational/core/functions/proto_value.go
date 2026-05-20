@@ -182,7 +182,7 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 			}
-			if v < math.MinInt64 || v > math.MaxInt64 {
+			if v < -9.2233720368547758e18 || v > 9.2233720368547748e18 {
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %g out of range for %s column %q", v, fd.Kind(), fd.Name())
 			}
