@@ -16,9 +16,9 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### SQL engine completeness (SQL engine expert, B+ grade)
 
-- [x] **IN (subquery) not supported.** Java explicitly rejects `IN (SELECT ...)` with `UNSUPPORTED_QUERY` at `ExpressionVisitor.java:618`. Go correctly rejects too. Not a gap — Java alignment.
-- [ ] **Derived table + JOIN can't be planned.** `FROM base_table, (SELECT ... GROUP BY ...) sub WHERE ...` fails in Cascades. Simple derived tables (subquery in FROM without join) work. Fix: extend Cascades to handle derived-table quantifiers in multi-source SelectExpression.
-- [ ] **CTE + aggregate + JOIN can't be planned.** `WITH cte AS (...) SELECT ... FROM cte JOIN ... GROUP BY ...` fails. Simple CTE + single-table works. Fix: extend CTE scope threading through join + aggregate translation.
+- [ ] **IN (subquery) as deliberate Go extension.** Java explicitly rejects `IN (SELECT ...)` with `UNSUPPORTED_QUERY` at `ExpressionVisitor.java:618`. Go currently rejects too. Consider supporting as a Go-only extension with deep test coverage.
+- [x] **Derived table + JOIN can't be planned.** Root cause: `buildSelectScope` resolved derived-table columns correctly but `preWalkPred` was discarded in the non-subquery path — fallback `buildWherePredicateForJoins` can't resolve derived-table aliases. Fix: use resolver's walked predicate when available. Tests: `subquery_in_from_with_join` now asserts correct results (Alice/Bob with order_count > 1).
+- [x] **CTE + aggregate + JOIN can't be planned.** Root cause: `buildCTEColumnSource` rejected aggregate CTEs (bailed on `aggCols > 0 || countStar`), so CTE scope was never registered, resolver returned nil. Fix: delegate to `buildDerivedTableSourceFromAgg` for aggregate CTEs. Tests: `cte_with_join` now asserts correct results (Charlie/Alice/Bob by shipped total DESC).
 - [ ] **Covering index unreachable from SQL.** Core infrastructure ported (IndexKeyValueToPartialRecord, FieldCopier, Builder pattern, 9 unit tests). Planner has covering flag + MergeFetchIntoCoveringIndexRule. SQL projections prevent triggering (`IsFinalNeeded=false` not reachable). Fix: teach translator to produce RecordConstructorValue projections that allow partial-record reconstruction from index entries.
 
 ### Testing gaps (testing expert, A- grade)
@@ -26,7 +26,7 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [ ] **No network partition simulation.** Chaos tests inject FDB-level faults (commit-unknown, conflict, timeout) but not link failures. testcontainers can introduce `tc` filter delays — not used. Fix: add partition/slow-link injection via tc or iptables in chaos test harness.
 - [ ] **No long-running sustained-load tests.** binding-stress is seed-based (single query replay), not continuous workload. Missing: sustained 100k-record scans under concurrent writes, multi-hour chaos under 10+ concurrent clients.
 - [ ] **No schema migration tests.** No upgrade-compatibility tests (add column, change index type, rename table). Tests assume static schema. Fix: add test suite that evolves schema across multiple transactions and verifies data integrity.
-- [ ] **Audit high t.Skip counts.** 36 skips in cascades_fdb_test.go and 27 in plan_shape_conformance_test.go. Determine whether these are legit infrastructure gates or hidden failures.
+- [x] **Audit high t.Skip counts.** Audited: all 27 skips in cascades_fdb_test.go and all 9 in plan_shape_conformance_test.go are the legitimate Docker check (`FDB not available (no Docker)`). Broader codebase audit: fuzz tests skip invalid inputs (standard), conformance gap gate currently has zero entries hitting it, benchmarks are env-gated. No hidden failures behind any skip.
 
 ---
 

@@ -698,6 +698,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		return op, nil
 	}
 
+	if preWalkPred != nil {
+		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		_ = upgradeFirstFilter(op, pred)
+		return op, nil
+	}
+
 	var pred predicates.QueryPredicate
 	var predOk bool
 	if v.cteScopes != nil && len(sq.joins) == 0 {

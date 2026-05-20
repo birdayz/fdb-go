@@ -525,10 +525,15 @@ func buildCTEColumnSource(
 	}
 	if innerSQ.derivedQuery != nil ||
 		len(innerSQ.joins) > 0 ||
-		len(innerSQ.aggCols) > 0 ||
-		innerSQ.countStar ||
 		innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
+	}
+	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
+		src, ok := buildDerivedTableSourceFromAgg(cteName, innerSQ)
+		if !ok {
+			return semantic.ScopeSource{}, false
+		}
+		return src, true
 	}
 	hasComputedExpr := false
 	for _, e := range innerSQ.projExprs {

@@ -703,9 +703,7 @@ func TestFDB_QualityProbe_CTEAdvanced(t *testing.T) {
 	})
 
 	t.Run("cte_with_join", func(t *testing.T) {
-		// CTE with aggregate + join: known Cascades limitation for
-		// complex CTE shapes. Verify it either works or rejects cleanly.
-		_, err := db.QueryContext(context.Background(), `WITH shipped AS (
+		rows := collectRows(t, db, `WITH shipped AS (
 			SELECT customer_id, SUM(amount) AS total
 			FROM orders WHERE status = 'shipped'
 			GROUP BY customer_id
@@ -714,9 +712,13 @@ func TestFDB_QualityProbe_CTEAdvanced(t *testing.T) {
 		FROM customers c, shipped s
 		WHERE c.id = s.customer_id
 		ORDER BY s.total DESC`)
-		// If it succeeds, great. If it errors, verify it's a clean rejection.
-		if err != nil {
-			t.Logf("CTE+agg+join: %v (known limitation)", err)
+		// shipped: (1, 100.50), (2, 50.25), (3, 300.00)
+		// JOIN customers → Charlie 300, Alice 100.50, Bob 50.25
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "Charlie" {
+			t.Errorf("first row name: want Charlie, got %v", rows[0][0])
 		}
 	})
 
@@ -1033,15 +1035,17 @@ func TestFDB_QualityProbe_DerivedTable(t *testing.T) {
 	})
 
 	t.Run("subquery_in_from_with_join", func(t *testing.T) {
-		ctx := context.Background()
-		_, err := db.QueryContext(ctx,
+		rows := collectRows(t, db,
 			`SELECT c.name, sub.order_count FROM customers c,
 			 (SELECT customer_id, COUNT(*) AS order_count FROM orders GROUP BY customer_id) sub
 			 WHERE c.id = sub.customer_id AND sub.order_count > 1
 			 ORDER BY c.name`)
-		if err != nil {
-			t.Logf("derived table + join: %v (known Cascades limitation)", err)
-			return
+		// customers 1 (Alice) and 2 (Bob) each have 2 orders → order_count > 1
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "Alice" || fmt.Sprintf("%v", rows[1][0]) != "Bob" {
+			t.Errorf("want [Alice, Bob], got [%v, %v]", rows[0][0], rows[1][0])
 		}
 	})
 }
