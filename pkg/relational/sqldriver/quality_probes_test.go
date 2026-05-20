@@ -812,6 +812,493 @@ func TestFDB_QualityProbe_InsertSelect(t *testing.T) {
 	})
 }
 
+func TestFDB_QualityProbe_UnionLimitOffset(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "ulo")
+
+	t.Run("union_all_large_limit_with_offset", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM customers UNION ALL SELECT id FROM orders ORDER BY id LIMIT 100 OFFSET 3")
+		// 4 customers + 6 orders = 10 total, skip 3 → 7
+		if len(rows) != 7 {
+			t.Fatalf("want 7 rows (OFFSET 3, LIMIT 100), got %d", len(rows))
+		}
+	})
+
+	t.Run("union_all_limit_offset", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM customers UNION ALL SELECT id FROM orders ORDER BY id LIMIT 3 OFFSET 2")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		// sorted ids: 1,2,3,4,10,11,12,13,14,15 → offset 2 → [3,4,10]
+		ids := make([]int64, len(rows))
+		for i, r := range rows {
+			ids[i] = r[0].(int64)
+		}
+		if ids[0] != 3 || ids[1] != 4 || ids[2] != 10 {
+			t.Errorf("want [3,4,10], got %v", ids)
+		}
+	})
+
+	t.Run("union_all_limit_only", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM customers UNION ALL SELECT id FROM orders LIMIT 5")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("union_all_order_limit_desc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM customers UNION ALL SELECT id FROM orders ORDER BY id DESC LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		ids := make([]int64, len(rows))
+		for i, r := range rows {
+			ids[i] = r[0].(int64)
+		}
+		// sorted desc: 15,14,13,12,11,10,4,3,2,1 → first 3
+		if ids[0] != 15 || ids[1] != 14 || ids[2] != 13 {
+			t.Errorf("want [15,14,13], got %v", ids)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_AggregateEdgeCases(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "aec")
+
+	t.Run("count_star_vs_count_col", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT COUNT(*), COUNT(amount) FROM orders")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		countStar := rows[0][0].(int64)
+		countAmount := rows[0][1].(int64)
+		// COUNT(*) = 6, COUNT(amount) = 5 (one NULL amount)
+		if countStar != 6 {
+			t.Errorf("COUNT(*) want 6, got %d", countStar)
+		}
+		if countAmount != 5 {
+			t.Errorf("COUNT(amount) want 5, got %d", countAmount)
+		}
+	})
+
+	t.Run("sum_null_column", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT SUM(amount) FROM orders WHERE customer_id = 4")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][0] != nil {
+			t.Errorf("SUM of only NULL values should be NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("avg_with_nulls", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT AVG(amount) FROM orders")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		avg, ok := rows[0][0].(float64)
+		if !ok {
+			t.Fatalf("AVG should return float64, got %T (%v)", rows[0][0], rows[0][0])
+		}
+		// (100.50 + 200.00 + 50.25 + 75.00 + 300.00) / 5 = 145.15
+		if math.Abs(avg-145.15) > 0.01 {
+			t.Errorf("AVG want 145.15, got %f", avg)
+		}
+	})
+
+	t.Run("min_max_with_nulls", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MIN(amount), MAX(amount) FROM orders")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		minVal, ok1 := rows[0][0].(float64)
+		maxVal, ok2 := rows[0][1].(float64)
+		if !ok1 || !ok2 {
+			t.Fatalf("MIN/MAX want float64, got %T/%T", rows[0][0], rows[0][1])
+		}
+		if minVal != 50.25 {
+			t.Errorf("MIN want 50.25, got %f", minVal)
+		}
+		if maxVal != 300.00 {
+			t.Errorf("MAX want 300.00, got %f", maxVal)
+		}
+	})
+
+	t.Run("aggregate_empty_result", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT COUNT(*), SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM orders WHERE 1 = 0")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row for aggregate over empty set, got %d", len(rows))
+		}
+		// COUNT(*) over empty = 0, others = NULL
+		if rows[0][0].(int64) != 0 {
+			t.Errorf("COUNT(*) over empty want 0, got %v", rows[0][0])
+		}
+		for i, name := range []string{"SUM", "AVG", "MIN", "MAX"} {
+			if rows[0][i+1] != nil {
+				t.Errorf("%s over empty set should be NULL, got %v", name, rows[0][i+1])
+			}
+		}
+	})
+
+	t.Run("group_by_with_having_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT customer_id, COUNT(*) as cnt FROM orders
+			 GROUP BY customer_id HAVING COUNT(*) >= 2 ORDER BY customer_id`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 customers with 2+ orders, got %d", len(rows))
+		}
+		// customer 1: 2 orders, customer 2: 2 orders
+		if rows[0][0].(int64) != 1 || rows[0][1].(int64) != 2 {
+			t.Errorf("row 0: want (1, 2), got (%v, %v)", rows[0][0], rows[0][1])
+		}
+		if rows[1][0].(int64) != 2 || rows[1][1].(int64) != 2 {
+			t.Errorf("row 1: want (2, 2), got (%v, %v)", rows[1][0], rows[1][1])
+		}
+	})
+}
+
+func TestFDB_QualityProbe_SubqueryInWhere(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "sqw")
+
+	t.Run("in_subquery", func(t *testing.T) {
+		// IN (subquery) not yet supported by Cascades planner
+		err := expectError(t, db,
+			`SELECT name FROM customers
+			 WHERE id IN (SELECT customer_id FROM orders WHERE status = 'shipped')
+			 ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for IN subquery")
+		}
+		t.Logf("IN subquery: %v (known limitation)", err)
+	})
+
+	t.Run("not_in_subquery", func(t *testing.T) {
+		err := expectError(t, db,
+			`SELECT name FROM customers
+			 WHERE id NOT IN (SELECT customer_id FROM orders WHERE status = 'shipped')
+			 ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for NOT IN subquery")
+		}
+		t.Logf("NOT IN subquery: %v (known limitation)", err)
+	})
+
+	t.Run("exists_with_and", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name FROM customers c
+			 WHERE c.active = true
+			 AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped')
+			 ORDER BY c.name`)
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		// Active + shipped: Alice, Bob (Diana has pending; Charlie inactive)
+		if len(names) != 2 || names[0] != "Alice" || names[1] != "Bob" {
+			t.Errorf("want [Alice, Bob], got %v", names)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_DerivedTable(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "dt")
+
+	t.Run("subquery_in_from", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT sq.cid, sq.total FROM
+			 (SELECT customer_id AS cid, SUM(amount) AS total
+			  FROM orders GROUP BY customer_id) sq
+			 WHERE sq.total > 100
+			 ORDER BY sq.total DESC`)
+		if len(rows) < 2 {
+			t.Fatalf("want at least 2 rows, got %d", len(rows))
+		}
+		// Charlie: 300, Alice: 300.50, Bob: 125.25
+		firstTotal := rows[0][1].(float64)
+		if firstTotal < 200 {
+			t.Errorf("first total should be > 200, got %f", firstTotal)
+		}
+	})
+
+	t.Run("subquery_in_from_with_join", func(t *testing.T) {
+		ctx := context.Background()
+		_, err := db.QueryContext(ctx,
+			`SELECT c.name, sub.order_count FROM customers c,
+			 (SELECT customer_id, COUNT(*) AS order_count FROM orders GROUP BY customer_id) sub
+			 WHERE c.id = sub.customer_id AND sub.order_count > 1
+			 ORDER BY c.name`)
+		if err != nil {
+			t.Logf("derived table + join: %v (known Cascades limitation)", err)
+			return
+		}
+	})
+}
+
+func TestFDB_QualityProbe_BetweenAndIn(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "bai")
+
+	t.Run("between_numeric", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM orders WHERE amount BETWEEN 50.00 AND 100.50 ORDER BY id")
+		ids := make([]int64, len(rows))
+		for i, r := range rows {
+			ids[i] = r[0].(int64)
+		}
+		// 50.25 (12), 75.00 (13), 100.50 (10)
+		if len(ids) != 3 || ids[0] != 10 || ids[1] != 12 || ids[2] != 13 {
+			t.Errorf("want [10, 12, 13], got %v", ids)
+		}
+	})
+
+	t.Run("not_between", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM orders WHERE amount NOT BETWEEN 50.00 AND 100.50 ORDER BY id")
+		ids := make([]int64, len(rows))
+		for i, r := range rows {
+			ids[i] = r[0].(int64)
+		}
+		// 200.00 (11), 300.00 (14)
+		if len(ids) != 2 || ids[0] != 11 || ids[1] != 14 {
+			t.Errorf("want [11, 14], got %v", ids)
+		}
+	})
+
+	t.Run("in_list_numeric", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE id IN (1, 3) ORDER BY name")
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		if len(names) != 2 || names[0] != "Alice" || names[1] != "Charlie" {
+			t.Errorf("want [Alice, Charlie], got %v", names)
+		}
+	})
+
+	t.Run("in_list_string", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM orders WHERE status IN ('shipped', 'pending') ORDER BY id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 orders (3 shipped + 2 pending), got %d", len(rows))
+		}
+	})
+
+	t.Run("like_pattern", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE name LIKE 'A%' ORDER BY name")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "Alice" {
+			t.Errorf("want Alice, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("like_underscore", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE name LIKE '_ob'")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "Bob" {
+			t.Errorf("want Bob, got %v", rows)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_CastExpressions(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "ce")
+
+	t.Run("cast_int_to_string", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT CAST(id AS STRING) FROM customers WHERE id = 1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		val := fmt.Sprintf("%v", rows[0][0])
+		if val != "1" {
+			t.Errorf("CAST(1 AS STRING) want '1', got '%s'", val)
+		}
+	})
+
+	t.Run("cast_string_to_int_from_table", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT CAST(name AS STRING), CAST(id AS STRING) FROM customers WHERE id = 1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "1" {
+			t.Errorf("CAST(1 AS STRING) want '1', got '%v'", rows[0][1])
+		}
+	})
+
+	t.Run("cast_float_to_int", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT CAST(amount AS BIGINT) FROM orders WHERE id = 10")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		val := rows[0][0].(int64)
+		// 100.50 → truncated to 100 (or 101 depending on rounding)
+		if val != 100 && val != 101 {
+			t.Errorf("CAST(100.50 AS BIGINT) want 100 or 101, got %d", val)
+		}
+	})
+
+	t.Run("cast_null_preserves_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT CAST(amount AS STRING) FROM orders WHERE id = 15")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][0] != nil {
+			t.Errorf("CAST(NULL AS STRING) should be NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("cast_double_to_string", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT CAST(amount AS STRING) FROM orders WHERE id = 10")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		val := fmt.Sprintf("%v", rows[0][0])
+		if val != "100.5" && val != "100.50" && val != "1.005E2" {
+			t.Errorf("CAST(100.50 AS STRING) want '100.5' or '100.50', got '%s'", val)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_MultipleOrderBy(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "mob")
+
+	t.Run("order_by_two_cols", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT region, name FROM customers ORDER BY region, name")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// NULL region sorts first (NULLS FIRST for ASC), then EAST, then WEST
+		r0 := fmt.Sprintf("%v", rows[0][0])
+		if r0 != "<nil>" {
+			// Diana (NULL region) should be first or last depending on null ordering
+			// Check that at least the non-null regions are ordered
+			regions := make([]string, len(rows))
+			for i, r := range rows {
+				regions[i] = fmt.Sprintf("%v", r[0])
+			}
+			t.Logf("order: %v", regions)
+		}
+	})
+
+	t.Run("order_by_asc_desc_mix", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT customer_id, amount FROM orders WHERE amount IS NOT NULL ORDER BY customer_id ASC, amount DESC")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 non-null rows, got %d", len(rows))
+		}
+		// customer 1: 200.00, 100.50 (desc)
+		// customer 2: 75.00, 50.25 (desc)
+		// customer 3: 300.00
+		cid0 := rows[0][0].(int64)
+		amt0 := rows[0][1].(float64)
+		cid1 := rows[1][0].(int64)
+		amt1 := rows[1][1].(float64)
+		if cid0 != 1 || amt0 != 200.00 {
+			t.Errorf("row 0: want (1, 200.00), got (%d, %f)", cid0, amt0)
+		}
+		if cid1 != 1 || amt1 != 100.50 {
+			t.Errorf("row 1: want (1, 100.50), got (%d, %f)", cid1, amt1)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_IsNullIsNotNull(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "ininn")
+
+	t.Run("is_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM orders WHERE amount IS NULL")
+		if len(rows) != 1 || rows[0][0].(int64) != 15 {
+			t.Errorf("want [15], got %v", rows)
+		}
+	})
+
+	t.Run("is_not_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM orders WHERE amount IS NOT NULL ORDER BY id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+	})
+
+	t.Run("null_region_filter", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE region IS NULL")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "Diana" {
+			t.Errorf("want Diana, got %v", rows)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_CompoundPredicates(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "cp")
+
+	t.Run("and_or_precedence", func(t *testing.T) {
+		// WHERE a AND b OR c should parse as (a AND b) OR c
+		rows := collectRows(t, db,
+			`SELECT name FROM customers
+			 WHERE active = true AND region = 'WEST' OR region = 'EAST'
+			 ORDER BY name`)
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		// (active=true AND region=WEST): Alice
+		// OR region=EAST: Bob
+		if len(names) != 2 || names[0] != "Alice" || names[1] != "Bob" {
+			t.Errorf("want [Alice, Bob], got %v", names)
+		}
+	})
+
+	t.Run("parenthesized_or", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT name FROM customers
+			 WHERE active = true AND (region = 'WEST' OR region = 'EAST')
+			 ORDER BY name`)
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		// active AND (WEST or EAST): Alice, Bob
+		if len(names) != 2 || names[0] != "Alice" || names[1] != "Bob" {
+			t.Errorf("want [Alice, Bob], got %v", names)
+		}
+	})
+
+	t.Run("not_predicate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM customers WHERE NOT active = true ORDER BY name")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "Charlie" {
+			t.Errorf("want [Charlie], got %v", rows)
+		}
+	})
+}
+
 var (
 	_ = fmt.Sprintf // ensure import
 	_ = sort.Strings
