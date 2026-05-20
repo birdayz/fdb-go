@@ -1720,6 +1720,153 @@ func TestFDB_QualityProbe_LeftJoinWhereVsOn(t *testing.T) {
 	})
 }
 
+func TestFDB_QualityProbe_OrderByAlias(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "oba")
+
+	t.Run("order_by_alias", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT name AS n, region AS r FROM customers ORDER BY n`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		first := fmt.Sprintf("%v", rows[0][0])
+		if first != "Alice" {
+			t.Errorf("first by name: want Alice, got %s", first)
+		}
+	})
+
+	t.Run("order_by_expression", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT id, qty * price AS total FROM items
+			 WHERE price IS NOT NULL
+			 ORDER BY qty * price DESC`)
+		if len(rows) < 4 {
+			t.Fatalf("want at least 4 rows, got %d", len(rows))
+		}
+		// Highest: 104 (10*30=300), then 102 (5*25.25=126.25), then 100 (2*25.25=50.50), ...
+		first := rows[0][0].(int64)
+		if first != 104 {
+			t.Errorf("highest total: want item 104, got %d", first)
+		}
+	})
+
+	t.Run("order_by_column_number", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name, region FROM customers ORDER BY 2, 1")
+		// region order: NULL, EAST, WEST, WEST → then by name within WEST
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+	})
+}
+
+func TestFDB_QualityProbe_GroupByWithNulls(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "gbn")
+
+	t.Run("group_by_nullable_column", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT region, COUNT(*) FROM customers GROUP BY region ORDER BY region`)
+		// NULL: 1, EAST: 1, WEST: 2
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups, got %d: %v", len(rows), rows)
+		}
+		for _, r := range rows {
+			region := fmt.Sprintf("%v", r[0])
+			cnt := r[1].(int64)
+			switch region {
+			case "<nil>":
+				if cnt != 1 {
+					t.Errorf("NULL region: want 1, got %d", cnt)
+				}
+			case "EAST":
+				if cnt != 1 {
+					t.Errorf("EAST: want 1, got %d", cnt)
+				}
+			case "WEST":
+				if cnt != 2 {
+					t.Errorf("WEST: want 2, got %d", cnt)
+				}
+			}
+		}
+	})
+
+	t.Run("group_by_multiple_with_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT active, region, COUNT(*) FROM customers
+			 GROUP BY active, region
+			 ORDER BY active, region`)
+		// Expect groups for (false, WEST), (true, NULL), (true, EAST), (true, WEST)
+		if len(rows) < 4 {
+			t.Fatalf("want 4 groups, got %d: %v", len(rows), rows)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	dbPath := fmt.Sprintf("/qp_mtid_%s", t.Name())
+	db := openTestDB(t, dbPath)
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("QP_MTID_%s", t.Name())
+	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
+		CREATE TABLE t (id BIGINT NOT NULL, val STRING, PRIMARY KEY (id))`, tmpl)
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	sdb, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { sdb.Close() })
+
+	for i := int64(1); i <= 10; i++ {
+		if _, err := sdb.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO t VALUES (%d, 'v%d')", i, i)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("delete_with_limit", func(t *testing.T) {
+		_, err := sdb.ExecContext(ctx, "DELETE FROM t WHERE id > 8")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows := collectRows(t, sdb, "SELECT COUNT(*) FROM t")
+		cnt := rows[0][0].(int64)
+		if cnt != 8 {
+			t.Errorf("want 8 remaining, got %d", cnt)
+		}
+	})
+
+	t.Run("update_multiple_rows", func(t *testing.T) {
+		_, err := sdb.ExecContext(ctx, "UPDATE t SET val = 'updated' WHERE id <= 3")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, sdb, "SELECT val FROM t WHERE id = 1")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "updated" {
+			t.Errorf("want 'updated', got %v", rows)
+		}
+		rows = collectRows(t, sdb, "SELECT COUNT(*) FROM t WHERE val = 'updated'")
+		if rows[0][0].(int64) != 3 {
+			t.Errorf("want 3 updated rows, got %v", rows[0][0])
+		}
+	})
+}
+
 var (
 	_ = fmt.Sprintf // ensure import
 	_ = sort.Strings
