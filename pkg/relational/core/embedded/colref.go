@@ -61,6 +61,10 @@ func mapLookup(row map[string]driver.Value, ref colRef) (driver.Value, bool) {
 // Tries the full string first, then strips the table qualifier and
 // retries the bare column. Convenience wrapper for code paths that
 // still carry flat strings.
+//
+// WARNING: the returned value may be an ambiguousColumnMarker sentinel
+// if the row map contains one. Callers that need ambiguity checking
+// should use mapLookupStrChecked instead.
 func mapLookupStr(row map[string]driver.Value, key string) (driver.Value, bool) {
 	if v, ok := row[key]; ok {
 		return v, true

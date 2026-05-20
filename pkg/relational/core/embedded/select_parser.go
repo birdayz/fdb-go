@@ -77,8 +77,8 @@ type selectQuery struct {
 	projConstFolded []projectionFold
 }
 
-// joinType mirrors ANTLR's rule alternatives: InnerJoinContext vs
-// OuterJoinContext + ctx.LEFT()/ctx.RIGHT().
+// joinType enumerates the three join flavours; used to dispatch
+// LEFT/RIGHT null-padding in execSelectJoin.
 type joinType int
 
 const (

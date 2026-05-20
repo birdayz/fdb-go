@@ -3,11 +3,14 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 // qualityProbeDB sets up a multi-table schema with data for probing
@@ -121,6 +124,20 @@ func expectError(t *testing.T, db *sql.DB, query string) error {
 	}
 	t.Fatalf("expected error for %q, got success", query)
 	return nil
+}
+
+// requireSQLSTATE unwraps err to *api.Error and asserts that the SQLSTATE
+// code matches want. Use after expectError for Java-conformance tests where
+// the exact SQLSTATE is known.
+func requireSQLSTATE(t *testing.T, err error, want api.ErrorCode) {
+	t.Helper()
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *api.Error, got %T: %v", err, err)
+	}
+	if apiErr.Code != want {
+		t.Errorf("SQLSTATE: got %s, want %s (err: %v)", apiErr.Code, want, err)
+	}
 }
 
 func TestFDB_QualityProbe_JoinGroupByHavingOrderBy(t *testing.T) {
@@ -288,6 +305,7 @@ func TestFDB_QualityProbe_UnionOrderByLimit(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected UNION DISTINCT rejection")
 		}
+		requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
 	})
 
 	t.Run("union_all_with_limit", func(t *testing.T) {
@@ -647,9 +665,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected division by zero error")
 		}
-		if !strings.Contains(err.Error(), "by zero") {
-			t.Errorf("want 'by zero' in error, got: %v", err)
-		}
+		requireSQLSTATE(t, err, api.ErrCodeDivisionByZero)
 	})
 
 	t.Run("cast_edge_cases", func(t *testing.T) {
