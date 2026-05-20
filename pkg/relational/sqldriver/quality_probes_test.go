@@ -1639,6 +1639,87 @@ func TestFDB_QualityProbe_NestedCASE(t *testing.T) {
 	})
 }
 
+func TestFDB_QualityProbe_LeftJoinWhereVsOn(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "ljwo")
+
+	t.Run("left_join_where_on_outer", func(t *testing.T) {
+		// WHERE on outer table: should filter AFTER join, not during
+		rows := collectRows(t, db,
+			`SELECT c.name, o.status FROM customers c
+			 LEFT JOIN orders o ON c.id = o.customer_id
+			 WHERE c.active = true
+			 ORDER BY c.name, o.id`)
+		// Active customers: Alice, Bob, Diana
+		// Alice: orders 10(shipped), 11(pending)
+		// Bob: orders 12(shipped), 13(cancelled)
+		// Diana: order 15(pending)
+		names := make(map[string]bool)
+		for _, r := range rows {
+			names[fmt.Sprintf("%v", r[0])] = true
+		}
+		if names["Charlie"] {
+			t.Errorf("Charlie (inactive) should be filtered by WHERE")
+		}
+		if !names["Alice"] || !names["Bob"] || !names["Diana"] {
+			t.Errorf("active customers missing, got names: %v", names)
+		}
+		// All active customers should have their orders (including Diana's pending)
+		if len(rows) < 5 {
+			t.Errorf("want at least 5 rows (Alice:2 + Bob:2 + Diana:1), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("left_join_where_on_inner", func(t *testing.T) {
+		// WHERE on inner table effectively converts to INNER JOIN
+		rows := collectRows(t, db,
+			`SELECT c.name, o.status FROM customers c
+			 LEFT JOIN orders o ON c.id = o.customer_id
+			 WHERE o.status = 'shipped'
+			 ORDER BY c.name`)
+		// Only rows where o.status='shipped' survive (NULL status filtered)
+		for _, r := range rows {
+			status := fmt.Sprintf("%v", r[1])
+			if status != "shipped" {
+				t.Errorf("WHERE should filter non-shipped, got %v", r)
+			}
+		}
+		// Alice(shipped), Bob(shipped), Charlie(shipped) — Diana filtered
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("left_join_on_filter_vs_where_filter", func(t *testing.T) {
+		// ON clause filter: unmatched outer rows get NULLs
+		rowsOn := collectRows(t, db,
+			`SELECT c.name, o.status FROM customers c
+			 LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'shipped'
+			 ORDER BY c.name`)
+		// All 4 customers should appear; non-shipped get NULL status
+		if len(rowsOn) < 4 {
+			t.Fatalf("ON filter: want >= 4, got %d: %v", len(rowsOn), rowsOn)
+		}
+
+		// WHERE clause filter: NULL rows filtered out
+		rowsWhere := collectRows(t, db,
+			`SELECT c.name, o.status FROM customers c
+			 LEFT JOIN orders o ON c.id = o.customer_id
+			 WHERE o.status = 'shipped'
+			 ORDER BY c.name`)
+		// Only 3 customers with shipped orders
+		if len(rowsWhere) != 3 {
+			t.Fatalf("WHERE filter: want 3, got %d: %v", len(rowsWhere), rowsWhere)
+		}
+
+		// The results should differ — ON filter produces more rows
+		if len(rowsOn) == len(rowsWhere) {
+			t.Errorf("ON filter (%d rows) should produce more rows than WHERE filter (%d rows)",
+				len(rowsOn), len(rowsWhere))
+		}
+	})
+}
+
 var (
 	_ = fmt.Sprintf // ensure import
 	_ = sort.Strings
