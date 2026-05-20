@@ -895,6 +895,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					}
 					rowMap[ac.outName] = fullVals[i]
 				}
+				for i, gname := range sq.groupBy {
+					if i >= len(gs.groupVals) {
+						break
+					}
+					if _, seen := rowMap[gname]; !seen {
+						rowMap[gname] = gs.groupVals[i]
+					}
+					if ref := parseColRef(gname); ref.isQualified() {
+						if _, seen := rowMap[ref.bare()]; !seen {
+							rowMap[ref.bare()] = gs.groupVals[i]
+						}
+					}
+				}
 				for i, ac := range sq.aggCols {
 					if ac.outExpr == nil {
 						continue
