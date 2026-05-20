@@ -159,7 +159,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 					//  to match the SELECT path's same
 					// alignment.
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"Attempting to query non existing column %s", strings.ToUpper(colName))
+						"Attempting to query non existing column %s", strings.ToUpper(bare))
 				}
 				val, evalErr := evalExpr(ctx, c, rec.Record, elem.Expression())
 				if evalErr != nil {
