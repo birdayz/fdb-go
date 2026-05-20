@@ -2,11 +2,35 @@
 
 FoundationDB Record Layer — Go Port. Java version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
-Current state: 52 test targets, 264 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 34 plan types, 48 value types, 9 predicate types.
+Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 34 plan types, 48 value types, 9 predicate types. 90+ quality probe subtests.
 
 ---
 
-## CRITICAL
+## OPEN — discovered by 5-expert review panel (2026-05-20)
+
+### Executor memory model (C++ systems expert, B+ grade)
+
+- [ ] **Unbounded memory in sort/union/intersection executors.** `CollectAll()` drains entire cursors into slices. UNION, INTERSECTION, JOIN, recursive CTE, and general ORDER BY all buffer all rows in memory. No spill-to-disk or streaming merge. A 10M-row UNION will allocate 10M `QueryResult` structs. Top-K heap exists for LIMIT queries, but general sort materializes everything. Fix: implement spill-to-disk for sort buffers exceeding a configurable threshold, and streaming merge-join for intersection.
+- [ ] **Scan-then-buffer pattern in intersection.** `executeIntersection` collects all first-branch rows, then scans the second branch filtering. A 1M-row branch buffers 1M rows while second branch is scanned. Fix: streaming merge-intersection using sorted inputs.
+- [ ] **No client-side FDB constraint warnings.** No proactive checks for 5s tx timeout (cursor drain can exceed silently), 100KB value size (split records handle this, but individual KV pairs not validated pre-write), or 10MB tx size (only `GetApproximateTransactionSize()` available, no automatic batching). FDB enforces server-side, but late errors are confusing. Fix: add client-side size tracking with configurable warnings/errors.
+
+### SQL engine completeness (SQL engine expert, B+ grade)
+
+- [x] **IN (subquery) not supported.** Java explicitly rejects `IN (SELECT ...)` with `UNSUPPORTED_QUERY` at `ExpressionVisitor.java:618`. Go correctly rejects too. Not a gap — Java alignment.
+- [ ] **Derived table + JOIN can't be planned.** `FROM base_table, (SELECT ... GROUP BY ...) sub WHERE ...` fails in Cascades. Simple derived tables (subquery in FROM without join) work. Fix: extend Cascades to handle derived-table quantifiers in multi-source SelectExpression.
+- [ ] **CTE + aggregate + JOIN can't be planned.** `WITH cte AS (...) SELECT ... FROM cte JOIN ... GROUP BY ...` fails. Simple CTE + single-table works. Fix: extend CTE scope threading through join + aggregate translation.
+- [ ] **Covering index unreachable from SQL.** Core infrastructure ported (IndexKeyValueToPartialRecord, FieldCopier, Builder pattern, 9 unit tests). Planner has covering flag + MergeFetchIntoCoveringIndexRule. SQL projections prevent triggering (`IsFinalNeeded=false` not reachable). Fix: teach translator to produce RecordConstructorValue projections that allow partial-record reconstruction from index entries.
+
+### Testing gaps (testing expert, A- grade)
+
+- [ ] **No network partition simulation.** Chaos tests inject FDB-level faults (commit-unknown, conflict, timeout) but not link failures. testcontainers can introduce `tc` filter delays — not used. Fix: add partition/slow-link injection via tc or iptables in chaos test harness.
+- [ ] **No long-running sustained-load tests.** binding-stress is seed-based (single query replay), not continuous workload. Missing: sustained 100k-record scans under concurrent writes, multi-hour chaos under 10+ concurrent clients.
+- [ ] **No schema migration tests.** No upgrade-compatibility tests (add column, change index type, rename table). Tests assume static schema. Fix: add test suite that evolves schema across multiple transactions and verifies data integrity.
+- [ ] **Audit high t.Skip counts.** 36 skips in cascades_fdb_test.go and 27 in plan_shape_conformance_test.go. Determine whether these are legit infrastructure gates or hidden failures.
+
+---
+
+## CRITICAL (all resolved)
 
 ### Architectural misalignment
 
