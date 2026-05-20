@@ -77,6 +77,9 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			return triFalse, err
 		}
 		op := le.LogicalOperator()
+		if op == nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "missing logical operator")
+		}
 		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
 		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil
@@ -503,6 +506,9 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			return triFalse, err
 		}
 		op := e.LogicalOperator()
+		if op == nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "missing logical operator")
+		}
 		isAnd := op.AND() != nil || len(op.AllBIT_AND_OP()) >= 2
 		isOr := op.OR() != nil || len(op.AllBIT_OR_OP()) >= 2
 		isXor := op.XOR() != nil

@@ -115,7 +115,7 @@ func CastValue(v any, typeName string) (any, error) {
 		case int64:
 			return strconv.FormatInt(n, 10), nil
 		case float64:
-			return strconv.FormatFloat(n, 'g', -1, 64), nil
+			return javaDoubleToString(n), nil
 		case bool:
 			if n {
 				return "true", nil
@@ -183,6 +183,18 @@ func CastValue(v any, typeName string) (any, error) {
 		}
 	}
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)
+}
+
+// javaDoubleToString matches Java's Double.toString(double):
+// whole numbers always include ".0" (e.g. 1.0 → "1.0", not "1"),
+// and Go's 'g' format is adjusted so values already containing a
+// decimal point or exponent are left as-is.
+func javaDoubleToString(n float64) string {
+	s := strconv.FormatFloat(n, 'g', -1, 64)
+	if !strings.ContainsAny(s, ".eE") && s != "NaN" && s != "+Inf" && s != "-Inf" {
+		s += ".0"
+	}
+	return s
 }
 
 // StripStringLiteralQuotes removes a single pair of surrounding

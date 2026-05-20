@@ -1912,7 +1912,11 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			return strconv.FormatInt(i, 10)
 		}
 		if f, ok := v.(float64); ok {
-			return strconv.FormatFloat(f, 'g', -1, 64)
+			s := strconv.FormatFloat(f, 'g', -1, 64)
+			if !strings.ContainsAny(s, ".eE") && s != "NaN" && s != "+Inf" && s != "-Inf" {
+				s += ".0"
+			}
+			return s
 		}
 		if b, ok := v.(bool); ok {
 			// Match runtime functions.CastValue: lowercase
