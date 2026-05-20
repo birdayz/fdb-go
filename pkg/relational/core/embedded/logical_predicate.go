@@ -3089,15 +3089,20 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 	if leftProj == nil {
 		return nil
 	}
-	leftNames := make(map[string]bool, len(leftProj.Projections))
+	leftNames := make(map[string]bool, len(leftProj.Projections)*2)
 	for i, col := range leftProj.Projections {
 		leftNames[strings.ToUpper(col)] = true
+		leftNames[strings.ToUpper(parseColRef(col).bare())] = true
 		if i < len(leftProj.Aliases) && leftProj.Aliases[i] != "" {
 			leftNames[strings.ToUpper(leftProj.Aliases[i])] = true
 		}
 	}
 	for _, k := range sort.Keys {
-		if k.Expr != "" && !leftNames[strings.ToUpper(k.Expr)] {
+		if k.Expr == "" {
+			continue
+		}
+		upper := strings.ToUpper(k.Expr)
+		if !leftNames[upper] && !leftNames[strings.ToUpper(parseColRef(k.Expr).bare())] {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q not found in UNION result columns", k.Expr)
 		}
