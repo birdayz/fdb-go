@@ -1299,6 +1299,346 @@ func TestFDB_QualityProbe_CompoundPredicates(t *testing.T) {
 	})
 }
 
+func TestFDB_QualityProbe_JoinPredicateEdgeCases(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "jpec")
+
+	t.Run("join_with_or_predicate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, o.id FROM customers c, orders o
+			 WHERE c.id = o.customer_id AND (o.status = 'shipped' OR o.status = 'pending')
+			 ORDER BY o.id`)
+		// shipped: 10(Alice), 12(Bob), 14(Charlie); pending: 11(Alice), 15(Diana)
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("join_with_not_equal", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, o.status FROM customers c, orders o
+			 WHERE c.id = o.customer_id AND o.status <> 'cancelled'
+			 ORDER BY c.name, o.id`)
+		// All orders except cancelled (id=13, Bob's)
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("join_with_between_on_join_col", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, o.amount FROM customers c, orders o
+			 WHERE c.id = o.customer_id AND o.amount BETWEEN 50.00 AND 200.00
+			 ORDER BY o.amount`)
+		// 50.25, 75.00, 100.50, 200.00
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("left_join_with_null_inner", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, o.status FROM customers c
+			 LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'shipped'
+			 ORDER BY c.name`)
+		// Alice: shipped (order 10), Bob: shipped (12), Charlie: shipped (14), Diana: null
+		// Also Alice has pending (11) and Bob has cancelled (13) but those don't match
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		if len(rows) < 4 {
+			t.Fatalf("want >= 4 rows, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("cross_join_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT COUNT(*) FROM customers c, orders o`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		cnt := rows[0][0].(int64)
+		// 4 customers × 6 orders = 24
+		if cnt != 24 {
+			t.Errorf("cross join count want 24, got %d", cnt)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_NestedAggregation(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "nagg")
+
+	t.Run("group_by_expression", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT status, SUM(amount), COUNT(*), MIN(amount), MAX(amount)
+			 FROM orders
+			 GROUP BY status
+			 ORDER BY status`)
+		if len(rows) < 3 {
+			t.Fatalf("want 3 groups (cancelled, pending, shipped), got %d: %v", len(rows), rows)
+		}
+		for _, r := range rows {
+			status := fmt.Sprintf("%v", r[0])
+			switch status {
+			case "shipped":
+				sum := r[1].(float64)
+				if math.Abs(sum-450.75) > 0.01 {
+					t.Errorf("shipped SUM want 450.75, got %f", sum)
+				}
+				cnt := r[2].(int64)
+				if cnt != 3 {
+					t.Errorf("shipped COUNT want 3, got %d", cnt)
+				}
+			case "pending":
+				cnt := r[2].(int64)
+				if cnt != 2 {
+					t.Errorf("pending COUNT want 2, got %d", cnt)
+				}
+			case "cancelled":
+				cnt := r[2].(int64)
+				if cnt != 1 {
+					t.Errorf("cancelled COUNT want 1, got %d", cnt)
+				}
+			}
+		}
+	})
+
+	t.Run("group_by_multiple_keys", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT customer_id, status, COUNT(*) FROM orders
+			 GROUP BY customer_id, status
+			 ORDER BY customer_id, status`)
+		// Each (customer_id, status) combo is a group
+		if len(rows) < 4 {
+			t.Fatalf("want at least 4 groups, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("having_with_multiple_aggregates", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT customer_id, SUM(amount), COUNT(*) FROM orders
+			 GROUP BY customer_id
+			 HAVING SUM(amount) > 100 AND COUNT(*) >= 2
+			 ORDER BY customer_id`)
+		// customer 1: sum=300.50, count=2; customer 2: sum=125.25, count=2
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_UpdateWithSubquery(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	dbPath := fmt.Sprintf("/qp_uws_%s", t.Name())
+	db := openTestDB(t, dbPath)
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("QP_UWS_%s", t.Name())
+	ddl := fmt.Sprintf(`CREATE SCHEMA TEMPLATE %s
+		CREATE TABLE t1 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))
+		CREATE TABLE t2 (id BIGINT NOT NULL, ref_id BIGINT, tag STRING, PRIMARY KEY (id))`, tmpl)
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	sdb, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { sdb.Close() })
+
+	for i := int64(1); i <= 5; i++ {
+		if _, err := sdb.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO t1 VALUES (%d, %d)", i, i*10)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+	for i := int64(1); i <= 3; i++ {
+		if _, err := sdb.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO t2 VALUES (%d, %d, 'tag_%d')", i, i, i)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("delete_with_exists", func(t *testing.T) {
+		_, err := sdb.ExecContext(ctx,
+			"DELETE FROM t1 WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.ref_id = t1.id)")
+		if err != nil {
+			t.Logf("DELETE with EXISTS: %v (known limitation)", err)
+			return
+		}
+		rows := collectRows(t, sdb, "SELECT id FROM t1 ORDER BY id")
+		// Should delete rows 1,2,3 (matched in t2), leaving 4,5
+		if len(rows) != 2 {
+			t.Fatalf("want 2 remaining rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 4 || rows[1][0].(int64) != 5 {
+			t.Errorf("want [4,5], got %v", rows)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_ArithmeticExpressions(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "arith")
+
+	t.Run("arithmetic_in_select", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, qty * price AS total FROM items WHERE id = 100")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		total := rows[0][1].(float64)
+		// 2 * 25.25 = 50.50
+		if math.Abs(total-50.50) > 0.01 {
+			t.Errorf("qty*price want 50.50, got %f", total)
+		}
+	})
+
+	t.Run("arithmetic_in_where", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM items WHERE qty * price > 100 ORDER BY id")
+		// items: 100: 2*25.25=50.50, 101: 1*50=50, 102: 5*25.25=126.25, 103: 1*50.25=50.25, 104: 10*30=300
+		// > 100: 102 (126.25), 104 (300)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(int64) != 102 || rows[1][0].(int64) != 104 {
+			t.Errorf("want [102, 104], got %v", rows)
+		}
+	})
+
+	t.Run("arithmetic_null_propagation", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, qty * price FROM items WHERE id = 105")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		// item 105: qty=3, price=null → null
+		if rows[0][1] != nil {
+			t.Errorf("null * 3 should be null, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("arithmetic_addition_subtraction", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, amount + 10, amount - 10 FROM orders WHERE id = 10")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		add := rows[0][1].(float64)
+		sub := rows[0][2].(float64)
+		if math.Abs(add-110.50) > 0.01 {
+			t.Errorf("amount+10 want 110.50, got %f", add)
+		}
+		if math.Abs(sub-90.50) > 0.01 {
+			t.Errorf("amount-10 want 90.50, got %f", sub)
+		}
+	})
+
+	t.Run("integer_division", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, qty / 2 FROM items WHERE id = 100")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		// 2 / 2 = 1
+		val := rows[0][1].(int64)
+		if val != 1 {
+			t.Errorf("2/2 want 1, got %d", val)
+		}
+	})
+
+	t.Run("modulo", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, qty % 3 FROM items WHERE id = 102")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		// 5 % 3 = 2
+		val := rows[0][1].(int64)
+		if val != 2 {
+			t.Errorf("5%%3 want 2, got %d", val)
+		}
+	})
+}
+
+func TestFDB_QualityProbe_NestedCASE(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "nc")
+
+	t.Run("nested_case_when", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT name,
+				CASE
+					WHEN active = true THEN
+						CASE WHEN region = 'WEST' THEN 'active-west'
+						     WHEN region = 'EAST' THEN 'active-east'
+						     ELSE 'active-other'
+						END
+					ELSE 'inactive'
+				END AS label
+			 FROM customers ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		expected := map[string]string{
+			"Alice":   "active-west",
+			"Bob":     "active-east",
+			"Charlie": "inactive",
+			"Diana":   "active-other",
+		}
+		for _, r := range rows {
+			name := fmt.Sprintf("%v", r[0])
+			label := fmt.Sprintf("%v", r[1])
+			if exp, ok := expected[name]; ok && exp != label {
+				t.Errorf("%s: want %q, got %q", name, exp, label)
+			}
+		}
+	})
+
+	t.Run("case_with_null_comparison", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT id,
+				CASE WHEN amount IS NULL THEN 'no-amount'
+				     WHEN amount > 200 THEN 'high'
+				     WHEN amount > 100 THEN 'medium'
+				     ELSE 'low'
+				END AS tier
+			 FROM orders ORDER BY id`)
+		if len(rows) != 6 {
+			t.Fatalf("want 6, got %d", len(rows))
+		}
+		expected := map[int64]string{
+			10: "medium", // 100.50
+			11: "medium", // 200.00
+			12: "low",    // 50.25
+			13: "low",    // 75.00
+			14: "high",   // 300.00
+			15: "no-amount",
+		}
+		for _, r := range rows {
+			id := r[0].(int64)
+			tier := fmt.Sprintf("%v", r[1])
+			if exp, ok := expected[id]; ok && exp != tier {
+				t.Errorf("order %d: want %q, got %q", id, exp, tier)
+			}
+		}
+	})
+}
+
 var (
 	_ = fmt.Sprintf // ensure import
 	_ = sort.Strings

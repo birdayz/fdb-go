@@ -535,21 +535,34 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			flatMapPlan.SetNotExists(true)
 		}
 
-		var outerPreds, abovePreds []predicates.QueryPredicate
+		var outerPreds, innerOnlyPreds, abovePreds []predicates.QueryPredicate
 		for pi, p := range preds {
 			if matchedPreds[pi] {
 				continue
 			}
 			if predicateReferencesAlias(p, rightAlias) {
-				abovePreds = append(abovePreds, p)
+				if joinType == plans.JoinLeftOuter && !predicateReferencesAlias(p, leftAlias) {
+					innerOnlyPreds = append(innerOnlyPreds, p)
+				} else {
+					abovePreds = append(abovePreds, p)
+				}
 			} else {
 				outerPreds = append(outerPreds, p)
 			}
 		}
 
+		if len(innerOnlyPreds) > 0 {
+			stripped := stripAliasFromPredicates(innerOnlyPreds, innerPrefix)
+			innerWithFilter := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan.GetInner(), stripped)
+			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
+				flatMapPlan.GetOuter(), innerWithFilter,
+				flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
+				flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
+			)
+			flatMapPlan.SetLeftOuter(true)
+		}
+
 		if len(outerPreds) > 0 {
-			// Strip the outer alias prefix from predicates so they match
-			// unqualified keys in the raw scan output.
 			stripped := stripAliasFromPredicates(outerPreds, outerPrefix)
 			outerWithFilter := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan.GetOuter(), stripped)
 			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
@@ -647,15 +660,32 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 				flatMapPlan.SetNotExists(true)
 			}
 
-			var residualPreds []predicates.QueryPredicate
+			var innerOnlyResiduals, otherResiduals []predicates.QueryPredicate
 			for _, p := range preds {
-				if p != pred {
-					residualPreds = append(residualPreds, p)
+				if p == pred {
+					continue
+				}
+				if joinType == plans.JoinLeftOuter &&
+					predicateReferencesAlias(p, rightAlias) &&
+					!predicateReferencesAlias(p, leftAlias) {
+					innerOnlyResiduals = append(innerOnlyResiduals, p)
+				} else {
+					otherResiduals = append(otherResiduals, p)
 				}
 			}
+			if len(innerOnlyResiduals) > 0 {
+				stripped := stripAliasFromPredicates(innerOnlyResiduals, innerPrefix)
+				innerWithFilter := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan.GetInner(), stripped)
+				flatMapPlan = plans.NewRecordQueryFlatMapPlan(
+					flatMapPlan.GetOuter(), innerWithFilter,
+					flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
+					flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
+				)
+				flatMapPlan.SetLeftOuter(true)
+			}
 			var finalPlan plans.RecordQueryPlan = flatMapPlan
-			if len(residualPreds) > 0 {
-				finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, residualPreds)
+			if len(otherResiduals) > 0 {
+				finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, otherResiduals)
 			}
 
 			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
