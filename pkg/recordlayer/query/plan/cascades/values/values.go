@@ -1626,6 +1626,9 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		if ri == 0 {
 			panic(&ArithmeticDivisionByZeroError{})
 		}
+		if li == math.MinInt64 && ri == -1 {
+			return int64(0)
+		}
 		return li % ri
 	}
 	return nil

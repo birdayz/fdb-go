@@ -62,6 +62,10 @@ func (w *physicalInMemorySortWrapper) WithChildren(qs []expressions.Quantifier) 
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalInMemorySortWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, w.plan.GetSortKeys())
+		return &physicalInMemorySortWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalInMemorySortWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

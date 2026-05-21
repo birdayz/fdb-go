@@ -71,6 +71,10 @@ func (w *physicalStreamingAggWrapper) WithChildren(qs []expressions.Quantifier) 
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalStreamingAggWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, w.plan.GetGroupingKeys(), w.plan.GetAggregates())
+		return &physicalStreamingAggWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalStreamingAggWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

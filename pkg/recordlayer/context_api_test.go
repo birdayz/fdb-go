@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
@@ -431,6 +432,90 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(rctx.HasDirtyStoreState()).To(BeFalse())
 			Expect(rctx.Timer()).To(BeNil())
 			Expect(rctx.GetConflictingKeys()).To(BeEmpty())
+		})
+	})
+
+	Describe("CheckTransactionSize", func() {
+		It("returns nil when thresholds are disabled", func() {
+			tx, err := sharedDB.CreateTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+
+			rctx := NewFDBRecordContext(tx)
+			Expect(rctx.CheckTransactionSize()).NotTo(HaveOccurred())
+		})
+
+		It("returns nil when size is below warn threshold", func() {
+			tx, err := sharedDB.CreateTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+
+			rctx := NewFDBRecordContext(tx)
+			rctx.txSizeWarnBytes = 1_000_000
+			Expect(rctx.CheckTransactionSize()).NotTo(HaveOccurred())
+		})
+
+		It("returns TransactionSizeWarningError once when warn threshold exceeded", func() {
+			tx, err := sharedDB.CreateTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+
+			rctx := NewFDBRecordContext(tx)
+			rctx.txSizeWarnBytes = 1 // 1 byte = always warn after any write
+
+			ks := specSubspace()
+			tx.Set(fdb.Key(ks.Bytes()), make([]byte, 100))
+
+			err = rctx.CheckTransactionSize()
+			Expect(err).To(HaveOccurred())
+			var warnErr *TransactionSizeWarningError
+			Expect(errors.As(err, &warnErr)).To(BeTrue())
+			Expect(warnErr.CurrentBytes).To(BeNumerically(">", 0))
+
+			// Second call should NOT warn again (once per tx)
+			err = rctx.CheckTransactionSize()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns TransactionSizeExceededError when error threshold exceeded", func() {
+			tx, err := sharedDB.CreateTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+
+			rctx := NewFDBRecordContext(tx)
+			rctx.txSizeErrorBytes = 1 // 1 byte = always error after any write
+
+			ks := specSubspace()
+			tx.Set(fdb.Key(ks.Bytes()), make([]byte, 100))
+
+			err = rctx.CheckTransactionSize()
+			Expect(err).To(HaveOccurred())
+			var exceedErr *TransactionSizeExceededError
+			Expect(errors.As(err, &exceedErr)).To(BeTrue())
+			Expect(exceedErr.CurrentBytes).To(BeNumerically(">", 0))
+
+			// Error repeats on subsequent calls (not once-only like warn)
+			err = rctx.CheckTransactionSize()
+			Expect(err).To(HaveOccurred())
+			Expect(errors.As(err, &exceedErr)).To(BeTrue())
+		})
+
+		It("error threshold takes precedence over warn threshold", func() {
+			tx, err := sharedDB.CreateTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+
+			rctx := NewFDBRecordContext(tx)
+			rctx.txSizeWarnBytes = 1
+			rctx.txSizeErrorBytes = 1
+
+			ks := specSubspace()
+			tx.Set(fdb.Key(ks.Bytes()), make([]byte, 100))
+
+			err = rctx.CheckTransactionSize()
+			Expect(err).To(HaveOccurred())
+			var exceedErr *TransactionSizeExceededError
+			Expect(errors.As(err, &exceedErr)).To(BeTrue())
 		})
 	})
 })

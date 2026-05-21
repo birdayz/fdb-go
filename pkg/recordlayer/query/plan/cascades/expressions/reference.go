@@ -144,10 +144,6 @@ func (r *Reference) GetBest(less func(a, b RelationalExpression) bool) Relationa
 // further to merge equivalence classes across the whole memo.
 func (r *Reference) Insert(e RelationalExpression) bool {
 	if e == nil {
-		// Defensive: callers should never insert nil. Panic loudly so a
-		// regression is caught at the offending call site rather than
-		// later when Reference.Members() returns a slice with a nil
-		// entry that crashes the next walk.
 		panic("Reference.Insert: nil expression")
 	}
 	eHash := e.HashCodeWithoutChildren()

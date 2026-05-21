@@ -131,9 +131,6 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 		{"mul MAX*1", OpMul, math.MaxInt64, 1, int64(math.MaxInt64)},
 		{"mul MIN*1", OpMul, math.MinInt64, 1, int64(math.MinInt64)},
 		{"mul 0*MAX", OpMul, 0, math.MaxInt64, int64(0)},
-		// MinInt64 % -1 is safe — unlike division, Go's `%` produces
-		// 0 (mathematical result is 0, representable in int64).
-		// Distinct from `div MIN/-1` which DOES overflow + decline.
 		{"mod MIN%-1", OpMod, math.MinInt64, -1, int64(0)},
 	}
 	for _, tc := range cases {

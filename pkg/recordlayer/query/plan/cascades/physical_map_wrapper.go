@@ -63,6 +63,10 @@ func (w *physicalMapWrapper) WithChildren(qs []expressions.Quantifier) (expressi
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalMapWrapper.WithChildren: expected 1, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryMapPlan(innerPlan, w.plan.GetResultValue())
+		return &physicalMapWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalMapWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

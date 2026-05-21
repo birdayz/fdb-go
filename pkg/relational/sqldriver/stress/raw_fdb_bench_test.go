@@ -19,7 +19,6 @@ import (
 )
 
 func TestFDB_RawIngestBench(t *testing.T) {
-	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -106,7 +105,6 @@ func TestFDB_RawIngestBench(t *testing.T) {
 }
 
 func TestFDB_RawReadScaling(t *testing.T) {
-	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -192,7 +190,6 @@ func TestFDB_RawReadScaling(t *testing.T) {
 }
 
 func TestFDB_SaveRecordBatchScaling(t *testing.T) {
-	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -290,7 +287,6 @@ func TestFDB_SaveRecordBatchScaling(t *testing.T) {
 }
 
 func TestFDB_SaveRecordPerRowScaling(t *testing.T) {
-	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
@@ -399,7 +395,6 @@ func TestFDB_SaveRecordPerRowScaling(t *testing.T) {
 }
 
 func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
-	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

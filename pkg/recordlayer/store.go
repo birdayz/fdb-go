@@ -405,6 +405,10 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	timer.Increment(CountDeleteRecordKey)
 	timer.IncrementBy(CountDeleteRecordKeyBytes, int64(oldsizeInfo.KeySize))
 
+	if err := store.context.CheckTransactionSize(); err != nil {
+		return true, err
+	}
+
 	return true, nil
 }
 
@@ -659,6 +663,10 @@ func (store *FDBRecordStore) saveRecordInternal(
 	timer.Increment(CountSaveRecordKey)
 	timer.IncrementBy(CountSaveRecordKeyBytes, int64(newsizeInfo.KeySize))
 	timer.IncrementBy(CountSaveRecordValueBytes, int64(newsizeInfo.ValueSize))
+
+	if err := store.context.CheckTransactionSize(); err != nil {
+		return newStoredRecord, err
+	}
 
 	return newStoredRecord, nil
 }

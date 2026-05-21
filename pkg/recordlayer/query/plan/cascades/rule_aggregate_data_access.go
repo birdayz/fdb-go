@@ -85,6 +85,7 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			plan:        idxPlan,
 			columnNames: aggCand.GetColumnNames(),
 			unique:      false,
+			covering:    true,
 		}
 		call.Yield(wrapper)
 		singleMatched = true

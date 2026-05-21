@@ -6,13 +6,56 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ---
 
+## Stress test 1M baseline comparison (2026-05-21)
+
+Measured after cost model regression fixes. Compare against master baseline.
+
+**Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+| Query | Current | Master | Δ | Notes |
+|-------|---------|--------|---|-------|
+| pk_lookup_first | **20ms** | 23ms | = | PK point lookup |
+| pk_lookup_middle | **<10ms** | 5.6ms | = | |
+| pk_lookup_last | **10ms** | 5.7ms | = | |
+| index_customer_eq (8 rows) | **10ms** | 3.1s | 300x ↑ | Index scan works |
+| order_by_pk_index_filter (8 rows) | **<10ms** | 3.0s | 300x+ ↑ | Index scan works |
+| needle_in_haystack_pk | **<10ms** | 3.0s | 1500x ↑ | PK point lookup |
+| update_by_index | **<10ms** | 5ms | = | |
+| delete_single_row | <10ms | 2.2ms | = | |
+| in_list (46 rows) | 2.88s | 3.1s | = | |
+| order_by_pk_full (1M rows) | 3.24s | 3.4s | = | |
+| full_scan_count | 2.77s | 2.9s | = | |
+| group_by_status (4 rows) | 4.60s | 5.1s | = | |
+| full_scan_sparse_filter | 2.92s | 3.0s | = | |
+| scan_all_narrow (1M rows) | 3.27s | 3.4s | = | |
+| scan_all_wide (1M rows) | 3.59s | 3.8s | = | |
+| join_10_outer | 2.89s | 3.0s | = | |
+| index_amount_range (100K rows) | 3.08s | 3.3s | = | Fixed: cost model prefers full scan for range |
+| full_scan_filter (COUNT > 5000) | 2.88s | 3.0s | = | Fixed: cost model prefers full scan for range |
+| group_by_customer_having | 9.49s | 10s | = | Fixed: streaming agg uses InMemorySort(FullScan) |
+| **index_status_count (COUNT)** | **16.4s** | 3.1s | **5x ↓** | Needs table stats for low-cardinality equality |
+
+**Fixes applied:**
+- [x] Cost model: non-covering index scans with range/zero bounds add `base × FetchCPU` to CPU, used in PlanningCostModel criterion #2 via `Total()`
+- [x] Streaming agg rule: yields both InMemorySort(FullScan) and ordered-index alternatives, cost model picks
+- [x] FetchCPU raised from 0.5 to 1.5 (random I/O per-row fetch is expensive)
+- [ ] **Remaining:** index_status_count — equality on low-cardinality column (status, 4 values). Cost model can't distinguish from high-cardinality equality without table statistics. Fix: implement COUNT index statistics from RecordMetaData.
+- [ ] Pre-existing: `TestFDB_GroupByDerivedTableComputedExpr/nested_derived_agg_plus_literal` fails on master too (NULL in derived agg)
+
+---
+
 ## OPEN — discovered by 5-expert review panel (2026-05-20)
 
 ### Executor memory model (C++ systems expert, B+ grade)
 
-- [ ] **Unbounded memory in sort/union/intersection executors.** `CollectAll()` drains entire cursors into slices. UNION, INTERSECTION, JOIN, recursive CTE, and general ORDER BY all buffer all rows in memory. No spill-to-disk or streaming merge. A 10M-row UNION will allocate 10M `QueryResult` structs. Top-K heap exists for LIMIT queries, but general sort materializes everything. Fix: implement spill-to-disk for sort buffers exceeding a configurable threshold, and streaming merge-join for intersection.
-- [ ] **Scan-then-buffer pattern in intersection.** `executeIntersection` collects all first-branch rows, then scans the second branch filtering. A 1M-row branch buffers 1M rows while second branch is scanned. Fix: streaming merge-intersection using sorted inputs.
-- [ ] **No client-side FDB constraint warnings.** No proactive checks for 5s tx timeout (cursor drain can exceed silently), 100KB value size (split records handle this, but individual KV pairs not validated pre-write), or 10MB tx size (only `GetApproximateTransactionSize()` available, no automatic batching). FDB enforces server-side, but late errors are confusing. Fix: add client-side size tracking with configurable warnings/errors.
+- [ ] **Unbounded memory in sort/NLJ/recursive-CTE executors.** `CollectAll()` still used by: `executeNestedLoopJoin` (inner relation), `executeRecursiveLevelUnion` (seed + levels), `executeRecursiveDfsJoin` (root + children), `executeInMemorySort`. Sort materializes everything. Fix: spill-to-disk for sort buffers exceeding a configurable threshold, streaming NLJ via index probes.
+- [x] **Scan-then-buffer pattern in intersection.** Replaced hash-based CollectAll with streaming `intersectionCursor` from `merge_cursor.go` — O(1) memory per child instead of O(N). `intersectionCompKeyFunc` bridges plan comparison-key values to tuple-encoded merge keys.
+- [x] **Scan-then-buffer pattern in union.** `executeUnion` now streams via `concatResultCursor` + `MapCursor` column remapping when plan metadata provides column names (the common SQL path). Buffered fallback retained for edge cases needing first-row peek.
+- [x] **Client-side FDB constraint warnings.** Added `TransactionSizeWarnBytes` and `TransactionSizeErrorBytes` to `RecordContextConfig`. `FDBRecordContext.CheckTransactionSize()` compares approximate size against thresholds, returns typed `TransactionSizeWarningError` (once per tx) or `TransactionSizeExceededError`. Auto-checked after SaveRecord and DeleteRecord. 5 Ginkgo tests.
+
+### EXISTS performance — correlated FlatMap not selected by plan extractor
+
+- [x] **EXISTS uses O(N×M) filter instead of O(N×logM) FlatMap.** Root cause: `findPhysicalPlan` returned the FIRST physical plan from a Reference, which was the NLJ (produced during saturation re-fire). Fix: `findPhysicalPlan`/`findPhysicalExpr` now use cost-based selection via `EstimateCost` to pick the cheapest physical plan. Same fix applied to `firstPhysicalChild` in `planning_cost_model.go`. EXISTS on 10K rows: **348ms (was 11,000ms) — 30x speedup.**
 
 ### SQL engine completeness (SQL engine expert, B+ grade)
 
@@ -25,7 +68,7 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 - [ ] **No network partition simulation.** Chaos tests inject FDB-level faults (commit-unknown, conflict, timeout) but not link failures. testcontainers can introduce `tc` filter delays — not used. Fix: add partition/slow-link injection via tc or iptables in chaos test harness.
 - [ ] **No long-running sustained-load tests.** binding-stress is seed-based (single query replay), not continuous workload. Missing: sustained 100k-record scans under concurrent writes, multi-hour chaos under 10+ concurrent clients.
-- [ ] **No schema migration tests.** No upgrade-compatibility tests (add column, change index type, rename table). Tests assume static schema. Fix: add test suite that evolves schema across multiple transactions and verifies data integrity.
+- [x] **Schema migration tests.** 10 Ginkgo specs in `schema_migration_test.go` covering: add index + online backfill across transactions (20 records, chunked limit=7), drop index with FormerIndex tracking + data access after removal, multi-step v1→v2→v3 evolution (drop price index + add quantity index + add composite index, validated at each step), metadata persistence with version history (save v1, save v2, load latest + historical), evolution validation rejection (missing FormerIndex, version downgrade), additive evolution acceptance, index state transitions (WriteOnly→Readable during build), concurrent writes during backfill (15 records, 10 pre-existing + 5 during build), multi-type index evolution validation. RFC for SQL-level ALTER DDL at `docs/rfc-schema-migration.md`.
 - [x] **Audit high t.Skip counts.** Audited: all 27 skips in cascades_fdb_test.go and all 9 in plan_shape_conformance_test.go are the legitimate Docker check (`FDB not available (no Docker)`). Broader codebase audit: fuzz tests skip invalid inputs (standard), conformance gap gate currently has zero entries hitting it, benchmarks are env-gated. No hidden failures behind any skip.
 
 ---
@@ -65,11 +108,11 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [x] **getCorrelatedTo() on all predicates** — Added `GetCorrelatedTo()` method to QueryPredicate interface. Implemented on all 10 concrete types. 8 unit tests.
 - [x] **Plan proto serialization** — Not needed for production single-process deployments. Go's in-memory PlanCache (`cascades_generator.go`) caches compiled plans per-connection. Continuation tokens serialize cursor STATE (position, accumulators) not plan STRUCTURE — plans are recreated from SQL on each transaction. Cross-process plan sharing would need this, but it's an optimization for distributed caches, not correctness.
 - [x] **Value type proto serialization** — Same reasoning as plan serialization. Values are part of plans which are held in memory. Continuation protos serialize evaluation STATE (aggregate accumulators, sort buffers), not the Value tree itself. Production deployments work without this.
-- [x] **Covering index for SQL** — Core ported: `IndexKeyValueToPartialRecord` with FieldCopier + Builder pattern (9 unit tests). Planner infrastructure exists (covering flag on IndexPlan, FetchFromPartialRecordPlan, MergeFetchIntoCoveringIndexRule). SQL layer currently can't trigger covering (projections prevent IsFinalNeeded=false). This is an optimization — queries work correctly via full-record fetch, just slower for index-only queries.
+- [ ] **Covering index for SQL** — Core ported: `IndexKeyValueToPartialRecord` with FieldCopier + Builder pattern (9 unit tests). Planner infrastructure exists (covering flag, MergeFetchIntoCoveringIndexRule). **Not working e2e:** SQL projections prevent triggering `IsFinalNeeded=false`. `SELECT name FROM users WHERE email=?` with index on `(email, name)` still fetches the full record. Fix: teach translator to produce RecordConstructorValue projections.
 
 ### Missing comparison subclasses
 
-- [x] **ParameterComparison** — Parameters work in filter predicates via ParameterValue + ParameterBinder. Index scan pushdown of parameters requires match candidate recognition of ParameterValue — this is an optimization (parameters still work correctly via filter, just not as PK scan range). Go's prepared statement implementation (`database/sql` with `?` placeholders) is production-ready for all SQL operations.
+- [ ] **ParameterComparison — index pushdown** — `WHERE id = ?` works via filter (correct results) but does O(N) scan instead of O(1) PK lookup. Match candidate doesn't recognize ParameterValue as a scannable comparison. Fix: teach match candidate to treat ParameterValue like a literal for PK/index scan range construction.
 - [x] **MultiColumnComparison** — Composite PK matching now handled by the multi-column FlatMap fix. Go doesn't parse `WHERE (a,b) IN ((1,2),(3,4))` tuple syntax, so Java's MultiColumnComparison class isn't needed. Individual column equality predicates match all leading PK columns.
 - [x] **OpaqueEqualityComparison** — Used for index-specific opaque comparisons in Java's legacy query planner. Not needed for SQL queries — all SQL comparisons use ComparisonPredicate with typed operators.
 - [x] **InvertedFunctionComparison** — Used for function-based index lookups (e.g., COLLATE, text transform). Not needed until function-based indexes are supported. No SQL syntax currently exercises this path.
@@ -92,14 +135,14 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ### Missing Java plan types
 
-- [x] **RecordQueryTextIndexPlan** — full-text search. Not in scope unless text indexes are needed.
-- [x] **RecordQueryAggregateIndexPlan** — pre-aggregated index scans. Would enable index-only GROUP BY.
-- [x] **RecordQueryLoadByKeysPlan** — direct key-based batch load. Subsumed by scan+filter but less efficient.
-- [x] **RecordQueryMultiIntersectionOnValuesPlan** — N-way intersection (current impl handles 2-way only).
-- [x] **RecordQueryUnorderedPrimaryKeyDistinctPlan** — PK-based dedup optimization. Covered by generic DistinctPlan but less efficient.
-- [x] **RecordQueryComparatorPlan** — comparator-based ranking.
-- [x] **RecordQueryScoreForRankPlan** — score-based ranking.
-- [x] **RecordQuerySelectorPlan** — selector-based filtering (internal planner use).
+- [ ] **RecordQueryAggregateIndexPlan** — plan type exists but NO planner rule produces it. `GROUP BY status, SUM(amount)` still does full table scan + in-memory aggregate instead of reading pre-computed index entries. Would turn 30ms GROUP BY on 10K rows into <1ms. Needs: Cascades rule that matches aggregate + scan and rewrites to aggregate index scan when a matching aggregate index exists.
+- [ ] **RecordQueryLoadByKeysPlan** — batch key lookup. Functionality covered by scan+filter but O(N) instead of O(k). Not critical.
+- [ ] **RecordQueryMultiIntersectionOnValuesPlan** — optimized N-way intersection on value columns. Generic IntersectionPlan handles 2+ way but less efficiently.
+- N/A **RecordQueryTextIndexPlan** — full-text search. Out of scope.
+- N/A **RecordQueryUnorderedPrimaryKeyDistinctPlan** — PK dedup optimization. Generic DistinctPlan works, just slower.
+- N/A **RecordQueryComparatorPlan** — comparator-based ranking. Out of scope.
+- N/A **RecordQueryScoreForRankPlan** — score-based ranking. Out of scope.
+- N/A **RecordQuerySelectorPlan** — selector-based filtering. Out of scope.
 
 ### Missing value types
 
@@ -112,7 +155,7 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 ### Missing rules
 
 - [x] **MatchPartition rules** — `WithPrimaryKeyDataAccessRule` implemented as `Planner.generateDataAccessWithConstraints()`. `AdjustMatchRule` implemented as `Planner.AdjustMatches()`. Both are explicit passes fired at the right timing, matching Java's behavior. The rule-vs-pass difference is architectural, not functional.
-- [x] **ExtractFromIndexKeyValueRuleSet (3 rules)** — `IndexKeyValueToPartialRecord` core ported with FieldCopier + Builder pattern (9 unit tests). Wiring into match candidates via `computeIndexEntryToLogicalRecord` is part of the covering index optimization — the rules work, they just can't fire until SQL projections allow `IsFinalNeeded=false`. Correctness unaffected — non-covering scans fetch full records.
+- [ ] **ExtractFromIndexKeyValueRuleSet (3 rules)** — `IndexKeyValueToPartialRecord` core ported with FieldCopier + Builder pattern (9 unit tests). Rules can't fire from SQL because translator doesn't produce projections that allow `IsFinalNeeded=false`. Blocked on covering index TODO above.
 
 ### PredicateWithValueAndRanges hierarchy
 
@@ -124,9 +167,21 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 - [x] **check_value field in FlatMapContinuation** — Wired: flatMapCursor writes outer PK as check_value, verifies on resume. Errors on mismatch (concurrent modification).
 - [x] **Catalog wire format reverse direction** — Go writes catalogs using the same protobuf schema as Java (RecordMetaDataProto). Wire format is identical — both use the same proto definitions from `proto/apple/`. Go reads Java catalogs (tested in conformance). Java reading Go catalogs works by definition since the proto format is shared. Full round-trip verification requires Java conformance server (not available), but the proto wire format guarantees byte-level compatibility.
 
+### Cost model quality (discovered by principal-SWE audit, 2026-05-21)
+
+- [ ] **Cost-based plan selection in findPhysicalExpr.** Architecturally correct per Cascades (plan assembly at extraction time, not rule-fire time). Partially implemented: `physicalFilterWrapper.WithChildren` rebuilds plan from fresh children via `extractChildPlan`. Full rollout to all 22 wrappers is BLOCKED by a Memo equivalence bug: non-equivalent expressions (e.g., `Filter(Filter(Scan))` and `Filter(Scan)`) share the same Reference, violating the Cascades group invariant. When extraction picks a non-equivalent member, the rebuilt plan loses operators. Fix: enforce Reference equivalence at `Insert` time. See `docs/rfc-cascades-plan-extraction.md`.
+- [ ] **Leaf-scan wrappers return CPU: 0.** `physicalScanWrapper.HintCost` and `physicalIndexScanWrapper.HintCost` (for the base case) return `CPU: 0`. Makes cost model cardinality-only for leaf scans, hiding execution cost differences. Fix: add per-row scan CPU (e.g., `FetchCPU * cardinality`).
+- [ ] **IN-union/IN-join wrappers use unexplained `×10` multiplier.** `physical_in_union_wrapper.go:72` and `physical_in_join_wrapper.go:72` multiply cardinality by 10 with no justification. Fix: derive from actual IN-list length or document the heuristic with a reference to Java's logic.
+- [x] **physicalMapWrapper/ProjectionWrapper used magic `0.01` CPU constant.** Replaced with `properties.ProjectionCPU` for consistency with logical operator cost model.
+- [x] **physicalInMemorySortWrapper used magic `n * 0.1` CPU formula.** Replaced with `n * SortCPU * log2(n)`, matching the logical sort cost formula exactly.
+- [ ] **String-based qualifier matching in NLJ/filter/projection push rules.** ~20 sites across `rule_implement_nested_loop_join.go`, `rule_push_filter_below_join.go`, `rule_push_projection_below_join.go` use `strings.HasPrefix(strings.ToUpper(fv.Field), prefix)` for alias matching. Fragile — can mismatch on prefix collisions. Fix: FieldValue should carry structured alias; compare alias directly.
+- [ ] **adjustGroupByMappings incomplete.** `single_matched_access.go:26` skips Java's `Value.pullUp`-based group-by adjustment. Breaks aggregate index matching when correlation pull-up is needed.
+- [ ] **FirstOrDefaultStreamingValue.Eval is a stub.** `value_first_or_default_streaming.go:16` — placeholder comment, no implementation. Any query evaluating this value fails. Fix: implement StreamingValue interface or gate the plan type.
+- [x] **physicalExplodeWrapper.HintCost returned LeafScanCardinality.** Was 1M rows for an IN-list of typically 2-100 values. Now derives cardinality from the actual `ConstantValue` slice length when the collection is a static IN-list, falls back to 10 for parameter-based explodes.
+
 ### Performance
 
-- [x] **InJoin plan selection** — Investigated: Cascades planner does implement bottom-up (children before parents in implementBottomUp). The inner Filter+Scan group SHOULD have physical plans by the time InJoinRule fires on the SelectExpression. The actual issue is that with the NLJ Explode guard, the planner correctly falls back to Filter+Scan which produces correct results. InJoin would be an optimization (O(k) PK lookups vs O(N) scan+filter). Current behavior: correct, just not optimal for large tables. InJoinRule fires correctly when inner plans exist.
+- [ ] **InJoin plan selection** — InJoinRule exists but the NLJ Explode guard forces fallback to Filter+Scan. `WHERE id IN (1,2,3)` does O(N) scan+filter instead of O(k) PK lookups. Correct results, wrong performance. Fix: allow InJoinRule to fire when inner plans exist (the Explode guard is too aggressive).
 - [x] **Composite PK FlatMap** — Now matches ALL leading PK columns. For composite PKs like (customer_id, order_num), creates multi-column prefix scan instead of single-column match.
 - [x] **Go-vs-Java SQL perf bench** — Go-side benchmarks exist (`just bench`): SaveRecord ~1ms, LoadRecord ~179us, ScanRecords ~656us, ScanIndex ~592us. Proto marshal/unmarshal benchmarked. Java comparison requires conformance server (not available), but Go's absolute numbers are production-grade for FDB's latency characteristics (network hop ~1ms dominates).
 

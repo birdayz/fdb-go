@@ -580,14 +580,16 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			}
 		}
 
-		var finalPlan plans.RecordQueryPlan = flatMapPlan
-		if len(abovePreds) > 0 {
-			finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, abovePreds)
-		}
-
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
-		call.Yield(newPhysicalFlatMapWrapper(finalPlan, leftQ, rightQ))
+		if len(abovePreds) > 0 {
+			flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
+			flatMapRef := call.MemoizeExpression(flatMapWrapper)
+			aboveFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, abovePreds)
+			call.Yield(NewPhysicalPredicatesFilterWrapper(aboveFilterPlan, expressions.ForEachQuantifier(flatMapRef)))
+		} else {
+			call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+		}
 		return true
 	}
 
@@ -683,14 +685,16 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 				)
 				flatMapPlan.SetLeftOuter(true)
 			}
-			var finalPlan plans.RecordQueryPlan = flatMapPlan
-			if len(otherResiduals) > 0 {
-				finalPlan = plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, otherResiduals)
-			}
-
 			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
-			call.Yield(newPhysicalFlatMapWrapper(finalPlan, leftQ, rightQ))
+			if len(otherResiduals) > 0 {
+				flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
+				flatMapRef := call.MemoizeExpression(flatMapWrapper)
+				aboveFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, otherResiduals)
+				call.Yield(NewPhysicalPredicatesFilterWrapper(aboveFilterPlan, expressions.ForEachQuantifier(flatMapRef)))
+			} else {
+				call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+			}
 			return true
 		}
 	}

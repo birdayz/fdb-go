@@ -93,8 +93,6 @@ func (p *RecordQueryScanPlan) GetResultType() values.Type { return p.flowedType 
 // GetChildren returns the empty slice — scans are leaves.
 func (p *RecordQueryScanPlan) GetChildren() []RecordQueryPlan { return nil }
 
-// EqualsWithoutChildren compares record-type sets + flowedType +
-// reverse direction.
 func (p *RecordQueryScanPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)
 	if !ok {
@@ -114,17 +112,26 @@ func (p *RecordQueryScanPlan) EqualsWithoutChildren(other RecordQueryPlan) bool 
 			return false
 		}
 	}
+	if len(p.scanComparisons) != len(o.scanComparisons) {
+		return false
+	}
+	for i := range p.scanComparisons {
+		if p.scanComparisons[i].GetRangeType() != o.scanComparisons[i].GetRangeType() {
+			return false
+		}
+	}
 	return true
 }
 
-// HashCodeWithoutChildren mixes the class discriminator + record-
-// type set + reverse flag.
 func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("scanplan|"))
 	for _, name := range p.recordTypes {
 		h.Write([]byte(name))
 		h.Write([]byte{0})
+	}
+	for _, cr := range p.scanComparisons {
+		h.Write([]byte{byte(cr.GetRangeType())})
 	}
 	if p.reverse {
 		h.Write([]byte{1})

@@ -50,17 +50,13 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	// Find a physical inner via the generic helper.
 	innerPlan := findPhysicalPlan(innerRef)
 	if innerPlan == nil {
-		return // inner not yet implemented; rule fires later
+		return
 	}
 
 	filterPlan := plans.NewRecordQueryFilterPlan(f.GetPredicates(), innerPlan)
 
-	// Reuse the existing physical wrapper expression from the inner
-	// Reference (put there by the inner's implement rule) rather than
-	// re-wrapping from scratch.
 	innerExpr := findPhysicalExpr(innerRef)
 	if innerExpr == nil {
 		return

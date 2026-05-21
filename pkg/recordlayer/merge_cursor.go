@@ -244,6 +244,9 @@ func (c *unionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
 }
 
 func (c *unionCursor[T]) Close() error {
+	if c.closed {
+		return nil
+	}
 	c.closed = true
 	var firstErr error
 	for _, child := range c.children {
@@ -464,6 +467,9 @@ func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, e
 }
 
 func (c *intersectionCursor[T]) Close() error {
+	if c.closed {
+		return nil
+	}
 	c.closed = true
 	var firstErr error
 	for _, child := range c.children {

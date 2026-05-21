@@ -61,36 +61,44 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	innerExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
-	if innerExpr == nil {
-		// Go extension: Java refuses GROUP BY without sorted input (no
-		// index on group key → "unable to plan"). Go inserts an in-memory
-		// sort below the streaming aggregation so GROUP BY works without
-		// an index. The sort cursor handles TimeLimitReached and carries
-		// its buffer in the MemorySortContinuation proto, so this
-		// composes correctly with cross-transaction pagination.
-		innerExpr = findPhysicalExpr(innerRef)
-		if innerExpr == nil {
-			return
-		}
-		sortKeys := make([]plans.SortKey, len(groupingKeys))
-		for i, gk := range groupingKeys {
-			if fv, ok := gk.(*values.FieldValue); ok {
-				sortKeys[i] = plans.SortKey{Field: fv.Field}
-			} else {
-				sortKeys[i] = plans.SortKey{
-					Field:     values.ExplainValue(gk),
-					ValueExpr: gk,
-				}
+	sortKeys := make([]plans.SortKey, len(groupingKeys))
+	for i, gk := range groupingKeys {
+		if fv, ok := gk.(*values.FieldValue); ok {
+			sortKeys[i] = plans.SortKey{Field: fv.Field}
+		} else {
+			sortKeys[i] = plans.SortKey{
+				Field:     values.ExplainValue(gk),
+				ValueExpr: gk,
 			}
 		}
-		sortedPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, sortKeys)
-		innerPlan = sortedPlan
 	}
 
-	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, groupingKeys, gb.GetAggregates())
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-	call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+	// Always yield InMemorySort(FullScan) path as a Go extension.
+	// Java refuses GROUP BY without sorted input; Go inserts an
+	// in-memory sort so GROUP BY works without a supporting index.
+	// When an ordered index also exists, both alternatives are yielded
+	// and the cost model picks the cheaper one.
+	rawExpr := findPhysicalExpr(innerRef)
+	if rawExpr != nil {
+		sortedPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, sortKeys)
+		rawQ := expressions.ForEachQuantifier(call.MemoizeExpression(rawExpr))
+		sortExpr := newPhysicalInMemorySortWrapper(sortedPlan, rawQ)
+		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(sortedPlan, groupingKeys, gb.GetAggregates())
+		sortQ := expressions.ForEachQuantifier(call.MemoizeExpression(sortExpr))
+		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, sortQ))
+	}
+
+	// If an ordered physical expression exists (e.g. index scan whose
+	// leading columns match the grouping keys), yield that path too.
+	orderedExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
+	if orderedExpr != nil {
+		if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
+			orderedInnerPlan := ppe.GetRecordQueryPlan()
+			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(orderedInnerPlan, groupingKeys, gb.GetAggregates())
+			orderedQ := expressions.ForEachQuantifier(call.MemoizeExpression(orderedExpr))
+			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, orderedQ))
+		}
+	}
 }
 
 // findOrderedPhysicalExpr scans the Reference for a physical-plan

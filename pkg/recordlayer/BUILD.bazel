@@ -234,6 +234,7 @@ go_test(
         "scan_limit_test.go",
         "scan_properties_test.go",
         "scan_test.go",
+        "schema_migration_test.go",
         "sparse_index_test.go",
         "split_helper_test.go",
         "split_key_expression_test.go",

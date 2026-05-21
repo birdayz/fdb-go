@@ -60,6 +60,10 @@ func (w *physicalFirstOrDefaultWrapper) WithChildren(qs []expressions.Quantifier
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalFirstOrDefaultWrapper.WithChildren: expected 1, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryFirstOrDefaultPlan(innerPlan, w.plan.GetDefaultValue())
+		return &physicalFirstOrDefaultWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalFirstOrDefaultWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

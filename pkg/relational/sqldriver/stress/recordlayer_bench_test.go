@@ -14,7 +14,6 @@ import (
 )
 
 func TestFDB_SQLParallelConnections(t *testing.T) {
-	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

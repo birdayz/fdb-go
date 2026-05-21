@@ -2291,39 +2291,100 @@ func TestDistinctKey_Deterministic(t *testing.T) {
 	}
 }
 
-// --- intersectionKey unit tests ---
+// --- intersectionCompKeyFunc unit tests ---
 
-func TestIntersectionKey_NoKeyVals_WithPK(t *testing.T) {
+func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(7)}
 	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"X": 1}}
-	key := intersectionKey(qr, nil)
-	expected := string(pk.Pack())
-	if key != expected {
-		t.Fatalf("expected packed PK, got %q", key)
+	fn := intersectionCompKeyFunc(nil)
+	got := fn(qr)
+	if len(got) != 1 || got[0] != int64(7) {
+		t.Fatalf("expected PK tuple {7}, got %v", got)
 	}
 }
 
-func TestIntersectionKey_NoKeyVals_NoPK(t *testing.T) {
+func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"X": 1}}
-	key := intersectionKey(qr, nil)
-	expected := fmt.Sprintf("%v", qr.Datum)
-	if key != expected {
-		t.Fatalf("expected datum string, got %q", key)
+	fn := intersectionCompKeyFunc(nil)
+	got := fn(qr)
+	if len(got) != 1 {
+		t.Fatalf("expected single-element tuple, got %v", got)
+	}
+	if _, ok := got[0].(string); !ok {
+		t.Fatalf("expected string element, got %T", got[0])
 	}
 }
 
-func TestIntersectionKey_WithKeyVals(t *testing.T) {
+func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"NAME": "alice", "AGE": int64(30)}}
 	keyVals := []values.Value{
 		&values.FieldValue{Field: "NAME", Typ: values.TypeString},
 		&values.FieldValue{Field: "AGE", Typ: values.TypeInt},
 	}
-	key := intersectionKey(qr, keyVals)
-	if key != "alice|30|" {
-		t.Fatalf("expected 'alice|30|', got %q", key)
+	fn := intersectionCompKeyFunc(keyVals)
+	got := fn(qr)
+	if len(got) != 2 || got[0] != "alice" || got[1] != int64(30) {
+		t.Fatalf("expected {alice, 30}, got %v", got)
+	}
+}
+
+// --- compareValues unit tests ---
+
+func TestCompareValues_NullHandling(t *testing.T) {
+	t.Parallel()
+	if compareValues(nil, nil) != 0 {
+		t.Fatal("nil == nil should be 0")
+	}
+	if compareValues(nil, int64(1)) >= 0 {
+		t.Fatal("nil < non-nil")
+	}
+	if compareValues(int64(1), nil) <= 0 {
+		t.Fatal("non-nil > nil")
+	}
+}
+
+func TestCompareValues_NumericTypes(t *testing.T) {
+	t.Parallel()
+	if compareValues(int64(1), int64(2)) >= 0 {
+		t.Fatal("1 < 2")
+	}
+	if compareValues(int64(2), int64(1)) <= 0 {
+		t.Fatal("2 > 1")
+	}
+	if compareValues(int64(42), float64(42.0)) != 0 {
+		t.Fatal("int64(42) == float64(42.0)")
+	}
+	if compareValues(float64(3.14), int64(3)) <= 0 {
+		t.Fatal("3.14 > 3")
+	}
+}
+
+func TestCompareValues_CrossTypeNotEqual(t *testing.T) {
+	t.Parallel()
+	// int vs string must NOT return 0 (the NaN bug would make them "equal")
+	cmp := compareValues(int64(42), "hello")
+	if cmp == 0 {
+		t.Fatal("int64(42) should not equal string 'hello'")
+	}
+	cmp2 := compareValues(float64(3.14), "world")
+	if cmp2 == 0 {
+		t.Fatal("float64(3.14) should not equal string 'world'")
+	}
+}
+
+func TestCompareValues_Strings(t *testing.T) {
+	t.Parallel()
+	if compareValues("abc", "def") >= 0 {
+		t.Fatal("abc < def")
+	}
+	if compareValues("xyz", "abc") <= 0 {
+		t.Fatal("xyz > abc")
+	}
+	if compareValues("same", "same") != 0 {
+		t.Fatal("same == same")
 	}
 }
 
@@ -4545,9 +4606,12 @@ func TestMemorySortCursor_OnNextAfterClose(t *testing.T) {
 	c := newMemorySortCursor(inner, []string{"x"}, nil)
 	c.Close()
 
-	_, err := c.OnNext(context.Background())
-	if err == nil {
-		t.Fatal("expected error from OnNext after Close")
+	result, err := c.OnNext(context.Background())
+	if err != nil {
+		t.Fatalf("OnNext after Close should not error, got: %v", err)
+	}
+	if result.HasNext() {
+		t.Fatal("OnNext after Close should return no-next")
 	}
 }
 
@@ -4647,9 +4711,12 @@ func TestAggregateCursor_OnNextAfterClose(t *testing.T) {
 	c := newAggregateCursor(inner, nil, nil)
 	c.Close()
 
-	_, err := c.OnNext(context.Background())
-	if err == nil {
-		t.Fatal("expected error from OnNext after Close")
+	result, err := c.OnNext(context.Background())
+	if err != nil {
+		t.Fatalf("OnNext after Close should not error, got: %v", err)
+	}
+	if result.HasNext() {
+		t.Fatal("OnNext after Close should return no-next")
 	}
 }
 

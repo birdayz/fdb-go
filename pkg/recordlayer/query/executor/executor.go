@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
@@ -806,23 +807,82 @@ func executeUnion(
 		md = store.GetRecordMetaData()
 	}
 
+	firstBranchKeys := planColumnNamesWithMD(inners[0], md)
+
+	// If plan metadata gives us column names for all branches, stream
+	// directly without buffering.
+	if firstBranchKeys != nil {
+		allKnown := true
+		for i := 1; i < len(inners); i++ {
+			if planColumnNamesWithMD(inners[i], md) == nil {
+				allKnown = false
+				break
+			}
+		}
+		if allKnown {
+			return executeUnionStreaming(ctx, inners, store, evalCtx, props, md, firstBranchKeys)
+		}
+	}
+
+	// Fallback: need to peek rows to discover column names — buffer.
+	return executeUnionBuffered(ctx, inners, store, evalCtx, continuation, props, md, firstBranchKeys)
+}
+
+func executeUnionStreaming(
+	ctx context.Context,
+	inners []plans.RecordQueryPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	props recordlayer.ExecuteProperties,
+	md *recordlayer.RecordMetaData,
+	targetKeys []string,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
+	for i, inner := range inners {
+		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
+		if err != nil {
+			for _, prev := range cursors {
+				prev.Close()
+			}
+			return nil, err
+		}
+		if i > 0 {
+			srcKeys := planColumnNamesWithMD(inner, md)
+			if srcKeys != nil && !slices.Equal(srcKeys, targetKeys) {
+				c = recordlayer.MapCursor(c, func(qr QueryResult) QueryResult {
+					return remapUnionColumnsByPosition(qr, srcKeys, targetKeys)
+				})
+			}
+		}
+		cursors = append(cursors, c)
+	}
+	return applySkipLimit(newConcatResultCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func executeUnionBuffered(
+	ctx context.Context,
+	inners []plans.RecordQueryPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+	md *recordlayer.RecordMetaData,
+	firstBranchKeys []string,
+) (recordlayer.RecordCursor[QueryResult], error) {
 	var all []QueryResult
-	var firstBranchKeys []string
 	for branchIdx, inner := range inners {
 		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
 		if err != nil {
 			return nil, err
 		}
 		items, err := CollectAll(ctx, cursor)
+		cursor.Close()
 		if err != nil {
 			return nil, err
 		}
-		if branchIdx == 0 {
-			firstBranchKeys = planColumnNamesWithMD(inner, md)
-			if firstBranchKeys == nil && len(items) > 0 {
-				if m, ok := items[0].Datum.(map[string]any); ok {
-					firstBranchKeys = mapKeysOrdered(m)
-				}
+		if branchIdx == 0 && firstBranchKeys == nil && len(items) > 0 {
+			if m, ok := items[0].Datum.(map[string]any); ok {
+				firstBranchKeys = mapKeysOrdered(m)
 			}
 		}
 		if branchIdx > 0 && len(firstBranchKeys) > 0 {
@@ -963,65 +1023,50 @@ func executeIntersection(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	keyVals := p.GetComparisonKeyValues()
-
-	firstCursor, err := ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndLimit())
-	if err != nil {
-		return nil, err
-	}
-	firstItems, err := CollectAll(ctx, firstCursor)
-	if err != nil {
-		return nil, err
-	}
-
-	otherSets := make([]map[string]struct{}, len(inners)-1)
-	for i := 1; i < len(inners); i++ {
-		cursor, err := ExecutePlan(ctx, inners[i], store, evalCtx, continuation, props.ClearSkipAndLimit())
+	// Children start from nil continuation. The intersectionCursor builds
+	// per-child IntersectionContinuation protos internally, but resuming
+	// from a parent-level continuation requires deserializing the proto
+	// and splitting per-child bytes — not yet wired. The old hash-based
+	// approach had the same limitation (passed raw continuation to all
+	// children, which was semantically wrong).
+	cursors := make([]recordlayer.RecordCursor[QueryResult], len(inners))
+	for i, inner := range inners {
+		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
 		if err != nil {
-			return nil, err
-		}
-		items, err := CollectAll(ctx, cursor)
-		if err != nil {
-			return nil, err
-		}
-		set := make(map[string]struct{}, len(items))
-		for _, item := range items {
-			set[intersectionKey(item, keyVals)] = struct{}{}
-		}
-		otherSets[i-1] = set
-	}
-
-	var results []QueryResult
-	for _, item := range firstItems {
-		key := intersectionKey(item, keyVals)
-		inAll := true
-		for _, set := range otherSets {
-			if _, ok := set[key]; !ok {
-				inAll = false
-				break
+			for _, prev := range cursors[:i] {
+				prev.Close()
 			}
+			return nil, err
 		}
-		if inAll {
-			results = append(results, item)
-		}
+		cursors[i] = c
 	}
 
-	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+	keyVals := p.GetComparisonKeyValues()
+	compKeyFunc := intersectionCompKeyFunc(keyVals)
+	return applySkipLimit(
+		recordlayer.Intersection(cursors, compKeyFunc, false),
+		props.Skip, props.ReturnedRowLimit,
+	), nil
 }
 
-func intersectionKey(qr QueryResult, keyVals []values.Value) string {
-	if len(keyVals) == 0 {
-		if qr.PrimaryKey != nil {
-			return string(qr.PrimaryKey.Pack())
+// intersectionCompKeyFunc builds a ComparisonKeyFunc that extracts a
+// tuple-encoded comparison key from a QueryResult. Uses the plan's
+// comparison-key values when available, falls back to PrimaryKey, then
+// to a string representation of the datum.
+func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
+	return func(qr QueryResult) tuple.Tuple {
+		if len(keyVals) > 0 {
+			t := make(tuple.Tuple, len(keyVals))
+			for i, kv := range keyVals {
+				t[i] = kv.Evaluate(qr.Datum)
+			}
+			return t
 		}
-		return fmt.Sprintf("%v", qr.Datum)
+		if qr.PrimaryKey != nil {
+			return qr.PrimaryKey
+		}
+		return tuple.Tuple{fmt.Sprintf("%v", qr.Datum)}
 	}
-	var b strings.Builder
-	for _, kv := range keyVals {
-		v := kv.Evaluate(qr.Datum)
-		fmt.Fprintf(&b, "%v|", v)
-	}
-	return b.String()
 }
 
 func executeFlatMap(
