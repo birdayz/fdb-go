@@ -88,7 +88,7 @@ func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost) properti
 	in := child[0].Cardinality
 	return properties.Cost{
 		Cardinality: in * properties.DistinctSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.DistinctCPU*0.8) * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.StreamingAggCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

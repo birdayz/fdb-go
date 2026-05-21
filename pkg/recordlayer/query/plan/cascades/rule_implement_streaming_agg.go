@@ -117,7 +117,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 // findOrderedPhysicalExpr scans the Reference for a physical-plan
 // member whose ordering satisfies the grouping keys (in order).
 func findOrderedPhysicalExpr(ref *expressions.Reference, groupingKeys []values.Value) expressions.RelationalExpression {
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); !ok {
 			continue
 		}
