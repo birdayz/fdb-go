@@ -14,32 +14,35 @@ Measured after cost model regression fixes. Compare against master baseline.
 
 | Query | Current | Master | Δ | Notes |
 |-------|---------|--------|---|-------|
-| pk_lookup_first | **20ms** | 23ms | = | PK point lookup |
+| pk_lookup_first | **10ms** | 23ms | 2x ↑ | PK point lookup |
 | pk_lookup_middle | **<10ms** | 5.6ms | = | |
-| pk_lookup_last | **10ms** | 5.7ms | = | |
-| index_customer_eq (8 rows) | **10ms** | 3.1s | 300x ↑ | Index scan works |
+| pk_lookup_last | **<10ms** | 5.7ms | = | |
+| index_customer_eq (8 rows) | **<10ms** | 3.1s | 300x+ ↑ | Index scan works |
 | order_by_pk_index_filter (8 rows) | **<10ms** | 3.0s | 300x+ ↑ | Index scan works |
 | needle_in_haystack_pk | **<10ms** | 3.0s | 1500x ↑ | PK point lookup |
 | update_by_index | **<10ms** | 5ms | = | |
 | delete_single_row | <10ms | 2.2ms | = | |
-| in_list (46 rows) | 2.88s | 3.1s | = | |
-| order_by_pk_full (1M rows) | 3.24s | 3.4s | = | |
-| full_scan_count | 2.77s | 2.9s | = | |
-| group_by_status (4 rows) | 4.60s | 5.1s | = | |
-| full_scan_sparse_filter | 2.92s | 3.0s | = | |
-| scan_all_narrow (1M rows) | 3.27s | 3.4s | = | |
-| scan_all_wide (1M rows) | 3.59s | 3.8s | = | |
-| join_10_outer | 2.89s | 3.0s | = | |
-| index_amount_range (100K rows) | 3.08s | 3.3s | = | Fixed: cost model prefers full scan for range |
-| full_scan_filter (COUNT > 5000) | 2.88s | 3.0s | = | Fixed: cost model prefers full scan for range |
-| group_by_customer_having | 9.49s | 10s | = | Fixed: streaming agg uses InMemorySort(FullScan) |
-| **index_status_count (COUNT)** | **16.4s** | 3.1s | **5x ↓** | Needs table stats for low-cardinality equality |
+| index_status_count (COUNT) | **0.32s** | 3.1s | **10x ↑** | Covering index for COUNT — no PK fetch |
+| full_scan_filter (COUNT > 5000) | **0.39s** | 3.0s | **8x ↑** | Covering index for COUNT — no PK fetch |
+| in_list (46 rows) | 2.90s | 3.1s | = | |
+| order_by_pk_full (1M rows) | 3.23s | 3.4s | = | |
+| full_scan_count | 3.01s | 2.9s | = | |
+| group_by_status (4 rows) | 4.64s | 5.1s | = | |
+| full_scan_sparse_filter | 2.93s | 3.0s | = | |
+| scan_all_narrow (1M rows) | 3.31s | 3.4s | = | |
+| scan_all_wide (1M rows) | 3.60s | 3.8s | = | |
+| join_10_outer | 2.79s | 3.0s | = | |
+| index_amount_range (100K rows) | 3.05s | 3.3s | = | Cost model prefers full scan for range |
+| group_by_customer_having | 9.28s | 10s | = | Streaming agg uses InMemorySort(FullScan) |
+
+**All regressions fixed. 6 queries faster than master.**
 
 **Fixes applied:**
-- [x] Cost model: non-covering index scans with range/zero bounds add `base × FetchCPU` to CPU, used in PlanningCostModel criterion #2 via `Total()`
-- [x] Streaming agg rule: yields both InMemorySort(FullScan) and ordered-index alternatives, cost model picks
+- [x] Cost model: non-covering index scans with range/zero bounds add `base × FetchCPU` to CPU
+- [x] Streaming agg rule: yields both InMemorySort(FullScan) and ordered-index alternatives
 - [x] FetchCPU raised from 0.5 to 1.5 (random I/O per-row fetch is expensive)
-- [ ] **Remaining:** index_status_count — equality on low-cardinality column (status, 4 values). Cost model can't distinguish from high-cardinality equality without table statistics. Fix: implement COUNT index statistics from RecordMetaData.
+- [x] Covering index for COUNT(*): streaming agg detects count-only aggregation over index scan, marks covering to skip PK fetch
+- [x] Aggregate index scans marked covering (no PK fetch needed)
 - [ ] Pre-existing: `TestFDB_GroupByDerivedTableComputedExpr/nested_derived_agg_plus_literal` fails on master too (NULL in derived agg)
 
 ---
