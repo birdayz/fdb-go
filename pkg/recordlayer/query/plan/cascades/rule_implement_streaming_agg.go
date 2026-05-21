@@ -51,11 +51,24 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	groupingKeys := gb.GetGroupingKeys()
 	if len(groupingKeys) == 0 {
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, groupingKeys, gb.GetAggregates())
 		innerExpr := findPhysicalExpr(innerRef)
 		if innerExpr == nil {
 			return
 		}
+		if isCountOnlyAggregation(gb.GetAggregates()) {
+			if idxWrapper := findIndexScanWrapper(innerRef); idxWrapper != nil && !idxWrapper.covering {
+				coveringWrapper := &physicalIndexScanWrapper{
+					plan:        idxWrapper.plan.WithCovering(nil),
+					columnNames: idxWrapper.columnNames,
+					unique:      idxWrapper.unique,
+					covering:    true,
+				}
+				coveringQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringWrapper))
+				aggPlan := plans.NewRecordQueryStreamingAggregationPlan(coveringWrapper.plan, groupingKeys, gb.GetAggregates())
+				call.Yield(newPhysicalStreamingAggWrapper(aggPlan, coveringQ))
+			}
+		}
+		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, groupingKeys, gb.GetAggregates())
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
 		return
@@ -136,6 +149,35 @@ func orderingSatisfiesGroupingKeys(o properties.Ordering, groupingKeys []values.
 			return false
 		}
 		if !strings.EqualFold(fv.Field, oFV.Field) {
+			return false
+		}
+	}
+	return true
+}
+
+// findIndexScanWrapper scans the Reference for a physicalIndexScanWrapper.
+func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper {
+	if ref == nil {
+		return nil
+	}
+	for _, m := range ref.AllMembers() {
+		if w, ok := m.(*physicalIndexScanWrapper); ok {
+			return w
+		}
+	}
+	return nil
+}
+
+// isCountOnlyAggregation reports whether all aggregates are COUNT(*)
+// (no field access needed from the base record). When true, an index
+// scan feeding this aggregation can be marked covering — the index
+// entries alone provide the count without PK fetch.
+func isCountOnlyAggregation(aggs []expressions.AggregateSpec) bool {
+	if len(aggs) == 0 {
+		return false
+	}
+	for _, a := range aggs {
+		if a.Function != expressions.AggCount {
 			return false
 		}
 	}
