@@ -33,6 +33,9 @@ func NewImplementInJoinRule() *ImplementInJoinRule {
 func (r *ImplementInJoinRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
+	if call.IsConstraintOnly() {
+		return
+	}
 	selectExpr := call.Bindings.Get(r.matcher).(*expressions.SelectExpression)
 
 	if selectExpr.HasPredicates() {
@@ -98,6 +101,17 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 	requestedOrderings := call.GetRequestedOrderings()
 	if len(requestedOrderings) == 0 {
 		requestedOrderings = []*RequestedOrdering{PreserveOrdering()}
+	} else {
+		hasPreserve := false
+		for _, ro := range requestedOrderings {
+			if ro.IsPreserve() {
+				hasPreserve = true
+				break
+			}
+		}
+		if !hasPreserve {
+			requestedOrderings = append(requestedOrderings, PreserveOrdering())
+		}
 	}
 
 	for _, partition := range partitions {

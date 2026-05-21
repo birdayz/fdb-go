@@ -83,6 +83,7 @@ const (
 	WriteCPU        = 1.0
 	FetchCPU        = 1.5 // per-row base-record fetch via PK lookup (random I/O)
 	StreamingAggCPU = 1.2 // cheaper than DistinctCPU (no hash table, pre-sorted input)
+	ScanCPU         = 0.1 // per-row sequential I/O cost for full table/index scans
 )
 
 // Cost is a Go-native heuristic cost: a cardinality estimate plus a

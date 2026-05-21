@@ -67,10 +67,14 @@ func (w *physicalInJoinWrapper) HintCost(child []properties.Cost) properties.Cos
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
+	inListLen := float64(len(w.plan.GetInValues()))
+	if inListLen < 1 {
+		inListLen = 10
+	}
 	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * 10 * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*10*properties.FilterCPU) * physicalWrapperCostMultiplier,
+		Cardinality: in * inListLen * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*inListLen*properties.FilterCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

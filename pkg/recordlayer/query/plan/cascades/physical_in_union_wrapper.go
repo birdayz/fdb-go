@@ -67,10 +67,14 @@ func (w *physicalInUnionWrapper) HintCost(child []properties.Cost) properties.Co
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
+	inDims := float64(len(w.plan.GetBindingNames()))
+	if inDims < 1 {
+		inDims = 10
+	}
 	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * 10 * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*10*properties.UnionCPU) * physicalWrapperCostMultiplier,
+		Cardinality: in * inDims * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*inDims*properties.UnionCPU) * physicalWrapperCostMultiplier,
 	}
 }
 
