@@ -81,7 +81,8 @@ const (
 	IntersectionCPU = 1.0
 	SelectCPU       = 0.5
 	WriteCPU        = 1.0
-	FetchCPU        = 0.5 // per-row base-record fetch via PK lookup
+	FetchCPU        = 1.5 // per-row base-record fetch via PK lookup (random I/O)
+	StreamingAggCPU = 1.2 // cheaper than DistinctCPU (no hash table, pre-sorted input)
 )
 
 // Cost is a Go-native heuristic cost: a cardinality estimate plus a

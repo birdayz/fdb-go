@@ -71,6 +71,10 @@ func (w *physicalStreamingAggWrapper) WithChildren(qs []expressions.Quantifier) 
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalStreamingAggWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryStreamingAggregationPlan(innerPlan, w.plan.GetGroupingKeys(), w.plan.GetAggregates())
+		return &physicalStreamingAggWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalStreamingAggWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
@@ -84,7 +88,7 @@ func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost) properti
 	in := child[0].Cardinality
 	return properties.Cost{
 		Cardinality: in * properties.DistinctSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.DistinctCPU*0.8) * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.StreamingAggCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

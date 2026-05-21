@@ -22,6 +22,17 @@ type RecordContextConfig struct {
 
 	// TransactionID is an optional identifier for tracing/debugging.
 	TransactionID string
+
+	// TransactionSizeWarnBytes triggers a warning when the approximate
+	// transaction size exceeds this threshold. Zero disables the check.
+	// FDB's hard limit is 10MB; a typical warning threshold is 8MB.
+	TransactionSizeWarnBytes int64
+
+	// TransactionSizeErrorBytes causes operations to return
+	// TransactionSizeExceededError when the approximate transaction
+	// size exceeds this threshold. Zero disables the check.
+	// Setting this below FDB's 10MB limit lets callers commit early.
+	TransactionSizeErrorBytes int64
 }
 
 // FDBDatabaseRunner provides configurable retry logic for FDB transactions.
@@ -214,6 +225,8 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 				return nil, err
 			}
 		}
+		recordCtx.txSizeWarnBytes = r.ContextConfig.TransactionSizeWarnBytes
+		recordCtx.txSizeErrorBytes = r.ContextConfig.TransactionSizeErrorBytes
 	}
 
 	return recordCtx, nil

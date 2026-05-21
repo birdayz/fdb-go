@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -351,33 +352,42 @@ func compareValues(a, b any) int {
 	switch av := a.(type) {
 	case int64:
 		bv := toFloat64(b)
-		af := float64(av)
-		if af < bv {
-			return -1
+		if !math.IsNaN(bv) {
+			af := float64(av)
+			if af < bv {
+				return -1
+			}
+			if af > bv {
+				return 1
+			}
+			return 0
 		}
-		if af > bv {
-			return 1
-		}
-		return 0
 	case int32:
 		bv := toFloat64(b)
-		af := float64(av)
-		if af < bv {
-			return -1
+		if !math.IsNaN(bv) {
+			af := float64(av)
+			if af < bv {
+				return -1
+			}
+			if af > bv {
+				return 1
+			}
+			return 0
 		}
-		if af > bv {
-			return 1
-		}
-		return 0
 	case float64:
+		if math.IsNaN(av) {
+			break
+		}
 		bv := toFloat64(b)
-		if av < bv {
-			return -1
+		if !math.IsNaN(bv) {
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
 		}
-		if av > bv {
-			return 1
-		}
-		return 0
 	case string:
 		if bv, ok := b.(string); ok {
 			if av < bv {
@@ -529,11 +539,17 @@ func (c *concatResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCurs
 }
 
 func (c *concatResultCursor) Close() error {
-	c.closed = true
-	for _, cursor := range c.cursors {
-		_ = cursor.Close()
+	if c.closed {
+		return nil
 	}
-	return nil
+	c.closed = true
+	var firstErr error
+	for _, cursor := range c.cursors {
+		if err := cursor.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (c *concatResultCursor) IsClosed() bool { return c.closed }

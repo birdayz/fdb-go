@@ -341,6 +341,11 @@ type FDBRecordContext struct {
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
 
+	// Client-side transaction size thresholds. Zero = disabled.
+	txSizeWarnBytes  int64
+	txSizeErrorBytes int64
+	txSizeWarned     atomic.Bool // only warn once per transaction
+
 	// Version management — matches Java's FDBRecordContext.
 	// Java uses AtomicInteger + ConcurrentSkipListMap.
 	// Go uses atomic.Int32 + mutex-protected maps.
@@ -406,6 +411,50 @@ func (rc *FDBRecordContext) Context() context.Context {
 // Matches Java's FDBRecordContext.getApproximateTransactionSize().
 func (rc *FDBRecordContext) GetApproximateTransactionSize() (int64, error) {
 	return rc.tx.GetApproximateSize().Get()
+}
+
+// CheckTransactionSize checks the approximate transaction size against the
+// configured warning and error thresholds. Returns TransactionSizeExceededError
+// if the error threshold is exceeded, TransactionSizeWarningError if the warning
+// threshold is exceeded (once per transaction), or nil.
+func (rc *FDBRecordContext) CheckTransactionSize() error {
+	if rc.txSizeWarnBytes == 0 && rc.txSizeErrorBytes == 0 {
+		return nil
+	}
+	size, err := rc.GetApproximateTransactionSize()
+	if err != nil {
+		return err
+	}
+	if rc.txSizeErrorBytes > 0 && size >= rc.txSizeErrorBytes {
+		return &TransactionSizeExceededError{CurrentBytes: size, LimitBytes: rc.txSizeErrorBytes}
+	}
+	if rc.txSizeWarnBytes > 0 && size >= rc.txSizeWarnBytes && rc.txSizeWarned.CompareAndSwap(false, true) {
+		return &TransactionSizeWarningError{CurrentBytes: size, LimitBytes: rc.txSizeWarnBytes}
+	}
+	return nil
+}
+
+// TransactionSizeExceededError is returned when the approximate transaction
+// size exceeds the configured error threshold. Callers should commit the
+// current transaction and start a new one.
+type TransactionSizeExceededError struct {
+	CurrentBytes int64
+	LimitBytes   int64
+}
+
+func (e *TransactionSizeExceededError) Error() string {
+	return fmt.Sprintf("transaction size %d bytes exceeds limit %d bytes", e.CurrentBytes, e.LimitBytes)
+}
+
+// TransactionSizeWarningError is returned once per transaction when the
+// approximate size exceeds the configured warning threshold.
+type TransactionSizeWarningError struct {
+	CurrentBytes int64
+	LimitBytes   int64
+}
+
+func (e *TransactionSizeWarningError) Error() string {
+	return fmt.Sprintf("transaction size %d bytes exceeds warning threshold %d bytes", e.CurrentBytes, e.LimitBytes)
 }
 
 // Commit commits the transaction

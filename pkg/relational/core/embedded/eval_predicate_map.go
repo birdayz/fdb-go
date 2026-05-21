@@ -304,15 +304,15 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			}
 			return triFromBool(res), nil
 		case p.TRUE() != nil:
-			b, _ := fieldVal.(bool)
-			res := b
+			b, ok := fieldVal.(bool)
+			res := ok && b
 			if negated {
 				res = !res
 			}
 			return triFromBool(res), nil
 		case p.FALSE() != nil:
-			b, _ := fieldVal.(bool)
-			res := !b && fieldVal != nil
+			b, ok := fieldVal.(bool)
+			res := ok && !b
 			if negated {
 				res = !res
 			}
@@ -410,14 +410,15 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"IN requires a parenthesized expression list or subquery")
 		}
+		sawNull := false
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
 			litVal, litErr := evalExprOnMap(ctx, conn, row, inExpr)
 			if litErr != nil {
 				return triFalse, litErr
 			}
 			if litVal == nil {
-				return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"NULL values are not allowed in the IN list")
+				sawNull = true
+				continue
 			}
 			if !valuesComparable(fieldVal, litVal) {
 				return triFalse, api.NewErrorf(api.ErrCodeDatatypeMismatch,
@@ -429,6 +430,9 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				}
 				return triTrue, nil
 			}
+		}
+		if sawNull {
+			return triNull, nil
 		}
 		if p.NOT() != nil {
 			return triTrue, nil

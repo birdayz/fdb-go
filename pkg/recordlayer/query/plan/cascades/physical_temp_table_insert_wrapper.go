@@ -74,6 +74,10 @@ func (w *physicalTempTableInsertWrapper) WithChildren(qs []expressions.Quantifie
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalTempTableInsertWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryTempTableInsertPlan(innerPlan, w.plan.GetTempTableAlias(), w.plan.IsOwning())
+		return &physicalTempTableInsertWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalTempTableInsertWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

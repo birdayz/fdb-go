@@ -214,7 +214,7 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
-	merged := expressions.NewSelectExpressionWithAliases(newResultValue, newQuantifiers, newPredicates, newAliases)
+	merged := expressions.NewSelectExpressionWithJoinType(newResultValue, newQuantifiers, newPredicates, newAliases, sel.GetJoinType())
 	call.Yield(merged)
 }
 

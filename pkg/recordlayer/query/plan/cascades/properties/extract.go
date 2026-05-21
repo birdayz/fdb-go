@@ -285,8 +285,9 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		), nil
 
 	case *expressions.SelectExpression:
-		return expressions.NewSelectExpression(
+		return expressions.NewSelectExpressionWithJoinType(
 			ex.GetResultValue(), freshChildren, ex.GetPredicates(),
+			ex.GetSourceAliases(), ex.GetJoinType(),
 		), nil
 
 	case *expressions.InsertExpression:

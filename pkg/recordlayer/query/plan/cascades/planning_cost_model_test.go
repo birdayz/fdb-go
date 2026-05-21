@@ -437,7 +437,32 @@ func TestIntersectChildAliases_EmptyChildren(t *testing.T) {
 	}
 }
 
-func TestPlanningCostModel_IndexScanPreferredOverPrimaryScan(t *testing.T) {
+func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *testing.T) {
+	t.Parallel()
+	primary := &physicalScanWrapper{
+		plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+	}
+	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.TypeInt}}
+	cr := predicates.EmptyComparisonRange()
+	mr := cr.Merge(&comp)
+	if !mr.Ok {
+		t.Fatal("failed to merge equality comparison")
+	}
+	index := &physicalIndexScanWrapper{
+		plan:        plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false),
+		columnNames: []string{"A"},
+		covering:    true,
+	}
+
+	if !PlanningCostModelLess(index, primary) {
+		t.Error("covering equality index scan should be preferred over primary scan")
+	}
+	if PlanningCostModelLess(primary, index) {
+		t.Error("primary scan should NOT be preferred over covering equality index scan")
+	}
+}
+
+func TestPlanningCostModel_NonCoveringFullIndexLosesToPrimaryScan(t *testing.T) {
 	t.Parallel()
 	primary := &physicalScanWrapper{
 		plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
@@ -447,10 +472,28 @@ func TestPlanningCostModel_IndexScanPreferredOverPrimaryScan(t *testing.T) {
 		columnNames: []string{"A"},
 	}
 
-	if !PlanningCostModelLess(index, primary) {
-		t.Error("index scan should be preferred over primary scan (Java default: PREFER_INDEX)")
+	if PlanningCostModelLess(index, primary) {
+		t.Error("full non-covering index scan should NOT beat primary scan (per-row PK fetch makes it strictly worse)")
 	}
-	if PlanningCostModelLess(primary, index) {
-		t.Error("primary scan should NOT be preferred over index scan")
+}
+
+func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
+	t.Parallel()
+	primary := &physicalScanWrapper{
+		plan: plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+	}
+	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: 42, Typ: values.TypeInt}}
+	cr := predicates.EmptyComparisonRange()
+	mr := cr.Merge(&comp)
+	if !mr.Ok {
+		t.Fatal("failed to merge equality comparison")
+	}
+	index := &physicalIndexScanWrapper{
+		plan:        plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false),
+		columnNames: []string{"A"},
+	}
+
+	if !PlanningCostModelLess(index, primary) {
+		t.Error("equality-bound index scan should beat full primary scan")
 	}
 }

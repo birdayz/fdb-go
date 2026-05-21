@@ -190,7 +190,17 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	outerBuilder.AddQuantifier(newLeftQuantifier)
 	outerBuilder.AddQuantifier(newRightQuantifier)
 
-	newSelectExpr := outerBuilder.Build().Seal().BuildSelectWithResultValue(sel.GetResultValue())
+	outerSealed := outerBuilder.Build().Seal()
+	newSelectExpr := outerSealed.BuildSelectWithResultValue(sel.GetResultValue())
+	if sel.GetJoinType() != expressions.JoinInner {
+		newSelectExpr = expressions.NewSelectExpressionWithJoinType(
+			sel.GetResultValue(),
+			newSelectExpr.GetQuantifiers(),
+			newSelectExpr.GetPredicates(),
+			newSelectExpr.GetSourceAliases(),
+			sel.GetJoinType(),
+		)
+	}
 
 	call.Yield(newSelectExpr)
 }

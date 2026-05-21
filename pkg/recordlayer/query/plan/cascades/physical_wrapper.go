@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -189,6 +190,43 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 		}
 	}
 	return nil
+}
+
+// isLeafReplaceable reports whether a plan is safe to substitute as the
+// inner of a projection without altering the output schema or predicate
+// semantics. Only leaf-adjacent plans (scans, filters over scans, index
+// scans, streaming agg, distinct, etc.) qualify. Compound join plans
+// (NLJ, FlatMap, InJoin) encode predicate semantics in their structure
+// and must NOT be swapped — extraction already picks the right join plan
+// via quantifier traversal.
+func isLeafReplaceable(p plans.RecordQueryPlan) bool {
+	switch p.(type) {
+	case *plans.RecordQueryScanPlan,
+		*plans.RecordQueryIndexPlan,
+		*plans.RecordQueryFilterPlan,
+		*plans.RecordQueryTypeFilterPlan,
+		*plans.RecordQueryFetchFromPartialRecordPlan,
+		*plans.RecordQueryInMemorySortPlan,
+		*plans.RecordQueryStreamingAggregationPlan,
+		*plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryLimitPlan,
+		*plans.RecordQuerySortPlan,
+		*plans.RecordQueryPredicatesFilterPlan:
+		return true
+	}
+	return false
+}
+
+// isStartsWithOnly reports whether a ComparisonRange consists solely of
+// STARTS_WITH comparisons (prefix lookups). These are typically selective
+// like equality, so the cost model treats them without fetch penalty.
+func isStartsWithOnly(cr *predicates.ComparisonRange) bool {
+	for _, c := range cr.GetInequalityComparisons() {
+		if c.Type != predicates.ComparisonStartsWith {
+			return false
+		}
+	}
+	return true
 }
 
 // writeHash64 writes a uint64 to the FNV hasher in big-endian
@@ -446,17 +484,28 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // they read a subset of records. Apply a selectivity multiplier on
 // top of the physical-wrapper discount. Unique indexes with all
 // columns equality-bound return cardinality=1 (point lookup).
+//
+// Non-covering index scans with range bounds or zero bounds (used for
+// ordering) inflate cardinality to reflect per-row PK fetch I/O.
+// Equality-only scans are left alone — equality typically has high
+// selectivity (few rows matched), making index+fetch worthwhile.
+// Without table statistics this is the best heuristic: it correctly
+// penalizes full-index-scan-for-ordering and wide range scans while
+// preserving fast equality point lookups.
 func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	base := properties.LeafScanCardinality * physicalWrapperCostMultiplier
+	numBound := 0
+	allEquality := true
+	hasRangeBound := false
 	if w.plan != nil {
-		comps := w.plan.GetScanComparisons()
-		numBound := 0
-		allEquality := true
-		for _, cr := range comps {
+		for _, cr := range w.plan.GetScanComparisons() {
 			if !cr.IsEmpty() {
 				numBound++
 				if !cr.IsEquality() {
 					allEquality = false
+					if cr.IsInequality() && !isStartsWithOnly(cr) {
+						hasRangeBound = true
+					}
 				}
 			}
 		}
@@ -469,7 +518,11 @@ func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost
 		}
 		base *= sel
 	}
-	return properties.Cost{Cardinality: base, CPU: 0}
+	cpu := 0.0
+	if !w.covering && (numBound == 0 || hasRangeBound) {
+		cpu = base * properties.FetchCPU
+	}
+	return properties.Cost{Cardinality: base, CPU: cpu}
 }
 
 func (w *physicalIndexScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -554,6 +607,10 @@ func (w *physicalFilterWrapper) HashCodeWithoutChildren() uint64 {
 func (w *physicalFilterWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalFilterWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryFilterPlan(w.plan.GetPredicates(), innerPlan)
+		return &physicalFilterWrapper{plan: newPlan, innerQuant: qs[0]}, nil
 	}
 	return &physicalFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
@@ -664,6 +721,9 @@ func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (exp
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalDistinctWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		return &physicalDistinctWrapper{plan: plans.NewRecordQueryDistinctPlan(innerPlan), innerQuant: qs[0]}, nil
+	}
 	return &physicalDistinctWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
@@ -761,6 +821,9 @@ func (w *physicalTypeFilterWrapper) HashCodeWithoutChildren() uint64 {
 func (w *physicalTypeFilterWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalTypeFilterWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		return &physicalTypeFilterWrapper{plan: plans.NewRecordQueryTypeFilterPlan(w.plan.GetRecordTypes(), innerPlan), innerQuant: qs[0]}, nil
 	}
 	return &physicalTypeFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
@@ -862,6 +925,9 @@ func (w *physicalInsertWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalInsertWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		return &physicalInsertWrapper{plan: plans.NewRecordQueryInsertPlan(innerPlan, w.plan.GetTargetRecordType(), w.plan.GetTargetType()), innerQuant: qs[0]}, nil
+	}
 	return &physicalInsertWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
@@ -948,6 +1014,9 @@ func (w *physicalDeleteWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalDeleteWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		return &physicalDeleteWrapper{plan: plans.NewRecordQueryDeletePlan(innerPlan, w.plan.GetTargetRecordType()), innerQuant: qs[0]}, nil
+	}
 	return &physicalDeleteWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
@@ -1031,6 +1100,9 @@ func (w *physicalUpdateWrapper) HashCodeWithoutChildren() uint64 {
 func (w *physicalUpdateWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalUpdateWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		return &physicalUpdateWrapper{plan: plans.NewRecordQueryUpdatePlan(innerPlan, w.plan.GetTargetRecordType(), w.plan.GetTransforms()), innerQuant: qs[0]}, nil
 	}
 	return &physicalUpdateWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
@@ -1305,6 +1377,10 @@ func (w *physicalProjectionWrapper) HashCodeWithoutChildren() uint64 {
 func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalProjectionWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryProjectionPlanWithAliases(w.plan.GetProjections(), w.plan.GetAliases(), innerPlan)
+		return &physicalProjectionWrapper{plan: newPlan, innerQuant: qs[0]}, nil
 	}
 	return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }

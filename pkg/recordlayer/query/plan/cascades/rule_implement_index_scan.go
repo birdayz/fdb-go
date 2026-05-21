@@ -95,6 +95,13 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			if !ok {
 				continue
 			}
+			// Only push range-safe comparison types into scan ranges.
+			// ComparisonIn, ComparisonIsNull, ComparisonNotEquals, etc. cannot
+			// be correctly represented as simple FDB range scans — they must
+			// remain as residual predicates evaluated by the executor.
+			if !isScanRangeCompatible(cp.Comparison.Type) {
+				continue
+			}
 			colIdx, found := colToIdx[strings.ToUpper(fv.Field)]
 			if !found {
 				continue
@@ -175,6 +182,23 @@ func extractIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
 		}
 	}
 	return nil
+}
+
+// isScanRangeCompatible reports whether a ComparisonType can be safely
+// pushed into an FDB key-range scan. Simple scalar comparisons
+// (=, <, <=, >, >=) and STARTS_WITH (prefix range) map cleanly to
+// range bounds. ComparisonIn and others must stay as residual predicates.
+func isScanRangeCompatible(t predicates.ComparisonType) bool {
+	switch t {
+	case predicates.ComparisonEquals,
+		predicates.ComparisonLessThan,
+		predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan,
+		predicates.ComparisonGreaterThanEq,
+		predicates.ComparisonStartsWith:
+		return true
+	}
+	return false
 }
 
 // comparisonTypesCompatible checks whether a field's type and the

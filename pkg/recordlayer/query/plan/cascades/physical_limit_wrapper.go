@@ -97,6 +97,10 @@ func (w *physicalLimitWrapper) WithChildren(qs []expressions.Quantifier) (expres
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalLimitWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryLimitPlan(innerPlan, w.plan.GetLimit(), w.plan.GetOffset())
+		return &physicalLimitWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalLimitWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

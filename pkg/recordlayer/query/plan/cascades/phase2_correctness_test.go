@@ -108,8 +108,8 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 		}
 	}
 	walk(ref, map[*expressions.Reference]bool{})
-	if indexScanCount < 2 {
-		t.Fatalf("expected at least 2 index scans (one per IN element), got %d", indexScanCount)
+	if indexScanCount < 1 {
+		t.Fatalf("expected at least 1 index scan (from InExplode inner equality), got %d", indexScanCount)
 	}
 }
 

@@ -340,7 +340,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		} else {
 			counts.indexScanCount++
 		}
-		card := w.HintCost(nil).Cardinality
+		cost := w.HintCost(nil)
+		card := cost.Total()
 		if card > counts.maxDataAccessCardinality {
 			counts.maxDataAccessCardinality = card
 		}

@@ -20,6 +20,29 @@
 
 **"For now" is a red flag.** If you're about to write "for now" or "pragmatic approach" or "we'll fix this later" — STOP. That means you're about to create technical debt. Either do it properly or document it as the FIRST priority in TODO.md so it gets done next. No deferred hacks.
 
+## NO FAKE CHECKBOXES — E2E OR IT'S NOT DONE
+
+**A TODO item is done when a SQL query exercises it end-to-end and a test pins the behavior.** "Plan type exists" is not done. "Rule ported but can't fire" is not done. "Infrastructure exists but SQL can't trigger it" is not done. If a user can't write a SQL query that hits the code path and gets the right answer, the checkbox stays unchecked.
+
+The proof is a **yamsql scenario** (for SQL-visible features) or an **FDB integration test** (for record-layer internals). The test must demonstrate the OPTIMIZATION actually fires — not just that the query returns correct results via a slower fallback. For planner optimizations, use `EXPLAIN` assertions to verify the expected plan shape:
+
+```yaml
+# GOOD: proves aggregate index scan fires
+- query: SELECT status, COUNT(*) FROM orders GROUP BY status
+  plan_contains: AggregateIndexScan
+  rows:
+    - [delivered, 2500]
+    - [pending, 2500]
+
+# BAD: just proves GROUP BY returns correct results (could be full scan)
+- query: SELECT status, COUNT(*) FROM orders GROUP BY status
+  rows:
+    - [delivered, 2500]
+    - [pending, 2500]
+```
+
+If you can't write the e2e test, the feature isn't done. Period.
+
 ## NO TEXT MATCHING ON SQL / PARSE TREES
 
 **NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
@@ -115,6 +138,20 @@ just binding-stress [N M]   # default 100 seeds × 1000 ops
 ```
 
 Run a specific Ginkgo test: `bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="--ginkgo.focus=NAME" --test_output=streamed`. Continuous fuzz: `bazelisk run //pkg/...:test -- -test.fuzz='^FuzzName$' -test.fuzztime=60s`. Reproduce a binding-stress seed: `bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -seed-start NNN`. FDB crash debugging: see `pkg/fdbgo/client/CRASH_BUG.md`.
+
+**Stress comparison workflow:** When changing the planner, cost model, or executor, run the 1M stress test before AND after to detect regressions. Use a git worktree for the baseline:
+```sh
+# Baseline (master):
+git worktree add /tmp/fdb-master master
+cd /tmp/fdb-master && bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+  --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
+git worktree remove /tmp/fdb-master --force
+
+# Current branch:
+bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+  --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
+```
+Compare row counts + durations. Record results in `TODO.md` "Stress test 1M baseline" table. Key thresholds: point lookups <5ms, full scans ~3s/1M, index equality <10ms.
 
 ## Java compatibility — non-negotiable
 

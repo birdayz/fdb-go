@@ -166,7 +166,6 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
 	}
-
 	// Plan scalar subqueries independently through the Cascades pipeline.
 	var scalarSubs []scalarSubqueryBinding
 	for _, ssq := range scalarSubqueryPlans {

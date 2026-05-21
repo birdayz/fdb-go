@@ -71,6 +71,15 @@ func (w *physicalFetchFromPartialRecordWrapper) WithChildren(qs []expressions.Qu
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalFetchFromPartialRecordWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+		newPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+			innerPlan,
+			w.plan.GetTranslateValueFunction(),
+			w.plan.GetResultType(),
+			w.plan.GetFetchIndexRecords(),
+		)
+		return &physicalFetchFromPartialRecordWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+	}
 	return &physicalFetchFromPartialRecordWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 

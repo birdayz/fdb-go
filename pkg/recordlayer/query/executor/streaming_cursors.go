@@ -91,7 +91,7 @@ func (c *aggregateCursor) withPartialState(groupKey string, keyVals []any, gs *g
 
 func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
-		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
 
 	// If we have a pending completed group from a previous group break,
@@ -383,7 +383,7 @@ func newMemorySortCursor(
 
 func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
-		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
 	}
 	if c.loaded {
 		return c.emitNext()
