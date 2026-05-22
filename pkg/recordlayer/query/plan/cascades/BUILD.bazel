@@ -248,6 +248,7 @@ go_test(
         "phase2_fuzz_test.go",
         "phase3_correctness_new_test.go",
         "phase3_correctness_test.go",
+        "physical_properties_test.go",
         "plan_choice_multicolumn_test.go",
         "plan_choice_test.go",
         "plan_context_builder_test.go",

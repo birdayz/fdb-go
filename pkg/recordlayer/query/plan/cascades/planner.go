@@ -653,6 +653,9 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	}
 	best := t.Ref.GetBest(p.costModel)
 	p.bestMember[t.Ref] = best
+	// Store as NoProperties winner on Reference for the new
+	// per-properties extraction path.
+	t.Ref.SetWinner(expressions.NoProperties, best)
 	if p.events != nil {
 		p.events.OnOptimizeReference(t.Ref, best)
 	}

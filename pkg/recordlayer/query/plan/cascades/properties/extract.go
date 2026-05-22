@@ -134,6 +134,15 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 		return nil, nil
 	}
 	visited[ref] = true
+
+	// Per-properties winner path (Graefe 1995 §2): if the Reference
+	// has a physical winner stamped for NoProperties, use it directly.
+	// Non-physical winners fall through to the legacy extraction which
+	// navigates FinalMembers to find the physical plan.
+	if w := ref.Winner(expressions.NoProperties); w != nil && isPhysicalPlan(w) {
+		return rebuildExpressionFromSelectorVisited(w, sel, stats, visited)
+	}
+
 	var best expressions.RelationalExpression
 	if sel != nil && sel.HasBestMember(ref) {
 		best = sel.BestMember(ref)

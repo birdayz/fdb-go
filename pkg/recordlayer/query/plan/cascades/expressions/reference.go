@@ -15,6 +15,12 @@ type Reference struct {
 	finalMembers    []RelationalExpression
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
+
+	// winners stores per-properties best plans following Graefe 1995 §2.
+	// Key is a comparable PhysicalProperties value (defined in the
+	// cascades package; stored as any here to avoid circular imports).
+	// Populated by OptimizeGroup(ref, props) during planning.
+	winners map[any]RelationalExpression
 }
 
 // InitialOf returns a Reference holding the single expression e as its
@@ -109,6 +115,33 @@ func (r *Reference) GetBest(less func(a, b RelationalExpression) bool) Relationa
 		}
 	}
 	return best
+}
+
+// Winner returns the best plan for the given physical properties key,
+// or nil if no winner has been stored. The key must be a comparable
+// PhysicalProperties value (defined in the cascades package).
+func (r *Reference) Winner(propsKey any) RelationalExpression {
+	if r.winners == nil {
+		return nil
+	}
+	return r.winners[propsKey]
+}
+
+// SetWinner stores the best plan for the given physical properties.
+func (r *Reference) SetWinner(propsKey any, expr RelationalExpression) {
+	if r.winners == nil {
+		r.winners = make(map[any]RelationalExpression)
+	}
+	r.winners[propsKey] = expr
+}
+
+// HasWinner reports whether a winner exists for the given properties.
+func (r *Reference) HasWinner(propsKey any) bool {
+	if r.winners == nil {
+		return false
+	}
+	_, ok := r.winners[propsKey]
+	return ok
 }
 
 // Insert adds e to the equivalence class if no existing member already

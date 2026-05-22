@@ -21,6 +21,7 @@ go_library(
         "logical_unique.go",
         "logical_values.go",
         "matchable_sort.go",
+        "physical_properties.go",
         "quantifier.go",
         "recursive_union.go",
         "reference.go",
