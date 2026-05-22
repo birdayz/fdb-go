@@ -47,6 +47,24 @@ Measured after cost model regression fixes. Compare against master baseline.
 
 ---
 
+## PERF — stress test 1M optimization targets (2026-05-22)
+
+Queries that should use indexes but appear to full-scan, or are orders of magnitude slower than expected. Schema has `idx_customer(customer_id)`, `idx_status(status)`, `idx_amount(amount)`, `idx_tier(tier)`.
+
+| # | Query | Current | Target | Speedup | Root cause |
+|---|-------|---------|--------|---------|------------|
+| P1 | `SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id` | **2.97s** | <100ms | 30x | NLJ scans all 100K customers per order instead of PK-probing `customers.id`. Join should use inner index on `customers(id)` — 10 PK lookups, not 10×100K. |
+| P2 | `SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status` | **5.19s** | <1s | 5x | Full scan + hash agg. `idx_status` provides ordering — streaming agg should eliminate the sort and scan index-ordered. Need: streaming agg from index wired for multi-column aggregates, not just COUNT. |
+| P3 | `SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id` | **10.09s** | <5s | 2x | Full scan + hash agg over 100K groups. `idx_customer` provides ordering — streaming agg should work. HAVING filter applied post-agg. |
+| P4 | `SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id` | **2.96s** | <100ms | 30x | InJoin over 5 index lookups returning ~50 rows. 3s for 50 rows means each InJoin leg does a full continuation scan instead of bounded index probe. Check: are scan comparisons set on the inner plan? |
+| P5 | `SELECT id, customer_id, amount, status FROM orders WHERE id = ? AND status = 'pending'` | **2.95s** | <10ms | 300x | PK equality + non-indexed filter. Should be PK point lookup + post-filter (1 FDB read). Getting 3s means the planner isn't using PK — possibly AND defeats the PK scan comparison. Check EXPLAIN. |
+
+**Priority order:** P5 (PK lookup broken by AND) → P1 (join index) → P4 (InJoin scan bounds) → P2/P3 (streaming agg).
+
+P5 is the most alarming — a PK point lookup should NEVER take 3 seconds regardless of table size. If `WHERE id = ? AND status = 'pending'` becomes a full scan, every compound-predicate PK lookup is broken.
+
+---
+
 ## OPEN — discovered by 5-expert review panel (2026-05-20)
 
 ### Executor memory model (C++ systems expert, B+ grade)
