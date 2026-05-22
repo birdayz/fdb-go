@@ -142,8 +142,8 @@ func NamedPhysicalQuantifier(alias values.CorrelationIdentifier, rangesOver *Ref
 
 // RebuildQuantifier creates a new Quantifier with the same kind and
 // alias but ranging over a different Reference. Used by
-// FinalizeExpressionsRule to point quantifiers at disentangled child
-// References. Mirrors Java's Quantifier.toBuilder().build(reference).
+// implementation rules to point quantifiers at new child References.
+// Mirrors Java's Quantifier.toBuilder().build(reference).
 func RebuildQuantifier(q Quantifier, newRef *Reference) Quantifier {
 	return Quantifier{
 		kind:        q.kind,

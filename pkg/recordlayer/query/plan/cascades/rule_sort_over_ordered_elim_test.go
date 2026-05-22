@@ -568,9 +568,7 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 		t.Fatal("no physicalIndexScanWrapper in ImplementIndexScanRule results")
 	}
 
-	innerRef := expressions.NewFinalReference(
-		[]expressions.RelationalExpression{idxWrapper},
-	)
+	innerRef := expressions.InitialOf(idxWrapper)
 	computeRefPlanProperties(innerRef)
 
 	// Build Sort(DATE ASC) over the prepared inner Reference.
@@ -646,9 +644,7 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 		t.Fatal("no physicalIndexScanWrapper in ImplementIndexScanRule results")
 	}
 
-	innerRef := expressions.NewFinalReference(
-		[]expressions.RelationalExpression{idxWrapper},
-	)
+	innerRef := expressions.InitialOf(idxWrapper)
 	computeRefPlanProperties(innerRef)
 
 	sortQ := expressions.ForEachQuantifier(innerRef)

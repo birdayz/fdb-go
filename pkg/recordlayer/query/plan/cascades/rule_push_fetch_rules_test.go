@@ -16,7 +16,7 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 		"idx_name", nil, []string{"MyRecord"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: true}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
@@ -24,7 +24,7 @@ func TestMergeFetchIntoCoveringIndex_FiresOnFetchOverIndex(t *testing.T) {
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	ref := expressions.InitialOf(fetchWrapper)
 
 	rule := NewMergeFetchIntoCoveringIndexRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -45,7 +45,7 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonCoveringIndex(t *testing.T)
 	)
 	// NOT marked as covering — MergeFetch should NOT fire.
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan, covering: false}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
@@ -53,7 +53,7 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonCoveringIndex(t *testing.T)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	ref := expressions.InitialOf(fetchWrapper)
 
 	rule := NewMergeFetchIntoCoveringIndexRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -69,9 +69,9 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonIndex(t *testing.T) {
 	// Fetch over a filter (not an index scan) — should not fire.
 	filterPlan := plans.NewRecordQueryFilterPlan(nil, nil)
 	filterWrapper := NewPhysicalFilterWrapper(filterPlan, expressions.ForEachQuantifier(
-		expressions.NewFinalReference(nil),
+		&expressions.Reference{},
 	))
-	filterRef := expressions.NewFinalReference([]expressions.RelationalExpression{filterWrapper})
+	filterRef := expressions.InitialOf(filterWrapper)
 
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		nil, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
@@ -79,7 +79,7 @@ func TestMergeFetchIntoCoveringIndex_DoesNotFireOnNonIndex(t *testing.T) {
 	fetchQ := expressions.ForEachQuantifier(filterRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	ref := expressions.InitialOf(fetchWrapper)
 
 	rule := NewMergeFetchIntoCoveringIndexRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -96,7 +96,7 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
 		return v, true
@@ -106,13 +106,13 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	distinctPlan := plans.NewRecordQueryDistinctPlan(nil)
 	distinctQ := expressions.ForEachQuantifier(fetchRef)
 	distinctWrapper := NewPhysicalDistinctWrapper(distinctPlan, distinctQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{distinctWrapper})
+	ref := expressions.InitialOf(distinctWrapper)
 
 	rule := NewPushDistinctThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -133,7 +133,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		// Always translatable — return the value rebound to target.
@@ -144,7 +144,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Filter with one pushable predicate.
 	pred := predicates.NewComparisonPredicate(
@@ -155,7 +155,7 @@ func TestPushFilterThroughFetch_AllPushable(t *testing.T) {
 	filterQ := expressions.ForEachQuantifier(fetchRef)
 	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{filterWrapper})
+	ref := expressions.InitialOf(filterWrapper)
 
 	rule := NewPushFilterThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -178,7 +178,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	// TranslateValueFunction that NEVER succeeds.
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
@@ -186,7 +186,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Predicate correlated to the filter's alias — requires
 	// translation but UnableToTranslate always fails.
@@ -198,7 +198,7 @@ func TestPushFilterThroughFetch_NoPushable(t *testing.T) {
 	filterQ := expressions.NamedForEachQuantifier(filterInnerAlias, fetchRef)
 	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{filterWrapper})
+	ref := expressions.InitialOf(filterWrapper)
 
 	rule := NewPushFilterThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -215,7 +215,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	// The filter's inner quantifier alias — predicates inside the
 	// filter reference this alias. We create it with a known alias
@@ -238,7 +238,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Both predicates are correlated to the filter's inner alias
 	// (simulating real predicates that reference the flowing row).
@@ -254,7 +254,7 @@ func TestPushFilterThroughFetch_PartialPush(t *testing.T) {
 	filterQ := expressions.NamedForEachQuantifier(filterInnerAlias, fetchRef)
 	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{filterWrapper})
+	ref := expressions.InitialOf(filterWrapper)
 
 	rule := NewPushFilterThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -278,7 +278,7 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	translateFn := func(v values.Value, _, _ values.CorrelationIdentifier) (values.Value, bool) {
 		return v, true
@@ -288,14 +288,14 @@ func TestPushMapThroughFetch_Fires(t *testing.T) {
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	resultVal := &values.FieldValue{Field: "x", Typ: values.TypeInt}
 	mapPlan := plans.NewRecordQueryMapPlan(nil, resultVal)
 	mapQ := expressions.ForEachQuantifier(fetchRef)
 	mapWrapper := NewPhysicalMapWrapper(mapPlan, mapQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{mapWrapper})
+	ref := expressions.InitialOf(mapWrapper)
 
 	rule := NewPushMapThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -319,7 +319,7 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	// UnableToTranslate — map can't be pushed.
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
@@ -327,7 +327,7 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Use a correlated FieldValue so translation is actually attempted.
 	resultVal := values.NewFieldValue(values.NewQuantifiedObjectValue(mapAlias), "x", values.TypeInt)
@@ -335,7 +335,7 @@ func TestPushMapThroughFetch_DoesNotFire_WhenTranslationFails(t *testing.T) {
 	mapQ := expressions.NamedForEachQuantifier(mapAlias, fetchRef)
 	mapWrapper := NewPhysicalMapWrapper(mapPlan, mapQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{mapWrapper})
+	ref := expressions.InitialOf(mapWrapper)
 
 	rule := NewPushMapThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -358,14 +358,14 @@ func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 			indexName, nil, []string{"T"}, values.UnknownType, false,
 		)
 		indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-		indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+		indexRef := expressions.InitialOf(indexWrapper)
 
 		fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 		)
 		fetchQ := expressions.ForEachQuantifier(indexRef)
 		fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-		fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+		fetchRef := expressions.InitialOf(fetchWrapper)
 		return expressions.ForEachQuantifier(fetchRef)
 	}
 
@@ -375,7 +375,7 @@ func TestPushUnionThroughFetch_AllChildrenHaveFetches(t *testing.T) {
 	unionPlan := plans.NewRecordQueryUnionPlan(nil)
 	unionWrapper := NewPhysicalUnionWrapper(unionPlan, []expressions.Quantifier{q1, q2})
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{unionWrapper})
+	ref := expressions.InitialOf(unionWrapper)
 
 	rule := NewPushUnionThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -401,25 +401,25 @@ func TestPushUnionThroughFetch_DoesNotFire_OnlyOneChildHasFetch(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan, translateFn, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 	q1 := expressions.ForEachQuantifier(fetchRef)
 
 	// Second child: plain scan (no fetch).
 	scanPlan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	scanWrapper := &physicalScanWrapper{plan: scanPlan}
-	scanRef := expressions.NewFinalReference([]expressions.RelationalExpression{scanWrapper})
+	scanRef := expressions.InitialOf(scanWrapper)
 	q2 := expressions.ForEachQuantifier(scanRef)
 
 	unionPlan := plans.NewRecordQueryUnionPlan(nil)
 	unionWrapper := NewPhysicalUnionWrapper(unionPlan, []expressions.Quantifier{q1, q2})
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{unionWrapper})
+	ref := expressions.InitialOf(unionWrapper)
 
 	rule := NewPushUnionThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)
@@ -459,7 +459,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 		"idx_a", nil, []string{"T"}, values.UnknownType, false,
 	)
 	indexWrapper := &physicalIndexScanWrapper{plan: indexPlan}
-	indexRef := expressions.NewFinalReference([]expressions.RelationalExpression{indexWrapper})
+	indexRef := expressions.InitialOf(indexWrapper)
 
 	// TranslateValueFunction that succeeds for FieldValues with field "x"
 	// but fails for field "y". Simulates an index covering column "x"
@@ -479,7 +479,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 	)
 	fetchQ := expressions.ForEachQuantifier(indexRef)
 	fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
-	fetchRef := expressions.NewFinalReference([]expressions.RelationalExpression{fetchWrapper})
+	fetchRef := expressions.InitialOf(fetchWrapper)
 
 	// Predicates using FieldValue WITH child — correlated to filterAlias.
 	pushablePred := predicates.NewComparisonPredicate(
@@ -495,7 +495,7 @@ func TestFieldValueChild_PushFilterDecision(t *testing.T) {
 	filterQ := expressions.NamedForEachQuantifier(filterAlias, fetchRef)
 	filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, filterQ)
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{filterWrapper})
+	ref := expressions.InitialOf(filterWrapper)
 
 	rule := NewPushFilterThroughFetchRule()
 	yielded := FireImplementationRule(rule, ref)

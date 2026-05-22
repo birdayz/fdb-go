@@ -63,12 +63,12 @@ func TestImplementUnorderedUnionRule_CreatesUnorderedUnionPlan(t *testing.T) {
 	wA := &physicalScanWrapper{plan: scanA}
 	wB := &physicalScanWrapper{plan: scanB}
 
-	refA := expressions.NewFinalReference([]expressions.RelationalExpression{wA})
+	refA := expressions.InitialOf(wA)
 	pmA := NewPlanPropertiesMap()
 	pmA.Add(wA)
 	refA.SetPlanProperties(pmA)
 
-	refB := expressions.NewFinalReference([]expressions.RelationalExpression{wB})
+	refB := expressions.InitialOf(wB)
 	pmB := NewPlanPropertiesMap()
 	pmB.Add(wB)
 	refB.SetPlanProperties(pmB)

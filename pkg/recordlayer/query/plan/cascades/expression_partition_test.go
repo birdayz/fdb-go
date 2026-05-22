@@ -153,7 +153,7 @@ func TestToPlanPartitions_WithPrecomputedPropertiesMap(t *testing.T) {
 	wA := &physicalScanWrapper{plan: scanA}
 
 	// Pre-compute properties and set on reference.
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{wA})
+	ref := expressions.InitialOf(wA)
 	pm := NewPlanPropertiesMap()
 	pm.Add(wA)
 	ref.SetPlanProperties(pm)
@@ -183,7 +183,8 @@ func TestToPlanPartitions_GroupsByDistinctAndStored(t *testing.T) {
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
 	wB := &physicalStreamingAggWrapper{plan: aggPlan}
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{wA, wB})
+	ref := expressions.InitialOf(wA)
+	ref.Insert(wB)
 	pm := NewPlanPropertiesMap()
 	pm.Add(wA)
 	pm.Add(wB)
@@ -199,7 +200,7 @@ func TestToPlanPartitions_FallbackWhenNoPropertiesMap(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	wrapper := &physicalScanWrapper{plan: scan}
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{wrapper})
+	ref := expressions.InitialOf(wrapper)
 	// Don't set plan properties — triggers fallback.
 
 	partitions := ToPlanPartitions(ref)

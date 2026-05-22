@@ -15,10 +15,10 @@ const (
 	PhaseRewriting PlannerPhase = iota
 
 	// PhasePlanning applies implementation rules that convert
-	// exploratory expressions to final (physical) expressions.
-	// Uses ImplementationCascadesRules. FinalizeExpressionsRule
-	// is the catch-all that finalizes any remaining exploratory
-	// expression by disentangling its children.
+	// logical expressions to physical (implementation) expressions.
+	// Uses ImplementationCascadesRules. Each rule inserts physical
+	// expressions into Members via ref.Insert; winners on the
+	// Reference select the cheapest physical plan.
 	PhasePlanning
 )
 

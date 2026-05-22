@@ -52,7 +52,7 @@ func buildDistinctOverProjection(
 
 	proj := expressions.NewLogicalProjectionExpression(projected, scanQ)
 	projRef := expressions.InitialOf(proj)
-	projRef.InsertFinal(makeFakePlanWrapper(recType))
+	projRef.Insert(makeFakePlanWrapper(recType))
 	projQ := expressions.ForEachQuantifier(projRef)
 
 	distinct := expressions.NewLogicalDistinctExpression(projQ)
@@ -68,7 +68,7 @@ func buildDistinctOverProjection(
 func buildDistinctOverScan(recType string) *expressions.Reference {
 	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
-	scanRef.InsertFinal(makeFakePlanWrapper(recType))
+	scanRef.Insert(makeFakePlanWrapper(recType))
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	distinct := expressions.NewLogicalDistinctExpression(scanQ)
@@ -240,7 +240,7 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 		filterQ,
 	)
 	projRef := expressions.InitialOf(proj)
-	projRef.InsertFinal(makeFakePlanWrapper("USERS"))
+	projRef.Insert(makeFakePlanWrapper("USERS"))
 	projQ := expressions.ForEachQuantifier(projRef)
 
 	distinct := expressions.NewLogicalDistinctExpression(projQ)
@@ -258,20 +258,20 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	}
 }
 
-// TestDistinctFinal_WrapsAllFinalMembers verifies the wrapping path
-// yields a DistinctWrapper for EVERY physical FinalMember, not just
+// TestDistinctFinal_WrapsAllMembers verifies the wrapping path
+// yields a DistinctWrapper for EVERY physical member, not just
 // the first. Regression test for the early-return bug.
-func TestDistinctFinal_WrapsAllFinalMembers(t *testing.T) {
+func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"ITEMS"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
-	// Insert TWO physical FinalMembers to simulate multiple candidates.
-	scanRef.InsertFinal(makeFakePlanWrapper("ITEMS"))
+	// Insert TWO physical members to simulate multiple candidates.
+	scanRef.Insert(makeFakePlanWrapper("ITEMS"))
 	fwd := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, false)
 	rev := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, true)
-	scanRef.InsertFinal(&physicalScanWrapper{plan: fwd})
-	scanRef.InsertFinal(&physicalScanWrapper{plan: rev})
+	scanRef.Insert(&physicalScanWrapper{plan: fwd})
+	scanRef.Insert(&physicalScanWrapper{plan: rev})
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Project a non-PK column so elimination does NOT fire.
@@ -282,9 +282,9 @@ func TestDistinctFinal_WrapsAllFinalMembers(t *testing.T) {
 		scanQ,
 	)
 	projRef := expressions.InitialOf(proj)
-	// Copy FinalMembers to projRef so the rule has plans to wrap.
-	for _, m := range scanRef.FinalMembers() {
-		projRef.InsertFinal(m)
+	// Copy members to projRef so the rule has plans to wrap.
+	for _, m := range scanRef.Members() {
+		projRef.Insert(m)
 	}
 	projQ := expressions.ForEachQuantifier(projRef)
 

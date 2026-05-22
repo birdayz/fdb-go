@@ -302,8 +302,8 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	}
 
 	// Collect all physical NLJ members — there should be at least 2
-	// (one per join direction). FinalMembers holds PLANNING-phase physical
-	// wrappers; AllMembers() is the union of Members and FinalMembers.
+	// (one per join direction). Physical wrappers are inserted into
+	// Members during the PLANNING phase.
 	var nljPlans []*plans.RecordQueryNestedLoopJoinPlan
 	for _, m := range selRef.AllMembers() {
 		nlj, ok := m.(*physicalNestedLoopJoinWrapper)

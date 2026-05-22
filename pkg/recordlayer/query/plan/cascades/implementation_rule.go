@@ -18,7 +18,7 @@ type ImplementationRule interface {
 
 // ImplementationRuleCall provides the restricted API that
 // ImplementationRules are allowed to use. It extends the base
-// RuleCall with FinalMemoizer and FinalYield operations.
+// RuleCall with Memoizer and Yield operations.
 //
 // Ports Java's ImplementationCascadesRuleCall.
 type ImplementationRuleCall struct {

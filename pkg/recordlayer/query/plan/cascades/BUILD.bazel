@@ -79,7 +79,6 @@ go_library(
         "rule_filter_dedup_predicates.go",
         "rule_filter_drop_true.go",
         "rule_filter_merge.go",
-        "rule_finalize_expressions.go",
         "rule_implement_delete.go",
         "rule_implement_distinct_final.go",
         "rule_implement_distinct_union.go",

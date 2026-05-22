@@ -33,7 +33,7 @@ func TestImplementNestedLoopJoin_Fires(t *testing.T) {
 	selRef := expressions.InitialOf(sel)
 
 	// NLJ fires during PLANNING phase (ImplementationRule). Run Plan() to
-	// trigger both EXPLORE and PLANNING; physical wrappers land in FinalMembers.
+	// trigger both EXPLORE and PLANNING; physical wrappers land in Members.
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
 	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(selRef); err != nil {

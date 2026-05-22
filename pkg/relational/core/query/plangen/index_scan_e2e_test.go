@@ -206,7 +206,7 @@ func TestEndToEnd_IndexIntersection(t *testing.T) {
 	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
-	// Plan() triggers PLANNING phase (populates FinalMembers). We then walk
+	// Plan() triggers PLANNING phase (populates Members). We then walk
 	// AllMembers to verify an intersection alternative was produced, even if
 	// the cost model didn't pick it as the best plan.
 	if _, _, err := p.Plan(ref); err != nil {
@@ -289,7 +289,7 @@ func TestEndToEnd_ThreeWayIntersection(t *testing.T) {
 	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
-	// Plan() triggers PLANNING phase (populates FinalMembers). Walk AllMembers
+	// Plan() triggers PLANNING phase (populates Members). Walk AllMembers
 	// to verify the 3-way intersection was produced as an alternative.
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)

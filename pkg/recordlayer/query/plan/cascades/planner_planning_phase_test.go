@@ -13,7 +13,7 @@ import (
 
 // planWithImplRules runs the full planner pipeline: REWRITING (Explore)
 // + PLANNING (implementation rules) on the given root Reference.
-// Returns the planner for further inspection (FinalMembers, properties).
+// Returns the planner for further inspection (Members, properties).
 func planWithImplRules(t *testing.T, rootRef *expressions.Reference, implRules []ImplementationRule) *Planner {
 	t.Helper()
 	p := NewPlanner(allRules(), nil).
@@ -300,7 +300,7 @@ func TestPlanner_PlanningPhase_SkippedWhenNoImplRules(t *testing.T) {
 // 7. Members populated after PLANNING phase.
 // ---------------------------------------------------------------------------
 
-func TestPlanner_PlanningPhase_FinalMembersPopulated(t *testing.T) {
+func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -313,7 +313,7 @@ func TestPlanner_PlanningPhase_FinalMembersPopulated(t *testing.T) {
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// After PLANNING, the root Reference should have members inserted by
-	// implementation rules (physical wrappers go into Members, not FinalMembers).
+	// implementation rules (physical wrappers go into Members).
 	all := rootRef.AllMembers()
 	if len(all) == 0 {
 		t.Fatal("root Reference has no members after PLANNING phase")

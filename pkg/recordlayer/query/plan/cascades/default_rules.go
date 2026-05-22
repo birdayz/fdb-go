@@ -168,8 +168,7 @@ func DMLImplementationRules() []ExpressionRule {
 }
 
 // DefaultImplementationRules returns the ImplementationRules for the
-// PLANNING phase. FinalizeExpressionsRule is the catch-all; the
-// specific rules fire before it for expressions they recognize.
+// PLANNING phase.
 func DefaultImplementationRules() []ImplementationRule {
 	rules := []ImplementationRule{
 		// --- Constraint-push rules (top-down, PLANNING Phase 1) ---

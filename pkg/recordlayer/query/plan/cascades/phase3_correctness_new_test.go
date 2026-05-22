@@ -103,12 +103,11 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// ImplementLimitRule fires during REWRITING and yields a
-	// physicalLimitWrapper into Members. FinalizeExpressionsRule then
-	// promotes it to FinalMembers.
+	// ImplementLimitRule fires during PLANNING and yields a
+	// physicalLimitWrapper into Members.
 	foundLimit := containsPhysical(rootRef, IsPhysicalLimit)
 	if !foundLimit {
-		for _, f := range rootRef.FinalMembers() {
+		for _, f := range rootRef.Members() {
 			if _, ok := f.(*physicalLimitWrapper); ok {
 				foundLimit = true
 				break
@@ -117,7 +116,7 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 	}
 	if !foundLimit {
 		types := make([]string, 0)
-		for _, f := range rootRef.FinalMembers() {
+		for _, f := range rootRef.Members() {
 			types = append(types, fmt.Sprintf("(final)%T", f))
 		}
 		for _, m := range rootRef.Members() {
@@ -156,7 +155,7 @@ func TestPhase3_FilterOnly(t *testing.T) {
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	foundFilter := false
-	for _, f := range rootRef.FinalMembers() {
+	for _, f := range rootRef.Members() {
 		if _, ok := f.(*physicalFilterWrapper); ok {
 			foundFilter = true
 		}
@@ -264,7 +263,7 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 		return ok
 	})
 	if !foundProjection {
-		for _, f := range rootRef.FinalMembers() {
+		for _, f := range rootRef.Members() {
 			if _, ok := f.(*physicalProjectionWrapper); ok {
 				foundProjection = true
 				break

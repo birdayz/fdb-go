@@ -3,16 +3,12 @@ package expressions
 // Reference is the planner's handle on an equivalence class of
 // RelationalExpressions — Cascades' "memo group".
 //
-// Java's Reference distinguishes exploratoryMembers (rewriting phase)
-// from finalMembers (planning phase). We mirror this: `members` holds
-// exploratory expressions, `finalMembers` holds implementation-phase
-// results. During the REWRITING phase, rules Insert into members.
-// During the PLANNING phase, ImplementationCascadesRules InsertFinal
-// into finalMembers. AllMembers() returns the union for code that
-// doesn't care about the distinction (matcher, cost extraction).
+// All expressions — logical and physical — live in `members`.
+// Implementation rules insert physical expressions into Members via
+// ref.Insert(). Winners on the Reference (per-properties best plans
+// following Graefe 1995 §2) replace the old FinalMembers extraction.
 type Reference struct {
 	members         []RelationalExpression
-	finalMembers    []RelationalExpression
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
 
@@ -45,51 +41,9 @@ func (r *Reference) Members() []RelationalExpression {
 	return r.members
 }
 
-// FinalMembers returns the final (implementation-phase) members.
-func (r *Reference) FinalMembers() []RelationalExpression {
-	return r.finalMembers
-}
-
-// AllMembers returns the union of exploratory and final members.
+// AllMembers returns all members of this Reference.
 func (r *Reference) AllMembers() []RelationalExpression {
-	if len(r.finalMembers) == 0 {
-		return r.members
-	}
-	if len(r.members) == 0 {
-		return r.finalMembers
-	}
-	all := make([]RelationalExpression, 0, len(r.members)+len(r.finalMembers))
-	all = append(all, r.members...)
-	all = append(all, r.finalMembers...)
-	return all
-}
-
-// InsertFinal adds e to the final members if no existing final member
-// matches. Used by ImplementationCascadesRules during the PLANNING phase.
-func (r *Reference) InsertFinal(e RelationalExpression) bool {
-	if e == nil {
-		panic("Reference.InsertFinal: nil expression")
-	}
-	eHash := e.HashCodeWithoutChildren()
-	for _, m := range r.finalMembers {
-		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
-			return false
-		}
-		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
-			return false
-		}
-	}
-	r.finalMembers = append(r.finalMembers, e)
-	return true
-}
-
-// NewFinalReference creates a new Reference containing only the given
-// final expressions. Used by FinalMemoizer to create disentangled
-// references during the PLANNING phase.
-func NewFinalReference(exprs []RelationalExpression) *Reference {
-	final := make([]RelationalExpression, len(exprs))
-	copy(final, exprs)
-	return &Reference{finalMembers: final}
+	return r.members
 }
 
 // GetBest returns the cheapest member of this Reference under the
