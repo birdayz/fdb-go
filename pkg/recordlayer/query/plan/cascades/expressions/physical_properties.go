@@ -1,5 +1,9 @@
 package expressions
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+)
+
 // PhysicalProperties captures the physical requirements a parent
 // operator demands from a child group. Following Graefe 1995 §2,
 // OptimizeGroup(group, properties) finds the cheapest plan in the
@@ -39,12 +43,22 @@ func OrderingFromSortKeys(keys []SortKey) PhysicalProperties {
 			break
 		}
 		o.cols[i] = orderingColumn{
-			name: k.Value.Name(),
+			name: valueFieldName(k.Value),
 			desc: k.Reverse,
 		}
 		o.count++
 	}
 	return PhysicalProperties{ordering: o}
+}
+
+// valueFieldName extracts the field name from a Value. For
+// FieldValues, returns the Field name directly. For other Values,
+// falls back to Name() (which is a debug string).
+func valueFieldName(v values.Value) string {
+	if fv, ok := v.(*values.FieldValue); ok {
+		return fv.Field
+	}
+	return v.Name()
 }
 
 // OrderingCount returns the number of ordering columns.

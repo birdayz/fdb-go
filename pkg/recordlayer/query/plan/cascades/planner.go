@@ -426,10 +426,13 @@ func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visite
 		)
 
 		// Insert generated expressions into the Reference so Pass 3
-		// (bottom-up implementation) can see them.
+		// (bottom-up implementation) can see them. Also stamp ordering
+		// winners for physical scans that provide ordering (enables
+		// sort elimination via per-properties winners in extraction).
 		for _, expr := range exprs {
 			ref.Insert(expr)
 		}
+		stampOrderingWinners(ref, p.costModel)
 	}
 }
 
