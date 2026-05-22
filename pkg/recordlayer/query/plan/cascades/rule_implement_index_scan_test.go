@@ -405,23 +405,23 @@ func TestImplementIndexScanRule_PlannerIntegration_PrefersIndexOverFullScan(t *t
 	ref := expressions.InitialOf(filter)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
-	// After exploration: look for a physicalIndexScanWrapper in ref
+	// After planning: look for a physicalIndexScanWrapper in ref
 	// (the all-predicates-consumed case yields it directly into the
 	// filter's Reference).
 	var foundIndexScan bool
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalIndexScanWrapper); ok {
 			foundIndexScan = true
 			break
 		}
 	}
 	if !foundIndexScan {
-		t.Fatalf("planner did not produce an index scan wrapper; members=%d", len(ref.Members()))
+		t.Fatalf("planner did not produce an index scan wrapper; members=%d", len(ref.AllMembers()))
 	}
 }
 
@@ -468,16 +468,16 @@ func TestImplementIndexScanRule_PlannerIntegration_MultipleCandidates(t *testing
 	ref := expressions.InitialOf(filter)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	// Both candidates should produce index scans. The 2-column index
 	// (Order$status_date) subsumes both predicates and yields a bare
 	// index scan; the 1-column index yields a filter-over-index-scan.
 	indexScanCount := 0
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalIndexScanWrapper); ok {
 			indexScanCount++
 		}

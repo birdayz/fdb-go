@@ -28,6 +28,7 @@ type ImplementationRuleCall struct {
 	Reference      *expressions.Reference
 	Context        PlanContext
 	Constraints    *ConstraintMap
+	memo           *Memo
 	yielded        []expressions.RelationalExpression
 	constraintOnly bool
 }
@@ -103,13 +104,13 @@ func (c *ImplementationRuleCall) MemoizeFinalExpression(
 // Returns the yielded expressions (which were also inserted into
 // ref.FinalMembers).
 func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference, constraints ...*ConstraintMap) []expressions.RelationalExpression {
-	return FireImplementationRuleWithContext(rule, ref, nil, constraints...)
+	return FireImplementationRuleWithContext(rule, ref, nil, nil, constraints...)
 }
 
 // FireImplementationRuleWithContext is like FireImplementationRule but
 // threads a PlanContext through to the rule call. The planner uses this
 // to provide PK / match-candidate info to rules that need it.
-func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions.Reference, ctx PlanContext, constraints ...*ConstraintMap) []expressions.RelationalExpression {
+func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions.Reference, ctx PlanContext, memo *Memo, constraints ...*ConstraintMap) []expressions.RelationalExpression {
 	var cm *ConstraintMap
 	if len(constraints) > 0 {
 		cm = constraints[0]
@@ -119,24 +120,15 @@ func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions
 	}
 	var allYielded []expressions.RelationalExpression
 	for _, member := range ref.AllMembers() {
-		allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, member, ctx, cm)...)
+		allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, member, ctx, cm, memo)...)
 
-		// ChildrenAsSet permutation: for expressions whose children are
-		// order-independent (SelectExpression with INNER or CROSS joins),
-		// also fire the rule with quantifiers swapped so implementation
-		// rules explore both outer/inner assignments. The swapped
-		// expression is ephemeral — it is NOT inserted into the memo.
-		//
-		// Only swap when the first two quantifiers are both ForEach
-		// (a real join). Existential quantifiers indicate semi-joins
-		// (EXISTS subqueries) where quantifier ordering is semantic.
 		if sel, ok := member.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
 			qs := sel.GetQuantifiers()
 			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
 				qs[0].Kind() == expressions.QuantifierForEach &&
 				qs[1].Kind() == expressions.QuantifierForEach {
 				swapped := sel.WithSwappedQuantifiers()
-				allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, swapped, ctx, cm)...)
+				allYielded = append(allYielded, fireImplRuleOnMember(rule, ref, swapped, ctx, cm, memo)...)
 			}
 		}
 	}
@@ -153,6 +145,7 @@ func fireImplRuleOnMember(
 	member expressions.RelationalExpression,
 	ctx PlanContext,
 	cm *ConstraintMap,
+	memo *Memo,
 ) []expressions.RelationalExpression {
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
 	var yielded []expressions.RelationalExpression
@@ -162,6 +155,7 @@ func fireImplRuleOnMember(
 			Reference:   ref,
 			Context:     ctx,
 			Constraints: cm,
+			memo:        memo,
 		}
 		rule.OnMatch(call)
 		for _, y := range call.yielded {

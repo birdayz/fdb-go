@@ -558,7 +558,7 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 		)
 		ref := expressions.InitialOf(sort)
 
-		p := NewPlanner(rules, ctx)
+		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
 		p.Plan(ref)
 	}
 }
@@ -596,7 +596,7 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 		)
 		ref := expressions.InitialOf(gb)
 
-		p := NewPlanner(rules, ctx)
+		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
 		p.Plan(ref)
 	}
 }
@@ -628,7 +628,7 @@ func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 		)
 		ref := expressions.InitialOf(gb)
 
-		p := NewPlanner(rules, ctx)
+		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
 		p.Plan(ref)
 	}
 }

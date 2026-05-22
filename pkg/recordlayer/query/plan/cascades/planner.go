@@ -50,6 +50,12 @@ type Planner struct {
 	// Reference.finalMembers via InsertFinal.
 	implementationRules []ImplementationRule
 
+	// batchARules are physical implementation ExpressionRules that
+	// run in a second EXPLORE pass after the first EXPLORE converges.
+	// They insert physical wrappers into Members (not FinalMembers)
+	// so the standard OPTIMIZE path stamps bestMember correctly.
+	batchARules []ExpressionRule
+
 	// exploreCount[ref] = member count at last saturation check on
 	// `ref`. SaturationCheckTask short-circuits when count hasn't grown.
 	exploreCount map[*expressions.Reference]int
@@ -159,6 +165,13 @@ func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 	return p
 }
 
+// WithBatchARules adds physical implementation ExpressionRules that
+// run in a second EXPLORE pass. Returns p for chaining.
+func (p *Planner) WithBatchARules(rules []ExpressionRule) *Planner {
+	p.batchARules = rules
+	return p
+}
+
 // WithCostModel sets the comparator used by OptimizeReferenceTask.
 // Use RewritingCostModelLess for the REWRITING phase, PlanningCostModelLess
 // for the PLANNING phase. Matches Java's per-phase cost model. Returns p.
@@ -213,16 +226,33 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// No-op when no PartialMatches were created during EXPLORE.
 	AdjustMatches(rootRef)
 
+	// IMPLEMENTATION EXPLORE: run adapted BatchA rules as a second
+	// EXPLORE pass. Physical wrappers go into Members (not FinalMembers),
+	// preserving the standard OPTIMIZE/extraction path. This runs after
+	// the first EXPLORE converges so all logical alternatives are
+	// explored before physical implementation.
+	if len(p.batchARules) > 0 {
+		p.exploreWithRules(rootRef, p.batchARules)
+	}
+
 	// PLANNING phase: constraint propagation → data access → implementation.
-	// Data access generation is integrated into the PLANNING phase
-	// (after constraint propagation, before implementation) so it has
-	// access to ordering constraints — matching Java's architecture.
 	p.runPlanningPhase(rootRef)
 
-	// Use the selector path so extraction reuses the OPTIMIZE-stamped
-	// best member per Reference.
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
+}
+
+// exploreWithRules runs a focused EXPLORE pass with the given rules.
+// Used for the BatchA physical implementation rules that need to
+// insert into Members (not FinalMembers) so OPTIMIZE can stamp them.
+func (p *Planner) exploreWithRules(rootRef *expressions.Reference, rules []ExpressionRule) {
+	saved := p.rules
+	savedCount := p.exploreCount
+	p.rules = rules
+	p.exploreCount = make(map[*expressions.Reference]int)
+	p.Explore(rootRef)
+	p.rules = saved
+	p.exploreCount = savedCount
 }
 
 // ErrPlannerCapHit signals that Explore exited via the MaxTasks
@@ -322,7 +352,7 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 	}
 
 	for _, rule := range p.implementationRules {
-		FireImplementationRuleWithContext(rule, ref, p.ctx, cm)
+		FireImplementationRuleWithContext(rule, ref, p.ctx, p.memo, cm)
 	}
 
 	computeRefPlanProperties(ref)

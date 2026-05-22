@@ -145,7 +145,10 @@ func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 
 	// Explicitly include ImplementSimpleSelectRule (currently disabled in
 	// DefaultImplementationRules) so we get a physical PredicatesFilter.
+	// PrimaryScanRule is required so the inner scan gets a physical wrapper
+	// before ImplementSimpleSelectRule fires (it needs a physical inner).
 	implRules := []ImplementationRule{
+		AsImplementationRule(NewPrimaryScanRule()),
 		NewImplementSimpleSelectRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),

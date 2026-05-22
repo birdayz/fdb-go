@@ -182,13 +182,13 @@ func TestOrderedIndexScan_PlannerIntegration(t *testing.T) {
 	ref := expressions.InitialOf(sort)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	foundIndexScanAtTop := false
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if IsPhysicalIndexScan(m) {
 			foundIndexScanAtTop = true
 			break

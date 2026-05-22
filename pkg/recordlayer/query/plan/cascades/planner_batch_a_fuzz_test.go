@@ -55,7 +55,7 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 		// Combine logical-rewrite + Batch A read-side implement rules.
 		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
 
-		p := NewPlanner(rules, nil)
+		p := NewPlanner(rules, nil).WithImplementationRules(DefaultImplementationRules())
 		p.MaxTasks = 50_000
 
 		plan, _, err := p.Plan(ref)
@@ -168,7 +168,7 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 		}
 
 		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, ctx)
+		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
 		p.MaxTasks = 50_000
 
 		plan, _, err := p.Plan(topRef)

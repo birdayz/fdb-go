@@ -40,6 +40,7 @@ type ExpressionRuleCall struct {
 	Context     PlanContext
 	memo        *Memo
 	yieldedExps []expressions.RelationalExpression
+	yieldFn     func(expressions.RelationalExpression) bool
 }
 
 // NewExpressionRuleCall builds a rule-call against a Reference + an
@@ -79,9 +80,11 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 	if expr == nil {
 		panic("ExpressionRuleCall.Yield: nil expression")
 	}
-	// Validate first, then update state. Reference.Insert panics on
-	// nil, so the order matters — without the early check, yieldedExps
-	// would have a nil entry leaked before the panic propagated.
+	if c.yieldFn != nil {
+		result := c.yieldFn(expr)
+		c.yieldedExps = append(c.yieldedExps, expr)
+		return result
+	}
 	inserted := c.Reference.Insert(expr)
 	c.yieldedExps = append(c.yieldedExps, expr)
 	return inserted

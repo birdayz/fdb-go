@@ -48,13 +48,13 @@ func TestImplementTableFunction_ViaPlanner(t *testing.T) {
 	ref := expressions.InitialOf(tf)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	found := false
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalTableFunctionWrapper); ok {
 			found = true
 			break
@@ -73,7 +73,7 @@ func TestImplementTableFunction_PlanOutput(t *testing.T) {
 	ref := expressions.InitialOf(tf)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)

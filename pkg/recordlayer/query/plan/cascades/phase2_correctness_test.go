@@ -86,9 +86,9 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 	ref := expressions.InitialOf(filter)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	indexScanCount := 0
@@ -98,7 +98,7 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 			return
 		}
 		visited[r] = true
-		for _, m := range r.Members() {
+		for _, m := range r.AllMembers() {
 			if IsPhysicalIndexScan(m) {
 				indexScanCount++
 			}

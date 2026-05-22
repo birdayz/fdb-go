@@ -43,13 +43,13 @@ func TestImplementTempTableScan_ViaPlanner(t *testing.T) {
 	ref := expressions.InitialOf(scanExpr)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	foundPhysical := false
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalTempTableScanWrapper); ok {
 			foundPhysical = true
 			break
@@ -68,7 +68,7 @@ func TestImplementTempTableScan_PlanOutput(t *testing.T) {
 	ref := expressions.InitialOf(scanExpr)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -170,7 +170,7 @@ func TestImplementTempTableInsert_ViaPlanner(t *testing.T) {
 	topRef := expressions.InitialOf(insert)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(topRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -429,13 +429,13 @@ func TestImplementRecursiveDfsJoin_ViaPlanner(t *testing.T) {
 	topRef := expressions.InitialOf(recUnion)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(topRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(topRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	foundDfs := false
-	for _, m := range topRef.Members() {
+	for _, m := range topRef.AllMembers() {
 		if IsPhysicalRecursiveDfsJoin(m) {
 			foundDfs = true
 			break
@@ -480,15 +480,15 @@ func TestImplementRecursiveDfsJoin_PlanOutput(t *testing.T) {
 	topRef := expressions.InitialOf(recUnion)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(topRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(topRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	// Find the physical RecursiveDfsJoin among the members and verify
 	// it carries a plan with an Explain string.
 	var dfsWrap *physicalRecursiveDfsJoinWrapper
-	for _, m := range topRef.Members() {
+	for _, m := range topRef.AllMembers() {
 		if w, ok := m.(*physicalRecursiveDfsJoinWrapper); ok {
 			dfsWrap = w
 			break
@@ -633,13 +633,13 @@ func TestImplementRecursiveLevelUnion_ViaPlanner(t *testing.T) {
 	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(topRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(topRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	foundLevel := false
-	for _, m := range topRef.Members() {
+	for _, m := range topRef.AllMembers() {
 		if IsPhysicalRecursiveLevelUnion(m) {
 			foundLevel = true
 			break
@@ -656,13 +656,13 @@ func TestImplementRecursiveLevelUnion_PlanOutput(t *testing.T) {
 	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(topRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(topRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	var wrap *physicalRecursiveLevelUnionWrapper
-	for _, m := range topRef.Members() {
+	for _, m := range topRef.AllMembers() {
 		if w, ok := m.(*physicalRecursiveLevelUnionWrapper); ok {
 			wrap = w
 			break
@@ -689,14 +689,14 @@ func TestImplementRecursiveLevelUnion_BothRulesFire_TraversalAny(t *testing.T) {
 	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalAny)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(topRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(topRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	foundDfs := false
 	foundLevel := false
-	for _, m := range topRef.Members() {
+	for _, m := range topRef.AllMembers() {
 		if IsPhysicalRecursiveDfsJoin(m) {
 			foundDfs = true
 		}

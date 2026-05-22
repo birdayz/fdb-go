@@ -310,7 +310,10 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 	rootRef := expressions.InitialOf(sel)
 
 	// Explicitly include ImplementSimpleSelectRule.
+	// PrimaryScanRule is required so the inner scan gets a physical wrapper
+	// before ImplementSimpleSelectRule fires (it needs a physical inner).
 	implRules := []ImplementationRule{
+		AsImplementationRule(NewPrimaryScanRule()),
 		NewImplementSimpleSelectRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),

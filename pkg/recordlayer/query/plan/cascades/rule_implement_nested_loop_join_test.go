@@ -32,17 +32,17 @@ func TestImplementNestedLoopJoin_Fires(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	// First, need to implement the inner scans as physical plans
-	// (PrimaryScanRule fires on FullUnorderedScan).
+	// NLJ fires during PLANNING phase (ImplementationRule). Run Plan() to
+	// trigger both EXPLORE and PLANNING; physical wrappers land in FinalMembers.
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(selRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(selRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
-	// After exploration, the Select should have a physical NLJ member.
+	// After planning, the Select should have a physical NLJ member.
 	foundNLJ := false
-	for _, m := range selRef.Members() {
+	for _, m := range selRef.AllMembers() {
 		if IsPhysicalNestedLoopJoin(m) {
 			foundNLJ = true
 			break
@@ -94,7 +94,7 @@ func TestImplementNestedLoopJoin_PlanOutput(t *testing.T) {
 
 	// Plan the join.
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(selRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)

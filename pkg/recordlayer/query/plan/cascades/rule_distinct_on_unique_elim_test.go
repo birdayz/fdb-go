@@ -84,7 +84,7 @@ func TestDistinctFinal_PKProjected_Eliminates(t *testing.T) {
 		&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire and eliminate DISTINCT when PK is projected")
 	}
@@ -103,7 +103,7 @@ func TestDistinctFinal_NonPKProjected_Wraps(t *testing.T) {
 		&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -125,7 +125,7 @@ func TestDistinctFinal_FullScan_Eliminates(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverScan("USERS")
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire on full scan with PK")
 	}
@@ -166,7 +166,7 @@ func TestDistinctFinal_CompositePK_Eliminates(t *testing.T) {
 		&values.FieldValue{Field: "QTY", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should eliminate when all composite PK cols projected")
 	}
@@ -186,7 +186,7 @@ func TestDistinctFinal_CompositePKPartial_Wraps(t *testing.T) {
 		&values.FieldValue{Field: "QTY", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -209,7 +209,7 @@ func TestDistinctFinal_CaseInsensitive(t *testing.T) {
 		&values.FieldValue{Field: "id", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire with case-insensitive PK match")
 	}
@@ -247,7 +247,7 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	distinctRef := expressions.InitialOf(distinct)
 
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire through filter")
 	}
@@ -293,7 +293,7 @@ func TestDistinctFinal_WrapsAllFinalMembers(t *testing.T) {
 
 	// PK is "ID" but projection only has "NAME" → no elimination.
 	ctx := &pkPlanContext{pk: map[string][]string{"ITEMS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 
 	wrapCount := 0
 	for _, r := range results {

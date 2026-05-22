@@ -59,7 +59,7 @@ func FuzzPlanner_Limit_NoPanic(f *testing.F) {
 		ref := expressions.InitialOf(topExpr)
 
 		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, EmptyPlanContext())
+		p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 		plan, _, err := p.Plan(ref)
 		// We don't care about the specific result — just that it doesn't panic.
 		_ = plan
@@ -123,7 +123,7 @@ func FuzzPlanner_ProjectionPipeline_NoPanic(f *testing.F) {
 		}
 
 		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, EmptyPlanContext())
+		p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 		plan, _, err := p.Plan(ref)
 		_ = plan
 		_ = err
@@ -154,7 +154,7 @@ func FuzzPlanner_LimitOverUnion_NoPanic(f *testing.F) {
 		ref := expressions.InitialOf(lim)
 
 		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, EmptyPlanContext())
+		p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
 		plan, _, err := p.Plan(ref)
 		_ = plan
 		_ = err

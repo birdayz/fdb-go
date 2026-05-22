@@ -14,6 +14,7 @@ go_library(
         "derivations_evaluator.go",
         "expression_matcher.go",
         "expression_partition.go",
+        "expression_rule_adapter.go",
         "expression_rule_call.go",
         "fixpoint.go",
         "graph_expansion.go",
