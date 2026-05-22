@@ -62,7 +62,7 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	preds := f.GetPredicates()
+	preds := flattenFilterPredicates(f.GetPredicates())
 	if len(preds) == 0 {
 		return
 	}
@@ -322,6 +322,18 @@ func residualPredicates(
 		}
 	}
 	return residual
+}
+
+func flattenFilterPredicates(preds []predicates.QueryPredicate) []predicates.QueryPredicate {
+	var result []predicates.QueryPredicate
+	for _, p := range preds {
+		if and, ok := p.(*predicates.AndPredicate); ok {
+			result = append(result, flattenFilterPredicates(and.SubPredicates)...)
+		} else {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 var _ ExpressionRule = (*ImplementIndexScanRule)(nil)
