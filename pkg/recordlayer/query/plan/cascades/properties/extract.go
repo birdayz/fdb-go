@@ -162,7 +162,45 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 	if best == nil {
 		return nil, nil
 	}
+
+	// Sort elimination via per-properties winners (Graefe 1995 §2):
+	// if the best expression is a LogicalSort and the child Reference
+	// has a winner for the sort's ordering, skip the sort and use the
+	// ordered winner directly.
+	if sortExpr, ok := best.(*expressions.LogicalSortExpression); ok {
+		if childWinner := sortWinnerFromChild(sortExpr, sel, stats, visited); childWinner != nil {
+			return childWinner, nil
+		}
+	}
+
 	return rebuildExpressionFromSelectorVisited(best, sel, stats, visited)
+}
+
+// sortWinnerFromChild checks if a LogicalSort's child Reference has
+// an ordering-specific winner that satisfies the sort's keys. If yes,
+// returns the rebuilt winner (sort eliminated). If no, returns nil.
+func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) expressions.RelationalExpression {
+	childRef := sortExpr.GetInner().GetRangesOver()
+	if childRef == nil {
+		return nil
+	}
+	sortKeys := sortExpr.GetSortKeys()
+	if len(sortKeys) == 0 {
+		return nil
+	}
+	requiredProps := expressions.OrderingFromSortKeys(sortKeys)
+	if requiredProps.IsEmpty() {
+		return nil
+	}
+	winner := childRef.Winner(requiredProps)
+	if winner == nil || !isPhysicalPlan(winner) {
+		return nil
+	}
+	rebuilt, err := rebuildExpressionFromSelectorVisited(winner, sel, stats, visited)
+	if err != nil {
+		return nil
+	}
+	return rebuilt
 }
 
 // rebuildExpressionFromSelectorVisited is the same switch-based

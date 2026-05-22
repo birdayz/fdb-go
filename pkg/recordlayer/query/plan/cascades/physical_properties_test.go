@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -140,6 +142,75 @@ func TestOptimizeReferenceTask_StampsWinner(t *testing.T) {
 	}
 	if p.BestMember(ref) != scan {
 		t.Fatal("OptimizeReferenceTask should also stamp bestMember map")
+	}
+}
+
+func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
+	t.Parallel()
+
+	// Set up: Sort(STATUS ASC) → Scan
+	// Manually stamp an ordering winner on the scan Reference.
+	// Verify extraction eliminates the sort.
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		},
+		q,
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	// Run BatchA rules (PrimaryScanRule will produce physicalScanWrapper).
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx)
+	p.Explore(sortRef)
+
+	// Now manually stamp an ordered index scan as the ordering winner
+	// on the scan Reference. This simulates the future data-access
+	// architecture where ordered scans go into the child Reference.
+	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
+	scanPlan := cand.ToScanPlan(emptyPrefix, false)
+	idxPlan := extractIndexPlan(scanPlan)
+	if idxPlan == nil {
+		t.Fatal("could not extract index plan from candidate")
+	}
+	orderedScan := &physicalIndexScanWrapper{
+		plan:        idxPlan,
+		columnNames: []string{"STATUS"},
+		unique:      false,
+	}
+	scanRef.Insert(orderedScan)
+
+	// Stamp it as the ordering winner for STATUS ASC.
+	orderingProps := expressions.OrderingFromNameDir([]string{"STATUS"}, []bool{false})
+	scanRef.SetWinner(orderingProps, orderedScan)
+
+	// Now extract — the sort should be eliminated via the child's
+	// ordering winner.
+	plan, err := properties.ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
+	if err != nil {
+		t.Fatalf("ExtractBestPlanFromSelector: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("plan is nil")
+	}
+	// The extracted plan should be the index scan (sort eliminated),
+	// not a LogicalSortExpression or InMemorySort.
+	if !IsPhysicalIndexScan(plan) {
+		t.Fatalf("sort should be eliminated via child ordering winner; got %T", plan)
 	}
 }
 
