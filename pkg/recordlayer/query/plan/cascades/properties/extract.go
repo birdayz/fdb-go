@@ -94,6 +94,12 @@ type BestMemberSelector interface {
 	// HasBestMember reports whether the selector has a stored
 	// choice for `ref` (distinguishes "no choice" from "chose nil").
 	HasBestMember(ref *expressions.Reference) bool
+	// GetBestPhysical returns the cheapest physical member of `ref`
+	// under the planner's multi-criteria cost model. Called during
+	// extraction to consider PLANNING-phase physical members that
+	// may not be in the EXPLORE-phase winner. Returns nil if no
+	// physical member exists.
+	GetBestPhysical(ref *expressions.Reference) expressions.RelationalExpression
 }
 
 // ExtractBestPlanFromSelector returns a fresh tree where every

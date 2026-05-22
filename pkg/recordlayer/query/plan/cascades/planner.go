@@ -139,6 +139,30 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 	return ref.HasWinner(expressions.NoProperties)
 }
 
+// GetBestPhysical returns the cheapest physical member of `ref`
+// under the planner's multi-criteria cost model. Considers all
+// current members (including PLANNING-phase additions). Excludes
+// InMemorySort: it's a Go-only fallback that should never displace
+// a sort-eliminating index scan from EXPLORE.
+func (p *Planner) GetBestPhysical(ref *expressions.Reference) expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	var best expressions.RelationalExpression
+	for _, m := range ref.AllMembers() {
+		if _, ok := m.(physicalPlanExpression); !ok {
+			continue
+		}
+		if _, isSort := m.(*physicalInMemorySortWrapper); isSort {
+			continue
+		}
+		if best == nil || p.costModel(m, best) {
+			best = m
+		}
+	}
+	return best
+}
+
 // OptimizeGroup finds the cheapest plan in `ref` that satisfies
 // `props` and stores it as a winner. Following Graefe 1995 §2:
 //
@@ -282,6 +306,13 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// over logical EXPLORE-phase winners.
 	p.reoptimizeAll(rootRef)
 
+	// Promote PLANNING-phase InJoin/InUnion winners. These plans are
+	// produced by ImplementInJoinRule/ImplementInUnionRule during
+	// PLANNING and may be cheaper than the EXPLORE-phase winner at
+	// any Reference. Walk all Memo References and check if an InJoin
+	// or InUnion is better than the current winner under the cost model.
+	p.promoteInJoinWinners(rootRef)
+
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
 }
@@ -386,6 +417,56 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 			ref.SetWinner(expressions.NoProperties, bestPhys)
 		}
 	}
+}
+
+// promoteInJoinWinners walks all References and checks if an InJoin
+// or InUnion physical member is cheaper than the current NoProperties
+// winner under the cost model. These plans are produced during PLANNING
+// by ImplementInJoinRule/ImplementInUnionRule and may be cheaper than
+// the EXPLORE-phase winner (e.g., InJoin(IndexScan) vs Filter(Scan)).
+func (p *Planner) promoteInJoinWinners(rootRef *expressions.Reference) {
+	visited := make(map[*expressions.Reference]bool)
+	p.promoteInJoinRecursive(rootRef, visited)
+	if p.memo != nil {
+		for ref := range p.memo.References() {
+			p.promoteInJoinRecursive(ref, visited)
+		}
+	}
+}
+
+func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+	for _, m := range ref.AllMembers() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.promoteInJoinRecursive(childRef, visited)
+			}
+		}
+	}
+	existing := ref.Winner(expressions.NoProperties)
+	if existing == nil {
+		return
+	}
+	if _, isPhys := existing.(physicalPlanExpression); !isPhys {
+		return
+	}
+	for _, m := range ref.AllMembers() {
+		if !IsPhysicalInJoin(m) && !isPhysicalInUnion(m) {
+			continue
+		}
+		if p.costModel(m, existing) {
+			existing = m
+		}
+	}
+	ref.SetWinner(expressions.NoProperties, existing)
+}
+
+func isPhysicalInUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInUnionWrapper)
+	return ok
 }
 
 func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
