@@ -217,10 +217,10 @@ func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	t.Parallel()
 
-	// Set up: Sort(STATUS ASC) → Scan with a matching index.
-	// The data access pass should produce an ordered index scan
-	// in the scan Reference, stamp it as an ordering winner, and
-	// extraction should eliminate the sort via sortWinnerFromChild.
+	// Sort(STATUS ASC) → Filter(STATUS > 'a') → Scan with index on STATUS.
+	// The filter creates PartialMatches via matching rules, data access
+	// produces an ordered index scan, and ImplementSortRule eliminates
+	// the sort when it finds the ordered scan in the filter Reference.
 	a1 := values.UniqueCorrelationIdentifier()
 	cand := NewValueIndexScanMatchCandidate(
 		"Order$status",
@@ -235,19 +235,25 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "a"),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 	sort := expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
 			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
 		},
-		q,
+		filterQ,
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	// Run the full Plan pipeline — this includes:
-	// 1. EXPLORE with BatchA + matching rules
-	// 2. Data access generation (stampOrderingWinners after insert)
-	// 3. PLANNING phase implementation
-	// 4. Extraction with sort elimination via per-properties winners
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
 	rules = append(rules, MatchingRules()...)
 	p := NewPlanner(rules, ctx).
@@ -260,23 +266,16 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 		t.Fatal("plan is nil")
 	}
 
-	// Verify: the scan Reference should have an ordering winner.
-	orderingProps := expressions.OrderingFromNameDir([]string{"STATUS"}, []bool{false})
-	if scanRef.Winner(orderingProps) == nil {
-		t.Log("scan Reference does not have ordering winner (data access may not have produced ordered scan)")
-	}
-
 	// The plan should not be an in-memory sort — sort should be eliminated
-	// either via OrderedIndexScanRule OR via per-properties winners.
-	if _, isSort := plan.(*physicalInMemorySortWrapper); isSort {
-		t.Fatal("sort should be eliminated, got physicalInMemorySortWrapper")
+	// via the ImplementSortRule + data access path.
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+		t.Fatalf("sort should be eliminated via data access; got %T", plan)
 	}
 }
 
 func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
 	t.Parallel()
 
-	// Create an index scan candidate that provides ordering on STATUS.
 	a1 := values.UniqueCorrelationIdentifier()
 	cand := NewValueIndexScanMatchCandidate(
 		"Order$status",
@@ -288,7 +287,6 @@ func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	// Set up a scan → sort expression tree.
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
@@ -300,14 +298,12 @@ func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	// Run exploration with BatchA rules to produce physical wrappers.
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
 	p := NewPlanner(rules, ctx)
 	p.Explore(sortRef)
 
-	// The sort Reference should now have an ordering-specific winner
-	// for the STATUS ordering (from OrderedIndexScanRule producing a
-	// physicalIndexScanWrapper that hints STATUS ASC).
+	// OrderedIndexScanRule produces an ordered index scan at the sort
+	// level. stampOrderingWinners detects the ordering and stamps it.
 	statusOrdering := expressions.OrderingFromNameDir([]string{"STATUS"}, []bool{false})
 	winner := sortRef.Winner(statusOrdering)
 	if winner == nil {
