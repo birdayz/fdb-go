@@ -145,7 +145,10 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 					currentPlan = inJoinPlan
 				}
 
-				for _, m := range currentRef.FinalMembers() {
+				for _, m := range currentRef.AllMembers() {
+					if _, ok := m.(physicalPlanExpression); !ok {
+						continue
+					}
 					call.YieldFinalExpression(m)
 				}
 			}

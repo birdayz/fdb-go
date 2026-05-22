@@ -110,19 +110,18 @@ func TestPlannerWithBatchA_ImplementsIntersectionOverScan(t *testing.T) {
 	ref := expressions.InitialOf(intr)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, nil)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, nil).WithImplementationRules(DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
-	// Cost-driven extraction should pick a physical IntersectionPlan
-	// wrapper over the original logical Intersection.
-	best := p.BestMember(ref)
-	if best == nil {
-		t.Fatal("BestMember returned nil")
-	}
-	if _, ok := best.(*physicalIntersectionWrapper); !ok {
-		t.Fatalf("BestMember = %T, want *physicalIntersectionWrapper (cost-driven extraction should pick physical)", best)
+	// Planning should produce a physical IntersectionPlan.
+	if _, ok := plan.(*physicalIntersectionWrapper); !ok {
+		t.Fatalf("plan = %T, want *physicalIntersectionWrapper", plan)
 	}
 }
 

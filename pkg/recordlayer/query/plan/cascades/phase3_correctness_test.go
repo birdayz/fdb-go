@@ -45,16 +45,18 @@ func allRules() []ExpressionRule {
 	return rules
 }
 
-// exploreAndVerify runs the planner on ref and fatals if it doesn't converge.
+// exploreAndVerify runs the planner on ref (EXPLORE + PLANNING) and fatals if
+// it doesn't converge. Physical wrappers land in Members after PLANNING;
+// containsPhysical uses AllMembers() to find them.
 func exploreAndVerify(t *testing.T, ref *expressions.Reference, rules []ExpressionRule, ctx PlanContext) {
 	t.Helper()
 	if ctx == nil {
 		ctx = EmptyPlanContext()
 	}
-	p := NewPlanner(rules, ctx)
-	_, conv := p.Explore(ref)
-	if !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	_, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 }
 

@@ -33,7 +33,7 @@ func TestPlanningCostModel_FewerResidualPredicatesWins(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.NewFinalReference([]expressions.RelationalExpression{&physicalScanWrapper{plan: scan}})
+	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	pred1 := predicates.NewComparisonPredicate(
@@ -97,8 +97,8 @@ func TestDeepHashCode_DistinguishesDifferentChildren(t *testing.T) {
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 
-	refA := expressions.NewFinalReference([]expressions.RelationalExpression{&physicalScanWrapper{plan: scanA}})
-	refB := expressions.NewFinalReference([]expressions.RelationalExpression{&physicalScanWrapper{plan: scanB}})
+	refA := expressions.InitialOf(&physicalScanWrapper{plan: scanA})
+	refB := expressions.InitialOf(&physicalScanWrapper{plan: scanB})
 
 	tfPlan := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, nil)
 	filterA := NewPhysicalTypeFilterWrapper(tfPlan, expressions.ForEachQuantifier(refA))
@@ -121,7 +121,7 @@ func TestPlanningCostModel_CNFSizeForOrPredicates(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	scanRef := expressions.NewFinalReference([]expressions.RelationalExpression{&physicalScanWrapper{plan: scan}})
+	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	pred := func(field string) predicates.QueryPredicate {
@@ -176,7 +176,7 @@ func TestPlanningCostModel_TypeFilterCountsRecordTypes(t *testing.T) {
 	t.Parallel()
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T1", "T2", "T3"}, values.UnknownType, false)
-	scanRef := expressions.NewFinalReference([]expressions.RelationalExpression{&physicalScanWrapper{plan: scan}})
+	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	// Type filter admitting 1 type should have typeFilterCount=1.
@@ -298,7 +298,7 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 		plan:        innerPlanA,
 		columnNames: []string{"a"},
 	}
-	innerRefA := expressions.NewFinalReference([]expressions.RelationalExpression{innerIndexA})
+	innerRefA := expressions.InitialOf(innerIndexA)
 	wrapA := NewPhysicalInJoinWrapper(inJoinPlanA, expressions.NewPhysicalQuantifier(innerRefA))
 
 	// Build an InJoin plan with an unsarged binding: the inner scan
@@ -306,7 +306,7 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 	innerPlanB := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	inJoinPlanB := plans.NewRecordQueryInJoinPlan(innerPlanB, "other_bind", false, false)
 	innerScanB := &physicalScanWrapper{plan: innerPlanB}
-	innerRefB := expressions.NewFinalReference([]expressions.RelationalExpression{innerScanB})
+	innerRefB := expressions.InitialOf(innerScanB)
 	wrapB := NewPhysicalInJoinWrapper(inJoinPlanB, expressions.NewPhysicalQuantifier(innerRefB))
 
 	opsA := findExpressionsByType(wrapA)
@@ -393,8 +393,8 @@ func TestCollectSargedAliases_IntersectionIsSetIntersection(t *testing.T) {
 	child1 := makeIndexScan("idx1", "a", "b")
 	child2 := makeIndexScan("idx2", "b", "c")
 
-	ref1 := expressions.NewFinalReference([]expressions.RelationalExpression{child1})
-	ref2 := expressions.NewFinalReference([]expressions.RelationalExpression{child2})
+	ref1 := expressions.InitialOf(child1)
+	ref2 := expressions.InitialOf(child2)
 
 	q1 := expressions.NewPhysicalQuantifier(ref1)
 	q2 := expressions.NewPhysicalQuantifier(ref2)

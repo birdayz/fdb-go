@@ -30,7 +30,7 @@ func TestImplementInJoinRule_SkipsWithPredicates(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -63,7 +63,7 @@ func TestImplementInJoinRule_SkipsSingleQuantifier(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -86,7 +86,7 @@ func TestImplementInJoinRule_FiresWithExplodeAndInner(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -126,7 +126,7 @@ func TestImplementInJoinRule_SkipsWhenResultNotQOV(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -194,7 +194,7 @@ func TestImplementInJoinRule_MultipleExplodes(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -313,7 +313,7 @@ func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 		columnNames: []string{"a"},
 		unique:      false,
 	}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{iw})
+	innerRef := expressions.InitialOf(iw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(iw)
 	innerRef.SetPlanProperties(pm)

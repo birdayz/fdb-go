@@ -119,24 +119,9 @@ func DefaultExpressionRules() []ExpressionRule {
 }
 
 // BatchAExpressionRules returns the B5 Batch A physical-implementation
-// rules: rules that lower a logical RelationalExpression to a physical
-// RecordQueryPlan via the per-shape physical wrapper bridges.
-//
-// These rules are NOT part of DefaultExpressionRules — keeping the two
-// sets separate mirrors Java's logical/physical rule split. The
-// planner driver decides whether to fire physical-implementation rules
-// (when an executable plan is the goal) or only logical rewrites
-// (when the goal is plan-rewrite analysis).
-//
-// Compose with: append(DefaultExpressionRules(), BatchAExpressionRules()...)
-//
-// Currently 6 read-side implement rules ported (PrimaryScanRule,
-// ImplementFilterRule, ImplementTypeFilterRule, ImplementUnionRule,
-// ImplementIntersectionRule). ImplementSortRule and ImplementDistinctRule
-// moved to DefaultImplementationRules (PLANNING phase) per Java. Remaining: covering-index +
-// MergeFetchIntoCoveringIndexRule + index-equality / range rules —
-// all gated on MatchCandidate / IndexAccessHint infrastructure
-// (per RFC-022).
+// rules. These run in a second EXPLORE pass (after logical exploration
+// converges) so physical wrappers go into Members and the standard
+// OPTIMIZE path stamps bestMember correctly.
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
@@ -146,15 +131,9 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
 		NewOrderedPrimaryScanRule(),
-		// ImplementDistinctRule REMOVED (D-3): Java's ImplementDistinctRule
-		// is PLANNING-phase only. Distinct implementation + elimination now
-		// happens exclusively in ImplementDistinctFinalRule (DefaultImplementationRules).
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
 		NewImplementIntersectionRule(),
-		// SortOverOrderedElimRule REMOVED (D-1): Java's RemoveSortRule
-		// is PLANNING-phase only. Sort elimination now happens exclusively
-		// in ImplementSortRule (DefaultImplementationRules).
 		NewImplementStreamingAggregationRule(),
 		NewStreamingAggFromIndexRule(),
 		NewAggregateDataAccessRule(),
@@ -189,8 +168,7 @@ func DMLImplementationRules() []ExpressionRule {
 }
 
 // DefaultImplementationRules returns the ImplementationRules for the
-// PLANNING phase. FinalizeExpressionsRule is the catch-all; the
-// specific rules fire before it for expressions they recognize.
+// PLANNING phase.
 func DefaultImplementationRules() []ImplementationRule {
 	rules := []ImplementationRule{
 		// --- Constraint-push rules (top-down, PLANNING Phase 1) ---
@@ -243,9 +221,8 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushInUnionThroughFetchRule(),
 		NewRemoveProjectionRule(),
 		NewMergeProjectionAndFetchRule(),
-
-		NewFinalizeExpressionsRule(),
 	}
+
 	rules = append(rules, GoExtensionImplementationRules()...)
 	return rules
 }

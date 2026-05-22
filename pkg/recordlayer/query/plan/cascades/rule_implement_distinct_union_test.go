@@ -37,7 +37,7 @@ func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -58,7 +58,7 @@ func makeScanWithPK(recordType string, pkCols ...string) (*physicalScanWrapper, 
 	}
 	scan := plans.NewRecordQueryScanPlan([]string{recordType}, values.UnknownType, false).WithPrimaryKey(pkVals)
 	sw := &physicalScanWrapper{plan: scan}
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	ref := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	ref.SetPlanProperties(pm)
@@ -100,14 +100,14 @@ func TestImplementDistinctUnionRule_NoFireWithoutPK(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	refA := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	refA := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	refA.SetPlanProperties(pm)
 
 	scan2 := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw2 := &physicalScanWrapper{plan: scan2}
-	refB := expressions.NewFinalReference([]expressions.RelationalExpression{sw2})
+	refB := expressions.InitialOf(sw2)
 	pm2 := NewPlanPropertiesMap()
 	pm2.Add(sw2)
 	refB.SetPlanProperties(pm2)

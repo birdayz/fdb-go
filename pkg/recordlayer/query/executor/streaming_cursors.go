@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -521,8 +522,17 @@ type nljCursor struct {
 	preds      []predicates.QueryPredicate
 	evalCtx    *EvaluationContext
 
+	// hashIndex is a hash index on inner rows keyed by the equijoin
+	// column. When non-nil, inner row lookup is O(1) per outer row
+	// instead of O(N). Built by newNLJCursor when it detects a
+	// single-column equijoin predicate.
+	hashIndex    map[any][]int // join-key → indices into innerRows
+	hashJoinCol  string        // inner-side column name for hash lookup
+	outerJoinCol string        // outer-side column name for hash lookup
+
 	currentOuter   *QueryResult
 	innerIdx       int
+	innerMatches   []int // hash-matched inner row indices for current outer
 	outerMatched   bool
 	outerExhausted bool
 	closed         bool
@@ -536,7 +546,7 @@ func newNLJCursor(
 	preds []predicates.QueryPredicate,
 	evalCtx *EvaluationContext,
 ) *nljCursor {
-	return &nljCursor{
+	c := &nljCursor{
 		outerInner: outer,
 		innerRows:  innerRows,
 		joinType:   joinType,
@@ -545,6 +555,114 @@ func newNLJCursor(
 		preds:      preds,
 		evalCtx:    evalCtx,
 	}
+	c.tryBuildHashIndex(innerAlias)
+	return c
+}
+
+// tryBuildHashIndex attempts to build a hash index on the inner rows
+// for equijoin predicates. If exactly one predicate is an equality
+// comparison between outer.col and inner.col, builds a hash map
+// keyed by the inner column value.
+func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
+	if len(c.preds) == 0 || len(c.innerRows) < 100 {
+		return
+	}
+	outerCol, innerCol := extractEquijoinColumns(c.preds, c.outerAlias, innerAlias)
+	if outerCol == "" || innerCol == "" {
+		return
+	}
+	idx := make(map[any][]int, len(c.innerRows))
+	for i, row := range c.innerRows {
+		m, ok := row.Datum.(map[string]any)
+		if !ok {
+			return
+		}
+		val := lookupJoinKey(m, innerCol, innerAlias)
+		idx[val] = append(idx[val], i)
+	}
+	c.hashIndex = idx
+	c.hashJoinCol = innerCol
+	c.outerJoinCol = outerCol
+}
+
+// extractEquijoinColumns extracts the outer and inner column names
+// from a single-column equijoin predicate. Returns ("","") if the
+// predicates don't match the pattern.
+func extractEquijoinColumns(preds []predicates.QueryPredicate, outerAlias, innerAlias string) (string, string) {
+	var outerCol, innerCol string
+	eqCount := 0
+	for _, p := range preds {
+		cp, ok := p.(*predicates.ComparisonPredicate)
+		if !ok {
+			continue
+		}
+		if cp.Comparison.Type != predicates.ComparisonEquals {
+			continue
+		}
+		lhs := fieldName(cp.Operand)
+		rhs := fieldName(cp.Comparison.Operand)
+		if lhs == "" || rhs == "" {
+			continue
+		}
+		lhsTable, lhsCol := splitQualified(lhs)
+		rhsTable, rhsCol := splitQualified(rhs)
+		if matchesAlias(lhsTable, outerAlias) && matchesAlias(rhsTable, innerAlias) {
+			outerCol = lhsCol
+			innerCol = rhsCol
+			eqCount++
+		} else if matchesAlias(lhsTable, innerAlias) && matchesAlias(rhsTable, outerAlias) {
+			outerCol = rhsCol
+			innerCol = lhsCol
+			eqCount++
+		}
+	}
+	if eqCount != 1 {
+		return "", ""
+	}
+	return outerCol, innerCol
+}
+
+func fieldName(v values.Value) string {
+	if v == nil {
+		return ""
+	}
+	if fv, ok := v.(*values.FieldValue); ok {
+		return fv.Field
+	}
+	return ""
+}
+
+func splitQualified(name string) (table, col string) {
+	for i := len(name) - 1; i >= 0; i-- {
+		if name[i] == '.' {
+			return name[:i], name[i+1:]
+		}
+	}
+	return "", name
+}
+
+func matchesAlias(table, alias string) bool {
+	if table == "" {
+		return true
+	}
+	return strings.EqualFold(table, alias)
+}
+
+func lookupJoinKey(m map[string]any, col, alias string) any {
+	if v, ok := m[col]; ok {
+		return v
+	}
+	qualified := alias + "." + col
+	if v, ok := m[qualified]; ok {
+		return v
+	}
+	for k, v := range m {
+		_, c := splitQualified(k)
+		if strings.EqualFold(c, col) {
+			return v
+		}
+	}
+	return nil
 }
 
 func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -578,31 +696,68 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			outerRow := result.GetValue()
 			c.currentOuter = &outerRow
 			c.innerIdx = 0
+			c.innerMatches = nil
 			c.outerMatched = false
+
+			// Hash probe: resolve inner row candidates for this outer row.
+			if c.hashIndex != nil {
+				outerMap, _ := outerRow.Datum.(map[string]any)
+				if outerMap != nil {
+					key := lookupJoinKey(outerMap, c.outerJoinCol, c.outerAlias)
+					c.innerMatches = c.hashIndex[key]
+				}
+			}
 		}
 
-		for c.innerIdx < len(c.innerRows) {
-			innerRow := c.innerRows[c.innerIdx]
-			c.innerIdx++
-
-			combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-			if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
-				continue
+		if c.hashIndex != nil {
+			// Hash join path: iterate only matching inner rows.
+			for c.innerIdx < len(c.innerMatches) {
+				innerRow := c.innerRows[c.innerMatches[c.innerIdx]]
+				c.innerIdx++
+				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
+				if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
+					continue
+				}
+				c.outerMatched = true
+				switch c.joinType {
+				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross:
+					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
+				case plans.JoinExists:
+					row := qualifyOuterRow(*c.currentOuter, c.outerAlias)
+					c.currentOuter = nil
+					return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
+				case plans.JoinNotExists:
+					c.currentOuter = nil
+				}
+				if c.currentOuter == nil {
+					break
+				}
 			}
-			c.outerMatched = true
+		} else {
+			// Linear scan path (fallback).
+			for c.innerIdx < len(c.innerRows) {
+				innerRow := c.innerRows[c.innerIdx]
+				c.innerIdx++
 
-			switch c.joinType {
-			case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross:
-				return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
-			case plans.JoinExists:
-				row := qualifyOuterRow(*c.currentOuter, c.outerAlias)
-				c.currentOuter = nil
-				return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
-			case plans.JoinNotExists:
-				c.currentOuter = nil
-			}
-			if c.currentOuter == nil {
-				break
+				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
+				if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
+					continue
+				}
+				c.outerMatched = true
+
+				switch c.joinType {
+				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross:
+					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
+				case plans.JoinExists:
+					row := qualifyOuterRow(*c.currentOuter, c.outerAlias)
+					c.currentOuter = nil
+					return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
+				case plans.JoinNotExists:
+					c.currentOuter = nil
+				}
+				if c.currentOuter == nil {
+					break
+				}
 			}
 		}
 

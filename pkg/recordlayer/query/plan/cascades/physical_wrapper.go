@@ -350,6 +350,20 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 		card := properties.LeafScanCardinality
 		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
+	// Check scan comparisons for cardinality estimation.
+	// A PK equality scan returns exactly 1 row.
+	if comps := w.plan.GetScanComparisons(); len(comps) > 0 {
+		allEquality := true
+		for _, cr := range comps {
+			if !cr.IsEquality() {
+				allEquality = false
+				break
+			}
+		}
+		if allEquality {
+			return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
+		}
+	}
 	types := w.plan.GetRecordTypes()
 	if len(types) == 0 {
 		card := properties.LeafScanCardinality * physicalWrapperCostMultiplier

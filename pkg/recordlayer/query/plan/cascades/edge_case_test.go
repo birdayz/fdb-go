@@ -61,11 +61,11 @@ func TestEdge_RollUpPartitions_PreservesExpressionIdentity(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. ToPlanPartitions fallback path when Reference has only exploratory
-//    members (no FinalMembers).
+// 2. ToPlanPartitions fallback path when Reference has no plan
+//    properties set.
 // ---------------------------------------------------------------------------
 
-func TestEdge_ToPlanPartitions_EmptyFinalMembers(t *testing.T) {
+func TestEdge_ToPlanPartitions_NoPlanProperties(t *testing.T) {
 	t.Parallel()
 
 	// Create a Reference with only exploratory members (via InitialOf).
@@ -74,7 +74,7 @@ func TestEdge_ToPlanPartitions_EmptyFinalMembers(t *testing.T) {
 	wrapper := &physicalScanWrapper{plan: scan}
 	ref := expressions.InitialOf(wrapper)
 
-	// FinalMembers is empty, plan properties not set -> fallback path.
+	// Plan properties not set -> fallback path.
 	partitions := ToPlanPartitions(ref)
 
 	// The fallback should still produce partitions because AllMembers
@@ -106,7 +106,8 @@ func TestEdge_ComputeRefPlanProperties_MultiplePlans(t *testing.T) {
 	idx := plans.NewRecordQueryIndexPlan("idx1", nil, []string{"T"}, values.UnknownType, false)
 	idxW := &physicalIndexScanWrapper{plan: idx, unique: true}
 
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{scanW, idxW})
+	ref := expressions.InitialOf(scanW)
+	ref.Insert(idxW)
 	computeRefPlanProperties(ref)
 
 	pm := GetRefPlanPropertiesMap(ref)
@@ -193,10 +194,10 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// After planning, the root should have a physicalScanWrapper in its
-	// final members — both Unique layers absorbed because scan is distinct.
-	finals := rootRef.FinalMembers()
+	// members — both Unique layers absorbed because scan is distinct.
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members — chained Unique not processed")
+		t.Fatal("root Reference has no members — chained Unique not processed")
 	}
 
 	foundScan := false
@@ -211,7 +212,7 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 		for i, f := range finals {
 			typs[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected physicalScanWrapper in final members (both Uniques absorbed), got: %v", typs)
+		t.Fatalf("expected physicalScanWrapper in members (both Uniques absorbed), got: %v", typs)
 	}
 }
 
@@ -229,17 +230,17 @@ func TestEdge_ImplementUnorderedUnionRule_ThreeChildren(t *testing.T) {
 	wB := &physicalScanWrapper{plan: scanB}
 	wC := &physicalScanWrapper{plan: scanC}
 
-	refA := expressions.NewFinalReference([]expressions.RelationalExpression{wA})
+	refA := expressions.InitialOf(wA)
 	pmA := NewPlanPropertiesMap()
 	pmA.Add(wA)
 	refA.SetPlanProperties(pmA)
 
-	refB := expressions.NewFinalReference([]expressions.RelationalExpression{wB})
+	refB := expressions.InitialOf(wB)
 	pmB := NewPlanPropertiesMap()
 	pmB.Add(wB)
 	refB.SetPlanProperties(pmB)
 
-	refC := expressions.NewFinalReference([]expressions.RelationalExpression{wC})
+	refC := expressions.InitialOf(wC)
 	pmC := NewPlanPropertiesMap()
 	pmC.Add(wC)
 	refC.SetPlanProperties(pmC)
@@ -396,8 +397,8 @@ func TestEdge_PropertyMapNilValue(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 10. After PLANNING, extraction should prefer physical wrappers from
-//     FinalMembers over logical expressions in Members.
+// 10. After PLANNING, extraction should prefer physical wrappers over
+//     logical expressions in Members.
 // ---------------------------------------------------------------------------
 
 func TestEdge_PlanExtraction_PrefersFinalOverExploratory(t *testing.T) {
@@ -410,7 +411,7 @@ func TestEdge_PlanExtraction_PrefersFinalOverExploratory(t *testing.T) {
 	// Simulate PLANNING phase: insert a physical wrapper as a final member.
 	physScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	wrapper := &physicalScanWrapper{plan: physScan}
-	ref.InsertFinal(wrapper)
+	ref.Insert(wrapper)
 
 	// GetBest with a comparator that always prefers physical plans.
 	best := ref.GetBest(func(a, b expressions.RelationalExpression) bool {

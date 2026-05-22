@@ -32,7 +32,7 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 		unique:      false,
 	}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{iw})
+	innerRef := expressions.InitialOf(iw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(iw)
 	innerRef.SetPlanProperties(pm)

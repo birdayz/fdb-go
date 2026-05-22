@@ -415,7 +415,7 @@ func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
+	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
 	best, _, err := p.Plan(filterRef)
 	if err != nil {
 		t.Fatalf("planner error: %v", err)
@@ -469,19 +469,19 @@ func TestIndexScan_CostComparison(t *testing.T) {
 	ref := expressions.InitialOf(filter)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 	var foundIndexScan bool
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalIndexScanWrapper); ok {
 			foundIndexScan = true
 			break
 		}
 	}
 	if !foundIndexScan {
-		t.Fatalf("planner should produce an index scan wrapper; members=%d", len(ref.Members()))
+		t.Fatalf("planner should produce an index scan wrapper; members=%d", len(ref.AllMembers()))
 	}
 }
 

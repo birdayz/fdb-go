@@ -52,35 +52,43 @@ func TestEndToEnd_IndexScanFromLogicalFilter(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
 	foundIndexScan := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
-		if r == nil || visited[r] {
+	var walk func(e expressions.RelationalExpression)
+	walk = func(e expressions.RelationalExpression) {
+		if e == nil {
 			return
 		}
-		visited[r] = true
-		for _, m := range r.Members() {
-			if cascades.IsPhysicalIndexScan(m) {
-				foundIndexScan = true
-				return
-			}
-			for _, q := range m.GetQuantifiers() {
-				walk(q.GetRangesOver(), visited)
-				if foundIndexScan {
-					return
+		if cascades.IsPhysicalIndexScan(e) {
+			foundIndexScan = true
+			return
+		}
+		for _, q := range e.GetQuantifiers() {
+			r := q.GetRangesOver()
+			if r != nil {
+				for _, m := range r.AllMembers() {
+					walk(m)
+					if foundIndexScan {
+						return
+					}
 				}
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walk(plan)
 	if !foundIndexScan {
-		t.Fatalf("planner did not produce an index scan anywhere in the tree; top Reference has %d members", len(ref.Members()))
+		t.Fatalf("planner did not produce an index scan anywhere in the plan; top plan is %T", plan)
 	}
 }
 
@@ -117,35 +125,43 @@ func TestEndToEnd_IndexScanThroughSort(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
 	foundIndexScan := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
-		if r == nil || visited[r] {
+	var walk func(e expressions.RelationalExpression)
+	walk = func(e expressions.RelationalExpression) {
+		if e == nil {
 			return
 		}
-		visited[r] = true
-		for _, m := range r.Members() {
-			if cascades.IsPhysicalIndexScan(m) {
-				foundIndexScan = true
-				return
-			}
-			for _, q := range m.GetQuantifiers() {
-				walk(q.GetRangesOver(), visited)
-				if foundIndexScan {
-					return
+		if cascades.IsPhysicalIndexScan(e) {
+			foundIndexScan = true
+			return
+		}
+		for _, q := range e.GetQuantifiers() {
+			r := q.GetRangesOver()
+			if r != nil {
+				for _, m := range r.AllMembers() {
+					walk(m)
+					if foundIndexScan {
+						return
+					}
 				}
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walk(plan)
 	if !foundIndexScan {
-		t.Fatalf("index scan not found through Sort layer; top Reference has %d members", len(ref.Members()))
+		t.Fatalf("index scan not found through Sort layer; plan is %T", plan)
 	}
 }
 
@@ -186,35 +202,40 @@ func TestEndToEnd_IndexIntersection(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	// Plan() triggers PLANNING phase (populates Members). We then walk
+	// AllMembers to verify an intersection alternative was produced, even if
+	// the cost model didn't pick it as the best plan.
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	foundIntersection := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+	var walkRef func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walkRef = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
 		if r == nil || visited[r] {
 			return
 		}
 		visited[r] = true
-		for _, m := range r.Members() {
+		for _, m := range r.AllMembers() {
 			if cascades.IsPhysicalIntersection(m) {
 				foundIntersection = true
 				return
 			}
 			for _, qq := range m.GetQuantifiers() {
-				walk(qq.GetRangesOver(), visited)
+				walkRef(qq.GetRangesOver(), visited)
 				if foundIntersection {
 					return
 				}
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walkRef(ref, map[*expressions.Reference]bool{})
 	if !foundIntersection {
-		t.Fatalf("planner did not produce a physical intersection; top has %d members", len(ref.Members()))
+		t.Fatal("planner did not produce a physical intersection")
 	}
 }
 
@@ -264,34 +285,38 @@ func TestEndToEnd_ThreeWayIntersection(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	// Plan() triggers PLANNING phase (populates Members). Walk AllMembers
+	// to verify the 3-way intersection was produced as an alternative.
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
-	// Walk the tree looking for a physical intersection with 3 children.
+	// Walk all members looking for a physical intersection with 3 children.
 	found3Way := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+	var walkRef func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walkRef = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
 		if r == nil || visited[r] {
 			return
 		}
 		visited[r] = true
-		for _, m := range r.Members() {
+		for _, m := range r.AllMembers() {
 			if cascades.IsPhysicalIntersection(m) && len(m.GetQuantifiers()) == 3 {
 				found3Way = true
 				return
 			}
 			for _, qq := range m.GetQuantifiers() {
-				walk(qq.GetRangesOver(), visited)
+				walkRef(qq.GetRangesOver(), visited)
 				if found3Way {
 					return
 				}
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walkRef(ref, map[*expressions.Reference]bool{})
 	if !found3Way {
 		t.Fatal("planner did not produce a 3-way physical intersection")
 	}
@@ -328,7 +353,8 @@ func TestEndToEnd_SortElimByIndex(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
 	best, _, err2 := p.Plan(ref)
@@ -385,7 +411,8 @@ func TestEndToEnd_PlanPicksSortElimOverMaterializedSort(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
@@ -444,7 +471,8 @@ func TestEndToEnd_SortElimWithPrefixEqAndRangeSuffix(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
@@ -501,7 +529,8 @@ func TestEndToEnd_SortElimThroughResidualFilter(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
@@ -545,29 +574,34 @@ func TestEndToEnd_InExplodeIndexScan(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
+	// The cost model may prefer a plain filter+scan over the union of index
+	// scans produced by InExplode. We care that the planner produced at least
+	// one index scan as an alternative — walk the full Reference DAG.
 	indexScanCount := 0
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+	var walkRef func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walkRef = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
 		if r == nil || visited[r] {
 			return
 		}
 		visited[r] = true
-		for _, m := range r.Members() {
+		for _, m := range r.AllMembers() {
 			if cascades.IsPhysicalIndexScan(m) {
 				indexScanCount++
 			}
 			for _, q := range m.GetQuantifiers() {
-				walk(q.GetRangesOver(), visited)
+				walkRef(q.GetRangesOver(), visited)
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walkRef(ref, map[*expressions.Reference]bool{})
 	if indexScanCount < 1 {
 		t.Fatalf("expected at least 1 index scan (from InExplode inner equality), got %d", indexScanCount)
 	}
@@ -608,8 +642,10 @@ func TestEndToEnd_UniqueIndexPointLookupPreferred(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -668,8 +704,10 @@ func TestEndToEnd_CompoundIndexBeatsIntersection(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -722,34 +760,42 @@ func TestEndToEnd_StreamingAggOverSortedIndex(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
 	// Walk for streaming aggregation.
 	foundStreamingAgg := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
-		if r == nil || visited[r] {
+	var walk func(e expressions.RelationalExpression)
+	walk = func(e expressions.RelationalExpression) {
+		if e == nil {
 			return
 		}
-		visited[r] = true
-		for _, m := range r.Members() {
-			if cascades.IsPhysicalStreamingAgg(m) {
-				foundStreamingAgg = true
-				return
-			}
-			for _, qq := range m.GetQuantifiers() {
-				walk(qq.GetRangesOver(), visited)
-				if foundStreamingAgg {
-					return
+		if cascades.IsPhysicalStreamingAgg(e) {
+			foundStreamingAgg = true
+			return
+		}
+		for _, qq := range e.GetQuantifiers() {
+			r := qq.GetRangesOver()
+			if r != nil {
+				for _, m := range r.AllMembers() {
+					walk(m)
+					if foundStreamingAgg {
+						return
+					}
 				}
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walk(plan)
 	if !foundStreamingAgg {
 		t.Fatal("planner did not produce a streaming aggregation — expected GroupBy over ordered index scan")
 	}
@@ -784,33 +830,41 @@ func TestEndToEnd_AggregateFromLogicalOperator(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
 	foundStreamingAgg := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
-		if r == nil || visited[r] {
+	var walk func(e expressions.RelationalExpression)
+	walk = func(e expressions.RelationalExpression) {
+		if e == nil {
 			return
 		}
-		visited[r] = true
-		for _, m := range r.Members() {
-			if cascades.IsPhysicalStreamingAgg(m) {
-				foundStreamingAgg = true
-				return
-			}
-			for _, qq := range m.GetQuantifiers() {
-				walk(qq.GetRangesOver(), visited)
-				if foundStreamingAgg {
-					return
+		if cascades.IsPhysicalStreamingAgg(e) {
+			foundStreamingAgg = true
+			return
+		}
+		for _, qq := range e.GetQuantifiers() {
+			r := qq.GetRangesOver()
+			if r != nil {
+				for _, m := range r.AllMembers() {
+					walk(m)
+					if foundStreamingAgg {
+						return
+					}
 				}
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walk(plan)
 	if !foundStreamingAgg {
 		t.Fatal("full pipeline from LogicalAggregate did not produce streaming aggregation")
 	}
@@ -852,8 +906,10 @@ func TestEndToEnd_PlanPicksStreamingAggOverHash(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -887,8 +943,10 @@ func TestEndToEnd_PlanPicksStreamingAggWhenNoOrdering(t *testing.T) {
 	)
 	ref := expressions.InitialOf(gb)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -921,8 +979,10 @@ func TestEndToEnd_GlobalAggregate(t *testing.T) {
 	)
 	ref := expressions.InitialOf(gb)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -968,8 +1028,10 @@ func TestEndToEnd_StreamingAggDirectFromOrderedIndex(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1037,8 +1099,10 @@ func TestEndToEnd_StreamingAggMultiColumnIndex(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1074,9 +1138,11 @@ func TestEndToEnd_DeletePlan(t *testing.T) {
 	del := expressions.NewDeleteExpression(filterQ, "T")
 	ref := expressions.InitialOf(del)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	rules = append(rules, cascades.DMLImplementationRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1102,9 +1168,11 @@ func TestEndToEnd_InsertPlan(t *testing.T) {
 	ins := expressions.NewInsertExpression(scanQ, "Target", values.UnknownType)
 	ref := expressions.InitialOf(ins)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	rules = append(rules, cascades.DMLImplementationRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1156,8 +1224,10 @@ func TestEndToEnd_InExplodeWithGroupBy(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	p.MaxTasks = 100_000
 
 	plan, _, err := p.Plan(ref)
@@ -1208,8 +1278,10 @@ func TestEndToEnd_AggregationExplainOutput(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1273,35 +1345,42 @@ func TestEndToEnd_FilterPushedThroughGroupBy(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
 	}
 
-	// After pushdown + index utilization, we expect an index scan
-	// somewhere in the explored DAG.
+	// After pushdown + index utilization, we expect an index scan somewhere in the plan.
 	foundIndexScan := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
-		if r == nil || visited[r] {
+	var walk func(e expressions.RelationalExpression)
+	walk = func(e expressions.RelationalExpression) {
+		if e == nil {
 			return
 		}
-		visited[r] = true
-		for _, m := range r.Members() {
-			if cascades.IsPhysicalIndexScan(m) {
-				foundIndexScan = true
-				return
-			}
-			for _, qq := range m.GetQuantifiers() {
-				walk(qq.GetRangesOver(), visited)
-				if foundIndexScan {
-					return
+		if cascades.IsPhysicalIndexScan(e) {
+			foundIndexScan = true
+			return
+		}
+		for _, qq := range e.GetQuantifiers() {
+			r := qq.GetRangesOver()
+			if r != nil {
+				for _, m := range r.AllMembers() {
+					walk(m)
+					if foundIndexScan {
+						return
+					}
 				}
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
+	walk(plan)
 	if !foundIndexScan {
 		t.Fatal("expected index scan on Orders$region after filter pushdown through GroupBy")
 	}
@@ -1347,8 +1426,10 @@ func TestEndToEnd_CompoundIndexFilterAndStreamingAgg(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1385,8 +1466,10 @@ func TestEndToEnd_MultipleAggregates(t *testing.T) {
 	}
 	ref := expressions.InitialOf(got)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1445,7 +1528,8 @@ func TestEndToEnd_SortOverStreamingAggEliminated(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
@@ -1495,8 +1579,10 @@ func TestEndToEnd_GroupByWithHavingClause(t *testing.T) {
 		}, gbQ)
 	ref := expressions.InitialOf(havingFilter)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1540,8 +1626,10 @@ func TestEndToEnd_StreamingAggFromIndexWithoutSort(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1585,8 +1673,10 @@ func TestEndToEnd_AggregateIndexDirectAccess(t *testing.T) {
 		),
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1631,8 +1721,10 @@ func TestEndToEnd_NestedLoopJoinBasic(t *testing.T) {
 	)
 	ref := expressions.InitialOf(sel)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1681,8 +1773,10 @@ func TestEndToEnd_JoinWithFilterOnOneSide(t *testing.T) {
 	)
 	ref := expressions.InitialOf(sel)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1717,8 +1811,10 @@ func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {
 	distinct := expressions.NewLogicalDistinctExpression(gbQ)
 	ref := expressions.InitialOf(distinct)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1743,8 +1839,10 @@ func TestEndToEnd_LimitOverScan(t *testing.T) {
 	lim := expressions.NewLogicalLimitExpression(10, 0, scanQ)
 	ref := expressions.InitialOf(lim)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1783,8 +1881,10 @@ func TestEndToEnd_LimitOverSortUsesOrderedIndex(t *testing.T) {
 			recordTypes: []string{"Orders"},
 		},
 	})
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1818,8 +1918,10 @@ func TestEndToEnd_JoinFromLogicalOperator(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1844,8 +1946,10 @@ func TestEndToEnd_LimitFromLogicalOperator(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1900,8 +2004,10 @@ func TestEndToEnd_LimitSortFilterWithIndex(t *testing.T) {
 			recordTypes: []string{"Orders"},
 		},
 	})
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -1946,7 +2052,8 @@ func TestEndToEnd_TextBasedFilterSortLimit(t *testing.T) {
 			recordTypes: []string{"Orders"},
 		},
 	})
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
@@ -1974,8 +2081,10 @@ func TestEndToEnd_TextBasedJoinToPlan(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2005,8 +2114,10 @@ func TestEndToEnd_TextBasedInListToPlan(t *testing.T) {
 			recordTypes: []string{"Orders"},
 		},
 	})
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2037,8 +2148,10 @@ func TestEndToEnd_StartsWithIndexScan(t *testing.T) {
 			recordTypes: []string{"Users"},
 		},
 	})
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2066,8 +2179,10 @@ func TestEndToEnd_LimitMergeEndToEnd(t *testing.T) {
 	outer := expressions.NewLogicalLimitExpression(10, 5, innerQ)
 	ref := expressions.InitialOf(outer)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2094,8 +2209,10 @@ func TestEndToEnd_LimitOverUnionPushesDown(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2117,9 +2234,11 @@ func TestEndToEnd_InsertValuesToPlan(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	rules = append(rules, cascades.DMLImplementationRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2143,8 +2262,10 @@ func TestEndToEnd_FunctionCallInFilterToPlan(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2172,8 +2293,10 @@ func TestEndToEnd_ArithmeticInProjectToPlan(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2206,8 +2329,10 @@ func TestEndToEnd_ProjectFilterIndexScanPipeline(t *testing.T) {
 	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
 		e2eIndexDef{name: "Users$status", columns: []string{"status"}, recordTypes: []string{"Users"}},
 	})
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2233,8 +2358,10 @@ func TestEndToEnd_ProjectionMergeThenImplement(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -2258,8 +2385,10 @@ func TestEndToEnd_ValuesToPlan(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)

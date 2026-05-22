@@ -32,7 +32,7 @@ func (r *ImplementProjectionFinalRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	for _, m := range innerRef.FinalMembers() {
+	for _, m := range innerRef.AllMembers() {
 		ph, ok := m.(physicalPlanExpression)
 		if !ok {
 			continue

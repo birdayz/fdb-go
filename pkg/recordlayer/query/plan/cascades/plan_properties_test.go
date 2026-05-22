@@ -51,7 +51,7 @@ func TestComputeDistinctRecords_FilterInheritsFromChild(t *testing.T) {
 	scanWrapper := &physicalScanWrapper{plan: scan}
 
 	// Put the scan wrapper in a Reference and compute its properties.
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{scanWrapper})
+	innerRef := expressions.InitialOf(scanWrapper)
 	pm := NewPlanPropertiesMap()
 	pm.Add(scanWrapper)
 	innerRef.SetPlanProperties(pm)
@@ -83,7 +83,7 @@ func TestComputeDistinctRecords_DistinctPlanIsTrue(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	dp := plans.NewRecordQueryDistinctPlan(scan)
 	scanW := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{scanW})
+	innerRef := expressions.InitialOf(scanW)
 	innerQ := expressions.ForEachQuantifier(innerRef)
 	dw := NewPhysicalDistinctWrapper(dp, innerQ)
 	got := computeDistinctRecords(dw, dp)
@@ -97,7 +97,7 @@ func TestComputeDistinctRecords_UnionPlanIsTrue(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	up := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scan})
 	scanW := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{scanW})
+	innerRef := expressions.InitialOf(scanW)
 	qs := []expressions.Quantifier{expressions.ForEachQuantifier(innerRef)}
 	uw := NewPhysicalUnionWrapper(up, qs)
 	got := computeDistinctRecords(uw, up)
@@ -232,7 +232,7 @@ func TestComputeRefPlanProperties_StoresMapOnReference(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	wrapper := &physicalScanWrapper{plan: scan}
-	ref := expressions.NewFinalReference([]expressions.RelationalExpression{wrapper})
+	ref := expressions.InitialOf(wrapper)
 
 	computeRefPlanProperties(ref)
 

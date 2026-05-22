@@ -296,15 +296,16 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	selRef := expressions.InitialOf(sel)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(selRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(selRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	// Collect all physical NLJ members — there should be at least 2
-	// (one per join direction).
+	// (one per join direction). Physical wrappers are inserted into
+	// Members during the PLANNING phase.
 	var nljPlans []*plans.RecordQueryNestedLoopJoinPlan
-	for _, m := range selRef.Members() {
+	for _, m := range selRef.AllMembers() {
 		nlj, ok := m.(*physicalNestedLoopJoinWrapper)
 		if !ok {
 			continue
@@ -314,7 +315,7 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 
 	if len(nljPlans) < 2 {
 		var explains []string
-		for _, m := range selRef.Members() {
+		for _, m := range selRef.AllMembers() {
 			explains = append(explains, fmt.Sprintf("%T", m))
 		}
 		t.Fatalf("expected at least 2 NLJ members (both join directions), got %d; members: %v",
@@ -367,14 +368,14 @@ func TestE2E_JoinCommutativitySkippedForLeftJoin(t *testing.T) {
 	selRef := expressions.InitialOf(sel)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext())
-	if _, conv := p.Explore(selRef); !conv {
-		t.Fatal("planner did not converge")
+	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	if _, _, err := p.Plan(selRef); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	// For LEFT JOIN, only one direction should be explored. All NLJ
 	// plans should have A as outer.
-	for _, m := range selRef.Members() {
+	for _, m := range selRef.AllMembers() {
 		nlj, ok := m.(*physicalNestedLoopJoinWrapper)
 		if !ok {
 			continue

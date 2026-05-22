@@ -53,7 +53,7 @@ func TestConstraintPropagation_NilConstraintMap(t *testing.T) {
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)

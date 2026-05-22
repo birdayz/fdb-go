@@ -51,7 +51,7 @@ func TestImplementSimpleSelectRule_SkipsMultiQuantifier(t *testing.T) {
 
 	scan := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	scanA.InsertFinal(sw)
+	scanA.Insert(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	scanA.SetPlanProperties(pm)
@@ -68,7 +68,7 @@ func TestImplementSimpleSelectRule_NoPredicatesSimpleResult(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -95,7 +95,7 @@ func TestImplementSimpleSelectRule_WithPredicates(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -126,7 +126,7 @@ func TestImplementSimpleSelectRule_WithProjection(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -169,7 +169,7 @@ func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -204,7 +204,7 @@ func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -239,7 +239,7 @@ func TestImplementSimpleSelectRule_TautologyPredicatesFiltered(t *testing.T) {
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)

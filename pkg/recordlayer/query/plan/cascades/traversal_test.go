@@ -199,7 +199,7 @@ func TestTraversal_EmptyReference(t *testing.T) {
 
 	// An empty reference has no members — the traversal should work
 	// but produce empty results.
-	ref := expressions.NewFinalReference(nil)
+	ref := &expressions.Reference{}
 	tr := NewTraversal(ref)
 
 	if tr.GetRootReference() != ref {

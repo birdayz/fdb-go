@@ -4,6 +4,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Planner is the task-stack driven cascades planner — Track B6.
@@ -46,18 +47,13 @@ type Planner struct {
 	memo  *Memo
 
 	// implementationRules run during PhasePlanning after the
-	// REWRITING phase converges. They yield final expressions into
-	// Reference.finalMembers via InsertFinal.
+	// REWRITING phase converges. They yield physical expressions
+	// into Reference.Members via Insert.
 	implementationRules []ImplementationRule
 
 	// exploreCount[ref] = member count at last saturation check on
 	// `ref`. SaturationCheckTask short-circuits when count hasn't grown.
 	exploreCount map[*expressions.Reference]int
-
-	// bestMember[ref] = the cheapest member chosen by the OPTIMIZE
-	// phase. Populated by OptimizeReferenceTask after saturation.
-	// Available via BestMember(ref) after Explore returns.
-	bestMember map[*expressions.Reference]expressions.RelationalExpression
 
 	// MaxTasks caps the total tasks executed before the planner
 	// gives up (returns the partial result). Defaults to 100_000.
@@ -114,7 +110,6 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		ctx:          ctx,
 		memo:         nil, // initialized lazily on first Explore call
 		exploreCount: make(map[*expressions.Reference]int),
-		bestMember:   make(map[*expressions.Reference]expressions.RelationalExpression),
 		costModel:    PlanningCostModelLess,
 		MaxTasks:     100_000,
 	}
@@ -127,29 +122,94 @@ func (p *Planner) Memo() *Memo {
 }
 
 // BestMember returns the OPTIMIZE-chosen best member for `ref`,
-// or nil if the Reference wasn't optimized (e.g. unreachable from
-// the Explore root, or Explore hit MaxTasks).
-//
-// Available after Explore (or Plan) returns. The map is populated
-// by OptimizeReferenceTask which fires after a Reference's
-// ApplyRulesTask reports no growth (saturation reached).
+// or nil if the Reference wasn't optimized. Delegates to the
+// per-properties winner map (NoProperties = cheapest overall).
 func (p *Planner) BestMember(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
-	return p.bestMember[ref]
+	return ref.Winner(expressions.NoProperties)
 }
 
-// HasBestMember reports whether OptimizeReferenceTask has stamped
-// a best for `ref`. Used by tests + the integration path that
-// distinguishes "Reference not yet optimized" from "Reference
-// optimized to nil (empty)".
+// HasBestMember reports whether a winner exists for `ref`.
 func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 	if ref == nil {
 		return false
 	}
-	_, ok := p.bestMember[ref]
-	return ok
+	return ref.HasWinner(expressions.NoProperties)
+}
+
+// OptimizeGroup finds the cheapest plan in `ref` that satisfies
+// `props` and stores it as a winner. Following Graefe 1995 §2:
+//
+//   - If a winner already exists for (ref, props), return it.
+//   - Iterate all members, find cheapest satisfying props.
+//   - If no member satisfies props and props requires ordering,
+//     use the NoProperties winner + sort enforcer.
+//   - Store the winner for (ref, props).
+//
+// Returns the winner, or nil if the group is empty.
+func (p *Planner) OptimizeGroup(ref *expressions.Reference, props expressions.PhysicalProperties) expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+
+	// Check memoized winner.
+	if w := ref.Winner(props); w != nil {
+		return w
+	}
+
+	// No ordering required → just pick cheapest overall.
+	if props.IsEmpty() {
+		best := ref.GetBest(p.costModel)
+		if best != nil {
+			ref.SetWinner(props, best)
+		}
+		return best
+	}
+
+	// Find cheapest member that satisfies the required ordering.
+	var best expressions.RelationalExpression
+	for _, m := range ref.AllMembers() {
+		h, ok := m.(orderingHinter)
+		if !ok {
+			continue
+		}
+		ord := h.HintOrdering()
+		if !ord.IsKnown || len(ord.Keys) == 0 {
+			continue
+		}
+		provided := orderingToProps(ord)
+		if !provided.Satisfies(props) {
+			continue
+		}
+		if best == nil || p.costModel(m, best) {
+			best = m
+		}
+	}
+
+	if best != nil {
+		ref.SetWinner(props, best)
+		return best
+	}
+
+	// No member satisfies props. The Graefe approach would add an
+	// enforcer (sort) here. For now, return nil — the caller handles
+	// the enforcer at extraction time via sortWinnerFromChild.
+	return nil
+}
+
+// orderingToProps converts a properties.Ordering to PhysicalProperties.
+func orderingToProps(ord properties.Ordering) expressions.PhysicalProperties {
+	names := make([]string, len(ord.Keys))
+	for i, k := range ord.Keys {
+		if fv, ok := k.(*values.FieldValue); ok {
+			names[i] = fv.Field
+		} else {
+			names[i] = k.Name()
+		}
+	}
+	return expressions.OrderingFromNameDir(names, ord.Descending)
 }
 
 // WithImplementationRules adds rules for PhasePlanning. These run
@@ -214,13 +274,14 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	AdjustMatches(rootRef)
 
 	// PLANNING phase: constraint propagation → data access → implementation.
-	// Data access generation is integrated into the PLANNING phase
-	// (after constraint propagation, before implementation) so it has
-	// access to ordering constraints — matching Java's architecture.
 	p.runPlanningPhase(rootRef)
 
-	// Use the selector path so extraction reuses the OPTIMIZE-stamped
-	// best member per Reference.
+	// Re-optimize all References to pick up implementation rule results.
+	// Implementation rules insert physical plans into Members; the cost
+	// model (criterion #1: physical beats non-physical) ensures they win
+	// over logical EXPLORE-phase winners.
+	p.reoptimizeAll(rootRef)
+
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
 }
@@ -238,7 +299,7 @@ func (e plannerErr) Error() string { return string(e) }
 
 // runPlanningPhase fires implementation rules bottom-up on every
 // Reference in the Memo. Leaf References first, then parents.
-// Each rule produces final members via InsertFinal.
+// Each rule inserts expressions into Members via ref.Insert.
 //
 // Phase sequence (matches Java's CascadesPlanner):
 //  1. Top-down constraint propagation (ordering constraints)
@@ -272,6 +333,57 @@ func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 			for ref := range p.memo.References() {
 				p.implementBottomUp(ref, visited, cm)
 			}
+		}
+	}
+}
+
+// reoptimizeAll re-runs OptimizeGroup on every reachable Reference
+// bottom-up after the PLANNING phase. Implementation rules insert
+// physical plans into Members; the cost model (criterion #1: physical
+// beats non-physical) ensures they replace logical EXPLORE-phase winners.
+func (p *Planner) reoptimizeAll(rootRef *expressions.Reference) {
+	visited := make(map[*expressions.Reference]bool)
+	p.reoptimizeRecursive(rootRef, visited)
+	if p.memo != nil {
+		for ref := range p.memo.References() {
+			p.reoptimizeRecursive(ref, visited)
+		}
+	}
+}
+
+func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+	for _, m := range ref.AllMembers() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.reoptimizeRecursive(childRef, visited)
+			}
+		}
+	}
+	// Only stamp a winner if EXPLORE didn't produce one (or produced
+	// a non-physical one). This handles References that only get
+	// physical plans during the PLANNING phase.
+	existing := ref.Winner(expressions.NoProperties)
+	if existing == nil {
+		best := ref.GetBest(p.costModel)
+		if best != nil {
+			ref.SetWinner(expressions.NoProperties, best)
+		}
+	} else if _, isPhys := existing.(physicalPlanExpression); !isPhys {
+		var bestPhys expressions.RelationalExpression
+		for _, m := range ref.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); !ok {
+				continue
+			}
+			if bestPhys == nil || p.costModel(m, bestPhys) {
+				bestPhys = m
+			}
+		}
+		if bestPhys != nil {
+			ref.SetWinner(expressions.NoProperties, bestPhys)
 		}
 	}
 }
@@ -322,7 +434,7 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 	}
 
 	for _, rule := range p.implementationRules {
-		FireImplementationRuleWithContext(rule, ref, p.ctx, cm)
+		FireImplementationRuleWithContext(rule, ref, p.ctx, p.memo, cm)
 	}
 
 	computeRefPlanProperties(ref)
@@ -395,10 +507,13 @@ func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visite
 		)
 
 		// Insert generated expressions into the Reference so Pass 3
-		// (bottom-up implementation) can see them.
+		// (bottom-up implementation) can see them. Also stamp ordering
+		// winners for physical scans that provide ordering (enables
+		// sort elimination via per-properties winners in extraction).
 		for _, expr := range exprs {
 			ref.Insert(expr)
 		}
+		stampOrderingWinners(ref, p.costModel)
 	}
 }
 
@@ -592,38 +707,71 @@ func (t *SaturationCheckTask) Run(p *Planner) {
 	p.push(&OptimizeReferenceTask{Ref: t.Ref})
 }
 
-// OptimizeReferenceTask is the OPTIMIZE phase: picks the cheapest
-// member of the Reference under the planner's cost comparator and
-// stamps it in the bestMember map. Mirrors Java's
-// OPTIMIZE phase in CascadesPlanner.
+// OptimizeReferenceTask picks the cheapest member of the Reference
+// and stamps it as winner. Implements Graefe 1995 §2: winners are
+// stored per (Reference, PhysicalProperties) pair. The NoProperties
+// winner is the cheapest plan overall; ordering-specific winners
+// are the cheapest plans that provide specific orderings.
 //
-// Fires after ApplyRulesTask reports a Reference saturated. The
-// pre-condition is that all child Reference's ApplyRulesTask have
-// also fired (bottom-up traversal guarantees this) — but we don't
-// require children to be optimized first; the cost model walks
-// child References itself via firstMemberCost (the cost model's
-// recursion contract).
-//
-// The comparator is p.costModel (PlanningCostModelLess for PLANNING,
-// RewritingCostModelLess for REWRITING), set via WithCostModel().
-//
-// PERF NOTE: the cost model re-walks the full sub-tree on every
-// GetBest comparison. For a Reference with K members over an N-deep
-// tree this is O(K·N) per OptimizeReferenceTask. Acceptable for
-// current tree sizes. When N or K grow, switch to a memoised
-// comparator.
+// Fires after SaturationCheckTask reports a Reference saturated.
 type OptimizeReferenceTask struct {
 	Ref *expressions.Reference
 }
 
-// Run picks the cheapest member, stamps it, fires the event.
+// Run delegates to OptimizeGroup for NoProperties (cheapest overall),
+// then stamps ordering-specific winners.
 func (t *OptimizeReferenceTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
 	}
-	best := t.Ref.GetBest(p.costModel)
-	p.bestMember[t.Ref] = best
+	best := p.OptimizeGroup(t.Ref, expressions.NoProperties)
+
+	// Stamp ordering-specific winners: for each physical member that
+	// provides a known ordering, store it as winner for those ordering
+	// properties. If multiple members provide the same ordering, the
+	// cost model picks the better one.
+	stampOrderingWinners(t.Ref, p.costModel)
+
 	if p.events != nil {
 		p.events.OnOptimizeReference(t.Ref, best)
 	}
+}
+
+// stampOrderingWinners iterates physical members of a Reference and
+// stamps ordering-specific winners. A member that implements
+// orderingHinter and returns a known ordering gets stamped as winner
+// for that ordering's PhysicalProperties key.
+func stampOrderingWinners(ref *expressions.Reference, costModel func(a, b expressions.RelationalExpression) bool) {
+	for _, m := range ref.AllMembers() {
+		h, ok := m.(orderingHinter)
+		if !ok {
+			continue
+		}
+		ord := h.HintOrdering()
+		if !ord.IsKnown || len(ord.Keys) == 0 {
+			continue
+		}
+		names := make([]string, len(ord.Keys))
+		for i, k := range ord.Keys {
+			if fv, ok := k.(*values.FieldValue); ok {
+				names[i] = fv.Field
+			} else {
+				names[i] = k.Name()
+			}
+		}
+		props := expressions.OrderingFromNameDir(names, ord.Descending)
+		if props.IsEmpty() {
+			continue
+		}
+		existing := ref.Winner(props)
+		if existing == nil || costModel(m, existing) {
+			ref.SetWinner(props, m)
+		}
+	}
+}
+
+// orderingHinter is implemented by physical wrappers that can
+// declare what ordering they produce.
+type orderingHinter interface {
+	HintOrdering() properties.Ordering
 }

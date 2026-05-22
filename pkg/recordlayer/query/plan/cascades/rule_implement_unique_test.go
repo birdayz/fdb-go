@@ -46,7 +46,7 @@ func TestImplementUniqueRule_AbsorbsWhenInnerIsDistinct(t *testing.T) {
 	scanWrapper := &physicalScanWrapper{plan: scan}
 
 	// Create inner reference with physical wrapper as final member.
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{scanWrapper})
+	innerRef := expressions.InitialOf(scanWrapper)
 
 	// Compute plan properties on the inner reference.
 	pm := NewPlanPropertiesMap()
@@ -83,7 +83,7 @@ func TestImplementUniqueRule_NoYieldWhenInnerNotDistinct(t *testing.T) {
 	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
 	aggWrapper := &physicalStreamingAggWrapper{plan: aggPlan}
 
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{aggWrapper})
+	innerRef := expressions.InitialOf(aggWrapper)
 	pm := NewPlanPropertiesMap()
 	pm.Add(aggWrapper)
 	innerRef.SetPlanProperties(pm)

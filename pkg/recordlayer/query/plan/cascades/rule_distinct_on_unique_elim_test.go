@@ -52,7 +52,7 @@ func buildDistinctOverProjection(
 
 	proj := expressions.NewLogicalProjectionExpression(projected, scanQ)
 	projRef := expressions.InitialOf(proj)
-	projRef.InsertFinal(makeFakePlanWrapper(recType))
+	projRef.Insert(makeFakePlanWrapper(recType))
 	projQ := expressions.ForEachQuantifier(projRef)
 
 	distinct := expressions.NewLogicalDistinctExpression(projQ)
@@ -68,7 +68,7 @@ func buildDistinctOverProjection(
 func buildDistinctOverScan(recType string) *expressions.Reference {
 	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
-	scanRef.InsertFinal(makeFakePlanWrapper(recType))
+	scanRef.Insert(makeFakePlanWrapper(recType))
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	distinct := expressions.NewLogicalDistinctExpression(scanQ)
@@ -84,7 +84,7 @@ func TestDistinctFinal_PKProjected_Eliminates(t *testing.T) {
 		&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire and eliminate DISTINCT when PK is projected")
 	}
@@ -103,7 +103,7 @@ func TestDistinctFinal_NonPKProjected_Wraps(t *testing.T) {
 		&values.FieldValue{Field: "NAME", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -125,7 +125,7 @@ func TestDistinctFinal_FullScan_Eliminates(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverScan("USERS")
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire on full scan with PK")
 	}
@@ -166,7 +166,7 @@ func TestDistinctFinal_CompositePK_Eliminates(t *testing.T) {
 		&values.FieldValue{Field: "QTY", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should eliminate when all composite PK cols projected")
 	}
@@ -186,7 +186,7 @@ func TestDistinctFinal_CompositePKPartial_Wraps(t *testing.T) {
 		&values.FieldValue{Field: "QTY", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -209,7 +209,7 @@ func TestDistinctFinal_CaseInsensitive(t *testing.T) {
 		&values.FieldValue{Field: "id", Typ: values.UnknownType},
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire with case-insensitive PK match")
 	}
@@ -240,14 +240,14 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 		filterQ,
 	)
 	projRef := expressions.InitialOf(proj)
-	projRef.InsertFinal(makeFakePlanWrapper("USERS"))
+	projRef.Insert(makeFakePlanWrapper("USERS"))
 	projQ := expressions.ForEachQuantifier(projRef)
 
 	distinct := expressions.NewLogicalDistinctExpression(projQ)
 	distinctRef := expressions.InitialOf(distinct)
 
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire through filter")
 	}
@@ -258,20 +258,20 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	}
 }
 
-// TestDistinctFinal_WrapsAllFinalMembers verifies the wrapping path
-// yields a DistinctWrapper for EVERY physical FinalMember, not just
+// TestDistinctFinal_WrapsAllMembers verifies the wrapping path
+// yields a DistinctWrapper for EVERY physical member, not just
 // the first. Regression test for the early-return bug.
-func TestDistinctFinal_WrapsAllFinalMembers(t *testing.T) {
+func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"ITEMS"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
-	// Insert TWO physical FinalMembers to simulate multiple candidates.
-	scanRef.InsertFinal(makeFakePlanWrapper("ITEMS"))
+	// Insert TWO physical members to simulate multiple candidates.
+	scanRef.Insert(makeFakePlanWrapper("ITEMS"))
 	fwd := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, false)
 	rev := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, true)
-	scanRef.InsertFinal(&physicalScanWrapper{plan: fwd})
-	scanRef.InsertFinal(&physicalScanWrapper{plan: rev})
+	scanRef.Insert(&physicalScanWrapper{plan: fwd})
+	scanRef.Insert(&physicalScanWrapper{plan: rev})
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Project a non-PK column so elimination does NOT fire.
@@ -282,9 +282,9 @@ func TestDistinctFinal_WrapsAllFinalMembers(t *testing.T) {
 		scanQ,
 	)
 	projRef := expressions.InitialOf(proj)
-	// Copy FinalMembers to projRef so the rule has plans to wrap.
-	for _, m := range scanRef.FinalMembers() {
-		projRef.InsertFinal(m)
+	// Copy members to projRef so the rule has plans to wrap.
+	for _, m := range scanRef.Members() {
+		projRef.Insert(m)
 	}
 	projQ := expressions.ForEachQuantifier(projRef)
 
@@ -293,7 +293,7 @@ func TestDistinctFinal_WrapsAllFinalMembers(t *testing.T) {
 
 	// PK is "ID" but projection only has "NAME" → no elimination.
 	ctx := &pkPlanContext{pk: map[string][]string{"ITEMS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx)
+	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 
 	wrapCount := 0
 	for _, r := range results {

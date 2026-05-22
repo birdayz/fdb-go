@@ -71,12 +71,7 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats StatisticsProv
 	}
 	visited[ref] = true
 	less := CostLessWith(stats)
-	var best expressions.RelationalExpression
-	if finals := ref.FinalMembers(); len(finals) > 0 {
-		best = bestFrom(finals, less)
-	} else {
-		best = ref.GetBest(less)
-	}
+	best := ref.GetBest(less)
 	if best == nil {
 		return nil, nil
 	}
@@ -134,26 +129,64 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 		return nil, nil
 	}
 	visited[ref] = true
+
+	// Per-properties winner path (Graefe 1995 §2): if the Reference
+	// has a physical winner stamped for NoProperties, use it directly.
+	// Non-physical winners fall through to the legacy extraction which
+	// navigates Members to find the physical plan.
+	if w := ref.Winner(expressions.NoProperties); w != nil && isPhysicalPlan(w) {
+		return rebuildExpressionFromSelectorVisited(w, sel, stats, visited)
+	}
+
 	var best expressions.RelationalExpression
 	if sel != nil && sel.HasBestMember(ref) {
 		best = sel.BestMember(ref)
 	}
 	if !isPhysicalPlan(best) {
-		if finals := ref.FinalMembers(); len(finals) > 0 {
-			if fb := bestPhysicalFrom(finals); fb != nil {
-				best = fb
-			} else if fb := bestFrom(finals, CostLessWith(stats)); fb != nil {
-				best = fb
-			}
-		}
-	}
-	if best == nil {
 		best = ref.GetBest(CostLessWith(stats))
 	}
 	if best == nil {
 		return nil, nil
 	}
+
+	// Sort elimination via per-properties winners (Graefe 1995 §2):
+	// if the best expression is a LogicalSort and the child Reference
+	// has a winner for the sort's ordering, skip the sort and use the
+	// ordered winner directly.
+	if sortExpr, ok := best.(*expressions.LogicalSortExpression); ok {
+		if childWinner := sortWinnerFromChild(sortExpr, sel, stats, visited); childWinner != nil {
+			return childWinner, nil
+		}
+	}
+
 	return rebuildExpressionFromSelectorVisited(best, sel, stats, visited)
+}
+
+// sortWinnerFromChild checks if a LogicalSort's child Reference has
+// an ordering-specific winner that satisfies the sort's keys. If yes,
+// returns the rebuilt winner (sort eliminated). If no, returns nil.
+func sortWinnerFromChild(sortExpr *expressions.LogicalSortExpression, sel BestMemberSelector, stats StatisticsProvider, visited map[*expressions.Reference]bool) expressions.RelationalExpression {
+	childRef := sortExpr.GetInner().GetRangesOver()
+	if childRef == nil {
+		return nil
+	}
+	sortKeys := sortExpr.GetSortKeys()
+	if len(sortKeys) == 0 {
+		return nil
+	}
+	requiredProps := expressions.OrderingFromSortKeys(sortKeys)
+	if requiredProps.IsEmpty() {
+		return nil
+	}
+	winner := childRef.Winner(requiredProps)
+	if winner == nil || !isPhysicalPlan(winner) {
+		return nil
+	}
+	rebuilt, err := rebuildExpressionFromSelectorVisited(winner, sel, stats, visited)
+	if err != nil {
+		return nil
+	}
+	return rebuilt
 }
 
 // rebuildExpressionFromSelectorVisited is the same switch-based

@@ -44,7 +44,10 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	call.PushConstraint(innerRef, []*RequestedOrdering{requestedOrdering})
 
 	if requestedOrdering.IsPreserve() {
-		for _, m := range innerRef.FinalMembers() {
+		for _, m := range innerRef.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); !ok {
+				continue
+			}
 			call.YieldFinalExpression(m)
 		}
 		return

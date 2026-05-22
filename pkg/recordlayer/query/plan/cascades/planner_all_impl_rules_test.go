@@ -11,9 +11,11 @@ import (
 func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 	t.Parallel()
 	rules := DefaultImplementationRules()
-	// 15 ordering-push + 4 referenced-fields-push + 9 Java-ported + 12 fetch-push-through + 1 Finalize + 1 Go extension (ImplementInMemorySortRule)
-	if len(rules) != 42 {
-		t.Fatalf("expected 42 implementation rules, got %d", len(rules))
+	// 15 ordering-push + 4 referenced-fields-push + 9 Java-ported + 12 fetch-push-through
+	// + 1 Go extension (ImplementInMemorySortRule) = 41
+	// Rules yield into Members.
+	if len(rules) != 41 {
+		t.Fatalf("expected 41 implementation rules, got %d", len(rules))
 	}
 }
 
@@ -27,7 +29,7 @@ func TestAllImplRules_UniqueOverDistinctUnion_WithPK_DirectFire(t *testing.T) {
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
 	})
-	unionRef := expressions.NewFinalReference([]expressions.RelationalExpression{union})
+	unionRef := expressions.InitialOf(union)
 
 	distinct := expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(unionRef))
@@ -51,9 +53,9 @@ func TestAllImplRules_UniqueOverDistinctUnion_WithPK_DirectFire(t *testing.T) {
 		FireImplementationRule(rule, rootRef)
 	}
 
-	finals := rootRef.FinalMembers()
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root should have final members after direct rule firing")
+		t.Fatal("root should have members after direct rule firing")
 	}
 }
 
@@ -62,7 +64,7 @@ func TestAllImplRules_SelectNoPredicatesPassThrough(t *testing.T) {
 
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	sw := &physicalScanWrapper{plan: scan}
-	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
@@ -79,7 +81,7 @@ func TestAllImplRules_SelectNoPredicatesPassThrough(t *testing.T) {
 		FireImplementationRule(rule, rootRef)
 	}
 
-	finals := rootRef.FinalMembers()
+	finals := rootRef.AllMembers()
 	foundScan := false
 	for _, f := range finals {
 		if _, ok := f.(*physicalScanWrapper); ok {
@@ -97,21 +99,21 @@ func TestAllImplRules_UnorderedUnionThreeLegs(t *testing.T) {
 
 	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
 	swA := &physicalScanWrapper{plan: scanA}
-	refA := expressions.NewFinalReference([]expressions.RelationalExpression{swA})
+	refA := expressions.InitialOf(swA)
 	pmA := NewPlanPropertiesMap()
 	pmA.Add(swA)
 	refA.SetPlanProperties(pmA)
 
 	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
 	swB := &physicalScanWrapper{plan: scanB}
-	refB := expressions.NewFinalReference([]expressions.RelationalExpression{swB})
+	refB := expressions.InitialOf(swB)
 	pmB := NewPlanPropertiesMap()
 	pmB.Add(swB)
 	refB.SetPlanProperties(pmB)
 
 	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
 	swC := &physicalScanWrapper{plan: scanC}
-	refC := expressions.NewFinalReference([]expressions.RelationalExpression{swC})
+	refC := expressions.InitialOf(swC)
 	pmC := NewPlanPropertiesMap()
 	pmC.Add(swC)
 	refC.SetPlanProperties(pmC)
@@ -127,7 +129,7 @@ func TestAllImplRules_UnorderedUnionThreeLegs(t *testing.T) {
 		FireImplementationRule(rule, rootRef)
 	}
 
-	finals := rootRef.FinalMembers()
+	finals := rootRef.AllMembers()
 	foundUnorderedUnion := false
 	for _, f := range finals {
 		if _, ok := f.(*physicalUnorderedUnionWrapper); ok {

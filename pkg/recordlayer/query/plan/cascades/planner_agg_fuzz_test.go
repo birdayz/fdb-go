@@ -131,7 +131,7 @@ func FuzzPlanner_Aggregation_NoPanic(f *testing.F) {
 		}
 
 		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, ctx)
+		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
 		p.MaxTasks = 50_000
 
 		plan, _, err := p.Plan(topRef)

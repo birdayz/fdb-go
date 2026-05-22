@@ -271,7 +271,8 @@ func TestEndToEnd_InsertFromScan_DMLPipeline(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	rules = append(rules, cascades.DMLImplementationRules()...)
 	p := cascades.NewPlanner(rules, nil)
 	plan, tasks, err := p.Plan(ref)
@@ -315,7 +316,8 @@ func TestEndToEnd_DeleteWithFilter_DMLPipeline(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
 	rules = append(rules, cascades.DMLImplementationRules()...)
 	p := cascades.NewPlanner(rules, nil)
 	plan, tasks, err := p.Plan(ref)
@@ -415,7 +417,8 @@ func TestEndToEnd_FullPipelineToPhysicalPlan(t *testing.T) {
 		cascades.DefaultExpressionRules(),
 		cascades.BatchAExpressionRules()...,
 	)
-	p := cascades.NewPlanner(rules, nil)
+	p := cascades.NewPlanner(rules, nil).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
@@ -545,8 +548,10 @@ func TestEndToEnd_UnionAll_TwoScans(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, nil)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, nil).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
@@ -627,8 +632,10 @@ func TestEndToEnd_PlanPrefersIndexScanOverFullScan(t *testing.T) {
 		},
 	})
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	p := cascades.NewPlanner(rules, ctx)
+	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
+	rules = append(rules, cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)

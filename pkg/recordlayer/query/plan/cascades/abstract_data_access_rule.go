@@ -320,7 +320,7 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 			}
 			// Non-covering: preserve the fetch wrapper.
 			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx}
-			idxRef := expressions.NewFinalReference([]expressions.RelationalExpression{idxWrapper})
+			idxRef := expressions.InitialOf(idxWrapper)
 			fetchQ := expressions.ForEachQuantifier(idxRef)
 			return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
 		}

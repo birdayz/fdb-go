@@ -303,10 +303,7 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
 // final-member physical plans in the given Reference. Called during the
 // PLANNING phase after ImplementationRules have fired on ref.
 func computeRefPlanProperties(ref *expressions.Reference) {
-	members := ref.FinalMembers()
-	if len(members) == 0 {
-		members = ref.AllMembers()
-	}
+	members := ref.AllMembers()
 	pm := NewPlanPropertiesMap()
 	for _, m := range members {
 		if ph, ok := m.(physicalPlanExpression); ok {

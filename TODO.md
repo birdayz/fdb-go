@@ -43,7 +43,23 @@ Measured after cost model regression fixes. Compare against master baseline.
 - [x] FetchCPU raised from 0.5 to 1.5 (random I/O per-row fetch is expensive)
 - [x] Covering index for COUNT(*): streaming agg detects count-only aggregation over index scan, marks covering to skip PK fetch
 - [x] Aggregate index scans marked covering (no PK fetch needed)
-- [ ] Pre-existing: `TestFDB_GroupByDerivedTableComputedExpr/nested_derived_agg_plus_literal` fails on master too (NULL in derived agg)
+- [x] Pre-existing: `TestFDB_GroupByDerivedTableComputedExpr/nested_derived_agg_plus_literal` — fixed (passes on master as of dayshift-98 verification)
+
+---
+
+## PERF — stress test 1M optimization targets (2026-05-22)
+
+Queries that should use indexes but appear to full-scan, or are orders of magnitude slower than expected. Schema has `idx_customer(customer_id)`, `idx_status(status)`, `idx_amount(amount)`, `idx_tier(tier)`.
+
+| # | Query | Current | Target | Speedup | Root cause | Status |
+|---|-------|---------|--------|---------|------------|--------|
+| P1 | `SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id` | **2.97s** | <100ms | 30x | NLJ inner plan is full scan of customers (100K rows per outer). Needs correlated index lookup on `customers(id)`. Same class as P4. | OPEN — requires correlated FlatMap index binding |
+| P2 | `SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status` | **5.19s** | ~5s | ~1x | Not a planner bug. `SUM(amount)` requires fetching each record (amount not in idx_status). Non-covering index scan + fetch is MORE expensive than primary scan + sort. Genuine I/O cost at 1M rows. | WONTFIX — correct behavior; needs composite index `(status, amount)` |
+| P3 | `SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id` | **10.09s** | ~10s | ~1x | Same as P2: `SUM(amount)` requires fetch from idx_customer. 100K groups × fetch = genuine I/O cost. | WONTFIX — needs composite index `(customer_id, amount)` |
+| P4 | `SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id` | **2.96s** | <100ms | 30x | InJoin inner plan is correlated filter over full scan. `customer_id = <explode_alias>` is a correlation reference, not a literal — ImplementIndexScanRule can't push it to index. | OPEN — requires correlated index binding in InJoin inner plan |
+| P5 | `WHERE id = ? AND status = 'pending'` | ~~2.95s~~ **1.67ms** | <10ms | ~~300x~~ **1370x** | **FIXED.** Two bugs: (1) ImplementIndexScanRule skipped AND predicates, (2) physicalScanWrapper.HintCost ignored scan comparisons. | **DONE** (commit f16872d9) |
+
+**P5 fixed (1370x).** P2/P3 are not planner bugs (genuine I/O cost). P1/P4 require correlated index binding — same architectural gap (NLJ/InJoin inner plan doesn't use index for correlation predicates).
 
 ---
 
@@ -184,7 +200,11 @@ Measured after cost model regression fixes. Compare against master baseline.
 
 ### Performance
 
-- [ ] **CRITICAL: Move BatchA rules from EXPLORE to PLANNING phase.** Root cause of ALL remaining index pushdown regressions. Go fires physical implementation rules (ImplementFilterRule, ImplementIndexScanRule, PrimaryScanRule, etc.) during EXPLORE; Java fires them during PLANNING only. The EXPLORE-phase stamps a physical bestMember in OptimizeReferenceTask. Plan extraction trusts this stamp and SKIPS PLANNING-phase FinalMembers (line 141 of extract.go: `if !isPhysicalPlan(best)`). Data-access-generated index scans (PK lookups, correlated scans) are in FinalMembers but never selected. **Fix:** Remove BatchA rules from ExpressionRules list. Create equivalent ImplementationRules that yield into FinalMembers. Affected rules: PrimaryScanRule, ImplementFilterRule, ImplementIndexScanRule, OrderedIndexScanRule, OrderedPrimaryScanRule, ImplementTypeFilterRule, ImplementUnionRule, ImplementIntersectionRule, ImplementStreamingAggregationRule, StreamingAggFromIndexRule, AggregateDataAccessRule, ImplementNestedLoopJoinRule, ImplementLimitRule, ImplementTempTableScanRule, ImplementTempTableInsertRule, ImplementRecursiveDfsJoinRule, ImplementRecursiveLevelUnionRule, ImplementExplodeRule, ImplementTableFunctionRule, ImplementProjectionRule, ImplementValuesRule. See `docs/rfc-cascades-plan-extraction.md` §"Extraction Blocker Analysis" for the full investigation.
+- [ ] **CRITICAL: Move BatchA rules from EXPLORE to PLANNING phase.** Infrastructure landed (dayshift-98): `AsImplementationRule` adapter, `ExpressionRuleCall.yieldFn`, `ImplementationRuleCall.memo`, `Planner.WithBatchARules`, `batchAImplementationRules()`. 46/46 tests pass with infrastructure. **Remaining blocker:** extraction prefers EXPLORE-phase `bestMember` over PLANNING-phase `FinalMembers` (line 141 of extract.go). Three approaches attempted in dayshift-98:
+  1. **Adapter approach (BatchA as ImplementationRules):** FinalMembers gets multiple physical alternatives. `bestPhysicalFrom(finals)` picks first-in-order, not cost-best. Union/CTE regressions from wrong ordering.
+  2. **Two-phase explore (BatchA in second Explore):** Physical wrappers in Members, OPTIMIZE stamps them. Derived-table regression: member insertion ordering differs from single-phase, changing `GetBest` tie-breaking.
+  3. **FinalMembers preference in extraction:** `FinalizeExpressionsRule` wraps EXPLORE physical wrappers into FinalMembers with stale children, producing wrong plans.
+  **Root cause (from Java source):** Go is missing `advancePlannerStage` — Java clears exploratory members and promotes REWRITING finals to PLANNING exploratory seed before implementation rules fire. Go also diverges by (a) adding `EstimateCost` as criterion 16 in `PlanningCostModelLess` (Java doesn't have it — uses only plan-local ordinal criteria + hash), and (b) running `FinalizeExpressionsRule` during PLANNING (Java only runs it during REWRITING). `EstimateCost` recurses through child References via `firstMemberCostMemoised`, which is non-deterministic when MemoizeExpression creates fresh References during PLANNING. **Fix path:** port `advancePlannerStage` to Go's Reference (clear Members, promote FinalMembers → Members, clear FinalMembers), then BatchA adapted rules fire against the promoted expressions and OPTIMIZE prunes FinalMembers per Java's `OptimizeGroup`. The `EstimateCost` criterion is a real Go improvement (not a stupid divergence) — it breaks ties that Java's ordinal criteria can't resolve — but it needs `firstMemberCostMemoised` to handle fresh-vs-shared References consistently.
 - [ ] **InJoin plan selection** — InJoinRule fires correctly (produces InJoin(IndexScan) plans). BLOCKED by BatchA→PLANNING migration above.
 - [ ] **Multi-predicate index pushdown** — `WHERE id = ? AND status = 'pending'` does O(N) scan. Cascades translator wraps AND tree as single AndPredicate; matchFilterAgainstSelect skips it. Fix (flattenConjuncts) is ready but BLOCKED by BatchA→PLANNING migration: flattening enables ImplementIndexScanRule (EXPLORE) to produce idx_status scan that wins over PK scan (PLANNING). After migration, both scans are in FinalMembers and extraction picks PK.
 - [x] **Composite PK FlatMap** — Now matches ALL leading PK columns. For composite PKs like (customer_id, order_num), creates multi-column prefix scan instead of single-column match.
