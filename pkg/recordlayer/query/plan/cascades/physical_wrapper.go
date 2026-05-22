@@ -160,6 +160,18 @@ func PhysicalIndexScanName(expr expressions.RelationalExpression) string {
 	return w.plan.GetIndexName()
 }
 
+// extractChildPlanFromQuantifier gets the RecordQueryPlan from a
+// quantifier's Reference. Used by WithChildren implementations to
+// rebuild the plan with the freshly-extracted child plan during plan
+// extraction. Returns nil if the quantifier has no physical plan.
+func extractChildPlanFromQuantifier(q expressions.Quantifier) plans.RecordQueryPlan {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	return findPhysicalPlan(ref)
+}
+
 // findPhysicalPlan scans ref's members for the first physical-plan
 // expression and returns its underlying RecordQueryPlan. Returns nil
 // if no physical plan has been yielded into ref yet.
