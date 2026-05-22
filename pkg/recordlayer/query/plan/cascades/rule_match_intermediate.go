@@ -351,7 +351,7 @@ func matchFilterAgainstSelect(
 	// Step 2: Match predicates. Try to bind each candidate
 	// Placeholder with a query ComparisonPredicate.
 	candidatePreds := candidateSelect.GetPredicates()
-	queryPreds := queryFilter.GetPredicates()
+	queryPreds := flattenConjuncts(queryFilter.GetPredicates())
 
 	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
 	predicateMapBuilder := NewPredicateMapBuilder()
@@ -472,6 +472,21 @@ func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 		return strings.EqualFold(qFV.Field, pFV.Field)
 	}
 	return false
+}
+
+// flattenConjuncts recursively expands AndPredicates into their
+// constituent conjuncts. [AND(a, b), c] → [a, b, c]. Non-AND
+// predicates pass through unchanged.
+func flattenConjuncts(preds []predicates.QueryPredicate) []predicates.QueryPredicate {
+	var result []predicates.QueryPredicate
+	for _, p := range preds {
+		if and, ok := p.(*predicates.AndPredicate); ok {
+			result = append(result, flattenConjuncts(and.SubPredicates)...)
+		} else {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 var _ ExpressionRule = (*MatchIntermediateRule)(nil)
