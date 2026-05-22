@@ -142,3 +142,48 @@ func TestOptimizeReferenceTask_StampsWinner(t *testing.T) {
 		t.Fatal("OptimizeReferenceTask should also stamp bestMember map")
 	}
 }
+
+func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
+	t.Parallel()
+
+	// Create an index scan candidate that provides ordering on STATUS.
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	// Set up a scan → sort expression tree.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		},
+		q,
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	// Run exploration with BatchA rules to produce physical wrappers.
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx)
+	p.Explore(sortRef)
+
+	// The sort Reference should now have an ordering-specific winner
+	// for the STATUS ordering (from OrderedIndexScanRule producing a
+	// physicalIndexScanWrapper that hints STATUS ASC).
+	statusOrdering := expressions.OrderingFromNameDir([]string{"STATUS"}, []bool{false})
+	winner := sortRef.Winner(statusOrdering)
+	if winner == nil {
+		t.Fatal("expected ordering-specific winner for STATUS ASC")
+	}
+	if !IsPhysicalIndexScan(winner) {
+		t.Fatalf("expected physicalIndexScanWrapper as ordering winner, got %T", winner)
+	}
+}

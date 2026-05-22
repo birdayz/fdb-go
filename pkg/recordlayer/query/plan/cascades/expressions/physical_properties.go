@@ -52,6 +52,26 @@ func (p PhysicalProperties) OrderingCount() int {
 	return p.ordering.count
 }
 
+// OrderingFromNameDir creates PhysicalProperties from column
+// name+direction pairs. Used by ordering-aware code outside the
+// expressions package (e.g., physical wrappers that know their
+// ordering via HintOrdering).
+func OrderingFromNameDir(names []string, desc []bool) PhysicalProperties {
+	var o physicalOrdering
+	for i, name := range names {
+		if i >= len(o.cols) {
+			break
+		}
+		d := false
+		if i < len(desc) {
+			d = desc[i]
+		}
+		o.cols[i] = orderingColumn{name: name, desc: d}
+		o.count++
+	}
+	return PhysicalProperties{ordering: o}
+}
+
 // Satisfies returns true if this plan's properties satisfy the
 // required properties. A plan satisfies requirements if it produces
 // at least as many ordered columns in the same order.

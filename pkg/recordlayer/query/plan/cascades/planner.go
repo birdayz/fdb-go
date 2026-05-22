@@ -4,6 +4,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Planner is the task-stack driven cascades planner — Track B6.
@@ -647,6 +648,8 @@ type OptimizeReferenceTask struct {
 }
 
 // Run picks the cheapest member, stamps it, fires the event.
+// Also stamps ordering-specific winners for members that provide
+// known orderings (Graefe 1995 §2: per-properties optimization).
 func (t *OptimizeReferenceTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
@@ -656,7 +659,53 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	// Store as NoProperties winner on Reference for the new
 	// per-properties extraction path.
 	t.Ref.SetWinner(expressions.NoProperties, best)
+
+	// Stamp ordering-specific winners: for each physical member that
+	// provides a known ordering, store it as winner for those ordering
+	// properties. If multiple members provide the same ordering, the
+	// cost model picks the better one.
+	stampOrderingWinners(t.Ref, p.costModel)
+
 	if p.events != nil {
 		p.events.OnOptimizeReference(t.Ref, best)
 	}
+}
+
+// stampOrderingWinners iterates physical members of a Reference and
+// stamps ordering-specific winners. A member that implements
+// orderingHinter and returns a known ordering gets stamped as winner
+// for that ordering's PhysicalProperties key.
+func stampOrderingWinners(ref *expressions.Reference, costModel func(a, b expressions.RelationalExpression) bool) {
+	for _, m := range ref.AllMembers() {
+		h, ok := m.(orderingHinter)
+		if !ok {
+			continue
+		}
+		ord := h.HintOrdering()
+		if !ord.IsKnown || len(ord.Keys) == 0 {
+			continue
+		}
+		names := make([]string, len(ord.Keys))
+		for i, k := range ord.Keys {
+			if fv, ok := k.(*values.FieldValue); ok {
+				names[i] = fv.Field
+			} else {
+				names[i] = k.Name()
+			}
+		}
+		props := expressions.OrderingFromNameDir(names, ord.Descending)
+		if props.IsEmpty() {
+			continue
+		}
+		existing := ref.Winner(props)
+		if existing == nil || costModel(m, existing) {
+			ref.SetWinner(props, m)
+		}
+	}
+}
+
+// orderingHinter is implemented by physical wrappers that can
+// declare what ordering they produce.
+type orderingHinter interface {
+	HintOrdering() properties.Ordering
 }
