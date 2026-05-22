@@ -47,8 +47,8 @@ type Planner struct {
 	memo  *Memo
 
 	// implementationRules run during PhasePlanning after the
-	// REWRITING phase converges. They yield final expressions into
-	// Reference.finalMembers via InsertFinal.
+	// REWRITING phase converges. They yield physical expressions
+	// into Reference.Members via Insert.
 	implementationRules []ImplementationRule
 
 	// batchARules are physical implementation ExpressionRules that

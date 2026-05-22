@@ -6,11 +6,9 @@ import (
 )
 
 // ImplementationRule is a rule that runs during PhasePlanning.
-// Unlike ExpressionRule (which yields exploratory expressions into
-// Members), an ImplementationRule yields final expressions into
-// FinalMembers via InsertFinal. It operates on expression partitions
-// — subsets of a Reference's final members — and creates disentangled
-// sub-DAGs via FinalMemoizer operations.
+// Like ExpressionRule, it yields expressions into Members via
+// ref.Insert(). It operates on expression partitions and creates
+// physical plan alternatives.
 //
 // Ports Java's ImplementationCascadesRule.
 type ImplementationRule interface {
@@ -110,9 +108,8 @@ func (c *ImplementationRuleCall) MemoizeFinalExpression(
 }
 
 // FireImplementationRule runs an ImplementationRule against a Reference,
-// matching each member and collecting yielded final expressions.
-// Returns the yielded expressions (which were also inserted into
-// ref.FinalMembers).
+// matching each member and collecting yielded expressions.
+// Returns the yielded expressions (also inserted into ref.Members).
 func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference, constraints ...*ConstraintMap) []expressions.RelationalExpression {
 	return FireImplementationRuleWithContext(rule, ref, nil, nil, constraints...)
 }
@@ -146,7 +143,7 @@ func FireImplementationRuleWithContext(rule ImplementationRule, ref *expressions
 }
 
 // fireImplRuleOnMember runs a single implementation rule against a single
-// member, inserting yielded expressions into ref.FinalMembers and returning
+// member, inserting yielded expressions into ref.Members and returning
 // them. Extracted to avoid duplication between normal and
 // ChildrenAsSet-permuted firing.
 func fireImplRuleOnMember(

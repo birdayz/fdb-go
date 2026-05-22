@@ -7,8 +7,8 @@ import (
 
 // AsImplementationRule adapts an ExpressionRule to run as an
 // ImplementationRule during the PLANNING phase. The wrapped rule's
-// Yield() inserts into FinalMembers (via the ImplementationRuleCall)
-// instead of Members (via Reference.Insert). MemoizeExpression uses
+// Yield() inserts into Members (via the ImplementationRuleCall)
+// alongside exploration rules. MemoizeExpression uses
 // the planner's Memo when available.
 //
 // This enables moving physical implementation rules (BatchA) from the
