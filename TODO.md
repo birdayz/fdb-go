@@ -43,7 +43,7 @@ Measured after cost model regression fixes. Compare against master baseline.
 - [x] FetchCPU raised from 0.5 to 1.5 (random I/O per-row fetch is expensive)
 - [x] Covering index for COUNT(*): streaming agg detects count-only aggregation over index scan, marks covering to skip PK fetch
 - [x] Aggregate index scans marked covering (no PK fetch needed)
-- [ ] Pre-existing: `TestFDB_GroupByDerivedTableComputedExpr/nested_derived_agg_plus_literal` fails on master too (NULL in derived agg)
+- [x] Pre-existing: `TestFDB_GroupByDerivedTableComputedExpr/nested_derived_agg_plus_literal` — fixed (passes on master as of dayshift-98 verification)
 
 ---
 
