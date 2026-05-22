@@ -43,12 +43,12 @@ func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 
 	// ImplementUniqueRule fires during the PLANNING phase. Because the
 	// inner scan is always distinct, the Unique operator is absorbed:
-	// the root Reference's final members should contain the inner scan
+	// the root Reference's members should contain the inner scan
 	// wrapper directly (promoted from the inner ref), NOT a Unique
 	// wrapper around it.
-	finals := rootRef.FinalMembers()
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members — ImplementUniqueRule did not fire")
+		t.Fatal("root Reference has no members — ImplementUniqueRule did not fire")
 	}
 
 	foundScan := false
@@ -63,7 +63,7 @@ func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalScanWrapper in final members (Unique absorbed), got types: %v", types)
+		t.Fatalf("expected *physicalScanWrapper in members (Unique absorbed), got types: %v", types)
 	}
 }
 
@@ -85,10 +85,10 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// ImplementUnorderedUnionRule should yield a
-	// physicalUnorderedUnionWrapper into the root Reference's final members.
-	finals := rootRef.FinalMembers()
+	// physicalUnorderedUnionWrapper into the root Reference's members.
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members after PLANNING phase")
+		t.Fatal("root Reference has no members after PLANNING phase")
 	}
 
 	var wrapper *physicalUnorderedUnionWrapper
@@ -103,7 +103,7 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalUnorderedUnionWrapper in final members, got types: %v", types)
+		t.Fatalf("expected *physicalUnorderedUnionWrapper in members, got types: %v", types)
 	}
 
 	// The underlying plan must be a RecordQueryUnorderedUnionPlan with 2 children.
@@ -152,16 +152,15 @@ func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 		NewImplementSimpleSelectRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
-		NewFinalizeExpressionsRule(),
 	}
 
 	planWithImplRules(t, rootRef, implRules)
 
 	// ImplementSimpleSelectRule should yield a physicalPredicatesFilterWrapper
-	// into the root Reference's final members.
-	finals := rootRef.FinalMembers()
+	// into the root Reference's members.
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members after PLANNING phase")
+		t.Fatal("root Reference has no members after PLANNING phase")
 	}
 
 	foundFilter := false
@@ -176,12 +175,12 @@ func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 		for i, f := range finals {
 			types[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected *physicalPredicatesFilterWrapper in final members, got types: %v", types)
+		t.Fatalf("expected *physicalPredicatesFilterWrapper in members, got types: %v", types)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 4. FinalizeExpressionsRule on a leaf (FullUnorderedScan).
+// 4. Physical scan wrapper in Members after PLANNING phase on a leaf.
 // ---------------------------------------------------------------------------
 
 func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) {
@@ -192,19 +191,16 @@ func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) 
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// FinalizeExpressionsRule is the catch-all. For a leaf expression
-	// with no children, it yields the expression directly into final
-	// members. With BatchA rules also active, PrimaryScanRule adds a
-	// physicalScanWrapper as an exploratory member, and
-	// FinalizeExpressionsRule finalizes both.
-	finals := rootRef.FinalMembers()
-	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members for leaf expression")
+	// After PLANNING, PrimaryScanRule (via BatchAExpressionRules fired during
+	// EXPLORE) inserts a physicalScanWrapper into Members. Verify it is present.
+	all := rootRef.AllMembers()
+	if len(all) == 0 {
+		t.Fatal("root Reference has no members for leaf expression")
 	}
 
-	// At least the original scan should be finalized.
+	// At least the original scan or a physical scan wrapper should be present.
 	foundScan := false
-	for _, f := range finals {
+	for _, f := range all {
 		switch f.(type) {
 		case *expressions.FullUnorderedScanExpression:
 			foundScan = true
@@ -213,7 +209,7 @@ func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) 
 		}
 	}
 	if !foundScan {
-		t.Fatal("expected a scan expression in final members")
+		t.Fatal("expected a scan expression in members")
 	}
 }
 
@@ -301,7 +297,7 @@ func TestPlanner_PlanningPhase_SkippedWhenNoImplRules(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. FinalMembers populated after PLANNING phase.
+// 7. Members populated after PLANNING phase.
 // ---------------------------------------------------------------------------
 
 func TestPlanner_PlanningPhase_FinalMembersPopulated(t *testing.T) {
@@ -316,18 +312,35 @@ func TestPlanner_PlanningPhase_FinalMembersPopulated(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// After PLANNING, the root Reference should have final members
-	// inserted by the implementation rules.
-	finals := rootRef.FinalMembers()
-	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members after PLANNING phase")
+	// After PLANNING, the root Reference should have members inserted by
+	// implementation rules (physical wrappers go into Members, not FinalMembers).
+	all := rootRef.AllMembers()
+	if len(all) == 0 {
+		t.Fatal("root Reference has no members after PLANNING phase")
 	}
 
-	// The inner scanRef should also have final members (from
-	// FinalizeExpressionsRule or PrimaryScanRule flowing through
-	// finalization).
-	innerFinals := scanRef.FinalMembers()
-	if len(innerFinals) == 0 {
-		t.Fatal("inner scanRef has no final members after PLANNING phase")
+	// Verify at least one physical expression is present in the root.
+	foundPhysical := false
+	for _, m := range all {
+		if _, ok := m.(physicalPlanExpression); ok {
+			foundPhysical = true
+			break
+		}
+	}
+	if !foundPhysical {
+		t.Fatal("root Reference has no physical members after PLANNING phase")
+	}
+
+	// The inner scanRef should also have physical members (from PrimaryScanRule).
+	innerAll := scanRef.AllMembers()
+	foundInnerPhysical := false
+	for _, m := range innerAll {
+		if _, ok := m.(physicalPlanExpression); ok {
+			foundInnerPhysical = true
+			break
+		}
+	}
+	if !foundInnerPhysical {
+		t.Fatal("inner scanRef has no physical members after PLANNING phase")
 	}
 }

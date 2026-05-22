@@ -71,12 +71,7 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats StatisticsProv
 	}
 	visited[ref] = true
 	less := CostLessWith(stats)
-	var best expressions.RelationalExpression
-	if finals := ref.FinalMembers(); len(finals) > 0 {
-		best = bestFrom(finals, less)
-	} else {
-		best = ref.GetBest(less)
-	}
+	best := ref.GetBest(less)
 	if best == nil {
 		return nil, nil
 	}
@@ -148,15 +143,6 @@ func extractBestPlanFromSelectorVisited(ref *expressions.Reference, sel BestMemb
 		best = sel.BestMember(ref)
 	}
 	if !isPhysicalPlan(best) {
-		if finals := ref.FinalMembers(); len(finals) > 0 {
-			if fb := bestPhysicalFrom(finals); fb != nil {
-				best = fb
-			} else if fb := bestFrom(finals, CostLessWith(stats)); fb != nil {
-				best = fb
-			}
-		}
-	}
-	if best == nil {
 		best = ref.GetBest(CostLessWith(stats))
 	}
 	if best == nil {

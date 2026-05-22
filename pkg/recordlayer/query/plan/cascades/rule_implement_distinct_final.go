@@ -72,13 +72,27 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		allDistinct = distinctEliminatedByUniqueKey(innerExpr, call.Context)
 	}
 
+	// Use the winner from the inner ref if available — it represents
+	// the fully composed physical plan including projections.
+	// Fall back to scanning AllMembers for physical plans.
 	pm := GetRefPlanPropertiesMap(innerRef)
 
-	for _, m := range innerRef.FinalMembers() {
-		ph, ok := m.(physicalPlanExpression)
-		if !ok {
-			continue
+	var candidates []expressions.RelationalExpression
+	if w := innerRef.Winner(expressions.NoProperties); w != nil {
+		if _, ok := w.(physicalPlanExpression); ok {
+			candidates = []expressions.RelationalExpression{w}
 		}
+	}
+	if len(candidates) == 0 {
+		for _, m := range innerRef.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); ok {
+				candidates = append(candidates, m)
+			}
+		}
+	}
+
+	for _, m := range candidates {
+		ph := m.(physicalPlanExpression)
 
 		isDistinct := allDistinct
 		if !isDistinct && pm != nil {

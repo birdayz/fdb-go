@@ -146,10 +146,7 @@ func toPlanPartitionsFallback(ref *expressions.Reference) []*PlanPartition {
 	if ref == nil {
 		return nil
 	}
-	members := ref.FinalMembers()
-	if len(members) == 0 {
-		members = ref.AllMembers()
-	}
+	members := ref.AllMembers()
 	p := &PlanPartition{
 		partitionProps: properties.PropertyMap{},
 		exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),

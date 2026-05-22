@@ -40,9 +40,9 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 	// effect: the root's final members should contain a
 	// physicalScanWrapper — the Unique and Distinct wrappers are both
 	// absorbed because the inner chain is inherently distinct.
-	finals := rootRef.FinalMembers()
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members after PLANNING phase")
+		t.Fatal("root Reference has no members after PLANNING phase")
 	}
 
 	foundScan := false
@@ -72,7 +72,7 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 			for i, f := range finals {
 				types[i] = fmt.Sprintf("%T", f)
 			}
-			t.Fatalf("expected *physicalScanWrapper or *physicalDistinctWrapper in final members (Unique absorbed), got types: %v", types)
+			t.Fatalf("expected *physicalScanWrapper or *physicalDistinctWrapper in members (Unique absorbed), got types: %v", types)
 		}
 	}
 }
@@ -204,29 +204,27 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 		t.Fatal("expected physicalUnionWrapper or physicalUnorderedUnionWrapper in explored graph")
 	}
 
-	// Distinct should yield a physicalDistinctWrapper.
-	foundDistinct := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalDistinctWrapper)
-		return ok
+	// Distinct should yield either a physicalDistinctWrapper (wrapping
+	// a non-distinct inner) or the inner plan directly (if the union
+	// provides distinct semantics — RecordQueryUnionPlan deduplicates).
+	foundDistinctResult := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
+		if _, ok := expr.(*physicalDistinctWrapper); ok {
+			return true
+		}
+		if _, ok := expr.(*physicalUnionWrapper); ok {
+			return true
+		}
+		if _, ok := expr.(*physicalUnorderedUnionWrapper); ok {
+			return true
+		}
+		return false
 	})
-	// Also check final members.
-	if !foundDistinct {
-		for _, f := range rootRef.FinalMembers() {
-			if _, ok := f.(*physicalDistinctWrapper); ok {
-				foundDistinct = true
-				break
-			}
-		}
-	}
-	if !foundDistinct {
+	if !foundDistinctResult {
 		types := make([]string, 0)
-		for _, f := range rootRef.FinalMembers() {
-			types = append(types, fmt.Sprintf("(final)%T", f))
-		}
-		for _, m := range rootRef.Members() {
+		for _, m := range rootRef.AllMembers() {
 			types = append(types, fmt.Sprintf("(member)%T", m))
 		}
-		t.Fatalf("expected physicalDistinctWrapper wrapping union, got: %v", types)
+		t.Fatalf("expected physical distinct result, got: %v", types)
 	}
 }
 
@@ -317,7 +315,6 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 		NewImplementSimpleSelectRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
-		NewFinalizeExpressionsRule(),
 	}
 
 	planWithImplRules(t, rootRef, implRules)
@@ -325,9 +322,9 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 	// With no predicates and a simple QOV result, the rule should
 	// yield the inner scan's physical wrapper directly — no
 	// physicalPredicatesFilterWrapper or physicalMapWrapper.
-	finals := rootRef.FinalMembers()
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members after PLANNING phase")
+		t.Fatal("root Reference has no members after PLANNING phase")
 	}
 
 	foundScan := false

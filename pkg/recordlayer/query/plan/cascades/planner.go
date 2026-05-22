@@ -298,6 +298,12 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// PLANNING phase: constraint propagation → data access → implementation.
 	p.runPlanningPhase(rootRef)
 
+	// Re-optimize all References to pick up implementation rule results.
+	// Implementation rules insert physical plans into Members; the cost
+	// model (criterion #1: physical beats non-physical) ensures they win
+	// over logical EXPLORE-phase winners.
+	p.reoptimizeAll(rootRef)
+
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
 }
@@ -362,6 +368,57 @@ func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 			for ref := range p.memo.References() {
 				p.implementBottomUp(ref, visited, cm)
 			}
+		}
+	}
+}
+
+// reoptimizeAll re-runs OptimizeGroup on every reachable Reference
+// bottom-up after the PLANNING phase. Implementation rules insert
+// physical plans into Members; the cost model (criterion #1: physical
+// beats non-physical) ensures they replace logical EXPLORE-phase winners.
+func (p *Planner) reoptimizeAll(rootRef *expressions.Reference) {
+	visited := make(map[*expressions.Reference]bool)
+	p.reoptimizeRecursive(rootRef, visited)
+	if p.memo != nil {
+		for ref := range p.memo.References() {
+			p.reoptimizeRecursive(ref, visited)
+		}
+	}
+}
+
+func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+	for _, m := range ref.AllMembers() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.reoptimizeRecursive(childRef, visited)
+			}
+		}
+	}
+	// Only stamp a winner if EXPLORE didn't produce one (or produced
+	// a non-physical one). This handles References that only get
+	// physical plans during the PLANNING phase.
+	existing := ref.Winner(expressions.NoProperties)
+	if existing == nil {
+		best := ref.GetBest(p.costModel)
+		if best != nil {
+			ref.SetWinner(expressions.NoProperties, best)
+		}
+	} else if _, isPhys := existing.(physicalPlanExpression); !isPhys {
+		var bestPhys expressions.RelationalExpression
+		for _, m := range ref.AllMembers() {
+			if _, ok := m.(physicalPlanExpression); !ok {
+				continue
+			}
+			if bestPhys == nil || p.costModel(m, bestPhys) {
+				bestPhys = m
+			}
+		}
+		if bestPhys != nil {
+			ref.SetWinner(expressions.NoProperties, bestPhys)
 		}
 	}
 }

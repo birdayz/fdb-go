@@ -256,7 +256,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewMergeProjectionAndFetchRule(),
 	}
 
-	rules = append(rules, NewFinalizeExpressionsRule())
 	rules = append(rules, GoExtensionImplementationRules()...)
 	return rules
 }

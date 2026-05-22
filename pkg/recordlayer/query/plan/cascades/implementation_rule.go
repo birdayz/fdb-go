@@ -84,19 +84,29 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 	source *expressions.Reference,
 	exprs []expressions.RelationalExpression,
 ) *expressions.Reference {
-	ref := expressions.NewFinalReference(exprs)
+	var ref *expressions.Reference
+	for i, e := range exprs {
+		if i == 0 {
+			ref = expressions.InitialOf(e)
+		} else {
+			ref.Insert(e)
+		}
+	}
+	if ref == nil {
+		ref = &expressions.Reference{}
+	}
 	if source != nil {
 		ref.SetPlanProperties(source.GetPlanProperties())
 	}
 	return ref
 }
 
-// MemoizeFinalExpression creates a new Reference with a single final
+// MemoizeFinalExpression creates a new Reference with a single
 // expression member.
 func (c *ImplementationRuleCall) MemoizeFinalExpression(
 	expr expressions.RelationalExpression,
 ) *expressions.Reference {
-	return expressions.NewFinalReference([]expressions.RelationalExpression{expr})
+	return expressions.InitialOf(expr)
 }
 
 // FireImplementationRule runs an ImplementationRule against a Reference,
@@ -159,7 +169,7 @@ func fireImplRuleOnMember(
 		}
 		rule.OnMatch(call)
 		for _, y := range call.yielded {
-			ref.InsertFinal(y)
+			ref.Insert(y)
 		}
 		yielded = append(yielded, call.yielded...)
 	}

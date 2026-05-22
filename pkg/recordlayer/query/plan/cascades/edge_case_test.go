@@ -193,10 +193,10 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// After planning, the root should have a physicalScanWrapper in its
-	// final members — both Unique layers absorbed because scan is distinct.
-	finals := rootRef.FinalMembers()
+	// members — both Unique layers absorbed because scan is distinct.
+	finals := rootRef.AllMembers()
 	if len(finals) == 0 {
-		t.Fatal("root Reference has no final members — chained Unique not processed")
+		t.Fatal("root Reference has no members — chained Unique not processed")
 	}
 
 	foundScan := false
@@ -211,7 +211,7 @@ func TestEdge_ImplementUniqueRule_ChainedUnique(t *testing.T) {
 		for i, f := range finals {
 			typs[i] = fmt.Sprintf("%T", f)
 		}
-		t.Fatalf("expected physicalScanWrapper in final members (both Uniques absorbed), got: %v", typs)
+		t.Fatalf("expected physicalScanWrapper in members (both Uniques absorbed), got: %v", typs)
 	}
 }
 
