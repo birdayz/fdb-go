@@ -262,8 +262,17 @@ func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 
 	// Pass 3: bottom-up implementation. Children are implemented
 	// first (with constraints from Pass 1 available), then parents.
+	// Visit ALL Memo references to ensure data access expressions
+	// generated in Pass 2 (which may be in non-root-reachable
+	// references created during exploration) get properly implemented.
 	if len(p.implementationRules) > 0 {
-		p.implementBottomUp(rootRef, make(map[*expressions.Reference]bool), cm)
+		visited := make(map[*expressions.Reference]bool)
+		p.implementBottomUp(rootRef, visited, cm)
+		if p.memo != nil {
+			for ref := range p.memo.References() {
+				p.implementBottomUp(ref, visited, cm)
+			}
+		}
 	}
 }
 
@@ -333,6 +342,11 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 func (p *Planner) generateDataAccessWithConstraints(rootRef *expressions.Reference, cm *ConstraintMap) {
 	visited := map[*expressions.Reference]bool{}
 	p.generateDataAccessRecursive(rootRef, visited, cm)
+	if p.memo != nil {
+		for ref := range p.memo.References() {
+			p.generateDataAccessRecursive(ref, visited, cm)
+		}
+	}
 }
 
 // generateDataAccessRecursive recurses children first (bottom-up),

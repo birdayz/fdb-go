@@ -160,6 +160,18 @@ func PhysicalIndexScanName(expr expressions.RelationalExpression) string {
 	return w.plan.GetIndexName()
 }
 
+// extractChildPlanFromQuantifier gets the RecordQueryPlan from a
+// quantifier's Reference. Used by WithChildren implementations to
+// rebuild the plan with the freshly-extracted child plan during plan
+// extraction. Returns nil if the quantifier has no physical plan.
+func extractChildPlanFromQuantifier(q expressions.Quantifier) plans.RecordQueryPlan {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	return findPhysicalPlan(ref)
+}
+
 // findPhysicalPlan scans ref's members for the first physical-plan
 // expression and returns its underlying RecordQueryPlan. Returns nil
 // if no physical plan has been yielded into ref yet.
@@ -335,17 +347,20 @@ func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (express
 // the logical one.
 func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	if w.plan == nil {
-		return properties.Cost{Cardinality: properties.LeafScanCardinality, CPU: 0}
+		card := properties.LeafScanCardinality
+		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
 	types := w.plan.GetRecordTypes()
 	if len(types) == 0 {
-		return properties.Cost{Cardinality: properties.LeafScanCardinality * physicalWrapperCostMultiplier, CPU: 0}
+		card := properties.LeafScanCardinality * physicalWrapperCostMultiplier
+		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
 	total := 0.0
 	for range types {
 		total += properties.LeafScanCardinality
 	}
-	return properties.Cost{Cardinality: total * physicalWrapperCostMultiplier, CPU: 0}
+	card := total * physicalWrapperCostMultiplier
+	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 }
 
 // HintOrdering: a scan produces rows in PK order when the scan
@@ -518,9 +533,9 @@ func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost
 		}
 		base *= sel
 	}
-	cpu := 0.0
+	cpu := base * properties.ScanCPU
 	if !w.covering && (numBound == 0 || hasRangeBound) {
-		cpu = base * properties.FetchCPU
+		cpu += base * properties.FetchCPU
 	}
 	return properties.Cost{Cardinality: base, CPU: cpu}
 }

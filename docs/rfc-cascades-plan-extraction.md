@@ -121,8 +121,11 @@ All operators where the implementation rule wires a child plan that diverges fro
 **REBUILD (proper Cascades extraction):**
 FlatMap, PredicatesFilter, Filter, Distinct, TypeFilter, Insert, Delete, Update, Map, Limit, InMemorySort, FirstOrDefault, DefaultOnEmpty, FetchFromPartialRecord, TempTableInsert, Union, Intersection, MergeSortUnion, MultiIntersection, UnorderedUnion, InUnion, Projection
 
+**CONDITIONAL REBUILD (leaf-replaceable child only):**
+InJoin (rebuilds when child is scan/filter/sort/etc., passthrough for correlated children)
+
 **PASSTHROUGH (correlated, need rule fixes):**
-NLJ, InJoin, StreamingAgg, RecursiveDfsJoin, RecursiveLevelUnion
+NLJ, StreamingAgg, RecursiveDfsJoin, RecursiveLevelUnion
 
 **Bugs fixed:**
 
@@ -150,4 +153,24 @@ The proper Cascades fix requires rule-level changes:
 
 2. **NLJ attempted rebuild result:** 6 test failures — all EXISTS/NOT EXISTS related. The NLJ rule has ~10 code paths creating inner quantifiers via `call.MemoizeExpression`. Fixing each to use dedicated References is feasible but requires careful per-path analysis.
 
-Remaining rules to fix: `ImplementNestedLoopJoinRule`, `ImplementInJoinRule`, `StreamingAggFromIndexRule`, `ImplementRecursiveDfsJoinRule`, `ImplementRecursiveLevelUnionRule`.
+Remaining rules to fix: `ImplementNestedLoopJoinRule`, `StreamingAggFromIndexRule`, `ImplementRecursiveDfsJoinRule`, `ImplementRecursiveLevelUnionRule`.
+
+### Extraction Blocker Analysis (2026-05-22)
+
+The extraction architecture has a fundamental gap: `extractBestPlanFromSelectorVisited` trusts the EXPLORE-phase `bestMember` stamp when it's physical (line 141: `if !isPhysicalPlan(best)`), and **skips FinalMembers entirely**. Since BatchA rules (ImplementFilterRule, ImplementIndexScanRule, etc.) fire during EXPLORE and produce physical wrappers, the EXPLORE-phase stamp is always physical for filter/scan References. The PLANNING-phase FinalMembers (which contain index scans, InJoin, streaming agg from data access + implementation rules) are never considered.
+
+**Impact:** This blocks ALL planner-driven index pushdown: IN-list InJoin(IndexScan), multi-predicate PK scan, covering index scans. The planner correctly produces optimal plans in FinalMembers, but extraction can't select them.
+
+**Attempted fixes and why they fail:**
+
+1. **Prefer FinalMembers over selector:** Picking `bestFrom(finals, CostLessWith(stats))` causes correctness regressions in CTE, JOIN, UNION queries. FinalMembers include physical plans with stale child references (from `FinalizeExpressionsRule` + passthrough `WithChildren`). Cost-based selection picks these stale plans.
+
+2. **Prefer leaf-only FinalMembers:** Bare leaf scans (IndexScan, Scan) without wrapping operators are picked at the wrong level — DISTINCT/SORT/FILTER above them are lost.
+
+3. **Suppress physical bestMember for References with PartialMatches:** Correctly defers to FinalMembers, but FinalMembers contain the same problematic stale-child plans from `FinalizeExpressionsRule`.
+
+4. **De-prioritize physical in OptimizeReferenceTask:** Changes UNION/CTE plan selection causing correctness regressions.
+
+**Root cause:** `FinalizeExpressionsRule` wraps ALL exploratory members (including physical wrappers) into FinalMembers via `WithQuantifiers` passthrough. This populates FinalMembers with stale copies that look valid to the cost model but produce wrong results when extraction rebuilds their children.
+
+**The Java-aligned fix:** Move BatchA physical implementation rules from EXPLORE phase to PLANNING phase. This ensures EXPLORE only produces logical alternatives, the selector's bestMember is logical, and extraction naturally falls through to PLANNING-phase FinalMembers. This is a structural refactor requiring BatchA rules to be re-typed as ImplementationRules (yielding into FinalMembers instead of exploratory Members).

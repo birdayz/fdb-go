@@ -60,6 +60,13 @@ func (w *physicalInJoinWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalInJoinWrapper.WithChildren: expected 1, got %d", len(qs))
 	}
+	if childPlan := extractChildPlanFromQuantifier(qs[0]); childPlan != nil && isLeafReplaceable(childPlan) {
+		rebuilt := plans.NewRecordQueryInJoinPlan(
+			childPlan, w.plan.GetBindingName(), w.plan.IsSorted(), w.plan.IsReverse())
+		rebuilt.SetInValues(w.plan.GetInValues())
+		rebuilt.SetSourceKind(w.plan.GetSourceKind())
+		return &physicalInJoinWrapper{plan: rebuilt, innerQuant: qs[0]}, nil
+	}
 	return &physicalInJoinWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
@@ -67,10 +74,14 @@ func (w *physicalInJoinWrapper) HintCost(child []properties.Cost) properties.Cos
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
+	inListLen := float64(len(w.plan.GetInValues()))
+	if inListLen < 1 {
+		inListLen = 10
+	}
 	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * 10 * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*10*properties.FilterCPU) * physicalWrapperCostMultiplier,
+		Cardinality: in * inListLen * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*inListLen*properties.FilterCPU) * physicalWrapperCostMultiplier,
 	}
 }
 
