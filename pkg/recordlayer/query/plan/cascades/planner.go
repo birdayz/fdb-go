@@ -61,11 +61,6 @@ type Planner struct {
 	// `ref`. SaturationCheckTask short-circuits when count hasn't grown.
 	exploreCount map[*expressions.Reference]int
 
-	// bestMember[ref] = the cheapest member chosen by the OPTIMIZE
-	// phase. Populated by OptimizeReferenceTask after saturation.
-	// Available via BestMember(ref) after Explore returns.
-	bestMember map[*expressions.Reference]expressions.RelationalExpression
-
 	// MaxTasks caps the total tasks executed before the planner
 	// gives up (returns the partial result). Defaults to 100_000.
 	// Hitting the cap is a strong signal of a non-terminating rule —
@@ -121,7 +116,6 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		ctx:          ctx,
 		memo:         nil, // initialized lazily on first Explore call
 		exploreCount: make(map[*expressions.Reference]int),
-		bestMember:   make(map[*expressions.Reference]expressions.RelationalExpression),
 		costModel:    PlanningCostModelLess,
 		MaxTasks:     100_000,
 	}
@@ -134,29 +128,94 @@ func (p *Planner) Memo() *Memo {
 }
 
 // BestMember returns the OPTIMIZE-chosen best member for `ref`,
-// or nil if the Reference wasn't optimized (e.g. unreachable from
-// the Explore root, or Explore hit MaxTasks).
-//
-// Available after Explore (or Plan) returns. The map is populated
-// by OptimizeReferenceTask which fires after a Reference's
-// ApplyRulesTask reports no growth (saturation reached).
+// or nil if the Reference wasn't optimized. Delegates to the
+// per-properties winner map (NoProperties = cheapest overall).
 func (p *Planner) BestMember(ref *expressions.Reference) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
 	}
-	return p.bestMember[ref]
+	return ref.Winner(expressions.NoProperties)
 }
 
-// HasBestMember reports whether OptimizeReferenceTask has stamped
-// a best for `ref`. Used by tests + the integration path that
-// distinguishes "Reference not yet optimized" from "Reference
-// optimized to nil (empty)".
+// HasBestMember reports whether a winner exists for `ref`.
 func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 	if ref == nil {
 		return false
 	}
-	_, ok := p.bestMember[ref]
-	return ok
+	return ref.HasWinner(expressions.NoProperties)
+}
+
+// OptimizeGroup finds the cheapest plan in `ref` that satisfies
+// `props` and stores it as a winner. Following Graefe 1995 §2:
+//
+//   - If a winner already exists for (ref, props), return it.
+//   - Iterate all members, find cheapest satisfying props.
+//   - If no member satisfies props and props requires ordering,
+//     use the NoProperties winner + sort enforcer.
+//   - Store the winner for (ref, props).
+//
+// Returns the winner, or nil if the group is empty.
+func (p *Planner) OptimizeGroup(ref *expressions.Reference, props expressions.PhysicalProperties) expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+
+	// Check memoized winner.
+	if w := ref.Winner(props); w != nil {
+		return w
+	}
+
+	// No ordering required → just pick cheapest overall.
+	if props.IsEmpty() {
+		best := ref.GetBest(p.costModel)
+		if best != nil {
+			ref.SetWinner(props, best)
+		}
+		return best
+	}
+
+	// Find cheapest member that satisfies the required ordering.
+	var best expressions.RelationalExpression
+	for _, m := range ref.AllMembers() {
+		h, ok := m.(orderingHinter)
+		if !ok {
+			continue
+		}
+		ord := h.HintOrdering()
+		if !ord.IsKnown || len(ord.Keys) == 0 {
+			continue
+		}
+		provided := orderingToProps(ord)
+		if !provided.Satisfies(props) {
+			continue
+		}
+		if best == nil || p.costModel(m, best) {
+			best = m
+		}
+	}
+
+	if best != nil {
+		ref.SetWinner(props, best)
+		return best
+	}
+
+	// No member satisfies props. The Graefe approach would add an
+	// enforcer (sort) here. For now, return nil — the caller handles
+	// the enforcer at extraction time via sortWinnerFromChild.
+	return nil
+}
+
+// orderingToProps converts a properties.Ordering to PhysicalProperties.
+func orderingToProps(ord properties.Ordering) expressions.PhysicalProperties {
+	names := make([]string, len(ord.Keys))
+	for i, k := range ord.Keys {
+		if fv, ok := k.(*values.FieldValue); ok {
+			names[i] = fv.Field
+		} else {
+			names[i] = k.Name()
+		}
+	}
+	return expressions.OrderingFromNameDir(names, ord.Descending)
 }
 
 // WithImplementationRules adds rules for PhasePlanning. These run
@@ -626,42 +685,24 @@ func (t *SaturationCheckTask) Run(p *Planner) {
 	p.push(&OptimizeReferenceTask{Ref: t.Ref})
 }
 
-// OptimizeReferenceTask is the OPTIMIZE phase: picks the cheapest
-// member of the Reference under the planner's cost comparator and
-// stamps it in the bestMember map. Mirrors Java's
-// OPTIMIZE phase in CascadesPlanner.
+// OptimizeReferenceTask picks the cheapest member of the Reference
+// and stamps it as winner. Implements Graefe 1995 §2: winners are
+// stored per (Reference, PhysicalProperties) pair. The NoProperties
+// winner is the cheapest plan overall; ordering-specific winners
+// are the cheapest plans that provide specific orderings.
 //
-// Fires after ApplyRulesTask reports a Reference saturated. The
-// pre-condition is that all child Reference's ApplyRulesTask have
-// also fired (bottom-up traversal guarantees this) — but we don't
-// require children to be optimized first; the cost model walks
-// child References itself via firstMemberCost (the cost model's
-// recursion contract).
-//
-// The comparator is p.costModel (PlanningCostModelLess for PLANNING,
-// RewritingCostModelLess for REWRITING), set via WithCostModel().
-//
-// PERF NOTE: the cost model re-walks the full sub-tree on every
-// GetBest comparison. For a Reference with K members over an N-deep
-// tree this is O(K·N) per OptimizeReferenceTask. Acceptable for
-// current tree sizes. When N or K grow, switch to a memoised
-// comparator.
+// Fires after SaturationCheckTask reports a Reference saturated.
 type OptimizeReferenceTask struct {
 	Ref *expressions.Reference
 }
 
-// Run picks the cheapest member, stamps it, fires the event.
-// Also stamps ordering-specific winners for members that provide
-// known orderings (Graefe 1995 §2: per-properties optimization).
+// Run delegates to OptimizeGroup for NoProperties (cheapest overall),
+// then stamps ordering-specific winners.
 func (t *OptimizeReferenceTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
 	}
-	best := t.Ref.GetBest(p.costModel)
-	p.bestMember[t.Ref] = best
-	// Store as NoProperties winner on Reference for the new
-	// per-properties extraction path.
-	t.Ref.SetWinner(expressions.NoProperties, best)
+	best := p.OptimizeGroup(t.Ref, expressions.NoProperties)
 
 	// Stamp ordering-specific winners: for each physical member that
 	// provides a known ordering, store it as winner for those ordering
