@@ -175,7 +175,6 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 				"Cascades planner could not plan scalar subquery")
 		}
 		subPlanner := cascades.NewPlanner(rules, planCtx).
-			WithBatchARules(cascades.BatchAExpressionRules()).
 			WithImplementationRules(cascades.DefaultImplementationRules()).
 			WithMaxTasks(100_000)
 		subBest, _, subErr := subPlanner.Plan(subRef)

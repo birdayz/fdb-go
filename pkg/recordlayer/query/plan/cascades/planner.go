@@ -292,7 +292,9 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// the first EXPLORE converges so all logical alternatives are
 	// explored before physical implementation.
 	if len(p.batchARules) > 0 {
-		p.exploreWithRules(rootRef, p.batchARules)
+		if !p.exploreWithRules(rootRef, p.batchARules) {
+			return nil, tasks, ErrPlannerCapHit
+		}
 	}
 
 	// PLANNING phase: constraint propagation → data access → implementation.
@@ -311,14 +313,15 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 // exploreWithRules runs a focused EXPLORE pass with the given rules.
 // Used for the BatchA physical implementation rules that need to
 // insert into Members (not FinalMembers) so OPTIMIZE can stamp them.
-func (p *Planner) exploreWithRules(rootRef *expressions.Reference, rules []ExpressionRule) {
+func (p *Planner) exploreWithRules(rootRef *expressions.Reference, rules []ExpressionRule) bool {
 	saved := p.rules
 	savedCount := p.exploreCount
 	p.rules = rules
 	p.exploreCount = make(map[*expressions.Reference]int)
-	p.Explore(rootRef)
+	_, conv := p.Explore(rootRef)
 	p.rules = saved
 	p.exploreCount = savedCount
+	return conv
 }
 
 // ErrPlannerCapHit signals that Explore exited via the MaxTasks

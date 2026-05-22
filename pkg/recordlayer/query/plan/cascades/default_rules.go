@@ -148,38 +148,6 @@ func BatchAExpressionRules() []ExpressionRule {
 	}
 }
 
-// batchAImplementationRules returns the BatchA rules adapted to the
-// ImplementationRule interface for use in the PLANNING phase. These
-// yield into FinalMembers instead of exploratory Members, fixing the
-// EXPLORE→PLANNING phase boundary issue where physical wrappers
-// produced during EXPLORE preempted PLANNING-phase FinalMembers in
-// extraction.
-func batchAImplementationRules() []ImplementationRule {
-	return []ImplementationRule{
-		AsImplementationRule(NewPrimaryScanRule()),
-		AsImplementationRule(NewImplementValuesRule()),
-		AsImplementationRule(NewImplementProjectionRule()),
-		AsImplementationRule(NewImplementFilterRule()),
-		AsImplementationRule(NewImplementIndexScanRule()),
-		AsImplementationRule(NewOrderedIndexScanRule()),
-		AsImplementationRule(NewOrderedPrimaryScanRule()),
-		AsImplementationRule(NewImplementTypeFilterRule()),
-		AsImplementationRule(NewImplementUnionRule()),
-		AsImplementationRule(NewImplementIntersectionRule()),
-		AsImplementationRule(NewImplementStreamingAggregationRule()),
-		AsImplementationRule(NewStreamingAggFromIndexRule()),
-		AsImplementationRule(NewAggregateDataAccessRule()),
-		AsImplementationRule(NewImplementNestedLoopJoinRule()),
-		AsImplementationRule(NewImplementLimitRule()),
-		AsImplementationRule(NewImplementTempTableScanRule()),
-		AsImplementationRule(NewImplementTempTableInsertRule()),
-		AsImplementationRule(NewImplementRecursiveDfsJoinRule()),
-		AsImplementationRule(NewImplementRecursiveLevelUnionRule()),
-		AsImplementationRule(NewImplementExplodeRule()),
-		AsImplementationRule(NewImplementTableFunctionRule()),
-	}
-}
-
 // DMLImplementationRules returns the DML-side implementation rules
 // (ImplementInsertRule, ImplementDeleteRule). Mirrors Java's
 // per-DML implementation rule set.
