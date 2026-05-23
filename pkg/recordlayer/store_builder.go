@@ -365,6 +365,8 @@ func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData) *gen.Dat
 	// an unnecessary full rebuild on the first reopen.
 	if metaData != nil && metaData.GetRecordCountKey() != nil {
 		header.RecordCountKey = metaData.GetRecordCountKey().ToKeyExpression()
+		readable := gen.DataStoreInfo_READABLE
+		header.RecordCountState = &readable
 	}
 
 	return header
