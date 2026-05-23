@@ -626,12 +626,42 @@ func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
 		expressions.ForEachQuantifier(sortRef),
 	)
 
-	plan := planPipeline(t, proj, idx("idx_a", "A"))
+	rootRef := expressions.InitialOf(proj)
+	rules := DefaultExpressionRules()
+	rules = append(rules, BatchAExpressionRules()...)
+	rules = append(rules, MatchingRules()...)
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{idx("idx_a", "A")})
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithMaxTasks(10_000)
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	plan := ExplainPhysicalPlan(best)
 	t.Logf("plan: %s", plan)
-	if strings.Contains(plan, "InJoin") {
-		t.Log("InJoin present in full pipeline — good")
+
+	// Dump all physical members at the sort Reference
+	t.Logf("Filter ref members: %d", len(filterRef.AllMembers()))
+	for i, m := range filterRef.AllMembers() {
+		if ph, ok := m.(physicalPlanExpression); ok {
+			t.Logf("  filter[%d] PHYSICAL: %s", i, ExplainPhysicalPlan(ph))
+		}
+	}
+	t.Logf("Sort ref members: %d", len(sortRef.AllMembers()))
+	for i, m := range sortRef.AllMembers() {
+		if ph, ok := m.(physicalPlanExpression); ok {
+			t.Logf("  sort[%d] PHYSICAL: %s", i, ExplainPhysicalPlan(ph))
+		}
+	}
+
+	if !strings.Contains(plan, "InJoin") {
+		t.Fatal("expected InJoin in plan")
+	}
+	if strings.Contains(plan, "IndexScan") {
+		t.Log("IndexScan used inside InJoin — optimal plan")
 	} else {
-		t.Logf("InJoin NOT present — extraction follows fresh References")
+		t.Log("IndexScan NOT inside InJoin — suboptimal, uses full scan per leg")
 	}
 }
 
