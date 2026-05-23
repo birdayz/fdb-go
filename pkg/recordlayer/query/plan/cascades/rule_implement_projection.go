@@ -36,15 +36,17 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	// Try covering merge: if inner has a Fetch wrapper and all
 	// projected values can push through, yield a covering IndexScan
 	// directly (no Projection, no Fetch). This fires during EXPLORE
-	// so the covering scan participates in sort elimination and cost
-	// comparison. Mirrors Java's MergeProjectionAndFetchRule.
+	// (not PLANNING like Java's MergeProjectionAndFetchRule) because
+	// Go's ExpressionRules see the Fetch wrapper in the inner
+	// Reference before PLANNING runs. The EXPLORE-phase covering
+	// scan participates in sort elimination and cost comparison.
 	projectedValues := proj.GetProjectedValues()
 	for _, m := range innerRef.AllMembers() {
 		fetchW, ok := m.(*physicalFetchFromPartialRecordWrapper)
 		if !ok {
 			continue
 		}
-		srcAlias := values.UniqueCorrelationIdentifier()
+		srcAlias := fetchW.innerQuant.GetAlias()
 		tgtAlias := values.UniqueCorrelationIdentifier()
 		allPushable := true
 		for _, v := range projectedValues {

@@ -146,6 +146,10 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		residual := residualPredicates(preds, consumed, prefix, aliases, colToIdx)
 
 		if fetchPlan, ok := idxPlan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+			// ToScanPlan for secondary indexes always returns
+			// Fetch(IndexPlan). The inner assertion is defensive —
+			// if a future candidate wraps something else, fall
+			// through to the extractIndexPlan path below.
 			if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
 				idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, columnNames: colNames, unique: cand.IsUnique()}
 				fetchQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
