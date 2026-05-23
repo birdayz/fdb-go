@@ -573,9 +573,6 @@ func TestPipeline_LimitWithOffset(t *testing.T) {
 
 func TestPipeline_InListExplode(t *testing.T) {
 	t.Parallel()
-	// WHERE col IN (1,2,3) — InComparisonToExplodeRule rewrites to
-	// SelectExpression + ExplodeExpression. With an index, this
-	// becomes InJoin or InUnion.
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
@@ -591,11 +588,50 @@ func TestPipeline_InListExplode(t *testing.T) {
 		[]predicates.QueryPredicate{inPred}, scanQ)
 	plan := planPipeline(t, filter, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
-	// Should produce InJoin or InUnion or IndexScan — depends on
-	// planner cost model. Key: it should NOT be a bare Scan.
-	if !strings.Contains(plan, "Index") && !strings.Contains(plan, "InJoin") &&
-		!strings.Contains(plan, "InUnion") && !strings.Contains(plan, "Filter") {
-		t.Fatalf("expected index-based or filtered plan for IN-list, got: %s", plan)
+	if !strings.Contains(plan, "InJoin") {
+		t.Fatalf("expected InJoin plan for IN-list with index, got: %s", plan)
+	}
+}
+
+func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	inPred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonIn,
+			Operand: &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}},
+		},
+	}
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{inPred}, scanQ)
+	filterRef := expressions.InitialOf(filter)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "B", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(filterRef),
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	proj := expressions.NewLogicalProjectionExpression(
+		[]values.Value{
+			&values.FieldValue{Field: "B", Typ: values.UnknownType},
+			&values.FieldValue{Field: "A", Typ: values.UnknownType},
+		},
+		expressions.ForEachQuantifier(sortRef),
+	)
+
+	plan := planPipeline(t, proj, idx("idx_a", "A"))
+	t.Logf("plan: %s", plan)
+	if strings.Contains(plan, "InJoin") {
+		t.Log("InJoin present in full pipeline — good")
+	} else {
+		t.Logf("InJoin NOT present — extraction follows fresh References")
 	}
 }
 

@@ -128,28 +128,30 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 				requestedOrdering)
 
 			for _, orderedSources := range allOrderings {
-				currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-				currentPlan := plans.RecordQueryPlan(innerPlans[0])
+				for _, innerPlan := range innerPlans {
+					currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
+					currentPlan := plans.RecordQueryPlan(innerPlan)
 
-				for i := len(orderedSources) - 1; i >= 0; i-- {
-					source := orderedSources[i]
-					inJoinPlan := plans.NewRecordQueryInJoinPlan(
-						currentPlan, source.bindingName, source.sorted, source.reverse)
-					if inValues := extractInValues(source.quantifier); inValues != nil {
-						inJoinPlan.SetInValues(inValues)
+					for i := len(orderedSources) - 1; i >= 0; i-- {
+						source := orderedSources[i]
+						inJoinPlan := plans.NewRecordQueryInJoinPlan(
+							currentPlan, source.bindingName, source.sorted, source.reverse)
+						if inValues := extractInValues(source.quantifier); inValues != nil {
+							inJoinPlan.SetInValues(inValues)
+						}
+						inJoinPlan.SetSourceKind(classifyInSourceKind(source.quantifier))
+						wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
+							expressions.NewPhysicalQuantifier(currentRef))
+						currentRef = call.MemoizeFinalExpression(wrapper)
+						currentPlan = inJoinPlan
 					}
-					inJoinPlan.SetSourceKind(classifyInSourceKind(source.quantifier))
-					wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
-						expressions.NewPhysicalQuantifier(currentRef))
-					currentRef = call.MemoizeFinalExpression(wrapper)
-					currentPlan = inJoinPlan
-				}
 
-				for _, m := range currentRef.AllMembers() {
-					if _, ok := m.(physicalPlanExpression); !ok {
-						continue
+					for _, m := range currentRef.AllMembers() {
+						if _, ok := m.(physicalPlanExpression); !ok {
+							continue
+						}
+						call.YieldFinalExpression(m)
 					}
-					call.YieldFinalExpression(m)
 				}
 			}
 		}
