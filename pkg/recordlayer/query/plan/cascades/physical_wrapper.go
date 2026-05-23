@@ -536,27 +536,19 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // top of the physical-wrapper discount. Unique indexes with all
 // columns equality-bound return cardinality=1 (point lookup).
 //
-// Non-covering index scans with range bounds or zero bounds (used for
-// ordering) inflate cardinality to reflect per-row PK fetch I/O.
-// Equality-only scans are left alone — equality typically has high
-// selectivity (few rows matched), making index+fetch worthwhile.
-// Without table statistics this is the best heuristic: it correctly
-// penalizes full-index-scan-for-ordering and wide range scans while
-// preserving fast equality point lookups.
+// Fetch I/O cost (FetchCPU per row) is NOT included here — it
+// belongs on the Fetch enforcer wrapper, which is eliminated for
+// covering scans.
 func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	base := indexBaseCardinality(w.plan, stats) * physicalWrapperCostMultiplier
 	numBound := 0
 	allEquality := true
-	hasRangeBound := false
 	if w.plan != nil {
 		for _, cr := range w.plan.GetScanComparisons() {
 			if !cr.IsEmpty() {
 				numBound++
 				if !cr.IsEquality() {
 					allEquality = false
-					if cr.IsInequality() && !isStartsWithOnly(cr) {
-						hasRangeBound = true
-					}
 				}
 			}
 		}
@@ -570,9 +562,6 @@ func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats propertie
 		base *= sel
 	}
 	cpu := base * properties.ScanCPU
-	if !w.covering && (numBound == 0 || hasRangeBound) {
-		cpu += base * properties.FetchCPU
-	}
 	return properties.Cost{Cardinality: base, CPU: cpu}
 }
 

@@ -87,9 +87,10 @@ func (w *physicalFetchFromPartialRecordWrapper) HintCost(child []properties.Cost
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
+	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
-		CPU:         child[0].CPU * physicalWrapperCostMultiplier,
+		Cardinality: in * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.FetchCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

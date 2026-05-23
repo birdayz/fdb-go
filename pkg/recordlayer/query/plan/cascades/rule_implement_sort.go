@@ -190,19 +190,27 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 			plan:        w.plan.WithStrictlySorted(),
 			columnNames: w.columnNames,
 			unique:      w.unique,
+			covering:    w.covering,
 		}
 	}
 	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
 		inner := fw.GetPlan().GetInner()
 		if idxPlan, ok := inner.(*plans.RecordQueryIndexPlan); ok {
 			newIdxPlan := idxPlan.WithStrictlySorted()
+			newIdxWrapper := &physicalIndexScanWrapper{
+				plan:        newIdxPlan,
+				columnNames: findIndexScanWrapper(fw.innerQuant.GetRangesOver()).columnNames,
+				unique:      true,
+			}
+			newIdxRef := expressions.InitialOf(newIdxWrapper)
+			newFetchQ := expressions.ForEachQuantifier(newIdxRef)
 			newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 				newIdxPlan,
 				fw.GetPlan().GetTranslateValueFunction(),
 				fw.GetPlan().GetResultType(),
 				fw.GetPlan().GetFetchIndexRecords(),
 			)
-			return NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, fw.innerQuant)
+			return NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, newFetchQ)
 		}
 	}
 	return expr

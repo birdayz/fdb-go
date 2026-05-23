@@ -560,7 +560,8 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 	// yields Projection(Fetch(IndexScan)), MergeProjectionAndFetchRule
 	// matches it and yields CoveringIndexScan). Without fixpoint, the
 	// second rule never sees the first rule's output.
-	for round := 0; round < 3; round++ {
+	const maxFixpointRounds = 8
+	for round := 0; round < maxFixpointRounds; round++ {
 		before := len(ref.AllMembers())
 		for _, rule := range p.implementationRules {
 			FireImplementationRuleWithContext(rule, ref, p.ctx, p.memo, cm)
