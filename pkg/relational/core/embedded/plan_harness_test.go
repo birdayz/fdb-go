@@ -100,9 +100,8 @@ func TestPlanHarness_GroupByCountCovering(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "StreamingAgg")
-	// TODO: cost model should pick covering IndexScan over InMemorySort(Scan).
-	// Currently picks InMemorySort because sort cost is underestimated (n*0.1).
-	// Fix blocked on planner unit test coverage for safe cost model iteration.
+	assertPlanContains(t, plan, "IDX_STATUS")
+	assertPlanNotContains(t, plan, "InMemorySort")
 }
 
 func TestPlanHarness_GroupByCountOrderBy(t *testing.T) {
@@ -127,8 +126,9 @@ func TestPlanHarness_GroupByCountOrderByDesc(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "StreamingAgg")
-	// TODO: should use IndexScan(IDX_STATUS) REVERSE for DESC ordering.
-	// Currently uses InMemorySort(InMemorySort(Scan)) — double sort.
+	assertPlanContains(t, plan, "IDX_STATUS")
+	assertPlanContains(t, plan, "REVERSE")
+	assertPlanNotContains(t, plan, "InMemorySort")
 }
 
 func TestPlanHarness_GroupBySumNonCovering(t *testing.T) {
@@ -141,6 +141,26 @@ func TestPlanHarness_GroupBySumNonCovering(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanNotContains(t, plan, "COVERING")
+	assertPlanContains(t, plan, "StreamingAgg")
+	assertPlanContains(t, plan, "IDX_STATUS")
+}
+
+func TestPlanHarness_GroupBySumCoveringComposite(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_status_amount ON ORDERS(status, amount)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, SUM(amount) FROM orders GROUP BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "StreamingAgg")
+	assertPlanContains(t, plan, "IDX_STATUS_AMOUNT")
+	assertPlanContains(t, plan, "COVERING")
 }
 
 func TestPlanHarness_PKLookupAndFilter(t *testing.T) {
@@ -181,6 +201,44 @@ func TestPlanHarness_InList(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "InJoin")
+}
+
+func TestPlanHarness_CountStarNoGroupBy(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT COUNT(*) FROM orders WHERE status = 'pending'",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "StreamingAgg")
+	assertPlanContains(t, plan, "IDX_STATUS")
+	assertPlanContains(t, plan, "COVERING")
+}
+
+func TestPlanHarness_OrderByNonIndexColumn(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id, amount FROM orders ORDER BY amount",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_AMOUNT")
+	assertPlanNotContains(t, plan, "InMemorySort")
+}
+
+func TestPlanHarness_FilterAndOrderDifferentIndexes(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE status = 'active' ORDER BY id",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
 }
 
 func TestPlanHarness_WithStats_SmallTable(t *testing.T) {
