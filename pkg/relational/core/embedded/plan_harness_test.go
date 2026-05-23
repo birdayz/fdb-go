@@ -636,6 +636,7 @@ func TestPlanHarness_Coalesce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Scan(ORDERS)")
 }
 
 func assertPlanContains(t *testing.T, plan, substr string) {
