@@ -525,6 +525,104 @@ func TestPlanHarness_Between(t *testing.T) {
 	t.Logf("plan: %s", plan)
 }
 
+// --- LEFT JOIN ---
+
+func TestPlanHarness_LeftJoin(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id",
+		multiTableSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "FlatMap")
+}
+
+// --- NOT EXISTS ---
+
+func TestPlanHarness_NotExists(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customers.id = orders.customer_id)",
+		multiTableSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+}
+
+// --- IS NULL ---
+
+func TestPlanHarness_IsNull(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE customer_id IS NULL",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+}
+
+// --- Multiple aggregates ---
+
+func TestPlanHarness_MultipleAggregates(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT MIN(amount), MAX(amount), COUNT(*) FROM orders",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "StreamingAgg")
+}
+
+// --- Self-join ---
+
+func TestPlanHarness_SelfJoin(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE EMPLOYEES (id BIGINT NOT NULL, manager_id BIGINT, name STRING, PRIMARY KEY (id))
+`
+	plan, err := PlanQueryForTest(
+		"SELECT e.name, m.name FROM employees e, employees m WHERE e.manager_id = m.id",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "FlatMap")
+}
+
+// --- CASE WHEN ---
+
+func TestPlanHarness_CaseWhen(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id, CASE WHEN amount > 1000 THEN 'high' ELSE 'low' END FROM orders",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Scan(ORDERS)")
+}
+
+// --- COALESCE ---
+
+func TestPlanHarness_Coalesce(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id, COALESCE(customer_id, 0) FROM orders",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+}
+
 func assertPlanContains(t *testing.T, plan, substr string) {
 	t.Helper()
 	if !strings.Contains(plan, substr) {
