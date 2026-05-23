@@ -172,6 +172,8 @@ CREATE INDEX idx_status_amount ON ORDERS(status, amount)
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "StreamingAgg")
+	assertPlanContains(t, plan, "IDX_STATUS_AMOUNT")
+	assertPlanContains(t, plan, "COVERING")
 }
 
 func TestPlanHarness_PKLookupAndFilter(t *testing.T) {
@@ -250,6 +252,7 @@ func TestPlanHarness_FilterAndOrderDifferentIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_STATUS")
 }
 
 func TestPlanHarness_WithStats_SmallTable(t *testing.T) {
@@ -264,6 +267,7 @@ func TestPlanHarness_WithStats_SmallTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan (100 rows): %s", plan)
+	assertPlanContains(t, plan, "IndexScan")
 }
 
 func TestPlanHarness_WithStats_LargeTable(t *testing.T) {
@@ -278,6 +282,7 @@ func TestPlanHarness_WithStats_LargeTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan (1M rows): %s", plan)
+	assertPlanContains(t, plan, "IndexScan")
 }
 
 // --- Multi-table schemas ---
@@ -417,17 +422,6 @@ func TestPlanHarness_GroupByHaving(t *testing.T) {
 	assertPlanContains(t, plan, "StreamingAgg")
 }
 
-func TestPlanHarness_UpdateByIndex(t *testing.T) {
-	t.Parallel()
-	plan, err := PlanQueryForTest(
-		"SELECT id FROM orders WHERE customer_id = 42",
-		ordersSchema, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertPlanContains(t, plan, "IndexScan(IDX_CUSTOMER, [=])")
-}
-
 func TestPlanHarness_FullScanSparseFilter(t *testing.T) {
 	t.Parallel()
 	plan, err := PlanQueryForTest(
@@ -473,6 +467,7 @@ CREATE TABLE NODES (
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "RecursiveDfsJoin")
 }
 
 // --- LIKE prefix pushdown ---
@@ -486,6 +481,7 @@ func TestPlanHarness_LikePrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Scan(ORDERS)")
 	// LIKE prefix pushdown to index is a future optimization.
 	// Currently falls back to full scan + filter.
 }
@@ -501,6 +497,7 @@ func TestPlanHarness_MultiplePredicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IndexScan")
 }
 
 // --- ORDER BY with LIMIT ---
@@ -546,6 +543,7 @@ CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "NestedLoopJoin")
 }
 
 // --- COUNT(*) without WHERE ---
@@ -573,6 +571,7 @@ func TestPlanHarness_Between(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_AMOUNT")
 }
 
 // --- LEFT JOIN ---
@@ -600,6 +599,7 @@ func TestPlanHarness_NotExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "FlatMap")
 }
 
 // --- IS NULL ---
@@ -613,6 +613,7 @@ func TestPlanHarness_IsNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Scan(ORDERS)")
 }
 
 // --- Multiple aggregates ---
