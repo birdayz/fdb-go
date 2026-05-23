@@ -470,6 +470,11 @@ func isPhysicalInUnion(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+func isPhysicalFlatMap(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalFlatMapWrapper)
+	return ok
+}
+
 func promoteByDataAccessCost(rootRef *expressions.Reference) {
 	if rootRef == nil {
 		return
@@ -494,8 +499,13 @@ func promoteByDataAccessCost(rootRef *expressions.Reference) {
 		if counts.maxDataAccessCardinality < 0 {
 			continue
 		}
-		if counts.maxDataAccessCardinality >= existingCounts.maxDataAccessCardinality {
+		if counts.maxDataAccessCardinality > existingCounts.maxDataAccessCardinality {
 			continue
+		}
+		if counts.maxDataAccessCardinality == existingCounts.maxDataAccessCardinality {
+			if counts.flatMapCount == 0 || existingCounts.flatMapCount > 0 {
+				continue
+			}
 		}
 		if counts.inMemorySortCount < existingCounts.inMemorySortCount {
 			continue

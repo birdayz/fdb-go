@@ -273,6 +273,10 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return cmp
 	}
 
+	if cmp := compareFlatMapVsNLJ(opsA, opsB); cmp != 0 {
+		return cmp
+	}
+
 	// Fall back to the scalar cost model when all multi-criteria tie.
 	// This avoids the hash tiebreak picking semantically broken plans
 	// (see D-4 wiring investigation). The scalar model's per-operator
@@ -312,6 +316,8 @@ type expressionCounts struct {
 	typeFilterCount          int
 	inJoinCount              int
 	inUnionCount             int
+	flatMapCount             int
+	nestedLoopJoinCount      int
 	mapCount                 int
 	predicatesFilterCount    int
 	unmatchedFieldCount      int
@@ -369,6 +375,10 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		counts.inJoinCount++
 	case *physicalInUnionWrapper:
 		counts.inUnionCount++
+	case *physicalFlatMapWrapper:
+		counts.flatMapCount++
+	case *physicalNestedLoopJoinWrapper:
+		counts.nestedLoopJoinCount++
 	case *physicalFetchFromPartialRecordWrapper:
 		counts.fetchCount++
 	case *physicalInMemorySortWrapper:
@@ -616,6 +626,20 @@ func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
 		return -1
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
+		return 1
+	}
+	return 0
+}
+
+func compareFlatMapVsNLJ(opsA, opsB expressionCounts) int {
+	aHasFlatMap := opsA.flatMapCount > 0
+	bHasFlatMap := opsB.flatMapCount > 0
+	aHasNLJ := opsA.nestedLoopJoinCount > 0
+	bHasNLJ := opsB.nestedLoopJoinCount > 0
+	if aHasFlatMap && bHasNLJ && !aHasNLJ && !bHasFlatMap {
+		return -1
+	}
+	if bHasFlatMap && aHasNLJ && !bHasNLJ && !aHasFlatMap {
 		return 1
 	}
 	return 0
