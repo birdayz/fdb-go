@@ -326,18 +326,10 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			highItem = comparand
 			highEndpoint = recordlayer.EndpointTypeRangeExclusive
 			hasHigh = true
-			if !hasLow {
-				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
-				hasLow = true
-			}
 		case predicates.ComparisonLessThanOrEq:
 			highItem = comparand
 			highEndpoint = recordlayer.EndpointTypeRangeInclusive
 			hasHigh = true
-			if !hasLow {
-				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
-				hasLow = true
-			}
 		case predicates.ComparisonIsNotNull:
 			if !hasLow {
 				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
