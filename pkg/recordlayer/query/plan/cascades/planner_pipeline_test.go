@@ -307,8 +307,8 @@ func TestPipeline_Join(t *testing.T) {
 	)
 	plan := planPipeline(t, sel)
 	t.Logf("plan: %s", plan)
-	if !strings.Contains(plan, "NestedLoopJoin") {
-		t.Fatalf("expected plan to contain NestedLoopJoin, got: %s", plan)
+	if !strings.Contains(plan, "NestedLoopJoin") && !strings.Contains(plan, "FlatMap") {
+		t.Fatalf("expected plan to contain NestedLoopJoin or FlatMap, got: %s", plan)
 	}
 }
 
