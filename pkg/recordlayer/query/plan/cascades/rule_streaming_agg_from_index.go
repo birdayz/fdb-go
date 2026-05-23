@@ -84,6 +84,7 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
+		// Forward-only: reverse scans break HAVING predicate evaluation ordering.
 		for _, reverse := range []bool{false} {
 			scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
 			idxPlan := extractIndexPlan(scanPlan)

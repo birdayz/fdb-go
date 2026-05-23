@@ -405,6 +405,41 @@ CREATE INDEX idx_category ON EVENTS(category)
 	assertPlanContains(t, planLarge, "IDX_CATEGORY")
 }
 
+func TestPlanHarness_GroupByHaving(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT customer_id, COUNT(*) FROM orders GROUP BY customer_id HAVING COUNT(*) >= 2 ORDER BY customer_id",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "StreamingAgg")
+}
+
+func TestPlanHarness_UpdateByIndex(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE customer_id = 42",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlanContains(t, plan, "IndexScan(IDX_CUSTOMER, [=])")
+}
+
+func TestPlanHarness_FullScanSparseFilter(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE tier = 'platinum'",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_TIER")
+}
+
 // --- UNION ---
 
 func TestPlanHarness_UnionAll(t *testing.T) {
