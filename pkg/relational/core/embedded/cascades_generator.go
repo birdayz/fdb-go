@@ -23,19 +23,28 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// cascadesGenerator routes SELECT queries through the Cascades planner
-// and executor. DML and DDL statements fall back to the naive generator.
+// cascadesGenerator is the single query generator for all SQL
+// statements. SELECT and DML (INSERT/UPDATE/DELETE) route through
+// the Cascades planner. EXPLAIN, SHOW, DDL, and transaction
+// statements are handled directly via PlanFunc wrappers around
+// the connection's exec* methods.
+//
+// When execMode is true (set by ExecContext), DML is routed through
+// execStatement rather than the Cascades pipeline, matching the
+// pre-existing ExecContext behavior.
 type cascadesGenerator struct {
-	c     *EmbeddedConnection
-	naive *naiveGenerator
-	cache *PlanCache
+	c        *EmbeddedConnection
+	cache    *PlanCache
+	execMode bool // true when called from ExecContext
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -44,9 +53,14 @@ func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
 	}
 	return &cascadesGenerator{
 		c:     c,
-		naive: &naiveGenerator{c: c},
 		cache: c.planCache,
 	}
+}
+
+func newCascadesGeneratorForExec(c *EmbeddedConnection) *cascadesGenerator {
+	g := newCascadesGenerator(c)
+	g.execMode = true
+	return g
 }
 
 func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, error) {
@@ -56,30 +70,136 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	}
 
 	stmts := root.Statements()
-	if stmts == nil || len(stmts.AllStatement()) != 1 {
-		return g.naive.Plan(ctx, sql)
+	if stmts == nil || len(stmts.AllStatement()) == 0 {
+		return &query.PlanFunc{
+			ExecFn: func(_ context.Context) (query.Result, error) {
+				return query.Result{RowsAffected: 0}, nil
+			},
+			UpdateFn:  func() bool { return true },
+			ExplainFn: func() string { return "empty" },
+		}, nil
 	}
 
-	stmt := stmts.AllStatement()[0]
+	all := stmts.AllStatement()
+	if len(all) == 1 {
+		return g.planOne(ctx, all[0])
+	}
 
-	// DML: route INSERT/UPDATE/DELETE through Cascades.
+	// Multi-statement batch: every child must be an update plan
+	// (DDL/DML only). Refuse a mixed batch containing SELECT/SHOW.
+	children := make([]query.Plan, 0, len(all))
+	for _, s := range all {
+		p, pErr := g.planOne(ctx, s)
+		if pErr != nil {
+			return nil, pErr
+		}
+		if !p.IsUpdate() {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"multi-statement batches must be DDL/DML only")
+		}
+		children = append(children, p)
+	}
+	return &query.MultiPlan{Plans: children}, nil
+}
+
+// planOne dispatches a single parsed statement to the appropriate
+// planning path: EXPLAIN, SELECT (via Cascades), DML (via Cascades),
+// SHOW, DDL, or transaction.
+func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatementContext) (query.Plan, error) {
+	c := g.c
+
+	// EXPLAIN <inner> → driver.Rows plan with a single PLAN column.
+	if util := stmt.UtilityStatement(); util != nil {
+		if full := util.FullDescribeStatement(); full != nil {
+			return g.planExplain(ctx, full)
+		}
+	}
+
+	// DML: route INSERT/UPDATE/DELETE through Cascades (QueryContext)
+	// or through execStatement (ExecContext).
 	if dml := stmt.DmlStatement(); dml != nil {
+		if g.execMode {
+			return g.planDDL(ctx, stmt)
+		}
 		return g.planDML(ctx, dml)
 	}
 
-	sel := stmt.SelectStatement()
-	if sel == nil {
-		// SHOW / DDL / other non-SELECT/DML statements stay on naive.
-		return g.naive.Plan(ctx, sql)
+	// SELECT: route through Cascades pipeline.
+	if sel := stmt.SelectStatement(); sel != nil {
+		return g.planSelect(ctx, sel)
 	}
 
+	// SHOW → driver.Rows plan (via admin dispatch).
+	if admin := stmt.AdministrationStatement(); admin != nil {
+		if show := admin.ShowStatement(); show != nil {
+			return &query.PlanFunc{
+				ExecFn: func(execCtx context.Context) (query.Result, error) {
+					rows, showErr := c.execShowStatement(execCtx, show)
+					if showErr != nil {
+						return query.Result{}, showErr
+					}
+					return query.Result{Rows: rows}, nil
+				},
+				UpdateFn:  func() bool { return false },
+				ExplainFn: func() string { return explainStatement("SHOW", show) },
+			}, nil
+		}
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"only SHOW administration statements are supported")
+	}
+
+	// DDL → update plan through execStatement.
+	if ddl := stmt.DdlStatement(); ddl != nil {
+		return g.planDDL(ctx, stmt)
+	}
+
+	// Transaction statements (COMMIT / ROLLBACK / START TRANSACTION).
+	if stmt.TransactionStatement() != nil {
+		return g.planDDL(ctx, stmt)
+	}
+
+	return nil, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
+}
+
+// planSelect routes a SELECT statement through the Cascades pipeline.
+func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (query.Plan, error) {
+	c := g.c
 	q := sel.Query()
 	if q == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "malformed SELECT statement")
 	}
 
+	// Explain-only mode: no FDB available, produce logical plan text only.
+	// Used by NewExplainOnlyGenerator / NewExplainOnlyGeneratorWithSchema.
+	if c.sess == nil || c.sess.DB == nil {
+		return g.planSelectExplainOnly(sel, q)
+	}
+
+	// INFORMATION_SCHEMA queries go through the connection's execSelect
+	// path which handles catalog-based system table queries.
 	if referencesInformationSchema(q) {
-		return g.naive.Plan(ctx, sql)
+		return &query.PlanFunc{
+			ExecFn: func(execCtx context.Context) (query.Result, error) {
+				rows, selErr := c.execSelect(execCtx, sel)
+				if selErr != nil {
+					return query.Result{}, selErr
+				}
+				return query.Result{Rows: rows}, nil
+			},
+			UpdateFn: func() bool { return false },
+			ExplainFn: func() string {
+				md := c.cachedMetaData()
+				if md != nil {
+					if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+						return op.Explain("")
+					}
+				}
+				if op := buildLogicalPlanForQuery(q); op != nil {
+					return op.Explain("")
+				}
+				return explainStatement("SELECT", sel)
+			},
+		}, nil
 	}
 
 	if err := g.c.ensureMetaData(ctx); err != nil {
@@ -91,8 +211,45 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			"no schema metadata available")
 	}
 
+	return g.planSelectCascades(q, md)
+}
+
+// planSelectExplainOnly produces a PlanFunc that renders a logical plan
+// without touching FDB. Used by NewExplainOnlyGenerator and
+// NewExplainOnlyGeneratorWithSchema for the plan-equivalence harness.
+func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementContext, q antlrgen.IQueryContext) (query.Plan, error) {
+	c := g.c
+	return &query.PlanFunc{
+		ExecFn: func(execCtx context.Context) (query.Result, error) {
+			rows, selErr := c.execSelect(execCtx, sel)
+			if selErr != nil {
+				return query.Result{}, selErr
+			}
+			return query.Result{Rows: rows}, nil
+		},
+		UpdateFn: func() bool { return false },
+		ExplainFn: func() string {
+			md := c.cachedMetaData()
+			if md != nil {
+				if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+					return op.Explain("")
+				}
+			}
+			if op := buildLogicalPlanForQuery(q); op != nil {
+				return op.Explain("")
+			}
+			return explainStatement("SELECT", sel)
+		},
+	}, nil
+}
+
+// planSelectCascades runs the full Cascades pipeline for a query.
+func (g *cascadesGenerator) planSelectCascades(q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (query.Plan, error) {
 	// Check plan cache before running the full Cascades pipeline.
-	sqlHash := QueryHash(sql)
+	// Use the query text for hashing since we don't have the original
+	// full SQL here — GetText() is stable for cache-key purposes.
+	sqlText := q.GetText()
+	sqlHash := QueryHash(sqlText)
 	if g.cache != nil {
 		if cachedPlan, cachedSubs, ok := g.cache.Get(sqlHash); ok {
 			return &cascadesPlan{
@@ -204,7 +361,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	// Don't cache LIMIT/OFFSET queries — the limit is applied post-execution
 	// and not stored in the cached plan.
 	if g.cache != nil && sqlLimit < 0 && sqlOffset == 0 {
-		g.cache.Put(sqlHash, sql, physPlan, scalarSubs)
+		g.cache.Put(sqlHash, sqlText, physPlan, scalarSubs)
 	}
 	return &cascadesPlan{
 		conn:             g.c,
@@ -214,6 +371,154 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		scalarSubqueries: scalarSubs,
 		sqlLimit:         sqlLimit,
 		sqlOffset:        sqlOffset,
+	}, nil
+}
+
+// planExplain handles `EXPLAIN <query|delete|insert|update>`.
+// For SELECT queries, runs the full Cascades pipeline and returns
+// physPlan.Explain() as the PLAN column. For DML, uses the existing
+// buildLogicalPlanFor*WithCatalog functions for the explain text.
+func (g *cascadesGenerator) planExplain(ctx context.Context, full antlrgen.IFullDescribeStatementContext) (query.Plan, error) {
+	objClause := full.DescribeObjectClause()
+	if objClause == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN requires an inner statement")
+	}
+	descStmts, ok := objClause.(*antlrgen.DescribeStatementsContext)
+	if !ok {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN form not supported (only EXPLAIN <query|insert|update|delete>)")
+	}
+	planText := g.computeExplainText(ctx, descStmts)
+	if planText == "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN inner statement produced no plan text")
+	}
+	return &query.PlanFunc{
+		ExecFn: func(_ context.Context) (query.Result, error) {
+			return query.Result{Rows: &staticRows{
+				cols: []string{"PLAN"},
+				rows: [][]driver.Value{{planText}},
+			}}, nil
+		},
+		UpdateFn:  func() bool { return false },
+		ExplainFn: func() string { return "EXPLAIN: " + planText },
+	}, nil
+}
+
+// computeExplainText builds the plan-tree text for the inner
+// statement of an EXPLAIN. For SELECT queries, attempts to run
+// the full Cascades pipeline to produce a physical plan explain.
+// Falls back to logical plan text for DML and when Cascades can't
+// plan the query (e.g. no metadata, INFORMATION_SCHEMA).
+func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.DescribeStatementsContext) string {
+	c := g.c
+	md := c.cachedMetaData()
+
+	// SELECT: try Cascades pipeline for physical plan explain.
+	if q := d.Query(); q != nil {
+		// Try Cascades for a physical plan explain when FDB + metadata are available.
+		if c.sess != nil && c.sess.DB != nil && !referencesInformationSchema(q) {
+			if err := c.ensureMetaData(ctx); err == nil {
+				if freshMd := c.cachedMetaData(); freshMd != nil {
+					if plan, planErr := g.planSelectCascades(q, freshMd); planErr == nil {
+						return plan.Explain()
+					}
+				}
+			}
+		}
+		// Fallback to logical plan text.
+		if md != nil {
+			if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForQuery(q); op != nil {
+			return op.Explain("")
+		}
+	}
+	if del := d.DeleteStatement(); del != nil {
+		if md != nil {
+			if op := buildLogicalPlanForDeleteWithCatalog(del, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForDelete(del); op != nil {
+			return op.Explain("")
+		}
+	}
+	if ins := d.InsertStatement(); ins != nil {
+		if md != nil {
+			if op := buildLogicalPlanForInsertWithCatalog(ins, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForInsert(ins); op != nil {
+			return op.Explain("")
+		}
+	}
+	if upd := d.UpdateStatement(); upd != nil {
+		if md != nil {
+			if op := buildLogicalPlanForUpdateWithCatalog(upd, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForUpdate(upd); op != nil {
+			return op.Explain("")
+		}
+	}
+	return ""
+}
+
+// planDDL wraps a DDL or transaction statement in a PlanFunc that
+// delegates to connection.execStatement.
+func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementContext) (query.Plan, error) {
+	c := g.c
+	return &query.PlanFunc{
+		ExecFn: func(execCtx context.Context) (query.Result, error) {
+			n, execErr := c.execStatement(execCtx, stmt)
+			if execErr != nil {
+				return query.Result{}, execErr
+			}
+			return query.Result{RowsAffected: n}, nil
+		},
+		UpdateFn: func() bool { return true },
+		ExplainFn: func() string {
+			md := c.cachedMetaData()
+			if dml := stmt.DmlStatement(); dml != nil {
+				if del := dml.DeleteStatement(); del != nil {
+					if md != nil {
+						if op := buildLogicalPlanForDeleteWithCatalog(del, md); op != nil {
+							return op.Explain("")
+						}
+					}
+					if op := buildLogicalPlanForDelete(del); op != nil {
+						return op.Explain("")
+					}
+				}
+				if upd := dml.UpdateStatement(); upd != nil {
+					if md != nil {
+						if op := buildLogicalPlanForUpdateWithCatalog(upd, md); op != nil {
+							return op.Explain("")
+						}
+					}
+					if op := buildLogicalPlanForUpdate(upd); op != nil {
+						return op.Explain("")
+					}
+				}
+				if ins := dml.InsertStatement(); ins != nil {
+					if md != nil {
+						if op := buildLogicalPlanForInsertWithCatalog(ins, md); op != nil {
+							return op.Explain("")
+						}
+					}
+					if op := buildLogicalPlanForInsert(ins); op != nil {
+						return op.Explain("")
+					}
+				}
+			}
+			return explainStatement(statementKind(stmt), stmt)
+		},
 	}, nil
 }
 
@@ -232,10 +537,17 @@ func extractLimitOffset(op logical.LogicalOperator) (int64, int64) {
 }
 
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (query.Plan, error) {
-	if err := g.c.ensureMetaData(ctx); err != nil {
+	c := g.c
+
+	// Explain-only mode: no FDB available, produce logical plan text only.
+	if c.sess == nil || c.sess.DB == nil {
+		return g.planDMLExplainOnly(dml)
+	}
+
+	if err := c.ensureMetaData(ctx); err != nil {
 		return nil, err
 	}
-	md := g.c.cachedMetaData()
+	md := c.cachedMetaData()
 	if md == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no schema metadata available")
 	}
@@ -297,6 +609,65 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		physicalPlan: physPlan,
 		explain:      logicalOp.Explain(""),
 		isUpdate:     true,
+	}, nil
+}
+
+// planDMLExplainOnly produces a PlanFunc that renders a logical plan
+// for DML (INSERT/UPDATE/DELETE) without touching FDB. Used by
+// NewExplainOnlyGenerator / NewExplainOnlyGeneratorWithSchema.
+func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext) (query.Plan, error) {
+	c := g.c
+	return &query.PlanFunc{
+		ExecFn: func(ctx context.Context) (query.Result, error) {
+			if ins := dml.InsertStatement(); ins != nil {
+				n, err := c.execInsert(ctx, ins)
+				return query.Result{RowsAffected: n}, err
+			}
+			if del := dml.DeleteStatement(); del != nil {
+				n, err := c.execDelete(ctx, del)
+				return query.Result{RowsAffected: n}, err
+			}
+			if upd := dml.UpdateStatement(); upd != nil {
+				n, err := c.execUpdate(ctx, upd)
+				return query.Result{RowsAffected: n}, err
+			}
+			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
+		},
+		UpdateFn: func() bool { return true },
+		ExplainFn: func() string {
+			md := c.cachedMetaData()
+			if del := dml.DeleteStatement(); del != nil {
+				if md != nil {
+					if op := buildLogicalPlanForDeleteWithCatalog(del, md); op != nil {
+						return op.Explain("")
+					}
+				}
+				if op := buildLogicalPlanForDelete(del); op != nil {
+					return op.Explain("")
+				}
+			}
+			if upd := dml.UpdateStatement(); upd != nil {
+				if md != nil {
+					if op := buildLogicalPlanForUpdateWithCatalog(upd, md); op != nil {
+						return op.Explain("")
+					}
+				}
+				if op := buildLogicalPlanForUpdate(upd); op != nil {
+					return op.Explain("")
+				}
+			}
+			if ins := dml.InsertStatement(); ins != nil {
+				if md != nil {
+					if op := buildLogicalPlanForInsertWithCatalog(ins, md); op != nil {
+						return op.Explain("")
+					}
+				}
+				if op := buildLogicalPlanForInsert(ins); op != nil {
+					return op.Explain("")
+				}
+			}
+			return "DML"
+		},
 	}, nil
 }
 
@@ -1600,4 +1971,173 @@ func findUnsupportedFunctionInSelectQuery(sq *selectQuery) string {
 		}
 	}
 	return ""
+}
+
+// NewExplainOnlyGenerator constructs a Generator suitable for capturing
+// Plan.Explain() output without executing. The returned Generator is
+// backed by a zero-value EmbeddedConnection — Plan.Execute on the
+// returned plans is unsupported (no FDB, no catalog, no session
+// state). Used by the plan-equivalence harness (RFC-022 section 4.-1) to
+// produce plan trees for diffing against Java's planner output.
+//
+// Catalog-aware predicate trees (buildLogicalPlanFor*WithCatalog
+// paths) require non-nil RecordMetaData; this constructor always
+// produces text-only logical plans. Use NewExplainOnlyGeneratorWithSchema
+// to unlock the catalog-aware branch.
+func NewExplainOnlyGenerator() query.Generator {
+	return newCascadesGenerator(&EmbeddedConnection{})
+}
+
+// NewExplainOnlyGeneratorWithSchema is the catalog-aware companion to
+// NewExplainOnlyGenerator. It parses the supplied CREATE SCHEMA
+// TEMPLATE DDL into an in-memory RecordLayerSchemaTemplate (no FDB
+// write), wraps it in an api.Schema bound to a synthetic database +
+// schema, and seeds the connection's SchemaCache. Subsequent
+// statements planned through the returned Generator route through the
+// buildLogicalPlanFor*WithCatalog paths so WHERE clauses appear as
+// real cascades.predicates.QueryPredicate trees in the Explain output.
+//
+// schemaDDL must contain exactly one CREATE SCHEMA TEMPLATE
+// statement. Multiple-statement DDL or any non-CREATE-SCHEMA-TEMPLATE
+// shape returns an error — callers should isolate the schema DDL from
+// the SELECT/DML they intend to plan.
+func NewExplainOnlyGeneratorWithSchema(schemaDDL string) (query.Generator, error) {
+	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
+	if err != nil {
+		return nil, err
+	}
+	const dbPath = "/explain"
+	const schemaName = "s"
+	sess := &session.Session{
+		DBPath: dbPath,
+		Schema: schemaName,
+		SchemaCache: map[string]api.Schema{
+			session.SchemaCacheKey(dbPath, schemaName): tmpl.GenerateSchema(dbPath, schemaName),
+		},
+	}
+	return newCascadesGenerator(&EmbeddedConnection{sess: sess}), nil
+}
+
+// startsWithCreateSchemaTemplate reports whether ddl begins (after
+// leading whitespace) with the case-insensitive "CREATE SCHEMA
+// TEMPLATE" header. Used to decide whether buildSchemaTemplateFromDDL
+// must auto-wrap a bare body.
+func startsWithCreateSchemaTemplate(ddl string) bool {
+	t := strings.TrimSpace(ddl)
+	if len(t) < len("CREATE SCHEMA TEMPLATE") {
+		return false
+	}
+	return strings.EqualFold(t[:len("CREATE SCHEMA TEMPLATE")], "CREATE SCHEMA TEMPLATE")
+}
+
+// buildSchemaTemplateFromDDL parses schemaDDL as a single
+// CREATE SCHEMA TEMPLATE statement and builds a
+// RecordLayerSchemaTemplate without performing any catalog write.
+func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTemplate, error) {
+	wrapped := schemaDDL
+	if !startsWithCreateSchemaTemplate(schemaDDL) {
+		wrapped = "CREATE SCHEMA TEMPLATE auto_template " + schemaDDL
+	}
+	root, err := parser.Parse(wrapped)
+	if err != nil {
+		return nil, fmt.Errorf("parse schema DDL: %w", err)
+	}
+	stmts := root.Statements()
+	if stmts == nil {
+		return nil, fmt.Errorf("schema DDL must contain exactly one statement, got 0")
+	}
+	if len(stmts.AllStatement()) != 1 {
+		return nil, fmt.Errorf("schema DDL must contain exactly one statement, got %d",
+			len(stmts.AllStatement()))
+	}
+	create := stmts.AllStatement()[0].DdlStatement()
+	if create == nil {
+		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement")
+	}
+	cs := create.CreateStatement()
+	if cs == nil {
+		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement")
+	}
+	stCtx, ok := cs.(*antlrgen.CreateSchemaTemplateStatementContext)
+	if !ok {
+		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement, got %T", cs)
+	}
+
+	templateID := stCtx.SchemaTemplateId().GetText()
+	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
+	for _, clause := range stCtx.AllTemplateClause() {
+		td := clause.TableDefinition()
+		if td == nil {
+			continue
+		}
+		tableName := td.Uid().GetText()
+		cols, pkCols, tdErr := parseTableDefinition(td)
+		if tdErr != nil {
+			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
+		}
+		b.AddTable(tableName, cols, pkCols)
+	}
+	for _, clause := range stCtx.AllTemplateClause() {
+		idxDef := clause.IndexDefinition()
+		if idxDef == nil {
+			continue
+		}
+		if idxErr := parseIndexDefinition(idxDef, b); idxErr != nil {
+			return nil, fmt.Errorf("index: %w", idxErr)
+		}
+	}
+	return b.Build()
+}
+
+// explainStatement returns a trivial textual description of a parsed
+// statement: the kind (SELECT / INSERT / UPDATE / DELETE / DDL / SHOW)
+// followed by its source text.
+func explainStatement(kind string, node interface {
+	GetText() string
+},
+) string {
+	txt := ""
+	if node != nil {
+		txt = node.GetText()
+	}
+	if txt == "" {
+		return kind
+	}
+	return fmt.Sprintf("%s: %s", kind, txt)
+}
+
+// statementKind returns a short human-readable tag for a parsed top-
+// level statement.
+func statementKind(stmt antlrgen.IStatementContext) string {
+	if stmt == nil {
+		return "STATEMENT"
+	}
+	if ddl := stmt.DdlStatement(); ddl != nil {
+		return "DDL"
+	}
+	if dml := stmt.DmlStatement(); dml != nil {
+		switch {
+		case dml.InsertStatement() != nil:
+			return "INSERT"
+		case dml.DeleteStatement() != nil:
+			return "DELETE"
+		case dml.UpdateStatement() != nil:
+			return "UPDATE"
+		}
+		return "DML"
+	}
+	if stmt.TransactionStatement() != nil {
+		return "TX"
+	}
+	return "STATEMENT"
+}
+
+// rowsOrEmpty returns rows or a non-nil empty driver.Rows when rows
+// is nil. The driver layer expects a non-nil driver.Rows for Query-
+// shaped calls.
+func rowsOrEmpty(rows driver.Rows) driver.Rows {
+	if rows == nil {
+		return emptyRows{}
+	}
+	return rows
 }
