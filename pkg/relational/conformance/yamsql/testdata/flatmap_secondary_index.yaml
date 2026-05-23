@@ -13,6 +13,7 @@ setup:
 tests:
   # Join via secondary index: categories.id = items.cat_id (cat_id has index)
   - query: SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id ORDER BY c.name, i.title
+    plan_contains: FlatMap
     rows:
       - ["Books", "Novel"]
       - ["Books", "Textbook"]
