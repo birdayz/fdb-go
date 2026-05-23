@@ -26,6 +26,7 @@ func TestStreamingAggFromIndex_Fires(t *testing.T) {
 	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
 	cand := NewValueIndexScanMatchCandidate(
 		"T$region", []string{"T"}, []string{"region"}, aliases, values.UnknownType, false,
+		nil,
 	)
 
 	results := FireExpressionRuleWithMemo(
@@ -63,6 +64,7 @@ func TestStreamingAggFromIndex_DoesNotFireWhenNoMatchingIndex(t *testing.T) {
 	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
 	cand := NewValueIndexScanMatchCandidate(
 		"T$status", []string{"T"}, []string{"status"}, aliases, values.UnknownType, false,
+		nil,
 	)
 
 	results := FireExpressionRuleWithMemo(
@@ -102,6 +104,7 @@ func TestStreamingAggFromIndex_MultiColumn(t *testing.T) {
 	}
 	cand := NewValueIndexScanMatchCandidate(
 		"T$region_city_amount", []string{"T"}, []string{"region", "city", "amount"}, aliases, values.UnknownType, false,
+		nil,
 	)
 
 	results := FireExpressionRuleWithMemo(
@@ -138,6 +141,7 @@ func TestStreamingAggFromIndex_DoesNotFireForGlobalAgg(t *testing.T) {
 	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
 	cand := NewValueIndexScanMatchCandidate(
 		"T$region", []string{"T"}, []string{"region"}, aliases, values.UnknownType, false,
+		nil,
 	)
 
 	results := FireExpressionRuleWithMemo(

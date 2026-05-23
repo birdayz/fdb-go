@@ -63,6 +63,7 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -99,7 +100,7 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 		}
 		visited[r] = true
 		for _, m := range r.AllMembers() {
-			if IsPhysicalIndexScan(m) {
+			if IsPhysicalIndexScan(m) || IsPhysicalFetchFromPartialRecord(m) {
 				indexScanCount++
 			}
 			for _, qq := range m.GetQuantifiers() {
@@ -128,6 +129,7 @@ func TestIndexScan_GapInPrefix(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -168,6 +170,7 @@ func TestIndexScan_InequalityStopsPrefix(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -195,10 +198,13 @@ func TestIndexScan_InequalityStopsPrefix(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	// Should be filter-over-index-scan (AMOUNT predicate is residual
+	// Should be filter-over-Fetch(IndexScan) (AMOUNT predicate is residual
 	// because the inequality on STATUS terminates the prefix).
 	if _, ok := results[0].(*physicalIndexScanWrapper); ok {
 		t.Fatal("expected filter wrapper (residual), got bare index scan")
+	}
+	if _, ok := results[0].(*physicalFetchFromPartialRecordWrapper); ok {
+		t.Fatal("expected filter wrapper (residual), got bare Fetch wrapper")
 	}
 }
 
@@ -215,6 +221,7 @@ func TestIndexScan_AllPredicatesResidual(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -262,10 +269,11 @@ func TestPlanContext_FromIndexDefs_UpperCaseColumnNames(t *testing.T) {
 	}
 }
 
-func (d stubDef) IndexName() string          { return d.name }
-func (d stubDef) IndexColumnNames() []string { return d.cols }
-func (d stubDef) IndexRecordTypes() []string { return d.types }
-func (d stubDef) IndexIsUnique() bool        { return d.unique }
+func (d stubDef) IndexName() string                { return d.name }
+func (d stubDef) IndexColumnNames() []string       { return d.cols }
+func (d stubDef) IndexRecordTypes() []string       { return d.types }
+func (d stubDef) IndexIsUnique() bool              { return d.unique }
+func (d stubDef) IndexPrimaryKeyColumns() []string { return nil }
 
 type stubDef struct {
 	name   string
@@ -410,6 +418,7 @@ func TestIndexScan_ThreeColumnPrefix(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2, a3},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -441,11 +450,15 @@ func TestIndexScan_ThreeColumnPrefix(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	fw, ok := results[0].(*physicalFetchFromPartialRecordWrapper)
 	if !ok {
-		t.Fatalf("expected bare index scan (all 3 consumed), got %T", results[0])
+		t.Fatalf("expected Fetch wrapper (all 3 consumed), got %T", results[0])
 	}
-	comps := wrapper.plan.GetScanComparisons()
+	idxPlan := extractIndexPlan(fw.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatal("expected inner RecordQueryIndexPlan inside Fetch wrapper")
+	}
+	comps := idxPlan.GetScanComparisons()
 	if len(comps) != 3 {
 		t.Fatalf("expected 3 scan comparisons, got %d", len(comps))
 	}

@@ -74,3 +74,10 @@ func (i *RecordLayerIndex) IndexRecordTypes() []string {
 // IndexIsUnique returns whether the index enforces uniqueness.
 // Satisfies cascades.IndexDef.
 func (i *RecordLayerIndex) IndexIsUnique() bool { return i.underlying.IsUnique() }
+
+// IndexPrimaryKeyColumns returns nil. This type is only used by the
+// metadata visitor pattern (api.Visitor), never passed to
+// NewPlanContextFromIndexDefs. The production Cascades path uses
+// metadataIndexDef (cascades_generator.go) which returns real PK
+// columns. Satisfies cascades.IndexDef.
+func (i *RecordLayerIndex) IndexPrimaryKeyColumns() []string { return nil }

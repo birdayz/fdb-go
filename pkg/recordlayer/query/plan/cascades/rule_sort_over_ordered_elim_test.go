@@ -24,6 +24,7 @@ func TestSortElim_IndexProvidesSortOrder(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -58,7 +59,7 @@ func TestSortElim_IndexProvidesSortOrder(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("sort should be eliminated when index provides the ordering; got %T", plan)
 	}
 }
@@ -79,6 +80,7 @@ func TestSortElim_MultiKeySortMatchesIndex(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2, a3},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -116,7 +118,7 @@ func TestSortElim_MultiKeySortMatchesIndex(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("multi-key sort should be eliminated; got %T", plan)
 	}
 }
@@ -136,6 +138,7 @@ func TestSortElim_PartialSortKeyMatch(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -176,7 +179,7 @@ func TestSortElim_PartialSortKeyMatch(t *testing.T) {
 
 	// Sort should NOT be eliminated — index provides (DATE) but sort
 	// requires (DATE, AMOUNT). The top-level plan must be an in-memory sort.
-	if IsPhysicalIndexScan(plan) || IsPhysicalFilter(plan) {
+	if IsPhysicalIndexScan(plan) || IsPhysicalFilter(plan) || IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatal("sort should NOT be eliminated when index provides fewer ordering keys than sort requires")
 	}
 }
@@ -196,6 +199,7 @@ func TestSortElim_RangeScanProvidesSortOrder(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -232,7 +236,7 @@ func TestSortElim_RangeScanProvidesSortOrder(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("sort should be eliminated when range-bound index scan provides the ordering; got %T", plan)
 	}
 }
@@ -251,6 +255,7 @@ func TestSortElim_SortKeyNotProvidedByIndex(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -289,7 +294,7 @@ func TestSortElim_SortKeyNotProvidedByIndex(t *testing.T) {
 
 	// The sort should NOT be eliminated — the index doesn't provide
 	// AMOUNT ordering. The top-level plan must be an in-memory sort.
-	if IsPhysicalIndexScan(plan) || IsPhysicalFilter(plan) {
+	if IsPhysicalIndexScan(plan) || IsPhysicalFilter(plan) || IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatal("sort should NOT be eliminated when index doesn't provide the sort key")
 	}
 }
@@ -308,6 +313,7 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -331,12 +337,18 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("DESC sort should be eliminated by a reverse index scan; got %T", plan)
 	}
 	if w, ok := plan.(*physicalIndexScanWrapper); ok {
 		if !w.plan.IsReverse() {
 			t.Fatal("DESC sort elimination should produce a reverse index scan")
+		}
+	} else if fw, ok := plan.(*physicalFetchFromPartialRecordWrapper); ok {
+		if innerIdx := extractIndexPlan(fw.GetRecordQueryPlan()); innerIdx != nil {
+			if !innerIdx.IsReverse() {
+				t.Fatal("DESC sort elimination should produce a reverse index scan")
+			}
 		}
 	}
 }
@@ -530,6 +542,7 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		true, // unique
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -555,20 +568,25 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 		t.Fatal("ImplementIndexScanRule should produce an index scan")
 	}
 
-	// Build a clean inner Reference with ONLY the index scan wrapper,
-	// then compute plan properties on it (simulating implementBottomUp).
-	var idxWrapper *physicalIndexScanWrapper
+	// Build a clean inner Reference with the index scan result (now
+	// Fetch(IndexScan)), then compute plan properties (simulating
+	// implementBottomUp).
+	var idxExpr expressions.RelationalExpression
 	for _, r := range idxResults {
-		if w, ok := r.(*physicalIndexScanWrapper); ok {
-			idxWrapper = w
+		if _, ok := r.(*physicalIndexScanWrapper); ok {
+			idxExpr = r
+			break
+		}
+		if _, ok := r.(*physicalFetchFromPartialRecordWrapper); ok {
+			idxExpr = r
 			break
 		}
 	}
-	if idxWrapper == nil {
-		t.Fatal("no physicalIndexScanWrapper in ImplementIndexScanRule results")
+	if idxExpr == nil {
+		t.Fatal("no index scan expression in ImplementIndexScanRule results")
 	}
 
-	innerRef := expressions.InitialOf(idxWrapper)
+	innerRef := expressions.InitialOf(idxExpr)
 	computeRefPlanProperties(innerRef)
 
 	// Build Sort(DATE ASC) over the prepared inner Reference.
@@ -584,10 +602,16 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 	yielded := FireImplementationRule(rule, sortRef)
 
 	// Check that at least one yielded expression is strictlySorted.
+	// With Fetch wrappers, look for an index plan at any level.
 	var foundStrictly *plans.RecordQueryIndexPlan
 	for _, e := range yielded {
 		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
 			foundStrictly = w.plan
+		}
+		if fw, ok := e.(*physicalFetchFromPartialRecordWrapper); ok {
+			if inner := extractIndexPlan(fw.GetRecordQueryPlan()); inner != nil && inner.IsStrictlySorted() {
+				foundStrictly = inner
+			}
 		}
 	}
 	if foundStrictly == nil {
@@ -610,6 +634,7 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false, // non-unique
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -633,18 +658,22 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 		t.Fatal("ImplementIndexScanRule should produce an index scan")
 	}
 
-	var idxWrapper *physicalIndexScanWrapper
+	var idxExpr expressions.RelationalExpression
 	for _, r := range idxResults {
-		if w, ok := r.(*physicalIndexScanWrapper); ok {
-			idxWrapper = w
+		if _, ok := r.(*physicalIndexScanWrapper); ok {
+			idxExpr = r
+			break
+		}
+		if _, ok := r.(*physicalFetchFromPartialRecordWrapper); ok {
+			idxExpr = r
 			break
 		}
 	}
-	if idxWrapper == nil {
-		t.Fatal("no physicalIndexScanWrapper in ImplementIndexScanRule results")
+	if idxExpr == nil {
+		t.Fatal("no index scan expression in ImplementIndexScanRule results")
 	}
 
-	innerRef := expressions.InitialOf(idxWrapper)
+	innerRef := expressions.InitialOf(idxExpr)
 	computeRefPlanProperties(innerRef)
 
 	sortQ := expressions.ForEachQuantifier(innerRef)
@@ -661,6 +690,11 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 	for _, e := range yielded {
 		if w, ok := e.(*physicalIndexScanWrapper); ok && w.plan.IsStrictlySorted() {
 			t.Fatalf("non-unique index should NOT produce a strictlySorted plan; got %s", w.plan.Explain())
+		}
+		if fw, ok := e.(*physicalFetchFromPartialRecordWrapper); ok {
+			if inner := extractIndexPlan(fw.GetRecordQueryPlan()); inner != nil && inner.IsStrictlySorted() {
+				t.Fatalf("non-unique index should NOT produce a strictlySorted plan; got %s", inner.Explain())
+			}
 		}
 	}
 	// Verify the rule DID yield something (sort was eliminated).

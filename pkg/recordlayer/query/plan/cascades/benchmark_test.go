@@ -528,6 +528,7 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
@@ -572,6 +573,7 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
@@ -610,6 +612,7 @@ func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)

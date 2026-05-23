@@ -61,24 +61,23 @@ func TestPlanChoice_MultiColumnIndexPrefix(t *testing.T) {
 
 	physicalPlan := ph.GetRecordQueryPlan()
 
-	switch pp := physicalPlan.(type) {
-	case *plans.RecordQueryIndexPlan:
-		t.Logf("✓ Optimizer chose INDEX SCAN: %s", pp.Explain())
-		comps := pp.GetScanComparisons()
-		eqCount := 0
-		for _, c := range comps {
-			if c.IsEquality() {
-				eqCount++
-			}
-		}
-		if eqCount < 2 {
-			t.Fatalf("expected 2 equality-bound prefix columns, got %d", eqCount)
-		}
-		t.Logf("✓ Both columns equality-bound in index scan prefix")
-	default:
+	pp := extractIndexPlan(physicalPlan)
+	if pp == nil {
 		t.Fatalf("optimizer should choose IndexScan for compound equality on multi-column index, got %T: %s",
 			physicalPlan, physicalPlan.Explain())
 	}
+	t.Logf("Optimizer chose INDEX SCAN: %s", pp.Explain())
+	comps := pp.GetScanComparisons()
+	eqCount := 0
+	for _, c := range comps {
+		if c.IsEquality() {
+			eqCount++
+		}
+	}
+	if eqCount < 2 {
+		t.Fatalf("expected 2 equality-bound prefix columns, got %d", eqCount)
+	}
+	t.Logf("Both columns equality-bound in index scan prefix")
 }
 
 func TestPlanChoice_NoIndexForNonMatchingColumn(t *testing.T) {
@@ -179,10 +178,10 @@ func TestPlanChoice_UniqueIndexPointLookup(t *testing.T) {
 	}
 
 	physicalPlan := ph.GetRecordQueryPlan()
-	if _, ok := physicalPlan.(*plans.RecordQueryIndexPlan); !ok {
+	if extractIndexPlan(physicalPlan) == nil {
 		t.Fatalf("unique index point lookup should choose IndexScan, got %T", physicalPlan)
 	}
-	t.Logf("✓ Unique index point lookup → IndexScan")
+	t.Logf("Unique index point lookup -> IndexScan")
 }
 
 func TestPlanChoice_PicksBestIndexAmongMultiple(t *testing.T) {
@@ -235,14 +234,14 @@ func TestPlanChoice_PicksBestIndexAmongMultiple(t *testing.T) {
 	}
 
 	physicalPlan := ph.GetRecordQueryPlan()
-	idxPlan, ok := physicalPlan.(*plans.RecordQueryIndexPlan)
-	if !ok {
+	idxPlan := extractIndexPlan(physicalPlan)
+	if idxPlan == nil {
 		t.Fatalf("expected IndexScan, got %T: %s", physicalPlan, physicalPlan.Explain())
 	}
 	if idxPlan.GetIndexName() != "idx_status" {
 		t.Fatalf("expected optimizer to pick idx_status, picked %s", idxPlan.GetIndexName())
 	}
-	t.Logf("✓ Optimizer correctly picked idx_status over idx_customer")
+	t.Logf("Optimizer correctly picked idx_status over idx_customer")
 }
 
 func TestPlanChoice_InequalityRangeScan(t *testing.T) {
@@ -352,23 +351,22 @@ func TestPlanChoice_EqualityPlusInequality(t *testing.T) {
 	}
 
 	physicalPlan := ph.GetRecordQueryPlan()
-	switch pp := physicalPlan.(type) {
-	case *plans.RecordQueryIndexPlan:
-		comps := pp.GetScanComparisons()
-		if len(comps) < 2 {
-			t.Fatalf("expected 2 comparison ranges, got %d", len(comps))
-		}
-		if !comps[0].IsEquality() {
-			t.Fatal("first column should be equality-bound")
-		}
-		if !comps[1].IsInequality() {
-			t.Fatalf("second column should be inequality-bound, got range type %d", comps[1].GetRangeType())
-		}
-		t.Logf("✓ Equality + inequality on compound index: %s", pp.Explain())
-	default:
+	pp := extractIndexPlan(physicalPlan)
+	if pp == nil {
 		t.Fatalf("expected IndexScan for equality+inequality prefix, got %T: %s",
 			physicalPlan, physicalPlan.Explain())
 	}
+	comps := pp.GetScanComparisons()
+	if len(comps) < 2 {
+		t.Fatalf("expected 2 comparison ranges, got %d", len(comps))
+	}
+	if !comps[0].IsEquality() {
+		t.Fatal("first column should be equality-bound")
+	}
+	if !comps[1].IsInequality() {
+		t.Fatalf("second column should be inequality-bound, got range type %d", comps[1].GetRangeType())
+	}
+	t.Logf("Equality + inequality on compound index: %s", pp.Explain())
 }
 
 func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
@@ -418,11 +416,10 @@ func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 
 	physicalPlan := ph.GetRecordQueryPlan()
 
-	switch pp := physicalPlan.(type) {
-	case *plans.RecordQueryIndexPlan:
-		t.Logf("✓ Optimizer chose INDEX SCAN with partial prefix: %s", pp.Explain())
-	default:
+	pp := extractIndexPlan(physicalPlan)
+	if pp == nil {
 		t.Fatalf("optimizer should choose IndexScan for single-column prefix match, got %T: %s",
 			physicalPlan, physicalPlan.Explain())
 	}
+	t.Logf("Optimizer chose INDEX SCAN with partial prefix: %s", pp.Explain())
 }

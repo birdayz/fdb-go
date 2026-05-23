@@ -24,6 +24,7 @@ func TestIndexScan_ConflictingEqualities(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -67,6 +68,7 @@ func TestIndexScan_SameEqualityTwice(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -94,11 +96,15 @@ func TestIndexScan_SameEqualityTwice(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield (same equality merges fine), got %d", len(results))
 	}
-	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	fw, ok := results[0].(*physicalFetchFromPartialRecordWrapper)
 	if !ok {
-		t.Fatalf("expected bare index scan (both consumed), got %T", results[0])
+		t.Fatalf("expected Fetch wrapper (both consumed), got %T", results[0])
 	}
-	if !wrapper.plan.GetScanComparisons()[0].IsEquality() {
+	idxPlan := extractIndexPlan(fw.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatal("expected inner RecordQueryIndexPlan inside Fetch wrapper")
+	}
+	if !idxPlan.GetScanComparisons()[0].IsEquality() {
 		t.Fatal("comparison should be equality")
 	}
 }
@@ -117,6 +123,7 @@ func TestIndexScan_NonFieldValueOperand(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -157,6 +164,7 @@ func TestIndexScan_NonComparisonPredicates(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -199,6 +207,7 @@ func TestIndexScan_EqualityThenInequality_ConsumesBoth(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -226,12 +235,16 @@ func TestIndexScan_EqualityThenInequality_ConsumesBoth(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	// Both consumed → bare index scan.
-	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	// Both consumed → Fetch(IndexScan).
+	fw, ok := results[0].(*physicalFetchFromPartialRecordWrapper)
 	if !ok {
-		t.Fatalf("expected bare *physicalIndexScanWrapper (all consumed), got %T", results[0])
+		t.Fatalf("expected *physicalFetchFromPartialRecordWrapper (all consumed), got %T", results[0])
 	}
-	comps := wrapper.plan.GetScanComparisons()
+	idxPlan := extractIndexPlan(fw.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatal("expected inner RecordQueryIndexPlan inside Fetch wrapper")
+	}
+	comps := idxPlan.GetScanComparisons()
 	if !comps[0].IsEquality() {
 		t.Fatal("first comparison should be equality")
 	}
@@ -255,6 +268,7 @@ func TestIndexScan_PredicateOrderIndependent(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -283,11 +297,15 @@ func TestIndexScan_PredicateOrderIndependent(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	fw, ok := results[0].(*physicalFetchFromPartialRecordWrapper)
 	if !ok {
-		t.Fatalf("expected bare index scan, got %T", results[0])
+		t.Fatalf("expected Fetch wrapper, got %T", results[0])
 	}
-	comps := wrapper.plan.GetScanComparisons()
+	idxPlan := extractIndexPlan(fw.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatal("expected inner RecordQueryIndexPlan inside Fetch wrapper")
+	}
+	comps := idxPlan.GetScanComparisons()
 	if !comps[0].IsEquality() || !comps[1].IsEquality() {
 		t.Fatal("both comparisons should be equality regardless of predicate order")
 	}
@@ -307,6 +325,7 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		true, // unique
+		nil,
 	)
 	b1 := values.UniqueCorrelationIdentifier()
 	candNonUnique := NewValueIndexScanMatchCandidate(
@@ -316,6 +335,7 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 		[]values.CorrelationIdentifier{b1},
 		values.UnknownType,
 		false, // non-unique
+		nil,
 	)
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
@@ -339,7 +359,18 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 	if len(resultsU) != 1 {
 		t.Fatalf("unique: expected 1 yield, got %d", len(resultsU))
 	}
-	wrapperU := resultsU[0].(*physicalIndexScanWrapper)
+	// The rule yields Fetch(IndexScan). Extract the inner index scan
+	// wrapper to compare costs at the index-scan level.
+	fetchU, ok := resultsU[0].(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		t.Fatalf("unique: expected *physicalFetchFromPartialRecordWrapper, got %T", resultsU[0])
+	}
+	innerIdxU := extractIndexPlan(fetchU.GetRecordQueryPlan())
+	if innerIdxU == nil {
+		t.Fatal("unique: expected inner RecordQueryIndexPlan inside Fetch")
+	}
+	// Build a physicalIndexScanWrapper to test HintCost at the index level.
+	wrapperU := &physicalIndexScanWrapper{plan: innerIdxU, columnNames: []string{"ID"}, unique: true}
 	costU := wrapperU.HintCost(nil, properties.DefaultStatistics{})
 
 	// Fire with non-unique index (rebuild filter for fresh reference).
@@ -361,7 +392,15 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 	if len(resultsNU) != 1 {
 		t.Fatalf("non-unique: expected 1 yield, got %d", len(resultsNU))
 	}
-	wrapperNU := resultsNU[0].(*physicalIndexScanWrapper)
+	fetchNU, ok := resultsNU[0].(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		t.Fatalf("non-unique: expected *physicalFetchFromPartialRecordWrapper, got %T", resultsNU[0])
+	}
+	innerIdxNU := extractIndexPlan(fetchNU.GetRecordQueryPlan())
+	if innerIdxNU == nil {
+		t.Fatal("non-unique: expected inner RecordQueryIndexPlan inside Fetch")
+	}
+	wrapperNU := &physicalIndexScanWrapper{plan: innerIdxNU, columnNames: []string{"ID"}, unique: false}
 	costNU := wrapperNU.HintCost(nil, properties.DefaultStatistics{})
 
 	if costU.Cardinality >= costNU.Cardinality {
@@ -384,6 +423,7 @@ func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	b1 := values.UniqueCorrelationIdentifier()
 	b2 := values.UniqueCorrelationIdentifier()
@@ -394,6 +434,7 @@ func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
 		[]values.CorrelationIdentifier{b1, b2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candSingle, candCompound}}
 
@@ -422,11 +463,17 @@ func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
 		t.Fatalf("planner error: %v", err)
 	}
 
-	w, ok := best.(*physicalIndexScanWrapper)
+	// The planner picks the best plan. Extract the index plan from
+	// whatever wrapper the planner chose (Fetch, bare index, or filter).
+	ph, ok := best.(physicalPlanExpression)
 	if !ok {
-		t.Fatalf("expected planner to pick physicalIndexScanWrapper, got %T", best)
+		t.Fatalf("expected physicalPlanExpression, got %T", best)
 	}
-	comps := w.plan.GetScanComparisons()
+	idxPlan := extractIndexPlan(ph.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatalf("expected RecordQueryIndexPlan inside best plan, got %T", ph.GetRecordQueryPlan())
+	}
+	comps := idxPlan.GetScanComparisons()
 	bound := 0
 	for _, cr := range comps {
 		if !cr.IsEmpty() {
@@ -452,6 +499,7 @@ func TestIndexScan_CostComparison(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -480,6 +528,10 @@ func TestIndexScan_CostComparison(t *testing.T) {
 			foundIndexScan = true
 			break
 		}
+		if _, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+			foundIndexScan = true
+			break
+		}
 	}
 	if !foundIndexScan {
 		t.Fatalf("planner should produce an index scan wrapper; members=%d", len(ref.AllMembers()))
@@ -499,6 +551,7 @@ func TestIndexScan_CaseInsensitiveColumnMatch(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 

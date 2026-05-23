@@ -75,6 +75,7 @@ func TestImplementStreamingAgg_IndexOrderedInput(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 

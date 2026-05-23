@@ -1177,6 +1177,18 @@ func (d *metadataIndexDef) IndexRecordTypes() []string {
 	return names
 }
 
+func (d *metadataIndexDef) IndexPrimaryKeyColumns() []string {
+	rts := d.md.RecordTypesForIndex(d.idx)
+	if len(rts) == 0 {
+		return nil
+	}
+	pk := rts[0].PrimaryKey
+	if pk == nil {
+		return nil
+	}
+	return pk.FieldNames()
+}
+
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 	if c.md == nil {
 		return nil

@@ -110,6 +110,7 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 				aliases,
 				values.UnknownType,
 				seed%5 == 0,
+				nil,
 			))
 		}
 		ctx := &indexTestPlanContext{candidates: candidates}

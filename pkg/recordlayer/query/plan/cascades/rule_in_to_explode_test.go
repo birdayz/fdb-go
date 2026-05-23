@@ -301,6 +301,7 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -342,7 +343,7 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 			if _, ok := m.(*expressions.ExplodeExpression); ok {
 				explodeCount++
 			}
-			if IsPhysicalIndexScan(m) {
+			if IsPhysicalIndexScan(m) || IsPhysicalFetchFromPartialRecord(m) {
 				indexScanCount++
 			}
 			for _, q := range m.GetQuantifiers() {

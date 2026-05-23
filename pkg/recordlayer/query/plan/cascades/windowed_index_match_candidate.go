@@ -232,8 +232,11 @@ func (c *WindowedIndexScanMatchCandidate) PushValueThroughFetch(
 // buildTranslateValueFunction creates a TranslateValueFunction for
 // the windowed index's covered columns.
 func (c *WindowedIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
-	coveredColumns := make(map[string]struct{}, len(c.columnNames))
+	coveredColumns := make(map[string]struct{}, len(c.columnNames)+len(c.primaryKeyColumns))
 	for _, col := range c.columnNames {
+		coveredColumns[strings.ToUpper(col)] = struct{}{}
+	}
+	for _, col := range c.primaryKeyColumns {
 		coveredColumns[strings.ToUpper(col)] = struct{}{}
 	}
 

@@ -76,7 +76,7 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// All fields in the projection are already available underneath
 	// the fetch. We don't need the projection nor the fetch — yield
-	// the fetch's inner child directly.
+	// the fetch's inner child directly, marked as covering.
 	fetchInnerRef := fetchW.innerQuant.GetRangesOver()
 	if fetchInnerRef == nil {
 		return
@@ -86,6 +86,16 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	if idxW, ok := fetchInnerExpr.(*physicalIndexScanWrapper); ok && !idxW.covering {
+		coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
+		call.Yield(&physicalIndexScanWrapper{
+			plan:        coveredPlan,
+			columnNames: idxW.columnNames,
+			unique:      idxW.unique,
+			covering:    true,
+		})
+		return
+	}
 	call.Yield(fetchInnerExpr)
 }
 
