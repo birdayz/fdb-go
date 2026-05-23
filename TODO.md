@@ -31,7 +31,7 @@ Measured after cost model regression fixes. Compare against master baseline.
 | full_scan_sparse_filter | 2.93s | 3.0s | = | |
 | scan_all_narrow (1M rows) | 3.31s | 3.4s | = | |
 | scan_all_wide (1M rows) | 3.60s | 3.8s | = | |
-| join_10_outer | 2.79s | 3.0s | = | |
+| join_10_outer | **0.01s** | 3.0s | **230x ↑** | FlatMap(PK-range, correlated PK-lookup) |
 | index_amount_range (100K rows) | 3.05s | 3.3s | = | Cost model prefers full scan for range |
 | group_by_customer_having | 9.28s | 10s | = | Streaming agg uses InMemorySort(FullScan) |
 
@@ -53,7 +53,7 @@ Queries that should use indexes but appear to full-scan, or are orders of magnit
 
 | # | Query | Current | Target | Speedup | Root cause | Status |
 |---|-------|---------|--------|---------|------------|--------|
-| P1 | `SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id` | **2.97s** | <100ms | 30x | NLJ inner plan is full scan of customers (100K rows per outer). Needs correlated index lookup on `customers(id)`. Same class as P4. | OPEN — requires correlated FlatMap index binding |
+| P1 | `SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id` | ~~2.97s~~ **13ms** | <100ms | ~~30x~~ **230x** | **FIXED.** Three bugs: (1) scanComparisonsToTupleRange LT/LTE wrongly set low exclusive, (2) outer predicates wrapped in PredicatesFilter instead of pushed into PK range scan, (3) case-insensitive field lookup in correlated FieldValue. | **DONE** (nightshift-99) |
 | P2 | `SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status` | **5.19s** | ~5s | ~1x | Not a planner bug. `SUM(amount)` requires fetching each record (amount not in idx_status). Non-covering index scan + fetch is MORE expensive than primary scan + sort. Genuine I/O cost at 1M rows. | WONTFIX — correct behavior; needs composite index `(status, amount)` |
 | P3 | `SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id` | **10.09s** | ~10s | ~1x | Same as P2: `SUM(amount)` requires fetch from idx_customer. 100K groups × fetch = genuine I/O cost. | WONTFIX — needs composite index `(customer_id, amount)` |
 | P4 | `SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id` | ~~2.96s~~ **0.02s** | <100ms | ~~30x~~ **150x** | **FIXED.** Four changes: (1) promoteInJoinWinners after PLANNING, (2) InJoinRule yields alternatives for ALL inner plans, (3) InMemorySortRule yields sort alternatives for InJoin/InUnion, (4) promoteByDataAccessCost at root. | **DONE** (nightshift-99) |
