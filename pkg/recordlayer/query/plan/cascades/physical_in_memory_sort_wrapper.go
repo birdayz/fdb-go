@@ -8,7 +8,6 @@ package cascades
 import (
 	"fmt"
 	"hash/fnv"
-	"math"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
@@ -94,8 +93,7 @@ func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost, _ proper
 	if n < 1 {
 		n = 1
 	}
-	logN := math.Max(1, math.Log2(math.Max(2, n)))
-	sortCPU := n * properties.SortCPU * logN
+	sortCPU := n * 0.1
 	return properties.Cost{
 		Cardinality: n,
 		CPU:         child[0].CPU + sortCPU,
