@@ -216,7 +216,11 @@ func orderingPartitionHash(o properties.Ordering) uint64 {
 	}
 	h := fnv.New64a()
 	for i, k := range o.Keys {
-		h.Write([]byte(values.ExplainValue(k)))
+		if fv, ok := k.(*values.FieldValue); ok {
+			h.Write([]byte(fv.Field))
+		} else {
+			h.Write([]byte(values.ExplainValue(k)))
+		}
 		if i < len(o.Descending) && o.Descending[i] {
 			h.Write([]byte{1})
 		} else {

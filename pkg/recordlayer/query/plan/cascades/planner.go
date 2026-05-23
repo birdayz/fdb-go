@@ -235,6 +235,7 @@ func (p *Planner) WithCostModel(less func(a, b expressions.RelationalExpression)
 // WithStatistics sets the table-level cardinality statistics for the cost
 // model. Stats flow through EstimateCost and HintCost to give scan/index
 // wrappers real cardinality instead of the default 1e6 constant.
+// Replaces the cost model — call after WithCostModel if both are used.
 func (p *Planner) WithStatistics(stats properties.StatisticsProvider) *Planner {
 	p.stats = stats
 	p.costModel = NewPlanningCostModelLess(stats)

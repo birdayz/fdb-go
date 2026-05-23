@@ -84,31 +84,30 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		// Forward-only: reverse scans break HAVING predicate evaluation ordering.
-		for _, reverse := range []bool{false} {
-			scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
-			idxPlan := extractIndexPlan(scanPlan)
-			if idxPlan == nil {
-				continue
-			}
-
-			covering := aggregatesCoveredByIndex(gb.GetAggregates(), colNames)
-			if covering {
-				idxPlan = idxPlan.WithCovering(colNames)
-			}
-			idxWrapper := &physicalIndexScanWrapper{
-				plan:        idxPlan,
-				columnNames: colNames,
-				unique:      cand.IsUnique(),
-				covering:    covering,
-			}
-
-			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
-				idxPlan, groupingKeys, gb.GetAggregates(),
-			)
-			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
-			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		// Forward-only: reverse ordering is handled by ImplementSortRule
+		// when ORDER BY DESC is present above the GroupBy.
+		scanPlan := cand.ToScanPlan(emptyPrefix, false)
+		idxPlan := extractIndexPlan(scanPlan)
+		if idxPlan == nil {
+			continue
 		}
+
+		covering := aggregatesCoveredByIndex(gb.GetAggregates(), colNames)
+		if covering {
+			idxPlan = idxPlan.WithCovering(colNames)
+		}
+		idxWrapper := &physicalIndexScanWrapper{
+			plan:        idxPlan,
+			columnNames: colNames,
+			unique:      cand.IsUnique(),
+			covering:    covering,
+		}
+
+		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
+			idxPlan, groupingKeys, gb.GetAggregates(),
+		)
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
 	}
 }
 
