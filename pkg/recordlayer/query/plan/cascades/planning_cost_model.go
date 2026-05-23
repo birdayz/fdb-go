@@ -726,16 +726,16 @@ func outerCardinality(fm *physicalFlatMapWrapper, stats properties.StatisticsPro
 	if ref == nil {
 		return properties.LeafScanCardinality
 	}
-	return properties.EstimateCostWith(firstPhysicalChild(ref), stats).Cardinality
+	best := ref.GetBest(properties.CostLessWith(stats))
+	if best == nil {
+		best = firstPhysicalChild(ref)
+	}
+	if best == nil {
+		return properties.LeafScanCardinality
+	}
+	return properties.EstimateCostWith(best, stats).Cardinality
 }
 
-// firstPhysicalChild returns the first physical member of ref.
-// Java's cost model recurses into the already-optimized best member
-// (Reference.get() after optimization); we pick the first physical
-// member by insertion order. Safe in practice because bottom-up
-// optimization means child References typically have exactly one
-// physical member at comparison time. To fully match Java, the
-// planner's bestMember map would need to be threaded through.
 func firstPhysicalChild(ref *expressions.Reference) expressions.RelationalExpression {
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); ok {
