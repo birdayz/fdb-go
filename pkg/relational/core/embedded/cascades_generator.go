@@ -371,7 +371,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		conn:             g.c,
 		md:               md,
 		physicalPlan:     physPlan,
-		explain:          logicalOp.Explain(""),
+		explain:          physPlan.Explain(),
 		scalarSubqueries: scalarSubs,
 		sqlLimit:         sqlLimit,
 		sqlOffset:        sqlOffset,
