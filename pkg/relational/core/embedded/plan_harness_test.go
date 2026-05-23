@@ -114,10 +114,9 @@ func TestPlanHarness_GroupByCountCovering(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "StreamingAgg")
-	// TODO: should use IndexScan(IDX_STATUS) once covering GROUP BY is wired
-	// in the executor (IndexKeyValueToPartialRecord for streaming agg).
-	// Currently InMemorySort(Scan) wins because FetchCPU doesn't model
-	// random vs sequential I/O cost difference.
+	assertPlanContains(t, plan, "IDX_STATUS")
+	assertPlanContains(t, plan, "COVERING")
+	assertPlanNotContains(t, plan, "InMemorySort")
 }
 
 func TestPlanHarness_GroupByCountOrderBy(t *testing.T) {
@@ -130,6 +129,8 @@ func TestPlanHarness_GroupByCountOrderBy(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "StreamingAgg")
+	assertPlanContains(t, plan, "IDX_STATUS")
+	assertPlanContains(t, plan, "COVERING")
 }
 
 func TestPlanHarness_GroupByCountOrderByDesc(t *testing.T) {
