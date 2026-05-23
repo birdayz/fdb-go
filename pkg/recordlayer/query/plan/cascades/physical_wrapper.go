@@ -151,13 +151,18 @@ func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
 }
 
 // PhysicalIndexScanName returns the index name if expr is a
-// physicalIndexScanWrapper, empty string otherwise.
+// physicalIndexScanWrapper or a physicalFetchFromPartialRecordWrapper
+// whose inner plan is an index plan. Returns empty string otherwise.
 func PhysicalIndexScanName(expr expressions.RelationalExpression) string {
-	w, ok := expr.(*physicalIndexScanWrapper)
-	if !ok {
-		return ""
+	if w, ok := expr.(*physicalIndexScanWrapper); ok {
+		return w.plan.GetIndexName()
 	}
-	return w.plan.GetIndexName()
+	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
+		if ip, ok := fw.plan.GetInner().(*plans.RecordQueryIndexPlan); ok {
+			return ip.GetIndexName()
+		}
+	}
+	return ""
 }
 
 // extractChildPlanFromQuantifier gets the RecordQueryPlan from a
@@ -1436,11 +1441,6 @@ func (w *physicalProjectionWrapper) HashCodeWithoutChildren() uint64 {
 func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalProjectionWrapper.WithChildren: expected 1 child, got %d", len(qs))
-	}
-	if inner := w.plan.GetInner(); inner != nil {
-		if idx, ok := inner.(*plans.RecordQueryIndexPlan); ok && idx.IsCovering() {
-			return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
-		}
 	}
 	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
 		newPlan := plans.NewRecordQueryProjectionPlanWithAliases(w.plan.GetProjections(), w.plan.GetAliases(), innerPlan)

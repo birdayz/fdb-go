@@ -145,7 +145,20 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		// RecordQueryPlanWithComparisons interface.
 		residual := residualPredicates(preds, consumed, prefix, aliases, colToIdx)
 
-		if idxPlanTyped := extractIndexPlan(idxPlan); idxPlanTyped != nil {
+		if fetchPlan, ok := idxPlan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+			if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
+				idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, columnNames: colNames, unique: cand.IsUnique()}
+				fetchQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+				fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+				if len(residual) == 0 {
+					call.Yield(fetchWrapper)
+				} else {
+					filterPlan := plans.NewRecordQueryFilterPlan(residual, fetchPlan)
+					innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(fetchWrapper))
+					call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
+				}
+			}
+		} else if idxPlanTyped := extractIndexPlan(idxPlan); idxPlanTyped != nil {
 			wrapper := &physicalIndexScanWrapper{plan: idxPlanTyped, columnNames: colNames, unique: cand.IsUnique()}
 			if len(residual) == 0 {
 				call.Yield(wrapper)

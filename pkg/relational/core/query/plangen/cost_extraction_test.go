@@ -647,7 +647,7 @@ func TestEndToEnd_PlanPrefersIndexScanOverFullScan(t *testing.T) {
 	// The plan should be the index scan (cheapest) — not the full scan
 	// or logical filter. Index scan has lower cardinality due to
 	// selectivity reduction.
-	if cascades.IsPhysicalIndexScan(plan) {
+	if cascades.IsPhysicalIndexScan(plan) || cascades.IsPhysicalFetchFromPartialRecord(plan) {
 		t.Logf("Plan correctly chose index scan (tasks=%d)", tasks)
 		return
 	}

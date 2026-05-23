@@ -194,7 +194,7 @@ func TestOrderedIndexScan_PlannerIntegration(t *testing.T) {
 
 	foundIndexScanAtTop := false
 	for _, m := range ref.AllMembers() {
-		if IsPhysicalIndexScan(m) {
+		if IsPhysicalIndexScan(m) || IsPhysicalFetchFromPartialRecord(m) {
 			foundIndexScanAtTop = true
 			break
 		}

@@ -368,8 +368,8 @@ func TestEndToEnd_SortElimByIndex(t *testing.T) {
 
 	// Sort should be eliminated by ImplementSortRule (PLANNING phase,
 	// matching Java's RemoveSortRule). The extracted plan should be an
-	// index scan, not a sort wrapper.
-	if cascades.IsPhysicalIndexScan(best) {
+	// index scan (possibly wrapped in a fetch), not a sort wrapper.
+	if cascades.IsPhysicalIndexScan(best) || cascades.IsPhysicalFetchFromPartialRecord(best) {
 		return
 	}
 	if cascades.IsPhysicalFilter(best) {
@@ -423,7 +423,7 @@ func TestEndToEnd_PlanPicksSortElimOverMaterializedSort(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if cascades.IsPhysicalIndexScan(plan) {
+	if cascades.IsPhysicalIndexScan(plan) || cascades.IsPhysicalFetchFromPartialRecord(plan) {
 		return
 	}
 	if cascades.IsPhysicalFilter(plan) {
@@ -483,7 +483,7 @@ func TestEndToEnd_SortElimWithPrefixEqAndRangeSuffix(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if cascades.IsPhysicalIndexScan(plan) || cascades.IsPhysicalFilter(plan) {
+	if cascades.IsPhysicalIndexScan(plan) || cascades.IsPhysicalFetchFromPartialRecord(plan) || cascades.IsPhysicalFilter(plan) {
 		return
 	}
 	t.Fatalf("sort should be eliminated; got %T", plan)
@@ -654,7 +654,7 @@ func TestEndToEnd_UniqueIndexPointLookupPreferred(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !cascades.IsPhysicalIndexScan(plan) {
+	if !cascades.IsPhysicalIndexScan(plan) && !cascades.IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("expected index scan, got %T", plan)
 	}
 	indexName := cascades.PhysicalIndexScanName(plan)
@@ -716,7 +716,7 @@ func TestEndToEnd_CompoundIndexBeatsIntersection(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !cascades.IsPhysicalIndexScan(plan) {
+	if !cascades.IsPhysicalIndexScan(plan) && !cascades.IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("expected compound index scan, got %T", plan)
 	}
 	indexName := cascades.PhysicalIndexScanName(plan)

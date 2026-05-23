@@ -87,10 +87,9 @@ func (w *physicalFetchFromPartialRecordWrapper) HintCost(child []properties.Cost
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	in := child[0].Cardinality
 	return properties.Cost{
-		Cardinality: in * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.FetchCPU) * physicalWrapperCostMultiplier,
+		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
+		CPU:         child[0].CPU * physicalWrapperCostMultiplier,
 	}
 }
 
@@ -106,6 +105,19 @@ func (w *physicalFetchFromPartialRecordWrapper) HintOrdering() properties.Orderi
 		}
 	}
 	return properties.Ordering{}
+}
+
+func (w *physicalFetchFromPartialRecordWrapper) HintRichOrdering() *RichOrdering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return EmptyOrdering()
+	}
+	for _, m := range ref.AllMembers() {
+		if rh, ok := m.(RichOrderingHinter); ok {
+			return rh.HintRichOrdering()
+		}
+	}
+	return EmptyOrdering()
 }
 
 func (w *physicalFetchFromPartialRecordWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

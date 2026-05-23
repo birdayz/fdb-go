@@ -4,6 +4,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // ImplementSortRule removes a logical LogicalSortExpression when the
@@ -160,27 +161,51 @@ func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *Re
 // strictlyOrderedIfUnique checks whether the given expression is a unique
 // index scan whose column count is covered by numKeys (requested sort keys +
 // equality-bound unsorted keys). Mirrors Java's RemoveSortRule.strictlyOrderedIfUnique.
+// Looks through Fetch wrappers to find the underlying index scan.
 func strictlyOrderedIfUnique(expr expressions.RelationalExpression, numKeys int) bool {
-	w, ok := expr.(*physicalIndexScanWrapper)
-	if !ok {
-		return false
+	if w, ok := expr.(*physicalIndexScanWrapper); ok {
+		return w.unique && numKeys >= len(w.columnNames)
 	}
-	return w.unique && numKeys >= len(w.columnNames)
+	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
+		ref := fw.innerQuant.GetRangesOver()
+		if ref == nil {
+			return false
+		}
+		for _, m := range ref.AllMembers() {
+			if w, ok := m.(*physicalIndexScanWrapper); ok {
+				return w.unique && numKeys >= len(w.columnNames)
+			}
+		}
+	}
+	return false
 }
 
 // makeStrictlySorted returns an expression with its inner plan marked
 // as strictlySorted. For index scans, this creates a new wrapper with
-// a cloned plan. For other plan types, returns the expression unchanged.
+// a cloned plan. For Fetch wrappers, creates a new Fetch wrapping a
+// strictlySorted index plan. For other plan types, returns unchanged.
 func makeStrictlySorted(expr expressions.RelationalExpression) expressions.RelationalExpression {
-	w, ok := expr.(*physicalIndexScanWrapper)
-	if !ok {
-		return expr
+	if w, ok := expr.(*physicalIndexScanWrapper); ok {
+		return &physicalIndexScanWrapper{
+			plan:        w.plan.WithStrictlySorted(),
+			columnNames: w.columnNames,
+			unique:      w.unique,
+		}
 	}
-	return &physicalIndexScanWrapper{
-		plan:        w.plan.WithStrictlySorted(),
-		columnNames: w.columnNames,
-		unique:      w.unique,
+	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
+		inner := fw.GetPlan().GetInner()
+		if idxPlan, ok := inner.(*plans.RecordQueryIndexPlan); ok {
+			newIdxPlan := idxPlan.WithStrictlySorted()
+			newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
+				newIdxPlan,
+				fw.GetPlan().GetTranslateValueFunction(),
+				fw.GetPlan().GetResultType(),
+				fw.GetPlan().GetFetchIndexRecords(),
+			)
+			return NewPhysicalFetchFromPartialRecordWrapper(newFetchPlan, fw.innerQuant)
+		}
 	}
+	return expr
 }
 
 // computePartitionOrdering returns the ordering of the first physical

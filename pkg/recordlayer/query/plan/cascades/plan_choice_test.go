@@ -54,13 +54,12 @@ func TestPlanChoice_IndexScanChosenOverFullScan(t *testing.T) {
 
 	physicalPlan := ph.GetRecordQueryPlan()
 
-	switch physicalPlan.(type) {
-	case *plans.RecordQueryIndexPlan:
-		// Index scan chosen — optimizer correctly preferred index over full scan.
-	default:
+	idxPlan := extractIndexPlan(physicalPlan)
+	if idxPlan == nil {
 		t.Fatalf("optimizer should choose IndexScan for equality on indexed column, got %T: %s",
 			physicalPlan, physicalPlan.Explain())
 	}
+	// Index scan chosen — optimizer correctly preferred index over full scan.
 }
 
 type planChoiceIndexDef struct {

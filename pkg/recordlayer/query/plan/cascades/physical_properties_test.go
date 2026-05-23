@@ -210,7 +210,7 @@ func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 	}
 	// The extracted plan should be the index scan (sort eliminated),
 	// not a LogicalSortExpression or InMemorySort.
-	if !IsPhysicalIndexScan(plan) {
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("sort should be eliminated via child ordering winner; got %T", plan)
 	}
 }
@@ -270,7 +270,7 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 
 	// The plan should not be an in-memory sort — sort should be eliminated
 	// via the ImplementSortRule + data access path.
-	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) {
+	if !IsPhysicalIndexScan(plan) && !IsPhysicalFilter(plan) && !IsPhysicalFetchFromPartialRecord(plan) {
 		t.Fatalf("sort should be eliminated via data access; got %T", plan)
 	}
 }
@@ -312,7 +312,7 @@ func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
 	if winner == nil {
 		t.Fatal("expected ordering-specific winner for STATUS ASC")
 	}
-	if !IsPhysicalIndexScan(winner) {
-		t.Fatalf("expected physicalIndexScanWrapper as ordering winner, got %T", winner)
+	if !IsPhysicalIndexScan(winner) && !IsPhysicalFetchFromPartialRecord(winner) {
+		t.Fatalf("expected physicalIndexScanWrapper or physicalFetchFromPartialRecordWrapper as ordering winner, got %T", winner)
 	}
 }

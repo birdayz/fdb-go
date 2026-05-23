@@ -46,14 +46,18 @@ func TestImplementIndexScanRule_SingleEquality(t *testing.T) {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
 
-	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	fw, ok := results[0].(*physicalFetchFromPartialRecordWrapper)
 	if !ok {
-		t.Fatalf("expected *physicalIndexScanWrapper, got %T", results[0])
+		t.Fatalf("expected *physicalFetchFromPartialRecordWrapper, got %T", results[0])
 	}
-	if wrapper.plan.GetIndexName() != "Order$status" {
-		t.Fatalf("index=%q, want Order$status", wrapper.plan.GetIndexName())
+	idxPlan := extractIndexPlan(fw.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatal("expected inner RecordQueryIndexPlan inside Fetch wrapper")
 	}
-	comps := wrapper.plan.GetScanComparisons()
+	if idxPlan.GetIndexName() != "Order$status" {
+		t.Fatalf("index=%q, want Order$status", idxPlan.GetIndexName())
+	}
+	comps := idxPlan.GetScanComparisons()
 	if len(comps) != 2 {
 		t.Fatalf("expected 2 scan comparisons, got %d", len(comps))
 	}
@@ -105,11 +109,15 @@ func TestImplementIndexScanRule_MultiEquality_AllConsumed(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	fw, ok := results[0].(*physicalFetchFromPartialRecordWrapper)
 	if !ok {
-		t.Fatalf("expected *physicalIndexScanWrapper (all consumed), got %T", results[0])
+		t.Fatalf("expected *physicalFetchFromPartialRecordWrapper (all consumed), got %T", results[0])
 	}
-	comps := wrapper.plan.GetScanComparisons()
+	idxPlan := extractIndexPlan(fw.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatal("expected inner RecordQueryIndexPlan inside Fetch wrapper")
+	}
+	comps := idxPlan.GetScanComparisons()
 	if !comps[0].IsEquality() || !comps[1].IsEquality() {
 		t.Fatal("both comparisons should be equality")
 	}
@@ -372,12 +380,16 @@ func TestImplementIndexScanRule_RangeScan_TwoInequalitiesSameColumn(t *testing.T
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
 	}
-	// Both predicates consumed (same column, merged range) → bare index scan.
-	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	// Both predicates consumed (same column, merged range) → Fetch(IndexScan).
+	fw, ok := results[0].(*physicalFetchFromPartialRecordWrapper)
 	if !ok {
-		t.Fatalf("expected *physicalIndexScanWrapper (all consumed), got %T", results[0])
+		t.Fatalf("expected *physicalFetchFromPartialRecordWrapper (all consumed), got %T", results[0])
 	}
-	comps := wrapper.plan.GetScanComparisons()
+	idxPlan := extractIndexPlan(fw.GetRecordQueryPlan())
+	if idxPlan == nil {
+		t.Fatal("expected inner RecordQueryIndexPlan inside Fetch wrapper")
+	}
+	comps := idxPlan.GetScanComparisons()
 	if !comps[0].IsInequality() {
 		t.Fatal("first comparison should be inequality (merged range)")
 	}
@@ -418,12 +430,16 @@ func TestImplementIndexScanRule_PlannerIntegration_PrefersIndexOverFullScan(t *t
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// After planning: look for a physicalIndexScanWrapper in ref
-	// (the all-predicates-consumed case yields it directly into the
-	// filter's Reference).
+	// After planning: look for a Fetch(IndexScan) or bare index scan
+	// in ref (the all-predicates-consumed case yields Fetch(IndexScan)
+	// into the filter's Reference).
 	var foundIndexScan bool
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalIndexScanWrapper); ok {
+			foundIndexScan = true
+			break
+		}
+		if _, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
 			foundIndexScan = true
 			break
 		}
@@ -484,11 +500,14 @@ func TestImplementIndexScanRule_PlannerIntegration_MultipleCandidates(t *testing
 	}
 
 	// Both candidates should produce index scans. The 2-column index
-	// (Order$status_date) subsumes both predicates and yields a bare
-	// index scan; the 1-column index yields a filter-over-index-scan.
+	// (Order$status_date) subsumes both predicates and yields Fetch(IndexScan);
+	// the 1-column index yields a filter-over-Fetch(IndexScan).
 	indexScanCount := 0
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalIndexScanWrapper); ok {
+			indexScanCount++
+		}
+		if _, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
 			indexScanCount++
 		}
 	}

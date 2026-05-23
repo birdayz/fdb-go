@@ -389,9 +389,6 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 			}
 		}
 	}
-	// Only stamp a winner if EXPLORE didn't produce one (or produced
-	// a non-physical one). This handles References that only get
-	// physical plans during the PLANNING phase.
 	existing := ref.Winner(expressions.NoProperties)
 	if existing == nil {
 		best := ref.GetBest(p.costModel)
@@ -557,8 +554,20 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 		}
 	}
 
-	for _, rule := range p.implementationRules {
-		FireImplementationRuleWithContext(rule, ref, p.ctx, p.memo, cm)
+	// Fixpoint: fire implementation rules until no new members are
+	// produced. Rules like MergeProjectionAndFetchRule match physical
+	// expressions yielded by other rules (e.g. ImplementProjectionRule
+	// yields Projection(Fetch(IndexScan)), MergeProjectionAndFetchRule
+	// matches it and yields CoveringIndexScan). Without fixpoint, the
+	// second rule never sees the first rule's output.
+	for round := 0; round < 3; round++ {
+		before := len(ref.AllMembers())
+		for _, rule := range p.implementationRules {
+			FireImplementationRuleWithContext(rule, ref, p.ctx, p.memo, cm)
+		}
+		if len(ref.AllMembers()) == before {
+			break
+		}
 	}
 
 	computeRefPlanProperties(ref)

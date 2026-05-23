@@ -155,7 +155,9 @@ func orderingSatisfiesGroupingKeys(o properties.Ordering, groupingKeys []values.
 	return true
 }
 
-// findIndexScanWrapper scans the Reference for a physicalIndexScanWrapper.
+// findIndexScanWrapper scans the Reference for a physicalIndexScanWrapper,
+// traversing through Fetch wrappers. The Fetch operator is a transparent
+// enforcer — rules that need index properties look through it.
 func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper {
 	if ref == nil {
 		return nil
@@ -163,6 +165,13 @@ func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper 
 	for _, m := range ref.AllMembers() {
 		if w, ok := m.(*physicalIndexScanWrapper); ok {
 			return w
+		}
+		if fw, ok := m.(*physicalFetchFromPartialRecordWrapper); ok {
+			if innerRef := fw.innerQuant.GetRangesOver(); innerRef != nil {
+				if w := findIndexScanWrapper(innerRef); w != nil {
+					return w
+				}
+			}
 		}
 	}
 	return nil
