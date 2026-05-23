@@ -52,6 +52,9 @@ type Test struct {
 	// the plan output contains this substring. Useful for verifying
 	// index scan, covering, sort elimination, etc.
 	PlanContains string `yaml:"plan_contains"`
+	// PlanNotContains, if set, asserts the plan does NOT contain this
+	// substring. Useful for negative assertions (no InMemorySort, no Fetch).
+	PlanNotContains string `yaml:"plan_not_contains"`
 }
 
 // Load parses a scenario from a YAML file.

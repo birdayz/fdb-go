@@ -147,13 +147,13 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 	if d := diffRows(t.Rows, actual, t.Unordered); d != "" {
 		return d
 	}
-	if t.PlanContains != "" {
-		return checkPlanContains(ctx, db, t.Query, t.PlanContains)
+	if t.PlanContains != "" || t.PlanNotContains != "" {
+		return checkPlanAssertions(ctx, db, t.Query, t.PlanContains, t.PlanNotContains)
 	}
 	return ""
 }
 
-func checkPlanContains(ctx context.Context, db *sql.DB, query, substr string) string {
+func checkPlanAssertions(ctx context.Context, db *sql.DB, query, contains, notContains string) string {
 	rows, err := db.QueryContext(ctx, "EXPLAIN "+query)
 	if err != nil {
 		return fmt.Sprintf("EXPLAIN error: %v", err)
@@ -167,8 +167,11 @@ func checkPlanContains(ctx context.Context, db *sql.DB, query, substr string) st
 		return "EXPLAIN returned no plan"
 	}
 	plan := fmt.Sprint(planRows[0][0])
-	if !strings.Contains(plan, substr) {
-		return fmt.Sprintf("plan does not contain %q:\n  %s", substr, plan)
+	if contains != "" && !strings.Contains(plan, contains) {
+		return fmt.Sprintf("plan does not contain %q:\n  %s", contains, plan)
+	}
+	if notContains != "" && strings.Contains(plan, notContains) {
+		return fmt.Sprintf("plan should not contain %q:\n  %s", notContains, plan)
 	}
 	return ""
 }

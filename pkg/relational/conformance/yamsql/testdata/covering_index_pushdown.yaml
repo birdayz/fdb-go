@@ -74,6 +74,7 @@ tests:
   # from the entry's primary-key tuple; no record fetch.
   - query: SELECT id FROM t WHERE status = 'active' ORDER BY id
     plan_contains: COVERING
+    plan_not_contains: Fetch
     rows:
       - [1]
       - [3]
