@@ -336,6 +336,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		}
 		subPlanner := cascades.NewPlanner(rules, planCtx).
 			WithImplementationRules(cascades.DefaultImplementationRules()).
+			WithStatistics(stats).
 			WithMaxTasks(100_000)
 		subBest, _, subErr := subPlanner.Plan(subRef)
 		if subErr != nil || subBest == nil {
@@ -1058,8 +1059,7 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 		return nil
 	}
 
-	counts := make(map[string]float64)
-	_, _ = c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	result, runErr := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		store, storeErr := c.newStoreBuilder().
 			SetContext(rctx).
 			SetSubspace(ss).
@@ -1068,6 +1068,7 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 		if storeErr != nil {
 			return nil, storeErr
 		}
+		counts := make(map[string]float64)
 		for name := range md.RecordTypes() {
 			count, countErr := store.GetSnapshotRecordCountForRecordType(name)
 			if countErr != nil {
@@ -1075,9 +1076,12 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 			}
 			counts[name] = float64(count)
 		}
-		return nil, nil
+		return counts, nil
 	})
-
+	if runErr != nil || result == nil {
+		return nil
+	}
+	counts := result.(map[string]float64)
 	if len(counts) == 0 {
 		return nil
 	}

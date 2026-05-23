@@ -252,9 +252,16 @@ func executeIndexScan(
 	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
 
 	if p.IsCovering() {
+		var pkCols []string
+		if rts := p.GetRecordTypes(); len(rts) > 0 {
+			if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil && rt.PrimaryKey != nil {
+				pkCols = rt.PrimaryKey.FieldNames()
+			}
+		}
 		return &coveringIndexCursor{
-			inner:   indexCursor,
-			columns: p.GetCoveringColumns(),
+			inner:     indexCursor,
+			columns:   p.GetCoveringColumns(),
+			pkColumns: pkCols,
 		}, nil
 	}
 
@@ -401,9 +408,10 @@ func (c *indexFetchCursor) Close() error {
 func (c *indexFetchCursor) IsClosed() bool { return c.closed }
 
 type coveringIndexCursor struct {
-	inner   recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	columns []string
-	closed  bool
+	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	columns   []string
+	pkColumns []string
+	closed    bool
 }
 
 func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -417,10 +425,17 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 
 	entry := result.GetValue()
 	vals := entry.IndexValues()
-	datum := make(map[string]any, len(c.columns))
+	pk := entry.PrimaryKey()
+
+	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
 	for i, col := range c.columns {
 		if i < len(vals) {
-			datum[col] = vals[i]
+			datum[strings.ToLower(col)] = vals[i]
+		}
+	}
+	for i, col := range c.pkColumns {
+		if i < len(pk) {
+			datum[strings.ToLower(col)] = pk[i]
 		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
