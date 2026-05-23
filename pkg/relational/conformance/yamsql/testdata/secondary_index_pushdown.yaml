@@ -33,6 +33,7 @@ tests:
   # Basic: WHERE on indexed column returns matching rows via index
   # scan. Order of rows within the same index key is FDB scan order.
   - query: SELECT id, status, v FROM t WHERE status = 'active' ORDER BY id
+    plan_contains: IndexScan(IDX_STATUS
     rows:
       - [1, 'active', 10]
       - [3, 'active', 30]
