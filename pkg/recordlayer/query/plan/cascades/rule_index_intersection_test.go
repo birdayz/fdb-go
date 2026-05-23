@@ -23,6 +23,7 @@ func TestIndexIntersection_TwoCandidatesFullCoverage(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	candB := NewValueIndexScanMatchCandidate(
 		"Order$amount",
@@ -31,6 +32,7 @@ func TestIndexIntersection_TwoCandidatesFullCoverage(t *testing.T) {
 		[]values.CorrelationIdentifier{b1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candA, candB}}
 
@@ -81,6 +83,7 @@ func TestIndexIntersection_SingleCandidateNoFire(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -124,6 +127,7 @@ func TestIndexIntersection_OverlappingPredicates(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	candB := NewValueIndexScanMatchCandidate(
 		"Order$status_v2",
@@ -132,6 +136,7 @@ func TestIndexIntersection_OverlappingPredicates(t *testing.T) {
 		[]values.CorrelationIdentifier{b1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candA, candB}}
 
@@ -172,6 +177,7 @@ func TestIndexIntersection_PartialCoverage(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	candB := NewValueIndexScanMatchCandidate(
 		"Order$amount",
@@ -180,6 +186,7 @@ func TestIndexIntersection_PartialCoverage(t *testing.T) {
 		[]values.CorrelationIdentifier{b1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candA, candB}}
 
@@ -241,6 +248,7 @@ func TestIndexIntersection_ThreeWay(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	candB := NewValueIndexScanMatchCandidate(
 		"Order$amount",
@@ -249,6 +257,7 @@ func TestIndexIntersection_ThreeWay(t *testing.T) {
 		[]values.CorrelationIdentifier{b1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	candC := NewValueIndexScanMatchCandidate(
 		"Order$date",
@@ -257,6 +266,7 @@ func TestIndexIntersection_ThreeWay(t *testing.T) {
 		[]values.CorrelationIdentifier{c1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candA, candB, candC}}
 
@@ -316,6 +326,7 @@ func TestIndexIntersection_PlannerIntegration(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	candB := NewValueIndexScanMatchCandidate(
 		"Order$amount",
@@ -324,6 +335,7 @@ func TestIndexIntersection_PlannerIntegration(t *testing.T) {
 		[]values.CorrelationIdentifier{b1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candA, candB}}
 

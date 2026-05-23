@@ -22,6 +22,7 @@ type ValueIndexScanMatchCandidate struct {
 	indexName       string
 	recordTypes     []string
 	columnNames     []string
+	pkColumnNames   []string
 	sargableAliases []values.CorrelationIdentifier
 	flowedType      values.Type
 	unique          bool
@@ -47,6 +48,7 @@ func NewValueIndexScanMatchCandidate(
 	sargableAliases []values.CorrelationIdentifier,
 	flowedType values.Type,
 	unique bool,
+	pkColumnNames []string,
 ) *ValueIndexScanMatchCandidate {
 	aliases := make([]values.CorrelationIdentifier, len(sargableAliases))
 	copy(aliases, sargableAliases)
@@ -54,10 +56,13 @@ func NewValueIndexScanMatchCandidate(
 	copy(types, recordTypes)
 	cols := make([]string, len(columnNames))
 	copy(cols, columnNames)
+	pkCols := make([]string, len(pkColumnNames))
+	copy(pkCols, pkColumnNames)
 	return &ValueIndexScanMatchCandidate{
 		indexName:       indexName,
 		recordTypes:     types,
 		columnNames:     cols,
+		pkColumnNames:   pkCols,
 		sargableAliases: aliases,
 		flowedType:      flowedType,
 		unique:          unique,
@@ -215,8 +220,11 @@ func (c *ValueIndexScanMatchCandidate) PushValueThroughFetch(
 // Ports the conceptual equivalent of Java's
 // ScanWithFetchMatchCandidate.createTranslateValueFunction.
 func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
-	coveredColumns := make(map[string]struct{}, len(c.columnNames))
+	coveredColumns := make(map[string]struct{}, len(c.columnNames)+len(c.pkColumnNames))
 	for _, col := range c.columnNames {
+		coveredColumns[strings.ToUpper(col)] = struct{}{}
+	}
+	for _, col := range c.pkColumnNames {
 		coveredColumns[strings.ToUpper(col)] = struct{}{}
 	}
 

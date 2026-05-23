@@ -63,6 +63,7 @@ func TestInExplode_MultiColumnIndex(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -128,6 +129,7 @@ func TestIndexScan_GapInPrefix(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -168,6 +170,7 @@ func TestIndexScan_InequalityStopsPrefix(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -215,6 +218,7 @@ func TestIndexScan_AllPredicatesResidual(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -262,10 +266,11 @@ func TestPlanContext_FromIndexDefs_UpperCaseColumnNames(t *testing.T) {
 	}
 }
 
-func (d stubDef) IndexName() string          { return d.name }
-func (d stubDef) IndexColumnNames() []string { return d.cols }
-func (d stubDef) IndexRecordTypes() []string { return d.types }
-func (d stubDef) IndexIsUnique() bool        { return d.unique }
+func (d stubDef) IndexName() string                { return d.name }
+func (d stubDef) IndexColumnNames() []string       { return d.cols }
+func (d stubDef) IndexRecordTypes() []string       { return d.types }
+func (d stubDef) IndexIsUnique() bool              { return d.unique }
+func (d stubDef) IndexPrimaryKeyColumns() []string { return nil }
 
 type stubDef struct {
 	name   string
@@ -410,6 +415,7 @@ func TestIndexScan_ThreeColumnPrefix(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2, a3},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 

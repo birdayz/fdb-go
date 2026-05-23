@@ -20,6 +20,7 @@ func TestExpandValueIndex_TwoColumns(t *testing.T) {
 		[]values.CorrelationIdentifier{alias0, alias1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 
 	trav := ExpandValueIndex(cand)
@@ -121,6 +122,7 @@ func TestExpandValueIndex_ZeroColumns(t *testing.T) {
 		[]values.CorrelationIdentifier{},
 		values.UnknownType,
 		false,
+		nil,
 	)
 
 	trav := ExpandValueIndex(cand)
@@ -163,6 +165,7 @@ func TestValueIndexScanMatchCandidate_GetTraversal_NonNil(t *testing.T) {
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
 		values.UnknownType,
 		false,
+		nil,
 	)
 
 	trav := cand.GetTraversal()
@@ -187,6 +190,7 @@ func TestValueIndexScanMatchCandidate_GetTraversal_SyncOnce(t *testing.T) {
 		},
 		values.UnknownType,
 		true,
+		nil,
 	)
 
 	trav1 := cand.GetTraversal()
@@ -206,6 +210,7 @@ func TestExpandValueIndex_LeafReferences(t *testing.T) {
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
 		values.UnknownType,
 		false,
+		nil,
 	)
 
 	trav := ExpandValueIndex(cand)

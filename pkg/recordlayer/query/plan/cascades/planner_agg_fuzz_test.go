@@ -126,6 +126,7 @@ func FuzzPlanner_Aggregation_NoPanic(f *testing.F) {
 				aliases,
 				values.UnknownType,
 				false,
+				nil,
 			)
 			ctx = &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 		}

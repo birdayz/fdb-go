@@ -1437,6 +1437,11 @@ func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (e
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalProjectionWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
+	if inner := w.plan.GetInner(); inner != nil {
+		if idx, ok := inner.(*plans.RecordQueryIndexPlan); ok && idx.IsCovering() {
+			return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+		}
+	}
 	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
 		newPlan := plans.NewRecordQueryProjectionPlanWithAliases(w.plan.GetProjections(), w.plan.GetAliases(), innerPlan)
 		return &physicalProjectionWrapper{plan: newPlan, innerQuant: qs[0]}, nil

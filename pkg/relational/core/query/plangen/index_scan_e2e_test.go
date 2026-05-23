@@ -19,10 +19,11 @@ type e2eIndexDef struct {
 	unique      bool
 }
 
-func (d e2eIndexDef) IndexName() string          { return d.name }
-func (d e2eIndexDef) IndexColumnNames() []string { return d.columns }
-func (d e2eIndexDef) IndexRecordTypes() []string { return d.recordTypes }
-func (d e2eIndexDef) IndexIsUnique() bool        { return d.unique }
+func (d e2eIndexDef) IndexName() string                { return d.name }
+func (d e2eIndexDef) IndexColumnNames() []string       { return d.columns }
+func (d e2eIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
+func (d e2eIndexDef) IndexIsUnique() bool              { return d.unique }
+func (d e2eIndexDef) IndexPrimaryKeyColumns() []string { return nil }
 
 // TestEndToEnd_IndexScanFromLogicalFilter verifies the full pipeline:
 // LogicalFilter(status = 'active') over Scan -> Convert -> Planner with

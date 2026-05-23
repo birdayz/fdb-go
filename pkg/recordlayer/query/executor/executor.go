@@ -433,9 +433,16 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 			datum[strings.ToUpper(col)] = vals[i]
 		}
 	}
+	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id)).
+	// The user-level PK columns are at the tail. Skip the prefix.
+	pkOffset := 0
+	if len(pk) > len(c.pkColumns) {
+		pkOffset = len(pk) - len(c.pkColumns)
+	}
 	for i, col := range c.pkColumns {
-		if i < len(pk) {
-			datum[strings.ToUpper(col)] = pk[i]
+		idx := i + pkOffset
+		if idx < len(pk) {
+			datum[strings.ToUpper(col)] = pk[idx]
 		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil

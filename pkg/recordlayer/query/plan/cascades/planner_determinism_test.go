@@ -92,7 +92,8 @@ type stubIndexDef struct {
 	unique      bool
 }
 
-func (d *stubIndexDef) IndexName() string          { return d.name }
-func (d *stubIndexDef) IndexColumnNames() []string { return d.columns }
-func (d *stubIndexDef) IndexRecordTypes() []string { return d.recordTypes }
-func (d *stubIndexDef) IndexIsUnique() bool        { return d.unique }
+func (d *stubIndexDef) IndexName() string                { return d.name }
+func (d *stubIndexDef) IndexColumnNames() []string       { return d.columns }
+func (d *stubIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
+func (d *stubIndexDef) IndexIsUnique() bool              { return d.unique }
+func (d *stubIndexDef) IndexPrimaryKeyColumns() []string { return nil }

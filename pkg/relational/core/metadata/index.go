@@ -74,3 +74,7 @@ func (i *RecordLayerIndex) IndexRecordTypes() []string {
 // IndexIsUnique returns whether the index enforces uniqueness.
 // Satisfies cascades.IndexDef.
 func (i *RecordLayerIndex) IndexIsUnique() bool { return i.underlying.IsUnique() }
+
+// IndexPrimaryKeyColumns returns the PK columns of the owning record
+// type. Satisfies cascades.IndexDef.
+func (i *RecordLayerIndex) IndexPrimaryKeyColumns() []string { return nil }

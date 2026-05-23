@@ -77,6 +77,17 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	// Mark the inner index scan as covering since the fetch is eliminated.
+	if idxW, ok := fetchInnerExpr.(*physicalIndexScanWrapper); ok && !idxW.covering {
+		coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
+		fetchInnerExpr = &physicalIndexScanWrapper{
+			plan:        coveredPlan,
+			columnNames: idxW.columnNames,
+			unique:      idxW.unique,
+			covering:    true,
+		}
+	}
+
 	// Build: Map(translatedResultValue, fetchInner)
 	// The fetch is eliminated entirely.
 	pushedMapPlan := plans.NewRecordQueryMapPlan(nil, pushedResultValue)

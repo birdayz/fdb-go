@@ -347,7 +347,7 @@ func TestTraversal_MatchCandidate_GetTraversal_NonNil(t *testing.T) {
 	// ExpandValueIndex. Verify they return non-nil with correct root.
 	alias := values.UniqueCorrelationIdentifier()
 	vc := NewValueIndexScanMatchCandidate("idx", []string{"T"}, []string{"a"},
-		[]values.CorrelationIdentifier{alias}, nil, false)
+		[]values.CorrelationIdentifier{alias}, nil, false, nil)
 	trav := vc.GetTraversal()
 	if trav == nil {
 		t.Fatal("expected non-nil traversal from ValueIndexScanMatchCandidate")

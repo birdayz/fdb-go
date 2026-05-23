@@ -24,6 +24,7 @@ func TestIndexScan_ConflictingEqualities(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -67,6 +68,7 @@ func TestIndexScan_SameEqualityTwice(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -117,6 +119,7 @@ func TestIndexScan_NonFieldValueOperand(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -157,6 +160,7 @@ func TestIndexScan_NonComparisonPredicates(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -199,6 +203,7 @@ func TestIndexScan_EqualityThenInequality_ConsumesBoth(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -255,6 +260,7 @@ func TestIndexScan_PredicateOrderIndependent(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -307,6 +313,7 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		true, // unique
+		nil,
 	)
 	b1 := values.UniqueCorrelationIdentifier()
 	candNonUnique := NewValueIndexScanMatchCandidate(
@@ -316,6 +323,7 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 		[]values.CorrelationIdentifier{b1},
 		values.UnknownType,
 		false, // non-unique
+		nil,
 	)
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
@@ -384,6 +392,7 @@ func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	b1 := values.UniqueCorrelationIdentifier()
 	b2 := values.UniqueCorrelationIdentifier()
@@ -394,6 +403,7 @@ func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
 		[]values.CorrelationIdentifier{b1, b2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candSingle, candCompound}}
 
@@ -452,6 +462,7 @@ func TestIndexScan_CostComparison(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -499,6 +510,7 @@ func TestIndexScan_CaseInsensitiveColumnMatch(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 

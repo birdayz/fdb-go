@@ -14,6 +14,7 @@ type IndexDef interface {
 	IndexColumnNames() []string
 	IndexRecordTypes() []string
 	IndexIsUnique() bool
+	IndexPrimaryKeyColumns() []string
 }
 
 // NewPlanContextFromIndexDefs builds a PlanContext with one
@@ -35,6 +36,13 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		for i := range cols {
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
+		var upperPK []string
+		if pkCols := def.IndexPrimaryKeyColumns(); len(pkCols) > 0 {
+			upperPK = make([]string, len(pkCols))
+			for i, c := range pkCols {
+				upperPK[i] = strings.ToUpper(c)
+			}
+		}
 		candidates = append(candidates, NewValueIndexScanMatchCandidate(
 			def.IndexName(),
 			def.IndexRecordTypes(),
@@ -42,6 +50,7 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 			aliases,
 			values.UnknownType,
 			def.IndexIsUnique(),
+			upperPK,
 		))
 	}
 	return &builtPlanContext{candidates: candidates}

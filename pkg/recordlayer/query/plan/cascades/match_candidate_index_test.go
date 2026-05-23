@@ -19,6 +19,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_AllEquality(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	eq1 := predicates.EmptyComparisonRange()
 	eq1.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
@@ -47,6 +48,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAtEmpty(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2, a3},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	eq1 := predicates.EmptyComparisonRange()
 	res := eq1.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
@@ -73,6 +75,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAfterInequality(t *testing.
 		[]values.CorrelationIdentifier{a1, a2, a3},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	eq := predicates.EmptyComparisonRange()
 	eqRes := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
@@ -106,6 +109,7 @@ func TestValueIndexScanMatchCandidate_ToScanPlan(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	eq := predicates.EmptyComparisonRange()
 	eqRes := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("active")})

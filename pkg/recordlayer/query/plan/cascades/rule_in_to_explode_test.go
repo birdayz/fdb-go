@@ -301,6 +301,7 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 

@@ -70,7 +70,8 @@ type planChoiceIndexDef struct {
 	unique      bool
 }
 
-func (d *planChoiceIndexDef) IndexName() string          { return d.name }
-func (d *planChoiceIndexDef) IndexColumnNames() []string { return d.columns }
-func (d *planChoiceIndexDef) IndexRecordTypes() []string { return d.recordTypes }
-func (d *planChoiceIndexDef) IndexIsUnique() bool        { return d.unique }
+func (d *planChoiceIndexDef) IndexName() string                { return d.name }
+func (d *planChoiceIndexDef) IndexColumnNames() []string       { return d.columns }
+func (d *planChoiceIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
+func (d *planChoiceIndexDef) IndexIsUnique() bool              { return d.unique }
+func (d *planChoiceIndexDef) IndexPrimaryKeyColumns() []string { return nil }

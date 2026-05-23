@@ -11,10 +11,11 @@ type testIndexDef struct {
 	unique      bool
 }
 
-func (d testIndexDef) IndexName() string          { return d.name }
-func (d testIndexDef) IndexColumnNames() []string { return d.columns }
-func (d testIndexDef) IndexRecordTypes() []string { return d.recordTypes }
-func (d testIndexDef) IndexIsUnique() bool        { return d.unique }
+func (d testIndexDef) IndexName() string                { return d.name }
+func (d testIndexDef) IndexColumnNames() []string       { return d.columns }
+func (d testIndexDef) IndexRecordTypes() []string       { return d.recordTypes }
+func (d testIndexDef) IndexIsUnique() bool              { return d.unique }
+func (d testIndexDef) IndexPrimaryKeyColumns() []string { return nil }
 
 func TestNewPlanContextFromIndexDefs_Basic(t *testing.T) {
 	t.Parallel()

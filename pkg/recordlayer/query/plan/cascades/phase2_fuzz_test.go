@@ -46,6 +46,7 @@ func FuzzIndexScanRule_NoPanic(f *testing.F) {
 			aliases,
 			values.UnknownType,
 			numCols%2 == 0,
+			nil,
 		)
 		ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -145,6 +146,7 @@ func FuzzNWayIntersection_NoPanic(f *testing.F) {
 				[]values.CorrelationIdentifier{alias},
 				values.UnknownType,
 				false,
+				nil,
 			))
 		}
 		ctx := &indexTestPlanContext{candidates: candidates}
@@ -196,6 +198,7 @@ func FuzzOrderedIndexScan_NoPanic(f *testing.F) {
 			aliases,
 			values.UnknownType,
 			false,
+			nil,
 		)
 		ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 

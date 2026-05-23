@@ -20,6 +20,7 @@ func TestImplementIndexScanRule_SingleEquality(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
@@ -76,6 +77,7 @@ func TestImplementIndexScanRule_MultiEquality_AllConsumed(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -124,6 +126,7 @@ func TestImplementIndexScanRule_ResidualPredicate(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -180,6 +183,7 @@ func TestImplementIndexScanRule_NoMatchingCandidate(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -216,6 +220,7 @@ func TestImplementIndexScanRule_RecordTypeMismatch(t *testing.T) {
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -253,6 +258,7 @@ func TestImplementIndexScanRule_InequalityPrefix(t *testing.T) {
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -336,6 +342,7 @@ func TestImplementIndexScanRule_RangeScan_TwoInequalitiesSameColumn(t *testing.T
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -387,6 +394,7 @@ func TestImplementIndexScanRule_PlannerIntegration_PrefersIndexOverFullScan(t *t
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
@@ -438,6 +446,7 @@ func TestImplementIndexScanRule_PlannerIntegration_MultipleCandidates(t *testing
 		[]values.CorrelationIdentifier{a1},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	cand2 := NewValueIndexScanMatchCandidate(
 		"Order$status_date",
@@ -446,6 +455,7 @@ func TestImplementIndexScanRule_PlannerIntegration_MultipleCandidates(t *testing
 		[]values.CorrelationIdentifier{b1, b2},
 		values.UnknownType,
 		false,
+		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand1, cand2}}
 

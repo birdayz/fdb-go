@@ -54,6 +54,34 @@ func TestPlanHarness_IndexRange(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "IndexScan(IDX_AMOUNT,")
+	assertPlanContains(t, plan, "COVERING")
+	assertPlanNotContains(t, plan, "Fetch")
+}
+
+func TestPlanHarness_IndexRangeCoveringIDAndAmount(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id, amount FROM orders WHERE amount > 9000",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IndexScan(IDX_AMOUNT,")
+	assertPlanContains(t, plan, "COVERING")
+}
+
+func TestPlanHarness_IndexRangeNonCovering(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id, status FROM orders WHERE amount > 9000",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IndexScan(IDX_AMOUNT,")
+	assertPlanNotContains(t, plan, "COVERING")
 }
 
 func TestPlanHarness_IndexRangeSelectStar(t *testing.T) {
