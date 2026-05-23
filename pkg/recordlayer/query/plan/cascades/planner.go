@@ -308,7 +308,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	p.promoteInJoinWinners(rootRef)
 	promoteByDataAccessCost(rootRef, p.stats)
 
-	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
+	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
 	return plan, tasks, err
 }
 
