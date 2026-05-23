@@ -91,16 +91,10 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 				continue
 			}
 
-			covering := aggregatesCoveredByIndex(gb.GetAggregates(), colNames)
-			if covering {
-				idxPlan = idxPlan.WithCovering(nil)
-			}
-
 			idxWrapper := &physicalIndexScanWrapper{
 				plan:        idxPlan,
 				columnNames: colNames,
 				unique:      cand.IsUnique(),
-				covering:    covering,
 			}
 
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
@@ -123,7 +117,7 @@ func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []stri
 		}
 		fv, ok := a.Operand.(*values.FieldValue)
 		if !ok {
-			return false
+			continue // COUNT(*) uses ConstantValue — no field access needed
 		}
 		found := false
 		for _, col := range indexCols {

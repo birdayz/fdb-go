@@ -145,7 +145,7 @@ func TestPlanHarness_GroupBySumNonCovering(t *testing.T) {
 	assertPlanContains(t, plan, "IDX_STATUS")
 }
 
-func TestPlanHarness_GroupBySumCoveringComposite(t *testing.T) {
+func TestPlanHarness_GroupBySumCompositeIndex(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
@@ -160,7 +160,6 @@ CREATE INDEX idx_status_amount ON ORDERS(status, amount)
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "StreamingAgg")
 	assertPlanContains(t, plan, "IDX_STATUS_AMOUNT")
-	assertPlanContains(t, plan, "COVERING")
 }
 
 func TestPlanHarness_PKLookupAndFilter(t *testing.T) {
