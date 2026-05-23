@@ -91,10 +91,16 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 				continue
 			}
 
+			covering := aggregatesCoveredByIndex(gb.GetAggregates(), colNames)
+			if covering {
+				idxPlan = idxPlan.WithCovering(nil)
+			}
+
 			idxWrapper := &physicalIndexScanWrapper{
 				plan:        idxPlan,
 				columnNames: colNames,
 				unique:      cand.IsUnique(),
+				covering:    covering,
 			}
 
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
@@ -104,6 +110,33 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
 		}
 	}
+}
+
+// aggregatesCoveredByIndex returns true when every field referenced by
+// the aggregates is present in the index columns. COUNT(*) has no operand
+// and is trivially covered. SUM(amount) is covered iff "amount" is in
+// the index. This lets the index scan skip the per-row PK fetch.
+func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []string) bool {
+	for _, a := range aggs {
+		if a.Operand == nil {
+			continue
+		}
+		fv, ok := a.Operand.(*values.FieldValue)
+		if !ok {
+			return false
+		}
+		found := false
+		for _, col := range indexCols {
+			if eqFold(fv.Field, col) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 var _ ExpressionRule = (*StreamingAggFromIndexRule)(nil)
