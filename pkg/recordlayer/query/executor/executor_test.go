@@ -748,8 +748,8 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 	if r.Low != nil {
 		t.Fatalf("low=%v, want nil (no lower bound but has exclusion mark)", r.Low)
 	}
-	if r.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
-		t.Fatalf("lowEndpoint=%v, want RangeExclusive (Java convention for LT-only)", r.LowEndpoint)
+	if r.LowEndpoint != recordlayer.EndpointTypeTreeStart {
+		t.Fatalf("lowEndpoint=%v, want TreeStart for LT-only (scan from beginning)", r.LowEndpoint)
 	}
 	if len(r.High) != 1 || r.High[0] != int64(50) {
 		t.Fatalf("high=%v, want [50]", r.High)
@@ -1874,8 +1874,8 @@ func TestScanComparisons_LessThanNoPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
-		t.Fatalf("expected low exclusive (no-prefix LT sets low exclusive), got %d", tr.LowEndpoint)
+	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart {
+		t.Fatalf("expected low TreeStart for LT-only, got %d", tr.LowEndpoint)
 	}
 	if tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected high exclusive, got %d", tr.HighEndpoint)
@@ -1896,8 +1896,8 @@ func TestScanComparisons_LessThanOrEqNoPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
-		t.Fatalf("expected low exclusive (LTE without prior low sets low exclusive), got %d", tr.LowEndpoint)
+	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart {
+		t.Fatalf("expected low TreeStart for LTE-only, got %d", tr.LowEndpoint)
 	}
 	if tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("expected high inclusive, got %d", tr.HighEndpoint)
@@ -1986,8 +1986,8 @@ func TestScanComparisons_EqualityPrefixThenLT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
-		t.Fatalf("expected low exclusive (LT sets low exclusive when no prior low), got %d", tr.LowEndpoint)
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected low inclusive (prefix-based range starts at prefix), got %d", tr.LowEndpoint)
 	}
 	if tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected high exclusive, got %d", tr.HighEndpoint)

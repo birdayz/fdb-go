@@ -342,23 +342,28 @@ func TestFDB_PlanShapeJoinFilterPushdown(t *testing.T) {
 	plan := planExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
-	// Must contain a NestedLoopJoin.
-	if !strings.Contains(plan, "NestedLoopJoin") {
-		t.Fatalf("expected NestedLoopJoin in plan, got: %s", plan)
+	// Must contain a join operator (NLJ or FlatMap with correlated scan).
+	if !strings.Contains(plan, "NestedLoopJoin") && !strings.Contains(plan, "FlatMap") {
+		t.Fatalf("expected NestedLoopJoin or FlatMap in plan, got: %s", plan)
 	}
 
 	// WHERE predicates are merged into the NLJ (not a separate Filter).
 	// The NLJ carries both the ON predicate (a.id = b.aid) and the WHERE
 	// predicate (a.name = 'foo') as [2 preds]. This matches Java's
 	// SelectExpression which carries all predicates inline.
-	// The NLJ must carry its own join predicate.
-	nljIdx := strings.Index(plan, "NestedLoopJoin")
-	if nljIdx < 0 {
-		t.Fatalf("expected NestedLoopJoin in plan, got: %s", plan)
-	}
-	afterNLJ := plan[nljIdx:]
-	if !strings.Contains(afterNLJ, "preds") {
-		t.Fatalf("expected join predicates inside NestedLoopJoin, got: %s", plan)
+	// The join must carry predicates: NLJ carries them inline, FlatMap
+	// pushes the equi-join to the correlated scan (residuals stay as
+	// PredicatesFilter above).
+	if strings.Contains(plan, "NestedLoopJoin") {
+		nljIdx := strings.Index(plan, "NestedLoopJoin")
+		afterNLJ := plan[nljIdx:]
+		if !strings.Contains(afterNLJ, "preds") {
+			t.Fatalf("expected join predicates inside NestedLoopJoin, got: %s", plan)
+		}
+	} else if strings.Contains(plan, "FlatMap") {
+		if !strings.Contains(plan, "preds") && !strings.Contains(plan, "[=]") {
+			t.Fatalf("expected predicates in FlatMap plan, got: %s", plan)
+		}
 	}
 
 	// Verify query results: only a.id=1 has name='foo', and b has two rows

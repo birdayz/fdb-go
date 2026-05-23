@@ -282,6 +282,14 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// over logical EXPLORE-phase winners.
 	p.reoptimizeAll(rootRef)
 
+	// Promote PLANNING-phase InJoin/InUnion winners. These plans are
+	// produced by ImplementInJoinRule/ImplementInUnionRule during
+	// PLANNING and may be cheaper than the EXPLORE-phase winner at
+	// any Reference. Walk all Memo References and check if an InJoin
+	// or InUnion is better than the current winner under the cost model.
+	p.promoteInJoinWinners(rootRef)
+	promoteByDataAccessCost(rootRef)
+
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
 }
@@ -386,6 +394,104 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 			ref.SetWinner(expressions.NoProperties, bestPhys)
 		}
 	}
+}
+
+// promoteInJoinWinners walks all References and checks if an InJoin
+// or InUnion physical member is cheaper than the current NoProperties
+// winner under the cost model. These plans are produced during PLANNING
+// by ImplementInJoinRule/ImplementInUnionRule and may be cheaper than
+// the EXPLORE-phase winner (e.g., InJoin(IndexScan) vs Filter(Scan)).
+func (p *Planner) promoteInJoinWinners(rootRef *expressions.Reference) {
+	visited := make(map[*expressions.Reference]bool)
+	p.promoteInJoinRecursive(rootRef, visited)
+	if p.memo != nil {
+		for ref := range p.memo.References() {
+			p.promoteInJoinRecursive(ref, visited)
+		}
+	}
+}
+
+func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+	for _, m := range ref.AllMembers() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.promoteInJoinRecursive(childRef, visited)
+			}
+		}
+	}
+	existing := ref.Winner(expressions.NoProperties)
+	if existing == nil {
+		return
+	}
+	if _, isPhys := existing.(physicalPlanExpression); !isPhys {
+		return
+	}
+	for _, m := range ref.AllMembers() {
+		if !IsPhysicalInJoin(m) && !isPhysicalInUnion(m) {
+			continue
+		}
+		if p.costModel(m, existing) {
+			existing = m
+		}
+	}
+	ref.SetWinner(expressions.NoProperties, existing)
+}
+
+func isPhysicalInUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInUnionWrapper)
+	return ok
+}
+
+func promoteByDataAccessCost(rootRef *expressions.Reference) {
+	if rootRef == nil {
+		return
+	}
+	existing := rootRef.Winner(expressions.NoProperties)
+	if existing == nil {
+		return
+	}
+	if _, ok := existing.(physicalPlanExpression); !ok {
+		return
+	}
+	existingCounts := findExpressionsByType(existing)
+	if existingCounts.maxDataAccessCardinality < 0 {
+		return
+	}
+	_, existingIsProj := existing.(*physicalProjectionWrapper)
+	for _, m := range rootRef.AllMembers() {
+		if _, ok := m.(physicalPlanExpression); !ok {
+			continue
+		}
+		counts := findExpressionsByType(m)
+		if counts.maxDataAccessCardinality < 0 {
+			continue
+		}
+		if counts.maxDataAccessCardinality > existingCounts.maxDataAccessCardinality {
+			continue
+		}
+		if counts.maxDataAccessCardinality == existingCounts.maxDataAccessCardinality {
+			if counts.flatMapCount == 0 || existingCounts.flatMapCount > 0 {
+				continue
+			}
+		}
+		// Don't replace a winner that includes InMemorySort with a
+		// candidate that drops the sort — the query's ORDER BY requires it.
+		if counts.inMemorySortCount < existingCounts.inMemorySortCount {
+			continue
+		}
+		if existingIsProj {
+			if _, ok := m.(*physicalProjectionWrapper); !ok {
+				continue
+			}
+		}
+		existing = m
+		existingCounts = counts
+	}
+	rootRef.SetWinner(expressions.NoProperties, existing)
 }
 
 func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {

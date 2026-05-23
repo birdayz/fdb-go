@@ -73,15 +73,14 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	leftPlan := findPhysicalPlan(leftRef)
-	rightPlan := findPhysicalPlan(rightRef)
-	if leftPlan == nil || rightPlan == nil {
+	leftExpr := findBestPhysicalExpr(leftRef, PlanningCostModelLess)
+	rightExpr := findBestPhysicalExpr(rightRef, PlanningCostModelLess)
+	if leftExpr == nil || rightExpr == nil {
 		return
 	}
-
-	leftExpr := findPhysicalExpr(leftRef)
-	rightExpr := findPhysicalExpr(rightRef)
-	if leftExpr == nil || rightExpr == nil {
+	leftPlan := leftExpr.(physicalPlanExpression).GetRecordQueryPlan()
+	rightPlan := rightExpr.(physicalPlanExpression).GetRecordQueryPlan()
+	if leftPlan == nil || rightPlan == nil {
 		return
 	}
 
@@ -109,12 +108,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// push an equi-join predicate into a correlated PK scan, emit a
 	// FlatMap plan (Java's RecordQueryFlatMapPlan). This turns O(N×M)
 	// into O(N×logM) via correlated index probes.
-	// Skip when quantifiers are swapped — alias/plan mapping would be
-	// inconsistent. The non-swapped version will also be explored.
-	if !sel.IsQuantifiersSwapped() {
-		if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType) {
-			return
-		}
+	if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType) {
+		return
 	}
 
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
@@ -564,9 +559,10 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 
 		if len(outerPreds) > 0 {
 			stripped := stripAliasFromPredicates(outerPreds, outerPrefix)
-			outerWithFilter := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan.GetOuter(), stripped)
+			outerPlan := flatMapPlan.GetOuter()
+			outerPlan = tryPushPredicatesIntoScan(outerPlan, stripped, call.Context, leftAlias)
 			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
-				outerWithFilter, flatMapPlan.GetInner(),
+				outerPlan, flatMapPlan.GetInner(),
 				flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
 				flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
 			)
@@ -965,6 +961,79 @@ func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
 		return upper[:dot], upper[dot+1:]
 	}
 	return "", upper
+}
+
+func tryPushPredicatesIntoScan(
+	outerPlan plans.RecordQueryPlan,
+	preds []predicates.QueryPredicate,
+	ctx PlanContext,
+	alias string,
+) plans.RecordQueryPlan {
+	scan, ok := outerPlan.(*plans.RecordQueryScanPlan)
+	if !ok {
+		return plans.NewRecordQueryPredicatesFilterPlan(outerPlan, preds)
+	}
+	recordTypes := scan.GetRecordTypes()
+	if len(recordTypes) != 1 || ctx == nil {
+		return plans.NewRecordQueryPredicatesFilterPlan(outerPlan, preds)
+	}
+	pkCols := ctx.GetPrimaryKeyColumns(recordTypes[0])
+	if len(pkCols) == 0 {
+		return plans.NewRecordQueryPredicatesFilterPlan(outerPlan, preds)
+	}
+
+	var matchedRanges []*predicates.ComparisonRange
+	matchedPreds := make(map[int]bool)
+	for _, pkCol := range pkCols {
+		pkUpper := strings.ToUpper(pkCol)
+		found := false
+		for pi, p := range preds {
+			if matchedPreds[pi] {
+				continue
+			}
+			cp, ok := p.(*predicates.ComparisonPredicate)
+			if !ok {
+				continue
+			}
+			fv, ok := cp.Operand.(*values.FieldValue)
+			if !ok {
+				continue
+			}
+			if !isScanRangeCompatible(cp.Comparison.Type) {
+				continue
+			}
+			if strings.ToUpper(fv.Field) != pkUpper {
+				continue
+			}
+			cr := predicates.EmptyComparisonRange()
+			mergeResult := cr.Merge(&cp.Comparison)
+			if !mergeResult.Ok {
+				continue
+			}
+			matchedRanges = append(matchedRanges, mergeResult.Range)
+			matchedPreds[pi] = true
+			found = true
+			break
+		}
+		if !found {
+			break
+		}
+	}
+
+	if len(matchedRanges) > 0 {
+		narrowedScan := scan.WithScanComparisons(matchedRanges)
+		var residual []predicates.QueryPredicate
+		for i, p := range preds {
+			if !matchedPreds[i] {
+				residual = append(residual, p)
+			}
+		}
+		if len(residual) > 0 {
+			return plans.NewRecordQueryPredicatesFilterPlan(narrowedScan, residual)
+		}
+		return narrowedScan
+	}
+	return plans.NewRecordQueryPredicatesFilterPlan(outerPlan, preds)
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)

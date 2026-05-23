@@ -87,6 +87,25 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerExpr))
 	call.YieldFinalExpression(newPhysicalInMemorySortWrapper(sortPlan, innerQ))
+
+	// Also yield InMemorySort alternatives for InJoin/InUnion members
+	// that aren't the first physical. These correlated plans may have
+	// much lower cardinality (e.g., InJoin(IndexScan) vs Filter(Scan))
+	// and sorting their small output is cheaper than sorting a full scan.
+	for _, m := range innerRef.AllMembers() {
+		if m == innerExpr {
+			continue
+		}
+		if !IsPhysicalInJoin(m) {
+			if _, ok := m.(*physicalInUnionWrapper); !ok {
+				continue
+			}
+		}
+		ph := m.(physicalPlanExpression)
+		altPlan := plans.NewRecordQueryInMemorySortPlan(ph.GetRecordQueryPlan(), planKeys)
+		altQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
+		call.YieldFinalExpression(newPhysicalInMemorySortWrapper(altPlan, altQ))
+	}
 }
 
 func (r *ImplementInMemorySortRule) GetRequestedOrderings(

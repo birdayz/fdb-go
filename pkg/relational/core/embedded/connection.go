@@ -261,9 +261,9 @@ func New(
 }
 
 // ExecContext executes SQL (DDL/DML/transaction) and returns the row-
-// count result. Routes through the query.Generator seam — the naive
-// Generator parses, dispatches to execStatement, and returns a Plan
-// whose Execute aggregates RowsAffected across a multi-statement
+// count result. Routes through cascadesGenerator in exec mode, which
+// dispatches DML/DDL/transaction through execStatement and returns a
+// Plan whose Execute aggregates RowsAffected across a multi-statement
 // batch.
 func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args []driver.NamedValue) (driver.Result, error) {
 	if c.closed.Load() {
@@ -276,7 +276,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 		return nil, err
 	}
 
-	gen := &naiveGenerator{c: c}
+	gen := newCascadesGeneratorForExec(c)
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
 		return nil, translateFDBError(err)
