@@ -180,11 +180,16 @@ type MapStatistics struct {
 	Fallback float64
 }
 
-// RecordTypeCardinality returns PerType[name] if present, otherwise
-// Fallback when > 0, otherwise LeafScanCardinality.
+// RecordTypeCardinality returns PerType[name] if present and > 0,
+// otherwise Fallback when > 0, otherwise LeafScanCardinality.
+// Zero counts are clamped to 1 to avoid zero-cost plans that break
+// cost-driven plan selection.
 func (s MapStatistics) RecordTypeCardinality(name string) float64 {
 	if c, ok := s.PerType[name]; ok {
-		return c
+		if c > 0 {
+			return c
+		}
+		return 1
 	}
 	if s.Fallback > 0 {
 		return s.Fallback

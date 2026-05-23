@@ -455,6 +455,22 @@ func TestStatistics_FallbackToLeafScan(t *testing.T) {
 	}
 }
 
+func TestStatistics_ZeroCountClampsToOne(t *testing.T) {
+	t.Parallel()
+	s := MapStatistics{PerType: map[string]float64{"T": 0}}
+	if got := s.RecordTypeCardinality("T"); got != 1 {
+		t.Fatalf("Zero count should clamp to 1, got %v", got)
+	}
+	s2 := MapStatistics{PerType: map[string]float64{"T": -5}}
+	if got := s2.RecordTypeCardinality("T"); got != 1 {
+		t.Fatalf("Negative count should clamp to 1, got %v", got)
+	}
+	s3 := MapStatistics{PerType: map[string]float64{"T": 42}}
+	if got := s3.RecordTypeCardinality("T"); got != 42 {
+		t.Fatalf("Positive count should return as-is, got %v", got)
+	}
+}
+
 // TestEstimateCost_ScanOverMultipleRecordTypesSums pins the Union-
 // across-record-types semantics of FullUnorderedScan: scan over
 // {A, B} emits stats(A) + stats(B) rows.

@@ -19,6 +19,7 @@ setup:
 tests:
   # Simple pushdown: literal on RHS.
   - query: SELECT id, name, v FROM t WHERE id = 3
+    plan_contains: "Scan(T, [=])"
     rows:
       - [3, 'gamma', 30]
 

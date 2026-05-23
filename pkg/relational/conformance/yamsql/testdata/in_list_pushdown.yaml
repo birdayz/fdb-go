@@ -70,6 +70,7 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id, name FROM t WHERE id IN (1, 3) ORDER BY id
+    plan_contains: InJoin
     rows:
       - [1, 'one']
       - [3, 'three']

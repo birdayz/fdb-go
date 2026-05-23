@@ -300,15 +300,15 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// over logical EXPLORE-phase winners.
 	p.reoptimizeAll(rootRef)
 
-	// Promote PLANNING-phase InJoin/InUnion winners. These plans are
-	// produced by ImplementInJoinRule/ImplementInUnionRule during
-	// PLANNING and may be cheaper than the EXPLORE-phase winner at
-	// any Reference. Walk all Memo References and check if an InJoin
-	// or InUnion is better than the current winner under the cost model.
+	// Post-PLANNING promotion: PLANNING-phase rules (InJoin, InUnion,
+	// FlatMap) insert plans into Members, but the EXPLORE-phase winner
+	// still holds. These passes promote PLANNING-phase plans when they
+	// are cheaper. Required until advancePlannerStage (BatchA→PLANNING
+	// migration) is ported from Java — see TODO.md.
 	p.promoteInJoinWinners(rootRef)
 	promoteByDataAccessCost(rootRef, p.stats)
 
-	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
+	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
 	return plan, tasks, err
 }
 

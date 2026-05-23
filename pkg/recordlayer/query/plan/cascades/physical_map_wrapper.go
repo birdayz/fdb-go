@@ -76,7 +76,7 @@ func (w *physicalMapWrapper) HintCost(child []properties.Cost, _ properties.Stat
 	}
 	return properties.Cost{
 		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + child[0].Cardinality*0.01) * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

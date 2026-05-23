@@ -153,6 +153,11 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	mdBuilder.SetSplitLongRecords(b.enableLongRows)
 	mdBuilder.SetStoreRecordVersions(b.storeRowVersions)
 	mdBuilder.SetVersion(b.version)
+	if !b.intermingleTbls {
+		mdBuilder.SetRecordCountKey(recordlayer.RecordTypeKey())
+	} else {
+		mdBuilder.SetRecordCountKey(recordlayer.EmptyKey())
+	}
 
 	for _, tbl := range b.tables {
 		rt := mdBuilder.GetRecordType(tbl.name)

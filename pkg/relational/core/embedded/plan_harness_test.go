@@ -312,7 +312,7 @@ func TestPlanHarness_FilterAndOrderDifferentIndexes(t *testing.T) {
 func TestPlanHarness_WithStats_SmallTable(t *testing.T) {
 	t.Parallel()
 	stats := properties.MapStatistics{
-		PerType: map[string]float64{"orders": 100},
+		PerType: map[string]float64{"ORDERS": 100},
 	}
 	plan, err := PlanQueryForTest(
 		"SELECT id FROM orders WHERE amount > 50",
@@ -327,7 +327,7 @@ func TestPlanHarness_WithStats_SmallTable(t *testing.T) {
 func TestPlanHarness_WithStats_LargeTable(t *testing.T) {
 	t.Parallel()
 	stats := properties.MapStatistics{
-		PerType: map[string]float64{"orders": 1_000_000},
+		PerType: map[string]float64{"ORDERS": 1_000_000},
 	}
 	plan, err := PlanQueryForTest(
 		"SELECT id FROM orders WHERE amount > 50",
@@ -337,6 +337,26 @@ func TestPlanHarness_WithStats_LargeTable(t *testing.T) {
 	}
 	t.Logf("plan (1M rows): %s", plan)
 	assertPlanContains(t, plan, "IndexScan")
+}
+
+func TestPlanHarness_StatsAffectInJoinSelection(t *testing.T) {
+	t.Parallel()
+	sql := "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id"
+	planSmall, err := PlanQueryForTest(sql, ordersSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planLarge, err := PlanQueryForTest(sql, ordersSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 1_000_000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan (10 rows):  %s", planSmall)
+	t.Logf("plan (1M rows):  %s", planLarge)
+	assertPlanContains(t, planLarge, "InJoin")
 }
 
 // --- Multi-table schemas ---
@@ -727,6 +747,93 @@ func TestPlanHarness_Coalesce(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 	assertPlanContains(t, plan, "Scan(ORDERS)")
+}
+
+func TestPlanHarness_StatsAffectGroupByPlan(t *testing.T) {
+	t.Parallel()
+	sql := "SELECT status, COUNT(*) FROM orders GROUP BY status"
+	planSmall, err := PlanQueryForTest(sql, ordersSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planLarge, err := PlanQueryForTest(sql, ordersSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 1_000_000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan (5 rows):  %s", planSmall)
+	t.Logf("plan (1M rows): %s", planLarge)
+	assertPlanContains(t, planSmall, "StreamingAgg")
+	assertPlanContains(t, planLarge, "StreamingAgg")
+	assertPlanContains(t, planLarge, "COVERING")
+}
+
+func TestPlanHarness_JoinWithAsymmetricStats(t *testing.T) {
+	t.Parallel()
+	sql := "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id"
+	plan, err := PlanQueryForTest(sql, multiTableSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 1_000_000, "CUSTOMERS": 100},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan (1M orders, 100 customers): %s", plan)
+	assertPlanContains(t, plan, "FlatMap")
+}
+
+func TestPlanHarness_CoveringCompositeIndex(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_status_amount ON ORDERS(status, amount)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, amount FROM orders WHERE status = 'pending'",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_STATUS_AMOUNT")
+	assertPlanContains(t, plan, "COVERING")
+	assertPlanNotContains(t, plan, "Fetch")
+}
+
+func TestPlanHarness_CoveringCompositeIndexPKAndIndexCols(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_status_amount ON ORDERS(status, amount)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT id, status, amount FROM orders WHERE status = 'pending'",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_STATUS_AMOUNT")
+	assertPlanContains(t, plan, "COVERING")
+	assertPlanNotContains(t, plan, "Fetch")
+}
+
+func TestPlanHarness_NonCoveringNeedsExtraColumn(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, tier STRING, PRIMARY KEY (id))
+CREATE INDEX idx_status ON ORDERS(status)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, tier FROM orders WHERE status = 'pending'",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanNotContains(t, plan, "COVERING")
 }
 
 func assertPlanContains(t *testing.T, plan, substr string) {

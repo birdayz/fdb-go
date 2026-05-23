@@ -361,28 +361,34 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 		card := stats.RecordTypeCardinality("")
 		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
-	if comps := w.plan.GetScanComparisons(); len(comps) > 0 {
-		allEquality := true
-		for _, cr := range comps {
+	comps := w.plan.GetScanComparisons()
+	numBound := 0
+	allEquality := true
+	for _, cr := range comps {
+		if !cr.IsEmpty() {
+			numBound++
 			if !cr.IsEquality() {
 				allEquality = false
-				break
 			}
 		}
-		if allEquality {
-			return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
-		}
+	}
+	if numBound > 0 && allEquality && numBound == len(comps) {
+		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}
 	types := w.plan.GetRecordTypes()
-	if len(types) == 0 {
-		card := stats.RecordTypeCardinality("") * physicalWrapperCostMultiplier
-		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
-	}
 	total := 0.0
-	for _, t := range types {
-		total += stats.RecordTypeCardinality(t)
+	if len(types) == 0 {
+		total = stats.RecordTypeCardinality("")
+	} else {
+		for _, t := range types {
+			total += stats.RecordTypeCardinality(t)
+		}
 	}
-	card := total * physicalWrapperCostMultiplier
+	sel := 1.0
+	for i := 0; i < numBound; i++ {
+		sel *= properties.FilterSelectivity
+	}
+	card := total * sel * physicalWrapperCostMultiplier
 	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 }
 
@@ -1431,7 +1437,7 @@ func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, _ properti
 	}
 	return properties.Cost{
 		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + child[0].Cardinality*0.01) * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

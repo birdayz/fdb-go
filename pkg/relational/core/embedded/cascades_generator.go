@@ -371,7 +371,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		conn:             g.c,
 		md:               md,
 		physicalPlan:     physPlan,
-		explain:          logicalOp.Explain(""),
+		explain:          physPlan.Explain(),
 		scalarSubqueries: scalarSubs,
 		sqlLimit:         sqlLimit,
 		sqlOffset:        sqlOffset,
@@ -1069,12 +1069,27 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 			return nil, storeErr
 		}
 		counts := make(map[string]float64)
-		for name := range md.RecordTypes() {
-			count, countErr := store.GetSnapshotRecordCountForRecordType(name)
+		if recordlayer.IsRecordTypeExpression(md.GetRecordCountKey()) {
+			for name := range md.RecordTypes() {
+				count, countErr := store.GetSnapshotRecordCountForRecordType(name)
+				if countErr != nil {
+					return nil, countErr
+				}
+				counts[name] = float64(count)
+			}
+		} else {
+			total, countErr := store.GetRecordCount()
 			if countErr != nil {
 				return nil, countErr
 			}
-			counts[name] = float64(count)
+			nTypes := len(md.RecordTypes())
+			if nTypes < 1 {
+				nTypes = 1
+			}
+			perType := float64(total) / float64(nTypes)
+			for name := range md.RecordTypes() {
+				counts[name] = perType
+			}
 		}
 		return counts, nil
 	})

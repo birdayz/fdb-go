@@ -13,10 +13,12 @@ setup:
 tests:
   # PK lookup.
   - query: SELECT total FROM orders WHERE id = 3
+    plan_contains: "Scan(ORDERS, [=])"
     rows:
       - [120]
   # Index scan with equality.
   - query: SELECT id, total FROM orders WHERE customer_id = 100 ORDER BY id
+    plan_contains: IndexScan(IDX_CUSTOMER
     rows:
       - [1, 50]
       - [2, 75]
@@ -32,8 +34,9 @@ tests:
       - [100, 125]
       - [200, 150]
       - [300, 200]
-  # COUNT with WHERE filter.
+  # COUNT with WHERE filter — covering index scan for COUNT(*).
   - query: SELECT COUNT(*) FROM orders WHERE status = 'shipped'
+    plan_contains: COVERING
     rows:
       - [3]
   # CTE with aggregate.
@@ -47,11 +50,12 @@ tests:
     rows:
       - [200, 150]
       - [300, 200]
-  # EXISTS subquery.
+  # EXISTS subquery — FlatMap for correlated EXISTS.
   - query: |-
       SELECT id FROM orders o
       WHERE EXISTS (SELECT 1 FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.id != o.id)
       ORDER BY id
+    plan_contains: FlatMap
     rows:
       - [1]
       - [2]
