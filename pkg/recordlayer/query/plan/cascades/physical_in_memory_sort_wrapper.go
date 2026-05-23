@@ -94,10 +94,7 @@ func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost, _ proper
 	if n < 1 {
 		n = 1
 	}
-	logN := math.Log2(n)
-	if logN < 1 {
-		logN = 1
-	}
+	logN := math.Max(1, math.Log2(math.Max(2, n)))
 	sortCPU := n * properties.SortCPU * logN
 	return properties.Cost{
 		Cardinality: n,
