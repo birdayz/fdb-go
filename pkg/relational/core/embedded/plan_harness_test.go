@@ -425,6 +425,106 @@ CREATE TABLE NODES (
 	t.Logf("plan: %s", plan)
 }
 
+// --- LIKE prefix pushdown ---
+
+func TestPlanHarness_LikePrefix(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE status LIKE 'pend%'",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	// LIKE prefix pushdown to index is a future optimization.
+	// Currently falls back to full scan + filter.
+}
+
+// --- Multiple WHERE predicates ---
+
+func TestPlanHarness_MultiplePredicates(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE status = 'active' AND amount > 100",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+}
+
+// --- ORDER BY with LIMIT ---
+
+func TestPlanHarness_OrderByWithLimit(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders ORDER BY id LIMIT 10",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanNotContains(t, plan, "InMemorySort")
+}
+
+// --- Subquery in WHERE ---
+
+func TestPlanHarness_FilterOnNonIndexColumn(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE tier = 'gold'",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_TIER")
+}
+
+// --- CROSS JOIN ---
+
+func TestPlanHarness_CrossJoin(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE A (id BIGINT NOT NULL, PRIMARY KEY (id))
+CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
+`
+	plan, err := PlanQueryForTest(
+		"SELECT a.id, b.id FROM a, b",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+}
+
+// --- COUNT(*) without WHERE ---
+
+func TestPlanHarness_CountStarFullTable(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT COUNT(*) FROM orders",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "StreamingAgg")
+}
+
+// --- BETWEEN ---
+
+func TestPlanHarness_Between(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE amount BETWEEN 100 AND 200",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+}
+
 func assertPlanContains(t *testing.T, plan, substr string) {
 	t.Helper()
 	if !strings.Contains(plan, substr) {
