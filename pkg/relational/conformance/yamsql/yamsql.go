@@ -48,6 +48,10 @@ type Test struct {
 	// ErrorCode, if set, asserts that the query fails with an api.Error
 	// whose Code matches. When non-empty, Rows is ignored.
 	ErrorCode string `yaml:"error_code"`
+	// PlanContains, if set, runs EXPLAIN on the query and asserts that
+	// the plan output contains this substring. Useful for verifying
+	// index scan, covering, sort elimination, etc.
+	PlanContains string `yaml:"plan_contains"`
 }
 
 // Load parses a scenario from a YAML file.

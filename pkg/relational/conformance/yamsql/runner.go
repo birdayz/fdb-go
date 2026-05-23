@@ -147,6 +147,29 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 	if d := diffRows(t.Rows, actual, t.Unordered); d != "" {
 		return d
 	}
+	if t.PlanContains != "" {
+		return checkPlanContains(ctx, db, t.Query, t.PlanContains)
+	}
+	return ""
+}
+
+func checkPlanContains(ctx context.Context, db *sql.DB, query, substr string) string {
+	rows, err := db.QueryContext(ctx, "EXPLAIN "+query)
+	if err != nil {
+		return fmt.Sprintf("EXPLAIN error: %v", err)
+	}
+	defer rows.Close()
+	planRows, err := scanAll(rows)
+	if err != nil {
+		return fmt.Sprintf("EXPLAIN scan error: %v", err)
+	}
+	if len(planRows) == 0 || len(planRows[0]) == 0 {
+		return "EXPLAIN returned no plan"
+	}
+	plan := fmt.Sprint(planRows[0][0])
+	if !strings.Contains(plan, substr) {
+		return fmt.Sprintf("plan does not contain %q:\n  %s", substr, plan)
+	}
 	return ""
 }
 

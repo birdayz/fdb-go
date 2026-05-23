@@ -73,12 +73,14 @@ tests:
   # SELECT id (PK only) WHERE indexed col equality → covered. PK comes
   # from the entry's primary-key tuple; no record fetch.
   - query: SELECT id FROM t WHERE status = 'active' ORDER BY id
+    plan_contains: COVERING
     rows:
       - [1]
       - [3]
 
   # SELECT indexed col + PK → covered, both values read from entry.
   - query: SELECT id, status FROM t WHERE status = 'active' ORDER BY id
+    plan_contains: COVERING
     rows:
       - [1, 'active']
       - [3, 'active']
@@ -188,6 +190,7 @@ tests:
   # SELECT of `note` (not in idx_status, not in PK) forces a record
   # fetch — the non-covering cursor is used. Same result.
   - query: SELECT id, note FROM t WHERE status = 'active' ORDER BY id
+    plan_contains: Fetch
     rows:
       - [1, 'n1']
       - [3, 'n3']

@@ -13,10 +13,12 @@ setup:
 tests:
   # PK lookup.
   - query: SELECT total FROM orders WHERE id = 3
+    plan_contains: "Scan(ORDERS, [=])"
     rows:
       - [120]
   # Index scan with equality.
   - query: SELECT id, total FROM orders WHERE customer_id = 100 ORDER BY id
+    plan_contains: IndexScan(IDX_CUSTOMER
     rows:
       - [1, 50]
       - [2, 75]
