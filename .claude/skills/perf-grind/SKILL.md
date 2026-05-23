@@ -88,6 +88,29 @@ gh pr comment --body "@claude Fixed X, Y, Z (commit abc123). Please review again
 
 After one fix lands, go back to step 1. Re-run the stress test. Find the next target. Fix it. Repeat until there's nothing left to fix or the human says stop.
 
+## Step 0: EXPLAIN first
+
+Before touching any code, run `EXPLAIN SELECT ...` to see the Cascades physical plan. EXPLAIN now shows the actual plan (FlatMap, InJoin, IndexScan, etc.), not the logical plan text. This tells you immediately whether the issue is plan selection (wrong plan chosen) or execution (right plan, wrong runtime behavior).
+
+```sql
+EXPLAIN SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id
+-- → Project([ID, AMOUNT], InMemorySort([ID ASC], InJoin(IndexScan(IDX_CUSTOMER, [=]), binding=q$76 ASC)))
+```
+
+If the plan looks right but the query is slow, the issue is in the executor (scan range resolution, QOV binding, etc.). If the plan is wrong (full scan instead of index), the issue is in plan selection (cost model, rule firing, winner promotion).
+
+## Lessons learned (nightshift-99)
+
+1. **Table statistics are the highest-leverage fix.** The cost model uses `LeafScanCardinality = 1e6` for every table. Java uses `getRecordCount()`. Before building cost model workarounds, wire up real record counts — see CRITICAL item in TODO.md.
+
+2. **Check actual scan ranges, not just plan shape.** A plan can show `Scan(ORDERS, [<>])` (correct inequality range) but return 0 rows because `scanComparisonsToTupleRange` produced an empty range after RecordTypeKey prepend. Always verify row counts.
+
+3. **Case sensitivity kills silently.** Proto datum maps use lowercase field names (`customer_id`). Planner rules produce uppercase (`CUSTOMER_ID`). FieldValue.evaluateCorrelated now has a case-insensitive fallback, but watch for new sites.
+
+4. **`findPhysicalPlan` (first physical) is a trap.** Multiple rules (`ImplementInJoinRule`, `ImplementNestedLoopJoinRule`, `ImplementInMemorySortRule`) used `findPhysicalPlan` which takes the FIRST physical member. The first is often the wrong one (Filter(Scan) instead of IndexScan). Use `findBestPhysicalExpr(ref, PlanningCostModelLess)` for cost-based selection.
+
+5. **Don't build promotion hacks before checking if the plan is even reachable.** `promoteInJoinWinners` and `promoteByDataAccessCost` exist because the EXPLORE-phase winner wasn't updated after PLANNING added cheaper alternatives. The real fix is table statistics feeding the cost model so it picks correctly without promotion.
+
 ## What NOT to do
 
 - Don't paper over problems with hacks
@@ -98,6 +121,8 @@ After one fix lands, go back to step 1. Re-run the stress test. Find the next ta
 - Don't change the cost model without understanding why the current values exist
 - Don't reoptimize winners blindly — understand what each Reference's winner means
 - Don't break recursive CTEs (they're fragile — always test them)
+- Don't use println debugging — use EXPLAIN to see the physical plan
+- Don't assume the plan shape is correct — verify the actual row count
 
 ## Key files
 
