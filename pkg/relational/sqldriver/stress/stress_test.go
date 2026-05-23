@@ -531,6 +531,14 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 			t.Errorf("got %d groups, want %d (possible FDB timeout truncation)", r.RowCount, len(statuses))
 		}
 	})
+	t.Run("group_by_status_count_only", func(t *testing.T) {
+		h.explain(t, "SELECT status, COUNT(*) FROM orders GROUP BY status")
+		r := h.timeQuery("SELECT status, COUNT(*) FROM orders GROUP BY status")
+		r.mustSucceed(t, "GROUP BY status COUNT only")
+		if r.RowCount != len(statuses) {
+			t.Errorf("got %d groups, want %d", r.RowCount, len(statuses))
+		}
+	})
 	t.Run("group_by_customer_having", func(t *testing.T) {
 		r := h.timeQuery("SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
 		r.mustSucceed(t, "GROUP BY customer HAVING")
