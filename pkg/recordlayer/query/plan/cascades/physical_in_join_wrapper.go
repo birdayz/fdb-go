@@ -70,7 +70,7 @@ func (w *physicalInJoinWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	return &physicalInJoinWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalInJoinWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalInJoinWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}

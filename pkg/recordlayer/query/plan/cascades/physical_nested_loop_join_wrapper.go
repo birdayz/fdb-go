@@ -77,7 +77,7 @@ func (w *physicalNestedLoopJoinWrapper) HashCodeWithoutChildren() uint64 {
 
 // HintCost: nested-loop join is O(outer × inner). The join predicate
 // selectivity reduces the output cardinality.
-func (w *physicalNestedLoopJoinWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalNestedLoopJoinWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 2 {
 		return properties.Cost{}
 	}

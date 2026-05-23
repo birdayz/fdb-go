@@ -299,9 +299,9 @@ func partitionCost(p *PlanPartition) float64 {
 		return 1e18
 	}
 	if hc, ok := exprs[0].(interface {
-		HintCost([]properties.Cost) properties.Cost
+		HintCost([]properties.Cost, properties.StatisticsProvider) properties.Cost
 	}); ok {
-		c := hc.HintCost(nil)
+		c := hc.HintCost(nil, properties.DefaultStatistics{})
 		return c.Cardinality + c.CPU
 	}
 	return 1e18

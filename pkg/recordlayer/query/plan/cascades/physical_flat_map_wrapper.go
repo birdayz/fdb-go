@@ -64,7 +64,7 @@ func (w *physicalFlatMapWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 2 {
 		return properties.Cost{}
 	}

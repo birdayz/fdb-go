@@ -81,7 +81,7 @@ func (w *physicalStreamingAggWrapper) WithChildren(qs []expressions.Quantifier) 
 // HintCost: streaming aggregation is cheap — one pass over sorted
 // input, output cardinality reduced by DistinctSelectivity. Cheaper
 // than hash because no hash table is built (O(1) memory per group).
-func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}

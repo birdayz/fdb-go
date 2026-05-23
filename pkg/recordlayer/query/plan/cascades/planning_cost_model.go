@@ -31,8 +31,18 @@ import (
 //  16. Scalar cost fallback (EstimateCost)
 //  17. Plan hash deterministic tie-break
 func PlanningCostModelLess(a, b expressions.RelationalExpression) bool {
-	cmp := planningCostModelCompare(a, b)
+	cmp := planningCostModelCompareWith(a, b, nil)
 	return cmp < 0
+}
+
+// NewPlanningCostModelLess returns a stats-aware cost model comparator.
+// The returned function uses real record counts (via stats) for
+// cardinality estimation at scan/index wrappers and the scalar cost
+// fallback (criterion #16). Pass nil for default (LeafScanCardinality).
+func NewPlanningCostModelLess(stats properties.StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
+	return func(a, b expressions.RelationalExpression) bool {
+		return planningCostModelCompareWith(a, b, stats) < 0
+	}
 }
 
 // RewritingCostModelLess is the Java-aligned cost model for the REWRITING
@@ -155,7 +165,7 @@ func isTableFunctionExpression(e expressions.RelationalExpression) bool {
 	return ok
 }
 
-func planningCostModelCompare(a, b expressions.RelationalExpression) int {
+func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats properties.StatisticsProvider) int {
 	if a == nil && b == nil {
 		return 0
 	}
@@ -175,8 +185,8 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return 1
 	}
 
-	opsA := findExpressionsByType(a)
-	opsB := findExpressionsByType(b)
+	opsA := findExpressionsByType(a, stats)
+	opsB := findExpressionsByType(b, stats)
 
 	// Criterion #2: max cardinality of all data accesses — lower wins.
 	// Unknown (-1) loses to known.
@@ -269,7 +279,7 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
-	if cmp := compareFlatMapJoinOrdering(a, b); cmp != 0 {
+	if cmp := compareFlatMapJoinOrdering(a, b, stats); cmp != 0 {
 		return cmp
 	}
 
@@ -282,8 +292,8 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 	// (see D-4 wiring investigation). The scalar model's per-operator
 	// cost formulas discriminate between plans that look identical to
 	// the ordinal criteria.
-	costA := properties.EstimateCost(a)
-	costB := properties.EstimateCost(b)
+	costA := properties.EstimateCostWith(a, stats)
+	costB := properties.EstimateCostWith(b, stats)
 	if costA.Less(costB) {
 		return -1
 	}
@@ -325,20 +335,23 @@ type expressionCounts struct {
 	maxDataAccessCardinality float64 // -1 means unknown (no data access found)
 }
 
-func findExpressionsByType(e expressions.RelationalExpression) expressionCounts {
+func findExpressionsByType(e expressions.RelationalExpression, stats properties.StatisticsProvider) expressionCounts {
+	if stats == nil {
+		stats = properties.DefaultStatistics{}
+	}
 	counts := expressionCounts{maxDataAccessCardinality: -1}
-	walkExpressionTree(e, &counts)
+	walkExpressionTree(e, &counts, stats)
 	return counts
 }
 
-func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts) {
+func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider) {
 	if e == nil {
 		return
 	}
 	switch w := e.(type) {
 	case *physicalScanWrapper:
 		counts.scanCount++
-		card := w.HintCost(nil).Cardinality
+		card := w.HintCost(nil, stats).Cardinality
 		if card > counts.maxDataAccessCardinality {
 			counts.maxDataAccessCardinality = card
 		}
@@ -348,7 +361,7 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		} else {
 			counts.indexScanCount++
 		}
-		cost := w.HintCost(nil)
+		cost := w.HintCost(nil, stats)
 		card := cost.Cardinality
 		if card > counts.maxDataAccessCardinality {
 			counts.maxDataAccessCardinality = card
@@ -390,7 +403,7 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 			continue
 		}
 		if child := firstPhysicalChild(ref); child != nil {
-			walkExpressionTree(child, counts)
+			walkExpressionTree(child, counts, stats)
 		}
 	}
 }
@@ -691,14 +704,14 @@ func intCompare(a, b int) int {
 // compareFlatMapJoinOrdering implements Java's FlatMapJoinOrderingProperty
 // criterion: when both plans are FlatMap, prefer the one with smaller outer
 // cardinality (fewer inner loop executions).
-func compareFlatMapJoinOrdering(a, b expressions.RelationalExpression) int {
+func compareFlatMapJoinOrdering(a, b expressions.RelationalExpression, stats properties.StatisticsProvider) int {
 	fmA, okA := a.(*physicalFlatMapWrapper)
 	fmB, okB := b.(*physicalFlatMapWrapper)
 	if !okA || !okB {
 		return 0
 	}
-	outerCardA := outerCardinality(fmA)
-	outerCardB := outerCardinality(fmB)
+	outerCardA := outerCardinality(fmA, stats)
+	outerCardB := outerCardinality(fmB, stats)
 	if outerCardA < outerCardB {
 		return -1
 	}
@@ -708,12 +721,12 @@ func compareFlatMapJoinOrdering(a, b expressions.RelationalExpression) int {
 	return 0
 }
 
-func outerCardinality(fm *physicalFlatMapWrapper) float64 {
+func outerCardinality(fm *physicalFlatMapWrapper, stats properties.StatisticsProvider) float64 {
 	ref := fm.outerQuant.GetRangesOver()
 	if ref == nil {
 		return properties.LeafScanCardinality
 	}
-	return properties.EstimateCost(firstPhysicalChild(ref)).Cardinality
+	return properties.EstimateCostWith(firstPhysicalChild(ref), stats).Cardinality
 }
 
 // firstPhysicalChild returns the first physical member of ref.

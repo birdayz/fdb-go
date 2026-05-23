@@ -70,7 +70,7 @@ func (w *physicalMapWrapper) WithChildren(qs []expressions.Quantifier) (expressi
 	return &physicalMapWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalMapWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalMapWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}

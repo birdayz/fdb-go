@@ -364,13 +364,11 @@ func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (express
 // FullUnorderedScanExpression arm) and applies the physical-wrapper
 // discount so cost-driven extraction prefers the physical scan over
 // the logical one.
-func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
+func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	if w.plan == nil {
-		card := properties.LeafScanCardinality
+		card := stats.RecordTypeCardinality("")
 		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
-	// Check scan comparisons for cardinality estimation.
-	// A PK equality scan returns exactly 1 row.
 	if comps := w.plan.GetScanComparisons(); len(comps) > 0 {
 		allEquality := true
 		for _, cr := range comps {
@@ -385,12 +383,12 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	}
 	types := w.plan.GetRecordTypes()
 	if len(types) == 0 {
-		card := properties.LeafScanCardinality * physicalWrapperCostMultiplier
+		card := stats.RecordTypeCardinality("") * physicalWrapperCostMultiplier
 		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
 	total := 0.0
-	for range types {
-		total += properties.LeafScanCardinality
+	for _, t := range types {
+		total += stats.RecordTypeCardinality(t)
 	}
 	card := total * physicalWrapperCostMultiplier
 	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
@@ -540,8 +538,8 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // Without table statistics this is the best heuristic: it correctly
 // penalizes full-index-scan-for-ordering and wide range scans while
 // preserving fast equality point lookups.
-func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
-	base := properties.LeafScanCardinality * physicalWrapperCostMultiplier
+func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
+	base := indexBaseCardinality(w.plan, stats) * physicalWrapperCostMultiplier
 	numBound := 0
 	allEquality := true
 	hasRangeBound := false
@@ -571,6 +569,19 @@ func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost
 		cpu += base * properties.FetchCPU
 	}
 	return properties.Cost{Cardinality: base, CPU: cpu}
+}
+
+func indexBaseCardinality(plan *plans.RecordQueryIndexPlan, stats properties.StatisticsProvider) float64 {
+	if plan != nil {
+		if types := plan.GetRecordTypes(); len(types) > 0 {
+			total := 0.0
+			for _, t := range types {
+				total += stats.RecordTypeCardinality(t)
+			}
+			return total
+		}
+	}
+	return stats.RecordTypeCardinality("")
 }
 
 func (w *physicalIndexScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
@@ -666,7 +677,7 @@ func (w *physicalFilterWrapper) WithChildren(qs []expressions.Quantifier) (expre
 // HintCost mirrors the LogicalFilter cost formula and applies the
 // physical-wrapper discount so cost-driven extraction prefers the
 // physical filter over the logical one.
-func (w *physicalFilterWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 || w.plan == nil {
 		return properties.Cost{}
 	}
@@ -776,7 +787,7 @@ func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (exp
 }
 
 // HintCost mirrors LogicalDistinct with the physical-wrapper discount.
-func (w *physicalDistinctWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -878,7 +889,7 @@ func (w *physicalTypeFilterWrapper) WithChildren(qs []expressions.Quantifier) (e
 
 // HintCost mirrors LogicalTypeFilter with the physical-wrapper
 // discount.
-func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -982,7 +993,7 @@ func (w *physicalInsertWrapper) WithChildren(qs []expressions.Quantifier) (expre
 // HintCost: INSERT cost is dominated by the per-row write cost
 // (Java's CascadesCostModel weights writes heavily). Mirrors the
 // LogicalDML write cost — sumCPU + cardinality * WriteCPU.
-func (w *physicalInsertWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalInsertWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -1069,7 +1080,7 @@ func (w *physicalDeleteWrapper) WithChildren(qs []expressions.Quantifier) (expre
 }
 
 // HintCost: DELETE write-heavy cost like INSERT.
-func (w *physicalDeleteWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalDeleteWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -1156,7 +1167,7 @@ func (w *physicalUpdateWrapper) WithChildren(qs []expressions.Quantifier) (expre
 }
 
 // HintCost: UPDATE write-heavy cost like INSERT/DELETE.
-func (w *physicalUpdateWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalUpdateWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -1246,7 +1257,7 @@ func (w *physicalUnionWrapper) WithChildren(qs []expressions.Quantifier) (expres
 
 // HintCost: UNION cardinality is sum of children, CPU is cumulative
 // + per-output-row merge work. Mirrors LogicalUnion.
-func (w *physicalUnionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	sumCard := 0.0
 	sumCPU := 0.0
 	for _, c := range child {
@@ -1348,7 +1359,7 @@ func (w *physicalIntersectionWrapper) WithChildren(qs []expressions.Quantifier) 
 // participant). CPU sums children + per-output-row merge work
 // (more expensive than Union — comparison-key-driven matching).
 // Mirrors LogicalIntersection.
-func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -1433,7 +1444,7 @@ func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (e
 	return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalProjectionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalProjectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -1515,7 +1526,7 @@ func (w *physicalValuesWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	return w, nil
 }
 
-func (w *physicalValuesWrapper) HintCost(_ []properties.Cost) properties.Cost {
+func (w *physicalValuesWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	return properties.Cost{Cardinality: 1, CPU: 0}
 }
 

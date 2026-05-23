@@ -73,7 +73,7 @@ func (w *physicalRecursiveLevelUnionWrapper) HashCodeWithoutChildren() uint64 {
 // HintCost: level-order traversal is O(initial + levels*recursive)
 // but levels are unknown at plan time. Use initial×recursive as a
 // pessimistic bound, same as the DFS wrapper.
-func (w *physicalRecursiveLevelUnionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalRecursiveLevelUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 2 {
 		return properties.Cost{}
 	}

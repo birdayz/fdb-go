@@ -82,7 +82,7 @@ func (w *physicalMultiIntersectionWrapper) WithChildren(qs []expressions.Quantif
 // HintCost: multi-intersection cardinality is bounded by the smallest
 // child (same as regular intersection). CPU sums children + per-output
 // merge work.
-func (w *physicalMultiIntersectionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalMultiIntersectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}

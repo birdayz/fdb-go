@@ -52,7 +52,7 @@ func (w *physicalTableFunctionWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (w *physicalTableFunctionWrapper) HintCost(_ []properties.Cost) properties.Cost {
+func (w *physicalTableFunctionWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	return properties.Cost{
 		Cardinality: properties.LeafScanCardinality * physicalWrapperCostMultiplier,
 		CPU:         0,

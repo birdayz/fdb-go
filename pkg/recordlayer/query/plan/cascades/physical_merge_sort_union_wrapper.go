@@ -67,7 +67,7 @@ func (w *physicalMergeSortUnionWrapper) WithChildren(qs []expressions.Quantifier
 	return &physicalMergeSortUnionWrapper{plan: w.plan, innerQuants: copied}, nil
 }
 
-func (w *physicalMergeSortUnionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalMergeSortUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	sumCard := 0.0
 	sumCPU := 0.0
 	for _, c := range child {

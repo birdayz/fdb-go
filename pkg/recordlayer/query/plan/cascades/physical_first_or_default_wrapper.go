@@ -67,7 +67,7 @@ func (w *physicalFirstOrDefaultWrapper) WithChildren(qs []expressions.Quantifier
 	return &physicalFirstOrDefaultWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalFirstOrDefaultWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalFirstOrDefaultWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}

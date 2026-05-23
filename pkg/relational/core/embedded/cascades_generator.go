@@ -19,6 +19,7 @@ import (
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -211,7 +212,7 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 			"no schema metadata available")
 	}
 
-	return g.planSelectCascades(q, md)
+	return g.planSelectCascades(ctx, q, md)
 }
 
 // planSelectExplainOnly produces a PlanFunc that renders a logical plan
@@ -244,7 +245,7 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 }
 
 // planSelectCascades runs the full Cascades pipeline for a query.
-func (g *cascadesGenerator) planSelectCascades(q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (query.Plan, error) {
+func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (query.Plan, error) {
 	// Check plan cache before running the full Cascades pipeline.
 	// Use the query text for hashing since we don't have the original
 	// full SQL here — GetText() is stable for cache-key purposes.
@@ -300,8 +301,10 @@ func (g *cascadesGenerator) planSelectCascades(q antlrgen.IQueryContext, md *rec
 	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
+	stats := g.fetchTableStatistics(ctx, md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
 	bestExpr, _, planErr := planner.Plan(ref)
@@ -421,7 +424,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 		if c.sess != nil && c.sess.DB != nil && !referencesInformationSchema(q) {
 			if err := c.ensureMetaData(ctx); err == nil {
 				if freshMd := c.cachedMetaData(); freshMd != nil {
-					if plan, planErr := g.planSelectCascades(q, freshMd); planErr == nil {
+					if plan, planErr := g.planSelectCascades(ctx, q, freshMd); planErr == nil {
 						return plan.Explain()
 					}
 				}
@@ -582,8 +585,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
+	dmlStats := g.fetchTableStatistics(ctx, md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithStatistics(dmlStats).
 		WithMaxTasks(100_000)
 
 	bestExpr, _, planErr := planner.Plan(ref)
@@ -1038,6 +1043,45 @@ func translateExecError(err error) error {
 		return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
 	}
 	return err
+}
+
+// fetchTableStatistics reads per-record-type row counts from FDB using a
+// snapshot transaction. Returns nil (use defaults) on any error — statistics
+// are best-effort; a failed stats read should never prevent query planning.
+func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *recordlayer.RecordMetaData) properties.StatisticsProvider {
+	c := g.c
+	if c.sess == nil || c.sess.DB == nil || md == nil {
+		return nil
+	}
+	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	if err != nil {
+		return nil
+	}
+
+	counts := make(map[string]float64)
+	_, _ = c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		store, storeErr := c.newStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+		for name := range md.RecordTypes() {
+			count, countErr := store.GetSnapshotRecordCountForRecordType(name)
+			if countErr != nil {
+				return nil, countErr
+			}
+			counts[name] = float64(count)
+		}
+		return nil, nil
+	})
+
+	if len(counts) == 0 {
+		return nil
+	}
+	return properties.MapStatistics{PerType: counts}
 }
 
 func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanContext {
