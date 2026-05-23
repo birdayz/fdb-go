@@ -84,17 +84,22 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		for _, reverse := range []bool{false, true} {
+		for _, reverse := range []bool{false} {
 			scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
 			idxPlan := extractIndexPlan(scanPlan)
 			if idxPlan == nil {
 				continue
 			}
 
+			covering := aggregatesCoveredByIndex(gb.GetAggregates(), colNames)
+			if covering {
+				idxPlan = idxPlan.WithCovering(colNames)
+			}
 			idxWrapper := &physicalIndexScanWrapper{
 				plan:        idxPlan,
 				columnNames: colNames,
 				unique:      cand.IsUnique(),
+				covering:    covering,
 			}
 
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(

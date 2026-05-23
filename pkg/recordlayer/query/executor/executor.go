@@ -430,12 +430,12 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
 	for i, col := range c.columns {
 		if i < len(vals) {
-			datum[strings.ToLower(col)] = vals[i]
+			datum[strings.ToUpper(col)] = vals[i]
 		}
 	}
 	for i, col := range c.pkColumns {
 		if i < len(pk) {
-			datum[strings.ToLower(col)] = pk[i]
+			datum[strings.ToUpper(col)] = pk[i]
 		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
