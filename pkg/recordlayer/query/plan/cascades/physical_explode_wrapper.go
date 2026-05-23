@@ -56,8 +56,11 @@ func (w *physicalExplodeWrapper) HintCost(_ []properties.Cost, _ properties.Stat
 	card := 10.0
 	if w.plan != nil {
 		if cv, ok := w.plan.GetCollectionValue().(*values.ConstantValue); ok {
-			if sl, ok := cv.Value.([]any); ok && len(sl) > 0 {
+			if sl, ok := cv.Value.([]any); ok {
 				card = float64(len(sl))
+				if card < 1 {
+					card = 1
+				}
 			}
 		}
 	}
