@@ -254,7 +254,8 @@ func planningCostModelCompare(a, b expressions.RelationalExpression) int {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
-	if opsA.unmatchedFieldCount != opsB.unmatchedFieldCount {
+	if opsA.unmatchedFieldCount != opsB.unmatchedFieldCount &&
+		opsA.inMemorySortCount == 0 && opsB.inMemorySortCount == 0 {
 		return intCompare(opsA.unmatchedFieldCount, opsB.unmatchedFieldCount)
 	}
 
@@ -314,6 +315,7 @@ type expressionCounts struct {
 	mapCount                 int
 	predicatesFilterCount    int
 	unmatchedFieldCount      int
+	inMemorySortCount        int
 	maxDataAccessCardinality float64 // -1 means unknown (no data access found)
 }
 
@@ -341,7 +343,7 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 			counts.indexScanCount++
 		}
 		cost := w.HintCost(nil)
-		card := cost.Total()
+		card := cost.Cardinality
 		if card > counts.maxDataAccessCardinality {
 			counts.maxDataAccessCardinality = card
 		}
@@ -369,6 +371,8 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		counts.inUnionCount++
 	case *physicalFetchFromPartialRecordWrapper:
 		counts.fetchCount++
+	case *physicalInMemorySortWrapper:
+		counts.inMemorySortCount++
 	}
 	for _, q := range e.GetQuantifiers() {
 		ref := q.GetRangesOver()
@@ -603,16 +607,16 @@ func isFetchExpression(e expressions.RelationalExpression) bool {
 // singular index scan WITH a fetch (non-covering or covering+fetch).
 // A covering index without fetch is strictly better and doesn't enter this path.
 func comparePrimaryScanVsIndexScan(opsA, opsB expressionCounts) int {
-	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0
-	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0
+	aIsPrimaryScan := opsA.scanCount == 1 && opsA.indexScanCount == 0 && opsA.coveringIndexCount == 0 && opsA.inMemorySortCount == 0
+	bIsPrimaryScan := opsB.scanCount == 1 && opsB.indexScanCount == 0 && opsB.coveringIndexCount == 0 && opsB.inMemorySortCount == 0
 	aIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsA)
 	bIsIndexScanWithFetch := isSingularIndexScanWithFetch(opsB)
 
 	if aIsPrimaryScan && bIsIndexScanWithFetch {
-		return 1
+		return -1
 	}
 	if bIsPrimaryScan && aIsIndexScanWithFetch {
-		return -1
+		return 1
 	}
 	return 0
 }
