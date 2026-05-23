@@ -53,8 +53,16 @@ func (w *physicalExplodeWrapper) HashCodeWithoutChildren() uint64 {
 }
 
 func (w *physicalExplodeWrapper) HintCost(_ []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
+	card := 10.0
+	if w.plan != nil {
+		if cv, ok := w.plan.GetCollectionValue().(*values.ConstantValue); ok {
+			if sl, ok := cv.Value.([]any); ok && len(sl) > 0 {
+				card = float64(len(sl))
+			}
+		}
+	}
 	return properties.Cost{
-		Cardinality: properties.LeafScanCardinality * physicalWrapperCostMultiplier,
+		Cardinality: card * physicalWrapperCostMultiplier,
 		CPU:         0,
 	}
 }
