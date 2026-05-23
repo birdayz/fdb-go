@@ -771,6 +771,19 @@ func TestPlanHarness_StatsAffectGroupByPlan(t *testing.T) {
 	assertPlanContains(t, planLarge, "COVERING")
 }
 
+func TestPlanHarness_JoinWithAsymmetricStats(t *testing.T) {
+	t.Parallel()
+	sql := "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id"
+	plan, err := PlanQueryForTest(sql, multiTableSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 1_000_000, "CUSTOMERS": 100},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan (1M orders, 100 customers): %s", plan)
+	assertPlanContains(t, plan, "FlatMap")
+}
+
 func TestPlanHarness_CoveringCompositeIndex(t *testing.T) {
 	t.Parallel()
 	schema := `
