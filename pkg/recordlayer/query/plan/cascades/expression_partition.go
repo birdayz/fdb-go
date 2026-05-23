@@ -2,9 +2,11 @@ package cascades
 
 import (
 	"fmt"
+	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
@@ -164,9 +166,9 @@ func toPlanPartitionsFallback(ref *expressions.Reference) []*PlanPartition {
 
 func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 	type propKey struct {
-		distinct    bool
-		stored      bool
-		hasOrdering bool
+		distinct     bool
+		stored       bool
+		orderingHash uint64
 	}
 
 	groups := make(map[propKey]*PlanPartition)
@@ -175,9 +177,9 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 		props := pm.GetProperties(expr)
 		ordering := props.GetOrdering()
 		key := propKey{
-			distinct:    props.GetBool(properties.PropDistinctRecords),
-			stored:      props.GetBool(properties.PropStoredRecord),
-			hasOrdering: ordering.IsKnown && len(ordering.Keys) > 0,
+			distinct:     props.GetBool(properties.PropDistinctRecords),
+			stored:       props.GetBool(properties.PropStoredRecord),
+			orderingHash: orderingPartitionHash(ordering),
 		}
 		part, ok := groups[key]
 		if !ok {
@@ -202,6 +204,26 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 		result = append(result, groups[key])
 	}
 	return result
+}
+
+// orderingPartitionHash produces a hash of the ordering keys and their
+// directions so that ASC and DESC orderings of the same columns fall into
+// separate partitions. Matches Java where Ordering.equals includes
+// ProvidedSortOrder direction in the bindingMap.
+func orderingPartitionHash(o properties.Ordering) uint64 {
+	if !o.IsKnown || len(o.Keys) == 0 {
+		return 0
+	}
+	h := fnv.New64a()
+	for i, k := range o.Keys {
+		h.Write([]byte(values.ExplainValue(k)))
+		if i < len(o.Descending) && o.Descending[i] {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
+	}
+	return h.Sum64()
 }
 
 // RollUpPlanPartitions merges partitions by retaining only the specified
