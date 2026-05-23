@@ -312,6 +312,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// any Reference. Walk all Memo References and check if an InJoin
 	// or InUnion is better than the current winner under the cost model.
 	p.promoteInJoinWinners(rootRef)
+	promoteByDataAccessCost(rootRef)
 
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
@@ -467,6 +468,47 @@ func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map
 func isPhysicalInUnion(expr expressions.RelationalExpression) bool {
 	_, ok := expr.(*physicalInUnionWrapper)
 	return ok
+}
+
+func promoteByDataAccessCost(rootRef *expressions.Reference) {
+	if rootRef == nil {
+		return
+	}
+	existing := rootRef.Winner(expressions.NoProperties)
+	if existing == nil {
+		return
+	}
+	if _, ok := existing.(physicalPlanExpression); !ok {
+		return
+	}
+	existingCounts := findExpressionsByType(existing)
+	if existingCounts.maxDataAccessCardinality < 0 {
+		return
+	}
+	_, existingIsProj := existing.(*physicalProjectionWrapper)
+	for _, m := range rootRef.AllMembers() {
+		if _, ok := m.(physicalPlanExpression); !ok {
+			continue
+		}
+		counts := findExpressionsByType(m)
+		if counts.maxDataAccessCardinality < 0 {
+			continue
+		}
+		if counts.maxDataAccessCardinality >= existingCounts.maxDataAccessCardinality {
+			continue
+		}
+		if counts.inMemorySortCount < existingCounts.inMemorySortCount {
+			continue
+		}
+		if existingIsProj {
+			if _, ok := m.(*physicalProjectionWrapper); !ok {
+				continue
+			}
+		}
+		existing = m
+		existingCounts = counts
+	}
+	rootRef.SetWinner(expressions.NoProperties, existing)
 }
 
 func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
