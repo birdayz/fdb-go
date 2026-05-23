@@ -6,6 +6,22 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ---
 
+## CRITICAL — Table statistics for cost model
+
+**The single highest-leverage improvement remaining.** The cost model uses `LeafScanCardinality = 1e6` for every table and `FilterSelectivity = 0.5` for every predicate. It can't distinguish a 10-row table from a 10M-row table. This forced nightshift-99 to build promotion hacks (`promoteInJoinWinners`, `promoteByDataAccessCost`) to work around wrong cost estimates — the root cause is missing statistics.
+
+**Java already does this.** `RecordStoreState.getRecordCount()` feeds into the planner's cardinality estimates. Go has `FDBRecordStore.GetSnapshotRecordCountForRecordType(name)` — it reads the count from the record store header (maintained atomically on insert/delete). The `StatisticsProvider` interface already exists in `properties/cost.go` with `RecordTypeCardinality(name) float64` — it just always returns `LeafScanCardinality`.
+
+**What to wire:**
+1. At plan time (`cascades_generator.go`), call `store.GetSnapshotRecordCountForRecordType(rt)` for each record type in the schema
+2. Build a `StatisticsProvider` impl that returns the real counts
+3. Pass it through the planner to `EstimateCost` / `HintCost` / `localCost`
+4. Remove `promoteByDataAccessCost` and `promoteInJoinWinners` — the cost model picks correctly with real counts
+
+**What it fixes immediately:** InJoin vs Filter selection, FlatMap vs NLJ selection, index scan vs full scan for range predicates, streaming agg from index decisions. Every cardinality-driven plan choice improves.
+
+---
+
 ## Stress test 1M baseline comparison (2026-05-21)
 
 Measured after cost model regression fixes. Compare against master baseline.
