@@ -6,19 +6,16 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 
 ---
 
-## CRITICAL — Table statistics for cost model
+## DONE — Table statistics for cost model (nightshift-100)
 
-**The single highest-leverage improvement remaining.** The cost model uses `LeafScanCardinality = 1e6` for every table and `FilterSelectivity = 0.5` for every predicate. It can't distinguish a 10-row table from a 10M-row table. This forced nightshift-99 to build promotion hacks (`promoteInJoinWinners`, `promoteByDataAccessCost`) to work around wrong cost estimates — the root cause is missing statistics.
+**Fixed.** Root cause: `SetRecordCountKey` was never called in the SQL DDL metadata builder (`pkg/relational/core/metadata/builder.go`), so `fetchTableStatistics` always returned nil and fell back to `LeafScanCardinality = 1e6`.
 
-**Java already does this.** `RecordStoreState.getRecordCount()` feeds into the planner's cardinality estimates. Go has `FDBRecordStore.GetSnapshotRecordCountForRecordType(name)` — it reads the count from the record store header (maintained atomically on insert/delete). The `StatisticsProvider` interface already exists in `properties/cost.go` with `RecordTypeCardinality(name) float64` — it just always returns `LeafScanCardinality`.
+**What was done:**
+1. `SetRecordCountKey(RecordTypeKey())` added to DDL metadata builder for non-intermingled tables
+2. Plan extraction now receives real statistics (was `DefaultStatistics{}`)
+3. Fixed case-mismatch in planner harness test stats keys (lowercase "orders" → uppercase "ORDERS")
 
-**What to wire:**
-1. At plan time (`cascades_generator.go`), call `store.GetSnapshotRecordCountForRecordType(rt)` for each record type in the schema
-2. Build a `StatisticsProvider` impl that returns the real counts
-3. Pass it through the planner to `EstimateCost` / `HintCost` / `localCost`
-4. Remove `promoteByDataAccessCost` and `promoteInJoinWinners` — the cost model picks correctly with real counts
-
-**What it fixes immediately:** InJoin vs Filter selection, FlatMap vs NLJ selection, index scan vs full scan for range predicates, streaming agg from index decisions. Every cardinality-driven plan choice improves.
+**Remaining:** `promoteByDataAccessCost` and `promoteInJoinWinners` are still present as safety nets. They're harmless with real statistics (cost model picks correctly) but should be removed once the 1M stress test confirms no regressions.
 
 ---
 
@@ -97,7 +94,7 @@ Queries that should use indexes but appear to full-scan, or are orders of magnit
 - [ ] **IN (subquery) as deliberate Go extension.** Java explicitly rejects `IN (SELECT ...)` with `UNSUPPORTED_QUERY` at `ExpressionVisitor.java:618`. Go currently rejects too. Consider supporting as a Go-only extension with deep test coverage.
 - [x] **Derived table + JOIN can't be planned.** Root cause: `buildSelectScope` resolved derived-table columns correctly but `preWalkPred` was discarded in the non-subquery path — fallback `buildWherePredicateForJoins` can't resolve derived-table aliases. Fix: use resolver's walked predicate when available. Tests: `subquery_in_from_with_join` now asserts correct results (Alice/Bob with order_count > 1).
 - [x] **CTE + aggregate + JOIN can't be planned.** Root cause: `buildCTEColumnSource` rejected aggregate CTEs (bailed on `aggCols > 0 || countStar`), so CTE scope was never registered, resolver returned nil. Fix: delegate to `buildDerivedTableSourceFromAgg` for aggregate CTEs. Tests: `cte_with_join` now asserts correct results (Charlie/Alice/Bob by shipped total DESC).
-- [ ] **Covering index unreachable from SQL.** Core infrastructure ported (IndexKeyValueToPartialRecord, FieldCopier, Builder pattern, 9 unit tests). Planner has covering flag + MergeFetchIntoCoveringIndexRule. SQL projections prevent triggering (`IsFinalNeeded=false` not reachable). Fix: teach translator to produce RecordConstructorValue projections that allow partial-record reconstruction from index entries.
+- [x] **Covering index for SQL.** Works e2e: `ImplementProjectionRule` (EXPLORE phase) detects when all projected FieldValues can push through the Fetch's TranslateValueFunction. Covers PK columns + index key columns. Tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`. The `IsFinalNeeded` path through compensation is not used — EXPLORE-phase projection push-through is the active mechanism.
 
 ### Testing gaps (testing expert, A- grade)
 
@@ -143,7 +140,7 @@ Queries that should use indexes but appear to full-scan, or are orders of magnit
 - [x] **getCorrelatedTo() on all predicates** — Added `GetCorrelatedTo()` method to QueryPredicate interface. Implemented on all 10 concrete types. 8 unit tests.
 - [x] **Plan proto serialization** — Not needed for production single-process deployments. Go's in-memory PlanCache (`cascades_generator.go`) caches compiled plans per-connection. Continuation tokens serialize cursor STATE (position, accumulators) not plan STRUCTURE — plans are recreated from SQL on each transaction. Cross-process plan sharing would need this, but it's an optimization for distributed caches, not correctness.
 - [x] **Value type proto serialization** — Same reasoning as plan serialization. Values are part of plans which are held in memory. Continuation protos serialize evaluation STATE (aggregate accumulators, sort buffers), not the Value tree itself. Production deployments work without this.
-- [ ] **Covering index for SQL** — Core ported: `IndexKeyValueToPartialRecord` with FieldCopier + Builder pattern (9 unit tests). Planner infrastructure exists (covering flag, MergeFetchIntoCoveringIndexRule). **Not working e2e:** SQL projections prevent triggering `IsFinalNeeded=false`. `SELECT name FROM users WHERE email=?` with index on `(email, name)` still fetches the full record. Fix: teach translator to produce RecordConstructorValue projections.
+- [x] **Covering index for SQL** — Works e2e via EXPLORE-phase `ImplementProjectionRule` push-through. PK columns + all index key columns are coverable. Verified with planner harness tests (composite index, PK+index, non-covering). The `IsFinalNeeded` compensation path is bypassed — the projection rule directly detects covering by pushing FieldValues through the Fetch's TranslateValueFunction.
 
 ### Missing comparison subclasses
 
@@ -190,7 +187,7 @@ Queries that should use indexes but appear to full-scan, or are orders of magnit
 ### Missing rules
 
 - [x] **MatchPartition rules** — `WithPrimaryKeyDataAccessRule` implemented as `Planner.generateDataAccessWithConstraints()`. `AdjustMatchRule` implemented as `Planner.AdjustMatches()`. Both are explicit passes fired at the right timing, matching Java's behavior. The rule-vs-pass difference is architectural, not functional.
-- [ ] **ExtractFromIndexKeyValueRuleSet (3 rules)** — `IndexKeyValueToPartialRecord` core ported with FieldCopier + Builder pattern (9 unit tests). Rules can't fire from SQL because translator doesn't produce projections that allow `IsFinalNeeded=false`. Blocked on covering index TODO above.
+- [x] **ExtractFromIndexKeyValueRuleSet (3 rules)** — `IndexKeyValueToPartialRecord` core ported with FieldCopier + Builder pattern (9 unit tests). Covering index now works via EXPLORE-phase `ImplementProjectionRule` push-through (bypasses `IsFinalNeeded` entirely). The rules themselves are dead code — `MergeFetchIntoCoveringIndexRule` exists for completeness but the projection rule handles covering directly.
 
 ### PredicateWithValueAndRanges hierarchy
 

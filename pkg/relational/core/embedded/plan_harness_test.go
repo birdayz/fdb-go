@@ -749,6 +749,58 @@ func TestPlanHarness_Coalesce(t *testing.T) {
 	assertPlanContains(t, plan, "Scan(ORDERS)")
 }
 
+func TestPlanHarness_CoveringCompositeIndex(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_status_amount ON ORDERS(status, amount)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, amount FROM orders WHERE status = 'pending'",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_STATUS_AMOUNT")
+	assertPlanContains(t, plan, "COVERING")
+	assertPlanNotContains(t, plan, "Fetch")
+}
+
+func TestPlanHarness_CoveringCompositeIndexPKAndIndexCols(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_status_amount ON ORDERS(status, amount)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT id, status, amount FROM orders WHERE status = 'pending'",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_STATUS_AMOUNT")
+	assertPlanContains(t, plan, "COVERING")
+	assertPlanNotContains(t, plan, "Fetch")
+}
+
+func TestPlanHarness_NonCoveringNeedsExtraColumn(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (id BIGINT NOT NULL, status STRING, amount BIGINT, tier STRING, PRIMARY KEY (id))
+CREATE INDEX idx_status ON ORDERS(status)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, tier FROM orders WHERE status = 'pending'",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanNotContains(t, plan, "COVERING")
+}
+
 func assertPlanContains(t *testing.T, plan, substr string) {
 	t.Helper()
 	if !strings.Contains(plan, substr) {
