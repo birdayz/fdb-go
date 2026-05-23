@@ -53,13 +53,20 @@ func TestPlanHarness_IndexRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	// Non-covering range scan on idx_amount returns ~10% of rows.
-	// With unknown selectivity (0.5), estimated 500K rows + 500K PK
-	// fetches. For large tables, full scan (3s sequential) beats
-	// non-covering index scan (8s random). But the cost model picks
-	// the index scan because criterion #2 (maxDataAccessCardinality)
-	// favors lower cardinality before criterion #16 (scalar cost).
-	// TODO: the cost model should account for fetch I/O in criterion #2.
+	assertPlanContains(t, plan, "IndexScan(IDX_AMOUNT,")
+}
+
+func TestPlanHarness_IndexRangeSelectStar(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT * FROM orders WHERE amount > 9000",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IndexScan(IDX_AMOUNT,")
+	assertPlanNotContains(t, plan, "COVERING")
 }
 
 func TestPlanHarness_OrderByPK(t *testing.T) {
