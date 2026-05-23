@@ -24,7 +24,7 @@ Measured after cost model regression fixes. Compare against master baseline.
 | delete_single_row | <10ms | 2.2ms | = | |
 | index_status_count (COUNT) | **0.32s** | 3.1s | **10x ↑** | Covering index for COUNT — no PK fetch |
 | full_scan_filter (COUNT > 5000) | **0.39s** | 3.0s | **8x ↑** | Covering index for COUNT — no PK fetch |
-| in_list (46 rows) | 2.90s | 3.1s | = | |
+| in_list (46 rows) | **0.02s** | 3.1s | **150x ↑** | InJoin(IndexScan) via promoteByDataAccessCost |
 | order_by_pk_full (1M rows) | 3.23s | 3.4s | = | |
 | full_scan_count | 3.01s | 2.9s | = | |
 | group_by_status (4 rows) | 4.64s | 5.1s | = | |
@@ -56,7 +56,7 @@ Queries that should use indexes but appear to full-scan, or are orders of magnit
 | P1 | `SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id` | **2.97s** | <100ms | 30x | NLJ inner plan is full scan of customers (100K rows per outer). Needs correlated index lookup on `customers(id)`. Same class as P4. | OPEN — requires correlated FlatMap index binding |
 | P2 | `SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status` | **5.19s** | ~5s | ~1x | Not a planner bug. `SUM(amount)` requires fetching each record (amount not in idx_status). Non-covering index scan + fetch is MORE expensive than primary scan + sort. Genuine I/O cost at 1M rows. | WONTFIX — correct behavior; needs composite index `(status, amount)` |
 | P3 | `SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id` | **10.09s** | ~10s | ~1x | Same as P2: `SUM(amount)` requires fetch from idx_customer. 100K groups × fetch = genuine I/O cost. | WONTFIX — needs composite index `(customer_id, amount)` |
-| P4 | `SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id` | **2.96s** | <100ms | 30x | InJoin inner plan is correlated filter over full scan. `customer_id = <explode_alias>` is a correlation reference, not a literal — ImplementIndexScanRule can't push it to index. | OPEN — requires correlated index binding in InJoin inner plan |
+| P4 | `SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id` | ~~2.96s~~ **0.02s** | <100ms | ~~30x~~ **150x** | **FIXED.** Four changes: (1) promoteInJoinWinners after PLANNING, (2) InJoinRule yields alternatives for ALL inner plans, (3) InMemorySortRule yields sort alternatives for InJoin/InUnion, (4) promoteByDataAccessCost at root. | **DONE** (nightshift-99) |
 | P5 | `WHERE id = ? AND status = 'pending'` | ~~2.95s~~ **1.67ms** | <10ms | ~~300x~~ **1370x** | **FIXED.** Two bugs: (1) ImplementIndexScanRule skipped AND predicates, (2) physicalScanWrapper.HintCost ignored scan comparisons. | **DONE** (commit f16872d9) |
 
 **P5 fixed (1370x).** P2/P3 are not planner bugs (genuine I/O cost). P1/P4 require correlated index binding — same architectural gap (NLJ/InJoin inner plan doesn't use index for correlation predicates).
