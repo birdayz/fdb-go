@@ -478,6 +478,8 @@ func promoteByDataAccessCost(rootRef *expressions.Reference) {
 				continue
 			}
 		}
+		// Don't replace a winner that includes InMemorySort with a
+		// candidate that drops the sort — the query's ORDER BY requires it.
 		if counts.inMemorySortCount < existingCounts.inMemorySortCount {
 			continue
 		}
