@@ -5,6 +5,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -339,7 +340,7 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 		t.Fatalf("unique: expected 1 yield, got %d", len(resultsU))
 	}
 	wrapperU := resultsU[0].(*physicalIndexScanWrapper)
-	costU := wrapperU.HintCost(nil)
+	costU := wrapperU.HintCost(nil, properties.DefaultStatistics{})
 
 	// Fire with non-unique index (rebuild filter for fresh reference).
 	scan2 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
@@ -361,7 +362,7 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 		t.Fatalf("non-unique: expected 1 yield, got %d", len(resultsNU))
 	}
 	wrapperNU := resultsNU[0].(*physicalIndexScanWrapper)
-	costNU := wrapperNU.HintCost(nil)
+	costNU := wrapperNU.HintCost(nil, properties.DefaultStatistics{})
 
 	if costU.Cardinality >= costNU.Cardinality {
 		t.Fatalf("unique point lookup (card=%.2f) should be cheaper than non-unique (card=%.2f)",

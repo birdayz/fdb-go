@@ -488,7 +488,7 @@ func localCost(e expressions.RelationalExpression, child []Cost, stats Statistic
 		// corresponding logical operator so cost-driven extraction
 		// prefers the physical plan.
 		if hinter, ok := e.(CostHinter); ok {
-			return hinter.HintCost(child)
+			return hinter.HintCost(child, stats)
 		}
 		// Unknown operator — pessimistic. Drives the planner toward
 		// known-cost shapes when alternatives exist. Safe because the
@@ -510,10 +510,13 @@ func localCost(e expressions.RelationalExpression, child []Cost, stats Statistic
 // plan.
 type CostHinter interface {
 	// HintCost returns this expression's cost given its children's
-	// rolled-up costs. Implementations should aggregate sumCPU =
-	// sum(child.CPU) + own-CPU and compute cardinality based on
-	// the operator's selectivity / row-shape contract.
-	HintCost(childCosts []Cost) Cost
+	// rolled-up costs and the active statistics provider.
+	// Implementations should aggregate sumCPU = sum(child.CPU) +
+	// own-CPU and compute cardinality based on the operator's
+	// selectivity / row-shape contract. Use stats for table-level
+	// cardinality when available (scan/index wrappers); most
+	// operators ignore stats and derive cardinality from children.
+	HintCost(childCosts []Cost, stats StatisticsProvider) Cost
 }
 
 // CostLess returns a comparator function `less(a, b RelationalExpression) bool`

@@ -65,7 +65,7 @@ func (w *physicalUnorderedUnionWrapper) WithChildren(qs []expressions.Quantifier
 	return &physicalUnorderedUnionWrapper{plan: w.plan, innerQuants: copied}, nil
 }
 
-func (w *physicalUnorderedUnionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalUnorderedUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	sumCard := 0.0
 	sumCPU := 0.0
 	for _, c := range child {

@@ -61,7 +61,7 @@ func (w *physicalLimitWrapper) HashCodeWithoutChildren() uint64 {
 }
 
 // HintCost: LIMIT reduces cardinality to min(child, limit).
-func (w *physicalLimitWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalLimitWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}

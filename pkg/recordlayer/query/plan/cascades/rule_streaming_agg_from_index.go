@@ -84,26 +84,61 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		for _, reverse := range []bool{false, true} {
-			scanPlan := cand.ToScanPlan(emptyPrefix, reverse)
-			idxPlan := extractIndexPlan(scanPlan)
-			if idxPlan == nil {
-				continue
-			}
+		// Forward-only: reverse ordering is handled by ImplementSortRule
+		// when ORDER BY DESC is present above the GroupBy.
+		scanPlan := cand.ToScanPlan(emptyPrefix, false)
+		idxPlan := extractIndexPlan(scanPlan)
+		if idxPlan == nil {
+			continue
+		}
 
-			idxWrapper := &physicalIndexScanWrapper{
-				plan:        idxPlan,
-				columnNames: colNames,
-				unique:      cand.IsUnique(),
-			}
+		covering := aggregatesCoveredByIndex(gb.GetAggregates(), colNames)
+		if covering {
+			idxPlan = idxPlan.WithCovering(colNames)
+		}
+		idxWrapper := &physicalIndexScanWrapper{
+			plan:        idxPlan,
+			columnNames: colNames,
+			unique:      cand.IsUnique(),
+			covering:    covering,
+		}
 
-			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
-				idxPlan, groupingKeys, gb.GetAggregates(),
-			)
-			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
-			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
+			idxPlan, groupingKeys, gb.GetAggregates(),
+		)
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+	}
+}
+
+// aggregatesCoveredByIndex returns true when every field referenced by
+// the aggregates is present in the index columns. COUNT(*) has no operand
+// and is trivially covered. SUM(amount) is covered iff "amount" is in
+// the index. This lets the index scan skip the per-row PK fetch.
+func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []string) bool {
+	for _, a := range aggs {
+		if a.Operand == nil {
+			continue
+		}
+		if _, isConst := a.Operand.(*values.ConstantValue); isConst {
+			continue // COUNT(*) / COUNT(1) — no field access needed
+		}
+		fv, ok := a.Operand.(*values.FieldValue)
+		if !ok {
+			return false // complex expression (e.g. SUM(a+1)) — may reference fields not in the index
+		}
+		found := false
+		for _, col := range indexCols {
+			if eqFold(fv.Field, col) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
 		}
 	}
+	return true
 }
 
 var _ ExpressionRule = (*StreamingAggFromIndexRule)(nil)

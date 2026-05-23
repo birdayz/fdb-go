@@ -85,7 +85,7 @@ func (w *physicalInMemorySortWrapper) HintOrdering() properties.Ordering {
 // HintCost: in-memory sort is expensive — materialize + O(n log n).
 // Must be more expensive than index-based sort elimination so Cascades
 // prefers indexes when available.
-func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
@@ -93,7 +93,7 @@ func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost) properti
 	if n < 1 {
 		n = 1
 	}
-	sortCPU := n * 0.1 // O(n log n) approximated; 10x more expensive than filter
+	sortCPU := n * 0.1
 	return properties.Cost{
 		Cardinality: n,
 		CPU:         child[0].CPU + sortCPU,

@@ -70,7 +70,7 @@ func (w *physicalRecursiveDfsJoinWrapper) HashCodeWithoutChildren() uint64 {
 
 // HintCost: recursive DFS is O(root + depth*child) but depth is
 // unknown at plan time. Use root×child as a pessimistic upper bound.
-func (w *physicalRecursiveDfsJoinWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalRecursiveDfsJoinWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 2 {
 		return properties.Cost{}
 	}

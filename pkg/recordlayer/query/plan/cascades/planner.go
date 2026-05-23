@@ -68,6 +68,11 @@ type Planner struct {
 	// REWRITING phase. Matches Java's per-phase cost model architecture.
 	costModel func(a, b expressions.RelationalExpression) bool
 
+	// stats is the optional table-level cardinality statistics. When
+	// set, the cost model uses real record counts instead of the
+	// default 1e6 constant.
+	stats properties.StatisticsProvider
+
 	// events is the (optional) event handler. Nil = no events.
 	events PlannerEventHandler
 }
@@ -227,6 +232,19 @@ func (p *Planner) WithCostModel(less func(a, b expressions.RelationalExpression)
 	return p
 }
 
+// WithStatistics sets the table-level cardinality statistics for the cost
+// model. Stats flow through EstimateCost and HintCost to give scan/index
+// wrappers real cardinality instead of the default 1e6 constant.
+// Replaces the cost model — call after WithCostModel if both are used.
+func (p *Planner) WithStatistics(stats properties.StatisticsProvider) *Planner {
+	p.stats = stats
+	p.costModel = NewPlanningCostModelLess(stats)
+	return p
+}
+
+// Statistics returns the planner's statistics provider, or nil if none set.
+func (p *Planner) Statistics() properties.StatisticsProvider { return p.stats }
+
 // WithMaxTasks overrides the task cap. Returns p for chaining.
 func (p *Planner) WithMaxTasks(n int) *Planner {
 	p.MaxTasks = n
@@ -288,7 +306,7 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// any Reference. Walk all Memo References and check if an InJoin
 	// or InUnion is better than the current winner under the cost model.
 	p.promoteInJoinWinners(rootRef)
-	promoteByDataAccessCost(rootRef)
+	promoteByDataAccessCost(rootRef, p.stats)
 
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
@@ -446,7 +464,7 @@ func isPhysicalInUnion(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
-func promoteByDataAccessCost(rootRef *expressions.Reference) {
+func promoteByDataAccessCost(rootRef *expressions.Reference, stats properties.StatisticsProvider) {
 	if rootRef == nil {
 		return
 	}
@@ -457,7 +475,7 @@ func promoteByDataAccessCost(rootRef *expressions.Reference) {
 	if _, ok := existing.(physicalPlanExpression); !ok {
 		return
 	}
-	existingCounts := findExpressionsByType(existing)
+	existingCounts := findExpressionsByType(existing, stats)
 	if existingCounts.maxDataAccessCardinality < 0 {
 		return
 	}
@@ -466,7 +484,7 @@ func promoteByDataAccessCost(rootRef *expressions.Reference) {
 		if _, ok := m.(physicalPlanExpression); !ok {
 			continue
 		}
-		counts := findExpressionsByType(m)
+		counts := findExpressionsByType(m, stats)
 		if counts.maxDataAccessCardinality < 0 {
 			continue
 		}

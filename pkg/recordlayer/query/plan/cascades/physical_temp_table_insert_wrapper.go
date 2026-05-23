@@ -56,7 +56,7 @@ func (w *physicalTempTableInsertWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (w *physicalTempTableInsertWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalTempTableInsertWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) < 1 {
 		return properties.Cost{}
 	}

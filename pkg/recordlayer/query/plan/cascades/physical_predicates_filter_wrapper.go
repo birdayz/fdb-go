@@ -67,7 +67,7 @@ func (w *physicalPredicatesFilterWrapper) WithChildren(qs []expressions.Quantifi
 	return &physicalPredicatesFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalPredicatesFilterWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalPredicatesFilterWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 || w.plan == nil {
 		return properties.Cost{}
 	}

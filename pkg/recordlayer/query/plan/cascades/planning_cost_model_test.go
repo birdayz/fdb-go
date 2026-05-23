@@ -190,8 +190,8 @@ func TestPlanningCostModel_TypeFilterCountsRecordTypes(t *testing.T) {
 		innerQ,
 	)
 
-	counts1 := findExpressionsByType(oneType)
-	counts3 := findExpressionsByType(threeTypes)
+	counts1 := findExpressionsByType(oneType, nil)
+	counts3 := findExpressionsByType(threeTypes, nil)
 
 	if counts1.typeFilterCount != 1 {
 		t.Errorf("typeFilterCount for 1-type filter = %d, want 1", counts1.typeFilterCount)
@@ -309,8 +309,8 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 	innerRefB := expressions.InitialOf(innerScanB)
 	wrapB := NewPhysicalInJoinWrapper(inJoinPlanB, expressions.NewPhysicalQuantifier(innerRefB))
 
-	opsA := findExpressionsByType(wrapA)
-	opsB := findExpressionsByType(wrapB)
+	opsA := findExpressionsByType(wrapA, nil)
+	opsB := findExpressionsByType(wrapB, nil)
 
 	cmp := compareInPlan(wrapA, wrapB, opsA, opsB)
 	if cmp != 0 {

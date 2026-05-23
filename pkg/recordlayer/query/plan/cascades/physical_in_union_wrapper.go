@@ -63,7 +63,7 @@ func (w *physicalInUnionWrapper) WithChildren(qs []expressions.Quantifier) (expr
 	return &physicalInUnionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-func (w *physicalInUnionWrapper) HintCost(child []properties.Cost) properties.Cost {
+func (w *physicalInUnionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
