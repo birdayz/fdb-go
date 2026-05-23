@@ -6,7 +6,6 @@ import (
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -251,18 +250,6 @@ func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 		return true
 	}
 	return false
-}
-
-// isStartsWithOnly reports whether a ComparisonRange consists solely of
-// STARTS_WITH comparisons (prefix lookups). These are typically selective
-// like equality, so the cost model treats them without fetch penalty.
-func isStartsWithOnly(cr *predicates.ComparisonRange) bool {
-	for _, c := range cr.GetInequalityComparisons() {
-		if c.Type != predicates.ComparisonStartsWith {
-			return false
-		}
-	}
-	return true
 }
 
 // writeHash64 writes a uint64 to the FNV hasher in big-endian

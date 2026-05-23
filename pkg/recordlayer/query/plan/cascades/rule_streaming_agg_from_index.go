@@ -103,11 +103,27 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 			covering:    covering,
 		}
 
-		aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
-			idxPlan, groupingKeys, gb.GetAggregates(),
-		)
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
-		call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		if covering {
+			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
+				idxPlan, groupingKeys, gb.GetAggregates(),
+			)
+			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		} else if fetchPlan, ok := scanPlan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+			fetchQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+			fetchWrapper := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
+				fetchWrapper.plan, groupingKeys, gb.GetAggregates(),
+			)
+			aggInnerQ := expressions.ForEachQuantifier(call.MemoizeExpression(fetchWrapper))
+			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, aggInnerQ))
+		} else {
+			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(
+				idxPlan, groupingKeys, gb.GetAggregates(),
+			)
+			innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxWrapper))
+			call.Yield(newPhysicalStreamingAggWrapper(aggPlan, innerQ))
+		}
 	}
 }
 

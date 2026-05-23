@@ -196,10 +196,14 @@ func makeStrictlySorted(expr expressions.RelationalExpression) expressions.Relat
 	if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
 		inner := fw.GetPlan().GetInner()
 		if idxPlan, ok := inner.(*plans.RecordQueryIndexPlan); ok {
+			origW := findIndexScanWrapper(fw.innerQuant.GetRangesOver())
+			if origW == nil {
+				return expr
+			}
 			newIdxPlan := idxPlan.WithStrictlySorted()
 			newIdxWrapper := &physicalIndexScanWrapper{
 				plan:        newIdxPlan,
-				columnNames: findIndexScanWrapper(fw.innerQuant.GetRangesOver()).columnNames,
+				columnNames: origW.columnNames,
 				unique:      true,
 			}
 			newIdxRef := expressions.InitialOf(newIdxWrapper)
