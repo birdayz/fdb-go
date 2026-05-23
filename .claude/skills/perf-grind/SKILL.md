@@ -33,24 +33,56 @@ For each slow query, trace the FULL path:
 
 Pick the RIGHT fix (the one that's architecturally correct), not the quick hack. Read Java first. Understand the algorithm. Then implement in Go.
 
-### 3. Fix it
+### 3. Validate with planner unit tests FIRST
+
+Before touching the stress test, validate plan selection with the planner harness. This is the **primary validation tool** — instant, no FDB, deterministic.
+
+```bash
+bazelisk test //pkg/relational/core/embedded:embedded_test \
+  --test_output=streamed --test_arg="--test.run=TestPlanHarness" --test_arg="--test.v"
+```
+
+The harness (`plan_harness.go`) runs the full Cascades pipeline without FDB:
+
+```go
+plan, err := PlanQueryForTest(sql, schemaDDL, stats)
+// plan is the physical plan Explain string
+assertPlanContains(t, plan, "IndexScan")
+assertPlanNotContains(t, plan, "InMemorySort")
+```
+
+**Write a harness test BEFORE the fix.** Assert the current (wrong) plan. Then fix the code. Then update the assertion to the expected (correct) plan.
+
+Add harness tests to `plan_harness_test.go` for every plan shape you touch. These tests are the regression net — if a future cost model change breaks a plan, the harness catches it immediately.
+
+Mock table stats via `properties.MapStatistics`:
+```go
+stats := properties.MapStatistics{
+    PerType: map[string]float64{"ORDERS": 1_000_000},
+}
+plan, err := PlanQueryForTest(sql, schema, stats)
+```
+
+### 4. Fix it
 
 One fix at a time. The fix must:
+- Pass ALL planner harness tests (plan shapes pinned)
 - Pass ALL 46 test targets (`bazelisk test //... --test_tag_filters=-conformance_java,-stress`)
-- Show measurable improvement in the stress test
-- Not regress any other query
+- Not regress any other query's plan shape
 
-Commit with a clear message showing before/after numbers:
+Commit with a clear message showing before/after plan shapes:
 ```
-perf: P5 fix — PK+AND filter 3s→2ms (1370x speedup)
+perf: GROUP BY COUNT(*) uses covering IndexScan instead of InMemorySort(Scan)
 ```
 
-### 4. Baseline comparison
+### 5. Baseline comparison (stress test, secondary)
 
-After fixing, run the full stress test and build a comparison table:
+After the harness confirms the plan, run the stress test to measure wall-clock improvement:
 
 | Query | Before | After | Delta |
 |-------|--------|-------|-------|
+
+The stress test is a secondary check — the harness is primary. A plan shape change that's correct per the harness should produce the expected runtime improvement. If the stress test contradicts the harness, the issue is in the executor, not the planner.
 
 Update `TODO.md` with results.
 
@@ -99,17 +131,23 @@ EXPLAIN SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER
 
 If the plan looks right but the query is slow, the issue is in the executor (scan range resolution, QOV binding, etc.). If the plan is wrong (full scan instead of index), the issue is in plan selection (cost model, rule firing, winner promotion).
 
-## Lessons learned (nightshift-99)
+## Lessons learned
 
-1. **Table statistics are the highest-leverage fix.** The cost model uses `LeafScanCardinality = 1e6` for every table. Java uses `getRecordCount()`. Before building cost model workarounds, wire up real record counts — see CRITICAL item in TODO.md.
+1. **Planner harness tests are the primary tool.** `PlanQueryForTest(sql, schema, stats)` runs the full Cascades pipeline instantly without FDB. Write a harness test BEFORE any cost model change. Pin the current plan shape. Change the cost model. Verify the new plan shape. This is how you iterate safely on cost model parameters.
 
-2. **Check actual scan ranges, not just plan shape.** A plan can show `Scan(ORDERS, [<>])` (correct inequality range) but return 0 rows because `scanComparisonsToTupleRange` produced an empty range after RecordTypeKey prepend. Always verify row counts.
+2. **Table statistics are wired.** `Planner.WithStatistics(stats)` feeds real FDB record counts into `CostHinter.HintCost(childCosts, stats)`. The cost model's `PlanningCostModelLess` uses stats at criterion #2 (data access cardinality), criterion #16 (EstimateCost), and in `promoteByDataAccessCost`.
 
-3. **Case sensitivity kills silently.** Proto datum maps use lowercase field names (`customer_id`). Planner rules produce uppercase (`CUSTOMER_ID`). FieldValue.evaluateCorrelated now has a case-insensitive fallback, but watch for new sites.
+3. **Partition direction matters.** `toPartitionsFromMap` partitions by `orderingPartitionHash` — ASC and DESC scans land in separate partitions. Without this, `ImplementSortRule` yields DESC scans for ASC ORDER BY requests (correctness bug, fixed swingshift-100).
 
-4. **`findPhysicalPlan` (first physical) is a trap.** Multiple rules (`ImplementInJoinRule`, `ImplementNestedLoopJoinRule`, `ImplementInMemorySortRule`) used `findPhysicalPlan` which takes the FIRST physical member. The first is often the wrong one (Filter(Scan) instead of IndexScan). Use `findBestPhysicalExpr(ref, PlanningCostModelLess)` for cost-based selection.
+4. **InMemorySort cost must be O(n log n).** `physicalInMemorySortWrapper.HintCost` uses `n * SortCPU * log2(n)`. The old `n * 0.1` underestimate by 200x masked index-scan opportunities.
 
-5. **Don't build promotion hacks before checking if the plan is even reachable.** `promoteInJoinWinners` and `promoteByDataAccessCost` exist because the EXPLORE-phase winner wasn't updated after PLANNING added cheaper alternatives. The real fix is table statistics feeding the cost model so it picks correctly without promotion.
+5. **Covering index detection for streaming agg.** `aggregatesCoveredByIndex` in `StreamingAggFromIndexRule` marks the index scan covering when all aggregate operands are available in the index columns. COUNT(*) trivially covered. SUM(col) covered iff col is in the index.
+
+6. **Check actual scan ranges, not just plan shape.** Verify row counts from the executor match expectations.
+
+7. **Case sensitivity kills silently.** Proto datum maps use lowercase; planner produces uppercase. FieldValue.evaluateCorrelated has a case-insensitive fallback.
+
+8. **`findPhysicalPlan` (first physical) is a trap.** Use `findBestPhysicalExpr(ref, PlanningCostModelLess)` for cost-based selection.
 
 ## What NOT to do
 
@@ -127,15 +165,19 @@ If the plan looks right but the query is slow, the issue is in the executor (sca
 ## Key files
 
 ```
-pkg/relational/sqldriver/stress/stress_test.go          — stress test
-pkg/relational/core/embedded/cascades_generator.go      — SQL → Cascades entry point
+pkg/relational/core/embedded/plan_harness.go            — PlanQueryForTest: SQL+schema → plan (no FDB)
+pkg/relational/core/embedded/plan_harness_test.go       — 19+ planner unit tests pinning plan shapes
+pkg/relational/sqldriver/stress/stress_test.go          — 1M stress test (wall-clock validation)
+pkg/relational/core/embedded/cascades_generator.go      — SQL → Cascades entry point + fetchTableStatistics
 pkg/relational/core/query/cascades_translator.go        — logical → Cascades translation
-pkg/recordlayer/query/plan/cascades/planner.go          — Cascades planner
-pkg/recordlayer/query/plan/cascades/planning_cost_model.go — cost model
+pkg/recordlayer/query/plan/cascades/planner.go          — Cascades planner + WithStatistics
+pkg/recordlayer/query/plan/cascades/planning_cost_model.go — 17-criterion cost model + NewPlanningCostModelLess(stats)
 pkg/recordlayer/query/plan/cascades/rule_implement_*.go — implementation rules
-pkg/recordlayer/query/plan/cascades/physical_wrapper.go — physical plan wrappers + HintCost
+pkg/recordlayer/query/plan/cascades/rule_streaming_agg_from_index.go — GROUP BY + index → StreamingAgg
+pkg/recordlayer/query/plan/cascades/physical_wrapper.go — physical plan wrappers + HintCost(child, stats)
+pkg/recordlayer/query/plan/cascades/expression_partition.go — plan partitioning by ordering direction
+pkg/recordlayer/query/plan/cascades/properties/cost.go  — Cost, StatisticsProvider, CostHinter
 pkg/recordlayer/query/executor/executor.go              — plan execution
-pkg/recordlayer/query/executor/streaming_cursors.go     — cursor implementations (NLJ, etc.)
 TODO.md                                                 — perf targets + status
 ```
 

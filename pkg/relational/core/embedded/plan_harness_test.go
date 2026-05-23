@@ -269,6 +269,166 @@ func TestPlanHarness_WithStats_LargeTable(t *testing.T) {
 	t.Logf("plan (1M rows): %s", plan)
 }
 
+// --- Multi-table schemas ---
+
+const multiTableSchema = `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  customer_id BIGINT,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE TABLE CUSTOMERS (
+  id BIGINT NOT NULL,
+  name STRING,
+  region STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX idx_customer ON ORDERS(customer_id)
+CREATE INDEX idx_status ON ORDERS(status)
+CREATE INDEX idx_amount ON ORDERS(amount)
+CREATE INDEX idx_region ON CUSTOMERS(region)
+`
+
+// --- EXISTS / NOT EXISTS ---
+
+func TestPlanHarness_ExistsSubquery(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE EXISTS (SELECT 1 FROM customers WHERE customers.id = orders.customer_id)",
+		multiTableSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "FlatMap")
+}
+
+// --- DISTINCT ---
+
+func TestPlanHarness_SelectDistinct(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT DISTINCT status FROM orders",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Distinct")
+}
+
+// --- Multi-column PK ---
+
+func TestPlanHarness_CompositePK(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ITEMS (
+  order_id BIGINT NOT NULL,
+  item_num BIGINT NOT NULL,
+  name STRING,
+  PRIMARY KEY (order_id, item_num)
+)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT name FROM items WHERE order_id = 1 AND item_num = 2",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Scan(ITEMS, [=, =])")
+}
+
+func TestPlanHarness_CompositePKPrefixScan(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ITEMS (
+  order_id BIGINT NOT NULL,
+  item_num BIGINT NOT NULL,
+  name STRING,
+  PRIMARY KEY (order_id, item_num)
+)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT name FROM items WHERE order_id = 1",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Scan(ITEMS, [=])")
+}
+
+// --- Stats-driven plan changes ---
+
+func TestPlanHarness_StatsAffectCost(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE EVENTS (
+  id BIGINT NOT NULL,
+  category STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX idx_category ON EVENTS(category)
+`
+	smallStats := properties.MapStatistics{PerType: map[string]float64{"EVENTS": 10}}
+	largeStats := properties.MapStatistics{PerType: map[string]float64{"EVENTS": 10_000_000}}
+
+	planSmall, err := PlanQueryForTest(
+		"SELECT id FROM events ORDER BY category",
+		schema, smallStats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planLarge, err := PlanQueryForTest(
+		"SELECT id FROM events ORDER BY category",
+		schema, largeStats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("small table plan: %s", planSmall)
+	t.Logf("large table plan: %s", planLarge)
+	assertPlanContains(t, planSmall, "IDX_CATEGORY")
+	assertPlanContains(t, planLarge, "IDX_CATEGORY")
+}
+
+// --- UNION ---
+
+func TestPlanHarness_UnionAll(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest(
+		"SELECT id FROM orders WHERE status = 'a' UNION ALL SELECT id FROM orders WHERE status = 'b'",
+		ordersSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "Union")
+}
+
+// --- Recursive CTE ---
+
+func TestPlanHarness_RecursiveCTE(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE NODES (
+  id BIGINT NOT NULL,
+  parent_id BIGINT,
+  name STRING,
+  PRIMARY KEY (id)
+)
+`
+	plan, err := PlanQueryForTest(
+		"WITH RECURSIVE tree AS (SELECT id, name FROM nodes WHERE id = 1 UNION ALL SELECT n.id, n.name FROM nodes n, tree t WHERE n.parent_id = t.id) SELECT * FROM tree",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+}
+
 func assertPlanContains(t *testing.T, plan, substr string) {
 	t.Helper()
 	if !strings.Contains(plan, substr) {
