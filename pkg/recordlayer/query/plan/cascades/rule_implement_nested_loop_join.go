@@ -73,15 +73,14 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	leftPlan := findPhysicalPlan(leftRef)
-	rightPlan := findPhysicalPlan(rightRef)
-	if leftPlan == nil || rightPlan == nil {
+	leftExpr := findBestPhysicalExpr(leftRef, PlanningCostModelLess)
+	rightExpr := findBestPhysicalExpr(rightRef, PlanningCostModelLess)
+	if leftExpr == nil || rightExpr == nil {
 		return
 	}
-
-	leftExpr := findPhysicalExpr(leftRef)
-	rightExpr := findPhysicalExpr(rightRef)
-	if leftExpr == nil || rightExpr == nil {
+	leftPlan := leftExpr.(physicalPlanExpression).GetRecordQueryPlan()
+	rightPlan := rightExpr.(physicalPlanExpression).GetRecordQueryPlan()
+	if leftPlan == nil || rightPlan == nil {
 		return
 	}
 

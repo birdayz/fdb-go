@@ -226,7 +226,14 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
 				if bm, ok := bound.(map[string]any); ok {
-					return bm[f.Field]
+					if v, ok := bm[f.Field]; ok {
+						return v
+					}
+					lower := strings.ToLower(f.Field)
+					if v, ok := bm[lower]; ok {
+						return v
+					}
+					return nil
 				}
 				return bound
 			}
@@ -240,7 +247,14 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 	case CorrelationBinder:
 		if bound, ok := ctx.GetCorrelationBinding(qov.Correlation); ok {
 			if bm, ok := bound.(map[string]any); ok {
-				return bm[f.Field]
+				if v, ok := bm[f.Field]; ok {
+					return v
+				}
+				lower := strings.ToLower(f.Field)
+				if v, ok := bm[lower]; ok {
+					return v
+				}
+				return nil
 			}
 			return bound
 		}
