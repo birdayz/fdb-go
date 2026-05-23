@@ -120,9 +120,12 @@ func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []stri
 		if a.Operand == nil {
 			continue
 		}
+		if _, isConst := a.Operand.(*values.ConstantValue); isConst {
+			continue // COUNT(*) / COUNT(1) — no field access needed
+		}
 		fv, ok := a.Operand.(*values.FieldValue)
 		if !ok {
-			continue // COUNT(*) uses ConstantValue — no field access needed
+			return false // complex expression (e.g. SUM(a+1)) — may reference fields not in the index
 		}
 		found := false
 		for _, col := range indexCols {
