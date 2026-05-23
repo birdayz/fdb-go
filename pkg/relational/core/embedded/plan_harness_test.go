@@ -749,6 +749,28 @@ func TestPlanHarness_Coalesce(t *testing.T) {
 	assertPlanContains(t, plan, "Scan(ORDERS)")
 }
 
+func TestPlanHarness_StatsAffectGroupByPlan(t *testing.T) {
+	t.Parallel()
+	sql := "SELECT status, COUNT(*) FROM orders GROUP BY status"
+	planSmall, err := PlanQueryForTest(sql, ordersSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planLarge, err := PlanQueryForTest(sql, ordersSchema, properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": 1_000_000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan (5 rows):  %s", planSmall)
+	t.Logf("plan (1M rows): %s", planLarge)
+	assertPlanContains(t, planSmall, "StreamingAgg")
+	assertPlanContains(t, planLarge, "StreamingAgg")
+	assertPlanContains(t, planLarge, "COVERING")
+}
+
 func TestPlanHarness_CoveringCompositeIndex(t *testing.T) {
 	t.Parallel()
 	schema := `
