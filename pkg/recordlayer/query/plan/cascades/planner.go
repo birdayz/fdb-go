@@ -139,30 +139,6 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 	return ref.HasWinner(expressions.NoProperties)
 }
 
-// GetBestPhysical returns the cheapest physical member of `ref`
-// under the planner's multi-criteria cost model. Considers all
-// current members (including PLANNING-phase additions). Excludes
-// InMemorySort: it's a Go-only fallback that should never displace
-// a sort-eliminating index scan from EXPLORE.
-func (p *Planner) GetBestPhysical(ref *expressions.Reference) expressions.RelationalExpression {
-	if ref == nil {
-		return nil
-	}
-	var best expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		if _, isSort := m.(*physicalInMemorySortWrapper); isSort {
-			continue
-		}
-		if best == nil || p.costModel(m, best) {
-			best = m
-		}
-	}
-	return best
-}
-
 // OptimizeGroup finds the cheapest plan in `ref` that satisfies
 // `props` and stores it as a winner. Following Graefe 1995 §2:
 //
@@ -467,11 +443,6 @@ func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map
 
 func isPhysicalInUnion(expr expressions.RelationalExpression) bool {
 	_, ok := expr.(*physicalInUnionWrapper)
-	return ok
-}
-
-func isPhysicalFlatMap(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalFlatMapWrapper)
 	return ok
 }
 

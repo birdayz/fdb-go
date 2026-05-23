@@ -640,28 +640,11 @@ func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
 	}
 	plan := ExplainPhysicalPlan(best)
 	t.Logf("plan: %s", plan)
-
-	// Dump all physical members at the sort Reference
-	t.Logf("Filter ref members: %d", len(filterRef.AllMembers()))
-	for i, m := range filterRef.AllMembers() {
-		if ph, ok := m.(physicalPlanExpression); ok {
-			t.Logf("  filter[%d] PHYSICAL: %s", i, ExplainPhysicalPlan(ph))
-		}
-	}
-	t.Logf("Sort ref members: %d", len(sortRef.AllMembers()))
-	for i, m := range sortRef.AllMembers() {
-		if ph, ok := m.(physicalPlanExpression); ok {
-			t.Logf("  sort[%d] PHYSICAL: %s", i, ExplainPhysicalPlan(ph))
-		}
-	}
-
 	if !strings.Contains(plan, "InJoin") {
 		t.Fatal("expected InJoin in plan")
 	}
-	if strings.Contains(plan, "IndexScan") {
-		t.Log("IndexScan used inside InJoin — optimal plan")
-	} else {
-		t.Log("IndexScan NOT inside InJoin — suboptimal, uses full scan per leg")
+	if !strings.Contains(plan, "IndexScan") {
+		t.Fatal("expected IndexScan inside InJoin for correlated index lookup")
 	}
 }
 

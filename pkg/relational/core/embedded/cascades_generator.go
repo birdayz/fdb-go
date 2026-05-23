@@ -612,9 +612,11 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}, nil
 }
 
-// planDMLExplainOnly produces a PlanFunc that renders a logical plan
-// for DML (INSERT/UPDATE/DELETE) without touching FDB. Used by
-// NewExplainOnlyGenerator / NewExplainOnlyGeneratorWithSchema.
+// planDMLExplainOnly produces a PlanFunc for DML (INSERT/UPDATE/DELETE).
+// ExecFn delegates to exec* methods (requires a live connection).
+// ExplainFn renders the logical plan without touching FDB. Used by
+// NewExplainOnlyGenerator / NewExplainOnlyGeneratorWithSchema where
+// only ExplainFn is called.
 func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext) (query.Plan, error) {
 	c := g.c
 	return &query.PlanFunc{
