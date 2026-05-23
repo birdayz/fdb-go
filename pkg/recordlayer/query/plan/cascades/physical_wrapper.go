@@ -372,7 +372,7 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 			}
 		}
 	}
-	if numBound > 0 && allEquality {
+	if numBound > 0 && allEquality && numBound == len(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}
 	types := w.plan.GetRecordTypes()
