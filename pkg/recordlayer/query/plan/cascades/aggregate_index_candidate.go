@@ -199,9 +199,11 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		if isCountStar {
 			return c.aggColumn == ""
 		}
-		if agg.Operand == nil {
-			return true
+		opFV, ok := agg.Operand.(*values.FieldValue)
+		if !ok {
+			return false
 		}
+		return c.aggColumn != "" && eqFold(opFV.Field, c.aggColumn)
 	}
 	opFV, ok := agg.Operand.(*values.FieldValue)
 	if !ok {
