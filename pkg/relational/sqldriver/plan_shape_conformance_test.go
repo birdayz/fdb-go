@@ -1027,3 +1027,282 @@ func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 		t.Fatalf("final: COUNT = %d, want 3", cnt)
 	}
 }
+
+func TestFDB_AggregateIndex_NullGroupKey(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "nullgrp",
+		"CREATE TABLE events (id BIGINT NOT NULL, category STRING, weight BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX count_by_cat AS SELECT COUNT(*) FROM events GROUP BY category "+
+			"CREATE INDEX sum_weight_by_cat AS SELECT SUM(weight) FROM events GROUP BY category")
+
+	inserts := []struct {
+		id       int
+		category string // "NULL" or quoted string
+		weight   int
+	}{
+		{1, "'alpha'", 10},
+		{2, "'alpha'", 20},
+		{3, "NULL", 30},
+		{4, "NULL", 40},
+		{5, "'beta'", 50},
+	}
+	for _, ins := range inserts {
+		sql := fmt.Sprintf("INSERT INTO events VALUES (%d, %s, %d)", ins.id, ins.category, ins.weight)
+		if _, err := db.ExecContext(ctx, sql); err != nil {
+			t.Fatalf("INSERT id=%d: %v", ins.id, err)
+		}
+	}
+
+	t.Run("count_includes_null_group", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT category, COUNT(*) FROM events GROUP BY category ORDER BY category")
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT category, COUNT(*) FROM events GROUP BY category ORDER BY category")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			category *string
+			cnt      int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.category, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		// Expect: NULL group (2), alpha (2), beta (1)
+		// NULL sorts first in FDB tuple ordering
+		if len(got) != 3 {
+			t.Fatalf("row count: got %d (%+v), want 3", len(got), got)
+		}
+		// NULL group
+		if got[0].category != nil {
+			t.Errorf("row 0: expected NULL category, got %q", *got[0].category)
+		}
+		if got[0].cnt != 2 {
+			t.Errorf("row 0 (NULL): count = %d, want 2", got[0].cnt)
+		}
+		// alpha group
+		if got[1].category == nil || *got[1].category != "alpha" {
+			t.Errorf("row 1: expected 'alpha', got %v", got[1].category)
+		}
+		if got[1].cnt != 2 {
+			t.Errorf("row 1 (alpha): count = %d, want 2", got[1].cnt)
+		}
+		// beta group
+		if got[2].category == nil || *got[2].category != "beta" {
+			t.Errorf("row 2: expected 'beta', got %v", got[2].category)
+		}
+		if got[2].cnt != 1 {
+			t.Errorf("row 2 (beta): count = %d, want 1", got[2].cnt)
+		}
+	})
+
+	t.Run("sum_includes_null_group", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT category, SUM(weight) FROM events GROUP BY category ORDER BY category")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			category *string
+			total    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.category, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("row count: got %d (%+v), want 3", len(got), got)
+		}
+		// NULL group: 30+40=70
+		if got[0].category != nil {
+			t.Errorf("row 0: expected NULL category, got %q", *got[0].category)
+		}
+		if got[0].total != 70 {
+			t.Errorf("row 0 (NULL): sum = %d, want 70", got[0].total)
+		}
+		// alpha: 10+20=30
+		if got[1].category == nil || *got[1].category != "alpha" {
+			t.Errorf("row 1: expected 'alpha', got %v", got[1].category)
+		}
+		if got[1].total != 30 {
+			t.Errorf("row 1 (alpha): sum = %d, want 30", got[1].total)
+		}
+		// beta: 50
+		if got[2].category == nil || *got[2].category != "beta" {
+			t.Errorf("row 2: expected 'beta', got %v", got[2].category)
+		}
+		if got[2].total != 50 {
+			t.Errorf("row 2 (beta): sum = %d, want 50", got[2].total)
+		}
+	})
+}
+
+func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cntnull",
+		"CREATE TABLE sensors (id BIGINT NOT NULL, sensor STRING, reading BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX count_readings AS SELECT COUNT(reading) FROM sensors GROUP BY sensor")
+
+	inserts := []struct {
+		id      int
+		sensor  string
+		reading string // "NULL" or a number
+	}{
+		{1, "temp", "72"},
+		{2, "temp", "68"},
+		{3, "temp", "NULL"},
+		{4, "humidity", "45"},
+		{5, "humidity", "NULL"},
+		{6, "humidity", "NULL"},
+		{7, "pressure", "NULL"},
+	}
+	for _, ins := range inserts {
+		sql := fmt.Sprintf("INSERT INTO sensors VALUES (%d, '%s', %s)", ins.id, ins.sensor, ins.reading)
+		if _, err := db.ExecContext(ctx, sql); err != nil {
+			t.Fatalf("INSERT id=%d: %v", ins.id, err)
+		}
+	}
+
+	t.Run("count_col_skips_nulls", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			sensor string
+			cnt    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.sensor, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		// temp: 2 non-null (72,68), humidity: 1 non-null (45)
+		// pressure: 0 non-null → ClearWhenZero removes entry
+		want := []row{{"humidity", 1}, {"temp", 2}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d (%+v)", len(got), got, len(want), want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("update_null_to_value", func(t *testing.T) {
+		// Make pressure's reading non-null
+		if _, err := db.ExecContext(ctx, "UPDATE sensors SET reading = 1013 WHERE id = 7"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			sensor string
+			cnt    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.sensor, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []row{{"humidity", 1}, {"pressure", 1}, {"temp", 2}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d (%+v)", len(got), got, len(want), want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("delete_non_null_row", func(t *testing.T) {
+		// Delete temp id=1 (reading=72, non-null) → temp count goes from 2→1
+		if _, err := db.ExecContext(ctx, "DELETE FROM sensors WHERE id = 1"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			sensor string
+			cnt    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.sensor, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []row{{"humidity", 1}, {"pressure", 1}, {"temp", 1}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d (%+v)", len(got), got, len(want), want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
