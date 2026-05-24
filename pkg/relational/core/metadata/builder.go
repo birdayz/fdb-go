@@ -414,6 +414,10 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 		return recordlayer.NewSumIndex(idx.name, gke), nil
 	case "COUNT":
 		return recordlayer.NewCountIndex(idx.name, gke), nil
+	case "MAX":
+		return recordlayer.NewMaxEverLongIndex(idx.name, gke), nil
+	case "MIN":
+		return recordlayer.NewMinEverLongIndex(idx.name, gke), nil
 	default:
 		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"unsupported aggregate index type %q", idx.aggType)
