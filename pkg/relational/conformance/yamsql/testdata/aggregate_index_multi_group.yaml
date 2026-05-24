@@ -1,0 +1,35 @@
+# aggregate_index_multi_group.yaml — Aggregate index with multi-column GROUP BY
+#
+# Verifies that CREATE INDEX ... AS SELECT AGG(...) GROUP BY col1, col2
+# correctly creates a multi-column grouping aggregate index.
+name: aggregate_index_multi_group
+schema_template: |
+  CREATE TABLE events (
+    id BIGINT NOT NULL,
+    category STRING,
+    severity STRING,
+    duration BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX count_by_cat_sev AS SELECT COUNT(*) FROM events GROUP BY category, severity
+setup:
+  - INSERT INTO events VALUES (1, 'error', 'high', 10)
+  - INSERT INTO events VALUES (2, 'error', 'high', 20)
+  - INSERT INTO events VALUES (3, 'error', 'low', 5)
+  - INSERT INTO events VALUES (4, 'warn', 'high', 3)
+  - INSERT INTO events VALUES (5, 'warn', 'low', 1)
+  - INSERT INTO events VALUES (6, 'warn', 'low', 2)
+  - INSERT INTO events VALUES (7, 'info', 'low', 1)
+tests:
+  - query: >
+      SELECT category, severity, COUNT(*)
+      FROM events
+      GROUP BY category, severity
+      ORDER BY category, severity
+    plan_contains: AggregateIndex
+    rows:
+      - ["error", "high", 2]
+      - ["error", "low", 1]
+      - ["info", "low", 1]
+      - ["warn", "high", 1]
+      - ["warn", "low", 2]
