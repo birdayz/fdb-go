@@ -1310,6 +1310,70 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("arithmetic_on_aggregate", func(t *testing.T) {
+		// Java tests: sum(col2) + 1 as post-aggregate arithmetic
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) + 1 FROM sales GROUP BY region ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// APAC=1000+1=1001, EU=125+1=126, US=600+1=601
+		want := []row{{"APAC", 1001}, {"EU", 126}, {"US", 601}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("order_by_aggregate_desc", func(t *testing.T) {
+		// ORDER BY SUM(amount) DESC — sorts aggregate output
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) FROM sales GROUP BY region ORDER BY SUM(amount) DESC")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// APAC=1000, US=600, EU=125. DESC order: APAC, US, EU
+		want := []row{{"APAC", 1000}, {"US", 600}, {"EU", 125}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("having_with_where", func(t *testing.T) {
 		// WHERE + HAVING combined: filter rows first, then groups
 		rows, err := db.QueryContext(ctx,
