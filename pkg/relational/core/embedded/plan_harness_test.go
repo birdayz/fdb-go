@@ -411,6 +411,33 @@ func TestPlanHarness_AggregateIndexViaBuilder(t *testing.T) {
 	}
 }
 
+func TestPlanHarness_AggregateIndexSumViaBuilder(t *testing.T) {
+	t.Parallel()
+	b := metadata.NewSchemaTemplateBuilder().SetName("test_schema").
+		AddTable("ORDERS", []metadata.ColumnSpec{
+			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("REGION", api.NewStringType(true), 2),
+			metadata.NewColumnSpec("AMOUNT", api.NewLongType(true), 3),
+		}, []string{"ID"}).
+		AddAggregateIndex("ORDERS", "sum_amount_by_region", []string{"REGION"}, "SUM", "AMOUNT")
+
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanQueryWithMetadata(
+		"SELECT region, SUM(amount) FROM orders GROUP BY region",
+		tmpl.Underlying(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "SUM") {
+		t.Fatalf("expected AggregateIndex(SUM, ...) with SUM index, got: %s", plan)
+	}
+}
+
 // --- Multi-table schemas ---
 
 const multiTableSchema = `
