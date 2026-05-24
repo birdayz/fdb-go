@@ -1310,6 +1310,35 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("select_only_aggregate_no_group_col", func(t *testing.T) {
+		// Java: SELECT sum(col2) FROM t1 GROUP BY col1 → [{15}, {76}]
+		// Tests that the aggregate value is returned without the group key
+		rows, err := db.QueryContext(ctx,
+			"SELECT SUM(amount) FROM sales GROUP BY region ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var total int64
+			if err := rows.Scan(&total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, total)
+		}
+		// ORDER BY region: APAC=1000, EU=125, US=600
+		want := []int64{1000, 125, 600}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %d, want %d", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("arithmetic_on_aggregate", func(t *testing.T) {
 		// Java tests: sum(col2) + 1 as post-aggregate arithmetic
 		rows, err := db.QueryContext(ctx,
