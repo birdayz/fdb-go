@@ -4795,3 +4795,29 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 		t.Errorf("rows = %d, want > 5", bufErr.Rows)
 	}
 }
+
+func TestMemorySortCursor_BufferLimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	rows := make([]QueryResult, 10)
+	for i := range rows {
+		rows[i] = qr("n", int64(i))
+	}
+	inner := recordlayer.FromList(rows)
+
+	c := newMemorySortCursor(inner, []string{"n"}, nil)
+	c.maxBuf = 5
+	defer c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected SortBufferExceededError")
+	}
+	var bufErr *SortBufferExceededError
+	if !errors.As(err, &bufErr) {
+		t.Fatalf("expected *SortBufferExceededError, got %T: %v", err, err)
+	}
+	if bufErr.Limit != 5 {
+		t.Errorf("limit = %d, want 5", bufErr.Limit)
+	}
+}
