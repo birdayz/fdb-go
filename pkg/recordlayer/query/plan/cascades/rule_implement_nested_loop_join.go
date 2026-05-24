@@ -410,16 +410,10 @@ func predicateReferencesAlias(p predicates.QueryPredicate, alias string) bool {
 		return false
 	}
 	upperAlias := strings.ToUpper(alias)
-	prefix := upperAlias + "."
 	found := false
 	walkPredicateFieldValues(p, func(fv *values.FieldValue) {
-		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-			if strings.ToUpper(qov.Correlation.String()) == upperAlias {
-				found = true
-			}
-			return
-		}
-		if strings.HasPrefix(strings.ToUpper(fv.Field), prefix) {
+		fvAlias, _ := fieldValueAliasAndCol(fv)
+		if fvAlias == upperAlias {
 			found = true
 		}
 	})
@@ -485,10 +479,7 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			if outerVal == nil {
 				continue
 			}
-			bareField := outerVal.Field
-			if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
-				bareField = bareField[len(outerPrefix):]
-			}
+			bareField := bareColumnName(outerVal, leftAlias)
 			correlatedOperand := values.NewFieldValue(
 				values.NewQuantifiedObjectValue(outerCorrelation),
 				bareField, outerVal.Typ,
@@ -617,10 +608,7 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			}
 
 			outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
-			bareField := outerVal.Field
-			if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
-				bareField = bareField[len(outerPrefix):]
-			}
+			bareField := bareColumnName(outerVal, leftAlias)
 			correlatedOperand := values.NewFieldValue(
 				values.NewQuantifiedObjectValue(outerCorrelation),
 				bareField, outerVal.Typ,
@@ -767,10 +755,7 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			}
 			// Build correlated index scan.
 			outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
-			bareField := outerVal.Field
-			if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
-				bareField = bareField[len(outerPrefix):]
-			}
+			bareField := bareColumnName(outerVal, outerAlias)
 			correlatedOperand := values.NewFieldValue(
 				values.NewQuantifiedObjectValue(outerCorrelation),
 				bareField, outerVal.Typ,
@@ -848,10 +833,7 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	allPreds []predicates.QueryPredicate,
 ) bool {
 	outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
-	bareField := outerVal.Field
-	if outerVal.Child == nil && strings.HasPrefix(strings.ToUpper(bareField), outerPrefix) {
-		bareField = bareField[len(outerPrefix):]
-	}
+	bareField := bareColumnName(outerVal, outerAlias)
 	correlatedOperand := values.NewFieldValue(
 		values.NewQuantifiedObjectValue(outerCorrelation),
 		bareField, outerVal.Typ,
@@ -961,6 +943,21 @@ func fieldValueAliasAndCol(fv *values.FieldValue) (alias, col string) {
 		return upper[:dot], upper[dot+1:]
 	}
 	return "", upper
+}
+
+// bareColumnName returns the unqualified column name from a FieldValue,
+// stripping the table alias prefix when it matches expectedAlias. For
+// QOV-based FieldValues the Field is already bare; for flat
+// "ALIAS.col" strings, the alias is stripped via fieldValueAliasAndCol.
+func bareColumnName(fv *values.FieldValue, expectedAlias string) string {
+	if fv.Child != nil {
+		return fv.Field
+	}
+	fvAlias, col := fieldValueAliasAndCol(fv)
+	if fvAlias != "" && fvAlias == strings.ToUpper(expectedAlias) {
+		return col
+	}
+	return fv.Field
 }
 
 func tryPushPredicatesIntoScan(
