@@ -2046,6 +2046,41 @@ func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
 		}
 	})
 
+	t.Run("noop_update_preserves_sum", func(t *testing.T) {
+		// No-op UPDATE (same value): SUM should remain unchanged.
+		// Tests removeCommonAtomicByKeyAndValue skipping common entries.
+		if _, err := db.ExecContext(ctx, "UPDATE accounts SET balance = 200 WHERE id = 2"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows, err := db.QueryContext(ctx, "SELECT owner, SUM(balance) FROM accounts GROUP BY owner ORDER BY owner")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			owner string
+			sum   int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.owner, &r.sum); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// alice: 100+200=300, bob: 500 — unchanged from initial
+		want := []row{{"alice", 300}, {"bob", 500}}
+		if len(got) != len(want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("update_value_same_group", func(t *testing.T) {
 		// Update alice's account 1 from 100 → 400. SUM should go 300→600.
 		if _, err := db.ExecContext(ctx, "UPDATE accounts SET balance = 400 WHERE id = 1"); err != nil {
