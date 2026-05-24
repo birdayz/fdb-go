@@ -281,7 +281,8 @@ func extractAggregateFromSelectElement(elem antlrgen.ISelectElementContext) (str
 			}
 			return "COUNT_NOT_NULL", col, nil
 		}
-		return "COUNT", "", nil
+		return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"COUNT requires * or a column argument")
 	case "SUM", "MIN", "MAX":
 		fa := awf.FunctionArg()
 		if fa == nil {
