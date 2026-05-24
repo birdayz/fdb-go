@@ -89,8 +89,8 @@ func (r *PushProjectionBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	prefix0 := strings.ToUpper(aliases[0]) + "."
-	prefix1 := strings.ToUpper(aliases[1]) + "."
+	upper0 := strings.ToUpper(aliases[0])
+	upper1 := strings.ToUpper(aliases[1])
 
 	// Classify each projected value by side. If any projected value
 	// is not a FieldValue, bail out — we only handle simple column
@@ -102,12 +102,12 @@ func (r *PushProjectionBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 		if !ok {
 			return // non-FieldValue projection — bail
 		}
-		upper := strings.ToUpper(fv.Field)
+		fvAlias, col := fieldValueAliasAndCol(fv)
 		switch {
-		case strings.HasPrefix(upper, prefix0):
-			needed0[upper[len(prefix0):]] = true
-		case strings.HasPrefix(upper, prefix1):
-			needed1[upper[len(prefix1):]] = true
+		case fvAlias == upper0:
+			needed0[col] = true
+		case fvAlias == upper1:
+			needed1[col] = true
 		default:
 			return // unrecognized alias — bail
 		}
@@ -118,12 +118,12 @@ func (r *PushProjectionBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// doesn't mention them.
 	for _, pred := range sel.GetPredicates() {
 		walkPredicateFieldValues(pred, func(fv *values.FieldValue) {
-			upper := strings.ToUpper(fv.Field)
-			if strings.HasPrefix(upper, prefix0) {
-				needed0[upper[len(prefix0):]] = true
+			fvAlias, col := fieldValueAliasAndCol(fv)
+			if fvAlias == upper0 {
+				needed0[col] = true
 			}
-			if strings.HasPrefix(upper, prefix1) {
-				needed1[upper[len(prefix1):]] = true
+			if fvAlias == upper1 {
+				needed1[col] = true
 			}
 		})
 	}

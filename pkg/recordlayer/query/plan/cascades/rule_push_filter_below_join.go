@@ -153,29 +153,17 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) int {
 	upper0 := strings.ToUpper(alias0)
 	upper1 := strings.ToUpper(alias1)
-	prefix0 := upper0 + "."
-	prefix1 := upper1 + "."
 
 	refs0, refs1 := false, false
 	foundAnyField := false
 
 	walkPredicateFieldValues(pred, func(fv *values.FieldValue) {
 		foundAnyField = true
-		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-			corrUpper := strings.ToUpper(qov.Correlation.String())
-			if corrUpper == upper0 {
-				refs0 = true
-			}
-			if corrUpper == upper1 {
-				refs1 = true
-			}
-			return
-		}
-		upper := strings.ToUpper(fv.Field)
-		if strings.HasPrefix(upper, prefix0) {
+		fvAlias, _ := fieldValueAliasAndCol(fv)
+		if fvAlias == upper0 {
 			refs0 = true
 		}
-		if strings.HasPrefix(upper, prefix1) {
+		if fvAlias == upper1 {
 			refs1 = true
 		}
 	})
@@ -280,20 +268,11 @@ func stripAliasValue(v values.Value, prefix string) values.Value {
 	if v == nil {
 		return nil
 	}
-	upperAlias := strings.TrimSuffix(prefix, ".")
+	upperAlias := strings.ToUpper(strings.TrimSuffix(prefix, "."))
 	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
-		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-			if strings.EqualFold(qov.Correlation.String(), upperAlias) {
-				return &values.FieldValue{Field: fv.Field, Typ: fv.Typ}
-			}
-			return fv
-		}
-		upper := strings.ToUpper(fv.Field)
-		if strings.HasPrefix(upper, prefix) {
-			return &values.FieldValue{
-				Field: fv.Field[len(prefix):],
-				Typ:   fv.Typ,
-			}
+		fvAlias, col := fieldValueAliasAndCol(fv)
+		if fvAlias == upperAlias {
+			return &values.FieldValue{Field: col, Typ: fv.Typ}
 		}
 		return fv
 	})

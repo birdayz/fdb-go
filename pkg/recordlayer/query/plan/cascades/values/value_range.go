@@ -12,7 +12,7 @@ package values
 // scalar `eval` method throws because per-row evaluation makes no
 // sense for a table-function. The Go seed mirrors this: Evaluate
 // returns nil per the placeholder pattern, and a separate
-// EvaluateAsStream method materialises the finite range as `[]any`
+// EvaluateAsStream method materialises the finite range as `[]int64`
 // for testability.
 //
 // Result type: a 1-column record with LONG-valued column "ID" — the

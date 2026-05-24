@@ -1,37 +1,30 @@
 package values
 
+// StreamingValue extends Value with streaming evaluation. Mirrors
+// Java's StreamingValue interface — Values that can produce a stream
+// of elements rather than a single scalar result.
+type StreamingValue interface {
+	Value
+	EvaluateAsStream(evalCtx any) []any
+}
+
 // FirstOrDefaultStreamingValue is the streaming variant of
 // FirstOrDefaultValue. Returns the first element produced by its
 // streaming child Value, or the default Value if the stream is
 // empty. Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.values.FirstOrDefaultStreamingValue`.
 //
-// Distinction from FirstOrDefaultValue: that variant operates on a
-// fixed array (the child Value evaluates to []any). This streaming
-// variant takes a streaming-shaped child (typically RangeValue or
-// a Quantifier flowing rows) and pulls just the first element via
-// the streaming protocol — useful when the child is potentially
-// large but we only need the first row.
-//
-// Eval is a placeholder for now — the streaming protocol isn't
-// fully wired (RangeValue's EvaluateAsStream is the closest
-// counterpart). When the StreamingValue interface lands, eval here
-// pulls childValue.evalAsStream(store, ctx).first() and falls back
-// to onEmptyResultValue.Evaluate if absent.
-//
-// Result type: childValue.Type() — Java does the same; the stream
-// element type IS the result type (we pull one element).
+// The child should implement StreamingValue. RangeValue returns
+// []int64 (not []any), so it doesn't satisfy StreamingValue and
+// is handled by an explicit type-switch fallback in Evaluate.
 type FirstOrDefaultStreamingValue struct {
 	ChildValue         Value
 	OnEmptyResultValue Value
 }
 
 // NewFirstOrDefaultStreamingValue constructs the streaming first-
-// or-default. Caller is responsible for ensuring childValue is a
-// streaming-shaped Value (e.g. RangeValue); the seed doesn't
-// type-enforce the streaming-marker check (Go's lack of a
-// StreamingValue interface marker — the planner is expected to
-// pre-validate).
+// or-default. The childValue should implement StreamingValue or be a
+// *RangeValue (adapted internally).
 func NewFirstOrDefaultStreamingValue(childValue, onEmpty Value) *FirstOrDefaultStreamingValue {
 	return &FirstOrDefaultStreamingValue{
 		ChildValue:         childValue,
@@ -57,30 +50,24 @@ func (v *FirstOrDefaultStreamingValue) Type() Type {
 	return v.ChildValue.Type()
 }
 
-// Evaluate is a placeholder — streaming eval needs the
-// StreamingValue interface fully wired. The seed-level harness
-// pulls EvaluateAsStream() if the child is a *RangeValue (the
-// only streaming-shaped Value we have today); otherwise returns
-// nil per the placeholder pattern.
-//
-// Real eval would call childValue.evalAsStream(store, ctx).first()
-// and fall back to onEmptyResultValue if absent.
+// Evaluate pulls the first element from the streaming child, or
+// returns the default value if the stream is empty.
 func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) any {
 	if v.ChildValue == nil {
 		return nil
 	}
-	// Special-case: RangeValue exposes EvaluateAsStream which we
-	// can pull the first element from.
-	if rv, ok := v.ChildValue.(*RangeValue); ok {
-		stream := rv.EvaluateAsStream(evalCtx)
-		if len(stream) > 0 {
-			return stream[0]
+	var stream []any
+	if sv, ok := v.ChildValue.(StreamingValue); ok {
+		stream = sv.EvaluateAsStream(evalCtx)
+	} else if rv, ok := v.ChildValue.(*RangeValue); ok {
+		for _, val := range rv.EvaluateAsStream(evalCtx) {
+			stream = append(stream, val)
 		}
-		// Empty stream — fall through to default.
 	} else {
-		// Non-RangeValue streaming child: gated on full StreamingValue
-		// interface. Surface nil per the placeholder pattern.
 		return nil
+	}
+	if len(stream) > 0 {
+		return stream[0]
 	}
 	if v.OnEmptyResultValue == nil {
 		return nil

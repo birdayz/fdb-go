@@ -183,3 +183,180 @@ func TestExtractBestPlan_DeleteExpression(t *testing.T) {
 		t.Fatalf("delete inner not a scan")
 	}
 }
+
+// --- ExtractBestPlanWith tests ---
+
+func TestExtractBestPlanWith_NilStats(t *testing.T) {
+	t.Parallel()
+	r := scan("T")
+	got, err := ExtractBestPlanWith(r, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if _, ok := got.(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("got %T, want *FullUnorderedScanExpression", got)
+	}
+}
+
+func TestExtractBestPlanWith_NilRef(t *testing.T) {
+	t.Parallel()
+	got, err := ExtractBestPlanWith(nil, DefaultStatistics{})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+}
+
+func TestExtractBestPlanWith_EmptyRef(t *testing.T) {
+	t.Parallel()
+	got, err := ExtractBestPlanWith(&expressions.Reference{}, DefaultStatistics{})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+}
+
+// --- ExtractBestPlanFromSelector tests ---
+
+type mockSelector struct {
+	winners map[*expressions.Reference]expressions.RelationalExpression
+}
+
+func (m *mockSelector) BestMember(ref *expressions.Reference) expressions.RelationalExpression {
+	return m.winners[ref]
+}
+
+func (m *mockSelector) HasBestMember(ref *expressions.Reference) bool {
+	_, ok := m.winners[ref]
+	return ok
+}
+
+func TestExtractBestPlanFromSelector_NilRef(t *testing.T) {
+	t.Parallel()
+	got, err := ExtractBestPlanFromSelector(nil, nil, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got != nil {
+		t.Fatalf("got %v, want nil", got)
+	}
+}
+
+func TestExtractBestPlanFromSelector_NilSelector(t *testing.T) {
+	t.Parallel()
+	r := scan("T")
+	got, err := ExtractBestPlanFromSelector(r, nil, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if _, ok := got.(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("got %T, want *FullUnorderedScanExpression", got)
+	}
+}
+
+func TestExtractBestPlanFromSelector_NonPhysicalSelectorFallsToCost(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	scanMember := expressions.NewFullUnorderedScanExpression([]string{"U"}, nil)
+	r := expressions.InitialOf(filter)
+	r.Insert(scanMember)
+
+	sel := &mockSelector{
+		winners: map[*expressions.Reference]expressions.RelationalExpression{
+			r: scanMember,
+		},
+	}
+	got, err := ExtractBestPlanFromSelector(r, sel, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if _, ok := got.(*expressions.LogicalFilterExpression); !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression (cost model picks cheaper filter over scan)", got)
+	}
+}
+
+func TestExtractBestPlanFromSelector_FallsBackToCostWhenSelectorHasNoBest(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	r := expressions.InitialOf(filter)
+
+	sel := &mockSelector{winners: map[*expressions.Reference]expressions.RelationalExpression{}}
+	got, err := ExtractBestPlanFromSelector(r, sel, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if _, ok := got.(*expressions.LogicalFilterExpression); !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression (cost fallback)", got)
+	}
+}
+
+func TestExtractBestPlanFromSelector_SingleMember(t *testing.T) {
+	t.Parallel()
+	r := scan("T")
+	got, err := ExtractBestPlanFromSelector(r, nil, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestExtractBestPlanFromSelector_WinnerUsedWhenPhysical(t *testing.T) {
+	t.Parallel()
+	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	r := expressions.InitialOf(scanExpr)
+	r.SetWinner(expressions.NoProperties, scanExpr)
+
+	got, err := ExtractBestPlanFromSelector(r, nil, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+func TestExtractBestPlanFromSelector_RecursivelyExtractsChildWithSelector(t *testing.T) {
+	t.Parallel()
+	innerScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	innerRef := expressions.InitialOf(innerScan)
+
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(innerRef),
+	)
+	topRef := expressions.InitialOf(filter)
+
+	sel := &mockSelector{
+		winners: map[*expressions.Reference]expressions.RelationalExpression{
+			innerRef: innerScan,
+		},
+	}
+
+	got, err := ExtractBestPlanFromSelector(topRef, sel, nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	exFilter, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	exInnerRef := exFilter.GetInner().GetRangesOver()
+	if exInnerRef == innerRef {
+		t.Fatal("extracted inner Reference is same pointer — should be fresh")
+	}
+}

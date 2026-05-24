@@ -1,0 +1,95 @@
+# join_index_correlation.yaml — Join with correlated index probe
+#
+# Tests that joins on indexed columns use correlated index probes
+# (FlatMap) rather than NLJ with full scan. The plan should show
+# FlatMap when the join predicate matches an index/PK on the inner table.
+name: join_index_correlation
+schema_template: |
+  CREATE TABLE departments (
+    id BIGINT NOT NULL,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE employees (
+    id BIGINT NOT NULL,
+    dept_id BIGINT,
+    name STRING,
+    salary BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_dept ON employees (dept_id)
+setup:
+  - INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales'), (3, 'HR')
+  - INSERT INTO employees VALUES
+      (10, 1, 'Alice', 100),
+      (11, 1, 'Bob', 120),
+      (12, 2, 'Charlie', 90),
+      (13, 2, 'Diana', 95),
+      (14, 3, 'Eve', 80)
+tests:
+  # Basic join on indexed column
+  - query: >
+      SELECT d.name, e.name FROM departments d, employees e
+      WHERE e.dept_id = d.id
+      ORDER BY d.name, e.name
+    rows:
+      - ['Engineering', 'Alice']
+      - ['Engineering', 'Bob']
+      - ['HR', 'Eve']
+      - ['Sales', 'Charlie']
+      - ['Sales', 'Diana']
+
+  # Join with additional filter on inner table
+  - query: >
+      SELECT d.name, e.name FROM departments d, employees e
+      WHERE e.dept_id = d.id AND e.salary > 90
+      ORDER BY d.name, e.name
+    rows:
+      - ['Engineering', 'Alice']
+      - ['Engineering', 'Bob']
+      - ['Sales', 'Diana']
+
+  # Join with aggregate on inner table
+  - query: >
+      SELECT d.name, COUNT(*) FROM departments d, employees e
+      WHERE e.dept_id = d.id
+      GROUP BY d.name
+      ORDER BY d.name
+    rows:
+      - ['Engineering', 2]
+      - ['HR', 1]
+      - ['Sales', 2]
+
+  # Self-join on PK
+  - query: >
+      SELECT e1.name, e2.name FROM employees e1, employees e2
+      WHERE e1.id = e2.id
+      ORDER BY e1.id
+    rows:
+      - ['Alice', 'Alice']
+      - ['Bob', 'Bob']
+      - ['Charlie', 'Charlie']
+      - ['Diana', 'Diana']
+      - ['Eve', 'Eve']
+
+  # LEFT JOIN preserving unmatched outer rows
+  - query: >
+      SELECT d.name, e.name FROM departments d
+      LEFT JOIN employees e ON e.dept_id = d.id AND e.salary > 200
+      ORDER BY d.name
+    rows:
+      - ['Engineering', null]
+      - ['HR', null]
+      - ['Sales', null]
+
+  # Join with ORDER BY on outer table column
+  - query: >
+      SELECT d.id, e.name FROM departments d, employees e
+      WHERE e.dept_id = d.id
+      ORDER BY d.id, e.name
+    rows:
+      - [1, 'Alice']
+      - [1, 'Bob']
+      - [2, 'Charlie']
+      - [2, 'Diana']
+      - [3, 'Eve']
