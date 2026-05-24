@@ -184,6 +184,35 @@ func (c *multiIntersectionMergeCursor) IsClosed() bool { return c.closed }
 
 var _ recordlayer.RecordCursor[QueryResult] = (*multiIntersectionMergeCursor)(nil)
 
+func executeLoadByKeys(
+	_ context.Context,
+	p *plans.RecordQueryLoadByKeysPlan,
+	store *recordlayer.FDBRecordStore,
+	_ *EvaluationContext,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	keys := p.GetKeysSource().GetPrimaryKeys()
+	if len(keys) == 0 {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+
+	results := make([]QueryResult, 0, len(keys))
+	for _, pk := range keys {
+		rec, err := store.LoadRecord(pk)
+		if err != nil {
+			return nil, fmt.Errorf("executor: LoadByKeys pk=%v: %w", pk, err)
+		}
+		if rec == nil {
+			continue
+		}
+		results = append(results, FromStoredRecord(rec))
+	}
+	return applySkipLimit(
+		recordlayer.FromList(results),
+		props.Skip, props.ReturnedRowLimit,
+	), nil
+}
+
 func executeUnorderedUnion(
 	ctx context.Context,
 	p *plans.RecordQueryUnorderedUnionPlan,
