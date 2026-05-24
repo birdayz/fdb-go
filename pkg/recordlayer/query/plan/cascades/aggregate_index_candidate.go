@@ -181,6 +181,14 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 	if agg.Function != c.aggFunction {
 		return false
 	}
+	if c.aggFunction == expressions.AggCount {
+		if _, isConst := agg.Operand.(*values.ConstantValue); isConst {
+			return true
+		}
+		if agg.Operand == nil {
+			return true
+		}
+	}
 	opFV, ok := agg.Operand.(*values.FieldValue)
 	if !ok {
 		return false
