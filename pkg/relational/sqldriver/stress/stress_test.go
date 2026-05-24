@@ -542,6 +542,14 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 			t.Errorf("got %d groups, want %d", r.RowCount, len(statuses))
 		}
 	})
+	t.Run("sum_by_status", func(t *testing.T) {
+		h.explain(t, "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status")
+		r := h.timeQuery("SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status")
+		r.mustSucceed(t, "SUM by status (aggregate index)")
+		if r.RowCount != len(statuses) {
+			t.Errorf("got %d groups, want %d", r.RowCount, len(statuses))
+		}
+	})
 	t.Run("group_by_customer_having", func(t *testing.T) {
 		h.explain(t, "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
 		r := h.timeQuery("SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
