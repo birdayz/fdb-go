@@ -963,6 +963,97 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mmhav",
+		"CREATE TABLE scores (id BIGINT NOT NULL, team STRING, points BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX max_pts AS SELECT MAX(points) FROM scores GROUP BY team "+
+			"CREATE INDEX min_pts AS SELECT MIN(points) FROM scores GROUP BY team")
+
+	for _, s := range []struct {
+		id     int
+		team   string
+		points int
+	}{
+		{1, "alpha", 100},
+		{2, "alpha", 250},
+		{3, "alpha", 50},
+		{4, "beta", 300},
+		{5, "beta", 150},
+		{6, "gamma", 999},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO scores VALUES (%d, '%s', %d)", s.id, s.team, s.points)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", s.id, err)
+		}
+	}
+
+	t.Run("having_max_gt", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT team, MAX(points) FROM scores GROUP BY team HAVING MAX(points) > 200 ORDER BY team")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			team string
+			max  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.team, &r.max); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{"alpha", 250}, {"beta", 300}, {"gamma", 999}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("having_min_lt", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT team, MIN(points) FROM scores GROUP BY team HAVING MIN(points) < 100 ORDER BY team")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			team string
+			min  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.team, &r.min); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{"alpha", 50}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
