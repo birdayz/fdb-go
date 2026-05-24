@@ -588,6 +588,48 @@ CREATE INDEX sum_by_region_status AS SELECT SUM(amount) FROM ORDERS GROUP BY reg
 	}
 }
 
+func TestPlanHarness_AggregateIndexDDL_CountColumn(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX count_amount_by_status AS SELECT COUNT(amount) FROM ORDERS GROUP BY status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(amount) FROM orders GROUP BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan for COUNT(col), got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_NoGroupBy(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX total_count AS SELECT COUNT(*) FROM ORDERS
+`
+	plan, err := PlanQueryForTest(
+		"SELECT COUNT(*) FROM orders",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("no-group-by plan: %s", plan)
+}
+
 func TestPlanHarness_AggregateIndexDDL_ParseError_NoAggregate(t *testing.T) {
 	t.Parallel()
 	schema := `
