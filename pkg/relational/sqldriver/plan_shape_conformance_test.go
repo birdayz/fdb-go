@@ -2661,6 +2661,46 @@ func TestFDB_DerivedTableJoinExists(t *testing.T) {
 	})
 }
 
+func TestFDB_TwoDerivedTablesJoined(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "2dt",
+		"CREATE TABLE a (ida BIGINT NOT NULL, a1 BIGINT, PRIMARY KEY (ida)) "+
+			"CREATE TABLE b (idb BIGINT NOT NULL, b1 BIGINT, PRIMARY KEY (idb))")
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO a VALUES (1, 100)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO b VALUES (4, 200)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// Java: select sq2.y, sq1.x from (select ida as x from a) sq1, (select idb as y from b) sq2
+	rows, err := db.QueryContext(ctx,
+		"SELECT sq2.y, sq1.x FROM (SELECT ida AS x FROM a) sq1, (SELECT idb AS y FROM b) sq2")
+	if err != nil {
+		t.Fatalf("QueryContext: %v", err)
+	}
+	defer rows.Close()
+	var y, x int64
+	if !rows.Next() {
+		t.Fatal("expected 1 row")
+	}
+	if err := rows.Scan(&y, &x); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if y != 4 || x != 1 {
+		t.Errorf("got y=%d x=%d, want y=4 x=1", y, x)
+	}
+	if rows.Next() {
+		t.Error("expected exactly 1 row")
+	}
+}
+
 func TestFDB_JoinWithNotIn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
