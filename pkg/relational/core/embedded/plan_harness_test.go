@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 )
 
 const ordersSchema = `
@@ -380,6 +382,33 @@ CREATE INDEX idx_status ON ORDERS(status)
 	t.Logf("plan: %s", plan)
 	// Without aggregate index, streaming agg over ordered index is expected.
 	assertPlanContains(t, plan, "StreamingAgg")
+}
+
+func TestPlanHarness_AggregateIndexViaBuilder(t *testing.T) {
+	t.Parallel()
+	b := metadata.NewSchemaTemplateBuilder().SetName("test_schema").
+		AddTable("ORDERS", []metadata.ColumnSpec{
+			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("STATUS", api.NewStringType(true), 2),
+			metadata.NewColumnSpec("AMOUNT", api.NewLongType(true), 3),
+		}, []string{"ID"}).
+		AddAggregateIndex("ORDERS", "count_by_status", []string{"STATUS"}, "COUNT", "")
+
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanQueryWithMetadata(
+		"SELECT status, COUNT(*) FROM orders GROUP BY status",
+		tmpl.Underlying(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan with aggregate index defined, got: %s", plan)
+	}
 }
 
 // --- Multi-table schemas ---
