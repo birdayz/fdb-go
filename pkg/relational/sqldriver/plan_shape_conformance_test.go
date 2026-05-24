@@ -963,6 +963,171 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mmever",
+		"CREATE TABLE highscores (id BIGINT NOT NULL, player STRING, score BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX max_score AS SELECT MAX(score) FROM highscores GROUP BY player "+
+			"CREATE INDEX min_score AS SELECT MIN(score) FROM highscores GROUP BY player")
+
+	inserts := []struct {
+		id     int
+		player string
+		score  int
+	}{
+		{1, "alice", 100},
+		{2, "alice", 250},
+		{3, "alice", 50},
+		{4, "bob", 300},
+		{5, "bob", 150},
+	}
+	for _, s := range inserts {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO highscores VALUES (%d, '%s', %d)", s.id, s.player, s.score)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", s.id, err)
+		}
+	}
+
+	t.Run("initial_max", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT player, MAX(score) FROM highscores GROUP BY player ORDER BY player")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			player string
+			max    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.player, &r.max); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{"alice", 250}, {"bob", 300}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("delete_max_holder_ever_persists", func(t *testing.T) {
+		// Delete alice's 250-score record. _EVER semantics: MAX stays 250.
+		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 2"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT player, MAX(score) FROM highscores GROUP BY player ORDER BY player")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			player string
+			max    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.player, &r.max); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// _EVER: alice's MAX is still 250 even though that record is deleted
+		want := []row{{"alice", 250}, {"bob", 300}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("new_max_updates_ever", func(t *testing.T) {
+		// Insert a new high score for alice → MAX should update to 500
+		if _, err := db.ExecContext(ctx, "INSERT INTO highscores VALUES (6, 'alice', 500)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT player, MAX(score) FROM highscores GROUP BY player ORDER BY player")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			player string
+			max    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.player, &r.max); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// alice: new high of 500, bob: still 300
+		want := []row{{"alice", 500}, {"bob", 300}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("min_ever_persists_after_delete", func(t *testing.T) {
+		// alice's min is 50 (id=3). Delete it. MIN_EVER: min stays 50.
+		if _, err := db.ExecContext(ctx, "DELETE FROM highscores WHERE id = 3"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT player, MIN(score) FROM highscores GROUP BY player ORDER BY player")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			player string
+			min    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.player, &r.min); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// _EVER: alice's MIN is still 50, bob's MIN is still 150
+		want := []row{{"alice", 50}, {"bob", 150}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

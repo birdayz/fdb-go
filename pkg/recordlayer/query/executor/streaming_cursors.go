@@ -15,6 +15,18 @@ import (
 
 var nonEndContinuation = recordlayer.NewBytesContinuation([]byte{0})
 
+// SortBufferExceededError is returned when an in-memory sort
+// materializes more rows than the configured limit. Prevents OOM
+// on unbounded ORDER BY without LIMIT.
+type SortBufferExceededError struct {
+	Rows  int
+	Limit int
+}
+
+func (e *SortBufferExceededError) Error() string {
+	return fmt.Sprintf("sort buffer exceeded: %d rows materialized (limit %d); add LIMIT or use an ordered index", e.Rows, e.Limit)
+}
+
 // ---------------------------------------------------------------------------
 // aggregateCursor — streaming GROUP BY (Java-aligned)
 // ---------------------------------------------------------------------------
@@ -445,7 +457,14 @@ type customSortCursor struct {
 	loaded  bool
 	emitIdx int
 	closed  bool
+	maxBuf  int // 0 = use DefaultMaxSortBufferRows
 }
+
+// DefaultMaxSortBufferRows is the maximum number of rows the in-memory
+// sort cursor will materialize before returning an error. Prevents OOM
+// on queries that sort unbounded result sets without LIMIT. Override per
+// cursor via the maxBuf field.
+const DefaultMaxSortBufferRows = 5_000_000
 
 func newCustomSortCursor(
 	inner recordlayer.RecordCursor[QueryResult],
@@ -463,6 +482,10 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 	}
 	if c.loaded {
 		return c.emitNext()
+	}
+	limit := c.maxBuf
+	if limit <= 0 {
+		limit = DefaultMaxSortBufferRows
 	}
 	for {
 		result, err := c.inner.OnNext(ctx)
@@ -486,6 +509,12 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 			), nil
 		}
 		c.buf = append(c.buf, result.GetValue())
+		if len(c.buf) > limit {
+			return recordlayer.RecordCursorResult[QueryResult]{}, &SortBufferExceededError{
+				Rows:  len(c.buf),
+				Limit: limit,
+			}
+		}
 	}
 }
 
