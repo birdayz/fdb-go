@@ -2,7 +2,7 @@
 
 FoundationDB Record Layer — Go Port. Java version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
-Current state: 46 test targets, 265 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 41 plan types (35 executor-wired), 48 value types, 9 predicate types. 90+ quality probe subtests. 61 planner harness tests. Real FDB record counts feed into cost model. Aggregate index DDL fully wired: `CREATE INDEX ... AS SELECT AGG(col) FROM t GROUP BY cols` → planner → executor (swingshift-102). Reference.finalMembers aligned with Java's exploratoryMembers/finalMembers split.
+Current state: 46 test targets, 270 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 41 plan types (36 executor-wired), 48 value types, 9 predicate types. 90+ quality probe subtests. 63 planner harness tests. Real FDB record counts feed into cost model. Aggregate index DDL fully wired: `CREATE INDEX ... AS SELECT AGG(col) FROM t GROUP BY cols` → planner → executor (swingshift-102). Reference.finalMembers aligned with Java's exploratoryMembers/finalMembers split.
 
 ---
 
