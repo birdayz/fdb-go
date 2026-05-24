@@ -1628,6 +1628,41 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("having_or_condition", func(t *testing.T) {
+		// HAVING with OR: either high count OR high sum
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, COUNT(*), SUM(amount) FROM sales GROUP BY region HAVING COUNT(*) >= 3 OR SUM(amount) >= 1000 ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			cnt    int64
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.cnt, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// APAC: cnt=1, sum=1000 → sum>=1000 matches
+		// EU: cnt=2, sum=125 → neither matches
+		// US: cnt=3, sum=600 → cnt>=3 matches
+		want := []row{{"APAC", 1, 1000}, {"US", 3, 600}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("where_on_group_key", func(t *testing.T) {
 		// Correctness test: WHERE on group key works via full scan + filter + streaming agg.
 		// Bounded aggregate scan (AISCAN [EQUALS]) is a future optimization (see TODO.md).
