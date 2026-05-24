@@ -1804,6 +1804,97 @@ func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_CountStarVsCountCol(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	// Java's aggregate-index-tests-count.yamsql: both COUNT(*) and COUNT(col)
+	// indexes on same table. Planner must pick the correct one.
+	db := setupPlanShapeDB(t, "cntboth",
+		"CREATE TABLE items (id BIGINT NOT NULL, grp BIGINT, val BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX cnt_star AS SELECT COUNT(*) FROM items GROUP BY grp "+
+			"CREATE INDEX cnt_val AS SELECT COUNT(val) FROM items GROUP BY grp")
+
+	// Insert rows: some with NULL val
+	for _, item := range []struct {
+		id  int
+		grp int
+		val string
+	}{
+		{1, 1, "10"},
+		{2, 1, "NULL"},
+		{3, 1, "NULL"},
+		{4, 2, "20"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO items VALUES (%d, %d, %s)", item.id, item.grp, item.val)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("count_star_includes_nulls", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT grp, COUNT(*) FROM items GROUP BY grp ORDER BY grp")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			grp int64
+			cnt int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.grp, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// grp=1: 3 rows total (including NULLs), grp=2: 1 row
+		want := []row{{1, 3}, {2, 1}}
+		if len(got) != len(want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("count_col_excludes_nulls", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT grp, COUNT(val) FROM items GROUP BY grp ORDER BY grp")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			grp int64
+			cnt int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.grp, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// grp=1: only 1 non-null val, grp=2: 1 non-null val
+		want := []row{{1, 1}, {2, 1}}
+		if len(got) != len(want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
