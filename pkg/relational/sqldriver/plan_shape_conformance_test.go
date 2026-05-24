@@ -2774,6 +2774,54 @@ func TestFDB_OrPredicateFilter(t *testing.T) {
 	})
 }
 
+func TestFDB_NestedDerivedTableNullFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "nestdt",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, PRIMARY KEY (id))")
+
+	for i := 1; i <= 5; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t1 VALUES (%d, %d)", i, i*10)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("nested_is_null_empty", func(t *testing.T) {
+		// Java: select * from (select * from (select * from T1) as x where ID is null) as y
+		// All IDs are NOT NULL, so result is empty
+		rows, err := db.QueryContext(ctx,
+			"SELECT * FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NULL) AS y")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		count := 0
+		for rows.Next() {
+			count++
+		}
+		if count != 0 {
+			t.Errorf("got %d rows, want 0", count)
+		}
+	})
+
+	t.Run("nested_is_not_null_all", func(t *testing.T) {
+		// Java: select count(*) from (select * from (select * from T1) as x where ID is not null) as y
+		var cnt int64
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NOT NULL) AS y").Scan(&cnt)
+		if err != nil {
+			t.Fatalf("QueryRow: %v", err)
+		}
+		if cnt != 5 {
+			t.Errorf("got %d, want 5", cnt)
+		}
+	})
+}
+
 func TestFDB_CaseWhenWithInList(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
