@@ -4763,3 +4763,35 @@ func TestCustomSortCursor_OnNextAfterClose(t *testing.T) {
 		t.Fatal("expected error from OnNext after Close")
 	}
 }
+
+func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	// Create an inner cursor with more rows than the limit.
+	rows := make([]QueryResult, 10)
+	for i := range rows {
+		rows[i] = qr("n", int64(i))
+	}
+	inner := recordlayer.FromList(rows)
+
+	c := newCustomSortCursor(inner, func(buf []QueryResult) {
+		sortByKeys(buf, []string{"n"}, nil)
+	})
+	c.maxBuf = 5 // limit to 5 rows
+	defer c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected SortBufferExceededError")
+	}
+	var bufErr *SortBufferExceededError
+	if !errors.As(err, &bufErr) {
+		t.Fatalf("expected *SortBufferExceededError, got %T: %v", err, err)
+	}
+	if bufErr.Limit != 5 {
+		t.Errorf("limit = %d, want 5", bufErr.Limit)
+	}
+	if bufErr.Rows <= 5 {
+		t.Errorf("rows = %d, want > 5", bufErr.Rows)
+	}
+}
