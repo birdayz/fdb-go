@@ -1729,6 +1729,81 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mcgrp",
+		"CREATE TABLE events (id BIGINT NOT NULL, cat STRING, sev STRING, dur BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX count_cat_sev AS SELECT COUNT(*) FROM events GROUP BY cat, sev")
+
+	for _, e := range []struct {
+		id  int
+		cat string
+		sev string
+		dur int
+	}{
+		{1, "error", "high", 10},
+		{2, "error", "high", 20},
+		{3, "error", "low", 5},
+		{4, "warn", "high", 3},
+		{5, "warn", "low", 1},
+		{6, "warn", "low", 2},
+		{7, "info", "low", 1},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO events VALUES (%d, '%s', '%s', %d)", e.id, e.cat, e.sev, e.dur)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", e.id, err)
+		}
+	}
+
+	t.Run("multi_group_count", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT cat, sev, COUNT(*) FROM events GROUP BY cat, sev ORDER BY cat, sev")
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
+		}
+
+		rows, err := db.QueryContext(ctx,
+			"SELECT cat, sev, COUNT(*) FROM events GROUP BY cat, sev ORDER BY cat, sev")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			cat string
+			sev string
+			cnt int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.cat, &r.sev, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{
+			{"error", "high", 2},
+			{"error", "low", 1},
+			{"info", "low", 1},
+			{"warn", "high", 1},
+			{"warn", "low", 2},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_CompositeAggExpressions(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
