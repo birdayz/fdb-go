@@ -3,12 +3,15 @@ package expressions
 // Reference is the planner's handle on an equivalence class of
 // RelationalExpressions — Cascades' "memo group".
 //
-// All expressions — logical and physical — live in `members`.
-// Implementation rules insert physical expressions into Members via
-// ref.Insert(). Winners on the Reference (per-properties best plans
-// following Graefe 1995 §2) replace the old FinalMembers extraction.
+// Members holds all expressions (logical and physical) inserted during
+// EXPLORE/REWRITING. FinalMembers holds physical plans produced during
+// the PLANNING phase (implementation rules + data access generation).
+// This mirrors Java's Reference which maintains exploratoryMembers and
+// finalMembers as separate sets.
 type Reference struct {
-	members         []RelationalExpression
+	members      []RelationalExpression
+	finalMembers []RelationalExpression
+
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
 
@@ -158,6 +161,34 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		}
 	}
 	r.members = append(r.members, e)
+	return true
+}
+
+// FinalMembers returns PLANNING-phase physical plans. Empty until
+// implementation rules or data access generation populate it.
+func (r *Reference) FinalMembers() []RelationalExpression {
+	return r.finalMembers
+}
+
+// InsertFinal adds e to the finalMembers set (PLANNING-phase physical
+// plans). Uses the same dedup logic as Insert. Also inserts into
+// members so that AllMembers remains a superset. Mirrors Java's
+// Reference.insertFinalExpression.
+func (r *Reference) InsertFinal(e RelationalExpression) bool {
+	if e == nil {
+		panic("Reference.InsertFinal: nil expression")
+	}
+	eHash := e.HashCodeWithoutChildren()
+	for _, m := range r.finalMembers {
+		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
+			return false
+		}
+		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
+			return false
+		}
+	}
+	r.finalMembers = append(r.finalMembers, e)
+	r.Insert(e)
 	return true
 }
 
