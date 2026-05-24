@@ -520,13 +520,11 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 	if len(m.compKeys) == 0 {
 		return ""
 	}
-	var b [64]byte
-	buf := b[:0]
-	for _, key := range m.compKeys {
-		v := key.Evaluate(qr.Datum)
-		buf = append(buf, []byte(fmt.Sprintf("%v|", v))...)
+	t := make(tuple.Tuple, len(m.compKeys))
+	for i, key := range m.compKeys {
+		t[i] = key.Evaluate(qr.Datum)
 	}
-	return string(buf)
+	return string(t.Pack())
 }
 
 func (m *mergeSortCursor) Close() error {
