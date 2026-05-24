@@ -193,6 +193,18 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	return true
 }
 
+// AdvancePlannerStage transitions this Reference from EXPLORE to PLANNING.
+// Replaces members with keep, clears finalMembers and planProperties.
+// Winners are preserved — they represent the best EXPLORE-phase physical
+// plans and should only be upgraded (not replaced) by PLANNING-phase
+// alternatives. PartialMatchMap is also preserved (data access generation
+// uses it in PLANNING). Mirrors Java's Reference.advancePlannerStageUnchecked.
+func (r *Reference) AdvancePlannerStage(keep []RelationalExpression) {
+	r.members = append(r.members[:0], keep...)
+	r.finalMembers = r.finalMembers[:0]
+	r.planProperties = nil
+}
+
 // GetPlanProperties returns the planner-phase property map stored on this Reference.
 func (r *Reference) GetPlanProperties() any { return r.planProperties }
 

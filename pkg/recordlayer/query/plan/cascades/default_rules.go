@@ -118,6 +118,21 @@ func DefaultExpressionRules() []ExpressionRule {
 	}
 }
 
+// PlanningExplorationRules returns the exploration rules that re-fire
+// during the PLANNING phase after advancePlannerStage clears EXPLORE
+// artifacts. These re-derive logical alternatives from the promoted
+// canonical seed. Mirrors Java's PlanningRuleSet.EXPLORATION_RULES.
+func PlanningExplorationRules() []ExpressionRule {
+	return []ExpressionRule{
+		NewNormalizePredicatesRule(),
+		NewInComparisonToExplodeRule(),
+		NewSplitSelectExtractIndependentQuantifiersRule(),
+		NewPullUpNullOnEmptyRule(),
+		NewPartitionSelectRule(),
+		NewPartitionBinarySelectRule(),
+	}
+}
+
 // BatchAExpressionRules returns the B5 Batch A physical-implementation
 // rules. These run in a second EXPLORE pass (after logical exploration
 // converges) so physical wrappers go into Members and the standard
