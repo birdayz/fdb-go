@@ -325,6 +325,65 @@ func TestPipeline_AggregateIndex(t *testing.T) {
 	}
 }
 
+func TestPipeline_AggregateIndexSUM(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "REGION", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}, Alias: "total"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$sum_amount_by_region",
+		[]string{"T"},
+		[]string{"REGION"},
+		expressions.AggSum,
+		"AMOUNT",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan, got: %s", plan)
+	}
+	if !strings.Contains(plan, "SUM") {
+		t.Fatalf("expected SUM in plan, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("should NOT use aggregate index for mismatched function, got: %s", plan)
+	}
+}
+
 // --- Composite operators ---
 
 func TestPipeline_Union(t *testing.T) {
