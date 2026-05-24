@@ -172,8 +172,9 @@ func (r *Reference) FinalMembers() []RelationalExpression {
 
 // InsertFinal adds e to the finalMembers set (PLANNING-phase physical
 // plans). Uses the same dedup logic as Insert. Also inserts into
-// members so that AllMembers remains a superset. Mirrors Java's
-// Reference.insertFinalExpression.
+// members so that AllMembers remains a superset. Returns true if e was
+// newly added to finalMembers (regardless of whether it was already in
+// members). Mirrors Java's Reference.insertFinalExpression.
 func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	if e == nil {
 		panic("Reference.InsertFinal: nil expression")
