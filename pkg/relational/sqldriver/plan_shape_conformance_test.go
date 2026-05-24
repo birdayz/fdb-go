@@ -855,3 +855,110 @@ func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 		}
 	})
 }
+
+func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aggmm",
+		"CREATE TABLE scores (id BIGINT NOT NULL, team STRING, points BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX max_points_by_team AS SELECT MAX(points) FROM scores GROUP BY team "+
+			"CREATE INDEX min_points_by_team AS SELECT MIN(points) FROM scores GROUP BY team")
+
+	for _, s := range []struct {
+		id     int
+		team   string
+		points int
+	}{
+		{1, "alpha", 100},
+		{2, "alpha", 250},
+		{3, "alpha", 50},
+		{4, "beta", 300},
+		{5, "beta", 150},
+		{6, "gamma", 999},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO scores VALUES (%d, '%s', %d)", s.id, s.team, s.points)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", s.id, err)
+		}
+	}
+
+	t.Run("max_aggregate_index", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT team, MAX(points) FROM scores GROUP BY team ORDER BY team")
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT team, MAX(points) FROM scores GROUP BY team ORDER BY team")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			team string
+			max  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.team, &r.max); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []row{{"alpha", 250}, {"beta", 300}, {"gamma", 999}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("min_aggregate_index", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT team, MIN(points) FROM scores GROUP BY team ORDER BY team")
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT team, MIN(points) FROM scores GROUP BY team ORDER BY team")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			team string
+			min  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.team, &r.min); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []row{{"alpha", 50}, {"beta", 150}, {"gamma", 999}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
