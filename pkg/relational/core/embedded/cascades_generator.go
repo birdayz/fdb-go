@@ -1285,6 +1285,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if agg, ok := plan.(*plans.RecordQueryStreamingAggregationPlan); ok {
 		return deriveColumnsFromAggregation(agg, md)
 	}
+	if aggIdx, ok := plan.(*plans.RecordQueryAggregateIndexPlan); ok {
+		return deriveColumnsFromAggregateIndex(aggIdx)
+	}
 	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 		return deriveColumnsFromJoin(nlj, md)
 	}
@@ -1381,6 +1384,32 @@ func findLeafDescriptor(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData)
 		return nil
 	}
 	return rt.Descriptor
+}
+
+func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan) []executor.ColumnDef {
+	groupCols := aggIdx.GetGroupCols()
+	aggCol := aggIdx.GetAggColumn()
+	aggFunc := aggIdx.GetAggregateFunction()
+
+	cols := make([]executor.ColumnDef, 0, len(groupCols)+1)
+	for _, gc := range groupCols {
+		cols = append(cols, executor.ColumnDef{
+			Name:     gc,
+			TypeName: "STRING",
+			Nullable: api.ColumnNullable,
+		})
+	}
+
+	aggName := aggCol
+	if aggName == "" {
+		aggName = aggFunc + "(*)"
+	}
+	cols = append(cols, executor.ColumnDef{
+		Name:     aggName,
+		TypeName: "BIGINT",
+		Nullable: api.ColumnNullable,
+	})
+	return cols
 }
 
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {

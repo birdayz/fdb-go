@@ -748,3 +748,110 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 		t.Errorf("expected FlatMap or EXISTS in plan, got:\n%s", plan)
 	}
 }
+
+func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aggidx",
+		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status "+
+			"CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM orders GROUP BY region")
+
+	for _, o := range []struct {
+		id     int
+		status string
+		region string
+		amount int
+	}{
+		{1, "pending", "US", 100},
+		{2, "pending", "US", 200},
+		{3, "shipped", "EU", 300},
+		{4, "shipped", "EU", 400},
+		{5, "delivered", "US", 500},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, '%s', '%s', %d)", o.id, o.status, o.region, o.amount)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", o.id, err)
+		}
+	}
+
+	t.Run("count_aggregate_index", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status")
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			status string
+			cnt    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.status, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []row{{"delivered", 1}, {"pending", 2}, {"shipped", 2}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("sum_aggregate_index", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region")
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
+		}
+
+		rows, err := db.QueryContext(ctx, "SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err: %v", err)
+		}
+		want := []row{{"EU", 700}, {"US", 800}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d, want %d", len(got), len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}

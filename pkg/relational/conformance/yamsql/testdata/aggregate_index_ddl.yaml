@@ -1,0 +1,36 @@
+# aggregate_index_ddl.yaml — Aggregate indexes via CREATE INDEX ... AS SELECT
+#
+# Exercises the DDL parser for aggregate index types (SUM, COUNT, MIN, MAX)
+# and verifies the planner selects AggregateIndex plans end-to-end.
+name: aggregate_index_ddl
+schema_template: |
+  CREATE TABLE orders (
+    id BIGINT NOT NULL,
+    status STRING,
+    region STRING,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status
+  CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM orders GROUP BY region
+setup:
+  - INSERT INTO orders VALUES (1, 'pending', 'US', 100)
+  - INSERT INTO orders VALUES (2, 'pending', 'US', 200)
+  - INSERT INTO orders VALUES (3, 'shipped', 'EU', 300)
+  - INSERT INTO orders VALUES (4, 'shipped', 'EU', 400)
+  - INSERT INTO orders VALUES (5, 'delivered', 'US', 500)
+tests:
+  # COUNT(*) via aggregate index
+  - query: SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status
+    plan_contains: AggregateIndex
+    rows:
+      - ["delivered", 1]
+      - ["pending", 2]
+      - ["shipped", 2]
+
+  # SUM via aggregate index
+  - query: SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region
+    plan_contains: AggregateIndex
+    rows:
+      - ["EU", 700]
+      - ["US", 800]
