@@ -1629,10 +1629,8 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 	})
 
 	t.Run("where_on_group_key", func(t *testing.T) {
-		// Java: WHERE col1 = 10 pushes into AISCAN bounded scan.
-		// Go: falls back to full scan + filter + streaming agg (correct but slower).
-		// Bounded aggregate scan requires predicate pushdown into GroupBy's inner
-		// which isn't implemented yet (parent Filter not visible to AggregateDataAccessRule).
+		// Correctness test: WHERE on group key works via full scan + filter + streaming agg.
+		// Bounded aggregate scan (AISCAN [EQUALS]) is a future optimization (see TODO.md).
 		rows, err := db.QueryContext(ctx,
 			"SELECT region, SUM(amount) FROM sales WHERE region = 'US' GROUP BY region")
 		if err != nil {
