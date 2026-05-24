@@ -1,0 +1,84 @@
+# index_scan_direction.yaml — Index scan direction tests
+#
+# Verifies that ORDER BY on indexed columns produces correct results
+# in both ASC and DESC directions. The Cascades planner should pick
+# ordered index scans when available, avoiding in-memory sort.
+name: index_scan_direction
+schema_template: |
+  CREATE TABLE events (
+    id BIGINT NOT NULL,
+    ts BIGINT,
+    category STRING,
+    payload STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_ts ON events (ts)
+  CREATE INDEX idx_category ON events (category)
+setup:
+  - INSERT INTO events VALUES
+      (1, 100, 'login', 'user1'),
+      (2, 200, 'logout', 'user1'),
+      (3, 150, 'login', 'user2'),
+      (4, 300, 'error', 'user3'),
+      (5, 250, 'login', 'user3'),
+      (6, 50, 'error', 'user1')
+tests:
+  # ORDER BY indexed column ASC
+  - query: SELECT id, ts FROM events WHERE ts >= 150 ORDER BY ts
+    rows:
+      - [3, 150]
+      - [2, 200]
+      - [5, 250]
+      - [4, 300]
+
+  # ORDER BY indexed column DESC
+  - query: SELECT id, ts FROM events WHERE ts >= 150 ORDER BY ts DESC
+    rows:
+      - [4, 300]
+      - [5, 250]
+      - [2, 200]
+      - [3, 150]
+
+  # ORDER BY PK ASC with range predicate
+  - query: SELECT id, ts FROM events WHERE id > 3 ORDER BY id
+    rows:
+      - [4, 300]
+      - [5, 250]
+      - [6, 50]
+
+  # ORDER BY PK DESC
+  - query: SELECT id FROM events ORDER BY id DESC
+    rows:
+      - [6]
+      - [5]
+      - [4]
+      - [3]
+      - [2]
+      - [1]
+
+  # ORDER BY string indexed column
+  - query: SELECT id, category FROM events WHERE category >= 'l' ORDER BY category, id
+    rows:
+      - [1, 'login']
+      - [3, 'login']
+      - [5, 'login']
+      - [2, 'logout']
+
+  # Covering index scan with ORDER BY
+  - query: SELECT id, ts FROM events WHERE ts BETWEEN 100 AND 200 ORDER BY ts
+    rows:
+      - [1, 100]
+      - [3, 150]
+      - [2, 200]
+
+  # COUNT with indexed filter
+  - query: SELECT COUNT(*) FROM events WHERE category = 'login'
+    rows:
+      - [3]
+
+  # Multi-value aggregate with indexed filter
+  - query: SELECT category, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY category ORDER BY category
+    rows:
+      - ['error', 2, 50, 300]
+      - ['login', 3, 100, 250]
+      - ['logout', 1, 200, 200]
