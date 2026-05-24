@@ -74,7 +74,7 @@ const (
 	// cardinality and CPU share a scale (Total = Cardinality + CPU).
 	FilterCPU       = 0.1
 	ProjectionCPU   = 0.05
-	SortCPU         = 1.0 // multiplied by N * log2(N) for Nlog(N) sort
+	SortCPU         = 0.15 // multiplied by N * log2(N) for Nlog(N) sort
 	DistinctCPU     = 1.5
 	TypeFilterCPU   = 0.05
 	UnionCPU        = 0.1
