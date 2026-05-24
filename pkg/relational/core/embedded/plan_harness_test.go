@@ -438,6 +438,158 @@ func TestPlanHarness_AggregateIndexSumViaBuilder(t *testing.T) {
 	}
 }
 
+// --- Aggregate index DDL (CREATE INDEX ... AS SELECT ...) ---
+
+func TestPlanHarness_AggregateIndexDDL_Count(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX count_by_status AS SELECT COUNT(*) FROM ORDERS GROUP BY status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(*) FROM orders GROUP BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_Sum(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  region STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY region
+`
+	plan, err := PlanQueryForTest(
+		"SELECT region, SUM(amount) FROM orders GROUP BY region",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "SUM") {
+		t.Fatalf("expected AggregateIndex(SUM) plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_Max(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MAX(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "MAX") {
+		t.Fatalf("expected AggregateIndex(MAX) plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_Min(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX min_price_by_cat AS SELECT MIN(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MIN(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "MIN") {
+		t.Fatalf("expected AggregateIndex(MIN) plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_MultiGroupBy(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  region STRING,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX sum_by_region_status AS SELECT SUM(amount) FROM ORDERS GROUP BY region, status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT region, status, SUM(amount) FROM orders GROUP BY region, status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan with multi-column GROUP BY, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_ParseError_NoAggregate(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX bad_idx AS SELECT status FROM ORDERS GROUP BY status
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error for index DDL without aggregate function")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestPlanHarness_AggregateIndexDDL_ParseError_NoFrom(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX bad_idx AS SELECT COUNT(*)
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error for index DDL without FROM clause")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
 // --- Multi-table schemas ---
 
 const multiTableSchema = `

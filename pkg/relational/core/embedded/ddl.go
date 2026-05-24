@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
@@ -150,7 +151,6 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 }
 
 // parseIndexDefinition handles a single CREATE INDEX clause within a schema template.
-// Only INDEX ON SOURCE form (INDEX name ON table (cols)) is supported.
 func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.Builder) error {
 	switch def := idxDef.(type) {
 	case *antlrgen.IndexOnSourceDefinitionContext:
@@ -169,10 +169,202 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		}
 		b.AddIndex(tableName, indexName, cols, unique)
 		return nil
+	case *antlrgen.IndexAsSelectDefinitionContext:
+		return parseAggregateIndexDefinition(def, b)
 	default:
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported index definition type %T; only INDEX … ON … is supported", idxDef)
+			"unsupported index definition type %T", idxDef)
 	}
+}
+
+// parseAggregateIndexDefinition handles CREATE INDEX name AS SELECT AGG(col) FROM table GROUP BY cols.
+// Matches Java's MaterializedViewIndexGenerator: extracts the aggregate function,
+// column, table, and grouping columns, then registers via Builder.AddAggregateIndex.
+func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, b *metadata.Builder) error {
+	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+
+	qt := def.QueryTerm()
+	if qt == nil {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: missing query term", indexName)
+	}
+	st, ok := qt.(*antlrgen.SimpleTableContext)
+	if !ok {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: only simple SELECT queries are supported", indexName)
+	}
+
+	fc := st.FromClause()
+	if fc == nil {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: FROM clause required", indexName)
+	}
+	ts := fc.TableSources()
+	if ts == nil {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: no table source", indexName)
+	}
+	sources := ts.AllTableSource()
+	if len(sources) != 1 {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: exactly one table source required", indexName)
+	}
+	tsb, ok := sources[0].(*antlrgen.TableSourceBaseContext)
+	if !ok {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: unsupported table source type", indexName)
+	}
+	ati, ok := tsb.TableSourceItem().(*antlrgen.AtomTableItemContext)
+	if !ok {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: table source must be a simple table reference", indexName)
+	}
+	tableName := functions.FullIdToName(ati.TableName().FullId())
+
+	selElems := st.SelectElements()
+	if selElems == nil {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: SELECT clause required", indexName)
+	}
+	allElems := selElems.AllSelectElement()
+	if len(allElems) != 1 {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: exactly one aggregate expression required in SELECT", indexName)
+	}
+	aggType, aggColumn, err := extractAggregateFromSelectElement(allElems[0])
+	if err != nil {
+		return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q", indexName)
+	}
+
+	var groupColumns []string
+	if gb := st.GroupByClause(); gb != nil {
+		for _, item := range gb.AllGroupByItem() {
+			colName, err := extractColumnNameFromExpression(item.Expression())
+			if err != nil {
+				return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+					"aggregate index %q GROUP BY", indexName)
+			}
+			groupColumns = append(groupColumns, colName)
+		}
+	}
+
+	b.AddAggregateIndex(tableName, indexName, groupColumns, aggType, aggColumn)
+	return nil
+}
+
+// extractAggregateFromSelectElement walks a select element's expression tree to find
+// the aggregate function call and returns (aggType, aggColumn). aggColumn is empty for COUNT(*).
+func extractAggregateFromSelectElement(elem antlrgen.ISelectElementContext) (string, string, error) {
+	see, ok := elem.(*antlrgen.SelectExpressionElementContext)
+	if !ok {
+		return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"select element must be an expression")
+	}
+	awf := findAggregateWindowedFunction(see.Expression())
+	if awf == nil {
+		return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"select element must contain an aggregate function (SUM, COUNT, MIN, MAX)")
+	}
+
+	fnName := strings.ToUpper(awf.GetFunctionName().GetText())
+
+	switch fnName {
+	case "COUNT":
+		if awf.GetStarArg() != nil {
+			return "COUNT", "", nil
+		}
+		if fa := awf.FunctionArg(); fa != nil {
+			col, err := extractColumnNameFromExpression(fa.Expression())
+			if err != nil {
+				return "", "", err
+			}
+			return "COUNT_NOT_NULL", col, nil
+		}
+		return "COUNT", "", nil
+	case "SUM", "MIN", "MAX":
+		fa := awf.FunctionArg()
+		if fa == nil {
+			return "", "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"%s requires a column argument", fnName)
+		}
+		col, err := extractColumnNameFromExpression(fa.Expression())
+		if err != nil {
+			return "", "", err
+		}
+		return fnName, col, nil
+	case "MIN_EVER":
+		fa := awf.FunctionArg()
+		if fa == nil {
+			return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
+				"MIN_EVER requires a column argument")
+		}
+		col, err := extractColumnNameFromExpression(fa.Expression())
+		if err != nil {
+			return "", "", err
+		}
+		return "MIN_EVER_TUPLE", col, nil
+	case "MAX_EVER":
+		fa := awf.FunctionArg()
+		if fa == nil {
+			return "", "", api.NewError(api.ErrCodeInvalidSchemaTemplate,
+				"MAX_EVER requires a column argument")
+		}
+		col, err := extractColumnNameFromExpression(fa.Expression())
+		if err != nil {
+			return "", "", err
+		}
+		return "MAX_EVER_TUPLE", col, nil
+	default:
+		return "", "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"unsupported aggregate function %q; supported: SUM, COUNT, MIN, MAX, MIN_EVER, MAX_EVER", fnName)
+	}
+}
+
+// findAggregateWindowedFunction walks an expression tree to find an AggregateWindowedFunctionContext.
+func findAggregateWindowedFunction(expr antlrgen.IExpressionContext) *antlrgen.AggregateWindowedFunctionContext {
+	if expr == nil {
+		return nil
+	}
+	return findAggregateInTree(expr)
+}
+
+func findAggregateInTree(node antlr.Tree) *antlrgen.AggregateWindowedFunctionContext {
+	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok {
+		return awf
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if result := findAggregateInTree(node.GetChild(i)); result != nil {
+			return result
+		}
+	}
+	return nil
+}
+
+// extractColumnNameFromExpression extracts a simple column name from an expression
+// that is a bare column reference (fullColumnName).
+func extractColumnNameFromExpression(expr antlrgen.IExpressionContext) (string, error) {
+	if expr == nil {
+		return "", api.NewError(api.ErrCodeInvalidSchemaTemplate, "expression is nil")
+	}
+	fcn := findFullColumnName(expr)
+	if fcn == nil {
+		return "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"expected a column reference, got %q", expr.GetText())
+	}
+	return functions.FullIdToName(fcn.FullId()), nil
+}
+
+func findFullColumnName(node antlr.Tree) *antlrgen.FullColumnNameContext {
+	if fcn, ok := node.(*antlrgen.FullColumnNameContext); ok {
+		return fcn
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if result := findFullColumnName(node.GetChild(i)); result != nil {
+			return result
+		}
+	}
+	return nil
 }
 
 // parseTableDefinition extracts column specs and primary key column
