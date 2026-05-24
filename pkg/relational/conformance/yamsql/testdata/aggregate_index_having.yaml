@@ -1,0 +1,34 @@
+# aggregate_index_having.yaml — Aggregate index with HAVING filter
+#
+# Verifies that single-aggregate GROUP BY with HAVING correctly uses
+# aggregate index when available. HAVING filters post-aggregation rows.
+name: aggregate_index_having
+schema_template: |
+  CREATE TABLE orders (
+    id BIGINT NOT NULL,
+    customer_id BIGINT,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX sum_by_customer AS SELECT SUM(amount) FROM orders GROUP BY customer_id
+setup:
+  - INSERT INTO orders VALUES (1, 100, 500)
+  - INSERT INTO orders VALUES (2, 100, 300)
+  - INSERT INTO orders VALUES (3, 200, 100)
+  - INSERT INTO orders VALUES (4, 200, 900)
+  - INSERT INTO orders VALUES (5, 300, 50)
+tests:
+  # SUM without HAVING — uses aggregate index
+  - query: SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
+    plan_contains: AggregateIndex
+    rows:
+      - [100, 800]
+      - [200, 1000]
+      - [300, 50]
+
+  # SUM with HAVING — filters post-aggregation via AggregateIndex + Filter
+  - query: SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 500 ORDER BY customer_id
+    plan_contains: AggregateIndex
+    rows:
+      - [100, 800]
+      - [200, 1000]

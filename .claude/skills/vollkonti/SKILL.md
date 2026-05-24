@@ -92,6 +92,14 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **Never force-push master.** Always verify branch before amend/force: `git branch --show-current`
 - **C++ is the spec.** If our Go client diverges from C++, fix our code. Never skip tests.
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
+- **Review after each major unit of work.** When a significant TODO item is complete (DDL pipeline, executor wiring, cost model fix with tests — NOT a single-line fix or one more test file), trigger the review loop:
+  1. Commit, push
+  2. Comment on the PR: `gh pr comment --body "@claude Completed <unit>. <1-2 sentence summary of what changed>. Please review."`
+  3. Wait for reviewer feedback: `gh run list --branch {shift-name} --limit 1 --json databaseId --jq '.[0].databaseId'` then `gh run watch <id> --exit-status` then read the latest comment
+  4. Address valid feedback (fix, commit, push, re-request). Push back on wrong suggestions with reasoning.
+  5. Iterate until no new issues. Then move to the next TODO item.
+  
+  **Judgment call on "major":** A unit is review-worthy when it touches >3 files, adds a new code path that could have bugs, or changes cost model / plan selection behavior. Pure test additions, doc updates, and single-file fixes don't need mid-work review — they get reviewed at end-of-shift. Don't stop working while waiting for review — start the next item immediately and handle feedback when it arrives.
 - **Mid-shift review is event-driven, NOT timer-driven.** When the user prompts for it (or an external trigger fires), pause, request `@claude review`, iterate to LGTM, then keep going. NEVER stop working in anticipation of mid-shift; NEVER compute a T+3:30 mark and pace yourself toward it. Being a bit late is fine; idling for the clock is not. A clean mid-shift review is a quality signal, not a stop signal.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
 - **You MUST keep working until wind-down.** Idling "because piling on more changes risks regressions" or "because the reviewer already approved" is not an option. The risk profile is low (CI + review catch regressions); the cost of an idle shift is high (less ground covered, more work dumped on the next shift). If you genuinely have nothing to do, that means you haven't looked hard enough — audit code you haven't touched, extend fuzz corpus, tighten tests, polish docs. Sitting waiting for review feedback is only acceptable inside the wind-down window. Scheduling wakeups to pass time before wind-down is a mis-use.

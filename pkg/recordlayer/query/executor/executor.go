@@ -149,6 +149,12 @@ func ExecutePlan(
 	case *plans.RecordQueryAggregateIndexPlan:
 		return executeAggregateIndexScan(ctx, p, store, evalCtx, continuation, props)
 
+	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
+		return executeMultiIntersection(ctx, p, store, evalCtx, continuation, props)
+
+	case *plans.RecordQueryLoadByKeysPlan:
+		return executeLoadByKeys(ctx, p, store, evalCtx, props)
+
 	// --- Go extensions (no Java equivalent) ---
 	case *plans.RecordQueryInMemorySortPlan:
 		return executeInMemorySort(ctx, p, store, evalCtx, continuation, props)

@@ -1,0 +1,49 @@
+# aggregate_index_delete.yaml — Aggregate index correctness after DELETE
+#
+# Verifies that deleting records properly decrements/updates the
+# aggregate index entries via atomic mutations.
+name: aggregate_index_delete
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    category STRING,
+    price BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX count_by_cat AS SELECT COUNT(*) FROM items GROUP BY category
+  CREATE INDEX sum_price_by_cat AS SELECT SUM(price) FROM items GROUP BY category
+setup:
+  - INSERT INTO items VALUES (1, 'A', 100)
+  - INSERT INTO items VALUES (2, 'A', 200)
+  - INSERT INTO items VALUES (3, 'A', 300)
+  - INSERT INTO items VALUES (4, 'B', 400)
+  - INSERT INTO items VALUES (5, 'B', 500)
+tests:
+  # Before delete: verify initial counts and sums
+  - query: SELECT category, COUNT(*) FROM items GROUP BY category ORDER BY category
+    plan_contains: AggregateIndex
+    rows:
+      - ["A", 3]
+      - ["B", 2]
+
+  - query: SELECT category, SUM(price) FROM items GROUP BY category ORDER BY category
+    plan_contains: AggregateIndex
+    rows:
+      - ["A", 600]
+      - ["B", 900]
+
+  # Delete one record from category A
+  - exec: DELETE FROM items WHERE id = 2
+
+  # After delete: counts and sums should be updated
+  - query: SELECT category, COUNT(*) FROM items GROUP BY category ORDER BY category
+    plan_contains: AggregateIndex
+    rows:
+      - ["A", 2]
+      - ["B", 2]
+
+  - query: SELECT category, SUM(price) FROM items GROUP BY category ORDER BY category
+    plan_contains: AggregateIndex
+    rows:
+      - ["A", 400]
+      - ["B", 900]

@@ -433,6 +433,9 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		CREATE INDEX idx_customer ON orders (customer_id)
 		CREATE INDEX idx_status ON orders (status)
 		CREATE INDEX idx_amount ON orders (amount)
+		CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status
+		CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM orders GROUP BY status
+		CREATE INDEX sum_amount_by_customer AS SELECT SUM(amount) FROM orders GROUP BY customer_id
 		CREATE TABLE customers (
 			id BIGINT NOT NULL,
 			name STRING NOT NULL,
@@ -536,6 +539,14 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		h.explain(t, "SELECT status, COUNT(*) FROM orders GROUP BY status")
 		r := h.timeQuery("SELECT status, COUNT(*) FROM orders GROUP BY status")
 		r.mustSucceed(t, "GROUP BY status COUNT only")
+		if r.RowCount != len(statuses) {
+			t.Errorf("got %d groups, want %d", r.RowCount, len(statuses))
+		}
+	})
+	t.Run("sum_by_status", func(t *testing.T) {
+		h.explain(t, "SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status")
+		r := h.timeQuery("SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status")
+		r.mustSucceed(t, "SUM by status (aggregate index)")
 		if r.RowCount != len(statuses) {
 			t.Errorf("got %d groups, want %d", r.RowCount, len(statuses))
 		}

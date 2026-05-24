@@ -1,0 +1,47 @@
+# aggregate_index_update.yaml — Aggregate index correctness after UPDATE
+#
+# Verifies that updating a record's grouping column properly moves the
+# aggregate contribution from the old group to the new group.
+name: aggregate_index_update
+schema_template: |
+  CREATE TABLE tasks (
+    id BIGINT NOT NULL,
+    status STRING,
+    effort BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX count_by_status AS SELECT COUNT(*) FROM tasks GROUP BY status
+  CREATE INDEX sum_effort_by_status AS SELECT SUM(effort) FROM tasks GROUP BY status
+setup:
+  - INSERT INTO tasks VALUES (1, 'todo', 10)
+  - INSERT INTO tasks VALUES (2, 'todo', 20)
+  - INSERT INTO tasks VALUES (3, 'done', 30)
+tests:
+  # Initial state
+  - query: SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status
+    plan_contains: AggregateIndex
+    rows:
+      - ["done", 1]
+      - ["todo", 2]
+
+  - query: SELECT status, SUM(effort) FROM tasks GROUP BY status ORDER BY status
+    plan_contains: AggregateIndex
+    rows:
+      - ["done", 30]
+      - ["todo", 30]
+
+  # Move task 2 from 'todo' to 'done'
+  - exec: UPDATE tasks SET status = 'done' WHERE id = 2
+
+  # After update: counts should reflect the move
+  - query: SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status
+    plan_contains: AggregateIndex
+    rows:
+      - ["done", 2]
+      - ["todo", 1]
+
+  - query: SELECT status, SUM(effort) FROM tasks GROUP BY status ORDER BY status
+    plan_contains: AggregateIndex
+    rows:
+      - ["done", 50]
+      - ["todo", 10]

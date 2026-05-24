@@ -81,10 +81,20 @@ func (w *physicalMultiIntersectionWrapper) WithChildren(qs []expressions.Quantif
 
 // HintCost: multi-intersection cardinality is bounded by the smallest
 // child (same as regular intersection). CPU sums children + per-output
-// merge work.
+// merge work. When children aren't available as quantifiers (leaf-style
+// embedding), estimates cardinality from DistinctSelectivity since
+// the output produces one row per distinct group.
 func (w *physicalMultiIntersectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
 	if len(child) == 0 {
-		return properties.Cost{}
+		groupCard := properties.LeafScanCardinality * properties.DistinctSelectivity
+		nChildren := len(w.plan.GetChildren())
+		if nChildren < 1 {
+			nChildren = 1
+		}
+		return properties.Cost{
+			Cardinality: groupCard,
+			CPU:         groupCard * properties.IntersectionCPU * float64(nChildren),
+		}
 	}
 	minCard := child[0].Cardinality
 	sumCard := 0.0

@@ -1,0 +1,34 @@
+# aggregate_index_sum.yaml — SUM aggregate index via DDL
+#
+# Exercises SUM aggregate index end-to-end: DDL parsing, planner selection,
+# executor reads from atomic-mutation index entries.
+name: aggregate_index_sum
+schema_template: |
+  CREATE TABLE sales (
+    id BIGINT NOT NULL,
+    region STRING,
+    category STRING,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX sum_by_region AS SELECT SUM(amount) FROM sales GROUP BY region
+setup:
+  - INSERT INTO sales VALUES (1, 'US', 'electronics', 100)
+  - INSERT INTO sales VALUES (2, 'US', 'clothing', 200)
+  - INSERT INTO sales VALUES (3, 'EU', 'electronics', 300)
+  - INSERT INTO sales VALUES (4, 'EU', 'clothing', 400)
+  - INSERT INTO sales VALUES (5, 'US', 'food', 150)
+  - INSERT INTO sales VALUES (6, 'APAC', 'electronics', 500)
+tests:
+  # SUM via aggregate index
+  - query: SELECT region, SUM(amount) FROM sales GROUP BY region ORDER BY region
+    plan_contains: AggregateIndex
+    rows:
+      - ["APAC", 500]
+      - ["EU", 700]
+      - ["US", 450]
+
+  # Single-region SUM
+  - query: SELECT region, SUM(amount) FROM sales WHERE region = 'US' GROUP BY region
+    rows:
+      - ["US", 450]

@@ -1,0 +1,58 @@
+# aggregate_index_count_not_null.yaml — COUNT(col) aggregate index with NULLs
+#
+# Exercises COUNT(col) aggregate index (COUNT_NOT_NULL type) to verify
+# that NULL values in the aggregated column are correctly excluded from
+# the count. This is the key difference between COUNT(*) and COUNT(col).
+name: aggregate_index_count_not_null
+schema_template: |
+  CREATE TABLE measurements (
+    id BIGINT NOT NULL,
+    sensor STRING,
+    reading BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX count_readings_by_sensor AS SELECT COUNT(reading) FROM measurements GROUP BY sensor
+setup:
+  - INSERT INTO measurements VALUES (1, 'temp', 72)
+  - INSERT INTO measurements VALUES (2, 'temp', 68)
+  - INSERT INTO measurements VALUES (3, 'temp', NULL)
+  - INSERT INTO measurements VALUES (4, 'humidity', 45)
+  - INSERT INTO measurements VALUES (5, 'humidity', NULL)
+  - INSERT INTO measurements VALUES (6, 'humidity', NULL)
+  - INSERT INTO measurements VALUES (7, 'pressure', NULL)
+tests:
+  # COUNT(reading) should skip NULLs:
+  #   temp: 2 non-null readings (72, 68)
+  #   humidity: 1 non-null reading (45)
+  #   pressure: 0 non-null readings (all NULL)
+  # Note: pressure group may not appear (ClearWhenZero removes 0-count entries)
+  - query: SELECT sensor, COUNT(reading) FROM measurements GROUP BY sensor ORDER BY sensor
+    plan_contains: AggregateIndex
+    rows:
+      - ["humidity", 1]
+      - ["temp", 2]
+
+  # Verify COUNT(*) counts all rows (including those with NULL reading)
+  - query: SELECT COUNT(*) FROM measurements
+    rows:
+      - [7]
+
+  # Insert a non-null reading for pressure — now it should appear
+  - exec: UPDATE measurements SET reading = 1013 WHERE id = 7
+
+  - query: SELECT sensor, COUNT(reading) FROM measurements GROUP BY sensor ORDER BY sensor
+    plan_contains: AggregateIndex
+    rows:
+      - ["humidity", 1]
+      - ["pressure", 1]
+      - ["temp", 2]
+
+  # Delete a non-null reading from temp
+  - exec: DELETE FROM measurements WHERE id = 1
+
+  - query: SELECT sensor, COUNT(reading) FROM measurements GROUP BY sensor ORDER BY sensor
+    plan_contains: AggregateIndex
+    rows:
+      - ["humidity", 1]
+      - ["pressure", 1]
+      - ["temp", 1]

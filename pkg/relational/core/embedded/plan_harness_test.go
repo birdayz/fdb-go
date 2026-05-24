@@ -384,6 +384,38 @@ CREATE INDEX idx_status ON ORDERS(status)
 	assertPlanContains(t, plan, "StreamingAgg")
 }
 
+func TestPlanHarness_AggregateIndexDDL_CombinedCountSum(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX count_by_status AS SELECT COUNT(*) FROM ORDERS GROUP BY status
+CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM ORDERS GROUP BY status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("combined COUNT+SUM plan: %s", plan)
+
+	sumOnly, err := PlanQueryForTest(
+		"SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("SUM-only plan: %s", sumOnly)
+	if !strings.Contains(sumOnly, "AggregateIndex") {
+		t.Errorf("expected AggregateIndex for SUM-only query, got: %s", sumOnly)
+	}
+}
+
 func TestPlanHarness_AggregateIndexViaBuilder(t *testing.T) {
 	t.Parallel()
 	b := metadata.NewSchemaTemplateBuilder().SetName("test_schema").
@@ -435,6 +467,288 @@ func TestPlanHarness_AggregateIndexSumViaBuilder(t *testing.T) {
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "SUM") {
 		t.Fatalf("expected AggregateIndex(SUM, ...) with SUM index, got: %s", plan)
+	}
+}
+
+// --- Aggregate index DDL (CREATE INDEX ... AS SELECT ...) ---
+
+func TestPlanHarness_AggregateIndexDDL_Count(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX count_by_status AS SELECT COUNT(*) FROM ORDERS GROUP BY status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(*) FROM orders GROUP BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_Sum(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  region STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY region
+`
+	plan, err := PlanQueryForTest(
+		"SELECT region, SUM(amount) FROM orders GROUP BY region",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "SUM") {
+		t.Fatalf("expected AggregateIndex(SUM) plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_Max(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MAX(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "MAX") {
+		t.Fatalf("expected AggregateIndex(MAX) plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_Min(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX min_price_by_cat AS SELECT MIN(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MIN(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "MIN") {
+		t.Fatalf("expected AggregateIndex(MIN) plan from DDL-defined index, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_MultiGroupBy(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  region STRING,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX sum_by_region_status AS SELECT SUM(amount) FROM ORDERS GROUP BY region, status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT region, status, SUM(amount) FROM orders GROUP BY region, status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan with multi-column GROUP BY, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_CountColumn(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX count_amount_by_status AS SELECT COUNT(amount) FROM ORDERS GROUP BY status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(amount) FROM orders GROUP BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan for COUNT(col), got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_NoGroupBy(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX total_count AS SELECT COUNT(*) FROM ORDERS
+`
+	plan, err := PlanQueryForTest(
+		"SELECT COUNT(*) FROM orders",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("no-group-by plan: %s", plan)
+}
+
+func TestPlanHarness_AggregateIndexDDL_ParseError_NoAggregate(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX bad_idx AS SELECT status FROM ORDERS GROUP BY status
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error for index DDL without aggregate function")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestPlanHarness_AggregateIndexDDL_ParseError_NoFrom(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX bad_idx AS SELECT COUNT(*)
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error for index DDL without FROM clause")
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestPlanHarness_AggregateIndexDDL_ParseError_AvgRejected(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  amount BIGINT,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX avg_idx AS SELECT AVG(amount) FROM ORDERS GROUP BY status
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error: AVG is not an indexable aggregate function")
+	}
+	if !strings.Contains(err.Error(), "unsupported aggregate function") {
+		t.Fatalf("expected 'unsupported aggregate function' error, got: %v", err)
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestPlanHarness_AggregateIndexDDL_ParseError_MultipleAggregates(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  amount BIGINT,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX multi_idx AS SELECT COUNT(*), SUM(amount) FROM ORDERS GROUP BY status
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error: only one aggregate per index definition allowed")
+	}
+	if !strings.Contains(err.Error(), "exactly one aggregate") {
+		t.Fatalf("expected 'exactly one aggregate' error, got: %v", err)
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestPlanHarness_AggregateIndexDDL_MinEver(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX min_price_by_cat AS SELECT MIN_EVER(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MIN(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex for MIN_EVER, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_MaxEver(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MAX(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex for MAX_EVER, got: %s", plan)
 	}
 }
 

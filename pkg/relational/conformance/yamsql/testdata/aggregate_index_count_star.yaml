@@ -1,0 +1,38 @@
+# aggregate_index_count_star.yaml — COUNT(*) aggregate index correctness
+#
+# Exercises COUNT(*) aggregate index with inserts, verifying atomic
+# mutation counts are correct after multiple inserts to same group.
+name: aggregate_index_count_star
+schema_template: |
+  CREATE TABLE logs (
+    id BIGINT NOT NULL,
+    level STRING,
+    message STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX count_by_level AS SELECT COUNT(*) FROM logs GROUP BY level
+setup:
+  - INSERT INTO logs VALUES (1, 'ERROR', 'disk full')
+  - INSERT INTO logs VALUES (2, 'ERROR', 'connection lost')
+  - INSERT INTO logs VALUES (3, 'ERROR', 'timeout')
+  - INSERT INTO logs VALUES (4, 'WARN', 'high latency')
+  - INSERT INTO logs VALUES (5, 'WARN', 'retry')
+  - INSERT INTO logs VALUES (6, 'INFO', 'started')
+  - INSERT INTO logs VALUES (7, 'INFO', 'connected')
+  - INSERT INTO logs VALUES (8, 'INFO', 'processing')
+  - INSERT INTO logs VALUES (9, 'INFO', 'done')
+  - INSERT INTO logs VALUES (10, 'DEBUG', 'trace')
+tests:
+  # All groups via aggregate index
+  - query: SELECT level, COUNT(*) FROM logs GROUP BY level ORDER BY level
+    plan_contains: AggregateIndex
+    rows:
+      - ["DEBUG", 1]
+      - ["ERROR", 3]
+      - ["INFO", 4]
+      - ["WARN", 2]
+
+  # Verify total count matches
+  - query: SELECT COUNT(*) FROM logs
+    rows:
+      - [10]

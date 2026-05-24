@@ -139,12 +139,20 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 		return false
 	}
 	if c.aggFunction == expressions.AggCount {
-		if _, isConst := aggs[0].Operand.(*values.ConstantValue); isConst {
-			return true
+		isCountStar := aggs[0].Operand == nil
+		if !isCountStar {
+			if _, isConst := aggs[0].Operand.(*values.ConstantValue); isConst {
+				isCountStar = true
+			}
 		}
-		if aggs[0].Operand == nil {
-			return true
+		if isCountStar {
+			return c.aggColumn == ""
 		}
+		opFV, ok := aggs[0].Operand.(*values.FieldValue)
+		if !ok {
+			return false
+		}
+		return c.aggColumn != "" && eqFold(opFV.Field, c.aggColumn)
 	}
 	opFV, ok := aggs[0].Operand.(*values.FieldValue)
 	if !ok {
@@ -182,12 +190,20 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		return false
 	}
 	if c.aggFunction == expressions.AggCount {
-		if _, isConst := agg.Operand.(*values.ConstantValue); isConst {
-			return true
+		isCountStar := agg.Operand == nil
+		if !isCountStar {
+			if _, isConst := agg.Operand.(*values.ConstantValue); isConst {
+				isCountStar = true
+			}
 		}
-		if agg.Operand == nil {
-			return true
+		if isCountStar {
+			return c.aggColumn == ""
 		}
+		opFV, ok := agg.Operand.(*values.FieldValue)
+		if !ok {
+			return false
+		}
+		return c.aggColumn != "" && eqFold(opFV.Field, c.aggColumn)
 	}
 	opFV, ok := agg.Operand.(*values.FieldValue)
 	if !ok {
