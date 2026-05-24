@@ -1563,13 +1563,12 @@ func (w *physicalAggregateIndexWrapper) WithChildren(qs []expressions.Quantifier
 	return w, nil
 }
 
-func (w *physicalAggregateIndexWrapper) HintCost(_ expressions.Quantifier, stats properties.StatisticsProvider) properties.Cost {
-	groupCols := w.plan.GetGroupCols()
+func (w *physicalAggregateIndexWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	tableCard := properties.LeafScanCardinality
 	if stats != nil {
 		tableCard = stats.RecordTypeCardinality(w.plan.GetRecordTypeName())
 	}
-	cardinality := tableCard / float64(max(1, len(groupCols)*10))
+	cardinality := tableCard * properties.DistinctSelectivity
 	if cardinality < 1 {
 		cardinality = 1
 	}

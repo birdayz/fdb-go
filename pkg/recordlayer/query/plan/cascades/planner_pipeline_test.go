@@ -47,6 +47,36 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 	return fmt.Sprintf("%T", best)
 }
 
+func planPipelineWithCandidates(t *testing.T, root expressions.RelationalExpression, candidates []MatchCandidate) string {
+	t.Helper()
+
+	rootRef := expressions.InitialOf(root)
+
+	rules := DefaultExpressionRules()
+	rules = append(rules, BatchAExpressionRules()...)
+	rules = append(rules, MatchingRules()...)
+
+	ctx := NewPlanContextFromMatchCandidates(candidates)
+
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithMaxTasks(10_000)
+
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil best expression")
+	}
+
+	explain := ExplainPhysicalPlan(best)
+	if explain != "" {
+		return explain
+	}
+	return fmt.Sprintf("%T", best)
+}
+
 // idx builds a stubIndexDef with sensible defaults (recordTypes: ["T"]).
 func idx(name string, columns ...string) IndexDef {
 	return &stubIndexDef{
@@ -264,6 +294,34 @@ func TestPipeline_StreamingAgg(t *testing.T) {
 	// With an index on the grouping key, streaming aggregation is possible.
 	if !strings.Contains(plan, "StreamingAgg") {
 		t.Fatalf("expected plan to contain StreamingAgg, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndex(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan, got: %s", plan)
 	}
 }
 
