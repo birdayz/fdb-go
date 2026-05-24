@@ -168,7 +168,7 @@ Queries that should use indexes but appear to full-scan, or are orders of magnit
 ### Missing Java plan types
 
 - [x] **RecordQueryAggregateIndexPlan** — full pipeline wired (dayshift-101 + swingshift-102): DDL parser for `CREATE INDEX ... AS SELECT AGG(col) FROM t GROUP BY cols` → creates AggregateIndexMatchCandidate → AggregateDataAccessRule yields physicalAggregateIndexWrapper → executor's executeAggregateIndexScan reads grouping keys + aggregate values directly from index entries. FDB integration test (TestFDB_PlanShapeAggregateIndexDDL) proves COUNT/SUM end-to-end.
-- [ ] **RecordQueryLoadByKeysPlan** — batch key lookup. Functionality covered by scan+filter but O(N) instead of O(k). Not critical.
+- [x] **RecordQueryLoadByKeysPlan** — executor wired (swingshift-102). Loads records by PK from KeysSource (static list or parameter). Uses store.LoadRecord per key + FromList cursor.
 - [x] **RecordQueryMultiIntersectionOnValuesPlan** — executor dispatch wired (swingshift-102). Uses N-way intersection cursor with comparison-key-based matching. Previously plan existed but executor returned "unsupported plan type".
 - N/A **RecordQueryTextIndexPlan** — full-text search. Out of scope.
 - N/A **RecordQueryUnorderedPrimaryKeyDistinctPlan** — PK dedup optimization. Generic DistinctPlan works, just slower.
