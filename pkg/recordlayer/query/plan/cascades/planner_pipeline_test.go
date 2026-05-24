@@ -419,6 +419,50 @@ func TestPipeline_AggregateIndexMAX(t *testing.T) {
 	}
 }
 
+func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	rootRef := expressions.InitialOf(groupBy)
+	rules := DefaultExpressionRules()
+	rules = append(rules, BatchAExpressionRules()...)
+	rules = append(rules, MatchingRules()...)
+
+	stats := properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}}
+	ctx := NewPlanContextFromMatchCandidates([]MatchCandidate{aggCand})
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithStatistics(stats).
+		WithMaxTasks(10_000)
+
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	plan := ExplainPhysicalPlan(best)
+	t.Logf("plan (1M stats): %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("aggregate index should win with 1M stats, got: %s", plan)
+	}
+}
+
 func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
