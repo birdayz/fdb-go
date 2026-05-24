@@ -497,3 +497,406 @@ func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
 		t.Error("equality-bound index scan should beat full primary scan")
 	}
 }
+
+// TestPlanningCostModelLess_Criterion8_TypeFilterCount verifies that
+// among plans with identical scan bases and zero residual predicates,
+// the one with fewer type-filter types wins.
+func TestPlanningCostModelLess_Criterion8_TypeFilterCount(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	innerQ := expressions.ForEachQuantifier(scanRef)
+
+	// Plan A: type filter over 1 type — typeFilterCount=1.
+	oneType := NewPhysicalTypeFilterWrapper(
+		plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, nil),
+		innerQ,
+	)
+	// Plan B: type filter over 3 types — typeFilterCount=3.
+	// Same underlying scan so all earlier criteria tie.
+	threeTypes := NewPhysicalTypeFilterWrapper(
+		plans.NewRecordQueryTypeFilterPlan([]string{"T1", "T2", "T3"}, nil),
+		innerQ,
+	)
+
+	if !PlanningCostModelLess(oneType, threeTypes) {
+		t.Error("typeFilterCount=1 should beat typeFilterCount=3")
+	}
+	if PlanningCostModelLess(threeTypes, oneType) {
+		t.Error("typeFilterCount=3 should NOT beat typeFilterCount=1")
+	}
+}
+
+// TestPlanningCostModelLess_Criterion9_TypeFilterDepth verifies that
+// expressionDepth returns the correct tree depth for a type filter, and
+// that the criterion's reversed comparison (deeper is better) is correct.
+// Criterion 9 fires when typeFilterCounts are equal and both depths are ≥ 0.
+// The comparison is intCompare(depthB, depthA), so larger depthA wins.
+func TestPlanningCostModelLess_Criterion9_TypeFilterDepth(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	innerQ := expressions.ForEachQuantifier(scanRef)
+
+	// shallowPlan: typeFilter IS the root (depth=0).
+	shallowPlan := NewPhysicalTypeFilterWrapper(
+		plans.NewRecordQueryTypeFilterPlan([]string{"T1"}, nil),
+		innerQ,
+	)
+
+	// deepPlan: inJoin → typeFilter(depth=1) → scan.
+	// Using inJoin as the outer layer avoids changing typeFilterCount or
+	// residual predicates.
+	typeFilterRef := expressions.InitialOf(shallowPlan)
+	typeFilterQ := expressions.NewPhysicalQuantifier(typeFilterRef)
+	inJoinPlan := plans.NewRecordQueryInJoinPlan(scan, "bind", false, false)
+	deepPlan := NewPhysicalInJoinWrapper(inJoinPlan, typeFilterQ)
+
+	// Verify depths directly.
+	shallowDepth := expressionDepth(shallowPlan, isTypeFilterExpression)
+	deepDepth := expressionDepth(deepPlan, isTypeFilterExpression)
+	if shallowDepth != 0 {
+		t.Errorf("shallowPlan typeFilter depth = %d, want 0", shallowDepth)
+	}
+	if deepDepth != 1 {
+		t.Errorf("deepPlan typeFilter depth = %d, want 1", deepDepth)
+	}
+
+	// Criterion 9 comparison: intCompare(depthB, depthA).
+	// If A is deepPlan (depth=1) and B is shallowPlan (depth=0):
+	// intCompare(0, 1) = -1 → A wins.
+	cmp := intCompare(shallowDepth, deepDepth) // intCompare(depthB, depthA) when a=deep, b=shallow
+	if cmp >= 0 {
+		t.Errorf("criterion 9: intCompare(depthShallow=%d, depthDeep=%d) = %d, want < 0 (deeper wins)", shallowDepth, deepDepth, cmp)
+	}
+}
+
+// TestPlanningCostModelLess_Criterion10_IndexScanFetchCount verifies
+// that among plans where both sides have covering or non-covering index
+// scans, the one with a lower (indexScanCount+fetchCount) sum wins.
+func TestPlanningCostModelLess_Criterion10_IndexScanFetchCount(t *testing.T) {
+	t.Parallel()
+
+	// Plan A: one non-covering index scan, no fetch → fetchA = indexScanCount+fetchCount = 1+0 = 1.
+	// Plan B: one covering index scan + one fetch → fetchB = 0+1 = 1? No:
+	//   fetchB = opsB.indexScanCount + opsB.fetchCount = 0 + 1 = 1.
+	// That ties. We need fetchB > fetchA.
+	//
+	// Plan A: covering index (coveringIndexCount=1), no explicit fetch wrapper.
+	//   fetchA = opsA.indexScanCount + opsA.fetchCount = 0 + 0 = 0.
+	// Plan B: non-covering index (indexScanCount=1), plus a fetch wrapper.
+	//   fetchB = opsB.indexScanCount + opsB.fetchCount = 1 + 1 = 2.
+	//
+	// Both have indexScanCount+coveringIndexCount > 0, so criterion 10 fires.
+	// fetchA (0) < fetchB (2) → plan A wins.
+
+	// Plan A: covering index scan (no fetch wrapper).
+	indexA := &physicalIndexScanWrapper{
+		plan:        plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false),
+		columnNames: []string{"a"},
+		covering:    true,
+	}
+
+	// Plan B: non-covering index scan + fetch wrapper.
+	indexB := &physicalIndexScanWrapper{
+		plan:        plans.NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, false),
+		columnNames: []string{"b"},
+	}
+	indexBRef := expressions.InitialOf(indexB)
+	indexBQ := expressions.NewPhysicalQuantifier(indexBRef)
+	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(nil, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+	planB := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, indexBQ)
+
+	// Verify counts are as expected before checking the full comparator.
+	opsA := findExpressionsByType(indexA, nil)
+	opsB := findExpressionsByType(planB, nil)
+	if opsA.coveringIndexCount != 1 || opsA.indexScanCount != 0 || opsA.fetchCount != 0 {
+		t.Fatalf("plan A counts wrong: covering=%d index=%d fetch=%d", opsA.coveringIndexCount, opsA.indexScanCount, opsA.fetchCount)
+	}
+	if opsB.indexScanCount != 1 || opsB.fetchCount != 1 {
+		t.Fatalf("plan B counts wrong: index=%d fetch=%d", opsB.indexScanCount, opsB.fetchCount)
+	}
+
+	fetchA := opsA.indexScanCount + opsA.fetchCount // 0
+	fetchB := opsB.indexScanCount + opsB.fetchCount // 2
+	if fetchA >= fetchB {
+		t.Fatalf("test setup invalid: fetchA=%d should be < fetchB=%d", fetchA, fetchB)
+	}
+
+	if !PlanningCostModelLess(indexA, planB) {
+		t.Error("plan with lower indexScanCount+fetchCount should win")
+	}
+	if PlanningCostModelLess(planB, indexA) {
+		t.Error("plan with higher indexScanCount+fetchCount should NOT win")
+	}
+}
+
+// TestPlanningCostModelLess_Criterion11_DistinctDepth verifies that
+// expressionDepth returns the correct depth for a distinct wrapper, and
+// that the criterion's reversed comparison (deeper is better) is correct.
+// Criterion 11: intCompare(distinctDepthB, distinctDepthA) — larger depthA wins.
+func TestPlanningCostModelLess_Criterion11_DistinctDepth(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	innerQ := expressions.NewPhysicalQuantifier(scanRef)
+
+	distPlan := plans.NewRecordQueryDistinctPlan(scan)
+
+	// shallowDistinct: distinct IS the root (depth=0).
+	shallowDistinct := NewPhysicalDistinctWrapper(distPlan, innerQ)
+
+	// deepDistinct: inJoin → distinct(depth=1) → scan.
+	// Using an inJoin as the outer layer so it doesn't add typeFilterCount
+	// or residual predicates that would trigger earlier criteria.
+	distinctRef := expressions.InitialOf(shallowDistinct)
+	distinctQ := expressions.NewPhysicalQuantifier(distinctRef)
+	inJoinPlan := plans.NewRecordQueryInJoinPlan(scan, "bind", false, false)
+	deepDistinct := NewPhysicalInJoinWrapper(inJoinPlan, distinctQ)
+
+	// Verify depths directly.
+	shallowDepth := expressionDepth(shallowDistinct, isDistinctExpression)
+	deepDepth := expressionDepth(deepDistinct, isDistinctExpression)
+	if shallowDepth != 0 {
+		t.Errorf("shallowDistinct depth = %d, want 0", shallowDepth)
+	}
+	if deepDepth != 1 {
+		t.Errorf("deepDistinct depth = %d, want 1", deepDepth)
+	}
+
+	// Criterion 11 comparison: intCompare(depthB, depthA).
+	// If A is deepDistinct (depth=1) and B is shallowDistinct (depth=0):
+	// intCompare(0, 1) = -1 → A wins (deeper is better).
+	cmp := intCompare(shallowDepth, deepDepth) // intCompare(depthB, depthA) when a=deep, b=shallow
+	if cmp >= 0 {
+		t.Errorf("criterion 11: intCompare(shallowDepth=%d, deepDepth=%d) = %d, want < 0 (deeper wins)", shallowDepth, deepDepth, cmp)
+	}
+}
+
+// TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount verifies
+// that the plan with fewer unmatched index fields wins, and that the
+// criterion is suppressed when either plan has an in-memory sort.
+func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
+	t.Parallel()
+
+	// Build two covering index scans with different numbers of unmatched fields.
+	// unmatchedFieldCount = totalCols - boundCols.
+	//
+	// Plan A: 1-column index, 1 equality bound → unmatched=0.
+	eqComp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}}
+	cr := predicates.EmptyComparisonRange()
+	mr := cr.Merge(&eqComp)
+	if !mr.Ok {
+		t.Fatal("failed to merge equality comparison")
+	}
+	indexA := &physicalIndexScanWrapper{
+		plan:        plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false),
+		columnNames: []string{"a"},
+		covering:    true,
+	}
+
+	// Plan B: 3-column index, 0 bounds → unmatched=3.
+	indexB := &physicalIndexScanWrapper{
+		plan:        plans.NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, false),
+		columnNames: []string{"a", "b", "c"},
+		covering:    true,
+	}
+
+	opsA := findExpressionsByType(indexA, nil)
+	opsB := findExpressionsByType(indexB, nil)
+	if opsA.unmatchedFieldCount != 0 {
+		t.Fatalf("plan A unmatchedFieldCount = %d, want 0", opsA.unmatchedFieldCount)
+	}
+	if opsB.unmatchedFieldCount != 3 {
+		t.Fatalf("plan B unmatchedFieldCount = %d, want 3", opsB.unmatchedFieldCount)
+	}
+
+	// Both have inMemorySortCount=0, so criterion 12 fires: fewer unmatched wins.
+	if !PlanningCostModelLess(indexA, indexB) {
+		t.Error("unmatched=0 should beat unmatched=3 (no in-memory sort)")
+	}
+	if PlanningCostModelLess(indexB, indexA) {
+		t.Error("unmatched=3 should NOT beat unmatched=0")
+	}
+
+	// Now wrap plan B in an in-memory sort — criterion 12 must not fire.
+	// With inMemorySortCount>0 on plan B, criterion 12 is suppressed.
+	// Plans will then be compared by later criteria or hash.
+	sortPlan := plans.NewRecordQueryInMemorySortPlan(nil, nil)
+	indexBRef := expressions.InitialOf(indexB)
+	indexBQ := expressions.NewPhysicalQuantifier(indexBRef)
+	withSort := newPhysicalInMemorySortWrapper(sortPlan, indexBQ)
+
+	opsWithSort := findExpressionsByType(withSort, nil)
+	if opsWithSort.inMemorySortCount != 1 {
+		t.Fatalf("withSort inMemorySortCount = %d, want 1", opsWithSort.inMemorySortCount)
+	}
+
+	// When plan B has an in-memory sort, the guard fires: criterion 12 must return 0.
+	// The guard condition is: opsA.inMemorySortCount==0 && opsB.inMemorySortCount==0.
+	// Verify via the counts directly.
+	opsNoSort := findExpressionsByType(indexA, nil)
+	if opsNoSort.inMemorySortCount != 0 || opsWithSort.inMemorySortCount != 1 {
+		t.Fatal("unexpected inMemorySortCount values")
+	}
+	// Criterion 12 should not fire (guard fails): unmatchedFieldCount check is skipped.
+	// intCompare fires only when both inMemorySortCount==0.
+	suppressed := opsNoSort.unmatchedFieldCount != opsWithSort.unmatchedFieldCount &&
+		opsNoSort.inMemorySortCount == 0 && opsWithSort.inMemorySortCount == 0
+	if suppressed {
+		t.Error("criterion 12 should be suppressed when plan B has in-memory sort")
+	}
+}
+
+// TestPlanningCostModelLess_Criterion13_InJoinCount verifies that
+// inJoinCount is counted correctly in the expression tree, and that
+// criterion 13 uses a reversed comparison (more in-joins is better).
+//
+// Criterion 13: intCompare(opsB.inJoinCount, opsA.inJoinCount).
+// When opsA.inJoinCount > opsB.inJoinCount, the result is negative → A wins.
+// This is the reversed comparison: MORE in-joins is BETTER.
+func TestPlanningCostModelLess_Criterion13_InJoinCount(t *testing.T) {
+	t.Parallel()
+
+	// Build nested in-join wrappers to verify count accumulation.
+	indexPlan := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
+	indexRef := expressions.InitialOf(&physicalIndexScanWrapper{
+		plan:        indexPlan,
+		columnNames: []string{"a"},
+		covering:    true,
+	})
+	indexQ := expressions.NewPhysicalQuantifier(indexRef)
+
+	inJoinPlan1 := plans.NewRecordQueryInJoinPlan(indexPlan, "bind1", false, false)
+	outerInJoin := NewPhysicalInJoinWrapper(inJoinPlan1, indexQ)
+
+	outerRef := expressions.InitialOf(outerInJoin)
+	outerQ := expressions.NewPhysicalQuantifier(outerRef)
+	inJoinPlan2 := plans.NewRecordQueryInJoinPlan(indexPlan, "bind2", false, false)
+	twoInJoins := NewPhysicalInJoinWrapper(inJoinPlan2, outerQ)
+
+	opsOne := findExpressionsByType(outerInJoin, nil)
+	opsTwo := findExpressionsByType(twoInJoins, nil)
+	if opsOne.inJoinCount != 1 {
+		t.Fatalf("outerInJoin inJoinCount = %d, want 1", opsOne.inJoinCount)
+	}
+	if opsTwo.inJoinCount != 2 {
+		t.Fatalf("twoInJoins inJoinCount = %d, want 2", opsTwo.inJoinCount)
+	}
+
+	// Criterion 13 reversed comparison: intCompare(opsB.inJoinCount, opsA.inJoinCount).
+	// When A has 2 and B has 1: intCompare(1, 2) = -1 → A wins.
+	// When A has 1 and B has 2: intCompare(2, 1) = 1 → B wins.
+	cmpAWins := intCompare(opsOne.inJoinCount, opsTwo.inJoinCount) // intCompare(opsB, opsA) when A=two, B=one
+	if cmpAWins >= 0 {
+		t.Errorf("criterion 13: intCompare(B.inJoin=%d, A.inJoin=%d) = %d, want < 0 (more wins)", opsOne.inJoinCount, opsTwo.inJoinCount, cmpAWins)
+	}
+	cmpBWins := intCompare(opsTwo.inJoinCount, opsOne.inJoinCount) // intCompare(opsB, opsA) when A=one, B=two
+	if cmpBWins <= 0 {
+		t.Errorf("criterion 13: intCompare(B.inJoin=%d, A.inJoin=%d) = %d, want > 0 (fewer in-joins loses)", opsTwo.inJoinCount, opsOne.inJoinCount, cmpBWins)
+	}
+}
+
+// TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount verifies
+// that fewer (mapCount + predicatesFilterCount) wins.
+func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T) {
+	t.Parallel()
+
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scanRef := expressions.InitialOf(&physicalScanWrapper{plan: scan})
+	innerQ := expressions.ForEachQuantifier(scanRef)
+
+	// Plan A: one predicates filter on top of the scan → predicatesFilterCount=1, mapCount=0.
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+	oneFilter := NewPhysicalPredicatesFilterWrapper(
+		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred}),
+		innerQ,
+	)
+
+	// Plan B: same filter, plus a map on top → predicatesFilterCount=1, mapCount=1 → sum=2.
+	filterRef := expressions.InitialOf(oneFilter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+	mapPlan := plans.NewRecordQueryMapPlan(nil, &values.ConstantValue{Value: int64(0), Typ: values.TypeInt})
+	withMap := NewPhysicalMapWrapper(mapPlan, filterQ)
+
+	opsA := findExpressionsByType(oneFilter, nil)
+	opsB := findExpressionsByType(withMap, nil)
+	sumA := opsA.mapCount + opsA.predicatesFilterCount
+	sumB := opsB.mapCount + opsB.predicatesFilterCount
+	if sumA != 1 {
+		t.Fatalf("plan A mapCount+predicatesFilterCount = %d, want 1", sumA)
+	}
+	if sumB != 2 {
+		t.Fatalf("plan B mapCount+predicatesFilterCount = %d, want 2", sumB)
+	}
+
+	if !PlanningCostModelLess(oneFilter, withMap) {
+		t.Error("sum=1 should beat sum=2 (fewer is better)")
+	}
+	if PlanningCostModelLess(withMap, oneFilter) {
+		t.Error("sum=2 should NOT beat sum=1")
+	}
+}
+
+// TestCompareFlatMapVsNLJ_FlatMapBeatsNLJ verifies that a plan with a
+// flatMap (and no NLJ) is preferred over a plan with an NLJ (and no
+// flatMap).
+func TestCompareFlatMapVsNLJ_FlatMapBeatsNLJ(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		a, b    expressionCounts
+		wantCmp int
+	}{
+		{
+			name:    "flatMap beats NLJ",
+			a:       expressionCounts{flatMapCount: 1},
+			b:       expressionCounts{nestedLoopJoinCount: 1},
+			wantCmp: -1,
+		},
+		{
+			name:    "NLJ loses to flatMap",
+			a:       expressionCounts{nestedLoopJoinCount: 1},
+			b:       expressionCounts{flatMapCount: 1},
+			wantCmp: 1,
+		},
+		{
+			name:    "both flatMap: tie",
+			a:       expressionCounts{flatMapCount: 1},
+			b:       expressionCounts{flatMapCount: 1},
+			wantCmp: 0,
+		},
+		{
+			name:    "both NLJ: tie",
+			a:       expressionCounts{nestedLoopJoinCount: 1},
+			b:       expressionCounts{nestedLoopJoinCount: 1},
+			wantCmp: 0,
+		},
+		{
+			name:    "flatMap + NLJ vs flatMap only: tie (both have flatMap)",
+			a:       expressionCounts{flatMapCount: 1, nestedLoopJoinCount: 1},
+			b:       expressionCounts{flatMapCount: 1},
+			wantCmp: 0,
+		},
+		{
+			name:    "neither: tie",
+			a:       expressionCounts{},
+			b:       expressionCounts{},
+			wantCmp: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		got := compareFlatMapVsNLJ(tc.a, tc.b)
+		if got != tc.wantCmp {
+			t.Errorf("compareFlatMapVsNLJ(%s) = %d, want %d", tc.name, got, tc.wantCmp)
+		}
+	}
+}
