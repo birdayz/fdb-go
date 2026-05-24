@@ -1312,9 +1312,10 @@ func TestEndToEnd_AggregationExplainOutput(t *testing.T) {
 func TestEndToEnd_FilterPushedThroughGroupBy(t *testing.T) {
 	t.Parallel()
 
-	// Filter(region='US') over GroupBy(region, COUNT(id)) over Scan.
+	// Filter(region='US') over GroupBy(region, COUNT(*)) over Scan.
 	// PushFilterThroughGroupBy pushes the filter below GroupBy.
-	// ImplementIndexScan uses the index on region.
+	// StreamingAggFromIndexRule uses the covering index on region for
+	// COUNT(*) (no field access needed — any index covers it).
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
@@ -1322,7 +1323,7 @@ func TestEndToEnd_FilterPushedThroughGroupBy(t *testing.T) {
 	gb := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount},
 		},
 		scanQ,
 	)
@@ -1605,7 +1606,8 @@ func TestEndToEnd_GroupByWithHavingClause(t *testing.T) {
 func TestEndToEnd_StreamingAggFromIndexWithoutSort(t *testing.T) {
 	t.Parallel()
 
-	// GroupBy(region, COUNT(id)) over Scan — no Sort in tree.
+	// GroupBy(region, COUNT(*)) over Scan — no Sort in tree.
+	// COUNT(*) is covered by any index (no field access needed).
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Sales"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
@@ -1613,7 +1615,7 @@ func TestEndToEnd_StreamingAggFromIndexWithoutSort(t *testing.T) {
 	gb := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount},
 		},
 		scanQ,
 	)

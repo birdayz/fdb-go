@@ -525,6 +525,7 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 	})
 
 	t.Run("group_by_status", func(t *testing.T) {
+		h.explain(t, "SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status")
 		r := h.timeQuery("SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status")
 		r.mustSucceed(t, "GROUP BY status")
 		if r.RowCount != len(statuses) {
@@ -540,6 +541,7 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		}
 	})
 	t.Run("group_by_customer_having", func(t *testing.T) {
+		h.explain(t, "SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
 		r := h.timeQuery("SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 50000 ORDER BY customer_id")
 		r.mustSucceed(t, "GROUP BY customer HAVING")
 	})

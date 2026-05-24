@@ -103,9 +103,15 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	// If an ordered physical expression exists (e.g. index scan whose
 	// leading columns match the grouping keys), yield that path too.
+	// Skip full-range Fetch wrappers: a Fetch(IndexScan(full-range))
+	// reads every row via random PK lookups, always slower than
+	// InMemorySort(FullScan). Selective Fetches (WHERE predicate
+	// consumed by the index) are kept — they read fewer rows.
 	orderedExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
 	if orderedExpr != nil {
-		if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
+		if fw, isFetch := orderedExpr.(*physicalFetchFromPartialRecordWrapper); isFetch && isFullRangeFetch(fw) {
+			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
+		} else if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
 			orderedInnerPlan := ppe.GetRecordQueryPlan()
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(orderedInnerPlan, groupingKeys, gb.GetAggregates())
 			orderedQ := expressions.ForEachQuantifier(call.MemoizeExpression(orderedExpr))
@@ -149,6 +155,27 @@ func orderingSatisfiesGroupingKeys(o properties.Ordering, groupingKeys []values.
 			return false
 		}
 		if !strings.EqualFold(fv.Field, oFV.Field) {
+			return false
+		}
+	}
+	return true
+}
+
+// isFullRangeFetch reports whether a Fetch wrapper's inner index scan has
+// no bound comparison ranges — i.e., it scans the entire index. A full-range
+// Fetch reads every row via random PK lookups, which is always worse than
+// a sequential full scan + in-memory sort.
+func isFullRangeFetch(fw *physicalFetchFromPartialRecordWrapper) bool {
+	innerRef := fw.innerQuant.GetRangesOver()
+	if innerRef == nil {
+		return true
+	}
+	idxWrapper := findIndexScanWrapper(innerRef)
+	if idxWrapper == nil || idxWrapper.plan == nil {
+		return true
+	}
+	for _, cr := range idxWrapper.plan.GetScanComparisons() {
+		if !cr.IsEmpty() {
 			return false
 		}
 	}

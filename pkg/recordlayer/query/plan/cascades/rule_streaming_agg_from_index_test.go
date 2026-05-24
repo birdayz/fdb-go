@@ -17,7 +17,7 @@ func TestStreamingAggFromIndex_Fires(t *testing.T) {
 	gb := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount},
 		},
 		scanQ,
 	)
@@ -75,6 +75,40 @@ func TestStreamingAggFromIndex_DoesNotFireWhenNoMatchingIndex(t *testing.T) {
 	)
 	if len(results) != 0 {
 		t.Fatal("StreamingAggFromIndexRule should NOT fire when index doesn't cover grouping keys")
+	}
+}
+
+func TestStreamingAggFromIndex_DoesNotFireWhenAggregateNotCovered(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	// Index covers the grouping key (region) but NOT the aggregate operand (amount).
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	gbRef := expressions.InitialOf(gb)
+
+	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}
+	cand := NewValueIndexScanMatchCandidate(
+		"T$region", []string{"T"}, []string{"region"}, aliases, values.UnknownType, false,
+		nil,
+	)
+
+	results := FireExpressionRuleWithMemo(
+		NewStreamingAggFromIndexRule(),
+		gbRef,
+		&indexTestPlanContext{candidates: []MatchCandidate{cand}},
+		nil,
+	)
+	if len(results) != 0 {
+		t.Fatal("StreamingAggFromIndexRule should NOT fire when aggregate operand is not in index")
 	}
 }
 
