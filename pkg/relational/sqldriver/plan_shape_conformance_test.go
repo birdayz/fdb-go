@@ -1628,6 +1628,38 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("having_agg_and_group_key_combined", func(t *testing.T) {
+		// Java: HAVING min(id) > 0 AND col1 = 20 — aggregate AND group key
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) FROM sales GROUP BY region HAVING SUM(amount) > 100 AND region = 'US'")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// Only US matches both: SUM=600>100 AND region='US'
+		want := []row{{"US", 600}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("having_on_different_agg_than_select", func(t *testing.T) {
 		// SELECT SUM but HAVING on COUNT — different agg in filter vs output
 		rows, err := db.QueryContext(ctx,
