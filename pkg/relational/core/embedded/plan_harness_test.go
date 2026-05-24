@@ -384,6 +384,38 @@ CREATE INDEX idx_status ON ORDERS(status)
 	assertPlanContains(t, plan, "StreamingAgg")
 }
 
+func TestPlanHarness_AggregateIndexDDL_CombinedCountSum(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX count_by_status AS SELECT COUNT(*) FROM ORDERS GROUP BY status
+CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM ORDERS GROUP BY status
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(*), SUM(amount) FROM orders GROUP BY status ORDER BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("combined COUNT+SUM plan: %s", plan)
+
+	sumOnly, err := PlanQueryForTest(
+		"SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("SUM-only plan: %s", sumOnly)
+	if !strings.Contains(sumOnly, "AggregateIndex") {
+		t.Errorf("expected AggregateIndex for SUM-only query, got: %s", sumOnly)
+	}
+}
+
 func TestPlanHarness_AggregateIndexViaBuilder(t *testing.T) {
 	t.Parallel()
 	b := metadata.NewSchemaTemplateBuilder().SetName("test_schema").
