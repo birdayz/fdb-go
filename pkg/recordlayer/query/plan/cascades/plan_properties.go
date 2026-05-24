@@ -491,6 +491,8 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 		return properties.UnknownMaxCardinality()
 	case *plans.RecordQueryTempTableScanPlan:
 		return properties.UnknownMaxCardinality()
+	case *plans.RecordQueryAggregateIndexPlan:
+		return properties.UnknownMaxCardinality()
 
 	default:
 		return properties.UnknownCardinalities()
