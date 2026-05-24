@@ -121,8 +121,12 @@ func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-// Explain renders AggregateIndex(function, indexName, recordType).
+// Explain renders AggregateIndex(function, indexName, [groupCols], recordType).
 func (p *RecordQueryAggregateIndexPlan) Explain() string {
+	if len(p.groupCols) > 0 {
+		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s)",
+			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, p.recordTypeName)
+	}
 	return fmt.Sprintf("AggregateIndex(%s, %s, %s)",
 		p.aggregateFunction, p.indexPlan.GetIndexName(), p.recordTypeName)
 }
