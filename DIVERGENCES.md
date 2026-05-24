@@ -95,13 +95,15 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 9. Type filter depth | ExpressionDepthProperty | `expressionDepth` (min across all members) | Aligned |
 | 10. Index scan fetches | count(PlanWithIndex, Fetch) | `indexScanCount + fetchCount` | Aligned |
 | 11. Distinct depth | ExpressionDepthProperty | `expressionDepth` | Aligned |
-| 12. Unmatched fields | UnmatchedFieldsCountProperty | `totalCols - boundCols` | Aligned |
+| 12. Unmatched fields | UnmatchedFieldsCountProperty (no guard) | `totalCols - boundCols`, guarded by `inMemorySortCount == 0` | **Go adds guard** — prevents double-counting unmatched fields when InMemorySort already accounts for ordering cost |
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
 | 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
 | 15. FlatMap join ordering | Compare outer child cardinalities | `compareFlatMapJoinOrdering` compares outer quantifier cardinalities | Aligned |
+| 15b. FlatMap vs NLJ | (none) | `compareFlatMapVsNLJ` — FlatMap beats NLJ | **Go-only** — workaround until `advancePlannerStage` is ported |
+| 15c. Scalar cost fallback | (none) | `EstimateCostWith` comparison | **Go-only** — breaks ties the ordinal criteria can't resolve |
 | 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `deepHashCode()` recursive | Aligned |
 
-Go-only addition: scalar `CostLess` fallback between criteria 14 and 16 (discriminates plans the ordinal criteria can't distinguish).
+Go-only criteria 15b and 15c are workarounds for the missing `advancePlannerStage`. Java's OptimizeGroup prunes finalMembers to a single winner — ties are rare. Go's flat member list has more competing plans, requiring tiebreakers. Audited dayshift-101: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields), removing criteria 15b/15c causes JOIN regression (NLJ chosen over FlatMap without real statistics).
 
 ### Cost Model: RewritingCostModelLess
 
