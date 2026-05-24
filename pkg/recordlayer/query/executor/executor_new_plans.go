@@ -11,6 +11,13 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+// executeAggregateIndexScan scans an aggregate index (SUM, COUNT, etc.)
+// and produces rows with grouping columns + aggregate value. The index
+// maintainer (atomicMutationIndexMaintainer) returns entries where:
+//   - Key = grouping column values (tuple-encoded)
+//   - Value = aggregate result (little-endian int64 → tuple.Tuple{int64})
+//
+// No record fetch needed — the index entries ARE the aggregated result.
 func executeAggregateIndexScan(
 	ctx context.Context,
 	p *plans.RecordQueryAggregateIndexPlan,
