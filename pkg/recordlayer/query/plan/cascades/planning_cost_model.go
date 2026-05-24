@@ -340,11 +340,25 @@ func findExpressionsByType(e expressions.RelationalExpression, stats properties.
 		stats = properties.DefaultStatistics{}
 	}
 	counts := expressionCounts{maxDataAccessCardinality: -1}
-	walkExpressionTree(e, &counts, stats)
+	visited := make(map[*expressions.Reference]bool)
+	walkExpressionTree(e, &counts, stats, visited)
 	return counts
 }
 
-func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider) {
+// bestPhysicalChild picks the cost-best physical member from ref.
+// Uses scalar EstimateCost to rank, matching Java's evaluateAtRef
+// which expects exactly one member per Reference at cost-model time.
+func bestPhysicalChild(ref *expressions.Reference, stats properties.StatisticsProvider) expressions.RelationalExpression {
+	best := ref.GetBest(properties.CostLessWith(stats))
+	if best != nil {
+		if _, ok := best.(physicalPlanExpression); ok {
+			return best
+		}
+	}
+	return firstPhysicalChild(ref)
+}
+
+func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCounts, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) {
 	if e == nil {
 		return
 	}
@@ -408,8 +422,12 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		if ref == nil {
 			continue
 		}
-		if child := firstPhysicalChild(ref); child != nil {
-			walkExpressionTree(child, counts, stats)
+		if visited[ref] {
+			continue
+		}
+		visited[ref] = true
+		if child := bestPhysicalChild(ref, stats); child != nil {
+			walkExpressionTree(child, counts, stats, visited)
 		}
 	}
 }
