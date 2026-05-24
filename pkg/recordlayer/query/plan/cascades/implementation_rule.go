@@ -166,7 +166,7 @@ func fireImplRuleOnMember(
 		}
 		rule.OnMatch(call)
 		for _, y := range call.yielded {
-			ref.Insert(y)
+			ref.InsertFinal(y)
 		}
 		yielded = append(yielded, call.yielded...)
 	}

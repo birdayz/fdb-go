@@ -7,6 +7,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -44,6 +45,70 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 		return explain
 	}
 	// Fallback: describe the expression type.
+	return fmt.Sprintf("%T", best)
+}
+
+func planPipelineWithStats(t *testing.T, root expressions.RelationalExpression, stats properties.StatisticsProvider, indexes ...IndexDef) string {
+	t.Helper()
+
+	rootRef := expressions.InitialOf(root)
+
+	rules := DefaultExpressionRules()
+	rules = append(rules, BatchAExpressionRules()...)
+	rules = append(rules, MatchingRules()...)
+
+	var ctx PlanContext
+	if len(indexes) > 0 {
+		ctx = NewPlanContextFromIndexDefs(indexes)
+	}
+
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithStatistics(stats).
+		WithMaxTasks(10_000)
+
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil best expression")
+	}
+
+	explain := ExplainPhysicalPlan(best)
+	if explain != "" {
+		return explain
+	}
+	return fmt.Sprintf("%T", best)
+}
+
+func planPipelineWithCandidates(t *testing.T, root expressions.RelationalExpression, candidates []MatchCandidate) string {
+	t.Helper()
+
+	rootRef := expressions.InitialOf(root)
+
+	rules := DefaultExpressionRules()
+	rules = append(rules, BatchAExpressionRules()...)
+	rules = append(rules, MatchingRules()...)
+
+	ctx := NewPlanContextFromMatchCandidates(candidates)
+
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithMaxTasks(10_000)
+
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil best expression")
+	}
+
+	explain := ExplainPhysicalPlan(best)
+	if explain != "" {
+		return explain
+	}
 	return fmt.Sprintf("%T", best)
 }
 
@@ -264,6 +329,196 @@ func TestPipeline_StreamingAgg(t *testing.T) {
 	// With an index on the grouping key, streaming aggregation is possible.
 	if !strings.Contains(plan, "StreamingAgg") {
 		t.Fatalf("expected plan to contain StreamingAgg, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndex(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndexSUM(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "REGION", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}, Alias: "total"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$sum_amount_by_region",
+		[]string{"T"},
+		[]string{"REGION"},
+		expressions.AggSum,
+		"AMOUNT",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan, got: %s", plan)
+	}
+	if !strings.Contains(plan, "SUM") {
+		t.Fatalf("expected SUM in plan, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndexMAX(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "CATEGORY", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE", Typ: values.UnknownType}, Alias: "max_price"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$max_price_by_category",
+		[]string{"T"},
+		[]string{"CATEGORY"},
+		expressions.AggMax,
+		"PRICE",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "MAX") {
+		t.Fatalf("expected AggregateIndex(MAX, ...) plan, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	rootRef := expressions.InitialOf(groupBy)
+	rules := DefaultExpressionRules()
+	rules = append(rules, BatchAExpressionRules()...)
+	rules = append(rules, MatchingRules()...)
+
+	stats := properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}}
+	ctx := NewPlanContextFromMatchCandidates([]MatchCandidate{aggCand})
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithStatistics(stats).
+		WithMaxTasks(10_000)
+
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	plan := ExplainPhysicalPlan(best)
+	t.Logf("plan (1M stats): %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("aggregate index should win with 1M stats, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("should NOT use aggregate index for mismatched function, got: %s", plan)
+	}
+}
+
+func TestPipeline_AggregateIndex_WithRegularIndex(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	regularIdx := NewPlanContextFromIndexDefs([]IndexDef{idx("idx_status", "STATUS")})
+	allCandidates := append(regularIdx.GetMatchCandidates(), aggCand)
+
+	plan := planPipelineWithCandidates(t, groupBy, allCandidates)
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("aggregate index should win over streaming agg+regular index, got: %s", plan)
 	}
 }
 
@@ -590,6 +845,30 @@ func TestPipeline_InListExplode(t *testing.T) {
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "InJoin") {
 		t.Fatalf("expected InJoin plan for IN-list with index, got: %s", plan)
+	}
+}
+
+func TestPipeline_InListExplode_WithStats(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	inPred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonIn,
+			Operand: &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}},
+		},
+	}
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{inPred}, scanQ)
+
+	stats := properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}}
+	plan := planPipelineWithStats(t, filter, stats, idx("idx_a", "A"))
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "InJoin") {
+		t.Fatalf("expected InJoin plan with 1M stats, got: %s", plan)
 	}
 }
 

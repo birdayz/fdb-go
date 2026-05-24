@@ -24,6 +24,8 @@ type RecordQueryAggregateIndexPlan struct {
 	recordTypeName    string
 	resultType        values.Type
 	aggregateFunction string
+	groupCols         []string
+	aggColumn         string
 }
 
 // NewRecordQueryAggregateIndexPlan constructs an aggregate index plan.
@@ -43,6 +45,20 @@ func NewRecordQueryAggregateIndexPlan(
 		aggregateFunction: aggregateFunction,
 	}
 }
+
+// WithGroupColumns sets the grouping and aggregate column names for
+// the executor to map index entries to result rows.
+func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, aggColumn string) *RecordQueryAggregateIndexPlan {
+	p.groupCols = groupCols
+	p.aggColumn = aggColumn
+	return p
+}
+
+// GetGroupCols returns the grouping column names.
+func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string { return p.groupCols }
+
+// GetAggColumn returns the aggregate column name.
+func (p *RecordQueryAggregateIndexPlan) GetAggColumn() string { return p.aggColumn }
 
 // GetIndexPlan returns the underlying index plan.
 func (p *RecordQueryAggregateIndexPlan) GetIndexPlan() *RecordQueryIndexPlan { return p.indexPlan }
@@ -105,8 +121,12 @@ func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-// Explain renders AggregateIndex(function, indexName, recordType).
+// Explain renders AggregateIndex(function, indexName, [groupCols], recordType).
 func (p *RecordQueryAggregateIndexPlan) Explain() string {
+	if len(p.groupCols) > 0 {
+		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s)",
+			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, p.recordTypeName)
+	}
 	return fmt.Sprintf("AggregateIndex(%s, %s, %s)",
 		p.aggregateFunction, p.indexPlan.GetIndexName(), p.recordTypeName)
 }

@@ -909,3 +909,28 @@ func TestCompareFlatMapVsNLJ_FlatMapBeatsNLJ(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanningCostModel_AggregateIndexBeatsStreamingAgg(t *testing.T) {
+	t.Parallel()
+
+	aggIdx := &physicalAggregateIndexWrapper{
+		plan: plans.NewRecordQueryAggregateIndexPlan(
+			plans.NewRecordQueryIndexPlan("idx_count", nil, nil, nil, false),
+			"T", nil, "COUNT",
+		).WithGroupColumns([]string{"STATUS"}, ""),
+	}
+
+	innerScan := &physicalScanWrapper{plan: plans.NewRecordQueryScanPlan([]string{"T"}, nil, false)}
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerScan))
+	streamingAgg := newPhysicalStreamingAggWrapper(
+		plans.NewRecordQueryStreamingAggregationPlan(innerScan.plan, nil, nil),
+		innerQ,
+	)
+
+	if !PlanningCostModelLess(aggIdx, streamingAgg) {
+		t.Fatal("aggregate index should be cheaper than streaming agg over full scan")
+	}
+	if PlanningCostModelLess(streamingAgg, aggIdx) {
+		t.Fatal("streaming agg should not be cheaper than aggregate index")
+	}
+}

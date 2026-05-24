@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 )
 
 const ordersSchema = `
@@ -357,6 +359,83 @@ func TestPlanHarness_StatsAffectInJoinSelection(t *testing.T) {
 	t.Logf("plan (10 rows):  %s", planSmall)
 	t.Logf("plan (1M rows):  %s", planLarge)
 	assertPlanContains(t, planLarge, "InJoin")
+}
+
+func TestPlanHarness_AggregateIndexCountGroupBy(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  customer_id BIGINT,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX idx_status ON ORDERS(status)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(*) FROM orders GROUP BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	// Without aggregate index, streaming agg over ordered index is expected.
+	assertPlanContains(t, plan, "StreamingAgg")
+}
+
+func TestPlanHarness_AggregateIndexViaBuilder(t *testing.T) {
+	t.Parallel()
+	b := metadata.NewSchemaTemplateBuilder().SetName("test_schema").
+		AddTable("ORDERS", []metadata.ColumnSpec{
+			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("STATUS", api.NewStringType(true), 2),
+			metadata.NewColumnSpec("AMOUNT", api.NewLongType(true), 3),
+		}, []string{"ID"}).
+		AddAggregateIndex("ORDERS", "count_by_status", []string{"STATUS"}, "COUNT", "")
+
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanQueryWithMetadata(
+		"SELECT status, COUNT(*) FROM orders GROUP BY status",
+		tmpl.Underlying(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex plan with aggregate index defined, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexSumViaBuilder(t *testing.T) {
+	t.Parallel()
+	b := metadata.NewSchemaTemplateBuilder().SetName("test_schema").
+		AddTable("ORDERS", []metadata.ColumnSpec{
+			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("REGION", api.NewStringType(true), 2),
+			metadata.NewColumnSpec("AMOUNT", api.NewLongType(true), 3),
+		}, []string{"ID"}).
+		AddAggregateIndex("ORDERS", "sum_amount_by_region", []string{"REGION"}, "SUM", "AMOUNT")
+
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanQueryWithMetadata(
+		"SELECT region, SUM(amount) FROM orders GROUP BY region",
+		tmpl.Underlying(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "SUM") {
+		t.Fatalf("expected AggregateIndex(SUM, ...) with SUM index, got: %s", plan)
+	}
 }
 
 // --- Multi-table schemas ---

@@ -90,3 +90,23 @@ func TestGroupByExpression_HashCodeWithoutChildren_Distinct(t *testing.T) {
 		t.Fatal("different GroupBy keys should produce different hash codes (collision possible but unlikely with these inputs)")
 	}
 }
+
+func TestAggregateFunction_String(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		f    AggregateFunction
+		want string
+	}{
+		{AggCount, "COUNT"},
+		{AggSum, "SUM"},
+		{AggMin, "MIN"},
+		{AggMax, "MAX"},
+		{AggAvg, "AVG"},
+		{AggregateFunction(99), "UNKNOWN"},
+	}
+	for _, tc := range tests {
+		if got := tc.f.String(); got != tc.want {
+			t.Errorf("AggregateFunction(%d).String() = %q, want %q", tc.f, got, tc.want)
+		}
+	}
+}

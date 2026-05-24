@@ -41,8 +41,8 @@ func TestAggregateDataAccessRule_Fires(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("AggregateDataAccessRule didn't fire")
 	}
-	if !IsPhysicalIndexScan(results[0]) {
-		t.Fatalf("expected physicalIndexScanWrapper, got %T", results[0])
+	if !IsPhysicalAggregateIndex(results[0]) {
+		t.Fatalf("expected physicalAggregateIndexWrapper, got %T", results[0])
 	}
 }
 

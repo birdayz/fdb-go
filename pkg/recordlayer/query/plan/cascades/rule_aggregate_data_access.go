@@ -81,13 +81,15 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		wrapper := &physicalIndexScanWrapper{
-			plan:        idxPlan,
-			columnNames: aggCand.GetColumnNames(),
-			unique:      false,
-			covering:    true,
+		var recordTypeName string
+		if rts := aggCand.GetRecordTypes(); len(rts) > 0 {
+			recordTypeName = rts[0]
 		}
-		call.Yield(wrapper)
+		aggPlan := plans.NewRecordQueryAggregateIndexPlan(
+			idxPlan, recordTypeName, values.UnknownType, aggCand.aggFunction.String(),
+		).WithGroupColumns(aggCand.groupCols, aggCand.aggColumn)
+
+		call.Yield(&physicalAggregateIndexWrapper{plan: aggPlan})
 		singleMatched = true
 	}
 	if singleMatched {

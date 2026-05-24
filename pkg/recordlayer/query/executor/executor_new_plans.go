@@ -11,6 +11,98 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+// executeAggregateIndexScan scans an aggregate index (SUM, COUNT, etc.)
+// and produces rows with grouping columns + aggregate value. The index
+// maintainer (atomicMutationIndexMaintainer) returns entries where:
+//   - Key = grouping column values (tuple-encoded)
+//   - Value = aggregate result (little-endian int64 → tuple.Tuple{int64})
+//
+// No record fetch needed — the index entries ARE the aggregated result.
+func executeAggregateIndexScan(
+	ctx context.Context,
+	p *plans.RecordQueryAggregateIndexPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	idxPlan := p.GetIndexPlan()
+	idx := store.GetMetaData().GetIndex(idxPlan.GetIndexName())
+	if idx == nil {
+		return nil, fmt.Errorf("executor: aggregate index %q not found", idxPlan.GetIndexName())
+	}
+	maintainer, err := store.GetIndexMaintainer(idx)
+	if err != nil {
+		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", idxPlan.GetIndexName(), err)
+	}
+
+	scanRange, err := scanComparisonsToTupleRange(idxPlan.GetScanComparisons(), evalCtx)
+	if err != nil {
+		return nil, fmt.Errorf("executor: building scan range for %q: %w", idxPlan.GetIndexName(), err)
+	}
+
+	scanProps := recordlayer.ScanProperties{
+		ExecuteProperties:   props,
+		Reverse:             idxPlan.IsReverse(),
+		CursorStreamingMode: recordlayer.StreamingModeIterator,
+	}
+
+	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
+
+	return &aggregateIndexCursor{
+		inner:     indexCursor,
+		groupCols: p.GetGroupCols(),
+		aggColumn: p.GetAggColumn(),
+		aggFunc:   p.GetAggregateFunction(),
+	}, nil
+}
+
+type aggregateIndexCursor struct {
+	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	groupCols []string
+	aggColumn string
+	aggFunc   string
+	closed    bool
+}
+
+func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+
+	entry := result.GetValue()
+	datum := make(map[string]any, len(c.groupCols)+1)
+
+	for i, col := range c.groupCols {
+		if i < len(entry.Key) {
+			datum[col] = entry.Key[i]
+		}
+	}
+
+	if len(entry.Value) > 0 {
+		col := c.aggColumn
+		if col == "" {
+			col = c.aggFunc + "(*)"
+		}
+		datum[col] = entry.Value[0]
+	}
+
+	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
+}
+
+func (c *aggregateIndexCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *aggregateIndexCursor) IsClosed() bool { return c.closed }
+
+var _ recordlayer.RecordCursor[QueryResult] = (*aggregateIndexCursor)(nil)
+
 func executeUnorderedUnion(
 	ctx context.Context,
 	p *plans.RecordQueryUnorderedUnionPlan,

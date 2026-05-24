@@ -300,11 +300,14 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// over logical EXPLORE-phase winners.
 	p.reoptimizeAll(rootRef)
 
-	// Post-PLANNING promotion: PLANNING-phase rules (InJoin, InUnion,
-	// FlatMap) insert plans into Members, but the EXPLORE-phase winner
-	// still holds. These passes promote PLANNING-phase plans when they
-	// are cheaper. Required until advancePlannerStage (BatchA→PLANNING
-	// migration) is ported from Java — see TODO.md.
+	// Post-PLANNING promotion: these passes promote InJoin/InUnion
+	// and FlatMap plans when they have lower data access cost. With
+	// finalMembers, reoptimizeAll already prefers them when real
+	// statistics are available (all FDB integration tests pass without
+	// these passes). They remain for unit tests that lack statistics —
+	// without stats, the ordinal cost model criteria tie on InJoin vs
+	// Filter+Scan. Removing these requires either statistics-aware
+	// unit tests or full advancePlannerStage.
 	p.promoteInJoinWinners(rootRef)
 	promoteByDataAccessCost(rootRef, p.stats)
 
@@ -389,15 +392,29 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 			}
 		}
 	}
+
+	// Prefer finalMembers (PLANNING-phase physical plans) over the
+	// full member set. This mirrors Java's OptimizeGroup which only
+	// considers finalMembers for plan selection.
+	candidates := ref.FinalMembers()
+	if len(candidates) == 0 {
+		candidates = ref.AllMembers()
+	}
+
 	existing := ref.Winner(expressions.NoProperties)
 	if existing == nil {
-		best := ref.GetBest(p.costModel)
+		var best expressions.RelationalExpression
+		for _, m := range candidates {
+			if best == nil || p.costModel(m, best) {
+				best = m
+			}
+		}
 		if best != nil {
 			ref.SetWinner(expressions.NoProperties, best)
 		}
 	} else if _, isPhys := existing.(physicalPlanExpression); !isPhys {
 		var bestPhys expressions.RelationalExpression
-		for _, m := range ref.AllMembers() {
+		for _, m := range candidates {
 			if _, ok := m.(physicalPlanExpression); !ok {
 				continue
 			}
@@ -640,12 +657,13 @@ func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visite
 			nil, // intersector (single-scan only)
 		)
 
-		// Insert generated expressions into the Reference so Pass 3
-		// (bottom-up implementation) can see them. Also stamp ordering
-		// winners for physical scans that provide ordering (enables
-		// sort elimination via per-properties winners in extraction).
+		// Insert generated expressions as final members so Pass 3
+		// (bottom-up implementation) and ToPlanPartitions see them.
+		// Also stamp ordering winners for physical scans that provide
+		// ordering (enables sort elimination via per-properties winners
+		// in extraction).
 		for _, expr := range exprs {
-			ref.Insert(expr)
+			ref.InsertFinal(expr)
 		}
 		stampOrderingWinners(ref, p.costModel)
 	}

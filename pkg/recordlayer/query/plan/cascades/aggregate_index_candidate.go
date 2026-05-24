@@ -138,6 +138,14 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 	if aggs[0].Function != c.aggFunction {
 		return false
 	}
+	if c.aggFunction == expressions.AggCount {
+		if _, isConst := aggs[0].Operand.(*values.ConstantValue); isConst {
+			return true
+		}
+		if aggs[0].Operand == nil {
+			return true
+		}
+	}
 	opFV, ok := aggs[0].Operand.(*values.FieldValue)
 	if !ok {
 		return false
@@ -172,6 +180,14 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 	agg := aggs[aggIndex]
 	if agg.Function != c.aggFunction {
 		return false
+	}
+	if c.aggFunction == expressions.AggCount {
+		if _, isConst := agg.Operand.(*values.ConstantValue); isConst {
+			return true
+		}
+		if agg.Operand == nil {
+			return true
+		}
 	}
 	opFV, ok := agg.Operand.(*values.FieldValue)
 	if !ok {

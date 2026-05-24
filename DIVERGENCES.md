@@ -52,6 +52,14 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **JoinMergeResultValue vs RecordConstructorValue:** Go uses `JoinMergeResultValue` (spreads both correlation bindings into a flat map at eval time). Java uses `RecordConstructorValue` with per-column `FieldValue` children. Functionally equivalent — both produce a map with qualified keys from both sides. The difference is WHEN columns are enumerated: Java at plan time (has schema metadata in the relational layer), Go at eval time (translator doesn't carry schema metadata). To close: pass `RecordMetaData` to the translator so it can produce field-level RecordConstructorValue.
 
+### Reference: finalMembers partially aligned (dayshift-101)
+
+**Java:** `Reference` has `exploratoryMembers` (logical EXPLORE-phase) and `finalMembers` (physical PLANNING-phase). `advancePlannerStage` clears exploratory, promotes REWRITING winner, clears finals. `OptimizeGroup` prunes `finalMembers` to 1 winner. `ToPlanPartitions` reads only `finalMembers` via `propertiesMap`.
+
+**Go (dayshift-101):** Added `finalMembers` to `Reference`. Implementation rules (`InsertFinal`) and data access generation insert into `finalMembers`. `computeRefPlanProperties` and `reoptimizeRecursive` prefer `finalMembers` when non-empty. `advancePlannerStage` NOT ported (Go's PLANNING phase relies on EXPLORE-phase physical wrappers in inner References).
+
+**Impact:** FDB integration tests pass without `promoteInJoinWinners`/`promoteByDataAccessCost` — `finalMembers` + real statistics is sufficient. Promotion hacks remain for unit tests without statistics.
+
 ### Go has explicit Sort/InMemorySort physical operators
 
 **Java:** Relies on `RemoveSortRule` to eliminate sorts; no in-memory sort plan exists.
@@ -95,13 +103,15 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 9. Type filter depth | ExpressionDepthProperty | `expressionDepth` (min across all members) | Aligned |
 | 10. Index scan fetches | count(PlanWithIndex, Fetch) | `indexScanCount + fetchCount` | Aligned |
 | 11. Distinct depth | ExpressionDepthProperty | `expressionDepth` | Aligned |
-| 12. Unmatched fields | UnmatchedFieldsCountProperty | `totalCols - boundCols` | Aligned |
+| 12. Unmatched fields | UnmatchedFieldsCountProperty (no guard) | `totalCols - boundCols`, guarded by `inMemorySortCount == 0` | **Go adds guard** — prevents double-counting unmatched fields when InMemorySort already accounts for ordering cost |
 | 13. InJoin count (more=better) | count(InJoinPlan) reversed | `inJoinCount` reversed | Aligned |
 | 14. Map/filter count | count(Map, PredicatesFilter) | `mapCount + predicatesFilterCount` | Aligned |
 | 15. FlatMap join ordering | Compare outer child cardinalities | `compareFlatMapJoinOrdering` compares outer quantifier cardinalities | Aligned |
+| 15b. FlatMap vs NLJ | (none) | `compareFlatMapVsNLJ` — FlatMap beats NLJ | **Go-only** — workaround until `advancePlannerStage` is ported |
+| 15c. Scalar cost fallback | (none) | `EstimateCostWith` comparison | **Go-only** — breaks ties the ordinal criteria can't resolve |
 | 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `deepHashCode()` recursive | Aligned |
 
-Go-only addition: scalar `CostLess` fallback between criteria 14 and 16 (discriminates plans the ordinal criteria can't distinguish).
+Go-only criteria 15b and 15c are workarounds for the missing `advancePlannerStage`. Java's OptimizeGroup prunes finalMembers to a single winner — ties are rare. Go's flat member list has more competing plans, requiring tiebreakers. Audited dayshift-101: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields), removing criteria 15b/15c causes JOIN regression (NLJ chosen over FlatMap without real statistics).
 
 ### Cost Model: RewritingCostModelLess
 
