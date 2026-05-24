@@ -391,6 +391,34 @@ func TestPipeline_AggregateIndexSUM(t *testing.T) {
 	}
 }
 
+func TestPipeline_AggregateIndexMAX(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "CATEGORY", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE", Typ: values.UnknownType}, Alias: "max_price"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$max_price_by_category",
+		[]string{"T"},
+		[]string{"CATEGORY"},
+		expressions.AggMax,
+		"PRICE",
+	)
+
+	plan := planPipelineWithCandidates(t, groupBy, []MatchCandidate{aggCand})
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, "MAX") {
+		t.Fatalf("expected AggregateIndex(MAX, ...) plan, got: %s", plan)
+	}
+}
+
 func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
