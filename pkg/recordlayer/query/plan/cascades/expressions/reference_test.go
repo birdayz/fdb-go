@@ -89,3 +89,63 @@ func TestReference_Insert_PanicsOnNil(t *testing.T) {
 	}()
 	r.Insert(nil)
 }
+
+func TestReference_InsertFinal_AddsToFinalMembers(t *testing.T) {
+	t.Parallel()
+	r := InitialOf(&stubExpr{name: "logical"})
+
+	final := &stubExpr{name: "physical"}
+	ok := r.InsertFinal(final)
+	if !ok {
+		t.Fatal("InsertFinal returned false for new expression")
+	}
+	if len(r.FinalMembers()) != 1 || r.FinalMembers()[0] != final {
+		t.Fatalf("FinalMembers=%v, want [%v]", r.FinalMembers(), final)
+	}
+	if len(r.AllMembers()) != 2 {
+		t.Fatalf("AllMembers should have 2 (logical + final), got %d", len(r.AllMembers()))
+	}
+}
+
+func TestReference_InsertFinal_Dedup(t *testing.T) {
+	t.Parallel()
+	r := &Reference{}
+	e := &stubExpr{name: "x"}
+	r.InsertFinal(e)
+	ok := r.InsertFinal(e)
+	if ok {
+		t.Fatal("InsertFinal should return false for duplicate")
+	}
+	if len(r.FinalMembers()) != 1 {
+		t.Fatalf("expected 1 final member after dedup, got %d", len(r.FinalMembers()))
+	}
+}
+
+func TestReference_InsertFinal_AlsoInMembers(t *testing.T) {
+	t.Parallel()
+	r := &Reference{}
+	e := &stubExpr{name: "a"}
+	r.InsertFinal(e)
+	if len(r.Members()) != 1 || r.Members()[0] != e {
+		t.Fatalf("InsertFinal should also add to Members, got %v", r.Members())
+	}
+}
+
+func TestReference_FinalMembers_EmptyByDefault(t *testing.T) {
+	t.Parallel()
+	r := InitialOf(&stubExpr{name: "x"})
+	if len(r.FinalMembers()) != 0 {
+		t.Fatalf("FinalMembers should be empty by default, got %d", len(r.FinalMembers()))
+	}
+}
+
+func TestReference_InsertFinal_NilPanics(t *testing.T) {
+	t.Parallel()
+	r := &Reference{}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic on InsertFinal(nil)")
+		}
+	}()
+	r.InsertFinal(nil)
+}
