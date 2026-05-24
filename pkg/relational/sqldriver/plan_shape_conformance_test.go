@@ -2551,6 +2551,116 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 	})
 }
 
+func TestFDB_DerivedTableJoinExists(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dtjex",
+		"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT NOT NULL, name STRING, emp_id BIGINT, PRIMARY KEY (id))")
+
+	for _, e := range []struct {
+		id   int
+		name string
+		dept int
+	}{
+		{1, "Jack", 1},
+		{2, "Thomas", 1},
+		{3, "Emily", 1},
+		{5, "Daniel", 2},
+		{8, "Megan", 3},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO emp VALUES (%d, '%s', %d)", e.id, e.name, e.dept)); err != nil {
+			t.Fatalf("INSERT emp: %v", err)
+		}
+	}
+	for _, d := range []struct {
+		id   int
+		name string
+	}{
+		{1, "Engineering"}, {2, "Sales"}, {3, "Marketing"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name)); err != nil {
+			t.Fatalf("INSERT dept: %v", err)
+		}
+	}
+	for _, p := range []struct {
+		id    int
+		name  string
+		empID int
+	}{
+		{1, "OLAP", 3}, {2, "SEO", 8}, {3, "Feedback", 5},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO project VALUES (%d, '%s', %d)", p.id, p.name, p.empID)); err != nil {
+			t.Fatalf("INSERT project: %v", err)
+		}
+	}
+
+	t.Run("subquery_exists_join_filter", func(t *testing.T) {
+		// Java: derived table with EXISTS + join to dept with filter
+		rows, err := db.QueryContext(ctx,
+			`SELECT sq.fname FROM
+				(SELECT fname, dept_id FROM emp WHERE EXISTS (SELECT * FROM project WHERE emp_id = emp.id)) AS sq,
+				dept
+			WHERE sq.dept_id = dept.id AND dept.name = 'Sales'`)
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var fname string
+			if err := rows.Scan(&fname); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, fname)
+		}
+		if len(got) != 1 || got[0] != "Daniel" {
+			t.Fatalf("got %v, want [Daniel]", got)
+		}
+	})
+
+	t.Run("three_way_dept_project", func(t *testing.T) {
+		// Java: 3-way join to find departments with projects
+		rows, err := db.QueryContext(ctx,
+			`SELECT dept.name, project.name FROM emp, dept, project
+			WHERE emp.dept_id = dept.id AND project.emp_id = emp.id
+			ORDER BY dept.name`)
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			dept    string
+			project string
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.dept, &r.project); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{"Engineering", "OLAP"}, {"Marketing", "SEO"}, {"Sales", "Feedback"}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_JoinWithNotIn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
