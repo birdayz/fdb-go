@@ -239,7 +239,7 @@ func executeUnorderedUnion(
 		}
 		cursors = append(cursors, c)
 	}
-	return applySkipLimit(newConcatResultCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executePredicatesFilter(
@@ -714,46 +714,3 @@ func (c *prependResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 
 func (c *prependResultCursor) Close() error   { c.closed = true; return c.inner.Close() }
 func (c *prependResultCursor) IsClosed() bool { return c.closed }
-
-// concatResultCursor yields all results from cursors[0], then
-// cursors[1], etc.
-type concatResultCursor struct {
-	cursors []recordlayer.RecordCursor[QueryResult]
-	current int
-	closed  bool
-}
-
-func newConcatResultCursor(cursors []recordlayer.RecordCursor[QueryResult]) *concatResultCursor {
-	return &concatResultCursor{cursors: cursors}
-}
-
-func (c *concatResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	for c.current < len(c.cursors) {
-		result, err := c.cursors[c.current].OnNext(ctx)
-		if err != nil {
-			return result, err
-		}
-		if result.HasNext() {
-			return result, nil
-		}
-		c.current++
-	}
-	return recordlayer.NewResultNoNext[QueryResult](
-		recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-}
-
-func (c *concatResultCursor) Close() error {
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	var firstErr error
-	for _, cursor := range c.cursors {
-		if err := cursor.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-func (c *concatResultCursor) IsClosed() bool { return c.closed }

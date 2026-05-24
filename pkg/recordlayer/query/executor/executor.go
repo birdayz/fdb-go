@@ -879,7 +879,7 @@ func executeUnionStreaming(
 		}
 		cursors = append(cursors, c)
 	}
-	return applySkipLimit(newConcatResultCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeUnionBuffered(
