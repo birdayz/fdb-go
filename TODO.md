@@ -15,7 +15,7 @@ Current state: 46 test targets, 264 yamsql scenarios, 508 cross-engine specs, 10
 2. Plan extraction now receives real statistics (was `DefaultStatistics{}`)
 3. Fixed case-mismatch in planner harness test stats keys (lowercase "orders" → uppercase "ORDERS")
 
-**Remaining:** `promoteByDataAccessCost` and `promoteInJoinWinners` are still present as safety nets. They're harmless with real statistics (cost model picks correctly) but should be removed once the 1M stress test confirms no regressions.
+**Remaining:** `promoteByDataAccessCost` and `promoteInJoinWinners` are still present as safety nets. **Verified dayshift-101:** all FDB integration tests (sqldriver, conformance, plandiff) pass WITHOUT these passes — `finalMembers` + the cost model with real statistics is sufficient. The passes only matter for unit tests without statistics (TestPipeline_InListExplode, TestPlanHarness_InList). Removal path: either add statistics to those unit tests or accept them as known-missing-stats edge cases.
 
 ---
 
