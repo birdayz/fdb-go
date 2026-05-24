@@ -2701,6 +2701,79 @@ func TestFDB_TwoDerivedTablesJoined(t *testing.T) {
 	}
 }
 
+func TestFDB_OrPredicateFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "orpred",
+		"CREATE TABLE vals (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")
+
+	for i := 1; i <= 10; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO vals VALUES (%d, %d)", i, i*10)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("or_two_ranges", func(t *testing.T) {
+		// Java: WHERE col >= X OR col <= Y (produces UNION of scans)
+		// Go: filter over full scan (correct, different plan)
+		rows, err := db.QueryContext(ctx,
+			"SELECT id FROM vals WHERE v <= 20 OR v >= 90 ORDER BY id")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, id)
+		}
+		// v<=20: id=1(10),2(20). v>=90: id=9(90),10(100).
+		want := []int64{1, 2, 9, 10}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %d, want %d", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("or_equality", func(t *testing.T) {
+		// WHERE v = 30 OR v = 70
+		rows, err := db.QueryContext(ctx,
+			"SELECT id FROM vals WHERE v = 30 OR v = 70 ORDER BY id")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, id)
+		}
+		want := []int64{3, 7}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %d, want %d", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_CaseWhenWithInList(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
