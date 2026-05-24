@@ -103,9 +103,15 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	// If an ordered physical expression exists (e.g. index scan whose
 	// leading columns match the grouping keys), yield that path too.
+	// Skip bare Fetch wrappers: a full-range Fetch reads every row via
+	// random PK lookups, which is always slower than InMemorySort over
+	// a sequential full scan. Filtered Fetches (selectivity > 0) are
+	// kept — they read fewer rows.
 	orderedExpr := findOrderedPhysicalExpr(innerRef, groupingKeys)
 	if orderedExpr != nil {
-		if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
+		if _, isFetch := orderedExpr.(*physicalFetchFromPartialRecordWrapper); isFetch {
+			// Skip — InMemorySort(FullScan) is cheaper than Fetch(IndexScan(full-range)).
+		} else if ppe, ok := orderedExpr.(physicalPlanExpression); ok {
 			orderedInnerPlan := ppe.GetRecordQueryPlan()
 			aggPlan := plans.NewRecordQueryStreamingAggregationPlan(orderedInnerPlan, groupingKeys, gb.GetAggregates())
 			orderedQ := expressions.ForEachQuantifier(call.MemoizeExpression(orderedExpr))

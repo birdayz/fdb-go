@@ -17,7 +17,7 @@ func TestStreamingAggFromIndex_Fires(t *testing.T) {
 	gb := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount},
 		},
 		scanQ,
 	)
