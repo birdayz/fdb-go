@@ -1494,6 +1494,41 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("having_multiple_conditions", func(t *testing.T) {
+		// Multiple HAVING conditions + multiple aggregates
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, COUNT(*), SUM(amount) FROM sales GROUP BY region HAVING COUNT(*) >= 2 AND SUM(amount) > 200 ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			cnt    int64
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.cnt, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// EU: cnt=2, sum=125. Count>=2 but sum<=200 → excluded.
+		// US: cnt=3, sum=600. Both conditions met.
+		// APAC: cnt=1, sum=1000. Count<2 → excluded.
+		want := []row{{"US", 3, 600}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("mismatched_agg_func_fallback", func(t *testing.T) {
 		// Schema has SUM+COUNT indexes for region, but query asks for MIN.
 		// Must NOT use aggregate index — falls back to streaming agg.
