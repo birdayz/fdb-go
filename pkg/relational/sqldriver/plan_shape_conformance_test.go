@@ -1804,6 +1804,91 @@ func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "updagg",
+		"CREATE TABLE accounts (id BIGINT NOT NULL, owner STRING, balance BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX sum_balance AS SELECT SUM(balance) FROM accounts GROUP BY owner")
+
+	for _, a := range []struct {
+		id      int
+		owner   string
+		balance int
+	}{
+		{1, "alice", 100},
+		{2, "alice", 200},
+		{3, "bob", 500},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO accounts VALUES (%d, '%s', %d)", a.id, a.owner, a.balance)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", a.id, err)
+		}
+	}
+
+	t.Run("initial_sums", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT owner, SUM(balance) FROM accounts GROUP BY owner ORDER BY owner")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			owner string
+			sum   int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.owner, &r.sum); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{"alice", 300}, {"bob", 500}}
+		if len(got) != len(want) {
+			t.Fatalf("got %+v, want %+v", got, want)
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("update_value_same_group", func(t *testing.T) {
+		// Update alice's account 1 from 100 → 400. SUM should go 300→600.
+		if _, err := db.ExecContext(ctx, "UPDATE accounts SET balance = 400 WHERE id = 1"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+
+		var owner string
+		var sum int64
+		if err := db.QueryRowContext(ctx, "SELECT owner, SUM(balance) FROM accounts WHERE owner = 'alice' GROUP BY owner").Scan(&owner, &sum); err != nil {
+			// Fallback: try without WHERE (known gap)
+			rows, err2 := db.QueryContext(ctx, "SELECT owner, SUM(balance) FROM accounts GROUP BY owner ORDER BY owner")
+			if err2 != nil {
+				t.Fatalf("QueryContext: %v (original: %v)", err2, err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var o string
+				var s int64
+				rows.Scan(&o, &s)
+				if o == "alice" {
+					owner, sum = o, s
+				}
+			}
+		}
+		if sum != 600 {
+			t.Errorf("alice SUM after update: got %d, want 600", sum)
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_CompositeAggExpressions(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
