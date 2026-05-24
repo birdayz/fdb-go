@@ -2701,6 +2701,78 @@ func TestFDB_TwoDerivedTablesJoined(t *testing.T) {
 	}
 }
 
+func TestFDB_CaseWhenWithInList(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "casein",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id, col1, col2 int
+	}{
+		{1, 10, 1},
+		{2, 10, 2},
+		{3, 10, 3},
+		{4, 10, 4},
+		{5, 10, 5},
+		{6, 20, 6},
+		{7, 20, 7},
+		{8, 20, 8},
+		{9, 20, 9},
+		{10, 20, 10},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	// Java standard-tests: CASE WHEN col1=10 THEN 100 WHEN col2 IN (6,7,8,9) THEN 200 ELSE 300 END
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, CASE WHEN col1 = 10 THEN 100 WHEN col2 IN (6, 7, 8, 9) THEN 200 ELSE 300 END AS newcol
+		FROM t1 ORDER BY id`)
+	if err != nil {
+		t.Fatalf("QueryContext: %v", err)
+	}
+	defer rows.Close()
+	type row struct {
+		id     int64
+		newcol int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.newcol); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	want := []row{
+		{1, 100},
+		{2, 100},
+		{3, 100},
+		{4, 100},
+		{5, 100},
+		{6, 200},
+		{7, 200},
+		{8, 200},
+		{9, 200},
+		{10, 300},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("row count: got %d, want %d\ngot: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
 func TestFDB_JoinWithNotIn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
