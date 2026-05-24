@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -102,6 +103,86 @@ func (c *aggregateIndexCursor) Close() error {
 func (c *aggregateIndexCursor) IsClosed() bool { return c.closed }
 
 var _ recordlayer.RecordCursor[QueryResult] = (*aggregateIndexCursor)(nil)
+
+func executeMultiIntersection(
+	ctx context.Context,
+	p *plans.RecordQueryMultiIntersectionOnValuesPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	children := p.GetChildren()
+	if len(children) == 0 {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+
+	cursors := make([]recordlayer.RecordCursor[QueryResult], len(children))
+	for i, child := range children {
+		c, err := ExecutePlan(ctx, child, store, evalCtx, nil, props.ClearSkipAndLimit())
+		if err != nil {
+			for _, prev := range cursors[:i] {
+				prev.Close()
+			}
+			return nil, err
+		}
+		cursors[i] = c
+	}
+
+	keyVals := p.GetComparisonKey()
+	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
+
+	innerCursor := recordlayer.Intersection(cursors, compKeyFunc, false)
+
+	return &multiIntersectionMergeCursor{
+		inner:    innerCursor,
+		cursors:  cursors,
+		children: children,
+	}, nil
+}
+
+func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
+	return func(qr QueryResult) tuple.Tuple {
+		if len(keyVals) > 0 {
+			t := make(tuple.Tuple, len(keyVals))
+			for i, kv := range keyVals {
+				t[i] = kv.Evaluate(qr.Datum)
+			}
+			return t
+		}
+		if qr.PrimaryKey != nil {
+			return qr.PrimaryKey
+		}
+		return tuple.Tuple{fmt.Sprintf("%v", qr.Datum)}
+	}
+}
+
+type multiIntersectionMergeCursor struct {
+	inner    recordlayer.RecordCursor[QueryResult]
+	cursors  []recordlayer.RecordCursor[QueryResult]
+	children []plans.RecordQueryPlan
+	closed   bool
+}
+
+func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if !result.HasNext() {
+		return result, nil
+	}
+	return result, nil
+}
+
+func (c *multiIntersectionMergeCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *multiIntersectionMergeCursor) IsClosed() bool { return c.closed }
+
+var _ recordlayer.RecordCursor[QueryResult] = (*multiIntersectionMergeCursor)(nil)
 
 func executeUnorderedUnion(
 	ctx context.Context,
