@@ -1286,7 +1286,7 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 		return deriveColumnsFromAggregation(agg, md)
 	}
 	if aggIdx, ok := plan.(*plans.RecordQueryAggregateIndexPlan); ok {
-		return deriveColumnsFromAggregateIndex(aggIdx)
+		return deriveColumnsFromAggregateIndex(aggIdx, md)
 	}
 	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 		return deriveColumnsFromJoin(nlj, md)
@@ -1386,16 +1386,30 @@ func findLeafDescriptor(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData)
 	return rt.Descriptor
 }
 
-func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan) []executor.ColumnDef {
+func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	groupCols := aggIdx.GetGroupCols()
 	aggCol := aggIdx.GetAggColumn()
 	aggFunc := aggIdx.GetAggregateFunction()
 
+	var desc protoreflect.MessageDescriptor
+	if md != nil {
+		rtName := aggIdx.GetRecordTypeName()
+		if rt := md.GetRecordType(rtName); rt != nil && rt.Descriptor != nil {
+			desc = rt.Descriptor
+		}
+	}
+
 	cols := make([]executor.ColumnDef, 0, len(groupCols)+1)
 	for _, gc := range groupCols {
+		typeName := "STRING"
+		if desc != nil {
+			if t := protoFieldTypeName(desc, gc); t != "UNKNOWN" {
+				typeName = t
+			}
+		}
 		cols = append(cols, executor.ColumnDef{
 			Name:     gc,
-			TypeName: "STRING",
+			TypeName: typeName,
 			Nullable: api.ColumnNullable,
 		})
 	}
@@ -1404,9 +1418,15 @@ func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan
 	if aggName == "" {
 		aggName = aggFunc + "(*)"
 	}
+	aggTypeName := "BIGINT"
+	if aggCol != "" && desc != nil {
+		if t := protoFieldTypeName(desc, aggCol); t != "UNKNOWN" {
+			aggTypeName = t
+		}
+	}
 	cols = append(cols, executor.ColumnDef{
 		Name:     aggName,
-		TypeName: "BIGINT",
+		TypeName: aggTypeName,
 		Nullable: api.ColumnNullable,
 	})
 	return cols
