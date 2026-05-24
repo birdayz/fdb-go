@@ -246,7 +246,8 @@ func isLeafReplaceable(p plans.RecordQueryPlan) bool {
 		*plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQuerySortPlan,
-		*plans.RecordQueryPredicatesFilterPlan:
+		*plans.RecordQueryPredicatesFilterPlan,
+		*plans.RecordQueryAggregateIndexPlan:
 		return true
 	}
 	return false
@@ -1553,7 +1554,12 @@ func (w *physicalAggregateIndexWrapper) EqualsWithoutChildren(other expressions.
 }
 
 func (w *physicalAggregateIndexWrapper) HashCodeWithoutChildren() uint64 {
-	return w.plan.HashCodeWithoutChildren()
+	h := fnv.New64a()
+	h.Write([]byte("physaggidxwrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
 }
 
 func (w *physicalAggregateIndexWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
