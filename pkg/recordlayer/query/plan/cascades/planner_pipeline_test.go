@@ -384,6 +384,37 @@ func TestPipeline_AggregateIndex_MismatchedFunction(t *testing.T) {
 	}
 }
 
+func TestPipeline_AggregateIndex_WithRegularIndex(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "cnt"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+
+	aggCand := NewAggregateIndexMatchCandidate(
+		"T$count_by_status",
+		[]string{"T"},
+		[]string{"STATUS"},
+		expressions.AggCount,
+		"",
+	)
+
+	regularIdx := NewPlanContextFromIndexDefs([]IndexDef{idx("idx_status", "STATUS")})
+	allCandidates := append(regularIdx.GetMatchCandidates(), aggCand)
+
+	plan := planPipelineWithCandidates(t, groupBy, allCandidates)
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("aggregate index should win over streaming agg+regular index, got: %s", plan)
+	}
+}
+
 // --- Composite operators ---
 
 func TestPipeline_Union(t *testing.T) {
