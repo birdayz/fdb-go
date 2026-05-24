@@ -181,19 +181,11 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | Value type proto serialization | Wire format | Value serialization infrastructure |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
 
-### Covering Index Scan (planner infrastructure only — unreachable from SQL)
+### Covering Index Scan — RESOLVED via ImplementProjectionRule
 
-**Planner:** `RecordQueryIndexPlan` carries `Covering bool` + `CoveringColumns []string`. Set by `wrapScanPlanWithCoverage` when `!comp.IsFinalNeeded()`. Column names from `MatchCandidate.GetColumnNames()`.
+**Status:** Covering index works end-to-end for SQL via `ImplementProjectionRule` (EXPLORE phase). When all projected FieldValues can push through the Fetch's TranslateValueFunction, the Fetch is eliminated. PK columns + all index key columns are coverable. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`. The FDB stress test shows 63x speedup for PK-only projections over index scans.
 
-**Executor:** `coveringIndexCursor` constructs `QueryResult` from `IndexEntry.IndexValues()` without `LoadRecord()`.
-
-**Why it doesn't fire for SQL:** The compensation check requires the pulled-up query result to be a bare `QuantifiedObjectValue`. SQL queries always wrap in `RecordConstructorValue` projections, so `IsFinalNeeded()` is always `true`. Covering only fires for direct record-layer API users.
-
-**Java's approach is fundamentally different:** `ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan()` uses `IndexKeyValueToPartialRecord` (826 LOC) to reconstruct a protobuf `Message` from index entries. It always wraps in `CoveringIndexPlan` + `FetchFromPartialRecordPlan`, then lets push-through rules eliminate the fetch. The covering decision is in the match candidate, not in compensation analysis.
-
-**Root cause:** Two index-scan paths compete. `ImplementIndexScanRule` creates bare `physicalIndexScanWrapper` (no covering flag, no Fetch); `wrapScanPlanWithCoverage` in the data-access path strips the Fetch when `!comp.IsFinalNeeded()`. The cost model prefers the bare scan (cheaper) but it doesn't carry covering info. The data-access path's `isCovering` check only returns true when the PullUp resolves to a bare QOV — which doesn't happen with SQL projections above.
-
-**To close (multi-shift):** Port `IndexKeyValueToPartialRecord` (826 LOC copier-based field extraction from key+value tuples), `extractFromIndexEntryMaybe` (per-Value method), `computeIndexEntryToLogicalRecord` (match candidate integration), and `CollapseRecordConstructorOverFieldsToStar` (needs field-level type ordinal metadata). Also needs value-column tracking in match candidates (current `GetColumnNames()` only returns key columns, not KeyWithValue value columns).
+**The compensation-based path** (`IsFinalNeeded`, `wrapScanPlanWithCoverage`) is bypassed — SQL projections always set `IsFinalNeeded() = true`. The ImplementProjectionRule path is the active mechanism. Java's `IndexKeyValueToPartialRecord` (826 LOC) approach remains unported but is not needed for SQL coverage.
 
 ## Optimization-Quality Gaps (correctness unaffected)
 
