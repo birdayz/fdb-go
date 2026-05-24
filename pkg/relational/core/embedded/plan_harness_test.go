@@ -359,6 +359,29 @@ func TestPlanHarness_StatsAffectInJoinSelection(t *testing.T) {
 	assertPlanContains(t, planLarge, "InJoin")
 }
 
+func TestPlanHarness_AggregateIndexCountGroupBy(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  customer_id BIGINT,
+  status STRING,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX idx_status ON ORDERS(status)
+`
+	plan, err := PlanQueryForTest(
+		"SELECT status, COUNT(*) FROM orders GROUP BY status",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	// Without aggregate index, streaming agg over ordered index is expected.
+	assertPlanContains(t, plan, "StreamingAgg")
+}
+
 // --- Multi-table schemas ---
 
 const multiTableSchema = `

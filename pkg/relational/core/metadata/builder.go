@@ -1,6 +1,8 @@
 package metadata
 
 import (
+	"strings"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -37,9 +39,11 @@ type tableSpec struct {
 
 // indexSpec describes a single index within a table.
 type indexSpec struct {
-	name    string
-	columns []string // field names in index key order
-	unique  bool
+	name      string
+	columns   []string // field names in index key order
+	unique    bool
+	aggType   string // "SUM", "COUNT", etc. — empty for VALUE indexes
+	aggColumn string // aggregated column (for SUM/MIN/MAX)
 }
 
 // ColumnSpec describes a single column within a table.
@@ -131,6 +135,46 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 	return b
 }
 
+// AddAggregateIndex registers an aggregate index (SUM, COUNT, MIN, MAX)
+// on the named table. groupColumns are the GROUP BY columns; aggColumn
+// is the aggregated column (empty for COUNT). aggType is one of "SUM",
+// "COUNT", "MIN", "MAX".
+func (b *Builder) AddAggregateIndex(tableName, indexName string, groupColumns []string, aggType, aggColumn string) *Builder {
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		colSet := make(map[string]bool, len(b.tables[i].columns))
+		for _, c := range b.tables[i].columns {
+			colSet[c.name] = true
+		}
+		for _, col := range groupColumns {
+			if !colSet[col] {
+				b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+					"aggregate index %q on table %q: grouping column %q not defined",
+					indexName, tableName, col))
+				return b
+			}
+		}
+		if aggColumn != "" && !colSet[aggColumn] {
+			b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"aggregate index %q on table %q: aggregate column %q not defined",
+				indexName, tableName, aggColumn))
+			return b
+		}
+		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
+			name:      indexName,
+			columns:   groupColumns,
+			aggType:   aggType,
+			aggColumn: aggColumn,
+		})
+		return b
+	}
+	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+		"aggregate index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
 // Build materialises the schema template. Returns an error when no
 // tables are registered or types cannot be mapped to proto field types.
 func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
@@ -173,6 +217,15 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 		rt.SetPrimaryKey(pkExpr)
 
 		for _, idx := range tbl.indexes {
+			if idx.aggType != "" {
+				rl, idxErr := buildAggregateIndex(idx)
+				if idxErr != nil {
+					return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
+						"table %q aggregate index %q", tbl.name, idx.name)
+				}
+				mdBuilder.AddIndex(tbl.name, rl)
+				continue
+			}
 			keyExpr, idxErr := buildIndexKeyExpression(idx.columns)
 			if idxErr != nil {
 				return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
@@ -339,6 +392,32 @@ func buildIndexKeyExpression(columns []string) (recordlayer.KeyExpression, error
 		exprs[i] = recordlayer.Field(col)
 	}
 	return recordlayer.Concat(exprs...), nil
+}
+
+func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
+	groupByExprs := make([]recordlayer.KeyExpression, len(idx.columns))
+	for i, col := range idx.columns {
+		groupByExprs[i] = recordlayer.Field(col)
+	}
+
+	var aggExpr recordlayer.KeyExpression
+	if idx.aggColumn != "" {
+		aggExpr = recordlayer.Field(idx.aggColumn)
+	} else {
+		aggExpr = recordlayer.EmptyKey()
+	}
+
+	gke := recordlayer.GroupBy(aggExpr, groupByExprs...)
+
+	switch strings.ToUpper(idx.aggType) {
+	case "SUM":
+		return recordlayer.NewSumIndex(idx.name, gke), nil
+	case "COUNT":
+		return recordlayer.NewCountIndex(idx.name, gke), nil
+	default:
+		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"unsupported aggregate index type %q", idx.aggType)
+	}
 }
 
 func buildPrimaryKeyExpression(tbl tableSpec, intermingle bool) (recordlayer.KeyExpression, error) {
