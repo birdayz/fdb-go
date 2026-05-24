@@ -1568,7 +1568,7 @@ func (w *physicalAggregateIndexWrapper) HintCost(_ []properties.Cost, stats prop
 	if stats != nil {
 		tableCard = stats.RecordTypeCardinality(w.plan.GetRecordTypeName())
 	}
-	cardinality := tableCard * properties.DistinctSelectivity
+	cardinality := tableCard * properties.DistinctSelectivity * physicalWrapperCostMultiplier
 	if cardinality < 1 {
 		cardinality = 1
 	}
