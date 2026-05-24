@@ -1606,7 +1606,8 @@ func TestEndToEnd_GroupByWithHavingClause(t *testing.T) {
 func TestEndToEnd_StreamingAggFromIndexWithoutSort(t *testing.T) {
 	t.Parallel()
 
-	// GroupBy(region, COUNT(id)) over Scan — no Sort in tree.
+	// GroupBy(region, COUNT(*)) over Scan — no Sort in tree.
+	// COUNT(*) is covered by any index (no field access needed).
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Sales"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
@@ -1614,7 +1615,7 @@ func TestEndToEnd_StreamingAggFromIndexWithoutSort(t *testing.T) {
 	gb := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount},
 		},
 		scanQ,
 	)
