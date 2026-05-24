@@ -664,6 +664,48 @@ CREATE INDEX bad_idx AS SELECT COUNT(*)
 	t.Logf("got expected error: %v", err)
 }
 
+func TestPlanHarness_AggregateIndexDDL_ParseError_AvgRejected(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  amount BIGINT,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX avg_idx AS SELECT AVG(amount) FROM ORDERS GROUP BY status
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error: AVG is not an indexable aggregate function")
+	}
+	if !strings.Contains(err.Error(), "unsupported aggregate function") {
+		t.Fatalf("expected 'unsupported aggregate function' error, got: %v", err)
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+func TestPlanHarness_AggregateIndexDDL_ParseError_MultipleAggregates(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  amount BIGINT,
+  status STRING,
+  PRIMARY KEY (id)
+)
+CREATE INDEX multi_idx AS SELECT COUNT(*), SUM(amount) FROM ORDERS GROUP BY status
+`
+	_, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err == nil {
+		t.Fatal("expected error: only one aggregate per index definition allowed")
+	}
+	if !strings.Contains(err.Error(), "exactly one aggregate") {
+		t.Fatalf("expected 'exactly one aggregate' error, got: %v", err)
+	}
+	t.Logf("got expected error: %v", err)
+}
+
 func TestPlanHarness_AggregateIndexDDL_MinEver(t *testing.T) {
 	t.Parallel()
 	schema := `
