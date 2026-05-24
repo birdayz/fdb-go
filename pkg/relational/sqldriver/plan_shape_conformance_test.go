@@ -1437,6 +1437,102 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_CompositeAggExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cmpag",
+		"CREATE TABLE invoices (id BIGINT NOT NULL, vendor STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX sum_by_vendor AS SELECT SUM(amount) FROM invoices GROUP BY vendor "+
+			"CREATE INDEX count_by_vendor AS SELECT COUNT(*) FROM invoices GROUP BY vendor")
+
+	for _, inv := range []struct {
+		id     int
+		vendor string
+		amount int
+	}{
+		{1, "acme", 100},
+		{2, "acme", 200},
+		{3, "acme", 300},
+		{4, "acme", 400},
+		{5, "globex", 1000},
+		{6, "globex", 2000},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO invoices VALUES (%d, '%s', %d)", inv.id, inv.vendor, inv.amount)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("sum_div_count_per_group", func(t *testing.T) {
+		// Java: SUM(col2) / COUNT(col2) GROUP BY col1 → AISCAN ∩ AISCAN
+		// Go: streaming aggregation (both aggregates in one pass)
+		rows, err := db.QueryContext(ctx,
+			"SELECT vendor, SUM(amount) / COUNT(*) FROM invoices GROUP BY vendor ORDER BY vendor")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			vendor string
+			avg    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.vendor, &r.avg); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// acme: 1000/4=250, globex: 3000/2=1500
+		want := []row{{"acme", 250}, {"globex", 1500}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("multiple_agg_funcs_one_query", func(t *testing.T) {
+		// Java uses INTERSECT for two aggs; Go should handle via streaming
+		rows, err := db.QueryContext(ctx,
+			"SELECT vendor, SUM(amount), COUNT(*) FROM invoices GROUP BY vendor ORDER BY vendor")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			vendor string
+			total  int64
+			cnt    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.vendor, &r.total, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{"acme", 1000, 4}, {"globex", 3000, 2}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
