@@ -14,8 +14,9 @@ type StreamingValue interface {
 // empty. Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.values.FirstOrDefaultStreamingValue`.
 //
-// The child must implement StreamingValue. RangeValue is adapted
-// via rangeValueStreamAdapter.
+// The child should implement StreamingValue. RangeValue returns
+// []int64 (not []any), so it doesn't satisfy StreamingValue and
+// is handled by an explicit type-switch fallback in Evaluate.
 type FirstOrDefaultStreamingValue struct {
 	ChildValue         Value
 	OnEmptyResultValue Value

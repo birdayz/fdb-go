@@ -39,6 +39,7 @@ tests:
 
   # IN-list on indexed column with single value (should become equality)
   - query: SELECT id, name FROM items WHERE category IN ('food') ORDER BY id
+    plan_not_contains: InJoin
     rows:
       - [7, 'Coffee']
       - [8, 'Tea']

@@ -302,7 +302,7 @@ func TestExtractBestPlanFromSelector_FallsBackToCostWhenSelectorHasNoBest(t *tes
 	}
 }
 
-func TestExtractBestPlanFromSelector_CycleDetection(t *testing.T) {
+func TestExtractBestPlanFromSelector_SingleMember(t *testing.T) {
 	t.Parallel()
 	r := scan("T")
 	got, err := ExtractBestPlanFromSelector(r, nil, nil)
