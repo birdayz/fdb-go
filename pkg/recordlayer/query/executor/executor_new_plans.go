@@ -84,7 +84,11 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	}
 
 	if len(entry.Value) > 0 {
-		datum[c.aggColumn] = entry.Value[0]
+		col := c.aggColumn
+		if col == "" {
+			col = c.aggFunc + "(*)"
+		}
+		datum[col] = entry.Value[0]
 	}
 
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
