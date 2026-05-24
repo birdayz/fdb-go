@@ -24,6 +24,8 @@ type RecordQueryAggregateIndexPlan struct {
 	recordTypeName    string
 	resultType        values.Type
 	aggregateFunction string
+	groupCols         []string
+	aggColumn         string
 }
 
 // NewRecordQueryAggregateIndexPlan constructs an aggregate index plan.
@@ -43,6 +45,20 @@ func NewRecordQueryAggregateIndexPlan(
 		aggregateFunction: aggregateFunction,
 	}
 }
+
+// WithGroupColumns sets the grouping and aggregate column names for
+// the executor to map index entries to result rows.
+func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, aggColumn string) *RecordQueryAggregateIndexPlan {
+	p.groupCols = groupCols
+	p.aggColumn = aggColumn
+	return p
+}
+
+// GetGroupCols returns the grouping column names.
+func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string { return p.groupCols }
+
+// GetAggColumn returns the aggregate column name.
+func (p *RecordQueryAggregateIndexPlan) GetAggColumn() string { return p.aggColumn }
 
 // GetIndexPlan returns the underlying index plan.
 func (p *RecordQueryAggregateIndexPlan) GetIndexPlan() *RecordQueryIndexPlan { return p.indexPlan }

@@ -1522,3 +1522,86 @@ func (w *physicalValuesWrapper) WithQuantifiers(_ []expressions.Quantifier) expr
 }
 
 var _ expressions.RelationalExpression = (*physicalValuesWrapper)(nil)
+
+// physicalAggregateIndexWrapper wraps a RecordQueryAggregateIndexPlan
+// as a leaf physical expression. Mirrors the aggregate index scan path
+// in Java's Cascades planner.
+type physicalAggregateIndexWrapper struct {
+	plan *plans.RecordQueryAggregateIndexPlan
+}
+
+func (w *physicalAggregateIndexWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
+func (w *physicalAggregateIndexWrapper) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+}
+
+func (w *physicalAggregateIndexWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
+func (w *physicalAggregateIndexWrapper) CanCorrelate() bool                       { return false }
+func (w *physicalAggregateIndexWrapper) ChildrenAsSet() bool                      { return false }
+
+func (w *physicalAggregateIndexWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+func (w *physicalAggregateIndexWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalAggregateIndexWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+func (w *physicalAggregateIndexWrapper) HashCodeWithoutChildren() uint64 {
+	return w.plan.HashCodeWithoutChildren()
+}
+
+func (w *physicalAggregateIndexWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 0 {
+		return nil, fmt.Errorf("physicalAggregateIndexWrapper.WithChildren: expected 0 children, got %d", len(qs))
+	}
+	return w, nil
+}
+
+func (w *physicalAggregateIndexWrapper) HintCost(_ expressions.Quantifier, stats properties.StatisticsProvider) properties.Cost {
+	groupCols := w.plan.GetGroupCols()
+	tableCard := properties.LeafScanCardinality
+	if stats != nil {
+		tableCard = stats.RecordTypeCardinality(w.plan.GetRecordTypeName())
+	}
+	cardinality := tableCard / float64(max(1, len(groupCols)*10))
+	if cardinality < 1 {
+		cardinality = 1
+	}
+	return properties.Cost{
+		Cardinality: cardinality,
+		CPU:         cardinality * properties.ScanCPU,
+	}
+}
+
+func (w *physicalAggregateIndexWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
+func (w *physicalAggregateIndexWrapper) HintOrdering() properties.Ordering {
+	groupCols := w.plan.GetGroupCols()
+	if len(groupCols) == 0 {
+		return properties.Ordering{IsKnown: true}
+	}
+	keys := make([]values.Value, len(groupCols))
+	desc := make([]bool, len(groupCols))
+	for i, col := range groupCols {
+		keys[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+		desc[i] = w.plan.IsReverse()
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+}
+
+// IsPhysicalAggregateIndex reports whether the expression is an aggregate
+// index scan wrapper.
+func IsPhysicalAggregateIndex(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalAggregateIndexWrapper)
+	return ok
+}
+
+var _ physicalPlanExpression = (*physicalAggregateIndexWrapper)(nil)

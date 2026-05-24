@@ -18,6 +18,23 @@ const (
 	AggAvg
 )
 
+func (f AggregateFunction) String() string {
+	switch f {
+	case AggCount:
+		return "COUNT"
+	case AggSum:
+		return "SUM"
+	case AggMin:
+		return "MIN"
+	case AggMax:
+		return "MAX"
+	case AggAvg:
+		return "AVG"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // AggregateSpec describes one aggregate column in a GroupBy.
 type AggregateSpec struct {
 	Function AggregateFunction

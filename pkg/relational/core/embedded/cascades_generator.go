@@ -1164,6 +1164,10 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 		if idx.RootExpression == nil {
 			continue
 		}
+		if aggCand := tryAggregateIndexCandidate(idx, c.md); aggCand != nil {
+			candidates = append(candidates, aggCand)
+			continue
+		}
 		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
 	}
 	if len(defs) > 0 {
@@ -1213,6 +1217,62 @@ func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 		return nil
 	}
 	return rt.PrimaryKey.FieldNames()
+}
+
+// tryAggregateIndexCandidate checks if the index is an aggregate type
+// (SUM, COUNT, MIN, MAX) and returns an AggregateIndexMatchCandidate,
+// or nil if the index is not an aggregate type.
+func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaData) *cascades.AggregateIndexMatchCandidate {
+	var aggFunc expressions.AggregateFunction
+	switch idx.Type {
+	case recordlayer.IndexTypeSum:
+		aggFunc = expressions.AggSum
+	case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:
+		aggFunc = expressions.AggCount
+	case recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple:
+		aggFunc = expressions.AggMax
+	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple:
+		aggFunc = expressions.AggMin
+	default:
+		return nil
+	}
+
+	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
+	if !ok {
+		return nil
+	}
+
+	allCols := gke.FieldNames()
+	groupingCount := gke.GetGroupingCount()
+	groupedCount := gke.GetGroupedCount()
+
+	if groupingCount == 0 {
+		return nil
+	}
+
+	groupCols := make([]string, groupingCount)
+	for i := 0; i < groupingCount; i++ {
+		groupCols[i] = strings.ToUpper(allCols[i])
+	}
+
+	var aggColumn string
+	if groupedCount > 0 && groupingCount+groupedCount <= len(allCols) {
+		aggColumn = strings.ToUpper(allCols[groupingCount])
+	}
+
+	rts := md.RecordTypesForIndex(idx)
+	rtNames := make([]string, len(rts))
+	for i, rt := range rts {
+		rtNames[i] = rt.Name
+	}
+
+	return cascades.NewAggregateIndexMatchCandidate(
+		idx.Name,
+		rtNames,
+		groupCols,
+		aggFunc,
+		aggColumn,
+	)
 }
 
 func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {

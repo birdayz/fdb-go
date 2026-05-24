@@ -146,6 +146,9 @@ func ExecutePlan(
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return executeFetchFromPartialRecord(ctx, p, store, evalCtx, continuation, props)
 
+	case *plans.RecordQueryAggregateIndexPlan:
+		return executeAggregateIndexScan(ctx, p, store, evalCtx, continuation, props)
+
 	// --- Go extensions (no Java equivalent) ---
 	case *plans.RecordQueryInMemorySortPlan:
 		return executeInMemorySort(ctx, p, store, evalCtx, continuation, props)

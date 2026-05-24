@@ -1692,8 +1692,8 @@ func TestEndToEnd_AggregateIndexDirectAccess(t *testing.T) {
 	// the aggregate index is used.
 	explain := cascades.ExplainPhysicalPlan(plan)
 	t.Logf("Plan: %T, Explain: %s", plan, explain)
-	if !cascades.IsPhysicalIndexScan(plan) && !cascades.IsPhysicalStreamingAgg(plan) {
-		t.Fatalf("expected index scan or streaming agg from aggregate index, got %T", plan)
+	if !cascades.IsPhysicalAggregateIndex(plan) && !cascades.IsPhysicalIndexScan(plan) && !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected aggregate index, index scan, or streaming agg, got %T", plan)
 	}
 }
 
