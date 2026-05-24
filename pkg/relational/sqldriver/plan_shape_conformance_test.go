@@ -1628,6 +1628,38 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("arithmetic_across_aggregates", func(t *testing.T) {
+		// Java pattern: SELECT COUNT(*) + SUM(amount) — arithmetic over two aggregates
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, COUNT(*) + SUM(amount) FROM sales GROUP BY region ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			val    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.val); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// APAC: 1+1000=1001, EU: 2+125=127, US: 3+600=603
+		want := []row{{"APAC", 1001}, {"EU", 127}, {"US", 603}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("having_agg_and_group_key_combined", func(t *testing.T) {
 		// Java: HAVING min(id) > 0 AND col1 = 20 — aggregate AND group key
 		rows, err := db.QueryContext(ctx,
