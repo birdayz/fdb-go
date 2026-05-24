@@ -7,6 +7,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -44,6 +45,40 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 		return explain
 	}
 	// Fallback: describe the expression type.
+	return fmt.Sprintf("%T", best)
+}
+
+func planPipelineWithStats(t *testing.T, root expressions.RelationalExpression, stats properties.StatisticsProvider, indexes ...IndexDef) string {
+	t.Helper()
+
+	rootRef := expressions.InitialOf(root)
+
+	rules := DefaultExpressionRules()
+	rules = append(rules, BatchAExpressionRules()...)
+	rules = append(rules, MatchingRules()...)
+
+	var ctx PlanContext
+	if len(indexes) > 0 {
+		ctx = NewPlanContextFromIndexDefs(indexes)
+	}
+
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules()).
+		WithStatistics(stats).
+		WithMaxTasks(10_000)
+
+	best, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan failed: %v", err)
+	}
+	if best == nil {
+		t.Fatal("Plan returned nil best expression")
+	}
+
+	explain := ExplainPhysicalPlan(best)
+	if explain != "" {
+		return explain
+	}
 	return fmt.Sprintf("%T", best)
 }
 
@@ -738,6 +773,30 @@ func TestPipeline_InListExplode(t *testing.T) {
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "InJoin") {
 		t.Fatalf("expected InJoin plan for IN-list with index, got: %s", plan)
+	}
+}
+
+func TestPipeline_InListExplode_WithStats(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	inPred := &predicates.ComparisonPredicate{
+		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
+		Comparison: predicates.Comparison{
+			Type:    predicates.ComparisonIn,
+			Operand: &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}},
+		},
+	}
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{inPred}, scanQ)
+
+	stats := properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}}
+	plan := planPipelineWithStats(t, filter, stats, idx("idx_a", "A"))
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "InJoin") {
+		t.Fatalf("expected InJoin plan with 1M stats, got: %s", plan)
 	}
 }
 
