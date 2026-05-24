@@ -303,9 +303,11 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// Post-PLANNING promotion: these passes promote InJoin/InUnion
 	// and FlatMap plans when they have lower data access cost. With
 	// finalMembers, reoptimizeAll already prefers them when real
-	// statistics are available. These passes remain as safety nets for
-	// plans where the ordinal cost model criteria are tied (e.g.,
-	// pipeline tests without statistics).
+	// statistics are available (all FDB integration tests pass without
+	// these passes). They remain for unit tests that lack statistics —
+	// without stats, the ordinal cost model criteria tie on InJoin vs
+	// Filter+Scan. Removing these requires either statistics-aware
+	// unit tests or full advancePlannerStage.
 	p.promoteInJoinWinners(rootRef)
 	promoteByDataAccessCost(rootRef, p.stats)
 
