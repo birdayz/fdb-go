@@ -1494,6 +1494,38 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("group_by_with_limit", func(t *testing.T) {
+		// Go extension: LIMIT with GROUP BY
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) FROM sales GROUP BY region ORDER BY region LIMIT 2")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// ORDER BY region: APAC, EU, US. LIMIT 2 → only APAC, EU.
+		want := []row{{"APAC", 1000}, {"EU", 125}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("having_multiple_conditions", func(t *testing.T) {
 		// Multiple HAVING conditions + multiple aggregates
 		rows, err := db.QueryContext(ctx,
