@@ -70,6 +70,9 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 	scanTypes := scan.GetRecordTypes()
 
 	for _, cand := range candidates {
+		if _, isAgg := cand.(*AggregateIndexMatchCandidate); isAgg {
+			continue
+		}
 		if !recordTypesOverlap(scanTypes, cand.GetRecordTypes()) {
 			continue
 		}

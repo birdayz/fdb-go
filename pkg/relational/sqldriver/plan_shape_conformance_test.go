@@ -1403,6 +1403,37 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("where_on_group_key", func(t *testing.T) {
+		// Java: WHERE col1 = 10 pushes into aggregate index scan range
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) FROM sales WHERE region = 'US' GROUP BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{"US", 600}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("having_with_where", func(t *testing.T) {
 		// WHERE + HAVING combined: filter rows first, then groups
 		rows, err := db.QueryContext(ctx,
