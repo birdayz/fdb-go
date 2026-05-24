@@ -664,6 +664,52 @@ CREATE INDEX bad_idx AS SELECT COUNT(*)
 	t.Logf("got expected error: %v", err)
 }
 
+func TestPlanHarness_AggregateIndexDDL_MinEver(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX min_price_by_cat AS SELECT MIN_EVER(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MIN(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex for MIN_EVER, got: %s", plan)
+	}
+}
+
+func TestPlanHarness_AggregateIndexDDL_MaxEver(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ORDERS (
+  id BIGINT NOT NULL,
+  category STRING,
+  price BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX max_price_by_cat AS SELECT MAX_EVER(price) FROM ORDERS GROUP BY category
+`
+	plan, err := PlanQueryForTest(
+		"SELECT category, MAX(price) FROM orders GROUP BY category",
+		schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("expected AggregateIndex for MAX_EVER, got: %s", plan)
+	}
+}
+
 // --- Multi-table schemas ---
 
 const multiTableSchema = `
