@@ -962,3 +962,68 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 		}
 	})
 }
+
+func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "agglife",
+		"CREATE TABLE counters (id BIGINT NOT NULL, bucket STRING, val BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX count_by_bucket AS SELECT COUNT(*) FROM counters GROUP BY bucket")
+
+	// Insert 3 records into bucket 'A'
+	for i := 1; i <= 3; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO counters VALUES (%d, 'A', %d)", i, i*100)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	// Verify COUNT=3 via aggregate index
+	plan := planExplainVia(t, ctx, db, "SELECT bucket, COUNT(*) FROM counters GROUP BY bucket")
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "AggregateIndex") {
+		t.Errorf("expected AggregateIndex plan, got: %s", plan)
+	}
+
+	var bucket string
+	var cnt int64
+	row := db.QueryRowContext(ctx, "SELECT bucket, COUNT(*) FROM counters GROUP BY bucket")
+	if err := row.Scan(&bucket, &cnt); err != nil {
+		t.Fatalf("scan after insert: %v", err)
+	}
+	if cnt != 3 {
+		t.Fatalf("after 3 inserts: COUNT = %d, want 3", cnt)
+	}
+
+	// Delete record id=2
+	if _, err := db.ExecContext(ctx, "DELETE FROM counters WHERE id = 2"); err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+
+	// Verify COUNT=2
+	row = db.QueryRowContext(ctx, "SELECT bucket, COUNT(*) FROM counters GROUP BY bucket")
+	if err := row.Scan(&bucket, &cnt); err != nil {
+		t.Fatalf("scan after delete: %v", err)
+	}
+	if cnt != 2 {
+		t.Fatalf("after delete: COUNT = %d, want 2", cnt)
+	}
+
+	// Insert another record
+	if _, err := db.ExecContext(ctx, "INSERT INTO counters VALUES (10, 'A', 1000)"); err != nil {
+		t.Fatalf("INSERT 10: %v", err)
+	}
+
+	// Verify COUNT=3 again
+	row = db.QueryRowContext(ctx, "SELECT bucket, COUNT(*) FROM counters GROUP BY bucket")
+	if err := row.Scan(&bucket, &cnt); err != nil {
+		t.Fatalf("scan final: %v", err)
+	}
+	if cnt != 3 {
+		t.Fatalf("final: COUNT = %d, want 3", cnt)
+	}
+}
