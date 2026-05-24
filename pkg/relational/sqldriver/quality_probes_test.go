@@ -2000,6 +2000,75 @@ func TestFDB_QualityProbe_LimitZero(t *testing.T) {
 	})
 }
 
+func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "csp")
+
+	t.Run("correlated_not_exists", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name FROM customers c
+			 WHERE NOT EXISTS (
+			   SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'cancelled'
+			 )
+			 ORDER BY c.name`)
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		if len(names) != 3 || names[0] != "Alice" || names[1] != "Charlie" || names[2] != "Diana" {
+			t.Errorf("want [Alice, Charlie, Diana], got %v", names)
+		}
+	})
+
+	t.Run("correlated_exists_with_filter", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name FROM customers c
+			 WHERE EXISTS (
+			   SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped'
+			 )
+			 ORDER BY c.name`)
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = fmt.Sprintf("%v", r[0])
+		}
+		if len(names) != 3 || names[0] != "Alice" || names[1] != "Bob" || names[2] != "Charlie" {
+			t.Errorf("want [Alice, Bob, Charlie], got %v", names)
+		}
+	})
+
+	t.Run("cte_with_join_filter", func(t *testing.T) {
+		// Active customers: Alice(1), Bob(2), Diana(4)
+		// Shipped orders: 10(cust 1), 12(cust 2), 14(cust 3)
+		// Active + shipped: Alice(10), Bob(12) = 2 rows
+		rows := collectRows(t, db,
+			`WITH active_customers AS (
+			   SELECT id, name FROM customers WHERE active = true
+			 )
+			 SELECT ac.name, o.status
+			 FROM active_customers ac, orders o
+			 WHERE o.customer_id = ac.id AND o.status = 'shipped'
+			 ORDER BY ac.name`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 shipped orders from active customers, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "Alice" {
+			t.Errorf("first name: want Alice, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "Bob" {
+			t.Errorf("second name: want Bob, got %v", rows[1][0])
+		}
+	})
+
+	t.Run("multi_table_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT COUNT(*) FROM customers c, orders o
+			 WHERE o.customer_id = c.id`)
+		if len(rows) != 1 || rows[0][0].(int64) != 6 {
+			t.Errorf("want count=6, got %v", rows)
+		}
+	})
+}
+
 var (
 	_ = fmt.Sprintf // ensure import
 	_ = sort.Strings
