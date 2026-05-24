@@ -435,6 +435,7 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		CREATE INDEX idx_amount ON orders (amount)
 		CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status
 		CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM orders GROUP BY status
+		CREATE INDEX sum_amount_by_customer AS SELECT SUM(amount) FROM orders GROUP BY customer_id
 		CREATE TABLE customers (
 			id BIGINT NOT NULL,
 			name STRING NOT NULL,
