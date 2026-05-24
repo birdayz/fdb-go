@@ -2550,3 +2550,109 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 		}
 	})
 }
+
+func TestFDB_JoinWithNotIn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jnotin",
+		"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+
+	for _, e := range []struct {
+		id   int
+		name string
+		dept int
+	}{
+		{1, "Jack", 1},
+		{2, "Thomas", 1},
+		{3, "Emily", 1},
+		{4, "Amelia", 1},
+		{5, "Daniel", 2},
+		{6, "Chloe", 2},
+		{7, "Charlotte", 2},
+		{8, "Megan", 3},
+		{9, "Harry", 3},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO emp VALUES (%d, '%s', %d)", e.id, e.name, e.dept)); err != nil {
+			t.Fatalf("INSERT emp: %v", err)
+		}
+	}
+	for _, d := range []struct {
+		id   int
+		name string
+	}{
+		{1, "Engineering"}, {2, "Sales"}, {3, "Marketing"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name)); err != nil {
+			t.Fatalf("INSERT dept: %v", err)
+		}
+	}
+
+	t.Run("join_with_not_in", func(t *testing.T) {
+		// Java: emp JOIN dept WHERE dept.name='Engineering' AND emp.id NOT IN (1,3)
+		rows, err := db.QueryContext(ctx,
+			"SELECT emp.id, fname FROM emp, dept WHERE emp.dept_id = dept.id AND dept.name = 'Engineering' AND emp.id NOT IN (1, 3) ORDER BY emp.id")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			id    int64
+			fname string
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.fname); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{2, "Thomas"}, {4, "Amelia"}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("join_exclude_dept", func(t *testing.T) {
+		// Java: emp JOIN dept WHERE dept.id NOT IN (1, 3)
+		rows, err := db.QueryContext(ctx,
+			"SELECT emp.id, fname FROM emp, dept WHERE emp.dept_id = dept.id AND dept.id NOT IN (1, 3) ORDER BY emp.id")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			id    int64
+			fname string
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.fname); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		want := []row{{5, "Daniel"}, {6, "Chloe"}, {7, "Charlotte"}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
