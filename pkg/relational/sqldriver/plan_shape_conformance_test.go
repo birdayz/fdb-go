@@ -1128,6 +1128,222 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_UngroupedAndEmpty(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ungrp",
+		"CREATE TABLE counters (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX total_count AS SELECT COUNT(*) FROM counters "+
+			"CREATE INDEX total_sum AS SELECT SUM(val) FROM counters "+
+			"CREATE INDEX count_val AS SELECT COUNT(val) FROM counters")
+
+	t.Run("empty_table_count_star", func(t *testing.T) {
+		// Java >= 4.0.561: ungrouped COUNT(*) on empty table returns [{0}]
+		var cnt int64
+		err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM counters").Scan(&cnt)
+		if err != nil {
+			t.Fatalf("QueryRow: %v", err)
+		}
+		if cnt != 0 {
+			t.Errorf("COUNT(*) on empty table: got %d, want 0", cnt)
+		}
+	})
+
+	t.Run("empty_table_sum", func(t *testing.T) {
+		// SUM on empty table: SQL standard says NULL
+		var sum *int64
+		err := db.QueryRowContext(ctx, "SELECT SUM(val) FROM counters").Scan(&sum)
+		if err != nil {
+			t.Fatalf("QueryRow: %v", err)
+		}
+		if sum != nil {
+			t.Errorf("SUM on empty table: got %d, want NULL", *sum)
+		}
+	})
+
+	// Insert data
+	for _, ins := range []struct {
+		id  int
+		val string
+	}{
+		{1, "10"},
+		{2, "20"},
+		{3, "30"},
+		{4, "NULL"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO counters VALUES (%d, %s)", ins.id, ins.val)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("ungrouped_count_star", func(t *testing.T) {
+		var cnt int64
+		err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM counters").Scan(&cnt)
+		if err != nil {
+			t.Fatalf("QueryRow: %v", err)
+		}
+		if cnt != 4 {
+			t.Errorf("COUNT(*): got %d, want 4", cnt)
+		}
+	})
+
+	t.Run("ungrouped_sum", func(t *testing.T) {
+		var total int64
+		err := db.QueryRowContext(ctx, "SELECT SUM(val) FROM counters").Scan(&total)
+		if err != nil {
+			t.Fatalf("QueryRow: %v", err)
+		}
+		if total != 60 {
+			t.Errorf("SUM(val): got %d, want 60", total)
+		}
+	})
+
+	t.Run("ungrouped_count_col", func(t *testing.T) {
+		var cnt int64
+		err := db.QueryRowContext(ctx, "SELECT COUNT(val) FROM counters").Scan(&cnt)
+		if err != nil {
+			t.Fatalf("QueryRow: %v", err)
+		}
+		// 3 non-null values
+		if cnt != 3 {
+			t.Errorf("COUNT(val): got %d, want 3", cnt)
+		}
+	})
+}
+
+func TestFDB_AggregateIndex_Having(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aghav",
+		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX sum_by_region AS SELECT SUM(amount) FROM sales GROUP BY region "+
+			"CREATE INDEX count_by_region AS SELECT COUNT(*) FROM sales GROUP BY region")
+
+	for _, s := range []struct {
+		id     int
+		region string
+		amount int
+	}{
+		{1, "US", 100},
+		{2, "US", 200},
+		{3, "US", 300},
+		{4, "EU", 50},
+		{5, "EU", 75},
+		{6, "APAC", 1000},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO sales VALUES (%d, '%s', %d)", s.id, s.region, s.amount)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", s.id, err)
+		}
+	}
+
+	t.Run("having_count_gt", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, COUNT(*) FROM sales GROUP BY region HAVING COUNT(*) > 2 ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			cnt    int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.cnt); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// Only US has count > 2
+		want := []row{{"US", 3}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("having_sum_gt", func(t *testing.T) {
+		plan := planExplainVia(t, ctx, db, "SELECT region, SUM(amount) FROM sales GROUP BY region HAVING SUM(amount) > 200 ORDER BY region")
+		t.Logf("plan: %s", plan)
+
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) FROM sales GROUP BY region HAVING SUM(amount) > 200 ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// APAC=1000, US=600 both > 200. EU=125 excluded.
+		want := []row{{"APAC", 1000}, {"US", 600}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
+	t.Run("having_with_where", func(t *testing.T) {
+		// WHERE + HAVING combined: filter rows first, then groups
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) FROM sales WHERE amount > 50 GROUP BY region HAVING SUM(amount) >= 500 ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// After WHERE amount>50: US(100,200,300)=600, EU(75)=75, APAC(1000)=1000
+		// HAVING >=500: APAC=1000, US=600
+		want := []row{{"APAC", 1000}, {"US", 600}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

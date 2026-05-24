@@ -1414,9 +1414,11 @@ func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan
 		})
 	}
 
-	aggName := aggCol
-	if aggName == "" {
+	var aggName string
+	if aggCol == "" {
 		aggName = aggFunc + "(*)"
+	} else {
+		aggName = aggFunc + "(" + aggCol + ")"
 	}
 	aggTypeName := "BIGINT"
 	if aggCol != "" && desc != nil {
