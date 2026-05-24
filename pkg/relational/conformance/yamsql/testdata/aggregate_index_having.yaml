@@ -26,8 +26,9 @@ tests:
       - [200, 1000]
       - [300, 50]
 
-  # SUM with HAVING — filters post-aggregation
+  # SUM with HAVING — filters post-aggregation via AggregateIndex + Filter
   - query: SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 500 ORDER BY customer_id
+    plan_contains: AggregateIndex
     rows:
       - [100, 800]
       - [200, 1000]

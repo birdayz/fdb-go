@@ -380,6 +380,7 @@ type memorySortCursor struct {
 	loaded  bool
 	emitIdx int
 	closed  bool
+	maxBuf  int // 0 = use DefaultMaxSortBufferRows
 }
 
 func newMemorySortCursor(
@@ -402,6 +403,10 @@ func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		return c.emitNext()
 	}
 
+	limit := c.maxBuf
+	if limit <= 0 {
+		limit = DefaultMaxSortBufferRows
+	}
 	for {
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
@@ -424,6 +429,12 @@ func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 			), nil
 		}
 		c.buf = append(c.buf, result.GetValue())
+		if len(c.buf) > limit {
+			return recordlayer.RecordCursorResult[QueryResult]{}, &SortBufferExceededError{
+				Rows:  len(c.buf),
+				Limit: limit,
+			}
+		}
 	}
 }
 
