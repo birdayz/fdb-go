@@ -23,13 +23,12 @@ type SingleMatchedAccess struct {
 	topToTopTranslationMap       TranslationMap
 	satisfyingRequestedOrderings []*RequestedOrdering
 
-	// Lazily computed pulled-up group-by mappings. In Java this uses
+	// Lazily computed pulled-up group-by mappings. Java uses
 	// Suppliers.memoize with adjustGroupByMappings(Quantifier.current(),
-	// partialMatch.getCandidateRef().get()). The full adjustGroupByMappings
-	// depends on Value.pullUp infrastructure not yet ported; for now we
-	// delegate to matchInfo.GetGroupByMappings() which is correct when
-	// no pull-up adjustment is needed (the common case for non-aggregate
-	// indexes).
+	// partialMatch.getCandidateRef().get()). Go calls
+	// AdjustGroupByMappings with values.CurrentAlias (matching Java's
+	// Quantifier.current()) so the pulled-up values carry the canonical
+	// alias used by downstream aggregate index matching.
 	pulledUpGroupByMappingsOnce sync.Once
 	pulledUpGroupByMappings     *GroupByMappings
 }
@@ -122,7 +121,7 @@ func (s *SingleMatchedAccess) computePulledUpGroupByMappings() *GroupByMappings 
 	if resultValue == nil {
 		return gbm
 	}
-	return AdjustGroupByMappings(gbm, s.candidateTopAlias, resultValue)
+	return AdjustGroupByMappings(gbm, values.CurrentAlias, resultValue)
 }
 
 // String returns a human-readable representation mirroring Java's

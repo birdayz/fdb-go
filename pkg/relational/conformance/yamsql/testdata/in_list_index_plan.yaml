@@ -1,0 +1,71 @@
+# in_list_index_plan.yaml — IN-list queries must use InJoin(IndexScan)
+#
+# When a table has an index on a column used in an IN-list predicate,
+# the Cascades planner should produce an InJoin plan that iterates
+# over IN-list values and does per-value index probes. This is O(k)
+# where k = IN-list size, versus O(N) for a full scan + filter.
+#
+# The plan_contains assertions verify the optimization fires.
+name: in_list_index_plan
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    category STRING,
+    name STRING,
+    price BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_category ON items (category)
+  CREATE INDEX idx_price ON items (price)
+setup:
+  - INSERT INTO items VALUES
+      (1, 'books', 'Go Programming', 45),
+      (2, 'books', 'Algorithms', 60),
+      (3, 'electronics', 'Keyboard', 120),
+      (4, 'electronics', 'Mouse', 30),
+      (5, 'clothing', 'Shirt', 25),
+      (6, 'clothing', 'Jacket', 90),
+      (7, 'food', 'Coffee', 15),
+      (8, 'food', 'Tea', 10)
+tests:
+  # IN-list on indexed column with small list
+  - query: SELECT id, category FROM items WHERE category IN ('books', 'electronics') ORDER BY id
+    plan_contains: InJoin
+    rows:
+      - [1, 'books']
+      - [2, 'books']
+      - [3, 'electronics']
+      - [4, 'electronics']
+
+  # IN-list on indexed column with single value (should become equality)
+  - query: SELECT id, name FROM items WHERE category IN ('food') ORDER BY id
+    rows:
+      - [7, 'Coffee']
+      - [8, 'Tea']
+
+  # IN-list on integer indexed column
+  - query: SELECT id, name FROM items WHERE price IN (25, 45, 120) ORDER BY id
+    plan_contains: InJoin
+    rows:
+      - [1, 'Go Programming']
+      - [3, 'Keyboard']
+      - [5, 'Shirt']
+
+  # IN-list on PK column (should use PK index probe)
+  - query: SELECT id, name FROM items WHERE id IN (2, 5, 7) ORDER BY id
+    plan_contains: InJoin
+    rows:
+      - [2, 'Algorithms']
+      - [5, 'Shirt']
+      - [7, 'Coffee']
+
+  # IN-list with no matching rows
+  - query: SELECT id FROM items WHERE category IN ('toys', 'sports')
+    plan_contains: InJoin
+    rows: []
+
+  # IN-list combined with another predicate
+  - query: SELECT id, name FROM items WHERE category IN ('books', 'electronics') AND price > 50 ORDER BY id
+    rows:
+      - [2, 'Algorithms']
+      - [3, 'Keyboard']
