@@ -1628,6 +1628,38 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		}
 	})
 
+	t.Run("having_on_different_agg_than_select", func(t *testing.T) {
+		// SELECT SUM but HAVING on COUNT — different agg in filter vs output
+		rows, err := db.QueryContext(ctx,
+			"SELECT region, SUM(amount) FROM sales GROUP BY region HAVING COUNT(*) >= 2 ORDER BY region")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		type row struct {
+			region string
+			total  int64
+		}
+		var got []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.region, &r.total); err != nil {
+				t.Fatalf("Scan: %v", err)
+			}
+			got = append(got, r)
+		}
+		// EU cnt=2, US cnt=3 → both pass HAVING. APAC cnt=1 excluded.
+		want := []row{{"EU", 125}, {"US", 600}}
+		if len(got) != len(want) {
+			t.Fatalf("row count: got %d (%+v), want %d", len(got), got, len(want))
+		}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("row %d: got %+v, want %+v", i, got[i], w)
+			}
+		}
+	})
+
 	t.Run("having_or_condition", func(t *testing.T) {
 		// HAVING with OR: either high count OR high sum
 		rows, err := db.QueryContext(ctx,
