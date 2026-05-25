@@ -19030,6 +19030,85 @@ func TestFDB_DeleteThenInsertSameKey(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinCountGroupByWithHaving — JOIN + GROUP BY + HAVING COUNT
+func TestFDB_JoinCountGroupByHaving(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jcgh",
+		"CREATE TABLE jcgh_authors(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jcgh_books(id BIGINT, author_id BIGINT, title STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO jcgh_authors VALUES (1,'alice'),(2,'bob'),(3,'carol')"); err != nil {
+		t.Fatalf("INSERT authors: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO jcgh_books VALUES
+		(10,1,'book1'),(11,1,'book2'),(12,1,'book3'),
+		(20,2,'book4'),
+		(30,3,'book5'),(31,3,'book6')`); err != nil {
+		t.Fatalf("INSERT books: %v", err)
+	}
+
+	t.Run("authors_with_2plus_books", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name, COUNT(*) FROM jcgh_authors a
+			JOIN jcgh_books b ON a.id = b.author_id
+			GROUP BY a.name
+			HAVING COUNT(*) >= 2
+			ORDER BY a.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (alice=3, carol=2), got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" || toInt64(rows[0][1]) != 3 {
+			t.Errorf("alice: want 3, got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "carol" || toInt64(rows[1][1]) != 2 {
+			t.Errorf("carol: want 2, got %v", rows[1])
+		}
+	})
+}
+
+// TestFDB_LimitZero — LIMIT 0 returns no rows
+func TestFDB_LimitZeroReturnsNothing(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "lzrn",
+		"CREATE TABLE lzrn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO lzrn_t VALUES (1,10),(2,20),(3,30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("limit_0", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM lzrn_t LIMIT 0")
+		if len(rows) != 0 {
+			t.Errorf("want 0 rows with LIMIT 0, got %d", len(rows))
+		}
+	})
+
+	t.Run("limit_1", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lzrn_t ORDER BY id LIMIT 1")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
+			t.Errorf("want [1], got %v", rows)
+		}
+	})
+
+	t.Run("limit_exceeds_rows", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lzrn_t LIMIT 100")
+		if len(rows) != 3 {
+			t.Errorf("want 3 (all rows), got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
