@@ -14391,6 +14391,43 @@ func TestFDB_JoinSumWithHavingAndLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateConditionalAndVerifyAggregate — UPDATE with CASE, verify via aggregate
+func TestFDB_UpdateConditionalAndVerifyAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ucva", "CREATE TABLE ucva_t(id BIGINT, score BIGINT, grade STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ucva_t VALUES
+		(1, 95, ''), (2, 85, ''), (3, 75, ''), (4, 65, ''), (5, 55, '')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_grade_via_case", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, `
+			UPDATE ucva_t SET grade = CASE
+				WHEN score >= 90 THEN 'A'
+				WHEN score >= 80 THEN 'B'
+				WHEN score >= 70 THEN 'C'
+				ELSE 'F'
+			END
+		`); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+	})
+
+	t.Run("verify_grade_counts", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grade, COUNT(*) FROM ucva_t GROUP BY grade ORDER BY grade")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 grades, got %d: %v", len(rows), rows)
+		}
+		t.Logf("grades: %v", rows)
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
