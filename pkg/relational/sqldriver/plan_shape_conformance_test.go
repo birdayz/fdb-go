@@ -15211,6 +15211,43 @@ func TestFDB_CTEWithUnionAll(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithWhereAndCase — JOIN + WHERE + CASE WHEN in SELECT
+func TestFDB_JoinWithWhereAndCase(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwwc",
+		"CREATE TABLE jwwc_emp(id BIGINT, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwwc_dept(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO jwwc_emp VALUES
+		(1, 'alice', 1, 100), (2, 'bob', 1, 150), (3, 'charlie', 2, 80)
+	`); err != nil {
+		t.Fatalf("INSERT emp: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwwc_dept VALUES (1, 'eng'), (2, 'sales')"); err != nil {
+		t.Fatalf("INSERT dept: %v", err)
+	}
+
+	t.Run("join_where_case", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT e.name, d.name,
+				CASE WHEN e.salary >= 100 THEN 'senior' ELSE 'junior' END AS level
+			FROM jwwc_emp e JOIN jwwc_dept d ON e.dept_id = d.id
+			WHERE d.name = 'eng'
+			ORDER BY e.salary DESC
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 eng employees, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][2]) != "senior" {
+			t.Errorf("bob(150): should be senior, got %v", rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
