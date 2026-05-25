@@ -14504,6 +14504,59 @@ func TestFDB_UnionAllThreeWayAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_DeleteWithMultipleConditions — DELETE with AND/OR/IN conditions
+func TestFDB_DeleteWithMultipleConditions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dwmc2", "CREATE TABLE dwmc_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO dwmc_t VALUES
+		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40),
+		(5, 'B', 50), (6, 'A', 60), (7, 'C', 70)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_with_and", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dwmc_t WHERE cat = 'A' AND val < 35")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 (id=1:10, id=3:30), got %d", n)
+		}
+	})
+
+	t.Run("verify_remaining", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM dwmc_t")
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("want 5 remaining, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("delete_with_in", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dwmc_t WHERE cat IN ('B', 'C')")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 4 {
+			t.Errorf("want 4 (B:2 + C:2), got %d", n)
+		}
+	})
+
+	t.Run("only_a_remains", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM dwmc_t ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 6 {
+			t.Errorf("only id=6 (A,60) should remain, got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
