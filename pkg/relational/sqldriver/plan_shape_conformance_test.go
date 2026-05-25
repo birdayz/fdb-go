@@ -5219,3 +5219,51 @@ func TestFDB_OrPredicateWithJoin(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_CaseWhenInListCombined(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "casein2",
+		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id))")
+
+	for _, o := range []struct {
+		id, amt int
+		s       string
+	}{
+		{1, 100, "new"},
+		{2, 200, "processing"},
+		{3, 300, "shipped"},
+		{4, 400, "delivered"},
+		{5, 50, "cancelled"},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.s, o.amt))
+	}
+
+	t.Run("case_in_list", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT id,
+			        CASE WHEN status IN ('new', 'processing') THEN 'pending'
+			             WHEN status IN ('shipped', 'delivered') THEN 'complete'
+			             ELSE 'other'
+			        END AS category,
+			        amount
+			 FROM orders ORDER BY id`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if rows[0][1].(string) != "pending" {
+			t.Errorf("id=1 (new): got %v, want pending", rows[0][1])
+		}
+		if rows[2][1].(string) != "complete" {
+			t.Errorf("id=3 (shipped): got %v, want complete", rows[2][1])
+		}
+		if rows[4][1].(string) != "other" {
+			t.Errorf("id=5 (cancelled): got %v, want other", rows[4][1])
+		}
+	})
+
+	_ = ctx
+}
