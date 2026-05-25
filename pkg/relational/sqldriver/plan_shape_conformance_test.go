@@ -17642,6 +17642,110 @@ func TestFDB_100RowDataset(t *testing.T) {
 	})
 }
 
+// TestFDB_LeftJoinCountSumPerDept — LEFT JOIN dept→emp, COUNT(e.id) and SUM(salary) per dept
+func TestFDB_LeftJoinCountSumPerDept(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ljcsd",
+		"CREATE TABLE ljcsd_dept(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE ljcsd_emp(id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ljcsd_dept VALUES (1,'eng'),(2,'sales'),(3,'hr')"); err != nil {
+		t.Fatalf("INSERT dept: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ljcsd_emp VALUES (10,1,100),(11,1,120),(12,2,80)"); err != nil {
+		t.Fatalf("INSERT emp: %v", err)
+	}
+
+	t.Run("count_per_dept_left", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT d.name, COUNT(e.id) FROM ljcsd_dept d
+			LEFT JOIN ljcsd_emp e ON d.id = e.dept_id
+			GROUP BY d.name
+			ORDER BY d.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 depts, got %d", len(rows))
+		}
+		// eng=2, hr=0, sales=1
+		wantCnt := []int64{2, 0, 1}
+		for i, w := range wantCnt {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("%v: want %d, got %v", rows[i][0], w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("sum_salary_coalesce", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT d.name, COALESCE(SUM(e.salary), 0) FROM ljcsd_dept d
+			LEFT JOIN ljcsd_emp e ON d.id = e.dept_id
+			GROUP BY d.name
+			ORDER BY d.name
+		`)
+		// eng=220, hr=0, sales=80
+		wantSum := []int64{220, 0, 80}
+		for i, w := range wantSum {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("%v: want %d, got %v", rows[i][0], w, rows[i][1])
+			}
+		}
+	})
+}
+
+// TestFDB_MultipleInsertsThenAggregate — multiple INSERT batches then verify
+func TestFDB_MultipleInsertsThenAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mita",
+		"CREATE TABLE mita_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+
+	for batch := 0; batch < 5; batch++ {
+		var b strings.Builder
+		for i := 0; i < 10; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			id := batch*10 + i + 1
+			fmt.Fprintf(&b, "(%d,%d)", id, id*2)
+		}
+		if _, err := db.ExecContext(ctx, "INSERT INTO mita_t VALUES "+b.String()); err != nil {
+			t.Fatalf("INSERT batch %d: %v", batch, err)
+		}
+	}
+
+	t.Run("total_50_rows", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM mita_t")
+		if toInt64(rows[0][0]) != 50 {
+			t.Errorf("want 50, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_vals", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM mita_t")
+		// val = 2*id, sum = 2*(1+2+...+50) = 2*1275 = 2550
+		if toInt64(rows[0][0]) != 2550 {
+			t.Errorf("want 2550, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("min_max", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT MIN(val), MAX(val) FROM mita_t")
+		if toInt64(rows[0][0]) != 2 || toInt64(rows[0][1]) != 100 {
+			t.Errorf("want min=2 max=100, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
