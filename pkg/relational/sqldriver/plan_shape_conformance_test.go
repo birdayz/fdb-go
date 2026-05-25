@@ -10849,6 +10849,94 @@ func TestFDB_SelectExpressions(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinSelfReference — self-join patterns
+func TestFDB_JoinSelfReference(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sjref", "CREATE TABLE employees(id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO employees VALUES
+		(1, 'ceo', NULL), (2, 'vp1', 1), (3, 'vp2', 1),
+		(4, 'mgr1', 2), (5, 'mgr2', 2), (6, 'dev1', 4)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("self_join_manager", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT e.name, m.name AS manager
+			FROM employees e JOIN employees m ON e.manager_id = m.id
+			ORDER BY e.name
+		`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5 (all except ceo who has NULL manager_id), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("self_join_count_reports", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT m.name, COUNT(*) AS reports
+			FROM employees e JOIN employees m ON e.manager_id = m.id
+			GROUP BY m.name
+			ORDER BY reports DESC
+		`)
+		if len(rows) < 2 {
+			t.Fatalf("want at least 2 managers, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "ceo" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("ceo should have 2 reports, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
+// TestFDB_WhereWithMultipleConditions — complex WHERE with many predicates
+func TestFDB_WhereWithMultipleConditions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wmcond", "CREATE TABLE wmc_t(id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wmc_t VALUES
+		(1, 10, 'foo', 100), (2, 20, 'bar', 200), (3, 30, 'foo', 300),
+		(4, 40, 'baz', 400), (5, 50, 'foo', 500), (6, 10, 'bar', 150)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("and_chain", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE a >= 10 AND a <= 30 AND b = 'foo' ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (id=1,3), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("or_with_and", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE (b = 'foo' AND c > 200) OR (b = 'bar' AND c < 200) ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (id=3:foo+300, id=5:foo+500, id=6:bar+150), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("between_and_eq", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE a BETWEEN 20 AND 40 AND b = 'foo' ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
+			t.Errorf("want id=3, got %v", rows)
+		}
+	})
+
+	t.Run("not_equal_combined", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE b <> 'foo' AND c > 100 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (id=2,4,6), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
