@@ -5161,3 +5161,61 @@ func TestFDB_NestedDerivedWithIsNullNotNull(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_OrPredicateWithJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "orjoin",
+		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, level STRING, PRIMARY KEY (id))")
+
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'Engineering')")
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (2, 'Sales')")
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (3, 'HR')")
+	for _, e := range []struct {
+		id, did   int
+		name, lvl string
+	}{
+		{1, 1, "Alice", "senior"},
+		{2, 1, "Bob", "junior"},
+		{3, 2, "Charlie", "senior"},
+		{4, 2, "Dave", "junior"},
+		{5, 3, "Eve", "senior"},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO emp VALUES (%d, '%s', %d, '%s')", e.id, e.name, e.did, e.lvl))
+	}
+
+	t.Run("or_on_different_tables", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT e.name, d.name AS dept
+			 FROM emp e, dept d
+			 WHERE e.dept_id = d.id AND (d.name = 'Engineering' OR e.level = 'senior')
+			 ORDER BY e.name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d: %v", len(rows), rows)
+		}
+		names := make([]string, len(rows))
+		for i, r := range rows {
+			names[i] = r[0].(string)
+		}
+		t.Logf("names: %v", names)
+		if names[0] != "Alice" || names[1] != "Bob" {
+			t.Errorf("first two should be Alice, Bob (Engineering)")
+		}
+	})
+
+	t.Run("or_same_column", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT e.name FROM emp e
+			 WHERE e.level = 'senior' OR e.level = 'junior'
+			 ORDER BY e.name`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5 (all employees), got %d", len(rows))
+		}
+	})
+
+	_ = ctx
+}
