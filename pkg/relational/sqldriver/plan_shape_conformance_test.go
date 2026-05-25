@@ -12084,6 +12084,48 @@ func TestFDB_JoinAggregateWithHaving(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithAlias — column and table aliases in various positions
+func TestFDB_SelectWithAlias(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "swal", "CREATE TABLE swa_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO swa_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("column_alias", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id AS key, val AS value FROM swa_t ORDER BY key")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+	})
+
+	t.Run("table_alias_qualified", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT t.id, t.val FROM swa_t t ORDER BY t.id")
+		if len(rows) != 3 || toInt64(rows[0][0]) != 1 {
+			t.Errorf("want id=1, got %v", rows)
+		}
+	})
+
+	t.Run("aggregate_alias_in_order_by", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT val AS v FROM swa_t ORDER BY v DESC")
+		if toInt64(rows[0][0]) != 300 {
+			t.Errorf("first val DESC should be 300, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("expression_alias", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val * 2 AS doubled FROM swa_t ORDER BY id")
+		if toInt64(rows[0][1]) != 200 {
+			t.Errorf("100*2=200, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
