@@ -11307,6 +11307,45 @@ func TestFDB_GroupByWithOrderByAndLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEInDML — CTE used in INSERT...SELECT
+func TestFDB_CTEInDML(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctdml",
+		"CREATE TABLE ct_src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE ct_dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ct_src VALUES (1, 10), (2, 20), (3, 30), (4, 40)"); err != nil {
+		t.Fatalf("INSERT src: %v", err)
+	}
+
+	t.Run("cte_insert_select_unsupported", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `
+			WITH filtered AS (SELECT * FROM ct_src WHERE val > 15)
+			INSERT INTO ct_dst SELECT * FROM filtered
+		`)
+		if err == nil {
+			t.Errorf("expected error for CTE in INSERT...SELECT")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("plain_insert_select_works", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO ct_dst SELECT * FROM ct_src WHERE val > 25")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 (val>25: 30,40), got %d", n)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
