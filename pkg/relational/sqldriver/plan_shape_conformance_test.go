@@ -14465,6 +14465,45 @@ func TestFDB_SelectWithWhereAndOrderByLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllThreeWayAggregate — 3-way UNION ALL with aggregates
+func TestFDB_UnionAllThreeWayAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "u3wa",
+		"CREATE TABLE u3wa_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE u3wa_b(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE u3wa_c(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO u3wa_a VALUES (1, 10), (2, 20)"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO u3wa_b VALUES (3, 30)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO u3wa_c VALUES (4, 40), (5, 50), (6, 60)"); err != nil {
+		t.Fatalf("INSERT c: %v", err)
+	}
+
+	t.Run("three_way_count_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*), SUM(val) FROM (
+				SELECT val FROM u3wa_a
+				UNION ALL SELECT val FROM u3wa_b
+				UNION ALL SELECT val FROM u3wa_c
+			) AS all_data
+		`)
+		if toInt64(rows[0][0]) != 6 {
+			t.Errorf("COUNT = 2+1+3 = 6, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 210 {
+			t.Errorf("SUM = 10+20+30+40+50+60 = 210, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
