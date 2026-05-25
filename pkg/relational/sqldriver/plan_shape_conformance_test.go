@@ -5307,3 +5307,60 @@ func TestFDB_TwoDerivedTablesCrossJoined(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_DerivedTableExistsJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "dtexjn",
+		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))")
+
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'Engineering')")
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (2, 'Sales')")
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (3, 'HR')")
+	db.ExecContext(ctx, "INSERT INTO emp VALUES (1, 'Alice', 1)")
+	db.ExecContext(ctx, "INSERT INTO emp VALUES (2, 'Bob', 1)")
+	db.ExecContext(ctx, "INSERT INTO emp VALUES (3, 'Charlie', 2)")
+	db.ExecContext(ctx, "INSERT INTO project VALUES (1, 'Alpha', 1)")
+	db.ExecContext(ctx, "INSERT INTO project VALUES (2, 'Beta', 2)")
+
+	t.Run("derived_table_join_agg", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT sub.dept_name, sub.emp_count
+			 FROM (SELECT d.name AS dept_name, COUNT(e.id) AS emp_count
+			       FROM dept d, emp e
+			       WHERE d.id = e.dept_id
+			       GROUP BY d.name) sub
+			 ORDER BY sub.dept_name`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Engineering" || rows[0][1].(int64) != 2 {
+			t.Errorf("row 0: got %v, want [Engineering, 2]", rows[0])
+		}
+		if rows[1][0].(string) != "Sales" || rows[1][1].(int64) != 1 {
+			t.Errorf("row 1: got %v, want [Sales, 1]", rows[1])
+		}
+	})
+
+	t.Run("three_way_dept_project_join", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT d.name, p.name AS project, COUNT(e.id) AS team_size
+			 FROM dept d, emp e, project p
+			 WHERE d.id = e.dept_id AND d.id = p.dept_id
+			 GROUP BY d.name, p.name
+			 ORDER BY d.name, p.name`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Engineering" || rows[0][2].(int64) != 2 {
+			t.Errorf("row 0: got %v, want [Engineering, Alpha, 2]", rows[0])
+		}
+	})
+
+	_ = ctx
+}
