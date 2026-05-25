@@ -3340,3 +3340,174 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_EmptyTableAggregates(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "emptyagg",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+
+	t.Run("sum_empty_is_null", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT SUM(col1) FROM t1")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatal("expected 1 row")
+		}
+		var v *int64
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if v != nil {
+			t.Errorf("SUM on empty table: got %d, want NULL", *v)
+		}
+	})
+
+	t.Run("count_star_empty_is_zero", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT COUNT(*) FROM t1")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatal("expected 1 row")
+		}
+		var cnt int64
+		if err := rows.Scan(&cnt); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if cnt != 0 {
+			t.Errorf("COUNT(*) on empty table: got %d, want 0", cnt)
+		}
+	})
+
+	t.Run("sum_and_count_empty", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatal("expected 1 row")
+		}
+		var sumVal *int64
+		var cntVal int64
+		if err := rows.Scan(&sumVal, &cntVal); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if sumVal != nil {
+			t.Errorf("SUM: got %d, want NULL", *sumVal)
+		}
+		if cntVal != 0 {
+			t.Errorf("COUNT: got %d, want 0", cntVal)
+		}
+	})
+
+	t.Run("union_all_empty_tables", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT col1, col2 FROM t1 UNION ALL SELECT col1, col2 FROM t1")
+		if len(rows) != 0 {
+			t.Fatalf("want 0 rows, got %d", len(rows))
+		}
+	})
+
+	_ = ctx
+}
+
+func TestFDB_CompositeAggregateExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "compagg",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, grp BIGINT, val BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id, grp, val int
+	}{
+		{1, 1, 10},
+		{2, 1, 20},
+		{3, 1, 30},
+		{4, 2, 100},
+		{5, 2, 200},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.grp, r.val)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("sum_and_count_per_group", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT grp, SUM(val), COUNT(*) FROM t1 GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 60 || rows[0][2].(int64) != 3 {
+			t.Errorf("grp 1: got sum=%v count=%v, want 60, 3", rows[0][1], rows[0][2])
+		}
+		if rows[1][1].(int64) != 300 || rows[1][2].(int64) != 2 {
+			t.Errorf("grp 2: got sum=%v count=%v, want 300, 2", rows[1][1], rows[1][2])
+		}
+	})
+
+	t.Run("avg_as_sum_div_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT grp, SUM(val) / COUNT(*) FROM t1 GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 20 {
+			t.Errorf("grp 1 avg: got %v, want 20", rows[0][1])
+		}
+		if rows[1][1].(int64) != 150 {
+			t.Errorf("grp 2 avg: got %v, want 150", rows[1][1])
+		}
+	})
+
+	t.Run("min_max_per_group", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT grp, MIN(val), MAX(val) FROM t1 GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 10 || rows[0][2].(int64) != 30 {
+			t.Errorf("grp 1: got min=%v max=%v, want 10, 30", rows[0][1], rows[0][2])
+		}
+		if rows[1][1].(int64) != 100 || rows[1][2].(int64) != 200 {
+			t.Errorf("grp 2: got min=%v max=%v, want 100, 200", rows[1][1], rows[1][2])
+		}
+	})
+
+	t.Run("having_with_sum_and_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT grp, SUM(val) FROM t1 GROUP BY grp HAVING COUNT(*) > 2")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row (grp 1), got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 1 || rows[0][1].(int64) != 60 {
+			t.Errorf("got grp=%v sum=%v, want 1, 60", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("duplicate_alias_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT grp AS g, grp AS g2, SUM(val) AS s1, SUM(val) AS s2 FROM t1 GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][0] != rows[0][1] || rows[0][2] != rows[0][3] {
+			t.Errorf("duplicate aliases should match: %v", rows[0])
+		}
+	})
+
+	_ = ctx
+}
