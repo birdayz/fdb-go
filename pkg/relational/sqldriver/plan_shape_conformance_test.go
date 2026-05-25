@@ -13527,6 +13527,51 @@ func TestFDB_SelectCountWithVariousFilters(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllWithAggregatePerLeg — each UNION ALL leg has its own aggregate
+func TestFDB_UnionAllWithAggregatePerLeg(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uaapl",
+		"CREATE TABLE uaa_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE uaa_b(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO uaa_a VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO uaa_b VALUES (4, 40), (5, 50)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("aggregate_per_leg_no_order", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*), SUM(val) FROM uaa_a
+			UNION ALL
+			SELECT COUNT(*), SUM(val) FROM uaa_b
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		t.Logf("per-leg aggregates: %v", rows)
+	})
+
+	t.Run("sum_all_values_via_union", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(val), COUNT(*) FROM (
+				SELECT val FROM uaa_a UNION ALL SELECT val FROM uaa_b
+			) AS combined
+		`)
+		if toInt64(rows[0][0]) != 150 {
+			t.Errorf("SUM all = 10+20+30+40+50 = 150, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 5 {
+			t.Errorf("COUNT all = 5, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
