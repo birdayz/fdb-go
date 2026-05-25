@@ -10013,6 +10013,90 @@ func TestFDB_PrimaryKeyOperations(t *testing.T) {
 	})
 }
 
+// TestFDB_LargeDataSet — tests with more than a handful of rows
+func TestFDB_LargeDataSet(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "lrgds", "CREATE TABLE big_t(id BIGINT, val BIGINT, grp BIGINT, PRIMARY KEY(id))")
+	for i := 1; i <= 100; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO big_t VALUES (%d, %d, %d)", i, i*10, (i-1)%5)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	t.Run("count_100", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM big_t")
+		if toInt64(rows[0][0]) != 100 {
+			t.Errorf("want 100, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_100", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM big_t")
+		if toInt64(rows[0][0]) != 50500 {
+			t.Errorf("SUM(1..100 * 10) = 50500, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("group_by_5_groups", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM big_t GROUP BY grp ORDER BY grp")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 groups, got %d", len(rows))
+		}
+		for _, r := range rows {
+			if toInt64(r[1]) != 20 {
+				t.Errorf("grp %v: want 20 items, got %v", r[0], r[1])
+			}
+		}
+	})
+
+	t.Run("limit_on_large", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM big_t ORDER BY id LIMIT 5")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if toInt64(rows[4][0]) != 5 {
+			t.Errorf("5th row should be id=5, got %v", rows[4][0])
+		}
+	})
+
+	t.Run("filter_on_large", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM big_t WHERE val > 500")
+		if toInt64(rows[0][0]) != 50 {
+			t.Errorf("val>500 means id>50, want 50 rows, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("min_max_on_large", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT MIN(val), MAX(val) FROM big_t")
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("MIN should be 10, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 1000 {
+			t.Errorf("MAX should be 1000, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("delete_half_verify", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM big_t WHERE id > 50")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 50 {
+			t.Errorf("want 50 deleted, got %d", n)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM big_t")
+		if toInt64(rows[0][0]) != 50 {
+			t.Errorf("50 remaining, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
