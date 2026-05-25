@@ -3613,3 +3613,77 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aggdesc",
+		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status")
+
+	for _, o := range []struct {
+		id     int
+		status string
+		amount int
+	}{
+		{1, "pending", 100},
+		{2, "pending", 200},
+		{3, "shipped", 300},
+		{4, "shipped", 400},
+		{5, "shipped", 500},
+		{6, "delivered", 600},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("order_by_group_key_asc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "delivered" {
+			t.Errorf("first: got %v, want delivered", rows[0][0])
+		}
+		if rows[2][0].(string) != "shipped" {
+			t.Errorf("last: got %v, want shipped", rows[2][0])
+		}
+	})
+
+	t.Run("order_by_group_key_desc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status DESC")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "shipped" {
+			t.Errorf("first: got %v, want shipped", rows[0][0])
+		}
+		if rows[2][0].(string) != "delivered" {
+			t.Errorf("last: got %v, want delivered", rows[2][0])
+		}
+	})
+
+	t.Run("order_by_aggregate_desc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT status, COUNT(*) AS cnt FROM orders GROUP BY status ORDER BY cnt DESC")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 3 {
+			t.Errorf("first count: got %v, want 3 (shipped)", rows[0][1])
+		}
+		if rows[2][1].(int64) != 1 {
+			t.Errorf("last count: got %v, want 1 (delivered)", rows[2][1])
+		}
+	})
+
+	_ = ctx
+}
