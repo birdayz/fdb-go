@@ -1,0 +1,104 @@
+# distinct_from_java.yaml — IS [NOT] DISTINCT FROM patterns from
+# Java's distinct-from.yamsql. Tests NULL-safe comparison semantics:
+# IS DISTINCT FROM (not equal, treating NULL as a value) and
+# IS NOT DISTINCT FROM (equal, treating NULL = NULL).
+name: distinct_from_java
+schema_template: |
+  CREATE TABLE t1 (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t1 VALUES
+      (1, 10, 1),
+      (2, 10, null),
+      (3, 10, 3),
+      (4, 10, null),
+      (5, 10, 5),
+      (6, 20, null),
+      (7, 20, null),
+      (8, 20, null),
+      (9, 20, 9),
+      (10, 20, 10)
+tests:
+  # IS DISTINCT FROM null — returns non-NULL rows
+  - query: SELECT id FROM t1 WHERE col2 IS DISTINCT FROM null ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [5]
+      - [9]
+      - [10]
+
+  # IS DISTINCT FROM value — returns rows where col != value OR col IS NULL
+  - query: SELECT id FROM t1 WHERE col1 IS DISTINCT FROM 10 ORDER BY id
+    rows:
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # Reversed: null IS DISTINCT FROM col — same semantics
+  - query: SELECT id FROM t1 WHERE null IS DISTINCT FROM col2 ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [5]
+      - [9]
+      - [10]
+
+  # Reversed: value IS DISTINCT FROM col
+  - query: SELECT id FROM t1 WHERE 10 IS DISTINCT FROM col1 ORDER BY id
+    rows:
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # null IS DISTINCT FROM null → FALSE (null equals null)
+  - query: SELECT COUNT(*) FROM t1 WHERE null IS DISTINCT FROM null
+    rows:
+      - [0]
+
+  # 10 IS DISTINCT FROM 10 → FALSE
+  - query: SELECT COUNT(*) FROM t1 WHERE 10 IS DISTINCT FROM 10
+    rows:
+      - [0]
+
+  # IS NOT DISTINCT FROM null — returns NULL rows
+  - query: SELECT id FROM t1 WHERE col2 IS NOT DISTINCT FROM null ORDER BY id
+    rows:
+      - [2]
+      - [4]
+      - [6]
+      - [7]
+      - [8]
+
+  # IS NOT DISTINCT FROM value — like = but NULL-safe
+  - query: SELECT id FROM t1 WHERE col1 IS NOT DISTINCT FROM 20 ORDER BY id
+    rows:
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # null IS NOT DISTINCT FROM null → TRUE
+  - query: SELECT COUNT(*) FROM t1 WHERE null IS NOT DISTINCT FROM null
+    rows:
+      - [10]
+
+  # 10 IS NOT DISTINCT FROM 10 → TRUE
+  - query: SELECT COUNT(*) FROM t1 WHERE 10 IS NOT DISTINCT FROM 10
+    rows:
+      - [10]
+
+  # Combined: DISTINCT FROM in GROUP BY
+  - query: SELECT col1, COUNT(*) FROM t1 WHERE col2 IS DISTINCT FROM null GROUP BY col1 ORDER BY col1
+    rows:
+      - [10, 3]
+      - [20, 2]
