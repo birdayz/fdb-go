@@ -13608,6 +13608,36 @@ func TestFDB_JoinWithGroupByAndCoalesce(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithOrAndIn — WHERE combining OR with IN
+func TestFDB_WhereWithOrAndIn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "woai", "CREATE TABLE woai_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO woai_t VALUES
+		(1, 'A', 10), (2, 'B', 20), (3, 'C', 30), (4, 'D', 40), (5, 'A', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("or_with_in", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM woai_t WHERE cat IN ('A', 'B') OR val > 35 ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (A:1,5 + B:2 + val>35:4), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("and_with_in", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM woai_t WHERE cat IN ('A', 'C') AND val >= 30 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (C:30, A:50), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
