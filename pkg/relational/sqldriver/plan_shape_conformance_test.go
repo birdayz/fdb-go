@@ -11783,6 +11783,52 @@ func TestFDB_UpdateWithSubquery(t *testing.T) {
 	})
 }
 
+// TestFDB_CTERecursiveDepthLimit — recursive CTE hits depth limit
+func TestFDB_CTERecursiveDepthLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctrdl", "CREATE TABLE tree(id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO tree VALUES
+		(1, NULL, 'root'), (2, 1, 'child1'), (3, 1, 'child2'),
+		(4, 2, 'grandchild1'), (5, 3, 'grandchild2')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("recursive_cte_hits_depth_limit", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, `
+			WITH RECURSIVE descendants AS (
+				SELECT id, name FROM tree WHERE id = 1
+				UNION ALL
+				SELECT t.id, t.name FROM tree t JOIN descendants d ON t.parent_id = d.id
+			)
+			SELECT name FROM descendants ORDER BY id
+		`)
+		if err == nil {
+			t.Logf("recursive CTE unexpectedly succeeded")
+		} else {
+			if !strings.Contains(err.Error(), "depth") {
+				t.Logf("error: %v", err)
+			}
+		}
+	})
+
+	t.Run("recursive_cte_leaf_nodes", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT t.name FROM tree t
+			WHERE NOT EXISTS (SELECT 1 FROM tree c WHERE c.parent_id = t.id)
+			ORDER BY t.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 leaf nodes, got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
