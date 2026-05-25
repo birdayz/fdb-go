@@ -13764,6 +13764,48 @@ func TestFDB_DeleteWithJoinedFilter(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateWithArithmeticAndWhere — UPDATE SET with arithmetic and WHERE
+func TestFDB_UpdateWithArithmeticAndWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uwaw", "CREATE TABLE uwaw_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO uwaw_t VALUES (1, 10, 5), (2, 20, 3), (3, 30, 7)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("double_price_where_qty_gt_4", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE uwaw_t SET price = price * 2 WHERE qty > 4")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 updated (qty=5,7), got %d", n)
+		}
+		rows := collectRows(t, db, "SELECT id, price FROM uwaw_t ORDER BY id")
+		if toInt64(rows[0][1]) != 20 {
+			t.Errorf("id=1: 10*2=20, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 20 {
+			t.Errorf("id=2: unchanged 20, got %v", rows[1][1])
+		}
+		if toInt64(rows[2][1]) != 60 {
+			t.Errorf("id=3: 30*2=60, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("verify_sum_after_update", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(price), SUM(price * qty) FROM uwaw_t")
+		if toInt64(rows[0][0]) != 100 {
+			t.Errorf("SUM(price) = 20+20+60 = 100, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
