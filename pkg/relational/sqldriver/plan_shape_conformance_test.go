@@ -12811,6 +12811,44 @@ func TestFDB_WhereOnJoinColumns(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEMultipleUsage — single CTE referenced multiple times in query
+func TestFDB_CTEMultipleUsage(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctmu", "CREATE TABLE ctmu_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ctmu_t VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("cte_used_in_join_with_self", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH base AS (SELECT id, val FROM ctmu_t WHERE val >= 20)
+			SELECT a.id, b.id FROM base a JOIN base b ON a.id < b.id
+			ORDER BY a.id, b.id
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 pair (2,3), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 2 || toInt64(rows[0][1]) != 3 {
+			t.Errorf("want (2,3), got (%v,%v)", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("cte_with_where_reuse", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH data AS (SELECT * FROM ctmu_t)
+			SELECT COUNT(*), SUM(val) FROM data
+		`)
+		if toInt64(rows[0][0]) != 3 || toInt64(rows[0][1]) != 60 {
+			t.Errorf("want count=3 sum=60, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
