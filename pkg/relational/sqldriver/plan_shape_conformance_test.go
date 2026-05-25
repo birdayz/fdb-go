@@ -14979,6 +14979,43 @@ func TestFDB_SelectWithMultipleAggregatesAndWhere(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithGroupByCountAndLimit — JOIN + GROUP BY + COUNT + ORDER BY + LIMIT
+func TestFDB_JoinWithGroupByCountAndLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jgcl",
+		"CREATE TABLE jgcl_authors(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jgcl_books(id BIGINT, author_id BIGINT, title STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jgcl_authors VALUES (1, 'tolkien'), (2, 'rowling'), (3, 'martin')"); err != nil {
+		t.Fatalf("INSERT authors: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO jgcl_books VALUES
+		(1, 1, 'lotr'), (2, 1, 'hobbit'), (3, 1, 'silmarillion'),
+		(4, 2, 'hp1'), (5, 2, 'hp2'),
+		(6, 3, 'got')
+	`); err != nil {
+		t.Fatalf("INSERT books: %v", err)
+	}
+
+	t.Run("most_prolific_author", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name, COUNT(*) AS book_count
+			FROM jgcl_authors a JOIN jgcl_books b ON a.id = b.author_id
+			GROUP BY a.name ORDER BY book_count DESC LIMIT 1
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "tolkien" || toInt64(rows[0][1]) != 3 {
+			t.Errorf("want tolkien(3), got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
