@@ -14625,6 +14625,48 @@ func TestFDB_JoinWithCoalesceInGroupBy(t *testing.T) {
 	})
 }
 
+// TestFDB_MultiColumnInsertAndQuery — multiple string+bigint columns
+func TestFDB_MultiColumnInsertAndQuery(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mciq", "CREATE TABLE mciq_t(id BIGINT, first STRING, last STRING, age BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO mciq_t VALUES
+		(1, 'alice', 'smith', 30, 90),
+		(2, 'bob', 'jones', 25, 85),
+		(3, 'charlie', 'smith', 35, 70),
+		(4, 'david', 'jones', 28, 95)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("filter_and_project", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT first, score FROM mciq_t WHERE last = 'smith' ORDER BY score DESC")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 smiths, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" || toInt64(rows[0][1]) != 90 {
+			t.Errorf("first smith by score: want alice 90, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("group_by_last_name_avg", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT last, SUM(score) / COUNT(*) AS avg_score FROM mciq_t GROUP BY last ORDER BY last")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 90 {
+			t.Errorf("jones avg = (85+95)/2 = 90, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 80 {
+			t.Errorf("smith avg = (90+70)/2 = 80, got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
