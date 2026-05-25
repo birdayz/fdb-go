@@ -13482,6 +13482,51 @@ func TestFDB_JoinWithCoalesceAndCase(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectCountWithVariousFilters — COUNT(*) with different WHERE patterns
+func TestFDB_SelectCountWithVariousFilters(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "scvf", "CREATE TABLE scvf_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO scvf_t VALUES
+		(1, 'active', 90), (2, 'inactive', 60), (3, 'active', 80),
+		(4, 'active', 70), (5, 'inactive', 50), (6, 'active', 95)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("count_all", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t")
+		if toInt64(rows[0][0]) != 6 {
+			t.Errorf("want 6, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_with_eq", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE status = 'active'")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want 4 active, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_with_gt", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE score > 75")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 (80,90,95), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_with_combined", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE status = 'active' AND score >= 80")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 (80,90,95 active), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
