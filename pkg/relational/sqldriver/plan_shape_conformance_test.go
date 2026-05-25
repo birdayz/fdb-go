@@ -15478,6 +15478,34 @@ func TestFDB_JoinWithInPredicate(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithGreaterAndLess — combined > and < in WHERE
+func TestFDB_WhereWithGreaterAndLess(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wwgl", "CREATE TABLE wwgl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO wwgl_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("range_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wwgl_t WHERE val > 15 AND val < 45 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (20,30,40), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("exclusive_range_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wwgl_t WHERE val > 10 AND val < 50")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
