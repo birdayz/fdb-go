@@ -17443,6 +17443,98 @@ func TestFDB_MinMaxGroupByOrderByAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_LikePatternVariants — LIKE with various wildcard patterns
+func TestFDB_LikePatternVariants(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "lpv",
+		"CREATE TABLE lpv_t(id BIGINT, email STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO lpv_t VALUES
+		(1,'alice@example.com'),(2,'bob@test.org'),(3,'carol@example.com'),
+		(4,'dave@test.net'),(5,'eve@example.org')`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("suffix_match", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email LIKE '%example.com'")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 @example.com, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("prefix_match", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT email FROM lpv_t WHERE email LIKE 'alice%'")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "alice@example.com" {
+			t.Errorf("want alice@example.com, got %v", rows)
+		}
+	})
+
+	t.Run("contains_match", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email LIKE '%test%'")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 containing 'test', got %v", rows[0][0])
+		}
+	})
+
+	t.Run("not_like", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email NOT LIKE '%example%'")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 not containing 'example', got %v", rows[0][0])
+		}
+	})
+
+	t.Run("like_with_order", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT email FROM lpv_t WHERE email LIKE '%@example%' ORDER BY email")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 @example rows, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice@example.com" {
+			t.Errorf("first: want alice@example.com, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_ComparisonOperatorCoverage — systematic =, <>, <, <=, >, >= coverage
+func TestFDB_ComparisonOperatorCoverage(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "coc",
+		"CREATE TABLE wco_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO wco_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		want  int64
+	}{
+		{"eq", "SELECT COUNT(*) FROM wco_t WHERE val = 30", 1},
+		{"neq", "SELECT COUNT(*) FROM wco_t WHERE val <> 30", 4},
+		{"lt", "SELECT COUNT(*) FROM wco_t WHERE val < 30", 2},
+		{"le", "SELECT COUNT(*) FROM wco_t WHERE val <= 30", 3},
+		{"gt", "SELECT COUNT(*) FROM wco_t WHERE val > 30", 2},
+		{"ge", "SELECT COUNT(*) FROM wco_t WHERE val >= 30", 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows := collectRows(t, db, tt.query)
+			if toInt64(rows[0][0]) != tt.want {
+				t.Errorf("%s: want %d, got %v", tt.name, tt.want, rows[0][0])
+			}
+		})
+	}
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
