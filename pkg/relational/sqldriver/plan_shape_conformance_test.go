@@ -5364,3 +5364,44 @@ func TestFDB_DerivedTableExistsJoin(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_JoinNotInPattern(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "jnotin2",
+		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'Engineering')")
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (2, 'Sales')")
+	db.ExecContext(ctx, "INSERT INTO dept VALUES (3, 'HR')")
+	db.ExecContext(ctx, "INSERT INTO emp VALUES (1, 'Alice', 1)")
+	db.ExecContext(ctx, "INSERT INTO emp VALUES (2, 'Bob', 1)")
+	db.ExecContext(ctx, "INSERT INTO emp VALUES (3, 'Charlie', 2)")
+
+	t.Run("not_in_subquery_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx,
+			"SELECT d.name FROM dept d WHERE d.id NOT IN (SELECT dept_id FROM emp)")
+		if err == nil {
+			t.Fatal("expected error for NOT IN (subquery)")
+		}
+	})
+
+	t.Run("join_not_in_workaround", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT d.name FROM dept d
+			 WHERE NOT EXISTS (SELECT 1 FROM emp e WHERE e.dept_id = d.id)
+			 ORDER BY d.name`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (HR), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "HR" {
+			t.Errorf("got %v, want HR", rows[0][0])
+		}
+	})
+
+	_ = ctx
+}
