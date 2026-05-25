@@ -16888,6 +16888,114 @@ func TestFDB_StringOrderByLexicographic(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByHavingSumWithJoin — JOIN two tables, GROUP BY, HAVING on SUM
+func TestFDB_GroupByHavingSumWithJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ghsj",
+		"CREATE TABLE ghsj_cat(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE ghsj_prod(id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ghsj_cat VALUES (1,'electronics'),(2,'clothing'),(3,'food')"); err != nil {
+		t.Fatalf("INSERT cat: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ghsj_prod VALUES
+		(10,1,500),(11,1,300),(12,1,200),
+		(20,2,50),(21,2,30),
+		(30,3,10),(31,3,5),(32,3,8)`); err != nil {
+		t.Fatalf("INSERT prod: %v", err)
+	}
+
+	t.Run("categories_with_total_gt_100", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT c.name, SUM(p.price) FROM ghsj_cat c
+			JOIN ghsj_prod p ON c.id = p.cat_id
+			GROUP BY c.name
+			HAVING SUM(p.price) > 100
+			ORDER BY c.name
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 category (electronics=1000), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "electronics" || toInt64(rows[0][1]) != 1000 {
+			t.Errorf("want [electronics 1000], got %v", rows[0])
+		}
+	})
+
+	t.Run("all_categories_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT c.name, COUNT(*) FROM ghsj_cat c
+			JOIN ghsj_prod p ON c.id = p.cat_id
+			GROUP BY c.name
+			ORDER BY c.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 categories, got %d", len(rows))
+		}
+		// ORDER BY c.name: clothing=2, electronics=3, food=3
+		wantCnt := []int64{2, 3, 3}
+		for i, w := range wantCnt {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d (%v): want count %d, got %v", i, rows[i][0], w, rows[i][1])
+			}
+		}
+	})
+}
+
+// TestFDB_WhereInWithOrderByLimit — IN predicate + ORDER BY + LIMIT
+func TestFDB_WhereInWithOrderByLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wiol",
+		"CREATE TABLE wiol_t(id BIGINT, status STRING, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wiol_t VALUES
+		(1,'a',100),(2,'b',200),(3,'a',300),(4,'c',400),(5,'b',500),(6,'a',600)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("in_a_order_amount_desc_limit2", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, amount FROM wiol_t
+			WHERE status IN ('a')
+			ORDER BY amount DESC
+			LIMIT 2
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 600 || toInt64(rows[1][1]) != 300 {
+			t.Errorf("want [600 300], got [%v %v]", rows[0][1], rows[1][1])
+		}
+	})
+
+	t.Run("in_a_or_b_via_or", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM wiol_t
+			WHERE status = 'a' OR status = 'b'
+		`)
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("want 5 (3 a's + 2 b's), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("not_in_c", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM wiol_t WHERE status NOT IN ('c')
+		`)
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("want 5 (all except c), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
