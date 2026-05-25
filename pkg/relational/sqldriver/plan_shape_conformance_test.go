@@ -13681,6 +13681,44 @@ func TestFDB_AggregateWithWhereAndOrderBy(t *testing.T) {
 	})
 }
 
+// TestFDB_CTE3Tables — CTE referencing 3 tables
+func TestFDB_CTE3Tables(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cte3t",
+		"CREATE TABLE c3_dept(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE c3_emp(id BIGINT, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO c3_dept VALUES (1, 'eng'), (2, 'sales')"); err != nil {
+		t.Fatalf("INSERT dept: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO c3_emp VALUES
+		(1, 1, 'alice', 100), (2, 1, 'bob', 120), (3, 2, 'charlie', 90)
+	`); err != nil {
+		t.Fatalf("INSERT emp: %v", err)
+	}
+
+	t.Run("cte_with_join_and_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH dept_stats AS (
+				SELECT d.name AS dept, COUNT(*) AS headcount, SUM(e.salary) AS payroll
+				FROM c3_dept d JOIN c3_emp e ON d.id = e.dept_id
+				GROUP BY d.name
+			)
+			SELECT dept, headcount, payroll FROM dept_stats ORDER BY dept
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "eng" || toInt64(rows[0][1]) != 2 || toInt64(rows[0][2]) != 220 {
+			t.Errorf("eng: want hc=2 pay=220, got %v %v %v", rows[0][0], rows[0][1], rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
