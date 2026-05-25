@@ -12258,6 +12258,47 @@ func TestFDB_GroupByOrderByNonAggColumn(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertDuplicateAndRecover — insert duplicate PK then continue with valid operations
+func TestFDB_InsertDuplicateAndRecover(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "idrc", "CREATE TABLE idr_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO idr_t VALUES (1, 'first')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("duplicate_pk_errors", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "INSERT INTO idr_t VALUES (1, 'duplicate')")
+		if err == nil {
+			t.Fatalf("expected duplicate PK error")
+		}
+		t.Logf("expected error: %v", err)
+	})
+
+	t.Run("subsequent_insert_works", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO idr_t VALUES (2, 'second')"); err != nil {
+			t.Fatalf("INSERT after dup error should work: %v", err)
+		}
+	})
+
+	t.Run("data_intact", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM idr_t ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "first" {
+			t.Errorf("id=1 should still be 'first', got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][1]) != "second" {
+			t.Errorf("id=2 should be 'second', got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
