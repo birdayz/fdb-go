@@ -19109,6 +19109,73 @@ func TestFDB_LimitZeroReturnsNothing(t *testing.T) {
 	})
 }
 
+// TestFDB_CoalesceThreeColumnFallback — COALESCE(a, b, c) cascading NULL fallback
+func TestFDB_CoalesceThreeColumnFallback(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cchn",
+		"CREATE TABLE cchn_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cchn_t VALUES
+		(1,10,20,30),(2,null,20,30),(3,null,null,30),(4,null,null,null)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("coalesce_three_cols", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, c) FROM cchn_t ORDER BY id")
+		want := []any{int64(10), int64(20), int64(30), nil}
+		for i, w := range want {
+			if w == nil {
+				if rows[i][1] != nil {
+					t.Errorf("id %d: want NULL, got %v", i+1, rows[i][1])
+				}
+			} else if toInt64(rows[i][1]) != w.(int64) {
+				t.Errorf("id %d: want %v, got %v", i+1, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("coalesce_with_constant", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COALESCE(a, b, c, 0) FROM cchn_t WHERE id = 4")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("want 0 fallback, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_OrderByMultipleWithLimit — ORDER BY 3 columns with LIMIT
+func TestFDB_OrderByThreeColumnsLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "o3cl",
+		"CREATE TABLE o3cl_t(id BIGINT, a STRING, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO o3cl_t VALUES
+		(1,'x',1,10),(2,'x',1,20),(3,'x',2,5),(4,'y',1,15),(5,'y',2,25)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_a_b_c_limit3", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM o3cl_t ORDER BY a, b, c LIMIT 3")
+		// x,1,10(id=1) → x,1,20(id=2) → x,2,5(id=3)
+		want := []int64{1, 2, 3}
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
