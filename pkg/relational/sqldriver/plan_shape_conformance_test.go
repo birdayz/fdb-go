@@ -14870,6 +14870,39 @@ func TestFDB_JoinWithNotExists(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithMaxMinAndOrder — GROUP BY with MAX-MIN range and ORDER BY
+func TestFDB_GroupByWithMaxMinAndOrder(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbmmo", "CREATE TABLE gbmmo_t(id BIGINT, team STRING, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbmmo_t VALUES
+		(1, 'A', 10), (2, 'A', 50), (3, 'B', 30), (4, 'B', 35),
+		(5, 'C', 20), (6, 'C', 80), (7, 'C', 45)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("range_per_team", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT team, MAX(score) - MIN(score) AS score_range
+			FROM gbmmo_t GROUP BY team ORDER BY score_range DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "C" || toInt64(rows[0][1]) != 60 {
+			t.Errorf("C range = 80-20 = 60, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "A" || toInt64(rows[1][1]) != 40 {
+			t.Errorf("A range = 50-10 = 40, got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
