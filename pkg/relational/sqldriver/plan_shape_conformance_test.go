@@ -8686,6 +8686,208 @@ func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 	})
 }
 
+// TestFDB_LimitOffsetCombinations — LIMIT+OFFSET with ORDER BY
+func TestFDB_LimitOffsetCombinations(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "limoff", "CREATE TABLE lim_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	for i := 1; i <= 10; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO lim_t VALUES (%d, %d)", i, i*10)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", i, err)
+		}
+	}
+
+	t.Run("limit_3_order_by", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lim_t ORDER BY id LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 1 || toInt64(rows[2][0]) != 3 {
+			t.Errorf("want 1,2,3 got %v,%v,%v", rows[0][0], rows[1][0], rows[2][0])
+		}
+	})
+
+	t.Run("limit_exceeds_table", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lim_t ORDER BY id LIMIT 100")
+		if len(rows) != 10 {
+			t.Fatalf("want 10 (all), got %d", len(rows))
+		}
+	})
+
+	t.Run("limit_0", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lim_t LIMIT 0")
+		if len(rows) != 0 {
+			t.Errorf("LIMIT 0 should return 0, got %d", len(rows))
+		}
+	})
+
+	t.Run("limit_with_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lim_t ORDER BY id DESC LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 || toInt64(rows[2][0]) != 8 {
+			t.Errorf("want 10,9,8 got %v,%v,%v", rows[0][0], rows[1][0], rows[2][0])
+		}
+	})
+
+	t.Run("limit_with_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lim_t WHERE val > 50 ORDER BY id LIMIT 2")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 6 {
+			t.Errorf("first should be 6, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("limit_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM lim_t ORDER BY val DESC LIMIT 1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("top val should be id=10, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_ScalarSubqueryInSelect — scalar subquery in SELECT list
+func TestFDB_ScalarSubqueryInSelect(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "scsq",
+		"CREATE TABLE main_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE ref_t(cat STRING, label STRING, PRIMARY KEY(cat))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO main_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40), (5, 'C', 50)
+	`); err != nil {
+		t.Fatalf("INSERT main_t: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ref_t VALUES
+		('A', 'alpha'), ('B', 'beta'), ('C', 'gamma')
+	`); err != nil {
+		t.Fatalf("INSERT ref_t: %v", err)
+	}
+
+	t.Run("scalar_subquery_in_select_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT (SELECT COUNT(*) FROM main_t)")
+		if err == nil {
+			t.Errorf("expected error for scalar subquery in SELECT, got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("exists_subquery", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM main_t WHERE EXISTS (SELECT 1 FROM ref_t WHERE ref_t.cat = main_t.cat) ORDER BY id")
+		if len(rows) != 5 {
+			t.Fatalf("all rows have matching ref_t, want 5 got %d", len(rows))
+		}
+	})
+
+	t.Run("not_exists_subquery", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO main_t VALUES (6, 'D', 60)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id FROM main_t WHERE NOT EXISTS (SELECT 1 FROM ref_t WHERE ref_t.cat = main_t.cat) ORDER BY id")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (cat=D has no ref), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 6 {
+			t.Errorf("want id=6, got %v", rows[0][0])
+		}
+		if _, err := db.ExecContext(ctx, "DELETE FROM main_t WHERE id = 6"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+	})
+}
+
+// TestFDB_UpdateDeleteReturnCount — UPDATE/DELETE affected row counts
+func TestFDB_UpdateDeleteReturnCount(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "udrc", "CREATE TABLE cnt_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO cnt_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_returns_count", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE cnt_t SET val = val + 1 WHERE val > 30")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			t.Fatalf("RowsAffected: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("want 2 updated (40,50), got %d", n)
+		}
+	})
+
+	t.Run("delete_returns_count", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM cnt_t WHERE val <= 20")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			t.Fatalf("RowsAffected: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("want 2 deleted (10,20), got %d", n)
+		}
+	})
+
+	t.Run("verify_remaining", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM cnt_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 remaining, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("update_no_match", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE cnt_t SET val = 999 WHERE id = 999")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			t.Fatalf("RowsAffected: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("want 0 updated, got %d", n)
+		}
+	})
+
+	t.Run("delete_no_match", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM cnt_t WHERE id = 999")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			t.Fatalf("RowsAffected: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("want 0 deleted, got %d", n)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
