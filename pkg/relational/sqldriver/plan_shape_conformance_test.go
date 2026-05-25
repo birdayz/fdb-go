@@ -14113,6 +14113,45 @@ func TestFDB_GroupByHavingOrderLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEWithJoinAndFilter — CTE + JOIN + WHERE filter
+func TestFDB_CTEWithJoinAndFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctjf",
+		"CREATE TABLE ctjf_orders(id BIGINT, customer STRING, amount BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE ctjf_customers(name STRING, tier STRING, PRIMARY KEY(name))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ctjf_orders VALUES
+		(1, 'alice', 100), (2, 'alice', 200), (3, 'bob', 50)
+	`); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO ctjf_customers VALUES ('alice', 'gold'), ('bob', 'silver')"); err != nil {
+		t.Fatalf("INSERT customers: %v", err)
+	}
+
+	t.Run("cte_join_filter", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH order_sums AS (
+				SELECT customer, SUM(amount) AS total FROM ctjf_orders GROUP BY customer
+			)
+			SELECT c.name, c.tier, o.total
+			FROM ctjf_customers c JOIN order_sums o ON c.name = o.customer
+			WHERE o.total > 100
+			ORDER BY c.name
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (alice=300>100), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" || toInt64(rows[0][2]) != 300 {
+			t.Errorf("want alice 300, got %v %v", rows[0][0], rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
