@@ -13391,6 +13391,46 @@ func TestFDB_GroupByTwoColumnsWithAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertSelectWithExpression — INSERT...SELECT with computed columns
+func TestFDB_InsertSelectWithExpression(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "iswe",
+		"CREATE TABLE iswe_src(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE iswe_dst(id BIGINT, total BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO iswe_src VALUES (1, 10, 5), (2, 20, 3), (3, 30, 7)"); err != nil {
+		t.Fatalf("INSERT src: %v", err)
+	}
+
+	t.Run("insert_select_with_expression", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO iswe_dst SELECT id, price * qty FROM iswe_src")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT with expr: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 inserted, got %d", n)
+		}
+	})
+
+	t.Run("verify_computed_values", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, total FROM iswe_dst ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 50 {
+			t.Errorf("id=1: 10*5=50, got %v", rows[0][1])
+		}
+		if toInt64(rows[2][1]) != 210 {
+			t.Errorf("id=3: 30*7=210, got %v", rows[2][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
