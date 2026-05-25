@@ -1,0 +1,131 @@
+# between_java.yaml — BETWEEN patterns from Java's between.yamsql.
+# Tests BETWEEN/NOT BETWEEN with inclusive bounds, empty ranges,
+# OR combinations, compatible types (int/double), complex operands,
+# and NULL behavior.
+name: between_java
+schema_template: |
+  CREATE TABLE t1 (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX i1 ON t1 (col1)
+setup:
+  - INSERT INTO t1 VALUES
+      (1, 10, 1),
+      (2, 10, 2),
+      (3, 10, 3),
+      (4, 10, 4),
+      (5, 10, 5),
+      (6, 20, 6),
+      (7, 20, 7),
+      (8, 20, 8),
+      (9, 20, 9),
+      (10, 20, 10),
+      (11, 30, 11),
+      (12, 30, 12),
+      (13, 30, 13)
+tests:
+  # Basic BETWEEN (inclusive)
+  - query: SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 6 ORDER BY id
+    rows:
+      - [4]
+      - [5]
+      - [6]
+
+  # Degenerate BETWEEN: same value
+  - query: SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 4 ORDER BY id
+    rows:
+      - [4]
+
+  # Empty BETWEEN: low > high
+  - query: SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN 4 AND 3
+    rows:
+      - [0]
+
+  # NOT BETWEEN
+  - query: SELECT id FROM t1 WHERE col2 NOT BETWEEN 2 AND 12 ORDER BY id
+    rows:
+      - [1]
+      - [13]
+
+  # NOT BETWEEN with reversed bounds (all rows pass)
+  - query: SELECT COUNT(*) FROM t1 WHERE col2 NOT BETWEEN 12 AND 2
+    rows:
+      - [13]
+
+  # BETWEEN with OR: two non-overlapping ranges
+  - query: SELECT id FROM t1 WHERE col2 BETWEEN 2 AND 4 OR col2 BETWEEN 6 AND 7 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+      - [6]
+      - [7]
+
+  # BETWEEN on indexed column
+  - query: SELECT id FROM t1 WHERE col1 BETWEEN 10 AND 10 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # BETWEEN with expression: col + constant
+  - query: SELECT id FROM t1 WHERE col1 + 5 BETWEEN 10 AND 20 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # NOT BETWEEN with expression
+  - query: SELECT id FROM t1 WHERE col1 + 5 NOT BETWEEN 10 AND 20 ORDER BY id
+    rows:
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+      - [11]
+      - [12]
+      - [13]
+
+  # BETWEEN with compatible types (int and double)
+  - query: SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 6.2 ORDER BY id
+    rows:
+      - [4]
+      - [5]
+      - [6]
+
+  - query: SELECT id FROM t1 WHERE col2 BETWEEN 4.1 AND 6 ORDER BY id
+    rows:
+      - [5]
+      - [6]
+
+  # Constant BETWEEN (always true/false filter)
+  - query: SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 1 AND 10
+    rows:
+      - [13]
+
+  - query: SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 5 AND 10
+    rows:
+      - [0]
+
+  # Complex operands: arithmetic in BETWEEN bounds
+  - query: SELECT COUNT(*) FROM t1 WHERE 2+2 BETWEEN 1+1 AND 3+3
+    rows:
+      - [13]
+
+  # NULL in BETWEEN: null BETWEEN x AND y → UNKNOWN → no rows
+  - query: SELECT COUNT(*) FROM t1 WHERE null BETWEEN 1 AND 2
+    rows:
+      - [0]
+
+  # NULL bounds: x BETWEEN null AND y → UNKNOWN
+  - query: SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN null AND 10
+    rows:
+      - [0]
