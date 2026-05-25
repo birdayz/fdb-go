@@ -12214,6 +12214,50 @@ func TestFDB_NestedAggregateInDerived(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByOrderByNonAggColumn — ORDER BY on GROUP BY key
+func TestFDB_GroupByOrderByNonAggColumn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbobn", "CREATE TABLE gobn_t(id BIGINT, city STRING, revenue BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gobn_t VALUES
+		(1, 'NYC', 500), (2, 'LA', 300), (3, 'NYC', 400),
+		(4, 'SF', 200), (5, 'LA', 100), (6, 'SF', 600)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_by_group_key", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT city, SUM(revenue) FROM gobn_t GROUP BY city ORDER BY city")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "LA" {
+			t.Errorf("first alphabetically should be LA, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("order_by_aggregate_asc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT city, SUM(revenue) AS total FROM gobn_t GROUP BY city ORDER BY total")
+		if toInt64(rows[0][1]) != 400 {
+			t.Errorf("smallest total should be LA(400), got %v", rows[0][1])
+		}
+	})
+
+	t.Run("order_by_count_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT city, COUNT(*) AS cnt FROM gobn_t GROUP BY city ORDER BY cnt DESC, city")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 2 {
+			t.Errorf("all groups have 2, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
