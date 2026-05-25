@@ -5402,6 +5402,844 @@ func TestFDB_JoinNotInPattern(t *testing.T) {
 			t.Errorf("got %v, want HR", rows[0][0])
 		}
 	})
+}
+
+func TestFDB_BetweenOperator(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "between1",
+		"CREATE TABLE t1 (id INTEGER NOT NULL, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 10, 1)",
+		"INSERT INTO t1 VALUES (2, 10, 2)",
+		"INSERT INTO t1 VALUES (3, 10, 3)",
+		"INSERT INTO t1 VALUES (4, 10, 4)",
+		"INSERT INTO t1 VALUES (5, 10, 5)",
+		"INSERT INTO t1 VALUES (6, 20, 6)",
+		"INSERT INTO t1 VALUES (7, 20, 7)",
+		"INSERT INTO t1 VALUES (8, 20, 8)",
+		"INSERT INTO t1 VALUES (9, 20, 9)",
+		"INSERT INTO t1 VALUES (10, 20, 10)",
+		"INSERT INTO t1 VALUES (11, 30, 11)",
+		"INSERT INTO t1 VALUES (12, 30, 12)",
+		"INSERT INTO t1 VALUES (13, 30, 13)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("between_range", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 6 ORDER BY id")
+		wantIDs := []int64{4, 5, 6}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d rows, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			got := toInt64(rows[i][0])
+			if got != w {
+				t.Errorf("row %d: got %d, want %d", i, got, w)
+			}
+		}
+	})
+
+	t.Run("between_single_value", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 4")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 4 {
+			t.Fatalf("want [4], got %v", rows)
+		}
+	})
+
+	t.Run("between_empty_range", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 3")
+		if len(rows) != 0 {
+			t.Fatalf("want 0 rows for reversed range, got %d", len(rows))
+		}
+	})
+
+	t.Run("not_between", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 NOT BETWEEN 2 AND 12 ORDER BY id")
+		wantIDs := []int64{1, 13}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d rows, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("not_between_reversed_returns_all", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 NOT BETWEEN 12 AND 2 ORDER BY id")
+		if len(rows) != 13 {
+			t.Fatalf("want 13 rows for NOT BETWEEN with reversed range, got %d", len(rows))
+		}
+	})
+
+	t.Run("between_or_between", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE col2 BETWEEN 2 AND 4 OR col2 BETWEEN 6 AND 7 ORDER BY id")
+		wantIDs := []int64{2, 3, 4, 6, 7}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d rows, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("between_with_group_by", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT col1, COUNT(*) FROM t1 WHERE col2 BETWEEN 3 AND 8 GROUP BY col1 ORDER BY col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 10 || toInt64(rows[0][1]) != 3 {
+			t.Errorf("group 10: want count=3, got %v", rows[0])
+		}
+		if toInt64(rows[1][0]) != 20 || toInt64(rows[1][1]) != 3 {
+			t.Errorf("group 20: want count=3, got %v", rows[1])
+		}
+	})
+
+	t.Run("between_in_having", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT col1, SUM(col2) AS s FROM t1 GROUP BY col1 HAVING SUM(col2) BETWEEN 10 AND 20 ORDER BY col1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 group (col1=10, sum=15), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("want col1=10, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 15 {
+			t.Errorf("want sum=15, got %v", rows[0][1])
+		}
+	})
+}
+
+func TestFDB_GroupByAlias(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "gbalias1",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 10, 1)",
+		"INSERT INTO t1 VALUES (2, 10, 2)",
+		"INSERT INTO t1 VALUES (3, 10, 3)",
+		"INSERT INTO t1 VALUES (4, 20, 4)",
+		"INSERT INTO t1 VALUES (5, 20, 5)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("select_group_col", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT col1 FROM t1 GROUP BY col1 ORDER BY col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 || toInt64(rows[1][0]) != 20 {
+			t.Errorf("got %v, %v", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("select_group_col_with_alias", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT col1 AS xx FROM t1 GROUP BY col1 ORDER BY col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 || toInt64(rows[1][0]) != 20 {
+			t.Errorf("got %v, %v", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("select_star_group_by_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT * FROM t1 GROUP BY col1")
+		if err == nil {
+			t.Fatal("expected error for SELECT * with GROUP BY")
+		}
+		if !strings.Contains(err.Error(), "42803") {
+			t.Errorf("want SQLSTATE 42803, got %v", err)
+		}
+	})
+
+	t.Run("select_non_grouped_col_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT id FROM t1 GROUP BY col1")
+		if err == nil {
+			t.Fatal("expected error for non-grouped column")
+		}
+		if !strings.Contains(err.Error(), "42803") {
+			t.Errorf("want SQLSTATE 42803, got %v", err)
+		}
+	})
+
+	t.Run("select_undefined_col_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT bla FROM t1 GROUP BY col1")
+		if err == nil {
+			t.Fatal("expected error for undefined column")
+		}
+		if !strings.Contains(err.Error(), "42703") {
+			t.Errorf("want SQLSTATE 42703, got %v", err)
+		}
+	})
+
+	t.Run("max_min_per_group", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT col1, MAX(col2), MIN(col2) FROM t1 GROUP BY col1 ORDER BY col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 3 || toInt64(rows[0][2]) != 1 {
+			t.Errorf("group 10: want max=3,min=1, got %v,%v", rows[0][1], rows[0][2])
+		}
+		if toInt64(rows[1][1]) != 5 || toInt64(rows[1][2]) != 4 {
+			t.Errorf("group 20: want max=5,min=4, got %v,%v", rows[1][1], rows[1][2])
+		}
+	})
+
+	t.Run("having_min_and_col", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MAX(id) FROM t1 GROUP BY col1 HAVING MIN(id) > 0 AND col1 = 20")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
+			t.Fatalf("want [{5}], got %v", rows)
+		}
+	})
+
+	t.Run("count_star_ungrouped", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM t1")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
+			t.Fatalf("want 5, got %v", rows)
+		}
+	})
+
+	t.Run("group_col_expr_plus_literal", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT col1 + 10 FROM t1 GROUP BY col1 ORDER BY col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 20 || toInt64(rows[1][0]) != 30 {
+			t.Errorf("got %v, %v, want 20, 30", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("duplicate_group_alias_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS x")
+		if err == nil {
+			t.Fatal("expected error for duplicate group alias")
+		}
+		if !strings.Contains(err.Error(), "42702") {
+			t.Errorf("want SQLSTATE 42702, got %v", err)
+		}
+	})
+
+	t.Run("derived_table_group_by", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT col1 FROM (SELECT col1 FROM t1) AS x GROUP BY col1 ORDER BY col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 || toInt64(rows[1][0]) != 20 {
+			t.Errorf("got %v, %v", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("derived_table_max", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 3 || toInt64(rows[1][0]) != 5 {
+			t.Errorf("got %v, %v, want 3, 5", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("derived_table_min", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MIN(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 1 || toInt64(rows[1][0]) != 4 {
+			t.Errorf("got %v, %v, want 1, 4", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("derived_table_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 3 || toInt64(rows[1][0]) != 2 {
+			t.Errorf("got %v, %v, want 3, 2", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("derived_table_sum", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT SUM(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 6 || toInt64(rows[1][0]) != 9 {
+			t.Errorf("got %v, %v, want 6, 9", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("sum_div_count_per_group", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT SUM(x.col2) / COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("group 10: want 6/3=2, got %v", rows[0][0])
+		}
+		if toInt64(rows[1][0]) != 4 {
+			t.Errorf("group 20: want 9/2=4, got %v", rows[1][0])
+		}
+	})
+
+	t.Run("derived_max_col_not_in_derived_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx,
+			"SELECT MAX(x.col2) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1")
+		if err == nil {
+			t.Fatal("expected error: col2 not in derived table")
+		}
+		if !strings.Contains(err.Error(), "42703") {
+			t.Errorf("want SQLSTATE 42703, got %v", err)
+		}
+	})
+
+	t.Run("ungrouped_col_through_derived_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx,
+			"SELECT x.col2 FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1")
+		if err == nil {
+			t.Fatal("expected error: col2 not in GROUP BY")
+		}
+		if !strings.Contains(err.Error(), "42803") {
+			t.Errorf("want SQLSTATE 42803, got %v", err)
+		}
+	})
+
+	t.Run("ungrouped_max", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
+			t.Fatalf("want 5, got %v", rows)
+		}
+	})
+
+	t.Run("ungrouped_min", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MIN(x.col2) FROM (SELECT col1, col2 FROM t1) AS x")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
+			t.Fatalf("want 1, got %v", rows)
+		}
+	})
+
+	t.Run("ungrouped_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
+			t.Fatalf("want 5, got %v", rows)
+		}
+	})
+
+	t.Run("nested_derived_agg_filter", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT g + 4 FROM
+			   (SELECT MIN(x.col2) AS g FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1) AS y
+			 WHERE g > 3`)
+		if len(rows) != 1 || toInt64(rows[0][0]) != 8 {
+			t.Fatalf("want [{8}] (MIN for col1=20 is 4, +4=8), got %v", rows)
+		}
+	})
+}
+
+func TestFDB_InsertSelectCross(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "inssel1",
+		"CREATE TABLE src (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dst (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+
+	for i := int64(1); i <= 5; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO src VALUES (%d, %d)", i, i*10)); err != nil {
+			t.Fatalf("insert src: %v", err)
+		}
+	}
+
+	t.Run("insert_select_all", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO dst SELECT id, val FROM src")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 5 {
+			t.Errorf("want 5 rows affected, got %d", n)
+		}
+		rows := collectRows(t, db, "SELECT id, val FROM dst ORDER BY id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 rows in dst, got %d", len(rows))
+		}
+		for i := 0; i < 5; i++ {
+			wantID := int64(i + 1)
+			wantVal := wantID * 10
+			if toInt64(rows[i][0]) != wantID || toInt64(rows[i][1]) != wantVal {
+				t.Errorf("row %d: got (%v, %v), want (%d, %d)",
+					i, rows[i][0], rows[i][1], wantID, wantVal)
+			}
+		}
+	})
+
+	t.Run("insert_select_with_expr", func(t *testing.T) {
+		db2 := setupPlanShapeDB(t, "inssel2",
+			"CREATE TABLE src2 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
+				"CREATE TABLE dst2 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+		for i := int64(1); i <= 3; i++ {
+			db2.ExecContext(ctx, fmt.Sprintf("INSERT INTO src2 VALUES (%d, %d)", i, i*10))
+		}
+		res, err := db2.ExecContext(ctx, "INSERT INTO dst2 SELECT id * 100, val + 1 FROM src2")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT with expr: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 rows affected, got %d", n)
+		}
+		rows := collectRows(t, db2, "SELECT id, val FROM dst2 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 100 || toInt64(rows[0][1]) != 11 {
+			t.Errorf("row 0: got (%v, %v), want (100, 11)", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("insert_select_with_where", func(t *testing.T) {
+		db3 := setupPlanShapeDB(t, "inssel3",
+			"CREATE TABLE src3 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id)) "+
+				"CREATE TABLE dst3 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+		for i := int64(1); i <= 5; i++ {
+			db3.ExecContext(ctx, fmt.Sprintf("INSERT INTO src3 VALUES (%d, %d)", i, i*10))
+		}
+		res, err := db3.ExecContext(ctx, "INSERT INTO dst3 SELECT id, val FROM src3 WHERE val >= 30")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT WHERE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 rows affected, got %d", n)
+		}
+		rows := collectRows(t, db3, "SELECT id FROM dst3 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		wantIDs := []int64{3, 4, 5}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+}
+
+func TestFDB_UpdateExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "updexpr1",
+		"CREATE TABLE items (id BIGINT NOT NULL, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO items VALUES (1, 10, 100)",
+		"INSERT INTO items VALUES (2, 20, 200)",
+		"INSERT INTO items VALUES (3, 30, 300)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("update_set_arithmetic", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE items SET qty = qty + 5 WHERE id = 1")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			t.Errorf("want 1 affected, got %d", n)
+		}
+		rows := collectRows(t, db, "SELECT qty FROM items WHERE id = 1")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 15 {
+			t.Fatalf("want qty=15, got %v", rows)
+		}
+	})
+
+	t.Run("update_multiple_columns", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "UPDATE items SET qty = qty * 2, price = price - 10 WHERE id = 2")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT qty, price FROM items WHERE id = 2")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 40 || toInt64(rows[0][1]) != 190 {
+			t.Errorf("want (40, 190), got (%v, %v)", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("update_all_rows", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE items SET price = price + 1")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 affected, got %d", n)
+		}
+	})
+
+	t.Run("update_no_match", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE items SET qty = 0 WHERE id = 999")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 0 {
+			t.Errorf("want 0 affected, got %d", n)
+		}
+	})
+}
+
+func TestFDB_CoalesceEdgeCases(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "coalesce1",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 10, 100)",
+		"INSERT INTO t1 VALUES (2, NULL, 200)",
+		"INSERT INTO t1 VALUES (3, NULL, NULL)",
+		"INSERT INTO t1 VALUES (4, 40, NULL)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("coalesce_first_non_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, 0) FROM t1 ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		wantVals := []int64{10, 200, 0, 40}
+		for i, w := range wantVals {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][1], w)
+			}
+		}
+	})
+
+	t.Run("coalesce_all_null_returns_fallback", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COALESCE(a, b, -1) FROM t1 WHERE id = 3")
+		if len(rows) != 1 || toInt64(rows[0][0]) != -1 {
+			t.Fatalf("want -1, got %v", rows)
+		}
+	})
+
+	t.Run("coalesce_in_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(COALESCE(a, 0)) FROM t1")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 50 {
+			t.Fatalf("want 50 (10+0+0+40), got %v", rows)
+		}
+	})
+
+	t.Run("coalesce_in_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM t1 WHERE COALESCE(a, 0) > 0 ORDER BY id")
+		wantIDs := []int64{1, 4}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d rows, got %d", len(wantIDs), len(rows))
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+}
+
+func TestFDB_MultiTableDeleteUpdate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "mtdel1",
+		"CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, amount BIGINT, status STRING, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO orders VALUES (1, 100, 50, 'pending')",
+		"INSERT INTO orders VALUES (2, 100, 75, 'shipped')",
+		"INSERT INTO orders VALUES (3, 200, 100, 'pending')",
+		"INSERT INTO orders VALUES (4, 200, 200, 'delivered')",
+		"INSERT INTO orders VALUES (5, 300, 150, 'pending')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("delete_with_in_list", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM orders WHERE id IN (1, 3)")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2, got %d", n)
+		}
+	})
+
+	t.Run("verify_after_delete", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM orders ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 remaining, got %d", len(rows))
+		}
+		wantIDs := []int64{2, 4, 5}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("update_with_case", func(t *testing.T) {
+		_, err := db.ExecContext(ctx,
+			`UPDATE orders SET status = CASE
+				WHEN amount > 100 THEN 'high'
+				ELSE 'low'
+			 END
+			 WHERE status = 'pending'`)
+		if err != nil {
+			t.Fatalf("UPDATE CASE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, status FROM orders WHERE id = 5")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if rows[0][1].(string) != "high" {
+			t.Errorf("want 'high', got %v", rows[0][1])
+		}
+	})
+
+	t.Run("delete_between", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM orders WHERE amount BETWEEN 100 AND 200")
+		if err != nil {
+			t.Fatalf("DELETE BETWEEN: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 (ids 4,5), got %d", n)
+		}
+	})
+
+	t.Run("verify_final_state", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, amount FROM orders ORDER BY id")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 2 || toInt64(rows[0][1]) != 75 {
+			t.Errorf("want (2, 75), got (%v, %v)", rows[0][0], rows[0][1])
+		}
+	})
+}
+
+func TestFDB_LimitBasicPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "limoff1",
+		"CREATE TABLE items (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))")
+
+	for i := int64(1); i <= 10; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO items VALUES (%d, 'item%d', %d)", i, i, i*100)); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("limit_basic", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		for i := int64(0); i < 3; i++ {
+			if toInt64(rows[i][0]) != i+1 {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], i+1)
+			}
+		}
+	})
+
+	t.Run("limit_exceeds_rows", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 100")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+	})
+
+	t.Run("limit_zero", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 0")
+		if len(rows) != 0 {
+			t.Fatalf("want 0, got %d", len(rows))
+		}
+	})
+
+	t.Run("limit_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, price FROM items ORDER BY price DESC LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("first should be id=10, got %v", rows[0][0])
+		}
+	})
 
 	_ = ctx
+}
+
+func TestFDB_SubqueryScalarComparison(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "subsclr1",
+		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, salary BIGINT, dept_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO dept VALUES (1, 'Engineering')",
+		"INSERT INTO dept VALUES (2, 'Sales')",
+		"INSERT INTO emp VALUES (1, 'Alice', 100, 1)",
+		"INSERT INTO emp VALUES (2, 'Bob', 120, 1)",
+		"INSERT INTO emp VALUES (3, 'Charlie', 80, 2)",
+		"INSERT INTO emp VALUES (4, 'Diana', 90, 2)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("exists_with_correlated_filter", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT d.name FROM dept d
+			 WHERE EXISTS (SELECT 1 FROM emp e WHERE e.dept_id = d.id AND e.salary > 100)
+			 ORDER BY d.name`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 dept (Engineering), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Engineering" {
+			t.Errorf("want Engineering, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("not_exists_correlated", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT d.name FROM dept d
+			 WHERE NOT EXISTS (SELECT 1 FROM emp e WHERE e.dept_id = d.id AND e.salary > 100)
+			 ORDER BY d.name`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 dept (Sales), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Sales" {
+			t.Errorf("want Sales, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("exists_non_correlated_all_rows", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT name FROM emp WHERE EXISTS (SELECT 1 FROM dept WHERE id = 1) ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (non-correlated EXISTS returns all), got %d", len(rows))
+		}
+	})
+
+	t.Run("join_aggregate_per_dept", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT d.name, COUNT(*) AS cnt, SUM(e.salary) AS total
+			 FROM dept d, emp e
+			 WHERE e.dept_id = d.id
+			 GROUP BY d.name
+			 ORDER BY d.name`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "Engineering" || toInt64(rows[0][1]) != 2 || toInt64(rows[0][2]) != 220 {
+			t.Errorf("Engineering: got %v, want (Engineering, 2, 220)", rows[0])
+		}
+		if rows[1][0].(string) != "Sales" || toInt64(rows[1][1]) != 2 || toInt64(rows[1][2]) != 170 {
+			t.Errorf("Sales: got %v, want (Sales, 2, 170)", rows[1])
+		}
+	})
+
+	t.Run("having_on_joined_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT d.name, SUM(e.salary)
+			 FROM dept d, emp e
+			 WHERE e.dept_id = d.id
+			 GROUP BY d.name
+			 HAVING SUM(e.salary) > 200`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (Engineering sum=220), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Engineering" {
+			t.Errorf("want Engineering, got %v", rows[0][0])
+		}
+	})
+}
+
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int32:
+		return int64(n)
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
+	default:
+		return 0
+	}
 }
