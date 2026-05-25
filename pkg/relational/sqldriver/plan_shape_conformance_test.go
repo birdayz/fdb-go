@@ -4835,3 +4835,55 @@ func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_DistinctWithExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "distexpr",
+		"CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct{ id, a, b int }{
+		{1, 1, 10}, {2, 1, 10}, {3, 2, 20}, {4, 2, 20}, {5, 3, 30},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d, %d)", r.id, r.a, r.b))
+	}
+
+	t.Run("distinct_column", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT DISTINCT a FROM t ORDER BY a")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("distinct_two_columns", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT DISTINCT a, b FROM t ORDER BY a")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("distinct_with_expression", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT DISTINCT a * b FROM t ORDER BY a * b")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (10, 40, 90), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(int64) != 10 {
+			t.Errorf("row 0: got %v, want 10", rows[0][0])
+		}
+		if rows[2][0].(int64) != 90 {
+			t.Errorf("row 2: got %v, want 90", rows[2][0])
+		}
+	})
+
+	t.Run("count_distinct_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT COUNT(DISTINCT a) FROM t")
+		if err == nil {
+			t.Fatal("expected error for COUNT(DISTINCT), got nil")
+		}
+	})
+
+	_ = ctx
+}
