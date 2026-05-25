@@ -15382,6 +15382,40 @@ func TestFDB_GroupByHavingSumMinMax(t *testing.T) {
 	})
 }
 
+// TestFDB_DeleteAllAndRepopulate — DELETE all rows, repopulate, verify
+func TestFDB_DeleteAllAndRepopulate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "darep", "CREATE TABLE darep_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO darep_t VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_all_verify_empty", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM darep_t WHERE id > 0"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM darep_t")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("want 0 after delete all, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("repopulate_verify", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO darep_t VALUES (10, 100), (20, 200)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM darep_t")
+		if toInt64(rows[0][0]) != 2 || toInt64(rows[0][1]) != 300 {
+			t.Errorf("want count=2 sum=300, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
