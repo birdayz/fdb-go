@@ -18229,6 +18229,82 @@ func TestFDB_GroupByMultipleAggregatesAll(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereOrWithDifferentColumns — OR across different columns
+func TestFDB_WhereOrWithDifferentColumns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wodc",
+		"CREATE TABLE wodc_t(id BIGINT, name STRING, age BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wodc_t VALUES
+		(1,'alice',30),(2,'bob',25),(3,'carol',40),(4,'dave',20),(5,'alice',35)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("name_or_age", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id FROM wodc_t WHERE name = 'bob' OR age >= 35 ORDER BY id
+		`)
+		// bob(id=2), carol(id=3,age=40), alice(id=5,age=35)
+		want := []int64{2, 3, 5}
+		if len(rows) != len(want) {
+			t.Fatalf("want %d rows, got %d: %v", len(want), len(rows), rows)
+		}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("count_name_alice_or_age_lt_25", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM wodc_t WHERE name = 'alice' OR age < 25
+		`)
+		// alice: ids 1,5; age<25: id=4(dave,20) → 3 total
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_UpdateSetToNull — UPDATE setting column to NULL
+func TestFDB_UpdateSetToNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ustn",
+		"CREATE TABLE ustn_t(id BIGINT, val BIGINT, label STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ustn_t VALUES (1,10,'x'),(2,20,'y'),(3,30,'z')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("set_val_null", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "UPDATE ustn_t SET val = null WHERE id = 2")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT val FROM ustn_t WHERE id = 2")
+		if rows[0][0] != nil {
+			t.Errorf("want NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_non_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(val) FROM ustn_t")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 non-null, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
