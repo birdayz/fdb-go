@@ -15786,6 +15786,41 @@ func TestFDB_JoinWithUpdateAndVerify(t *testing.T) {
 	})
 }
 
+// TestFDB_CombinedWhereAndGroupBy — WHERE filter before GROUP BY
+func TestFDB_CombinedWhereAndGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cwagb", "CREATE TABLE cwagb_t(id BIGINT, region STRING, status STRING, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cwagb_t VALUES
+		(1, 'east', 'active', 100), (2, 'east', 'inactive', 50),
+		(3, 'west', 'active', 200), (4, 'west', 'active', 150),
+		(5, 'east', 'active', 75)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("where_active_group_by_region", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, SUM(amount) AS total
+			FROM cwagb_t WHERE status = 'active'
+			GROUP BY region ORDER BY total DESC
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "west" || toInt64(rows[0][1]) != 350 {
+			t.Errorf("west active: 200+150=350, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "east" || toInt64(rows[1][1]) != 175 {
+			t.Errorf("east active: 100+75=175, got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
