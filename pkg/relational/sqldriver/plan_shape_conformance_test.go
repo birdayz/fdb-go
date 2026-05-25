@@ -12849,6 +12849,50 @@ func TestFDB_CTEMultipleUsage(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithMinMaxBigint — MIN/MAX on BIGINT with GROUP BY
+func TestFDB_GroupByWithMinMaxBigint(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbmmb", "CREATE TABLE gbmm_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbmm_t VALUES
+		(1, 'eng', 80), (2, 'eng', 120), (3, 'eng', 100),
+		(4, 'hr', 70), (5, 'hr', 90),
+		(6, 'sales', 110)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("min_max_per_group", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT dept, MIN(salary), MAX(salary) FROM gbmm_t GROUP BY dept ORDER BY dept")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 80 || toInt64(rows[0][2]) != 120 {
+			t.Errorf("eng: MIN=80 MAX=120, got %v %v", rows[0][1], rows[0][2])
+		}
+		if toInt64(rows[1][1]) != 70 || toInt64(rows[1][2]) != 90 {
+			t.Errorf("hr: MIN=70 MAX=90, got %v %v", rows[1][1], rows[1][2])
+		}
+		if toInt64(rows[2][1]) != 110 || toInt64(rows[2][2]) != 110 {
+			t.Errorf("sales: MIN=MAX=110, got %v %v", rows[2][1], rows[2][2])
+		}
+	})
+
+	t.Run("max_minus_min_range", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT dept, MAX(salary) - MIN(salary) AS range_val FROM gbmm_t GROUP BY dept ORDER BY dept")
+		if toInt64(rows[0][1]) != 40 {
+			t.Errorf("eng range = 120-80 = 40, got %v", rows[0][1])
+		}
+		if toInt64(rows[2][1]) != 0 {
+			t.Errorf("sales range = 110-110 = 0, got %v", rows[2][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
