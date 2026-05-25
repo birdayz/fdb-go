@@ -4887,3 +4887,65 @@ func TestFDB_DistinctWithExpressions(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_UpdateDeleteWithExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "upddel",
+		"CREATE TABLE inventory (id BIGINT NOT NULL, name STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id         int
+		name       string
+		qty, price int
+	}{
+		{1, "Widget", 100, 10},
+		{2, "Gadget", 50, 20},
+		{3, "Doohickey", 200, 5},
+		{4, "Thingamajig", 10, 100},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO inventory VALUES (%d, '%s', %d, %d)", r.id, r.name, r.qty, r.price))
+	}
+
+	t.Run("update_with_arithmetic", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE inventory SET qty = qty + 10 WHERE price > 15")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("rows affected: got %d, want 2 (Gadget, Thingamajig)", n)
+		}
+		rows := collectRows(t, db, "SELECT name, qty FROM inventory WHERE price > 15 ORDER BY name")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 60 {
+			t.Errorf("Gadget qty: got %v, want 60 (50+10)", rows[0][1])
+		}
+		if rows[1][1].(int64) != 20 {
+			t.Errorf("Thingamajig qty: got %v, want 20 (10+10)", rows[1][1])
+		}
+	})
+
+	t.Run("delete_with_between", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM inventory WHERE price BETWEEN 5 AND 15")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("rows affected: got %d, want 2 (Widget=10, Doohickey=5)", n)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM inventory")
+		if rows[0][0].(int64) != 2 {
+			t.Errorf("remaining: got %v, want 2", rows[0][0])
+		}
+	})
+
+	_ = ctx
+}
