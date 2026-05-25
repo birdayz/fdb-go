@@ -11646,6 +11646,43 @@ func TestFDB_AggregateOverJoinWithNulls(t *testing.T) {
 	})
 }
 
+// TestFDB_OrderByWithNulls — ORDER BY behavior with NULL values
+func TestFDB_OrderByWithNulls(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "obnull", "CREATE TABLE obn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO obn_t VALUES (1, 30), (2, NULL), (3, 10), (4, NULL), (5, 20)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_by_asc_nulls", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val, id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		t.Logf("ORDER BY val ASC: %v", rows)
+	})
+
+	t.Run("order_by_desc_nulls", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val DESC, id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		t.Logf("ORDER BY val DESC: %v", rows)
+	})
+
+	t.Run("count_non_null_ordered", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(val) FROM obn_t")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("COUNT(val) should be 3 (excludes 2 NULLs), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
