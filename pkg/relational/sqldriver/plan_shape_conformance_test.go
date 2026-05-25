@@ -3511,3 +3511,105 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_JoinWithOrderBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "joinob",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, a1 BIGINT, a2 BIGINT, a3 STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT NOT NULL, b1 BIGINT, b2 BIGINT, b3 STRING, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id, a1, a2 int
+		a3         string
+	}{
+		{1001, 1, 10, "a"}, {1002, 1, 11, "b"}, {1003, 1, 12, "a"}, {1004, 1, 13, "b"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO t1 VALUES (%d, %d, %d, '%s')", r.id, r.a1, r.a2, r.a3)); err != nil {
+			t.Fatalf("INSERT t1: %v", err)
+		}
+	}
+	for _, r := range []struct {
+		id, b1, b2 int
+		b3         string
+	}{
+		{2001, 1, 20, "a"}, {2002, 1, 19, "a"}, {2003, 1, 18, "b"}, {2004, 1, 17, "b"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO t2 VALUES (%d, %d, %d, '%s')", r.id, r.b1, r.b2, r.b3)); err != nil {
+			t.Fatalf("INSERT t2: %v", err)
+		}
+	}
+
+	t.Run("join_order_by_outer_asc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT t1.a2, t1.a3, t2.b2, t2.b3
+			 FROM t1, t2
+			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
+			 ORDER BY t1.a2`)
+		if len(rows) != 8 {
+			t.Fatalf("want 8 rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 10 {
+			t.Errorf("first row a2: got %v, want 10", rows[0][0])
+		}
+		if rows[7][0].(int64) != 13 {
+			t.Errorf("last row a2: got %v, want 13", rows[7][0])
+		}
+	})
+
+	t.Run("join_order_by_outer_desc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT t1.a2, t2.b2
+			 FROM t1, t2
+			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
+			 ORDER BY t1.a2 DESC`)
+		if len(rows) != 8 {
+			t.Fatalf("want 8 rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 13 {
+			t.Errorf("first row a2: got %v, want 13", rows[0][0])
+		}
+		if rows[7][0].(int64) != 10 {
+			t.Errorf("last row a2: got %v, want 10", rows[7][0])
+		}
+	})
+
+	t.Run("join_project_inner_order_outer", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT t2.b2, t2.b3
+			 FROM t1, t2
+			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
+			 ORDER BY t1.a2`)
+		if len(rows) != 8 {
+			t.Fatalf("want 8 rows, got %d", len(rows))
+		}
+		for _, r := range rows[:2] {
+			if r[1].(string) != "a" {
+				t.Errorf("first two rows should have b3='a', got %v", r[1])
+			}
+		}
+	})
+
+	t.Run("join_with_aggregate_order", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT t1.a3, COUNT(*) AS cnt
+			 FROM t1, t2
+			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
+			 GROUP BY t1.a3
+			 ORDER BY cnt DESC`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 4 || rows[1][1].(int64) != 4 {
+			t.Errorf("each group should have 4 rows: got %v, %v", rows[0][1], rows[1][1])
+		}
+	})
+
+	_ = ctx
+}
