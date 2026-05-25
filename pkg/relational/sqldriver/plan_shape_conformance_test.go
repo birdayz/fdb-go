@@ -14903,6 +14903,46 @@ func TestFDB_GroupByWithMaxMinAndOrder(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEWithOrderByAndLimit — CTE query with ORDER BY and LIMIT
+func TestFDB_CTEWithOrderByAndLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctobl", "CREATE TABLE ctobl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ctobl_t VALUES (1, 50), (2, 30), (3, 70), (4, 10), (5, 90)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("cte_order_by", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH sorted AS (SELECT * FROM ctobl_t)
+			SELECT id, val FROM sorted ORDER BY val DESC
+		`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 90 {
+			t.Errorf("first val DESC should be 90, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("cte_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH data AS (SELECT * FROM ctobl_t WHERE val > 20)
+			SELECT COUNT(*), SUM(val) FROM data
+		`)
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("COUNT of val>20: want 4, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 240 {
+			t.Errorf("SUM of val>20: 30+50+70+90=240, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
