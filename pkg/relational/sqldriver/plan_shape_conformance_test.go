@@ -13847,6 +13847,48 @@ func TestFDB_GroupByWithSumAndCoalesce(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithMultipleJoins — query joining 3 tables
+func TestFDB_SelectWithMultipleJoins(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "smj3",
+		"CREATE TABLE mj_countries(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE mj_cities(id BIGINT, country_id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE mj_pop(city_id BIGINT, population BIGINT, PRIMARY KEY(city_id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO mj_countries VALUES (1, 'USA'), (2, 'UK')"); err != nil {
+		t.Fatalf("INSERT countries: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO mj_cities VALUES (10, 1, 'NYC'), (20, 1, 'LA'), (30, 2, 'London')"); err != nil {
+		t.Fatalf("INSERT cities: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO mj_pop VALUES (10, 8000000), (20, 4000000), (30, 9000000)"); err != nil {
+		t.Fatalf("INSERT pop: %v", err)
+	}
+
+	t.Run("three_table_join_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT co.name, SUM(p.population)
+			FROM mj_countries co
+			JOIN mj_cities ci ON co.id = ci.country_id
+			JOIN mj_pop p ON ci.id = p.city_id
+			GROUP BY co.name ORDER BY co.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "UK" || toInt64(rows[0][1]) != 9000000 {
+			t.Errorf("UK: want 9M, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "USA" || toInt64(rows[1][1]) != 12000000 {
+			t.Errorf("USA: want 12M (8M+4M), got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
