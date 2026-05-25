@@ -14289,6 +14289,36 @@ func TestFDB_WhereWithNullAndNotNull(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertAndCountIntegrity — insert rows one at a time and verify COUNT after each
+func TestFDB_InsertAndCountIntegrity(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "iaci", "CREATE TABLE iaci_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+
+	t.Run("incremental_insert_count", func(t *testing.T) {
+		for i := 1; i <= 5; i++ {
+			if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO iaci_t VALUES (%d, %d)", i, i*10)); err != nil {
+				t.Fatalf("INSERT %d: %v", i, err)
+			}
+			rows := collectRows(t, db, "SELECT COUNT(*) FROM iaci_t")
+			if toInt64(rows[0][0]) != int64(i) {
+				t.Fatalf("after %d inserts: COUNT should be %d, got %v", i, i, rows[0][0])
+			}
+		}
+	})
+
+	t.Run("final_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM iaci_t")
+		if toInt64(rows[0][0]) != 150 {
+			t.Errorf("SUM = 10+20+30+40+50 = 150, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
