@@ -11829,6 +11829,65 @@ func TestFDB_CTERecursiveDepthLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_AggregateIndexWithUpdate — aggregate index correctness after updates
+func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aiupd",
+		"CREATE TABLE ai_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX cnt_grp AS SELECT COUNT(*) FROM ai_t GROUP BY grp "+
+			"CREATE INDEX sum_grp AS SELECT SUM(val) FROM ai_t GROUP BY grp")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ai_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("initial_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM ai_t GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 2 || toInt64(rows[0][2]) != 30 {
+			t.Errorf("A: want cnt=2,sum=30, got %v,%v", rows[0][1], rows[0][2])
+		}
+	})
+
+	t.Run("after_update_value", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE ai_t SET val = 100 WHERE id = 1"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT grp, SUM(val) FROM ai_t WHERE grp = 'A' GROUP BY grp")
+		if toInt64(rows[0][1]) != 120 {
+			t.Errorf("A sum after update: 100+20=120, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("after_delete", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM ai_t WHERE id = 2"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM ai_t WHERE grp = 'A' GROUP BY grp")
+		if toInt64(rows[0][1]) != 1 {
+			t.Errorf("A count after delete: want 1, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("after_insert_new_group", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO ai_t VALUES (4, 'C', 50)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM ai_t GROUP BY grp ORDER BY grp")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups now, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
