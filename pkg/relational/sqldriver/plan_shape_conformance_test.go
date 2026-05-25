@@ -16793,6 +16793,101 @@ func TestFDB_BetweenOrderBy(t *testing.T) {
 	})
 }
 
+// TestFDB_MultiRowInsertAndVerify — INSERT multiple rows in one statement, verify all
+func TestFDB_MultiRowInsertAndVerify(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mriv",
+		"CREATE TABLE mriv_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
+
+	t.Run("insert_10_rows", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, `INSERT INTO mriv_t VALUES
+			(1,'a',10),(2,'b',20),(3,'c',30),(4,'d',40),(5,'e',50),
+			(6,'f',60),(7,'g',70),(8,'h',80),(9,'i',90),(10,'j',100)`)
+		if err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 10 {
+			t.Errorf("want 10 rows affected, got %d", n)
+		}
+	})
+
+	t.Run("verify_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM mriv_t")
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("want 10, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("verify_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(score) FROM mriv_t")
+		if toInt64(rows[0][0]) != 550 {
+			t.Errorf("want 550, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("verify_order", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name FROM mriv_t ORDER BY name DESC LIMIT 3")
+		want := []string{"j", "i", "h"}
+		for i, w := range want {
+			if fmt.Sprintf("%v", rows[i][0]) != w {
+				t.Errorf("row %d: want %s, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
+// TestFDB_StringOrderByLexicographic — verify strings sort lexicographically
+func TestFDB_StringOrderByLexicographic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sol",
+		"CREATE TABLE sol_t(id BIGINT, word STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO sol_t VALUES (1,'banana'),(2,'apple'),(3,'cherry'),(4,'date'),(5,'elderberry')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("asc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT word FROM sol_t ORDER BY word ASC")
+		want := []string{"apple", "banana", "cherry", "date", "elderberry"}
+		for i, w := range want {
+			if fmt.Sprintf("%v", rows[i][0]) != w {
+				t.Errorf("row %d: want %s, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT word FROM sol_t ORDER BY word DESC")
+		want := []string{"elderberry", "date", "cherry", "banana", "apple"}
+		for i, w := range want {
+			if fmt.Sprintf("%v", rows[i][0]) != w {
+				t.Errorf("row %d: want %s, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("like_prefix_ordered", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT word FROM sol_t WHERE word LIKE 'a%' OR word LIKE 'b%' ORDER BY word")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "apple" || fmt.Sprintf("%v", rows[1][0]) != "banana" {
+			t.Errorf("want [apple banana], got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
