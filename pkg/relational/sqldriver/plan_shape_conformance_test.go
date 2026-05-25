@@ -9071,6 +9071,191 @@ func TestFDB_ConcatExpressions(t *testing.T) {
 	})
 }
 
+// TestFDB_HavingEdgeCases — HAVING with various predicate shapes
+func TestFDB_HavingEdgeCases(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "havec", "CREATE TABLE hav_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO hav_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'A', 30),
+		(4, 'B', 5), (5, 'B', 15),
+		(6, 'C', 100),
+		(7, 'D', 1), (8, 'D', 2), (9, 'D', 3), (10, 'D', 4)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("having_count_gt", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM hav_t GROUP BY grp HAVING COUNT(*) > 2 ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups (A=3, D=4), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" {
+			t.Errorf("first should be A, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "D" {
+			t.Errorf("second should be D, got %v", rows[1][0])
+		}
+	})
+
+	t.Run("having_sum_lt", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, SUM(val) FROM hav_t GROUP BY grp HAVING SUM(val) < 30 ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups (B=20, D=10), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "B" {
+			t.Errorf("first should be B, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("having_min_max", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, MIN(val), MAX(val) FROM hav_t GROUP BY grp HAVING MIN(val) > 3 ORDER BY grp")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups (A min=10, B min=5, C min=100), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("having_count_eq_1", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp FROM hav_t GROUP BY grp HAVING COUNT(*) = 1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 group (C), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "C" {
+			t.Errorf("should be C, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("having_with_order_by_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, SUM(val) AS total FROM hav_t GROUP BY grp HAVING SUM(val) > 15 ORDER BY SUM(val) DESC")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (C=100, A=60, B=20), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 100 {
+			t.Errorf("first should be C (100), got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 60 {
+			t.Errorf("second should be A (60), got %v", rows[1][1])
+		}
+		if toInt64(rows[2][1]) != 20 {
+			t.Errorf("third should be B (20), got %v", rows[2][1])
+		}
+	})
+}
+
+// TestFDB_DeleteInsertCycles — transactional integrity of delete+insert patterns
+func TestFDB_DeleteInsertCycles(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "delic", "CREATE TABLE cycle_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+
+	t.Run("insert_verify_delete_verify", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO cycle_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
+		if toInt64(rows[0][0]) != 3 {
+			t.Fatalf("after insert: want 3, got %v", rows[0][0])
+		}
+
+		if _, err := db.ExecContext(ctx, "DELETE FROM cycle_t WHERE val > 150"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows = collectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
+		if toInt64(rows[0][0]) != 1 {
+			t.Fatalf("after delete: want 1, got %v", rows[0][0])
+		}
+
+		if _, err := db.ExecContext(ctx, "INSERT INTO cycle_t VALUES (4, 400), (5, 500)"); err != nil {
+			t.Fatalf("INSERT round 2: %v", err)
+		}
+		rows = collectRows(t, db, "SELECT id, val FROM cycle_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (1,4,5), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("first should be id=1, got %v", rows[0][0])
+		}
+		if toInt64(rows[1][0]) != 4 {
+			t.Errorf("second should be id=4, got %v", rows[1][0])
+		}
+	})
+
+	t.Run("update_then_aggregate", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE cycle_t SET val = val * 2"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT SUM(val), MIN(val), MAX(val) FROM cycle_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 200+800+1000 {
+			t.Errorf("SUM should be 200+800+1000=2000, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("delete_all_then_aggregate", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM cycle_t WHERE id >= 0"); err != nil {
+			t.Fatalf("DELETE ALL: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("after delete all: COUNT should be 0, got %v", rows[0][0])
+		}
+		rows = collectRows(t, db, "SELECT SUM(val) FROM cycle_t")
+		if rows[0][0] != nil {
+			t.Errorf("SUM on empty should be NULL, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_CrossJoinBasic — CROSS JOIN (cartesian product)
+func TestFDB_CrossJoinBasic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "xjoin",
+		"CREATE TABLE xj1(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE xj2(code BIGINT, label STRING, PRIMARY KEY(code))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO xj1 VALUES (1, 'a'), (2, 'b')"); err != nil {
+		t.Fatalf("INSERT xj1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO xj2 VALUES (10, 'x'), (20, 'y'), (30, 'z')"); err != nil {
+		t.Fatalf("INSERT xj2: %v", err)
+	}
+
+	t.Run("cross_join_row_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT xj1.id, xj2.code FROM xj1, xj2 ORDER BY xj1.id, xj2.code")
+		if len(rows) != 6 {
+			t.Fatalf("want 2*3=6 rows, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("cross_join_with_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT xj1.id, xj2.code FROM xj1, xj2 WHERE xj2.code > 15 ORDER BY xj1.id, xj2.code")
+		if len(rows) != 4 {
+			t.Fatalf("want 2*2=4 rows (code>15: 20,30), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("cross_join_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM xj1, xj2")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 6 {
+			t.Errorf("COUNT(*) of cross join should be 6, got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
