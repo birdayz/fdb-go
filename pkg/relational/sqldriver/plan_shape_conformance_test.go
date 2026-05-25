@@ -13806,6 +13806,47 @@ func TestFDB_UpdateWithArithmeticAndWhere(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithSumAndCoalesce — SUM with COALESCE in GROUP BY context
+func TestFDB_GroupByWithSumAndCoalesce(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbsc", "CREATE TABLE gbsc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbsc_t VALUES
+		(1, 'A', 10), (2, 'A', NULL), (3, 'B', 30), (4, 'B', 40), (5, 'A', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("sum_with_coalesce_per_group", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, SUM(COALESCE(val, 0)) AS total
+			FROM gbsc_t GROUP BY grp ORDER BY grp
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 60 {
+			t.Errorf("A: SUM(COALESCE) = 10+0+50 = 60, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 70 {
+			t.Errorf("B: SUM(COALESCE) = 30+40 = 70, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("count_vs_count_col_per_group", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, COUNT(*), COUNT(val) FROM gbsc_t GROUP BY grp ORDER BY grp
+		`)
+		if toInt64(rows[0][1]) != 3 || toInt64(rows[0][2]) != 2 {
+			t.Errorf("A: COUNT(*)=3 COUNT(val)=2, got %v %v", rows[0][1], rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
