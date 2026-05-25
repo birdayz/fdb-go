@@ -12648,6 +12648,35 @@ func TestFDB_UnionAllWithDifferentWheres(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithCoalesceAndCase — GROUP BY with expression columns
+func TestFDB_GroupByWithCoalesceAndCase(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbcc", "CREATE TABLE gbcc_t(id BIGINT, region STRING, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbcc_t VALUES
+		(1, 'east', 100), (2, NULL, 200), (3, 'west', 300), (4, NULL, 400), (5, 'east', 500)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("group_by_coalesce", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COALESCE(region, 'unknown'), SUM(amount)
+			FROM gbcc_t
+			GROUP BY COALESCE(region, 'unknown')
+			ORDER BY COALESCE(region, 'unknown')
+		`)
+		t.Logf("GROUP BY COALESCE: %v", rows)
+		if len(rows) < 2 {
+			t.Fatalf("want at least 2 groups, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
