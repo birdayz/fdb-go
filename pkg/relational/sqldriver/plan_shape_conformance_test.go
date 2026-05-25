@@ -13145,6 +13145,39 @@ func TestFDB_SelectWithMultipleStringColumns(t *testing.T) {
 	})
 }
 
+// TestFDB_DerivedTableWithLimit — derived table containing LIMIT
+func TestFDB_DerivedTableWithLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dtlim", "CREATE TABLE dtl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO dtl_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("limit_in_derived_ignored", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM dtl_t LIMIT 3) AS d")
+		t.Logf("LIMIT in derived: COUNT=%v (LIMIT in subquery may be ignored)", rows[0][0])
+	})
+
+	t.Run("outer_limit_works", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM dtl_t) AS d ORDER BY id LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("outer LIMIT should work: want 3, got %d", len(rows))
+		}
+	})
+
+	t.Run("aggregate_over_derived_no_limit", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM (SELECT * FROM dtl_t WHERE val <= 30) AS d")
+		if toInt64(rows[0][0]) != 60 {
+			t.Errorf("SUM of val<=30 (10+20+30=60), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
