@@ -16712,6 +16712,87 @@ func TestFDB_DeleteAllThenCount(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertDuplicatePK — INSERT with duplicate PK should error or upsert
+func TestFDB_InsertDuplicatePK(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "idpk",
+		"CREATE TABLE idpk_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO idpk_t VALUES (1, 'first')"); err != nil {
+		t.Fatalf("INSERT 1: %v", err)
+	}
+
+	t.Run("duplicate_pk_errors", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "INSERT INTO idpk_t VALUES (1, 'second')")
+		if err == nil {
+			t.Errorf("expected error for duplicate PK insert")
+		}
+	})
+
+	t.Run("count_stays_one", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM idpk_t")
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("want 1 after duplicate PK insert, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_BetweenOrderBy — BETWEEN filter combined with ORDER BY
+func TestFDB_BetweenOrderBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "btob",
+		"CREATE TABLE btob_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO btob_t VALUES (1,10),(2,25),(3,30),(4,45),(5,50),(6,15),(7,35)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("between_asc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT val FROM btob_t WHERE val BETWEEN 20 AND 40 ORDER BY val")
+		want := []int64{25, 30, 35}
+		if len(rows) != len(want) {
+			t.Fatalf("want %d rows, got %d", len(want), len(rows))
+		}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("between_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT val FROM btob_t WHERE val BETWEEN 20 AND 40 ORDER BY val DESC")
+		want := []int64{35, 30, 25}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("not_between", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT val FROM btob_t WHERE val NOT BETWEEN 20 AND 40 ORDER BY val")
+		want := []int64{10, 15, 45, 50}
+		if len(rows) != len(want) {
+			t.Fatalf("want %d rows, got %d", len(want), len(rows))
+		}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
