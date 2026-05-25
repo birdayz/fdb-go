@@ -13216,6 +13216,47 @@ func TestFDB_JoinWithCaseWhen(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithNegation — NOT, negative numbers, subtraction in WHERE
+func TestFDB_WhereWithNegation(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wneg", "CREATE TABLE wn_t(id BIGINT, val BIGINT, flag BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO wn_t VALUES (1, 10, 1), (2, -5, 0), (3, 20, 1), (4, -10, 0), (5, 0, 1)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("negative_values", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wn_t WHERE val < 0 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 negative, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("not_flag", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wn_t WHERE NOT (flag = 1) ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (flag<>1), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("abs_via_case", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN val < 0 THEN val * -1 ELSE val END AS abs_val
+			FROM wn_t ORDER BY id
+		`)
+		if toInt64(rows[1][1]) != 5 {
+			t.Errorf("id=2: abs(-5)=5, got %v", rows[1][1])
+		}
+		if toInt64(rows[3][1]) != 10 {
+			t.Errorf("id=4: abs(-10)=10, got %v", rows[3][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
