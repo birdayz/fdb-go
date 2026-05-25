@@ -14319,6 +14319,38 @@ func TestFDB_InsertAndCountIntegrity(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithWhereOnDifferentColumn — GROUP BY one col, WHERE on another
+func TestFDB_GroupByWithWhereOnDifferentColumn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbwdc", "CREATE TABLE gbwdc_t(id BIGINT, dept STRING, level STRING, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbwdc_t VALUES
+		(1, 'eng', 'senior', 150), (2, 'eng', 'junior', 80),
+		(3, 'sales', 'senior', 120), (4, 'sales', 'junior', 70),
+		(5, 'eng', 'senior', 160), (6, 'hr', 'junior', 60)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("group_by_dept_where_level", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT dept, COUNT(*), SUM(salary)
+			FROM gbwdc_t WHERE level = 'senior'
+			GROUP BY dept ORDER BY dept
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (eng, sales have seniors), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "eng" || toInt64(rows[0][1]) != 2 || toInt64(rows[0][2]) != 310 {
+			t.Errorf("eng seniors: want cnt=2 sum=310, got %v %v %v", rows[0][0], rows[0][1], rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
