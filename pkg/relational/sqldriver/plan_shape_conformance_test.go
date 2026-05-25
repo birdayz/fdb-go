@@ -11394,6 +11394,49 @@ func TestFDB_UpdateMultiColumn(t *testing.T) {
 	})
 }
 
+// TestFDB_DerivedTableWithJoinAndAggregate — derived table in JOIN with aggregate
+func TestFDB_DerivedTableWithJoinAndAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dtja", "CREATE TABLE dtja_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO dtja_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40), (5, 'C', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("select_from_aggregate_derived", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT cat, total FROM (
+				SELECT cat, SUM(val) AS total FROM dtja_t GROUP BY cat
+			) AS summary
+			WHERE total > 25
+			ORDER BY total DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (A=30, B=70, C=50 all >25), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 70 {
+			t.Errorf("first should be B(70), got %v", rows[0][1])
+		}
+	})
+
+	t.Run("count_over_aggregate_derived", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM (
+				SELECT cat, SUM(val) AS total FROM dtja_t GROUP BY cat HAVING SUM(val) > 40
+			) AS big_cats
+		`)
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 cats with SUM>40 (B=70, C=50), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
