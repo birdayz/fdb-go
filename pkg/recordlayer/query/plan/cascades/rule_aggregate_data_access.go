@@ -103,7 +103,7 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Path 2: multi-aggregate intersection — multiple candidates, each
 	// covering one of the GroupBy's aggregates with identical grouping.
-	tryMultiAggregateIntersection(call, gb, candidates, scanTypes)
+	tryMultiAggregateIntersection(call, gb, candidates, scanTypes, innerFilterPreds)
 }
 
 // extractInnerFilterPredicates returns ComparisonPredicates from the
@@ -191,6 +191,7 @@ func tryMultiAggregateIntersection(
 	gb *expressions.GroupByExpression,
 	candidates []MatchCandidate,
 	scanTypes []string,
+	innerFilterPreds []*predicates.ComparisonPredicate,
 ) {
 	aggs := gb.GetAggregates()
 	if len(aggs) < 2 {
@@ -253,8 +254,8 @@ func tryMultiAggregateIntersection(
 	// Build child index scan plans.
 	childPlans := make([]plans.RecordQueryPlan, len(matched))
 	for i, mc := range matched {
-		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		sp := mc.ToScanPlan(emptyPrefix, false)
+		prefix := buildAggScanPrefix(mc, innerFilterPreds)
+		sp := mc.ToScanPlan(prefix, false)
 		idxPlan := extractIndexPlan(sp)
 		if idxPlan == nil {
 			return

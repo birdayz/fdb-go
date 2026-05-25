@@ -84,8 +84,22 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	bindingNames := make([]string, len(explodeQuantifiers))
+	inSources := make([][]any, len(explodeQuantifiers))
 	for i, eq := range explodeQuantifiers {
 		bindingNames[i] = eq.GetAlias().String()
+		if ref := eq.GetRangesOver(); ref != nil {
+			for _, member := range ref.AllMembers() {
+				if expl, ok := member.(*expressions.ExplodeExpression); ok {
+					cv := expl.GetCollectionValue()
+					if cv != nil {
+						if arr, ok := cv.Evaluate(nil).([]any); ok {
+							inSources[i] = arr
+						}
+					}
+					break
+				}
+			}
+		}
 	}
 
 	partitions := ToPlanPartitions(innerRef)
@@ -143,6 +157,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 				inUnionPlan := plans.NewRecordQueryInUnionPlanWithMaxSize(
 					innerPlans[0], bindingNames, comparisonKeys, isReverse, maxSize)
+				inUnionPlan.SetInSources(inSources)
 				call.YieldFinalExpression(NewPhysicalInUnionWrapper(
 					inUnionPlan,
 					expressions.NewPhysicalQuantifier(newRef),
@@ -154,6 +169,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 			newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 			inUnionPlan := plans.NewRecordQueryInUnionPlan(
 				innerPlans[0], bindingNames, nil, false)
+			inUnionPlan.SetInSources(inSources)
 			call.YieldFinalExpression(NewPhysicalInUnionWrapper(
 				inUnionPlan,
 				expressions.NewPhysicalQuantifier(newRef),

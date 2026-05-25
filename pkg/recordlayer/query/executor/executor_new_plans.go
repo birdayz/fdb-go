@@ -250,13 +250,13 @@ func executePredicatesFilter(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
 	preds := p.GetPredicates()
 	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0)
-	return &filterResultCursor{
+	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) bool {
 			var rowCtx any = qr.Datum
@@ -272,7 +272,8 @@ func executePredicatesFilter(
 			}
 			return true
 		},
-	}, nil
+	}
+	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeMap(
@@ -283,15 +284,16 @@ func executeMap(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
 	resultValue := p.GetResultValue()
-	return recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
-		mapped := resultValue.Evaluate(qr.Datum)
-		return QueryResult{Datum: mapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
-	}), nil
+	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
+		m := resultValue.Evaluate(qr.Datum)
+		return QueryResult{Datum: m, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
+	})
+	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeFirstOrDefault(
@@ -393,6 +395,47 @@ func executeInUnion(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	inSources := p.GetInSources()
+	bindingNames := p.GetBindingNames()
+	if len(inSources) == 0 || len(bindingNames) == 0 {
+		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	}
+
+	// Single binding dimension: execute inner once per IN value,
+	// merge-sort if comparison keys exist, otherwise concat.
+	if len(bindingNames) == 1 && len(inSources[0]) > 0 {
+		bindingID := values.NamedCorrelationIdentifier(bindingNames[0])
+		var cursors []recordlayer.RecordCursor[QueryResult]
+		for _, val := range inSources[0] {
+			boundCtx := evalCtx.WithBinding(bindingID, val)
+			cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, nil, props.ClearSkipAndLimit())
+			if err != nil {
+				for _, c := range cursors {
+					c.Close()
+				}
+				return nil, err
+			}
+			cursors = append(cursors, cursor)
+		}
+		if len(cursors) == 1 {
+			return applySkipLimit(cursors[0], props.Skip, props.ReturnedRowLimit), nil
+		}
+		compKeys := p.GetComparisonKeys()
+		if len(compKeys) > 0 {
+			merged := &mergeSortCursor{
+				cursors:   cursors,
+				compKeys:  compKeys,
+				reverse:   p.IsReverse(),
+				dedup:     true,
+				peeked:    make([]QueryResult, len(cursors)),
+				hasPeeked: make([]bool, len(cursors)),
+				exhausted: make([]bool, len(cursors)),
+			}
+			return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
+		}
+		return applySkipLimit(newConcatCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+	}
+
 	return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 }
 
@@ -441,6 +484,7 @@ type mergeSortCursor struct {
 	hasPeeked []bool
 	exhausted []bool
 	lastKey   string
+	hasLast   bool
 	closed    bool
 }
 
@@ -471,10 +515,11 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 
 		if m.dedup {
 			key := m.extractKey(result)
-			if key == m.lastKey && m.lastKey != "" {
+			if m.hasLast && key == m.lastKey {
 				continue
 			}
 			m.lastKey = key
+			m.hasLast = true
 		}
 
 		return recordlayer.NewResultWithValue(result, &recordlayer.StartContinuation{}), nil
@@ -553,28 +598,68 @@ func compareValues(a, b any) int {
 	}
 	switch av := a.(type) {
 	case int64:
-		bv := toFloat64(b)
-		if !math.IsNaN(bv) {
-			af := float64(av)
-			if af < bv {
+		switch bv := b.(type) {
+		case int64:
+			if av < bv {
 				return -1
 			}
-			if af > bv {
+			if av > bv {
 				return 1
 			}
 			return 0
+		case int32:
+			bv64 := int64(bv)
+			if av < bv64 {
+				return -1
+			}
+			if av > bv64 {
+				return 1
+			}
+			return 0
+		default:
+			bf := toFloat64(b)
+			if !math.IsNaN(bf) {
+				af := float64(av)
+				if af < bf {
+					return -1
+				}
+				if af > bf {
+					return 1
+				}
+				return 0
+			}
 		}
 	case int32:
-		bv := toFloat64(b)
-		if !math.IsNaN(bv) {
-			af := float64(av)
-			if af < bv {
+		av64 := int64(av)
+		switch bv := b.(type) {
+		case int64:
+			if av64 < bv {
 				return -1
 			}
-			if af > bv {
+			if av64 > bv {
 				return 1
 			}
 			return 0
+		case int32:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		default:
+			bf := toFloat64(b)
+			if !math.IsNaN(bf) {
+				af := float64(av)
+				if af < bf {
+					return -1
+				}
+				if af > bf {
+					return 1
+				}
+				return 0
+			}
 		}
 	case float64:
 		if math.IsNaN(av) {

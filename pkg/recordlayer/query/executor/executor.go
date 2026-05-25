@@ -634,9 +634,8 @@ func executeDistinct(
 func distinctKey(qr QueryResult) string {
 	m, ok := qr.Datum.(map[string]any)
 	if !ok {
-		return fmt.Sprintf("%v", qr.Datum)
+		return fmt.Sprintf("%T:%v", qr.Datum, qr.Datum)
 	}
-	// Sort keys for deterministic output — map iteration order is random.
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -653,7 +652,7 @@ func distinctKey(qr QueryResult) string {
 		if v == nil {
 			sb.WriteString("\x00NULL\x00")
 		} else {
-			sb.WriteString(fmt.Sprintf("%v", v))
+			fmt.Fprintf(&sb, "%T:%v", v, v)
 		}
 	}
 	return sb.String()
