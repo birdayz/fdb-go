@@ -436,7 +436,7 @@ func executeInUnion(
 		return applySkipLimit(newConcatCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
 	}
 
-	return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingNames))
 }
 
 func executeMergeSortUnion(
@@ -567,7 +567,15 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 	}
 	t := make(tuple.Tuple, len(m.compKeys))
 	for i, key := range m.compKeys {
-		t[i] = key.Evaluate(qr.Datum)
+		v := key.Evaluate(qr.Datum)
+		switch tv := v.(type) {
+		case nil, int64, int, uint, uint64, float32, float64, string, []byte, bool:
+			t[i] = tv
+		case int32:
+			t[i] = int64(tv)
+		default:
+			t[i] = fmt.Sprintf("%T:%v", v, v)
+		}
 	}
 	return string(t.Pack())
 }
