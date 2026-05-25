@@ -13345,6 +13345,52 @@ func TestFDB_MultiTableInsertAndJoin(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByTwoColumnsWithAggregate — GROUP BY on two columns
+func TestFDB_GroupByTwoColumnsWithAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gb2ca", "CREATE TABLE gb2_t(id BIGINT, region STRING, product STRING, sales BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gb2_t VALUES
+		(1, 'east', 'A', 10), (2, 'east', 'A', 20), (3, 'east', 'B', 30),
+		(4, 'west', 'A', 40), (5, 'west', 'B', 50), (6, 'west', 'B', 60)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("group_by_two_columns", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, product, SUM(sales), COUNT(*)
+			FROM gb2_t GROUP BY region, product
+			ORDER BY region, product
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 groups, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "east" || fmt.Sprintf("%v", rows[0][1]) != "A" || toInt64(rows[0][2]) != 30 {
+			t.Errorf("east/A: want sum=30, got %v %v %v", rows[0][0], rows[0][1], rows[0][2])
+		}
+		if toInt64(rows[3][2]) != 110 {
+			t.Errorf("west/B: want sum=50+60=110, got %v", rows[3][2])
+		}
+	})
+
+	t.Run("group_by_two_with_having", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, product, SUM(sales)
+			FROM gb2_t GROUP BY region, product
+			HAVING SUM(sales) > 35
+			ORDER BY region, product
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (west/A=40, west/B=110), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
