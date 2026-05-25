@@ -10525,6 +10525,58 @@ func TestFDB_LeftJoinNullHandling(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllWithOrderBy — UNION ALL followed by ORDER BY
+func TestFDB_UnionAllWithOrderBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uaob",
+		"CREATE TABLE ua1(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE ua2(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ua1 VALUES (1, 100), (2, 200)"); err != nil {
+		t.Fatalf("INSERT ua1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO ua2 VALUES (3, 50), (4, 150)"); err != nil {
+		t.Fatalf("INSERT ua2: %v", err)
+	}
+
+	t.Run("union_all_order_by_val", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val")
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 50 {
+			t.Errorf("first val should be 50, got %v", rows[0][1])
+		}
+		if toInt64(rows[3][1]) != 200 {
+			t.Errorf("last val should be 200, got %v", rows[3][1])
+		}
+	})
+
+	t.Run("union_all_order_by_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val DESC")
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 200 {
+			t.Errorf("first val DESC should be 200, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("union_all_with_limit", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val LIMIT 2")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 50 || toInt64(rows[1][1]) != 100 {
+			t.Errorf("want 50,100 got %v,%v", rows[0][1], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
