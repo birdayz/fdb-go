@@ -12039,6 +12039,51 @@ func TestFDB_BetweenWithGroupBy(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinAggregateWithHaving — JOIN + GROUP BY + HAVING + ORDER BY combined
+func TestFDB_JoinAggregateWithHaving(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jagh",
+		"CREATE TABLE jagh_teams(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jagh_scores(id BIGINT, team_id BIGINT, points BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jagh_teams VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')"); err != nil {
+		t.Fatalf("INSERT teams: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO jagh_scores VALUES
+		(1, 1, 10), (2, 1, 20), (3, 1, 30),
+		(4, 2, 5), (5, 2, 15),
+		(6, 3, 100)
+	`); err != nil {
+		t.Fatalf("INSERT scores: %v", err)
+	}
+
+	t.Run("join_group_having_order", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT t.name, COUNT(*) AS games, SUM(s.points) AS total
+			FROM jagh_teams t JOIN jagh_scores s ON t.id = s.team_id
+			GROUP BY t.name
+			HAVING SUM(s.points) >= 20
+			ORDER BY total DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (gamma=100, alpha=60, beta=20 all >=20), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "gamma" || toInt64(rows[0][2]) != 100 {
+			t.Errorf("first should be gamma(100), got %v %v", rows[0][0], rows[0][2])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "alpha" || toInt64(rows[1][2]) != 60 {
+			t.Errorf("second should be alpha(60), got %v %v", rows[1][0], rows[1][2])
+		}
+		if fmt.Sprintf("%v", rows[2][0]) != "beta" || toInt64(rows[2][2]) != 20 {
+			t.Errorf("third should be beta(20), got %v %v", rows[2][0], rows[2][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
