@@ -12969,6 +12969,47 @@ func TestFDB_JoinWithOrderByOnBothTables(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByHavingWithMultipleConditions — HAVING with AND/OR
+func TestFDB_GroupByHavingWithMultipleConditions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbhmc", "CREATE TABLE ghmc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ghmc_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'A', 30),
+		(4, 'B', 5), (5, 'B', 15),
+		(6, 'C', 100), (7, 'C', 200)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("having_count_and_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, COUNT(*), SUM(val) FROM ghmc_t
+			GROUP BY grp
+			HAVING COUNT(*) >= 2 AND SUM(val) > 30
+			ORDER BY grp
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (A: cnt=3 sum=60, C: cnt=2 sum=300), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("having_min_check", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, MIN(val) FROM ghmc_t
+			GROUP BY grp HAVING MIN(val) >= 5
+			ORDER BY grp
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (all groups have MIN>=5), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
