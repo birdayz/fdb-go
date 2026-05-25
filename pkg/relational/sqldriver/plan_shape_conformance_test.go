@@ -18942,6 +18942,94 @@ func TestFDB_CRUDCycle(t *testing.T) {
 	})
 }
 
+// TestFDB_SumWithWhereAndGroupBy — SUM filtered by WHERE then grouped
+func TestFDB_SumFilteredGrouped(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sfg",
+		"CREATE TABLE sfg_t(id BIGINT, region STRING, year BIGINT, revenue BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO sfg_t VALUES
+		(1,'east',2024,100),(2,'west',2024,200),(3,'east',2025,150),
+		(4,'west',2025,250),(5,'east',2024,50),(6,'north',2025,300)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("sum_2024_per_region", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, SUM(revenue) FROM sfg_t
+			WHERE year = 2024
+			GROUP BY region
+			ORDER BY region
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 regions in 2024, got %d", len(rows))
+		}
+		// east: 100+50=150, west: 200
+		if fmt.Sprintf("%v", rows[0][0]) != "east" || toInt64(rows[0][1]) != 150 {
+			t.Errorf("east: want 150, got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "west" || toInt64(rows[1][1]) != 200 {
+			t.Errorf("west: want 200, got %v", rows[1])
+		}
+	})
+
+	t.Run("sum_2025_total", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(revenue) FROM sfg_t WHERE year = 2025")
+		// 150+250+300=700
+		if toInt64(rows[0][0]) != 700 {
+			t.Errorf("want 700, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_per_year", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT year, COUNT(*) FROM sfg_t GROUP BY year ORDER BY year
+		`)
+		if toInt64(rows[0][1]) != 3 || toInt64(rows[1][1]) != 3 {
+			t.Errorf("want [3 3], got [%v %v]", rows[0][1], rows[1][1])
+		}
+	})
+}
+
+// TestFDB_DeleteThenInsertSameKey — delete row then re-insert same PK
+func TestFDB_DeleteThenInsertSameKey(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dtis",
+		"CREATE TABLE dtis_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO dtis_t VALUES (1,'original')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_and_reinsert", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM dtis_t WHERE id = 1"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, "INSERT INTO dtis_t VALUES (1,'replacement')"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT val FROM dtis_t WHERE id = 1")
+		if fmt.Sprintf("%v", rows[0][0]) != "replacement" {
+			t.Errorf("want 'replacement', got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_still_one", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM dtis_t")
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("want 1, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
