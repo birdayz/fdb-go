@@ -12607,6 +12607,47 @@ func TestFDB_MinMaxWithStrings(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllWithDifferentWheres — UNION ALL where each leg has different WHERE
+func TestFDB_UnionAllWithDifferentWheres(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uadw", "CREATE TABLE uadw_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO uadw_t VALUES
+		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40), (5, 'B', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("union_different_filters", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, val FROM uadw_t WHERE cat = 'A'
+			UNION ALL
+			SELECT id, val FROM uadw_t WHERE val > 40
+			ORDER BY id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (A:1,3 + val>40:5), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("union_count_different_filters", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM (
+				SELECT id FROM uadw_t WHERE cat = 'A'
+				UNION ALL
+				SELECT id FROM uadw_t WHERE cat = 'B'
+			) AS combined
+		`)
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("A(2) + B(2) = 4, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
