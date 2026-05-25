@@ -4758,3 +4758,80 @@ func TestFDB_ExistsWithGroupBy(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "multiaggx",
+		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, qty BIGINT, price BIGINT, cost BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id               int
+		region           string
+		qty, price, cost int
+	}{
+		{1, "US", 10, 100, 50},
+		{2, "US", 20, 50, 30},
+		{3, "EU", 5, 200, 80},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO sales VALUES (%d, '%s', %d, %d, %d)",
+			r.id, r.region, r.qty, r.price, r.cost))
+	}
+
+	t.Run("revenue_and_cost_per_region", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT region,
+			        SUM(qty * price) AS revenue,
+			        SUM(qty * cost) AS total_cost
+			 FROM sales GROUP BY region ORDER BY region`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		// EU: 5*200=1000 revenue, 5*80=400 cost
+		if rows[0][1] == nil || rows[0][2] == nil {
+			t.Fatalf("EU has NULL: revenue=%v cost=%v", rows[0][1], rows[0][2])
+		}
+		if rows[0][1].(int64) != 1000 {
+			t.Errorf("EU revenue: got %v, want 1000", rows[0][1])
+		}
+		if rows[0][2].(int64) != 400 {
+			t.Errorf("EU cost: got %v, want 400", rows[0][2])
+		}
+		// US: 10*100+20*50=2000 revenue, 10*50+20*30=1100 cost
+		if rows[1][1].(int64) != 2000 {
+			t.Errorf("US revenue: got %v, want 2000", rows[1][1])
+		}
+		if rows[1][2].(int64) != 1100 {
+			t.Errorf("US cost: got %v, want 1100", rows[1][2])
+		}
+	})
+
+	t.Run("profit_margin_derived", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT s.region, s.revenue - s.total_cost AS profit
+			 FROM (SELECT region,
+			              SUM(qty * price) AS revenue,
+			              SUM(qty * cost) AS total_cost
+			       FROM sales GROUP BY region) s
+			 ORDER BY profit DESC`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("profit NULL for %v", rows[0][0])
+		}
+		// US profit: 2000-1100=900, EU profit: 1000-400=600
+		if rows[0][0].(string) != "US" || rows[0][1].(int64) != 900 {
+			t.Errorf("row 0: got %v, want [US, 900]", rows[0])
+		}
+		if rows[1][0].(string) != "EU" || rows[1][1].(int64) != 600 {
+			t.Errorf("row 1: got %v, want [EU, 600]", rows[1])
+		}
+	})
+
+	_ = ctx
+}
