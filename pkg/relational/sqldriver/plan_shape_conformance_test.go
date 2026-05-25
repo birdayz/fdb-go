@@ -14588,6 +14588,43 @@ func TestFDB_SelectWithCaseInOrderBy(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithCoalesceInGroupBy — JOIN + GROUP BY + COALESCE in SELECT
+func TestFDB_JoinWithCoalesceInGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jcgb",
+		"CREATE TABLE jcgb_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jcgb_b(id BIGINT, aid BIGINT, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jcgb_a VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jcgb_b VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("left_join_coalesce_group_by", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name, COALESCE(SUM(b.amount), 0) AS total
+			FROM jcgb_a a LEFT JOIN jcgb_b b ON a.id = b.aid
+			GROUP BY a.name
+			ORDER BY total DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" || toInt64(rows[0][1]) != 300 {
+			t.Errorf("alice: want 300, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[2][0]) != "charlie" || toInt64(rows[2][1]) != 0 {
+			t.Errorf("charlie: want 0 (no orders), got %v %v", rows[2][0], rows[2][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
