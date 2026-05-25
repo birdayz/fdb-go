@@ -10434,6 +10434,97 @@ func TestFDB_WhereSubqueryCorrelated(t *testing.T) {
 	})
 }
 
+// TestFDB_LeftJoinNullHandling — LEFT JOIN NULL propagation edge cases
+func TestFDB_LeftJoinNullHandling(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ljnull",
+		"CREATE TABLE lj_left(id BIGINT, val STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE lj_right(id BIGINT, left_id BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO lj_left VALUES (1, 'a'), (2, 'b'), (3, 'c')"); err != nil {
+		t.Fatalf("INSERT left: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO lj_right VALUES (10, 1, 100), (20, 1, 200), (30, 3, 50)"); err != nil {
+		t.Fatalf("INSERT right: %v", err)
+	}
+
+	t.Run("left_join_null_right_columns", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT l.val, r.score
+			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
+			ORDER BY l.id, r.score
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (a:100, a:200, b:NULL, c:50), got %d: %v", len(rows), rows)
+		}
+		found_null := false
+		for _, r := range rows {
+			if fmt.Sprintf("%v", r[0]) == "b" && r[1] == nil {
+				found_null = true
+			}
+		}
+		if !found_null {
+			t.Errorf("b should have NULL score from left join")
+		}
+	})
+
+	t.Run("left_join_count_with_null", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT l.val, COUNT(r.score)
+			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
+			GROUP BY l.val
+			ORDER BY l.val
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "b" || toInt64(rows[1][1]) != 0 {
+			t.Errorf("b: COUNT(r.score) should be 0 (NULL), got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+
+	t.Run("left_join_sum_with_null", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT l.val, SUM(r.score)
+			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
+			GROUP BY l.val
+			ORDER BY l.val
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "a" || toInt64(rows[0][1]) != 300 {
+			t.Errorf("a: SUM=300, got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "b" {
+			t.Errorf("second should be b, got %v", rows[1][0])
+		}
+		if rows[1][1] != nil {
+			t.Errorf("b: SUM should be NULL (no matches), got %v", rows[1][1])
+		}
+	})
+
+	t.Run("left_join_coalesce_null", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT l.val, COALESCE(r.score, 0)
+			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
+			ORDER BY l.id, r.score
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		for _, r := range rows {
+			if fmt.Sprintf("%v", r[0]) == "b" && toInt64(r[1]) != 0 {
+				t.Errorf("b: COALESCE(NULL, 0) should be 0, got %v", r[1])
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
