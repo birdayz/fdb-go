@@ -17092,6 +17092,93 @@ func TestFDB_ArithmeticExpressionProjection(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateMultipleColumns — UPDATE SET on multiple columns at once
+func TestFDB_UpdateMultipleColumns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "umc",
+		"CREATE TABLE umc_t(id BIGINT, name STRING, score BIGINT, active BOOLEAN, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO umc_t VALUES (1,'alice',80,true),(2,'bob',90,true),(3,'carol',70,false)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_score_and_active", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE umc_t SET score = score + 5, active = false WHERE id = 1")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			t.Errorf("want 1 affected, got %d", n)
+		}
+
+		rows := collectRows(t, db, "SELECT score, active FROM umc_t WHERE id = 1")
+		if toInt64(rows[0][0]) != 85 {
+			t.Errorf("score: want 85, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "false" {
+			t.Errorf("active: want false, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("others_unchanged", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, score FROM umc_t WHERE id > 1 ORDER BY id")
+		if toInt64(rows[0][1]) != 90 || toInt64(rows[1][1]) != 70 {
+			t.Errorf("other rows changed: got [%v %v]", rows[0][1], rows[1][1])
+		}
+	})
+}
+
+// TestFDB_ExistsCorrelatedSubquery — WHERE EXISTS with correlated subquery
+func TestFDB_ExistsCorrelatedSubquery(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ecs",
+		"CREATE TABLE ecs_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE ecs_child(id BIGINT, pid BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ecs_parent VALUES (1,'p1'),(2,'p2'),(3,'p3')"); err != nil {
+		t.Fatalf("INSERT parent: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ecs_child VALUES (10,1),(20,1),(30,3)"); err != nil {
+		t.Fatalf("INSERT child: %v", err)
+	}
+
+	t.Run("parents_with_children", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM ecs_parent p
+			WHERE EXISTS (SELECT 1 FROM ecs_child c WHERE c.pid = p.id)
+			ORDER BY p.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 parents with children, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "p1" || fmt.Sprintf("%v", rows[1][0]) != "p3" {
+			t.Errorf("want [p1 p3], got %v", rows)
+		}
+	})
+
+	t.Run("parents_without_children", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM ecs_parent p
+			WHERE NOT EXISTS (SELECT 1 FROM ecs_child c WHERE c.pid = p.id)
+		`)
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "p2" {
+			t.Errorf("want [p2], got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
