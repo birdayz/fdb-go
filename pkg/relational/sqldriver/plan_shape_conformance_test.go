@@ -15747,6 +15747,45 @@ func TestFDB_SelectWithCaseAndAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithUpdateAndVerify — JOIN query, UPDATE, verify via JOIN again
+func TestFDB_JoinWithUpdateAndVerify(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwuv",
+		"CREATE TABLE jwuv_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwuv_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwuv_a VALUES (1, 'alice'), (2, 'bob')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwuv_b VALUES (10, 1, 100), (20, 2, 200)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("initial_join", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a.name, b.val FROM jwuv_a a JOIN jwuv_b b ON a.id = b.aid ORDER BY a.name")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+	})
+
+	t.Run("update_then_rejoin", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE jwuv_b SET val = val * 3 WHERE aid = 1"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT a.name, b.val FROM jwuv_a a JOIN jwuv_b b ON a.id = b.aid ORDER BY a.name")
+		if toInt64(rows[0][1]) != 300 {
+			t.Errorf("alice: 100*3=300, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 200 {
+			t.Errorf("bob: unchanged 200, got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
