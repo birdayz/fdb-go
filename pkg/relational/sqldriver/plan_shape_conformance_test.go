@@ -4440,3 +4440,47 @@ func TestFDB_UnionWithAggExpr(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_ScalarSubqueryWithAggExpr(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "ssqagg",
+		"CREATE TABLE items (id BIGINT NOT NULL, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct{ id, p, q int }{
+		{1, 10, 5}, {2, 20, 3}, {3, 100, 2},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO items VALUES (%d, %d, %d)", r.id, r.p, r.q))
+	}
+
+	t.Run("scalar_sum_expr", func(t *testing.T) {
+		var total int64
+		err := db.QueryRowContext(ctx,
+			"SELECT SUM(price * qty) FROM items").Scan(&total)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if total != 310 {
+			t.Errorf("got %d, want 310 (50+60+200)", total)
+		}
+	})
+
+	t.Run("where_gt_scalar_subquery", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT id, price * qty AS value FROM items
+			 WHERE price * qty > (SELECT SUM(price) FROM items)
+			 ORDER BY id`)
+		// SUM(price) = 130. price*qty: 50, 60, 200. Only id=3 (200) > 130.
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row (id=3, 200 > 130), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(int64) != 3 {
+			t.Errorf("got id=%v, want 3", rows[0][0])
+		}
+	})
+
+	_ = ctx
+}
