@@ -16269,6 +16269,118 @@ func TestFDB_GroupByWithWhereAndHaving(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllOrderByLimit — UNION ALL with ORDER BY and LIMIT
+func TestFDB_UnionAllOrderByLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uaol",
+		"CREATE TABLE uaol_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE uaol_b(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO uaol_a VALUES (1,10),(2,30),(3,50)"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO uaol_b VALUES (4,20),(5,40),(6,60)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("union_order_by_val", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, val FROM uaol_a
+			UNION ALL
+			SELECT id, val FROM uaol_b
+			ORDER BY val
+		`)
+		if len(rows) != 6 {
+			t.Fatalf("want 6 rows, got %d", len(rows))
+		}
+		wantVals := []int64{10, 20, 30, 40, 50, 60}
+		for i, w := range wantVals {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: want val %d, got %v", i, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("union_order_limit_3", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, val FROM uaol_a
+			UNION ALL
+			SELECT id, val FROM uaol_b
+			ORDER BY val DESC
+			LIMIT 3
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		wantVals := []int64{60, 50, 40}
+		for i, w := range wantVals {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: want val %d, got %v", i, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("union_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM (
+				SELECT val FROM uaol_a
+				UNION ALL
+				SELECT val FROM uaol_b
+			) u
+		`)
+		if toInt64(rows[0][0]) != 6 {
+			t.Errorf("want 6, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_SelfJoinPairs — self-join to find all pairs where a.val < b.val
+func TestFDB_SelfJoinPairs(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sjp",
+		"CREATE TABLE sjp_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO sjp_t VALUES (1,10),(2,20),(3,30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("all_ascending_pairs", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.id, b.id FROM sjp_t a JOIN sjp_t b ON a.val < b.val
+			ORDER BY a.id, b.id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 pairs (1,2)(1,3)(2,3), got %d: %v", len(rows), rows)
+		}
+		type pair struct{ a, b int64 }
+		want := []pair{{1, 2}, {1, 3}, {2, 3}}
+		for i, w := range want {
+			a, b := toInt64(rows[i][0]), toInt64(rows[i][1])
+			if a != w.a || b != w.b {
+				t.Errorf("pair %d: want (%d,%d), got (%d,%d)", i, w.a, w.b, a, b)
+			}
+		}
+	})
+
+	t.Run("pair_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM sjp_t a JOIN sjp_t b ON a.val < b.val
+		`)
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 pairs, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
