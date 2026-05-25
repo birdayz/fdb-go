@@ -16381,6 +16381,89 @@ func TestFDB_SelfJoinPairs(t *testing.T) {
 	})
 }
 
+// TestFDB_LargerDatasetAggregate — 50-row dataset with aggregate queries
+func TestFDB_LargerDatasetAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "lda",
+		"CREATE TABLE lda_t(id BIGINT, bucket BIGINT, val BIGINT, PRIMARY KEY(id))")
+
+	var vals strings.Builder
+	for i := 1; i <= 50; i++ {
+		if i > 1 {
+			vals.WriteString(",")
+		}
+		bucket := (i-1)%5 + 1
+		fmt.Fprintf(&vals, "(%d,%d,%d)", i, bucket, i*10)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO lda_t VALUES "+vals.String()); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("total_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM lda_t")
+		if toInt64(rows[0][0]) != 50 {
+			t.Errorf("want 50, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_all", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM lda_t")
+		// sum of 10+20+...+500 = 10*(1+2+...+50) = 10*1275 = 12750
+		if toInt64(rows[0][0]) != 12750 {
+			t.Errorf("want 12750, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_per_bucket", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT bucket, COUNT(*) FROM lda_t GROUP BY bucket ORDER BY bucket")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 buckets, got %d", len(rows))
+		}
+		for _, r := range rows {
+			if toInt64(r[1]) != 10 {
+				t.Errorf("bucket %v: want count 10, got %v", r[0], r[1])
+			}
+		}
+	})
+
+	t.Run("min_max_per_bucket", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT bucket, MIN(val), MAX(val) FROM lda_t GROUP BY bucket ORDER BY bucket")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 buckets, got %d", len(rows))
+		}
+		// bucket 1: ids 1,6,11,16,21,26,31,36,41,46 → vals 10,60,110,...,460
+		if toInt64(rows[0][1]) != 10 || toInt64(rows[0][2]) != 460 {
+			t.Errorf("bucket 1: want min=10 max=460, got min=%v max=%v", rows[0][1], rows[0][2])
+		}
+	})
+
+	t.Run("top_5_by_val", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM lda_t ORDER BY val DESC LIMIT 5")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 rows, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 500 {
+			t.Errorf("top val: want 500, got %v", rows[0][1])
+		}
+		if toInt64(rows[4][1]) != 460 {
+			t.Errorf("5th val: want 460, got %v", rows[4][1])
+		}
+	})
+
+	t.Run("where_range_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM lda_t WHERE val >= 200 AND val <= 300")
+		// vals 200,210,...,300 → 11 values
+		if toInt64(rows[0][0]) != 11 {
+			t.Errorf("want 11 rows in [200,300], got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
