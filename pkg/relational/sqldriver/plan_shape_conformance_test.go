@@ -14186,6 +14186,37 @@ func TestFDB_UpdateSetToExpression(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithArithmeticAndAlias — arithmetic expressions with column aliases
+func TestFDB_SelectWithArithmeticAndAlias(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "swaaa", "CREATE TABLE swaa_t(id BIGINT, width BIGINT, height BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO swaa_t VALUES (1, 10, 5), (2, 20, 8), (3, 15, 12)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("area_computation", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, width * height AS area FROM swaa_t ORDER BY area DESC")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 180 {
+			t.Errorf("largest area: 15*12=180, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("sum_simple_arithmetic", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(width + height) FROM swaa_t")
+		if toInt64(rows[0][0]) != 70 {
+			t.Errorf("SUM(width+height) = (10+5)+(20+8)+(15+12) = 70, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
