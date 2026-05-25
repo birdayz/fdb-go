@@ -10937,6 +10937,68 @@ func TestFDB_WhereWithMultipleConditions(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByMultipleAggregatesWithHaving — GROUP BY with multiple aggregates in HAVING
+func TestFDB_GroupByMultipleAggregatesWithHaving(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gmah", "CREATE TABLE gmah_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gmah_t VALUES
+		(1, 'eng', 100), (2, 'eng', 120), (3, 'eng', 80),
+		(4, 'sales', 90), (5, 'sales', 110),
+		(6, 'hr', 70), (7, 'hr', 60), (8, 'hr', 65), (9, 'hr', 75)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("having_count_and_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT dept, COUNT(*), SUM(salary), MIN(salary), MAX(salary)
+			FROM gmah_t
+			GROUP BY dept
+			HAVING COUNT(*) >= 3
+			ORDER BY dept
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (eng=3, hr=4), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "eng" {
+			t.Errorf("first should be eng, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][2]) != 300 {
+			t.Errorf("eng SUM = 100+120+80 = 300, got %v", rows[0][2])
+		}
+		if toInt64(rows[0][3]) != 80 {
+			t.Errorf("eng MIN = 80, got %v", rows[0][3])
+		}
+		if toInt64(rows[0][4]) != 120 {
+			t.Errorf("eng MAX = 120, got %v", rows[0][4])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "hr" {
+			t.Errorf("second should be hr, got %v", rows[1][0])
+		}
+		if toInt64(rows[1][1]) != 4 {
+			t.Errorf("hr COUNT = 4, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("having_avg_via_sum_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT dept, SUM(salary) / COUNT(*) AS avg_salary
+			FROM gmah_t
+			GROUP BY dept
+			HAVING SUM(salary) / COUNT(*) > 90
+			ORDER BY dept
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (eng avg=100, sales avg=100), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
