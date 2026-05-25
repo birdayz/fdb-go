@@ -15821,6 +15821,34 @@ func TestFDB_CombinedWhereAndGroupBy(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithArithmeticInWhere — arithmetic expressions in WHERE clause
+func TestFDB_SelectWithArithmeticInWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "swaiw", "CREATE TABLE swaiw_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO swaiw_t VALUES (1, 10, 5), (2, 20, 3), (3, 30, 2), (4, 5, 100)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("where_product_gt_50", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM swaiw_t WHERE price * qty > 50 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (id=2: 60, id=3: 60, id=4: 500), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("where_sum_gt", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM swaiw_t WHERE price + qty > 30 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (id=3: 32, id=4: 105), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
