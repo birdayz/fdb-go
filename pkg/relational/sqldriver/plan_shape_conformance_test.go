@@ -17822,6 +17822,97 @@ func TestFDB_CTEMultiple(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithOrderByNonAggColumn — ORDER BY group key column
+func TestFDB_GroupByWithOrderByNonAggColumn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbon",
+		"CREATE TABLE gbon_t(id BIGINT, city STRING, revenue BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbon_t VALUES
+		(1,'berlin',100),(2,'munich',200),(3,'berlin',150),(4,'hamburg',300),(5,'munich',50)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_by_city_asc", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT city, SUM(revenue) FROM gbon_t GROUP BY city ORDER BY city ASC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "berlin" || toInt64(rows[0][1]) != 250 {
+			t.Errorf("berlin: want 250, got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "hamburg" || toInt64(rows[1][1]) != 300 {
+			t.Errorf("hamburg: want 300, got %v", rows[1])
+		}
+		if fmt.Sprintf("%v", rows[2][0]) != "munich" || toInt64(rows[2][1]) != 250 {
+			t.Errorf("munich: want 250, got %v", rows[2])
+		}
+	})
+
+	t.Run("order_by_sum_desc", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT city, SUM(revenue) FROM gbon_t GROUP BY city ORDER BY SUM(revenue) DESC
+		`)
+		// hamburg=300, berlin=250, munich=250
+		if toInt64(rows[0][1]) != 300 {
+			t.Errorf("top: want 300, got %v", rows[0][1])
+		}
+	})
+}
+
+// TestFDB_WhereIsNullIsNotNull — IS NULL and IS NOT NULL filters
+func TestFDB_WhereIsNullIsNotNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "winn",
+		"CREATE TABLE winn_t(id BIGINT, val BIGINT, label STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO winn_t VALUES (1,10,'x'),(2,null,'y'),(3,30,null),(4,null,null)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("val_is_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM winn_t WHERE val IS NULL ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (ids 2,4), got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 2 || toInt64(rows[1][0]) != 4 {
+			t.Errorf("want [2 4], got [%v %v]", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("val_is_not_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM winn_t WHERE val IS NOT NULL ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (ids 1,3), got %d", len(rows))
+		}
+	})
+
+	t.Run("both_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM winn_t WHERE val IS NULL AND label IS NULL")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 4 {
+			t.Errorf("want [4], got %v", rows)
+		}
+	})
+
+	t.Run("either_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM winn_t WHERE val IS NULL OR label IS NULL")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 (ids 2,3,4), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
