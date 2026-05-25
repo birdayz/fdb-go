@@ -14667,6 +14667,48 @@ func TestFDB_MultiColumnInsertAndQuery(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithSubtraction — WHERE with subtraction and negative results
+func TestFDB_WhereWithSubtraction(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wwsub", "CREATE TABLE wwsub_t(id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO wwsub_t VALUES (1, 100, 30), (2, 50, 80), (3, 200, 100), (4, 10, 10)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("positive_difference", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wwsub_t WHERE a - b > 50 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (id=1: 70, id=3: 100), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("negative_difference", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, a - b FROM wwsub_t WHERE a - b < 0 ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want id=2 (50-80=-30), got %v", rows)
+		}
+	})
+
+	t.Run("zero_difference", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wwsub_t WHERE a - b = 0")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 4 {
+			t.Errorf("want id=4 (10-10=0), got %v", rows)
+		}
+	})
+
+	t.Run("sum_of_differences", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(a - b) FROM wwsub_t")
+		if toInt64(rows[0][0]) != 140 {
+			t.Errorf("SUM(a-b) = 70+(-30)+100+0 = 140, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
