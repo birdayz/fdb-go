@@ -15701,6 +15701,52 @@ func TestFDB_WhereWithMultipleBetween(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithCaseAndAggregate — CASE in SELECT with aggregate
+func TestFDB_SelectWithCaseAndAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "scaga", "CREATE TABLE scaga_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO scaga_t VALUES (1, 10), (2, 50), (3, 30), (4, 80), (5, 20)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("sum_case_when", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(CASE WHEN val > 25 THEN val ELSE 0 END) FROM scaga_t
+		`)
+		if toInt64(rows[0][0]) != 160 {
+			t.Errorf("SUM(CASE WHEN val>25) = 50+30+80 = 160, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_case_categories", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT
+				CASE WHEN val >= 50 THEN 'high' ELSE 'low' END AS tier,
+				COUNT(*)
+			FROM scaga_t
+			GROUP BY CASE WHEN val >= 50 THEN 'high' ELSE 'low' END
+		`)
+		t.Logf("CASE tier GROUP BY: %v", rows)
+		if len(rows) < 2 {
+			t.Fatalf("want at least 2 tiers, got %d", len(rows))
+		}
+	})
+
+	t.Run("max_of_case", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT MAX(CASE WHEN val < 50 THEN val ELSE 0 END) FROM scaga_t
+		`)
+		if toInt64(rows[0][0]) != 30 {
+			t.Errorf("MAX(CASE val<50 THEN val) = 30, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
