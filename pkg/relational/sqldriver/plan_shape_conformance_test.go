@@ -9404,6 +9404,178 @@ func TestFDB_JoinWithGroupBy(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEWithAggregate — CTE + aggregate patterns
+func TestFDB_CTEWithAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctea", "CREATE TABLE cte_data(id BIGINT, category STRING, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cte_data VALUES
+		(1, 'X', 10), (2, 'X', 20), (3, 'Y', 30), (4, 'Y', 40), (5, 'Z', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("cte_with_aggregate_in_body", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH totals AS (SELECT category, SUM(amount) AS total FROM cte_data GROUP BY category)
+			SELECT * FROM totals ORDER BY total DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "Y" {
+			t.Errorf("first should be Y(70), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("cte_filtered_by_outer_where", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH all_data AS (SELECT * FROM cte_data)
+			SELECT id, amount FROM all_data WHERE amount > 25 ORDER BY id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (30,40,50), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("cte_used_twice", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH base AS (SELECT category, SUM(amount) AS total FROM cte_data GROUP BY category)
+			SELECT b1.category, b1.total FROM base b1
+			WHERE b1.total > 20
+			ORDER BY b1.category
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (X=30, Y=70, Z=50 all >20), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("cte_count_over_cte", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH filtered AS (SELECT * FROM cte_data WHERE amount >= 20)
+			SELECT COUNT(*) FROM filtered
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("COUNT of amount>=20 should be 4, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_SetOperationErrors — INTERSECT/EXCEPT should error
+func TestFDB_SetOperationErrors(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "setop", "CREATE TABLE sop(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO sop VALUES (1, 10), (2, 20)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("intersect_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT id FROM sop INTERSECT SELECT id FROM sop")
+		if err == nil {
+			t.Errorf("expected error for INTERSECT, got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("except_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT id FROM sop EXCEPT SELECT id FROM sop")
+		if err == nil {
+			t.Errorf("expected error for EXCEPT, got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+}
+
+// TestFDB_NullSafeComparisons — NULL behavior in comparisons
+func TestFDB_NullSafeComparisons(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "nscmp", "CREATE TABLE ns_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ns_t VALUES (1, 10), (2, 20), (3, NULL)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("null_eq_returns_no_rows", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val = NULL")
+		if len(rows) != 0 {
+			t.Errorf("val = NULL should return 0 rows (NULL = NULL is UNKNOWN), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("null_ne_returns_no_rows", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val <> NULL")
+		if len(rows) != 0 {
+			t.Errorf("val <> NULL should return 0 rows, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("is_null_finds_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val IS NULL")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
+			t.Errorf("IS NULL should find id=3, got %v", rows)
+		}
+	})
+
+	t.Run("is_not_null_excludes_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val IS NOT NULL ORDER BY id")
+		if len(rows) != 2 {
+			t.Errorf("IS NOT NULL should find 2 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("coalesce_null_replacement", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, COALESCE(val, 0) FROM ns_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[2][1]) != 0 {
+			t.Errorf("COALESCE(NULL, 0) should be 0, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("sum_ignores_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM ns_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 30 {
+			t.Errorf("SUM should be 10+20=30 (NULL ignored), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_star_includes_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM ns_t")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("COUNT(*) includes NULL rows, should be 3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_column_excludes_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(val) FROM ns_t")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("COUNT(val) excludes NULL, should be 2, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
