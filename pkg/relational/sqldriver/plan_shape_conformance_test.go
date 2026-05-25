@@ -15416,6 +15416,34 @@ func TestFDB_DeleteAllAndRepopulate(t *testing.T) {
 	})
 }
 
+// TestFDB_SumWithMultiplication — SUM(col1*col2) expression aggregate
+func TestFDB_SumWithMultiplication(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "swmul", "CREATE TABLE swmul_t(id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO swmul_t VALUES (1, 5, 10), (2, 3, 20), (3, 7, 15)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("sum_product", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(qty * price) FROM swmul_t")
+		if toInt64(rows[0][0]) != 215 {
+			t.Errorf("SUM(qty*price) = 50+60+105 = 215, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("individual_products", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, qty * price AS total FROM swmul_t ORDER BY total DESC")
+		if toInt64(rows[0][1]) != 105 {
+			t.Errorf("max product: 7*15=105, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
