@@ -2019,13 +2019,29 @@ func rewriteAggregateValue(v values.Value) values.Value {
 	if v == nil {
 		return nil
 	}
-	if _, ok := v.(*values.AggregateValue); ok {
-		return &values.FieldValue{
-			Field: strings.ToUpper(values.ExplainValue(v)),
-			Typ:   values.UnknownType,
-		}
+	av, ok := v.(*values.AggregateValue)
+	if !ok {
+		return v
 	}
-	return v
+	var innerText string
+	if av.Operand != nil {
+		innerText = strings.ToUpper(values.ExplainValue(av.Operand))
+		innerText = strings.ReplaceAll(innerText, " ", "")
+		if len(innerText) > 2 && innerText[0] == '(' && innerText[len(innerText)-1] == ')' {
+			innerText = innerText[1 : len(innerText)-1]
+		}
+	} else {
+		innerText = "*"
+	}
+	funcName := strings.ToUpper(av.Op.Symbol())
+	if funcName == "COUNT(*)" {
+		return &values.FieldValue{Field: "COUNT(*)", Typ: values.UnknownType}
+	}
+	name := funcName + "(" + innerText + ")"
+	return &values.FieldValue{
+		Field: name,
+		Typ:   values.UnknownType,
+	}
 }
 
 func findAggregate(op logical.LogicalOperator) *logical.LogicalAggregate {

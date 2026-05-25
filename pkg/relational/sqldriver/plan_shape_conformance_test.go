@@ -4578,19 +4578,19 @@ func TestFDB_HavingWithAggExpr(t *testing.T) {
 	}
 
 	t.Run("having_sum_expr_threshold", func(t *testing.T) {
-		// Known gap: HAVING SUM(expr) doesn't filter — the HAVING
-		// predicate FieldValue can't resolve the expression-aggregate
-		// column in the streaming agg output map.
 		rows := collectRows(t, db,
 			`SELECT region, SUM(qty * price) AS revenue
 			 FROM orders GROUP BY region
 			 HAVING SUM(qty * price) > 100
 			 ORDER BY revenue DESC`)
-		t.Logf("HAVING SUM(expr): %d rows (want 2)", len(rows))
-		if len(rows) == 2 {
-			if rows[0][0].(string) != "EU" || rows[0][1].(int64) != 900 {
-				t.Errorf("row 0: got %v, want [EU, 900]", rows[0])
-			}
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows (EU=900, US=110), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "EU" || rows[0][1].(int64) != 900 {
+			t.Errorf("row 0: got %v, want [EU, 900]", rows[0])
+		}
+		if rows[1][0].(string) != "US" || rows[1][1].(int64) != 110 {
+			t.Errorf("row 1: got %v, want [US, 110]", rows[1])
 		}
 	})
 
