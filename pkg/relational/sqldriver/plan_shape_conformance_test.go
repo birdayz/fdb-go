@@ -12530,6 +12530,53 @@ func TestFDB_CaseWhenInGroupBy(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWhereOnString — string comparison operators
+func TestFDB_SelectWhereOnString(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "swstr", "CREATE TABLE sws_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO sws_t VALUES
+		(1, 'alice'), (2, 'bob'), (3, 'charlie'), (4, 'david'), (5, 'eve')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("string_eq", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM sws_t WHERE name = 'bob'")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want id=2, got %v", rows)
+		}
+	})
+
+	t.Run("string_ne", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM sws_t WHERE name <> 'bob'")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want 4 (!= bob), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("string_order_by", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name FROM sws_t ORDER BY name")
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" {
+			t.Errorf("first alphabetically should be alice, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[4][0]) != "eve" {
+			t.Errorf("last alphabetically should be eve, got %v", rows[4][0])
+		}
+	})
+
+	t.Run("string_in_list", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM sws_t WHERE name IN ('alice', 'eve') ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
