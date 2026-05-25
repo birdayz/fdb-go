@@ -18827,6 +18827,121 @@ func TestFDB_GroupByWithLimitOnResult(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllThreeBranches — UNION ALL with three SELECT branches
+func TestFDB_UnionAllThreeBranches(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ua3b",
+		"CREATE TABLE ua3b_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ua3b_t VALUES
+		(1,'a',10),(2,'b',20),(3,'c',30),(4,'a',40),(5,'b',50)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("three_branch_union", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, val FROM ua3b_t WHERE grp = 'a'
+			UNION ALL
+			SELECT id, val FROM ua3b_t WHERE grp = 'b'
+			UNION ALL
+			SELECT id, val FROM ua3b_t WHERE grp = 'c'
+			ORDER BY id
+		`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5 rows, got %d", len(rows))
+		}
+		for i := 0; i < 5; i++ {
+			if toInt64(rows[i][0]) != int64(i+1) {
+				t.Errorf("row %d: want id %d, got %v", i, i+1, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("three_branch_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM (
+				SELECT val FROM ua3b_t WHERE grp = 'a'
+				UNION ALL
+				SELECT val FROM ua3b_t WHERE grp = 'b'
+				UNION ALL
+				SELECT val FROM ua3b_t WHERE grp = 'c'
+			) u
+		`)
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("want 5, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_InsertThenUpdateThenVerify — full CRUD cycle
+func TestFDB_CRUDCycle(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "crud",
+		"CREATE TABLE crud_t(id BIGINT, name STRING, val BIGINT, PRIMARY KEY(id))")
+
+	t.Run("create", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO crud_t VALUES (1,'item1',100),(2,'item2',200),(3,'item3',300)")
+		if err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 inserted, got %d", n)
+		}
+	})
+
+	t.Run("read", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name, val FROM crud_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "item1" || toInt64(rows[0][1]) != 100 {
+			t.Errorf("row 0: want [item1 100], got %v", rows[0])
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "UPDATE crud_t SET val = val + 50 WHERE id = 2")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT val FROM crud_t WHERE id = 2")
+		if toInt64(rows[0][0]) != 250 {
+			t.Errorf("want 250, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM crud_t WHERE id = 3")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			t.Errorf("want 1, got %d", n)
+		}
+	})
+
+	t.Run("final_state", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM crud_t ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 remaining, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 1 || toInt64(rows[1][0]) != 2 {
+			t.Errorf("want ids [1 2], got [%v %v]", rows[0][0], rows[1][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
