@@ -1,0 +1,70 @@
+# aggregate_empty_table_java.yaml — Aggregate behavior on empty tables
+# from Java's aggregate-empty-table.yamsql. Tests SQL standard behavior:
+# COUNT(*) returns 0, SUM/MIN/MAX return NULL, GROUP BY returns no rows.
+name: aggregate_empty_table_java
+schema_template: |
+  CREATE TABLE empty_t (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE with_data (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO with_data VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+tests:
+  # COUNT(*) on empty table → 0
+  - query: SELECT COUNT(*) FROM empty_t
+    rows:
+      - [0]
+
+  # COUNT(*) with impossible WHERE → 0
+  - query: SELECT COUNT(*) FROM with_data WHERE col1 = 999
+    rows:
+      - [0]
+
+  # SUM on empty table → NULL
+  - query: SELECT SUM(col1) FROM empty_t
+    rows:
+      - [null]
+
+  # MIN on empty table → NULL
+  - query: SELECT MIN(col1) FROM empty_t
+    rows:
+      - [null]
+
+  # MAX on empty table → NULL
+  - query: SELECT MAX(col2) FROM empty_t
+    rows:
+      - [null]
+
+  # COUNT+SUM+MIN+MAX on empty table
+  - query: SELECT COUNT(*), SUM(col1), MIN(col1), MAX(col2) FROM empty_t
+    rows:
+      - [0, null, null, null]
+
+  # GROUP BY on empty table → no rows
+  - query: SELECT col1, COUNT(*) FROM empty_t GROUP BY col1
+    rows: []
+
+  # GROUP BY on empty result set → no rows
+  - query: SELECT col1, SUM(col2) FROM with_data WHERE col1 = 999 GROUP BY col1
+    rows: []
+
+  # COUNT(*) after insert+delete cycle → 0
+  - query: INSERT INTO empty_t VALUES (99, 1, 1)
+    rowcount: 1
+  - query: DELETE FROM empty_t WHERE id = 99
+    rowcount: 1
+  - query: SELECT COUNT(*) FROM empty_t
+    rows:
+      - [0]
+
+  # Aggregate with HAVING on empty result → no rows
+  - query: SELECT col1, COUNT(*) FROM with_data GROUP BY col1 HAVING COUNT(*) > 5
+    rows: []
