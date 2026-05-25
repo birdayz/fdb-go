@@ -11083,6 +11083,63 @@ func TestFDB_AggregateWithNullGroups(t *testing.T) {
 	})
 }
 
+// TestFDB_DeleteWithComplexWhere — DELETE with various WHERE patterns
+func TestFDB_DeleteWithComplexWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dcw", "CREATE TABLE dcw_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO dcw_t VALUES
+		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40), (5, 'B', 50),
+		(6, 'A', 60), (7, 'C', 70), (8, 'B', 80)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_with_in", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dcw_t WHERE cat IN ('C')")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 deleted (cat=C), got %d", n)
+		}
+	})
+
+	t.Run("delete_with_between", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dcw_t WHERE val BETWEEN 25 AND 55")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 deleted (val 30,50), got %d", n)
+		}
+	})
+
+	t.Run("verify_remaining", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, cat, val FROM dcw_t ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 remaining, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("delete_with_and_or", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dcw_t WHERE cat = 'A' AND val > 50")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			t.Errorf("want 1 deleted (id=6, A, 60), got %d", n)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
