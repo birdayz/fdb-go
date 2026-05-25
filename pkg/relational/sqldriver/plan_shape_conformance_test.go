@@ -15444,6 +15444,40 @@ func TestFDB_SumWithMultiplication(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithInPredicate — JOIN with IN filter on joined column
+func TestFDB_JoinWithInPredicate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwip",
+		"CREATE TABLE jwip_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwip_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwip_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwip_b VALUES (10, 1, 100), (20, 2, 200), (30, 3, 300)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("join_with_in_on_name", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name, b.val
+			FROM jwip_a a JOIN jwip_b b ON a.id = b.aid
+			WHERE a.name IN ('x', 'z')
+			ORDER BY a.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "x" || toInt64(rows[0][1]) != 100 {
+			t.Errorf("x: want val=100, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
