@@ -4684,3 +4684,77 @@ func TestFDB_ComplexExpressionCombinations(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_ExistsWithGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "exgrp",
+		"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
+
+	for _, c := range []struct {
+		id   int
+		name string
+	}{
+		{1, "Alice"}, {2, "Bob"}, {3, "Charlie"},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO customers VALUES (%d, '%s')", c.id, c.name))
+	}
+	for _, o := range []struct {
+		id, cid, amt int
+	}{
+		{1, 1, 100}, {2, 1, 200}, {3, 2, 50},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO orders VALUES (%d, %d, %d)", o.id, o.cid, o.amt))
+	}
+
+	t.Run("exists_filters_customers", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name FROM customers c
+			 WHERE EXISTS (SELECT 1 FROM orders o WHERE o.cust_id = c.id)
+			 ORDER BY c.name`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (Alice, Bob have orders), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Alice" {
+			t.Errorf("row 0: got %v, want Alice", rows[0][0])
+		}
+		if rows[1][0].(string) != "Bob" {
+			t.Errorf("row 1: got %v, want Bob", rows[1][0])
+		}
+	})
+
+	t.Run("not_exists_filters_customers", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name FROM customers c
+			 WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.cust_id = c.id)
+			 ORDER BY c.name`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (Charlie has no orders), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Charlie" {
+			t.Errorf("got %v, want Charlie", rows[0][0])
+		}
+	})
+
+	t.Run("exists_with_aggregate_in_outer", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, SUM(o.amount) AS total
+			 FROM customers c, orders o
+			 WHERE c.id = o.cust_id
+			 GROUP BY c.name
+			 HAVING SUM(o.amount) > 100
+			 ORDER BY c.name`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (Alice=300 > 100), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Alice" || rows[0][1].(int64) != 300 {
+			t.Errorf("got %v, want [Alice, 300]", rows[0])
+		}
+	})
+
+	_ = ctx
+}
