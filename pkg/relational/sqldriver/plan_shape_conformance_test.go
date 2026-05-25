@@ -5043,3 +5043,56 @@ func TestFDB_ThreeWayJoinWithAggregateExpr(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "selfjn",
+		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, mgr_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+
+	for _, e := range []struct {
+		id, mgr, sal int
+		name         string
+	}{
+		{1, 0, 100, "Alice"},
+		{2, 1, 80, "Bob"},
+		{3, 1, 90, "Charlie"},
+		{4, 2, 70, "Dave"},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO emp VALUES (%d, '%s', %d, %d)", e.id, e.name, e.mgr, e.sal))
+	}
+
+	t.Run("self_join_manager", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT e.name, m.name AS manager
+			 FROM emp e, emp m
+			 WHERE e.mgr_id = m.id
+			 ORDER BY e.name`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Bob" || rows[0][1].(string) != "Alice" {
+			t.Errorf("row 0: got %v, want [Bob, Alice]", rows[0])
+		}
+		if rows[2][0].(string) != "Dave" || rows[2][1].(string) != "Bob" {
+			t.Errorf("row 2: got %v, want [Dave, Bob]", rows[2])
+		}
+	})
+
+	t.Run("salary_between", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name, salary FROM emp WHERE salary BETWEEN 75 AND 95 ORDER BY salary")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Bob" || rows[1][0].(string) != "Charlie" {
+			t.Errorf("got %v %v, want Bob Charlie", rows[0][0], rows[1][0])
+		}
+	})
+
+	_ = ctx
+}
