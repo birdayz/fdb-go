@@ -7619,6 +7619,546 @@ func TestFDB_MixedTypeArithmetic(t *testing.T) {
 	})
 }
 
+// TestFDB_AggregateEmptyTable — Java aggregate-empty-table.yamsql patterns
+func TestFDB_AggregateEmptyTable(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aget", "CREATE TABLE empty_t(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+
+	t.Run("count_star_empty", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM empty_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("COUNT(*) on empty table should be 0, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_star_with_false_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM empty_t WHERE col1 = 0")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("COUNT(*) with WHERE on empty table should be 0, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_empty_returns_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(col1) FROM empty_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][0] != nil {
+			t.Errorf("SUM on empty table should be NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_with_where_empty_returns_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(col1) FROM empty_t WHERE col1 > 0")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][0] != nil {
+			t.Errorf("SUM with WHERE on empty table should be NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_column_empty", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(col2) FROM empty_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("COUNT(col2) on empty table should be 0, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("group_by_empty_returns_no_rows", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT col1, COUNT(*) FROM empty_t GROUP BY col1")
+		if len(rows) != 0 {
+			t.Errorf("GROUP BY on empty table should return 0 rows, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("min_max_empty_returns_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT MIN(col1), MAX(col1) FROM empty_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][0] != nil {
+			t.Errorf("MIN on empty table should be NULL, got %v", rows[0][0])
+		}
+		if rows[0][1] != nil {
+			t.Errorf("MAX on empty table should be NULL, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("insert_delete_then_count", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO empty_t VALUES (1, 10, 20), (2, 30, 40), (3, 50, 60)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM empty_t")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
+			t.Fatalf("after insert: want COUNT(*)=3, got %v", rows)
+		}
+
+		if _, err := db.ExecContext(ctx, "DELETE FROM empty_t WHERE id >= 1"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows = collectRows(t, db, "SELECT COUNT(*) FROM empty_t")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 0 {
+			t.Errorf("after delete: want COUNT(*)=0, got %v", rows)
+		}
+
+		rows = collectRows(t, db, "SELECT SUM(col1) FROM empty_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][0] != nil {
+			t.Errorf("SUM after delete should be NULL, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_CaseWhenJavaPatterns — Java case-when.yamsql patterns
+func TestFDB_CaseWhenJavaPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cwjp", "CREATE TABLE cw_a(a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY(a1))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO cw_a VALUES (1, 10, 10), (2, 11, 20), (3, 12, 30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("case_when_comparison", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a3, CASE WHEN a3 > 15 THEN 'foo' ELSE 'bar' END FROM cw_a ORDER BY a1")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		want := []string{"bar", "foo", "foo"}
+		for i, w := range want {
+			got := fmt.Sprintf("%v", rows[i][1])
+			if got != w {
+				t.Errorf("row %d: want %s, got %s", i, w, got)
+			}
+		}
+	})
+
+	t.Run("update_with_case_when", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE cw_a SET a2 = CASE WHEN a1 = 1 THEN 4444 END"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 4444 {
+			t.Errorf("a1=1: a2 should be 4444, got %v", rows[0][1])
+		}
+		if rows[1][1] != nil {
+			t.Errorf("a1=2: a2 should be NULL (no ELSE), got %v", rows[1][1])
+		}
+		if rows[2][1] != nil {
+			t.Errorf("a1=3: a2 should be NULL (no ELSE), got %v", rows[2][1])
+		}
+	})
+
+	t.Run("update_with_case_is_null", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE cw_a SET a2 = CASE WHEN a2 IS NULL THEN 8888 ELSE 2222 END"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 2222 {
+			t.Errorf("a1=1: was 4444 (not null) -> 2222, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 8888 {
+			t.Errorf("a1=2: was NULL -> 8888, got %v", rows[1][1])
+		}
+		if toInt64(rows[2][1]) != 8888 {
+			t.Errorf("a1=3: was NULL -> 8888, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("nested_case_when", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE cw_a SET a2 = CASE WHEN CASE WHEN a2 = 2222 THEN 8888 ELSE 2222 END > 4000 THEN 4444 ELSE 6666 END"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 4444 {
+			t.Errorf("a1=1: inner=8888>4000->4444, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 6666 {
+			t.Errorf("a1=2: inner=2222<4000->6666, got %v", rows[1][1])
+		}
+		if toInt64(rows[2][1]) != 6666 {
+			t.Errorf("a1=3: inner=2222<4000->6666, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("case_when_in_select_with_group_by", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT
+				CASE WHEN a2 = 4444 THEN 'high' ELSE 'low' END,
+				COUNT(*)
+			FROM cw_a
+			GROUP BY CASE WHEN a2 = 4444 THEN 'high' ELSE 'low' END
+		`)
+		if len(rows) < 1 {
+			t.Fatalf("want at least 1 row, got %d", len(rows))
+		}
+		t.Logf("CASE WHEN GROUP BY: %v", rows)
+	})
+}
+
+// TestFDB_InPredicatePatterns — Java in-predicate.yamsql patterns
+func TestFDB_InPredicatePatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "inpred", "CREATE TABLE in_t(a BIGINT, b BIGINT, c STRING, d BIGINT, PRIMARY KEY(a))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO in_t VALUES
+		(0, 9, 'foo', 100),
+		(1, 8, 'bar', 200),
+		(2, 7, 'doe', 300),
+		(3, 6, 'arc', 400),
+		(4, 5, 'per', 500),
+		(5, 4, 'doe', 600),
+		(6, 3, 'foo', 700),
+		(7, 2, 'arc', 800),
+		(8, 1, 'bar', 900),
+		(9, 0, 'doe', 1000)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("in_list_long", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (1, 3, 5, 7) ORDER BY a")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d: %v", len(rows), rows)
+		}
+		wantA := []int64{2, 4, 6, 8}
+		for i, wa := range wantA {
+			if toInt64(rows[i][0]) != wa {
+				t.Errorf("row %d: want a=%d, got %v", i, wa, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("in_singleton", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (6)")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want a=3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("in_no_match", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (10, 33, 66)")
+		if len(rows) != 0 {
+			t.Errorf("want 0 rows, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("in_string", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM in_t WHERE c IN ('bar', 'doe') ORDER BY a")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 rows, got %d: %v", len(rows), rows)
+		}
+		wantA := []int64{1, 2, 5, 8, 9}
+		for i, wa := range wantA {
+			if toInt64(rows[i][0]) != wa {
+				t.Errorf("row %d: want a=%d, got %v", i, wa, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("not_in", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM in_t WHERE c NOT IN ('foo', 'bar', 'doe', 'arc') ORDER BY a")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row (per), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want a=4, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("in_with_arithmetic", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("constant_in_returns_all", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM in_t WHERE 1 IN (1, 2, 3) ORDER BY a")
+		if len(rows) != 10 {
+			t.Errorf("constant TRUE IN should return all 10 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("constant_in_returns_none", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM in_t WHERE 1 IN (2, 3)")
+		if len(rows) != 0 {
+			t.Errorf("constant FALSE IN should return 0 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("in_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT c, COUNT(*) FROM in_t WHERE c IN ('foo', 'bar') GROUP BY c ORDER BY c")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "bar" {
+			t.Errorf("first group should be 'bar', got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 2 {
+			t.Errorf("bar count should be 2, got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "foo" {
+			t.Errorf("second group should be 'foo', got %v", rows[1][0])
+		}
+		if toInt64(rows[1][1]) != 2 {
+			t.Errorf("foo count should be 2, got %v", rows[1][1])
+		}
+	})
+}
+
+// TestFDB_NullOperatorPatterns — Java null-operator-tests.yamsql patterns
+func TestFDB_NullOperatorPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "nullop", "CREATE TABLE null_op(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO null_op VALUES
+		(1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5),
+		(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10),
+		(11, 20, 11), (12, 20, 12), (13, 20, 13)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("nested_derived_is_null_returns_empty", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM (SELECT * FROM null_op) AS x WHERE id IS NULL) AS y")
+		if len(rows) != 0 {
+			t.Errorf("ID IS NULL on non-null PK should return 0 rows, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("nested_derived_is_not_null_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM null_op) AS x WHERE id IS NOT NULL) AS y")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 13 {
+			t.Errorf("COUNT(*) of IS NOT NULL on non-null PK should be 13, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("null_insert_and_filter", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO null_op(id, col1) VALUES (100, NULL)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id FROM null_op WHERE col1 IS NULL ORDER BY id")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row with NULL col1, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 100 {
+			t.Errorf("want id=100, got %v", rows[0][0])
+		}
+		if _, err := db.ExecContext(ctx, "DELETE FROM null_op WHERE id = 100"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+	})
+
+	t.Run("is_null_in_case_when", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN col2 > 10 THEN 'high' ELSE 'low' END
+			FROM null_op ORDER BY id
+		`)
+		if len(rows) != 13 {
+			t.Fatalf("want 13 rows, got %d", len(rows))
+		}
+		lowCount := 0
+		highCount := 0
+		for _, r := range rows {
+			v := fmt.Sprintf("%v", r[1])
+			if v == "low" {
+				lowCount++
+			} else if v == "high" {
+				highCount++
+			}
+		}
+		if lowCount != 10 {
+			t.Errorf("want 10 'low' (col2 1-10), got %d", lowCount)
+		}
+		if highCount != 3 {
+			t.Errorf("want 3 'high' (col2 11-13), got %d", highCount)
+		}
+	})
+}
+
+// TestFDB_SelectStarDerived — derived table SELECT * patterns
+func TestFDB_SelectStarDerived(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "stard", "CREATE TABLE star_t(id BIGINT, name STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO star_t VALUES (1, 'alice', 10), (2, 'bob', 20), (3, 'charlie', 30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("select_star_basic", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM star_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "alice" {
+			t.Errorf("row 0 name: want alice, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("select_star_from_derived", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM (SELECT id, name FROM star_t) AS d ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if len(rows[0]) != 2 {
+			t.Errorf("derived should have 2 columns, got %d", len(rows[0]))
+		}
+	})
+
+	t.Run("select_star_from_nested_derived", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM (SELECT id, val FROM star_t) AS inner_d) AS outer_d ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("select_star_derived_with_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM star_t WHERE val > 15) AS d ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows (val>15), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("count_from_derived_star", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM star_t) AS d")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
+			t.Errorf("want COUNT(*)=3, got %v", rows)
+		}
+	})
+}
+
+// TestFDB_MultipleAggregates — multiple different aggregates in same query
+func TestFDB_MultipleAggregates(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mulagg", "CREATE TABLE multi_agg(id BIGINT, category STRING, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO multi_agg VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'A', 30),
+		(4, 'B', 15), (5, 'B', 25),
+		(6, 'C', 100)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("count_sum_min_max_global", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM multi_agg")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 6 {
+			t.Errorf("COUNT(*) want 6, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 200 {
+			t.Errorf("SUM want 200, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 10 {
+			t.Errorf("MIN want 10, got %v", rows[0][2])
+		}
+		if toInt64(rows[0][3]) != 100 {
+			t.Errorf("MAX want 100, got %v", rows[0][3])
+		}
+	})
+
+	t.Run("grouped_multi_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT category, COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM multi_agg GROUP BY category ORDER BY category")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" {
+			t.Errorf("row 0: want A, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("A COUNT want 3, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 60 {
+			t.Errorf("A SUM want 60, got %v", rows[0][2])
+		}
+		if toInt64(rows[0][3]) != 10 {
+			t.Errorf("A MIN want 10, got %v", rows[0][3])
+		}
+		if toInt64(rows[0][4]) != 30 {
+			t.Errorf("A MAX want 30, got %v", rows[0][4])
+		}
+		if toInt64(rows[1][1]) != 2 {
+			t.Errorf("B COUNT want 2, got %v", rows[1][1])
+		}
+		if toInt64(rows[1][2]) != 40 {
+			t.Errorf("B SUM want 40, got %v", rows[1][2])
+		}
+		if toInt64(rows[2][1]) != 1 {
+			t.Errorf("C COUNT want 1, got %v", rows[2][1])
+		}
+		if toInt64(rows[2][2]) != 100 {
+			t.Errorf("C SUM want 100, got %v", rows[2][2])
+		}
+	})
+
+	t.Run("having_with_multiple_aggregates", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT category, COUNT(*), SUM(amount) FROM multi_agg GROUP BY category HAVING COUNT(*) > 1 ORDER BY category")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups with COUNT>1 (A,B), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" {
+			t.Errorf("first should be A, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "B" {
+			t.Errorf("second should be B, got %v", rows[1][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
