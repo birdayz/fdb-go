@@ -4190,3 +4190,58 @@ func TestFDB_AggregateExpressionVariants(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_MinMaxExpressionArg(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "mmexpr",
+		"CREATE TABLE items (id BIGINT NOT NULL, cat STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+	for _, r := range []struct {
+		id   int
+		c    string
+		p, q int
+	}{
+		{1, "A", 10, 5}, {2, "A", 20, 3}, {3, "B", 100, 2}, {4, "B", 50, 4},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO items VALUES (%d, '%s', %d, %d)", r.id, r.c, r.p, r.q))
+	}
+
+	t.Run("min_expr", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT cat, MIN(price * qty) FROM items GROUP BY cat ORDER BY cat")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("MIN(price*qty) NULL for %v", rows[0][0])
+		}
+		if rows[0][1].(int64) != 50 {
+			t.Errorf("A min: got %v, want 50 (min(10*5,20*3))", rows[0][1])
+		}
+		if rows[1][1].(int64) != 200 {
+			t.Errorf("B min: got %v, want 200 (min(100*2,50*4))", rows[1][1])
+		}
+	})
+
+	t.Run("max_expr", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT cat, MAX(price * qty) FROM items GROUP BY cat ORDER BY cat")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("MAX(price*qty) NULL for %v", rows[0][0])
+		}
+		if rows[0][1].(int64) != 60 {
+			t.Errorf("A max: got %v, want 60 (max(50,60))", rows[0][1])
+		}
+		if rows[1][1].(int64) != 200 {
+			t.Errorf("B max: got %v, want 200 (max(200,200))", rows[1][1])
+		}
+	})
+
+	_ = ctx
+}
