@@ -15849,6 +15849,32 @@ func TestFDB_SelectWithArithmeticInWhere(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectCountDistinctViaGroupBy — count distinct via GROUP BY
+func TestFDB_SelectCountDistinctViaGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "scdvg", "CREATE TABLE scdvg_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO scdvg_t VALUES
+		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40), (5, 'B', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("group_by_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT cat, COUNT(*) FROM scdvg_t GROUP BY cat ORDER BY cat")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("A: want 2, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
