@@ -16464,6 +16464,123 @@ func TestFDB_LargerDatasetAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_NestedDerivedThreeLevels — 3 levels of derived table nesting
+func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "nd3",
+		"CREATE TABLE nd3_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO nd3_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("triple_nest_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(val) FROM (
+				SELECT val FROM (
+					SELECT val FROM nd3_t
+				) l2
+			) l3
+		`)
+		if toInt64(rows[0][0]) != 150 {
+			t.Errorf("want 150, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("triple_nest_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM (
+				SELECT val FROM (
+					SELECT val FROM nd3_t WHERE val > 20
+				) l2
+			) l3
+		`)
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("expression_alias_doesnt_propagate_through_3_levels", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, `
+			SELECT SUM(doubled) FROM (
+				SELECT doubled FROM (
+					SELECT val + val AS doubled FROM nd3_t
+				) l2
+			) l3
+		`)
+		if err == nil {
+			t.Errorf("expected error for aliased expression through 3 nested levels")
+		}
+	})
+}
+
+// TestFDB_JoinThreeTablesWithAgg — 3-way JOIN with aggregate
+func TestFDB_JoinThreeTablesWithAgg(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "j3a",
+		"CREATE TABLE j3a_cust(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE j3a_orders(id BIGINT, cust_id BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE j3a_items(id BIGINT, order_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO j3a_cust VALUES (1,'alice'),(2,'bob')"); err != nil {
+		t.Fatalf("INSERT cust: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO j3a_orders VALUES (10,1),(20,1),(30,2)"); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO j3a_items VALUES (100,10,50),(101,10,30),(102,20,70),(103,30,40)"); err != nil {
+		t.Fatalf("INSERT items: %v", err)
+	}
+
+	t.Run("total_per_customer", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT c.name, SUM(i.amount) FROM j3a_cust c
+			JOIN j3a_orders o ON c.id = o.cust_id
+			JOIN j3a_items i ON o.id = i.order_id
+			GROUP BY c.name
+			ORDER BY c.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 customers, got %d", len(rows))
+		}
+		// alice: orders 10,20 → items 50+30+70 = 150
+		// bob: order 30 → items 40
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" || toInt64(rows[0][1]) != 150 {
+			t.Errorf("alice: want 150, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "bob" || toInt64(rows[1][1]) != 40 {
+			t.Errorf("bob: want 40, got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+
+	t.Run("order_count_per_customer", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT c.name, COUNT(*) FROM j3a_cust c
+			JOIN j3a_orders o ON c.id = o.cust_id
+			GROUP BY c.name
+			ORDER BY c.name
+		`)
+		if toInt64(rows[0][1]) != 2 {
+			t.Errorf("alice: want 2 orders, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 1 {
+			t.Errorf("bob: want 1 order, got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
