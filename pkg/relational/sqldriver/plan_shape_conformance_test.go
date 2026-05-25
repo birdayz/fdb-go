@@ -19248,6 +19248,56 @@ func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinSumGroupByWithOrderBySum — JOIN + SUM + GROUP BY + ORDER BY SUM
+func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jsgo",
+		"CREATE TABLE jsgo_stores(id BIGINT, city STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jsgo_sales(id BIGINT, store_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO jsgo_stores VALUES (1,'berlin'),(2,'munich'),(3,'hamburg')"); err != nil {
+		t.Fatalf("INSERT stores: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO jsgo_sales VALUES
+		(10,1,100),(11,1,200),(12,2,300),(13,2,150),(14,2,50),(15,3,500)`); err != nil {
+		t.Fatalf("INSERT sales: %v", err)
+	}
+
+	t.Run("revenue_per_city_desc", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT s.city, SUM(sa.amount) FROM jsgo_stores s
+			JOIN jsgo_sales sa ON s.id = sa.store_id
+			GROUP BY s.city
+			ORDER BY SUM(sa.amount) DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 cities, got %d", len(rows))
+		}
+		// hamburg=500, munich=500, berlin=300
+		if fmt.Sprintf("%v", rows[0][0]) != "hamburg" && fmt.Sprintf("%v", rows[0][0]) != "munich" {
+			t.Errorf("top: want hamburg or munich (500), got %v", rows[0])
+		}
+		if toInt64(rows[2][1]) != 300 {
+			t.Errorf("bottom: want 300 (berlin), got %v", rows[2][1])
+		}
+	})
+
+	t.Run("total_revenue", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(sa.amount) FROM jsgo_stores s
+			JOIN jsgo_sales sa ON s.id = sa.store_id
+		`)
+		if toInt64(rows[0][0]) != 1300 {
+			t.Errorf("want 1300, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
