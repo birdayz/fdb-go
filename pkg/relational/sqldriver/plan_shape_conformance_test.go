@@ -13431,6 +13431,57 @@ func TestFDB_InsertSelectWithExpression(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithCoalesceAndCase — JOIN with COALESCE and CASE on joined columns
+func TestFDB_JoinWithCoalesceAndCase(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwcc",
+		"CREATE TABLE jwcc_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwcc_b(id BIGINT, aid BIGINT, note STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwcc_a VALUES (1, 100), (2, 200), (3, NULL)"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwcc_b VALUES (10, 1, 'x'), (20, 3, 'y')"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("left_join_coalesce_val", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.id, COALESCE(a.val, 0), b.note
+			FROM jwcc_a a LEFT JOIN jwcc_b b ON a.id = b.aid
+			ORDER BY a.id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[2][1]) != 0 {
+			t.Errorf("id=3: COALESCE(NULL,0)=0, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("join_case_on_val", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.id,
+				CASE WHEN a.val IS NULL THEN 'unknown' ELSE 'known' END
+			FROM jwcc_a a JOIN jwcc_b b ON a.id = b.aid
+			ORDER BY a.id
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 matched, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "known" {
+			t.Errorf("id=1 (val=100): should be known, got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][1]) != "unknown" {
+			t.Errorf("id=3 (val=NULL): should be unknown, got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
