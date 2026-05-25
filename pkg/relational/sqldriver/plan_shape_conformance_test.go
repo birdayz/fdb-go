@@ -17998,6 +17998,114 @@ func TestFDB_SelectStarFromTable(t *testing.T) {
 	})
 }
 
+// TestFDB_DerivedTableWithJoin — derived table (subquery in FROM) joined with base table
+func TestFDB_DerivedTableWithJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dtwj",
+		"CREATE TABLE dtwj_orders(id BIGINT, cust_id BIGINT, total BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE dtwj_cust(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO dtwj_cust VALUES (1,'alice'),(2,'bob'),(3,'carol')"); err != nil {
+		t.Fatalf("INSERT cust: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO dtwj_orders VALUES (10,1,100),(11,1,200),(12,2,150),(13,3,50)"); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+
+	t.Run("derived_as_join_source_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, `
+			SELECT c.name, d.order_total FROM dtwj_cust c
+			JOIN (SELECT cust_id, SUM(total) AS order_total FROM dtwj_orders GROUP BY cust_id) d
+			ON c.id = d.cust_id
+			ORDER BY c.name
+		`)
+		if err == nil {
+			t.Errorf("expected error for derived table as JOIN source")
+		}
+	})
+}
+
+// TestFDB_DeleteOldAndLowValue — DELETE with AND condition on status+val
+func TestFDB_DeleteOldAndLowValue(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dolv",
+		"CREATE TABLE dolv_t(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO dolv_t VALUES
+		(1,'old',10),(2,'new',20),(3,'old',30),(4,'new',40),(5,'old',5)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_old_and_low", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dolv_t WHERE status = 'old' AND val < 15")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		// old AND val<15: id=1(old,10), id=5(old,5) → 2 deleted
+		if n != 2 {
+			t.Errorf("want 2 deleted, got %d", n)
+		}
+	})
+
+	t.Run("remaining_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM dolv_t")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 remaining, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("remaining_ids", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM dolv_t ORDER BY id")
+		wantIds := []int64{2, 3, 4}
+		for i, w := range wantIds {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
+// TestFDB_CountWithGroupByHavingCount — COUNT+HAVING with equality
+func TestFDB_CountWithGroupByHavingCountEq(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cghce",
+		"CREATE TABLE cghce_t(id BIGINT, tag STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cghce_t VALUES
+		(1,'a'),(2,'a'),(3,'b'),(4,'b'),(5,'b'),(6,'c')`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("having_count_eq_2", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT tag FROM cghce_t GROUP BY tag HAVING COUNT(*) = 2")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "a" {
+			t.Errorf("want [a], got %v", rows)
+		}
+	})
+
+	t.Run("having_count_gt_1", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT tag, COUNT(*) FROM cghce_t GROUP BY tag HAVING COUNT(*) > 1 ORDER BY tag")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (a=2, b=3), got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
