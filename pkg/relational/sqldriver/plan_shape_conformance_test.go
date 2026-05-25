@@ -13293,6 +13293,58 @@ func TestFDB_CTEWithFilter(t *testing.T) {
 	})
 }
 
+// TestFDB_MultiTableInsertAndJoin — insert into multiple tables then join
+func TestFDB_MultiTableInsertAndJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mtij",
+		"CREATE TABLE mt_users(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE mt_posts(id BIGINT, user_id BIGINT, title STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO mt_users VALUES (1, 'alice'), (2, 'bob')"); err != nil {
+		t.Fatalf("INSERT users: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO mt_posts VALUES
+		(10, 1, 'hello'), (20, 1, 'world'), (30, 2, 'test')
+	`); err != nil {
+		t.Fatalf("INSERT posts: %v", err)
+	}
+
+	t.Run("join_count_posts_per_user", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT u.name, COUNT(*) AS post_count
+			FROM mt_users u JOIN mt_posts p ON u.id = p.user_id
+			GROUP BY u.name ORDER BY u.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("alice: want 2 posts, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "bob" || toInt64(rows[1][1]) != 1 {
+			t.Errorf("bob: want 1 post, got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+
+	t.Run("left_join_users_without_posts", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO mt_users VALUES (3, 'charlie')"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, `
+			SELECT u.name FROM mt_users u
+			LEFT JOIN mt_posts p ON u.id = p.user_id
+			WHERE p.id IS NULL
+		`)
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "charlie" {
+			t.Errorf("want charlie (no posts), got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
