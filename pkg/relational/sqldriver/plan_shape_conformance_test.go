@@ -5096,3 +5096,68 @@ func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_NestedDerivedWithIsNullNotNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "nestdnull",
+		"CREATE TABLE t (id BIGINT NOT NULL, label STRING, val BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id int
+		l  string
+		v  *int64
+	}{
+		{1, "A", ptr(int64(10))},
+		{2, "A", nil},
+		{3, "B", ptr(int64(30))},
+		{4, "B", ptr(int64(40))},
+	} {
+		if r.v == nil {
+			db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id, label) VALUES (%d, '%s')", r.id, r.l))
+		} else {
+			db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, '%s', %d)", r.id, r.l, *r.v))
+		}
+	}
+
+	t.Run("nested_is_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT * FROM (SELECT * FROM (SELECT * FROM t) x WHERE id IS NULL) y`)
+		if len(rows) != 0 {
+			t.Fatalf("want 0 rows (id is NOT NULL), got %d", len(rows))
+		}
+	})
+
+	t.Run("nested_is_not_null_count", func(t *testing.T) {
+		var cnt int64
+		err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM t) x WHERE val IS NOT NULL) y`).Scan(&cnt)
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if cnt != 3 {
+			t.Errorf("got %d, want 3 (id 1,3,4 have non-null val)", cnt)
+		}
+	})
+
+	t.Run("nested_agg_over_filtered", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT label, SUM(val)
+			 FROM (SELECT * FROM t WHERE val IS NOT NULL) sub
+			 GROUP BY label ORDER BY label`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][1].(int64) != 10 {
+			t.Errorf("A: got %v, want 10", rows[0][1])
+		}
+		if rows[1][1].(int64) != 70 {
+			t.Errorf("B: got %v, want 70 (30+40)", rows[1][1])
+		}
+	})
+
+	_ = ctx
+}
