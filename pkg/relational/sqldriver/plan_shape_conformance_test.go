@@ -15121,6 +15121,62 @@ func TestFDB_InsertSelectFromSameTable(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereComparisonOperators — all comparison operators
+func TestFDB_WhereComparisonOperators(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wco", "CREATE TABLE wco_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO wco_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("equal", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val = 30")
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("want 1, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("not_equal", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val <> 30")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want 4, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("less_than", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val < 30")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("less_equal", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val <= 30")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("greater_than", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val > 30")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("greater_equal", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val >= 30")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
