@@ -12720,6 +12720,57 @@ func TestFDB_SumWithArithmeticExpressions(t *testing.T) {
 	})
 }
 
+// TestFDB_LeftJoinWithAggregateAndHaving — LEFT JOIN + GROUP BY + HAVING
+func TestFDB_LeftJoinWithAggregateAndHaving(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ljah",
+		"CREATE TABLE ljah_p(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE ljah_c(id BIGINT, pid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ljah_p VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
+		t.Fatalf("INSERT p: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO ljah_c VALUES (10, 1, 100), (20, 1, 200), (30, 1, 300), (40, 2, 50)"); err != nil {
+		t.Fatalf("INSERT c: %v", err)
+	}
+
+	t.Run("left_join_having_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name, COUNT(c.val)
+			FROM ljah_p p LEFT JOIN ljah_c c ON p.id = c.pid
+			GROUP BY p.name
+			HAVING COUNT(c.val) > 0
+			ORDER BY p.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (p1=3, p2=1; p3 excluded by HAVING), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("p1 count should be 3, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("left_join_sum_having", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name, SUM(c.val)
+			FROM ljah_p p LEFT JOIN ljah_c c ON p.id = c.pid
+			GROUP BY p.name
+			HAVING SUM(c.val) > 100
+			ORDER BY p.name
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (p1=600>100), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 600 {
+			t.Errorf("p1 sum = 100+200+300 = 600, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
