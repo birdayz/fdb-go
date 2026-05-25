@@ -7143,6 +7143,207 @@ func TestFDB_StringOperations(t *testing.T) {
 	})
 }
 
+func TestFDB_ComplexWhereConditions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "cxwhere1",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, a BIGINT, b STRING, c BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 10, 'foo', 100)",
+		"INSERT INTO t1 VALUES (2, 20, 'bar', 200)",
+		"INSERT INTO t1 VALUES (3, 30, 'foo', 300)",
+		"INSERT INTO t1 VALUES (4, 10, 'bar', 400)",
+		"INSERT INTO t1 VALUES (5, 20, 'baz', NULL)",
+		"INSERT INTO t1 VALUES (6, NULL, 'foo', 600)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("and_or_combined", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE (a = 10 AND b = 'foo') OR (a = 20 AND b = 'bar') ORDER BY id")
+		wantIDs := []int64{1, 2}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("not_equal_and_is_not_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE a <> 10 AND c IS NOT NULL ORDER BY id")
+		wantIDs := []int64{2, 3}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("in_list_with_null_column", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE a IN (10, 30) ORDER BY id")
+		wantIDs := []int64{1, 3, 4}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+	})
+
+	t.Run("between_and_like", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE c BETWEEN 100 AND 400 AND b LIKE 'f%' ORDER BY id")
+		wantIDs := []int64{1, 3}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+	})
+
+	t.Run("null_safe_comparison", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE c IS NULL ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
+			t.Fatalf("want [5], got %v", rows)
+		}
+	})
+
+	t.Run("complex_having_with_case", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT b, COUNT(*),
+				CASE WHEN SUM(COALESCE(c, 0)) > 500 THEN 'high' ELSE 'low' END
+			 FROM t1
+			 WHERE a IS NOT NULL
+			 GROUP BY b
+			 ORDER BY b`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "bar" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("bar: got %v", rows[0])
+		}
+		if rows[1][0].(string) != "baz" || toInt64(rows[1][1]) != 1 {
+			t.Errorf("baz: got %v", rows[1])
+		}
+		if rows[2][0].(string) != "foo" || toInt64(rows[2][1]) != 2 {
+			t.Errorf("foo: got %v", rows[2])
+		}
+	})
+
+	t.Run("count_distinct_values_workaround", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT DISTINCT a FROM t1 WHERE a IS NOT NULL ORDER BY a")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 distinct a values (10,20,30), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 10 || toInt64(rows[1][0]) != 20 || toInt64(rows[2][0]) != 30 {
+			t.Errorf("got %v, %v, %v", rows[0][0], rows[1][0], rows[2][0])
+		}
+	})
+
+	_ = ctx
+}
+
+func TestFDB_ThreeWayJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "3wjoin1",
+		"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO customers VALUES (1, 'Alice')",
+		"INSERT INTO customers VALUES (2, 'Bob')",
+		"INSERT INTO products VALUES (10, 'Widget', 100)",
+		"INSERT INTO products VALUES (20, 'Gadget', 200)",
+		"INSERT INTO orders VALUES (1, 1, 10, 5)",
+		"INSERT INTO orders VALUES (2, 1, 20, 2)",
+		"INSERT INTO orders VALUES (3, 2, 10, 3)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("three_table_join", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, p.name, o.qty
+			 FROM customers c, orders o, products p
+			 WHERE o.customer_id = c.id AND o.product_id = p.id
+			 ORDER BY c.name, p.name`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		type row struct {
+			cust, prod string
+			qty        int64
+		}
+		want := []row{
+			{"Alice", "Gadget", 2},
+			{"Alice", "Widget", 5},
+			{"Bob", "Widget", 3},
+		}
+		for i, w := range want {
+			if rows[i][0].(string) != w.cust || rows[i][1].(string) != w.prod || toInt64(rows[i][2]) != w.qty {
+				t.Errorf("row %d: got (%v, %v, %v), want (%s, %s, %d)",
+					i, rows[i][0], rows[i][1], rows[i][2], w.cust, w.prod, w.qty)
+			}
+		}
+	})
+
+	t.Run("three_way_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, SUM(o.qty * p.price) AS total_spent
+			 FROM customers c, orders o, products p
+			 WHERE o.customer_id = c.id AND o.product_id = p.id
+			 GROUP BY c.name
+			 ORDER BY total_spent DESC`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		aliceSpent := int64(5*100 + 2*200)
+		bobSpent := int64(3 * 100)
+		if rows[0][0].(string) != "Alice" || toInt64(rows[0][1]) != aliceSpent {
+			t.Errorf("first: got %v, want (Alice, %d)", rows[0], aliceSpent)
+		}
+		if rows[1][0].(string) != "Bob" || toInt64(rows[1][1]) != bobSpent {
+			t.Errorf("second: got %v, want (Bob, %d)", rows[1], bobSpent)
+		}
+	})
+
+	t.Run("three_way_having", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, SUM(o.qty * p.price) AS total
+			 FROM customers c, orders o, products p
+			 WHERE o.customer_id = c.id AND o.product_id = p.id
+			 GROUP BY c.name
+			 HAVING SUM(o.qty * p.price) > 500`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (Alice, 900), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Alice" {
+			t.Errorf("want Alice, got %v", rows[0][0])
+		}
+	})
+
+	_ = ctx
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
