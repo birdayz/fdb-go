@@ -11140,6 +11140,57 @@ func TestFDB_DeleteWithComplexWhere(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithLeftAndCrossVariants — different JOIN types
+func TestFDB_JoinWithLeftAndCrossVariants(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jvar",
+		"CREATE TABLE jv_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jv_b(id BIGINT, a_id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jv_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
+		t.Fatalf("INSERT jv_a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jv_b VALUES (10, 1, 100), (20, 1, 200), (30, 2, 300)"); err != nil {
+		t.Fatalf("INSERT jv_b: %v", err)
+	}
+
+	t.Run("inner_join_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM jv_a JOIN jv_b ON jv_a.id = jv_b.a_id")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 matched rows, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("left_join_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM jv_a LEFT JOIN jv_b ON jv_a.id = jv_b.a_id")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want 4 (3 matched + 1 unmatched z), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("cross_join_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM jv_a, jv_b")
+		if toInt64(rows[0][0]) != 9 {
+			t.Errorf("want 3*3=9 cross product, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("inner_vs_left_difference", func(t *testing.T) {
+		inner := collectRows(t, db, "SELECT jv_a.name FROM jv_a JOIN jv_b ON jv_a.id = jv_b.a_id GROUP BY jv_a.name ORDER BY jv_a.name")
+		left := collectRows(t, db, "SELECT jv_a.name FROM jv_a LEFT JOIN jv_b ON jv_a.id = jv_b.a_id GROUP BY jv_a.name ORDER BY jv_a.name")
+		if len(inner) != 2 {
+			t.Errorf("inner join groups: want 2 (x,y), got %d", len(inner))
+		}
+		if len(left) != 3 {
+			t.Errorf("left join groups: want 3 (x,y,z), got %d", len(left))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
