@@ -18305,6 +18305,94 @@ func TestFDB_UpdateSetToNull(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertMultipleBatchesThenDelete — multi-batch insert then selective delete
+func TestFDB_InsertMultipleBatchesThenDelete(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "imbd",
+		"CREATE TABLE imbd_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO imbd_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
+		t.Fatalf("INSERT batch 1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO imbd_t VALUES (6,60),(7,70),(8,80),(9,90),(10,100)"); err != nil {
+		t.Fatalf("INSERT batch 2: %v", err)
+	}
+
+	t.Run("delete_even_ids", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM imbd_t WHERE id IN (2,4,6,8,10)")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 5 {
+			t.Errorf("want 5 deleted, got %d", n)
+		}
+	})
+
+	t.Run("remaining_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM imbd_t")
+		// remaining: 10+30+50+70+90 = 250
+		if toInt64(rows[0][0]) != 250 {
+			t.Errorf("want 250, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("remaining_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM imbd_t")
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("want 5, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_CaseWhenInSelect — CASE WHEN expressions in SELECT projection
+func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cwsp",
+		"CREATE TABLE cwsp_t(id BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO cwsp_t VALUES (1,95),(2,75),(3,55),(4,35),(5,85)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("grade_labels", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE
+				WHEN score >= 90 THEN 'A'
+				WHEN score >= 70 THEN 'B'
+				WHEN score >= 50 THEN 'C'
+				ELSE 'F'
+			END FROM cwsp_t ORDER BY id
+		`)
+		want := []string{"A", "B", "C", "F", "B"}
+		for i, w := range want {
+			if fmt.Sprintf("%v", rows[i][1]) != w {
+				t.Errorf("id %d: want %s, got %v", i+1, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("count_passing", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM cwsp_t WHERE score >= 50
+		`)
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want 4 passing (>=50), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
