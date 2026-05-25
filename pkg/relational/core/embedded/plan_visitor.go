@@ -860,15 +860,23 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		return op, ""
 	}
 
-	// Determine strip prefix for derived tables.
+	// Determine strip prefix for derived tables and table aliases.
 	stripPrefix := ""
 	if fs != nil && fs.derivedQuery != nil {
 		stripPrefix = strings.ToUpper(fs.tableName) + "."
 	}
+	aliasPrefix := ""
+	if fs != nil && fs.tableAlias != "" && len(fs.joins) == 0 {
+		aliasPrefix = strings.ToUpper(fs.tableAlias) + "."
+	}
 
 	strip := func(s string) string {
-		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
+		upper := strings.ToUpper(s)
+		if stripPrefix != "" && strings.HasPrefix(upper, stripPrefix) {
 			return s[len(stripPrefix):]
+		}
+		if aliasPrefix != "" && strings.HasPrefix(upper, aliasPrefix) {
+			return s[len(aliasPrefix):]
 		}
 		return s
 	}
