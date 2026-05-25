@@ -11728,6 +11728,61 @@ func TestFDB_EmptyStringVsNull(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateWithSubquery — UPDATE using correlated subquery logic
+func TestFDB_UpdateWithSubquery(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "upsq",
+		"CREATE TABLE up_main(id BIGINT, val BIGINT, flag STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE up_ref(id BIGINT, threshold BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO up_main VALUES (1, 10, 'low'), (2, 50, 'low'), (3, 90, 'low')"); err != nil {
+		t.Fatalf("INSERT main: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO up_ref VALUES (1, 40)"); err != nil {
+		t.Fatalf("INSERT ref: %v", err)
+	}
+
+	t.Run("update_with_case_and_comparison", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE up_main SET flag = CASE WHEN val > 40 THEN 'high' ELSE 'low' END"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, flag FROM up_main ORDER BY id")
+		if fmt.Sprintf("%v", rows[0][1]) != "low" {
+			t.Errorf("id=1 (val=10): should stay low, got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][1]) != "high" {
+			t.Errorf("id=2 (val=50>40): should be high, got %v", rows[1][1])
+		}
+		if fmt.Sprintf("%v", rows[2][1]) != "high" {
+			t.Errorf("id=3 (val=90>40): should be high, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("update_set_to_null", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE up_main SET val = NULL WHERE id = 2"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT val FROM up_main WHERE id = 2")
+		if rows[0][0] != nil {
+			t.Errorf("val should be NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("verify_null_in_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val), COUNT(val), COUNT(*) FROM up_main")
+		if toInt64(rows[0][2]) != 3 {
+			t.Errorf("COUNT(*) should be 3, got %v", rows[0][2])
+		}
+		if toInt64(rows[0][1]) != 2 {
+			t.Errorf("COUNT(val) should be 2 (one NULL), got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
