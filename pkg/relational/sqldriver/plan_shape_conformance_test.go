@@ -15248,6 +15248,37 @@ func TestFDB_JoinWithWhereAndCase(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByCountWithFilter — GROUP BY + COUNT + WHERE + ORDER BY
+func TestFDB_GroupByCountWithFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbcwf", "CREATE TABLE gbcwf_t(id BIGINT, cat STRING, active BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbcwf_t VALUES
+		(1, 'A', 1), (2, 'A', 0), (3, 'B', 1), (4, 'B', 1),
+		(5, 'C', 0), (6, 'C', 1), (7, 'A', 1)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("count_active_per_category", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT cat, COUNT(*) FROM gbcwf_t
+			WHERE active = 1
+			GROUP BY cat ORDER BY COUNT(*) DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("first: A with 2 active, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
