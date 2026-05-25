@@ -10238,6 +10238,85 @@ func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 	})
 }
 
+// TestFDB_MultiJoinWithFilter — multi-table join with various filter positions
+func TestFDB_MultiJoinWithFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mjwf",
+		"CREATE TABLE regions(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE stores(id BIGINT, region_id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE sales_mj(id BIGINT, store_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO regions VALUES (1, 'north'), (2, 'south')"); err != nil {
+		t.Fatalf("INSERT regions: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO stores VALUES (10, 1, 'store_a'), (20, 1, 'store_b'), (30, 2, 'store_c')"); err != nil {
+		t.Fatalf("INSERT stores: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO sales_mj VALUES
+		(100, 10, 500), (101, 10, 300), (102, 20, 700), (103, 30, 200), (104, 30, 400)
+	`); err != nil {
+		t.Fatalf("INSERT sales: %v", err)
+	}
+
+	t.Run("three_table_join", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT r.name, s.name, sm.amount
+			FROM regions r
+			JOIN stores s ON r.id = s.region_id
+			JOIN sales_mj sm ON s.id = sm.store_id
+			ORDER BY sm.amount
+		`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("three_table_join_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT r.name, SUM(sm.amount)
+			FROM regions r
+			JOIN stores s ON r.id = s.region_id
+			JOIN sales_mj sm ON s.id = sm.store_id
+			GROUP BY r.name
+			ORDER BY r.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 regions, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 1500 {
+			t.Errorf("north = 500+300+700 = 1500, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 600 {
+			t.Errorf("south = 200+400 = 600, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("join_with_where_on_leaf", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT r.name, COUNT(*)
+			FROM regions r
+			JOIN stores s ON r.id = s.region_id
+			JOIN sales_mj sm ON s.id = sm.store_id
+			WHERE sm.amount > 300
+			GROUP BY r.name
+			ORDER BY r.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 2 {
+			t.Errorf("north with amount>300: 500,700 = 2, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 1 {
+			t.Errorf("south with amount>300: 400 = 1, got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
