@@ -9869,6 +9869,150 @@ func TestFDB_UpdateWithExpressions(t *testing.T) {
 	})
 }
 
+// TestFDB_NestedDerivedTableQueries — deeply nested derived tables
+func TestFDB_NestedDerivedTableQueries(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ndtq", "CREATE TABLE nest_t(id BIGINT, val BIGINT, grp STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO nest_t VALUES
+		(1, 10, 'A'), (2, 20, 'A'), (3, 30, 'B'), (4, 40, 'B'), (5, 50, 'C')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("three_level_derived", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT * FROM (
+				SELECT * FROM (
+					SELECT * FROM nest_t WHERE val > 15
+				) AS inner_d
+			) AS outer_d
+			ORDER BY id
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (val>15), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("derived_with_rename_and_filter", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT d.x, d.y FROM (
+				SELECT id AS x, val AS y FROM nest_t
+			) AS d
+			WHERE d.y >= 30
+			ORDER BY d.x
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (val>=30), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("first x should be 3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("aggregate_over_derived", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*), SUM(val) FROM (
+				SELECT * FROM nest_t WHERE grp = 'A'
+			) AS d
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("COUNT should be 2, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 30 {
+			t.Errorf("SUM should be 10+20=30, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("group_by_over_derived", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, SUM(val) FROM (
+				SELECT * FROM nest_t WHERE val > 10
+			) AS d
+			GROUP BY grp
+			ORDER BY grp
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" || toInt64(rows[0][1]) != 20 {
+			t.Errorf("A: want SUM=20, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
+// TestFDB_PrimaryKeyOperations — PK lookup, insert duplicate, delete by PK
+func TestFDB_PrimaryKeyOperations(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "pkop", "CREATE TABLE pk_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO pk_t VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("pk_equality_lookup", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name FROM pk_t WHERE id = 2")
+		if len(rows) != 1 {
+			t.Fatalf("PK lookup should return 1 row, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "bob" {
+			t.Errorf("want bob, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("pk_not_found", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name FROM pk_t WHERE id = 999")
+		if len(rows) != 0 {
+			t.Errorf("nonexistent PK should return 0 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("duplicate_pk_error", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "INSERT INTO pk_t VALUES (1, 'duplicate')")
+		if err == nil {
+			t.Errorf("duplicate PK insert should error, got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("delete_by_pk", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM pk_t WHERE id = 3")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			t.Errorf("want 1 deleted, got %d", n)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM pk_t")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("after delete: want 2 remaining, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("update_by_pk", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE pk_t SET name = 'ALICE' WHERE id = 1"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT name FROM pk_t WHERE id = 1")
+		if fmt.Sprintf("%v", rows[0][0]) != "ALICE" {
+			t.Errorf("want ALICE, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
