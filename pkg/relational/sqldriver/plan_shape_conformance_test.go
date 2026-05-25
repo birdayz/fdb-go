@@ -12390,6 +12390,62 @@ func TestFDB_DeleteAllThenInsert(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateWithWhereAndVerify — UPDATE with various WHERE and verify results
+func TestFDB_UpdateWithWhereAndVerify(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uwv", "CREATE TABLE uwv_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO uwv_t VALUES
+		(1, 'pending', 10), (2, 'active', 20), (3, 'pending', 30),
+		(4, 'active', 40), (5, 'done', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_by_status", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE uwv_t SET score = score + 100 WHERE status = 'pending'")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 updated, got %d", n)
+		}
+	})
+
+	t.Run("verify_update", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, score FROM uwv_t WHERE status = 'pending' ORDER BY id")
+		if toInt64(rows[0][1]) != 110 {
+			t.Errorf("id=1: 10+100=110, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 130 {
+			t.Errorf("id=3: 30+100=130, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("update_status_and_score", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE uwv_t SET status = 'done', score = 0 WHERE status = 'pending'"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM uwv_t WHERE status = 'done'")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 done (2 former pending + 1 original), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("aggregate_after_updates", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT status, COUNT(*), SUM(score) FROM uwv_t GROUP BY status ORDER BY status")
+		t.Logf("final state: %v", rows)
+		if len(rows) < 2 {
+			t.Fatalf("want at least 2 groups, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
