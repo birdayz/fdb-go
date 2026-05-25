@@ -10628,6 +10628,65 @@ func TestFDB_MultiColumnIndex(t *testing.T) {
 	})
 }
 
+// TestFDB_ErrorHandling — SQL error conditions
+func TestFDB_ErrorHandling(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "errhnd", "CREATE TABLE err_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO err_t VALUES (1, 10), (2, 20)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("select_nonexistent_table", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT * FROM nonexistent_table")
+		if err == nil {
+			t.Errorf("expected error for nonexistent table")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("select_nonexistent_column", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT nonexistent_col FROM err_t")
+		if err == nil {
+			t.Errorf("expected error for nonexistent column")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("group_by_missing_column", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT id, val FROM err_t GROUP BY id")
+		if err == nil {
+			t.Errorf("expected error: val not in GROUP BY")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("insert_wrong_column_count", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "INSERT INTO err_t VALUES (3)")
+		if err == nil {
+			t.Errorf("expected error for wrong column count")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("syntax_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELEKT * FROM err_t")
+		if err == nil {
+			t.Errorf("expected syntax error")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
