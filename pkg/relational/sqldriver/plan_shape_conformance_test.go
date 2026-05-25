@@ -14152,6 +14152,40 @@ func TestFDB_CTEWithJoinAndFilter(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateSetToExpression — UPDATE SET to computed expression
+func TestFDB_UpdateSetToExpression(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uste", "CREATE TABLE uste_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO uste_t VALUES (1, 10, 20, 0), (2, 30, 40, 0)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("set_c_to_a_plus_b", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE uste_t SET c = a + b"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, c FROM uste_t ORDER BY id")
+		if toInt64(rows[0][1]) != 30 {
+			t.Errorf("id=1: c=10+20=30, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 70 {
+			t.Errorf("id=2: c=30+40=70, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("verify_sum_c", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(c) FROM uste_t")
+		if toInt64(rows[0][0]) != 100 {
+			t.Errorf("SUM(c) = 30+70 = 100, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
