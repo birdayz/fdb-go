@@ -17284,6 +17284,104 @@ func TestFDB_JoinSameTableTwice(t *testing.T) {
 	})
 }
 
+// TestFDB_ComplexBooleanWhere — complex boolean logic in WHERE
+func TestFDB_ComplexBooleanWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cbw",
+		"CREATE TABLE cbw_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cbw_t VALUES
+		(1,10,20,30),(2,5,25,35),(3,15,15,15),(4,20,10,30),(5,1,1,1)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("and_or_combined", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id FROM cbw_t
+			WHERE (a > 10 OR b > 20) AND c >= 30
+			ORDER BY id
+		`)
+		// id=1: (10>10=F OR 20>20=F)=F → out
+		// id=2: (5>10=F OR 25>20=T)=T AND 35>=30=T → in
+		// id=3: (15>10=T OR 15>20=F)=T AND 15>=30=F → out
+		// id=4: (20>10=T OR 10>20=F)=T AND 30>=30=T → in
+		want := []int64{2, 4}
+		if len(rows) != len(want) {
+			t.Fatalf("want %d rows, got %d: %v", len(want), len(rows), rows)
+		}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("not_and_or", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM cbw_t WHERE NOT (a = b AND b = c)
+		`)
+		// a=b AND b=c: id=3(15,15,15) and id=5(1,1,1) → NOT → 3 others
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("nested_or_and", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id FROM cbw_t
+			WHERE (a >= 10 AND b >= 10) OR (c = 1)
+			ORDER BY id
+		`)
+		// id=1: a=10,b=20 → T  id=3: a=15,b=15 → T  id=4: a=20,b=10 → T  id=5: c=1 → T
+		want := []int64{1, 3, 4, 5}
+		if len(rows) != len(want) {
+			t.Fatalf("want %d, got %d: %v", len(want), len(rows), rows)
+		}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
+// TestFDB_SelectConstantExpression — SELECT with constant expressions (no table)
+func TestFDB_SelectConstantExpression(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+
+	db := setupPlanShapeDB(t, "sce",
+		"CREATE TABLE sce_t(id BIGINT, PRIMARY KEY(id))")
+
+	t.Run("select_1_plus_2", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT 1 + 2 FROM sce_t")
+		// No rows in table, so no result
+		if len(rows) != 0 {
+			t.Errorf("want 0 rows from empty table, got %d", len(rows))
+		}
+	})
+
+	t.Run("constant_with_row", func(t *testing.T) {
+		ctx := context.Background()
+		if _, err := db.ExecContext(ctx, "INSERT INTO sce_t VALUES (1)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT 42, id FROM sce_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 42 {
+			t.Errorf("want 42, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
