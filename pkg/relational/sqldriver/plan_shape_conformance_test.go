@@ -13257,6 +13257,42 @@ func TestFDB_WhereWithNegation(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEWithFilter — CTE with WHERE filter in outer query
+func TestFDB_CTEWithFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctflt", "CREATE TABLE ctf_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ctf_t VALUES
+		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("cte_with_outer_where", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH all_data AS (SELECT * FROM ctf_t)
+			SELECT id, val FROM all_data WHERE cat = 'A' ORDER BY id
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("cte_aggregate_with_outer_filter", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH sums AS (SELECT cat, SUM(val) AS total FROM ctf_t GROUP BY cat)
+			SELECT cat, total FROM sums WHERE total > 20 ORDER BY cat
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (A=40, C=40), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
