@@ -6949,6 +6949,200 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	})
 }
 
+func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "gbtalias1",
+		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, amount BIGINT, rep STRING, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO sales VALUES (1, 'US', 100, 'Alice')",
+		"INSERT INTO sales VALUES (2, 'US', 200, 'Bob')",
+		"INSERT INTO sales VALUES (3, 'EU', 150, 'Charlie')",
+		"INSERT INTO sales VALUES (4, 'EU', 250, 'Diana')",
+		"INSERT INTO sales VALUES (5, 'APAC', 300, 'Eve')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("aliased_group_by_string", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT s.region, COUNT(*), SUM(s.amount) FROM sales s GROUP BY s.region ORDER BY s.region")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 regions, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "APAC" || toInt64(rows[0][1]) != 1 || toInt64(rows[0][2]) != 300 {
+			t.Errorf("APAC: got %v", rows[0])
+		}
+		if rows[1][0].(string) != "EU" || toInt64(rows[1][1]) != 2 || toInt64(rows[1][2]) != 400 {
+			t.Errorf("EU: got %v", rows[1])
+		}
+		if rows[2][0].(string) != "US" || toInt64(rows[2][1]) != 2 || toInt64(rows[2][2]) != 300 {
+			t.Errorf("US: got %v", rows[2])
+		}
+	})
+
+	t.Run("aliased_having_with_alias_prefix", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT s.region, SUM(s.amount)
+			 FROM sales s
+			 GROUP BY s.region
+			 HAVING SUM(s.amount) > 300
+			 ORDER BY s.region`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (EU, 400), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "EU" {
+			t.Errorf("want EU, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("aliased_group_by_two_columns", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT s.region, s.rep, SUM(s.amount)
+			 FROM sales s
+			 GROUP BY s.region, s.rep
+			 ORDER BY s.region, s.rep`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5 (each row is its own group), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("unaliased_same_results", func(t *testing.T) {
+		aliased := collectRows(t, db,
+			"SELECT s.region, COUNT(*) FROM sales s GROUP BY s.region ORDER BY s.region")
+		unaliased := collectRows(t, db,
+			"SELECT region, COUNT(*) FROM sales GROUP BY region ORDER BY region")
+		if len(aliased) != len(unaliased) {
+			t.Fatalf("aliased (%d) != unaliased (%d)", len(aliased), len(unaliased))
+		}
+		for i := range aliased {
+			if aliased[i][0] != unaliased[i][0] || toInt64(aliased[i][1]) != toInt64(unaliased[i][1]) {
+				t.Errorf("row %d: aliased=%v, unaliased=%v", i, aliased[i], unaliased[i])
+			}
+		}
+	})
+
+	_ = ctx
+}
+
+func TestFDB_NestedAggregateErrors(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "nesterr1",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+
+	db.ExecContext(ctx, "INSERT INTO t1 VALUES (1, 10)")
+	db.ExecContext(ctx, "INSERT INTO t1 VALUES (2, 20)")
+
+	t.Run("nested_aggregate_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT SUM(MAX(val)) FROM t1")
+		if err == nil {
+			t.Fatal("expected error for nested aggregate")
+		}
+	})
+
+	t.Run("aggregate_in_where_treated_as_having", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT val FROM t1 WHERE SUM(val) > 10")
+		if err != nil {
+			t.Logf("aggregate in WHERE rejects: %v (acceptable)", err)
+		} else {
+			t.Log("aggregate in WHERE accepted (may be treated as HAVING)")
+		}
+	})
+}
+
+func TestFDB_StringOperations(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "strop1",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 'Alice')",
+		"INSERT INTO t1 VALUES (2, 'Bob')",
+		"INSERT INTO t1 VALUES (3, 'Charlie')",
+		"INSERT INTO t1 VALUES (4, NULL)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("like_prefix", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM t1 WHERE name LIKE 'A%' ORDER BY name")
+		if len(rows) != 1 || rows[0][0].(string) != "Alice" {
+			t.Fatalf("want [Alice], got %v", rows)
+		}
+	})
+
+	t.Run("like_suffix", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM t1 WHERE name LIKE '%ob' ORDER BY name")
+		if len(rows) != 1 || rows[0][0].(string) != "Bob" {
+			t.Fatalf("want [Bob], got %v", rows)
+		}
+	})
+
+	t.Run("like_contains", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM t1 WHERE name LIKE '%li%' ORDER BY name")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (Alice, Charlie), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("not_like", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM t1 WHERE name NOT LIKE '%li%' ORDER BY name")
+		if len(rows) != 1 || rows[0][0].(string) != "Bob" {
+			t.Fatalf("want [Bob], got %v", rows)
+		}
+	})
+
+	t.Run("like_null_excluded", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT COUNT(*) FROM t1 WHERE name LIKE '%'")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
+			t.Fatalf("want 3 (NULL excluded from LIKE), got %v", rows)
+		}
+	})
+
+	t.Run("order_by_string", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM t1 WHERE name IS NOT NULL ORDER BY name")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "Alice" || rows[1][0].(string) != "Bob" || rows[2][0].(string) != "Charlie" {
+			t.Errorf("got %v, %v, %v", rows[0][0], rows[1][0], rows[2][0])
+		}
+	})
+
+	t.Run("order_by_string_desc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT name FROM t1 WHERE name IS NOT NULL ORDER BY name DESC")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "Charlie" || rows[2][0].(string) != "Alice" {
+			t.Errorf("got %v, %v", rows[0][0], rows[2][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
