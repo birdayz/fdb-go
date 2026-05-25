@@ -17913,6 +17913,91 @@ func TestFDB_WhereIsNullIsNotNull(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinOnCatAndVal — JOIN ON two columns (cat AND val)
+func TestFDB_JoinOnCatAndVal(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jocv",
+		"CREATE TABLE jocv_a(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE jocv_b(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO jocv_a VALUES (1,'x',10),(2,'y',20),(3,'x',30)"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO jocv_b VALUES (10,'x',10),(20,'y',25),(30,'x',30)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("join_on_cat_and_val", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.id, b.id FROM jocv_a a
+			JOIN jocv_b b ON a.cat = b.cat AND a.val = b.val
+			ORDER BY a.id
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 matches, got %d: %v", len(rows), rows)
+		}
+		// a(1,x,10) matches b(10,x,10); a(3,x,30) matches b(30,x,30)
+		if toInt64(rows[0][0]) != 1 || toInt64(rows[0][1]) != 10 {
+			t.Errorf("row 0: want [1 10], got %v", rows[0])
+		}
+		if toInt64(rows[1][0]) != 3 || toInt64(rows[1][1]) != 30 {
+			t.Errorf("row 1: want [3 30], got %v", rows[1])
+		}
+	})
+
+	t.Run("join_on_cat_only_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM jocv_a a JOIN jocv_b b ON a.cat = b.cat
+		`)
+		// x-x: 2*2=4, y-y: 1*1=1 → total 5
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("want 5, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_SelectStarFromTable — SELECT * returns all columns
+func TestFDB_SelectStarFromTable(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ssft",
+		"CREATE TABLE ssft_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ssft_t VALUES (1,'alice',90),(2,'bob',80)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("star_returns_all_cols", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM ssft_t ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if len(rows[0]) < 3 {
+			t.Fatalf("want >=3 columns, got %d", len(rows[0]))
+		}
+		if toInt64(rows[0][0]) != 1 || fmt.Sprintf("%v", rows[0][1]) != "alice" || toInt64(rows[0][2]) != 90 {
+			t.Errorf("row 0: want [1 alice 90], got %v", rows[0])
+		}
+	})
+
+	t.Run("star_with_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM ssft_t WHERE score > 85")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
