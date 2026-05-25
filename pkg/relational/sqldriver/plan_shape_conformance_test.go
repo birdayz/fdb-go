@@ -15918,6 +15918,100 @@ func TestFDB_JoinWithLeftAndInnerCompare(t *testing.T) {
 	})
 }
 
+// TestFDB_MultiColumnOrderTies — ORDER BY with tied first column, break by second
+func TestFDB_MultiColumnOrderTies(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mcot",
+		"CREATE TABLE mcot_t(id BIGINT, grade STRING, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO mcot_t VALUES (1,'A',90),(2,'B',80),(3,'A',70),(4,'B',95),(5,'A',85)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("asc_asc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade, score")
+		want := []int64{70, 85, 90, 80, 95}
+		for i, w := range want {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: want score %d, got %v", i, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("asc_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade ASC, score DESC")
+		want := []int64{90, 85, 70, 95, 80}
+		for i, w := range want {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: want score %d, got %v", i, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("desc_asc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade DESC, score ASC")
+		want := []int64{80, 95, 70, 85, 90}
+		for i, w := range want {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: want score %d, got %v", i, w, rows[i][1])
+			}
+		}
+	})
+}
+
+// TestFDB_AggregateMultipleGroupKeys — GROUP BY two columns
+func TestFDB_AggregateMultipleGroupKeys(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "amgk",
+		"CREATE TABLE amgk_t(id BIGINT, dept STRING, role STRING, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO amgk_t VALUES (1,'eng','dev',100),(2,'eng','dev',120),(3,'eng','qa',90),(4,'sales','rep',80),(5,'sales','rep',85),(6,'sales','mgr',150)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("count_per_dept_role", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT dept, role, COUNT(*) FROM amgk_t GROUP BY dept, role ORDER BY dept, role")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 groups, got %d", len(rows))
+		}
+		type grp struct {
+			dept, role string
+			cnt        int64
+		}
+		want := []grp{
+			{"eng", "dev", 2}, {"eng", "qa", 1}, {"sales", "mgr", 1}, {"sales", "rep", 2},
+		}
+		for i, w := range want {
+			d := fmt.Sprintf("%v", rows[i][0])
+			r := fmt.Sprintf("%v", rows[i][1])
+			c := toInt64(rows[i][2])
+			if d != w.dept || r != w.role || c != w.cnt {
+				t.Errorf("row %d: want %v, got [%s %s %d]", i, w, d, r, c)
+			}
+		}
+	})
+
+	t.Run("sum_per_dept_role", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT dept, role, SUM(salary) FROM amgk_t GROUP BY dept, role ORDER BY dept, role")
+		wantSum := []int64{220, 90, 150, 165}
+		for i, w := range wantSum {
+			if toInt64(rows[i][2]) != w {
+				t.Errorf("row %d: want sum %d, got %v", i, w, rows[i][2])
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
