@@ -3687,3 +3687,62 @@ func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aggcase",
+		"CREATE TABLE orders (id BIGINT NOT NULL, Status STRING, Amount BIGINT, PRIMARY KEY (id))")
+
+	for _, o := range []struct {
+		id     int
+		status string
+		amount int
+	}{
+		{1, "pending", 100},
+		{2, "pending", 200},
+		{3, "shipped", 300},
+		{4, "shipped", 400},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("having_mixed_case_column", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT status, SUM(amount) FROM orders GROUP BY status HAVING SUM(Amount) > 200 ORDER BY status")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "pending" || rows[0][1].(int64) != 300 {
+			t.Errorf("row 0: got %v, want [pending, 300]", rows[0])
+		}
+	})
+
+	t.Run("having_uppercase_column", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT STATUS, COUNT(*) FROM orders GROUP BY STATUS HAVING COUNT(*) >= 2")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("mixed_case_group_by_and_select", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT Status, SUM(AMOUNT) AS total FROM orders GROUP BY Status ORDER BY total DESC")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 700 {
+			t.Errorf("first total: got %v, want 700", rows[0][1])
+		}
+	})
+
+	_ = ctx
+}
