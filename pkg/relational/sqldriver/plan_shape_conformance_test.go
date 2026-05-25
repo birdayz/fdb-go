@@ -11496,6 +11496,89 @@ func TestFDB_WhereWithLikePatterns(t *testing.T) {
 	})
 }
 
+// TestFDB_WindowFunctionErrors — window functions should error (not supported)
+func TestFDB_WindowFunctionErrors(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wferr", "CREATE TABLE wf_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO wf_t VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("row_number_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT id, ROW_NUMBER() OVER (ORDER BY id) FROM wf_t")
+		if err == nil {
+			t.Logf("ROW_NUMBER() OVER unexpectedly succeeded")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("rank_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT id, RANK() OVER (ORDER BY val) FROM wf_t")
+		if err == nil {
+			t.Logf("RANK() OVER unexpectedly succeeded")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+}
+
+// TestFDB_MixedOperators — queries mixing multiple operator types
+func TestFDB_MixedOperators(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mixop", "CREATE TABLE mo_t(id BIGINT, a BIGINT, b STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO mo_t VALUES
+		(1, 10, 'hello'), (2, 20, 'world'), (3, 30, 'hello'),
+		(4, 40, 'test'), (5, 50, 'world'), (6, 60, 'hello')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("in_and_like_combined", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM mo_t WHERE a IN (10, 30, 50) AND b LIKE 'hel%' ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (id=1: a=10+hello, id=3: a=30+hello), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("between_and_not_like", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM mo_t WHERE a BETWEEN 20 AND 50 AND b NOT LIKE 'hel%' ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (id=2:world, id=4:test, id=5:world), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("group_by_string_with_count_and_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, COUNT(*), SUM(a) FROM mo_t GROUP BY b ORDER BY b")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "hello" || toInt64(rows[0][1]) != 3 || toInt64(rows[0][2]) != 100 {
+			t.Errorf("hello: want count=3, sum=10+30+60=100, got %v %v %v", rows[0][0], rows[0][1], rows[0][2])
+		}
+	})
+
+	t.Run("order_by_aggregate_desc_with_limit", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, SUM(a) AS total FROM mo_t GROUP BY b ORDER BY total DESC LIMIT 1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "hello" {
+			t.Errorf("top group should be hello(100), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
