@@ -14777,6 +14777,60 @@ func TestFDB_CompleteQueryPipeline(t *testing.T) {
 	})
 }
 
+// TestFDB_EndToEndWorkflow — complete e2e: CREATE + INSERT + SELECT + UPDATE + DELETE + aggregate verify
+func TestFDB_EndToEndWorkflow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "e2ew", "CREATE TABLE e2e_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
+
+	t.Run("full_e2e", func(t *testing.T) {
+		// INSERT
+		if _, err := db.ExecContext(ctx, `INSERT INTO e2e_t VALUES
+			(1, 'alice', 90), (2, 'bob', 80), (3, 'charlie', 70),
+			(4, 'david', 60), (5, 'eve', 95)
+		`); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+
+		// SELECT with ORDER BY
+		rows := collectRows(t, db, "SELECT name, score FROM e2e_t ORDER BY score DESC LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "eve" {
+			t.Errorf("top scorer should be eve, got %v", rows[0][0])
+		}
+
+		// UPDATE
+		if _, err := db.ExecContext(ctx, "UPDATE e2e_t SET score = score + 10 WHERE score < 80"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+
+		// DELETE
+		res, err := db.ExecContext(ctx, "DELETE FROM e2e_t WHERE name = 'david'")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			t.Errorf("want 1 deleted, got %d", n)
+		}
+
+		// Aggregate verify
+		rows = collectRows(t, db, "SELECT COUNT(*), SUM(score), MIN(score), MAX(score) FROM e2e_t")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("COUNT should be 4, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][3]) != 95 {
+			t.Errorf("MAX should still be 95 (eve), got %v", rows[0][3])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
