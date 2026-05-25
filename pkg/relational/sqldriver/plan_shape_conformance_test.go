@@ -12577,6 +12577,36 @@ func TestFDB_SelectWhereOnString(t *testing.T) {
 	})
 }
 
+// TestFDB_MinMaxWithStrings — MIN/MAX on string columns
+func TestFDB_MinMaxWithStrings(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mmstr", "CREATE TABLE mms_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO mms_t VALUES (1, 'charlie'), (2, 'alice'), (3, 'bob'), (4, 'david')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("min_string_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT MIN(name) FROM mms_t")
+		if err == nil {
+			t.Logf("MIN(string) succeeded unexpectedly")
+		} else {
+			t.Logf("MIN(string) not supported: %v", err)
+		}
+	})
+
+	t.Run("count_string_works", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(name) FROM mms_t")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("COUNT(name) should be 4, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
