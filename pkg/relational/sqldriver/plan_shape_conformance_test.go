@@ -9692,6 +9692,183 @@ func TestFDB_MultiTableJoinPatterns(t *testing.T) {
 	})
 }
 
+// TestFDB_AggregateIndexUsage — queries that should use aggregate indexes
+func TestFDB_AggregateIndexUsage(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "agidx2",
+		"CREATE TABLE aitems(id BIGINT, cat STRING, price BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX cnt_by_cat AS SELECT COUNT(*) FROM aitems GROUP BY cat "+
+			"CREATE INDEX sum_price_by_cat AS SELECT SUM(price) FROM aitems GROUP BY cat")
+	for i, item := range []struct {
+		cat   string
+		price int
+	}{
+		{"electronics", 100},
+		{"electronics", 200},
+		{"electronics", 300},
+		{"books", 15},
+		{"books", 25},
+		{"food", 5},
+		{"food", 10},
+		{"food", 8},
+		{"food", 12},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO aitems VALUES (%d, '%s', %d)", i+1, item.cat, item.price)); err != nil {
+			t.Fatalf("INSERT %d: %v", i+1, err)
+		}
+	}
+
+	t.Run("count_by_category", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT cat, COUNT(*) FROM aitems GROUP BY cat ORDER BY cat")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 categories, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "books" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("books: want 2, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "electronics" || toInt64(rows[1][1]) != 3 {
+			t.Errorf("electronics: want 3, got %v %v", rows[1][0], rows[1][1])
+		}
+		if fmt.Sprintf("%v", rows[2][0]) != "food" || toInt64(rows[2][1]) != 4 {
+			t.Errorf("food: want 4, got %v %v", rows[2][0], rows[2][1])
+		}
+	})
+
+	t.Run("sum_by_category", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT cat, SUM(price) FROM aitems GROUP BY cat ORDER BY cat")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 40 {
+			t.Errorf("books sum = 15+25 = 40, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 600 {
+			t.Errorf("electronics sum = 100+200+300 = 600, got %v", rows[1][1])
+		}
+		if toInt64(rows[2][1]) != 35 {
+			t.Errorf("food sum = 5+10+8+12 = 35, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("global_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM aitems")
+		if toInt64(rows[0][0]) != 9 {
+			t.Errorf("total count should be 9, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("global_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(price) FROM aitems")
+		if toInt64(rows[0][0]) != 675 {
+			t.Errorf("total sum should be 675, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_with_eq_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM aitems WHERE cat = 'food'")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("food count should be 4, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_with_eq_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(price) FROM aitems WHERE cat = 'electronics'")
+		if toInt64(rows[0][0]) != 600 {
+			t.Errorf("electronics sum should be 600, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("having_on_aggregate_index", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT cat, COUNT(*) FROM aitems GROUP BY cat HAVING COUNT(*) > 2 ORDER BY cat")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (electronics=3, food=4), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("insert_then_verify_aggregate", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO aitems VALUES (10, 'books', 35)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT cat, COUNT(*), SUM(price) FROM aitems WHERE cat = 'books' GROUP BY cat")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("books count after insert should be 3, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 75 {
+			t.Errorf("books sum after insert should be 75, got %v", rows[0][2])
+		}
+	})
+
+	t.Run("delete_then_verify_aggregate", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM aitems WHERE id = 10"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM aitems WHERE cat = 'books'")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("books count after delete should be 2, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_UpdateWithExpressions — UPDATE with arithmetic and conditional expressions
+func TestFDB_UpdateWithExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "updex", "CREATE TABLE upd_t(id BIGINT, val BIGINT, status STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO upd_t VALUES
+		(1, 100, 'active'), (2, 200, 'active'), (3, 300, 'inactive'), (4, 400, 'active'), (5, 500, 'inactive')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_arithmetic", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE upd_t SET val = val + 50 WHERE status = 'active'"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, val FROM upd_t WHERE status = 'active' ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 active, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 150 {
+			t.Errorf("id=1: 100+50=150, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 250 {
+			t.Errorf("id=2: 200+50=250, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("update_with_case", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE upd_t SET status = CASE WHEN val > 300 THEN 'premium' ELSE status END"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, status FROM upd_t WHERE status = 'premium' ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 premium (val>300: id=4(450), id=5(500)), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("update_multiply", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE upd_t SET val = val * 2 WHERE id = 1"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT val FROM upd_t WHERE id = 1")
+		if toInt64(rows[0][0]) != 300 {
+			t.Errorf("id=1: 150*2=300, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
