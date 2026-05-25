@@ -16012,6 +16012,94 @@ func TestFDB_AggregateMultipleGroupKeys(t *testing.T) {
 	})
 }
 
+// TestFDB_HavingCountThreshold — HAVING COUNT(*) >= N filters groups
+func TestFDB_HavingCountThreshold(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "hct",
+		"CREATE TABLE hct_t(id BIGINT, color STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO hct_t VALUES (1,'red'),(2,'blue'),(3,'red'),(4,'green'),(5,'red'),(6,'blue')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("count_ge_2", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) >= 2 ORDER BY color")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups (blue=2, red=3), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "blue" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("row 0: want [blue 2], got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "red" || toInt64(rows[1][1]) != 3 {
+			t.Errorf("row 1: want [red 3], got %v", rows[1])
+		}
+	})
+
+	t.Run("count_ge_3", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) >= 3")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 group (red=3), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "red" {
+			t.Errorf("want red, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_eq_1", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) = 1 ORDER BY color")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 group (green=1), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "green" {
+			t.Errorf("want green, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_UpdateConditionalArithmetic — UPDATE with CASE and arithmetic in SET
+func TestFDB_UpdateConditionalArithmetic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uca",
+		"CREATE TABLE uca_t(id BIGINT, price BIGINT, status STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO uca_t VALUES (1,100,'active'),(2,200,'inactive'),(3,50,'active'),(4,300,'inactive')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("double_active_prices", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE uca_t SET price = price * 2 WHERE status = 'active'")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 rows affected, got %d", n)
+		}
+
+		rows := collectRows(t, db, "SELECT id, price FROM uca_t WHERE status = 'active' ORDER BY id")
+		if toInt64(rows[0][1]) != 200 || toInt64(rows[1][1]) != 100 {
+			t.Errorf("want [200 100], got [%v %v]", rows[0][1], rows[1][1])
+		}
+	})
+
+	t.Run("inactive_unchanged", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, price FROM uca_t WHERE status = 'inactive' ORDER BY id")
+		if toInt64(rows[0][1]) != 200 || toInt64(rows[1][1]) != 300 {
+			t.Errorf("inactive should be unchanged: got [%v %v]", rows[0][1], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
