@@ -15016,6 +15016,40 @@ func TestFDB_JoinWithGroupByCountAndLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithAllColumnsAndFilter — SELECT * with WHERE
+func TestFDB_SelectWithAllColumnsAndFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sacf", "CREATE TABLE sacf_t(id BIGINT, name STRING, age BIGINT, city STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO sacf_t VALUES
+		(1, 'alice', 30, 'nyc'), (2, 'bob', 25, 'la'),
+		(3, 'charlie', 35, 'nyc'), (4, 'david', 28, 'sf')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("select_star_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM sacf_t WHERE city = 'nyc' ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 NYC residents, got %d", len(rows))
+		}
+		if len(rows[0]) != 4 {
+			t.Errorf("SELECT * should return 4 columns, got %d", len(rows[0]))
+		}
+	})
+
+	t.Run("select_star_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM sacf_t WHERE age > 27")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 (30, 35, 28), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
