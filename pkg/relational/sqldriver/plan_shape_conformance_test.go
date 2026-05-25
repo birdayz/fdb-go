@@ -15670,6 +15670,37 @@ func TestFDB_SelectCountGroupByHavingLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithMultipleBetween — multiple BETWEEN conditions with OR
+func TestFDB_WhereWithMultipleBetween(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wwmb", "CREATE TABLE wwmb_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO wwmb_t VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45), (6, 55)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("two_between_with_or", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wwmb_t WHERE val BETWEEN 10 AND 20 OR val BETWEEN 40 AND 50 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (15, 45), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 2 || toInt64(rows[1][0]) != 5 {
+			t.Errorf("want ids 2,5 got %v,%v", rows[0][0], rows[1][0])
+		}
+	})
+
+	t.Run("between_and_eq", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wwmb_t WHERE val BETWEEN 20 AND 40 AND id > 2")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 (25,35 with id>2), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
