@@ -16178,6 +16178,97 @@ func TestFDB_UpdateCaseWhenTier(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertSelectCrossTable — INSERT INTO ... SELECT FROM another table
+func TestFDB_InsertSelectCrossTable(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "isct",
+		"CREATE TABLE isct_src(id BIGINT, name STRING, active BOOLEAN, PRIMARY KEY(id)) "+
+			"CREATE TABLE isct_dst(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO isct_src VALUES (1,'alice',true),(2,'bob',false),(3,'carol',true),(4,'dave',false)"); err != nil {
+		t.Fatalf("INSERT src: %v", err)
+	}
+
+	t.Run("insert_active_only", func(t *testing.T) {
+		res, err := db.ExecContext(ctx,
+			"INSERT INTO isct_dst SELECT id, name FROM isct_src WHERE active = true")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 inserted, got %d", n)
+		}
+	})
+
+	t.Run("verify_dst", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name FROM isct_dst ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		names := []string{fmt.Sprintf("%v", rows[0][0]), fmt.Sprintf("%v", rows[1][0])}
+		if names[0] != "alice" || names[1] != "carol" {
+			t.Errorf("want [alice carol], got %v", names)
+		}
+	})
+}
+
+// TestFDB_GroupByWithWhereAndHaving — WHERE filters before GROUP BY, HAVING filters after
+func TestFDB_GroupByWithWhereAndHaving(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gwh",
+		"CREATE TABLE gwh_t(id BIGINT, region STRING, amount BIGINT, active BOOLEAN, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gwh_t VALUES
+		(1,'east',100,true),(2,'east',200,true),(3,'east',50,false),
+		(4,'west',300,true),(5,'west',150,true),(6,'west',75,false),
+		(7,'north',80,true)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("where_active_having_sum_gt_200", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, SUM(amount) FROM gwh_t
+			WHERE active = true
+			GROUP BY region
+			HAVING SUM(amount) > 200
+			ORDER BY region
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups (east=300, west=450), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "east" || toInt64(rows[0][1]) != 300 {
+			t.Errorf("row 0: want [east 300], got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "west" || toInt64(rows[1][1]) != 450 {
+			t.Errorf("row 1: want [west 450], got %v", rows[1])
+		}
+	})
+
+	t.Run("north_excluded_by_having", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, SUM(amount) FROM gwh_t
+			WHERE active = true
+			GROUP BY region
+			HAVING SUM(amount) > 200
+		`)
+		for _, r := range rows {
+			if fmt.Sprintf("%v", r[0]) == "north" {
+				t.Errorf("north (sum=80) should be excluded by HAVING > 200")
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
