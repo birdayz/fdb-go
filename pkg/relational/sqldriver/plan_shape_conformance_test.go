@@ -12933,6 +12933,42 @@ func TestFDB_OrderByWithLimitAndOffset(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithOrderByOnBothTables — ORDER BY referencing columns from both joined tables
+func TestFDB_JoinWithOrderByOnBothTables(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jobt",
+		"CREATE TABLE job_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE job_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO job_a VALUES (1, 'z'), (2, 'a'), (3, 'm')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO job_b VALUES (10, 1, 300), (20, 2, 100), (30, 3, 200)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("order_by_left_column", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a.name, b.val FROM job_a a JOIN job_b b ON a.id = b.aid ORDER BY a.name")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "a" {
+			t.Errorf("first should be 'a', got %v", rows[0][0])
+		}
+	})
+
+	t.Run("order_by_right_column", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a.name, b.val FROM job_a a JOIN job_b b ON a.id = b.aid ORDER BY b.val DESC")
+		if toInt64(rows[0][1]) != 300 {
+			t.Errorf("first val DESC should be 300, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
