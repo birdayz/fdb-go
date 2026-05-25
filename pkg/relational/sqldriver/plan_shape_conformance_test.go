@@ -14351,6 +14351,46 @@ func TestFDB_GroupByWithWhereOnDifferentColumn(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinSumWithHavingAndLimit — JOIN + SUM + HAVING + LIMIT combined
+func TestFDB_JoinSumWithHavingAndLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jshl",
+		"CREATE TABLE jshl_cat(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jshl_item(id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jshl_cat VALUES (1, 'food'), (2, 'toys'), (3, 'books')"); err != nil {
+		t.Fatalf("INSERT cat: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO jshl_item VALUES
+		(1, 1, 5), (2, 1, 10), (3, 1, 15),
+		(4, 2, 20), (5, 2, 30),
+		(6, 3, 8)
+	`); err != nil {
+		t.Fatalf("INSERT item: %v", err)
+	}
+
+	t.Run("join_sum_having_limit", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT c.name, SUM(i.price) AS total
+			FROM jshl_cat c JOIN jshl_item i ON c.id = i.cat_id
+			GROUP BY c.name
+			HAVING SUM(i.price) > 10
+			ORDER BY total DESC
+			LIMIT 1
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "toys" || toInt64(rows[0][1]) != 50 {
+			t.Errorf("want toys(50), got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
