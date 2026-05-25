@@ -15536,6 +15536,42 @@ func TestFDB_UpdateWithCoalesce(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinSumGroupByOrderDesc — JOIN + SUM + GROUP BY + ORDER BY DESC
+func TestFDB_JoinSumGroupByOrderDesc(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jsgod",
+		"CREATE TABLE jsgod_store(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jsgod_sale(id BIGINT, store_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jsgod_store VALUES (1, 'main'), (2, 'branch')"); err != nil {
+		t.Fatalf("INSERT store: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jsgod_sale VALUES (1, 1, 500), (2, 1, 300), (3, 2, 200), (4, 2, 800)"); err != nil {
+		t.Fatalf("INSERT sale: %v", err)
+	}
+
+	t.Run("revenue_by_store_desc", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT s.name, SUM(sa.amount) AS revenue
+			FROM jsgod_store s JOIN jsgod_sale sa ON s.id = sa.store_id
+			GROUP BY s.name ORDER BY revenue DESC
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "branch" || toInt64(rows[0][1]) != 1000 {
+			t.Errorf("first: branch 1000, got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "main" || toInt64(rows[1][1]) != 800 {
+			t.Errorf("second: main 800, got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
