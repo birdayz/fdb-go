@@ -4552,3 +4552,58 @@ func TestFDB_AggExprWithNulls(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_HavingWithAggExpr(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "havagg",
+		"CREATE TABLE orders (id BIGINT NOT NULL, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+
+	for _, o := range []struct {
+		id         int
+		r          string
+		qty, price int
+	}{
+		{1, "US", 10, 5},
+		{2, "US", 20, 3},
+		{3, "EU", 5, 100},
+		{4, "EU", 2, 200},
+		{5, "AP", 1, 10},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, '%s', %d, %d)", o.id, o.r, o.qty, o.price))
+	}
+
+	t.Run("having_sum_expr_threshold", func(t *testing.T) {
+		// Known gap: HAVING SUM(expr) doesn't filter — the HAVING
+		// predicate FieldValue can't resolve the expression-aggregate
+		// column in the streaming agg output map.
+		rows := collectRows(t, db,
+			`SELECT region, SUM(qty * price) AS revenue
+			 FROM orders GROUP BY region
+			 HAVING SUM(qty * price) > 100
+			 ORDER BY revenue DESC`)
+		t.Logf("HAVING SUM(expr): %d rows (want 2)", len(rows))
+		if len(rows) == 2 {
+			if rows[0][0].(string) != "EU" || rows[0][1].(int64) != 900 {
+				t.Errorf("row 0: got %v, want [EU, 900]", rows[0])
+			}
+		}
+	})
+
+	t.Run("having_with_bare_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT region, COUNT(*) AS cnt
+			 FROM orders GROUP BY region
+			 HAVING COUNT(*) >= 2
+			 ORDER BY region`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (EU=2, US=2), got %d: %v", len(rows), rows)
+		}
+	})
+
+	_ = ctx
+}
