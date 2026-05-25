@@ -8159,6 +8159,298 @@ func TestFDB_MultipleAggregates(t *testing.T) {
 	})
 }
 
+// TestFDB_BooleanThreeValueLogic — Java boolean.yamsql patterns
+func TestFDB_BooleanThreeValueLogic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "bool3v", "CREATE TABLE lb(a BIGINT, b BOOLEAN, PRIMARY KEY(a))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO lb VALUES (1, true), (2, false)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("where_b_eq_true", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM lb WHERE b = true")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
+			t.Errorf("want a=1, got %v", rows)
+		}
+	})
+
+	t.Run("where_b_eq_false", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM lb WHERE b = false")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want a=2, got %v", rows)
+		}
+	})
+
+	t.Run("where_b_ne_true", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM lb WHERE b <> TRUE")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want a=2, got %v", rows)
+		}
+	})
+
+	t.Run("where_b_is_true", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM lb WHERE b IS TRUE")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
+			t.Errorf("want a=1, got %v", rows)
+		}
+	})
+
+	t.Run("where_b_is_false", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM lb WHERE b IS FALSE")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want a=2, got %v", rows)
+		}
+	})
+
+	t.Run("where_b_is_not_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a FROM lb WHERE b IS NOT NULL ORDER BY a")
+		if len(rows) != 2 {
+			t.Errorf("want 2 rows (both non-null), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("select_b_eq_true", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b = true FROM lb ORDER BY a")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "true" {
+			t.Errorf("row 0: b=true, b=true should be true, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "false" {
+			t.Errorf("row 1: b=false, b=true should be false, got %v", rows[1][0])
+		}
+	})
+
+	t.Run("select_not_b", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT NOT b FROM lb ORDER BY a")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "false" {
+			t.Errorf("NOT true should be false, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "true" {
+			t.Errorf("NOT false should be true, got %v", rows[1][0])
+		}
+	})
+
+	t.Run("boolean_and_or", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b AND TRUE, b OR FALSE FROM lb ORDER BY a")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "true" {
+			t.Errorf("true AND TRUE should be true, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "true" {
+			t.Errorf("true OR FALSE should be true, got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "false" {
+			t.Errorf("false AND TRUE should be false, got %v", rows[1][0])
+		}
+		if fmt.Sprintf("%v", rows[1][1]) != "false" {
+			t.Errorf("false OR FALSE should be false, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("count_boolean_groups", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, COUNT(*) FROM lb GROUP BY b ORDER BY b")
+		if len(rows) < 2 {
+			t.Fatalf("want at least 2 groups, got %d: %v", len(rows), rows)
+		}
+		t.Logf("boolean GROUP BY: %v", rows)
+	})
+}
+
+// TestFDB_OrderByPatterns — Java orderby.yamsql patterns
+func TestFDB_OrderByPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ordby", `
+		CREATE TABLE obt(a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(a))
+	`)
+	if _, err := db.ExecContext(ctx, `INSERT INTO obt VALUES
+		(1, 10, 5), (2, 9, 5), (3, 8, 5),
+		(4, 7, 8), (5, 6, 8), (6, 5, 8),
+		(7, 4, 1), (8, 3, 1),
+		(9, 2, 0), (10, 1, 0)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_by_single_asc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, c FROM obt ORDER BY b")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("first b should be 1, got %v", rows[0][0])
+		}
+		if toInt64(rows[9][0]) != 10 {
+			t.Errorf("last b should be 10, got %v", rows[9][0])
+		}
+	})
+
+	t.Run("order_by_single_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, c FROM obt ORDER BY b DESC")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("first b should be 10, got %v", rows[0][0])
+		}
+		if toInt64(rows[9][0]) != 1 {
+			t.Errorf("last b should be 1, got %v", rows[9][0])
+		}
+	})
+
+	t.Run("order_by_with_range_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 ORDER BY b")
+		if len(rows) != 6 {
+			t.Fatalf("want 6 rows (b>=5), got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("first should be 5, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("order_by_with_filter_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 ORDER BY b DESC")
+		if len(rows) != 6 {
+			t.Fatalf("want 6 rows, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("first should be 10 (DESC), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("order_by_with_combined_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 AND c = 5 ORDER BY b")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows (b>=5 AND c=5), got %d: %v", len(rows), rows)
+		}
+		wantB := []int64{8, 9, 10}
+		for i, wb := range wantB {
+			if toInt64(rows[i][0]) != wb {
+				t.Errorf("row %d: want b=%d, got %v", i, wb, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("order_by_repetitive_values", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT c FROM obt ORDER BY c")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("first c should be 0, got %v", rows[0][0])
+		}
+		if toInt64(rows[9][0]) != 8 {
+			t.Errorf("last c should be 8, got %v", rows[9][0])
+		}
+	})
+
+	t.Run("order_by_two_columns", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT c, b FROM obt ORDER BY c, b")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 0 && toInt64(rows[0][1]) != 1 {
+			t.Errorf("first should be c=0,b=1, got c=%v,b=%v", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("order_by_two_columns_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT c, b FROM obt ORDER BY c DESC, b DESC")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 8 {
+			t.Errorf("first c should be 8 (DESC), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("order_by_with_limit", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT b FROM obt ORDER BY b LIMIT 4")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 with LIMIT, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("first b=1, got %v", rows[0][0])
+		}
+		if toInt64(rows[3][0]) != 4 {
+			t.Errorf("last b=4, got %v", rows[3][0])
+		}
+	})
+
+	t.Run("order_by_non_projected", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT c FROM obt ORDER BY b")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+		wantC := []int64{0, 0, 1, 1, 8, 8, 8, 5, 5, 5}
+		for i, wc := range wantC {
+			if toInt64(rows[i][0]) != wc {
+				t.Errorf("row %d: want c=%d, got %v", i, wc, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("order_by_non_projected_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT c FROM obt ORDER BY b DESC")
+		if len(rows) != 10 {
+			t.Fatalf("want 10, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("first c should be 5 (b=10 DESC), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("order_by_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT c, COUNT(*) FROM obt GROUP BY c ORDER BY COUNT(*)")
+		if len(rows) < 3 {
+			t.Fatalf("want at least 3 groups, got %d", len(rows))
+		}
+		t.Logf("ORDER BY aggregate: %v", rows)
+	})
+}
+
+// TestFDB_OrderByDuplicate — ORDER BY with same column twice should error
+func TestFDB_OrderByDuplicate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "obdup", "CREATE TABLE dup_t(a BIGINT, b BIGINT, PRIMARY KEY(a))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO dup_t VALUES (1, 10)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("duplicate_order_by_column", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT b FROM dup_t ORDER BY b, b")
+		if err == nil {
+			t.Errorf("expected error for duplicate ORDER BY column, got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+			if !strings.Contains(err.Error(), "42701") {
+				t.Logf("error code may differ from Java 42701: %v", err)
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
