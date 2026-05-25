@@ -10999,6 +10999,56 @@ func TestFDB_GroupByMultipleAggregatesWithHaving(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertMultiRow — multi-row INSERT patterns
+func TestFDB_InsertMultiRow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "imr", "CREATE TABLE imr_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+
+	t.Run("insert_single", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO imr_t VALUES (1, 'one')")
+		if err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			t.Errorf("want 1 affected, got %d", n)
+		}
+	})
+
+	t.Run("insert_multi", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO imr_t VALUES (2, 'two'), (3, 'three'), (4, 'four')")
+		if err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 affected, got %d", n)
+		}
+	})
+
+	t.Run("verify_all_inserted", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM imr_t")
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want 4 total, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("insert_with_null", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO imr_t VALUES (5, NULL)"); err != nil {
+			t.Fatalf("INSERT with NULL: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT val FROM imr_t WHERE id = 5")
+		if rows[0][0] != nil {
+			t.Errorf("val should be NULL, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
