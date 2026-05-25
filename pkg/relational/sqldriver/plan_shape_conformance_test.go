@@ -16996,6 +16996,102 @@ func TestFDB_WhereInWithOrderByLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEWithJoinAndAggregate — CTE feeds a JOIN then aggregate
+func TestFDB_CTEWithJoinAndAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cwja",
+		"CREATE TABLE cwja_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cwja_t VALUES
+		(1,'x',10),(2,'y',20),(3,'x',30),(4,'y',40),(5,'x',50)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("cte_joined_with_base", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH high AS (SELECT id, val FROM cwja_t WHERE val >= 30)
+			SELECT t.cat, COUNT(*) FROM cwja_t t
+			JOIN high h ON t.id = h.id
+			GROUP BY t.cat
+			ORDER BY t.cat
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
+		}
+		// val>=30: ids 3(x,30), 4(y,40), 5(x,50) → x=2, y=1
+		if fmt.Sprintf("%v", rows[0][0]) != "x" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("x: want 2, got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "y" || toInt64(rows[1][1]) != 1 {
+			t.Errorf("y: want 1, got %v", rows[1])
+		}
+	})
+
+	t.Run("cte_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH totals AS (SELECT cat, SUM(val) AS total FROM cwja_t GROUP BY cat)
+			SELECT cat, total FROM totals ORDER BY cat
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		// x: 10+30+50=90, y: 20+40=60
+		if toInt64(rows[0][1]) != 90 {
+			t.Errorf("x total: want 90, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 60 {
+			t.Errorf("y total: want 60, got %v", rows[1][1])
+		}
+	})
+}
+
+// TestFDB_ArithmeticExpressionProjection — complex arithmetic in SELECT
+func TestFDB_ArithmeticExpressionProjection(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aep",
+		"CREATE TABLE aep_t(id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO aep_t VALUES (1,10,3),(2,20,7),(3,15,5)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("add_multiply", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a + b, a * b FROM aep_t ORDER BY id")
+		wantAdd := []int64{13, 27, 20}
+		wantMul := []int64{30, 140, 75}
+		for i := range wantAdd {
+			if toInt64(rows[i][0]) != wantAdd[i] || toInt64(rows[i][1]) != wantMul[i] {
+				t.Errorf("row %d: want [%d %d], got [%v %v]", i, wantAdd[i], wantMul[i], rows[i][0], rows[i][1])
+			}
+		}
+	})
+
+	t.Run("subtract_in_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM aep_t WHERE a - b > 10 ORDER BY id")
+		// 10-3=7, 20-7=13, 15-5=10 → only id=2 has diff > 10
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want [2], got %v", rows)
+		}
+	})
+
+	t.Run("sum_of_expression", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(a + b) FROM aep_t")
+		// (10+3)+(20+7)+(15+5) = 13+27+20 = 60
+		if toInt64(rows[0][0]) != 60 {
+			t.Errorf("want 60, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
