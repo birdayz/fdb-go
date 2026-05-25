@@ -3224,3 +3224,119 @@ func TestFDB_JoinWithNotIn(t *testing.T) {
 		}
 	})
 }
+
+func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbdt",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id, col1, col2 int
+	}{
+		{1, 10, 1},
+		{2, 10, 2},
+		{3, 10, 3},
+		{4, 10, 4},
+		{5, 10, 5},
+		{6, 20, 6},
+		{7, 20, 7},
+		{8, 20, 8},
+		{9, 20, 9},
+		{10, 20, 10},
+		{11, 20, 11},
+		{12, 20, 12},
+		{13, 20, 13},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("max_group_by", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT MAX(id) FROM t1 GROUP BY col1 ORDER BY MAX(id)")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 5 {
+			t.Errorf("row 0: got %v, want 5", rows[0][0])
+		}
+		if rows[1][0].(int64) != 13 {
+			t.Errorf("row 1: got %v, want 13", rows[1][0])
+		}
+	})
+
+	t.Run("having_min_and_equality", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MAX(id) FROM t1 GROUP BY col1 HAVING MIN(id) > 0 AND col1 = 20")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 13 {
+			t.Errorf("got %v, want 13", rows[0][0])
+		}
+	})
+
+	t.Run("ungrouped_col_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT * FROM t1 GROUP BY col1")
+		if err == nil {
+			t.Fatal("expected error for ungrouped columns in SELECT *")
+		}
+	})
+
+	t.Run("undefined_col_error", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT bla FROM t1 GROUP BY col1")
+		if err == nil {
+			t.Fatal("expected error for undefined column")
+		}
+	})
+
+	t.Run("derived_table_max", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY MAX(x.col2)")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 5 {
+			t.Errorf("row 0: got %v, want 5", rows[0][0])
+		}
+		if rows[1][0].(int64) != 13 {
+			t.Errorf("row 1: got %v, want 13", rows[1][0])
+		}
+	})
+
+	t.Run("derived_table_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY COUNT(x.col2)")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 5 {
+			t.Errorf("row 0: got %v, want 5", rows[0][0])
+		}
+		if rows[1][0].(int64) != 8 {
+			t.Errorf("row 1: got %v, want 8", rows[1][0])
+		}
+	})
+
+	t.Run("derived_table_sum", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT SUM(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY SUM(x.col2)")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 15 {
+			t.Errorf("row 0: got %v, want 15", rows[0][0])
+		}
+		if rows[1][0].(int64) != 76 {
+			t.Errorf("row 1: got %v, want 76", rows[1][0])
+		}
+	})
+
+	_ = ctx
+}
