@@ -10577,6 +10577,57 @@ func TestFDB_UnionAllWithOrderBy(t *testing.T) {
 	})
 }
 
+// TestFDB_MultiColumnIndex — queries using multi-column indexes
+func TestFDB_MultiColumnIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mcidx",
+		"CREATE TABLE mci_t(id BIGINT, a STRING, b BIGINT, c STRING, PRIMARY KEY(id)) "+
+			"CREATE INDEX idx_ab ON mci_t (a, b)")
+	if _, err := db.ExecContext(ctx, `INSERT INTO mci_t VALUES
+		(1, 'x', 10, 'p'), (2, 'x', 20, 'q'), (3, 'x', 30, 'r'),
+		(4, 'y', 10, 's'), (5, 'y', 20, 't'),
+		(6, 'z', 50, 'u')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("prefix_eq_scan", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, b FROM mci_t WHERE a = 'x' ORDER BY b")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 for a='x', got %d", len(rows))
+		}
+	})
+
+	t.Run("full_eq_scan", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM mci_t WHERE a = 'y' AND b = 20")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
+			t.Errorf("want id=5, got %v", rows)
+		}
+	})
+
+	t.Run("prefix_eq_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a, COUNT(*), SUM(b) FROM mci_t GROUP BY a ORDER BY a")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups, got %d", len(rows))
+		}
+		if toInt64(rows[0][2]) != 60 {
+			t.Errorf("x sum = 10+20+30 = 60, got %v", rows[0][2])
+		}
+	})
+
+	t.Run("range_on_second_column", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM mci_t WHERE a = 'x' AND b > 15 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (b=20,30), got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
