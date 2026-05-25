@@ -16100,6 +16100,84 @@ func TestFDB_UpdateConditionalArithmetic(t *testing.T) {
 	})
 }
 
+// TestFDB_DeleteWithExistsSubquery — DELETE WHERE EXISTS (correlated subquery)
+func TestFDB_DeleteWithExistsSubquery(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dwe",
+		"CREATE TABLE dwe_orders(id BIGINT, customer STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE dwe_cancels(id BIGINT, order_id BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO dwe_orders VALUES (1,'alice'),(2,'bob'),(3,'carol')"); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO dwe_cancels VALUES (10,1),(20,3)"); err != nil {
+		t.Fatalf("INSERT cancels: %v", err)
+	}
+
+	t.Run("delete_cancelled_orders", func(t *testing.T) {
+		res, err := db.ExecContext(ctx,
+			"DELETE FROM dwe_orders WHERE EXISTS (SELECT 1 FROM dwe_cancels c WHERE c.order_id = dwe_orders.id)")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 deleted, got %d", n)
+		}
+	})
+
+	t.Run("remaining_is_bob", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT customer FROM dwe_orders")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "bob" {
+			t.Errorf("want [bob], got %v", rows)
+		}
+	})
+}
+
+// TestFDB_UpdateCaseWhenTier — UPDATE SET col = CASE WHEN ... tiered classification
+func TestFDB_UpdateCaseWhenTier(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ucwt",
+		"CREATE TABLE ucwt_t(id BIGINT, score BIGINT, tier STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO ucwt_t VALUES (1,95,'?'),(2,75,'?'),(3,55,'?'),(4,35,'?')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("classify_tiers", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `
+			UPDATE ucwt_t SET tier = CASE
+				WHEN score >= 90 THEN 'A'
+				WHEN score >= 70 THEN 'B'
+				WHEN score >= 50 THEN 'C'
+				ELSE 'D'
+			END
+		`)
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+
+		rows := collectRows(t, db, "SELECT id, tier FROM ucwt_t ORDER BY id")
+		want := []string{"A", "B", "C", "D"}
+		for i, w := range want {
+			if fmt.Sprintf("%v", rows[i][1]) != w {
+				t.Errorf("id %d: want tier %s, got %v", i+1, w, rows[i][1])
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
