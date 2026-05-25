@@ -14252,6 +14252,43 @@ func TestFDB_LeftJoinWithGroupByHavingOrder(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithNullAndNotNull — WHERE IS NULL and IS NOT NULL combined
+func TestFDB_WhereWithNullAndNotNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wnn", "CREATE TABLE wnn_t(id BIGINT, a BIGINT, b STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wnn_t VALUES
+		(1, 10, 'x'), (2, NULL, 'y'), (3, 30, NULL), (4, NULL, NULL), (5, 50, 'z')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("a_null_and_b_not_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wnn_t WHERE a IS NULL AND b IS NOT NULL ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want id=2 (a=NULL, b='y'), got %v", rows)
+		}
+	})
+
+	t.Run("both_not_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wnn_t WHERE a IS NOT NULL AND b IS NOT NULL")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 (id=1: a=10,b='x' + id=5: a=50,b='z'), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("either_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wnn_t WHERE a IS NULL OR b IS NULL")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3 (id=2:a=null, id=3:b=null, id=4:both), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
