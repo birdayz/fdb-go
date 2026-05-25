@@ -7483,6 +7483,142 @@ func TestFDB_WindowOfAggregation(t *testing.T) {
 	_ = ctx
 }
 
+func TestFDB_GroupByAliasWithTableName(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "gbtn1",
+		"CREATE TABLE items (id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO items VALUES (1, 'A', 100)",
+		"INSERT INTO items VALUES (2, 'A', 200)",
+		"INSERT INTO items VALUES (3, 'B', 300)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("group_by_table_name_qualified", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT items.category, SUM(items.price) FROM items GROUP BY items.category ORDER BY items.category")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "A" || toInt64(rows[0][1]) != 300 {
+			t.Errorf("A: got %v", rows[0])
+		}
+		if rows[1][0].(string) != "B" || toInt64(rows[1][1]) != 300 {
+			t.Errorf("B: got %v", rows[1])
+		}
+	})
+
+	t.Run("select_alias_group_unqualified", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT i.category, SUM(i.price) FROM items i GROUP BY category ORDER BY category")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "A" || toInt64(rows[0][1]) != 300 {
+			t.Errorf("A: got %v", rows[0])
+		}
+	})
+
+	t.Run("select_alias_group_alias", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT i.category, SUM(i.price) FROM items i GROUP BY i.category ORDER BY i.category")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "A" || toInt64(rows[0][1]) != 300 {
+			t.Errorf("A: got %v", rows[0])
+		}
+	})
+
+	t.Run("having_with_alias_qualified_sum", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT i.category FROM items i GROUP BY i.category HAVING SUM(i.price) > 200")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (both groups have sum >= 300), got %d: %v", len(rows), rows)
+		}
+	})
+
+	_ = ctx
+}
+
+func TestFDB_MixedTypeArithmetic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "mixtype1",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, int_val INTEGER, long_val BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 10, 100)",
+		"INSERT INTO t1 VALUES (2, 20, 200)",
+		"INSERT INTO t1 VALUES (3, 30, 300)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("int_plus_literal", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, int_val + 5 FROM t1 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 15 {
+			t.Errorf("10+5: got %v", rows[0][1])
+		}
+	})
+
+	t.Run("long_minus_int", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, long_val - int_val FROM t1 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 90 {
+			t.Errorf("100-10: got %v", rows[0][1])
+		}
+	})
+
+	t.Run("multiplication", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, int_val * 3 FROM t1 WHERE id = 2")
+		if len(rows) != 1 || toInt64(rows[0][1]) != 60 {
+			t.Fatalf("want 60, got %v", rows)
+		}
+	})
+
+	t.Run("division", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, long_val / int_val FROM t1 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 10 {
+			t.Errorf("100/10: got %v", rows[0][1])
+		}
+	})
+
+	t.Run("aggregate_arithmetic", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(int_val) * 2, SUM(long_val) / 3 FROM t1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 120 {
+			t.Errorf("SUM(int_val)*2 = 60*2 = 120, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 200 {
+			t.Errorf("SUM(long_val)/3 = 600/3 = 200, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
