@@ -4607,3 +4607,80 @@ func TestFDB_HavingWithAggExpr(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_ComplexExpressionCombinations(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "cplxexpr",
+		"CREATE TABLE t (id BIGINT NOT NULL, cat STRING, val BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id int
+		c  string
+		v  int
+	}{
+		{1, "A", 10},
+		{2, "A", 20},
+		{3, "A", 30},
+		{4, "B", 100},
+		{5, "B", 200},
+		{6, "C", 1},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, '%s', %d)", r.id, r.c, r.v))
+	}
+
+	t.Run("coalesce_sum_zero", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT cat, COALESCE(SUM(val), 0) FROM t GROUP BY cat ORDER BY cat")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 60 {
+			t.Errorf("A: got %v, want 60", rows[0][1])
+		}
+	})
+
+	t.Run("case_over_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT cat,
+			        CASE WHEN SUM(val) > 100 THEN 'high'
+			             WHEN SUM(val) > 10 THEN 'medium'
+			             ELSE 'low'
+			        END AS tier
+			 FROM t GROUP BY cat ORDER BY cat`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if rows[0][1].(string) != "medium" {
+			t.Errorf("A (sum=60): got %v, want medium", rows[0][1])
+		}
+		if rows[1][1].(string) != "high" {
+			t.Errorf("B (sum=300): got %v, want high", rows[1][1])
+		}
+		if rows[2][1].(string) != "low" {
+			t.Errorf("C (sum=1): got %v, want low", rows[2][1])
+		}
+	})
+
+	t.Run("arithmetic_on_aggregates", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT cat, SUM(val) * 2 + 1 AS doubled_plus FROM t GROUP BY cat ORDER BY cat")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("doubled_plus NULL for %v", rows[0][0])
+		}
+		if rows[0][1].(int64) != 121 {
+			t.Errorf("A: got %v, want 121 (60*2+1)", rows[0][1])
+		}
+		if rows[1][1].(int64) != 601 {
+			t.Errorf("B: got %v, want 601 (300*2+1)", rows[1][1])
+		}
+	})
+
+	_ = ctx
+}
