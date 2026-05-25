@@ -16581,6 +16581,137 @@ func TestFDB_JoinThreeTablesWithAgg(t *testing.T) {
 	})
 }
 
+// TestFDB_CoalesceInJoin — COALESCE to provide defaults for NULL from LEFT JOIN
+func TestFDB_CoalesceInJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cij",
+		"CREATE TABLE cij_emp(id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE cij_dept(id BIGINT, dname STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO cij_emp VALUES (1,'alice',10),(2,'bob',20),(3,'carol',99)"); err != nil {
+		t.Fatalf("INSERT emp: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO cij_dept VALUES (10,'eng'),(20,'sales')"); err != nil {
+		t.Fatalf("INSERT dept: %v", err)
+	}
+
+	t.Run("coalesce_dept_name", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT e.name, COALESCE(d.dname, 'unassigned') FROM cij_emp e
+			LEFT JOIN cij_dept d ON e.dept_id = d.id
+			ORDER BY e.id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		wantDept := []string{"eng", "sales", "unassigned"}
+		for i, w := range wantDept {
+			got := fmt.Sprintf("%v", rows[i][1])
+			if got != w {
+				t.Errorf("row %d: want dept %s, got %s", i, w, got)
+			}
+		}
+	})
+}
+
+// TestFDB_NullAggregateEdges — aggregate behavior with all-NULL column
+func TestFDB_NullAggregateEdges(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "nae",
+		"CREATE TABLE nae_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO nae_t(id) VALUES (1),(2),(3)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("count_star_includes_nulls", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM nae_t")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("COUNT(*) should count all rows including NULL val, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_col_excludes_nulls", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(val) FROM nae_t")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("COUNT(val) should be 0 for all-NULL column, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_null_is_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM nae_t")
+		if rows[0][0] != nil {
+			t.Errorf("SUM(NULL col) should be NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("min_null_is_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT MIN(val) FROM nae_t")
+		if rows[0][0] != nil {
+			t.Errorf("MIN(NULL col) should be NULL, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("coalesce_sum_zero", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COALESCE(SUM(val), 0) FROM nae_t")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("COALESCE(SUM(NULL), 0) should be 0, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_DeleteAllThenCount — DELETE all rows then verify COUNT=0
+func TestFDB_DeleteAllThenCount(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "datc",
+		"CREATE TABLE datc_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO datc_t VALUES (1,10),(2,20),(3,30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_all", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM datc_t WHERE id >= 1")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 deleted, got %d", n)
+		}
+	})
+
+	t.Run("count_is_zero", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM datc_t")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("want 0 after delete all, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("select_returns_empty", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM datc_t")
+		if len(rows) != 0 {
+			t.Errorf("want 0 rows, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
