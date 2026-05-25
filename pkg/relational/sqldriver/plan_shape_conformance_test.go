@@ -963,6 +963,82 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 	})
 }
 
+func TestFDB_AggregateIndex_BoundedScan(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aggbound",
+		"CREATE TABLE orders (id BIGINT NOT NULL, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX sum_by_status AS SELECT SUM(amount) FROM orders GROUP BY status")
+
+	for _, o := range []struct {
+		id     int
+		status string
+		amount int
+	}{
+		{1, "pending", 100},
+		{2, "pending", 200},
+		{3, "shipped", 300},
+		{4, "shipped", 400},
+		{5, "delivered", 500},
+		{6, "delivered", 600},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount)); err != nil {
+			t.Fatalf("INSERT id=%d: %v", o.id, err)
+		}
+	}
+
+	t.Run("where_on_group_key_returns_correct_results", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT status, SUM(amount) FROM orders WHERE status = 'pending' GROUP BY status")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		var gotStatus string
+		var gotSum int64
+		if !rows.Next() {
+			t.Fatal("expected 1 row, got 0")
+		}
+		if err := rows.Scan(&gotStatus, &gotSum); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if gotStatus != "pending" || gotSum != 300 {
+			t.Errorf("got (%s, %d), want (pending, 300)", gotStatus, gotSum)
+		}
+		if rows.Next() {
+			t.Error("expected 1 row, got more")
+		}
+	})
+
+	t.Run("where_on_different_group_key_value", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT status, SUM(amount) FROM orders WHERE status = 'delivered' GROUP BY status")
+		if err != nil {
+			t.Fatalf("QueryContext: %v", err)
+		}
+		defer rows.Close()
+		var gotStatus string
+		var gotSum int64
+		if !rows.Next() {
+			t.Fatal("expected 1 row, got 0")
+		}
+		if err := rows.Scan(&gotStatus, &gotSum); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if gotStatus != "delivered" || gotSum != 1100 {
+			t.Errorf("got (%s, %d), want (delivered, 1100)", gotStatus, gotSum)
+		}
+		if rows.Next() {
+			t.Error("expected 1 row, got more")
+		}
+	})
+}
+
 func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

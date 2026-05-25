@@ -291,6 +291,26 @@ func findFullScan(ref *expressions.Reference) *expressions.FullUnorderedScanExpr
 	return nil
 }
 
+// findFullScanThroughFilter is like findFullScan but also looks inside
+// LogicalFilterExpression children. Used by AggregateDataAccessRule
+// when PushFilterThroughGroupByRule wraps the Scan in a Filter.
+func findFullScanThroughFilter(ref *expressions.Reference) *expressions.FullUnorderedScanExpression {
+	for _, m := range ref.Members() {
+		if s, ok := m.(*expressions.FullUnorderedScanExpression); ok {
+			return s
+		}
+		if f, ok := m.(*expressions.LogicalFilterExpression); ok {
+			childRef := f.GetInner().GetRangesOver()
+			if childRef != nil {
+				if s := findFullScanThroughFilter(childRef); s != nil {
+					return s
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // recordTypesOverlap returns true if any element of a appears in b.
 func recordTypesOverlap(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
