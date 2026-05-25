@@ -2894,6 +2894,155 @@ func TestFDB_CaseWhenWithInList(t *testing.T) {
 	}
 }
 
+func TestFDB_CaseWhenWithoutElseReturnsNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "casenoelse",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id, col1, col2 int
+	}{
+		{1, 10, 1},
+		{2, 10, 2},
+		{3, 20, 6},
+		{4, 20, 7},
+		{5, 20, 10},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, CASE WHEN col1 = 10 THEN 100
+		              WHEN col2 IN (6, 7, 8, 9) THEN 200
+		         END AS newcol
+		FROM t1 ORDER BY id`)
+	if err != nil {
+		t.Fatalf("QueryContext: %v", err)
+	}
+	defer rows.Close()
+	type row struct {
+		id     int64
+		newcol *int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.newcol); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	want := []row{
+		{1, ptr(int64(100))},
+		{2, ptr(int64(100))},
+		{3, ptr(int64(200))},
+		{4, ptr(int64(200))},
+		{5, nil},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("row count: got %d, want %d\ngot: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if w.newcol == nil {
+			if got[i].newcol != nil {
+				t.Errorf("row %d: got %v, want NULL", i, *got[i].newcol)
+			}
+		} else if got[i].newcol == nil {
+			t.Errorf("row %d: got NULL, want %d", i, *w.newcol)
+		} else if *got[i].newcol != *w.newcol {
+			t.Errorf("row %d: got %d, want %d", i, *got[i].newcol, *w.newcol)
+		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "andrange",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX i1 ON t1 (col1)")
+
+	for _, r := range []struct {
+		id, col1, col2 int
+	}{
+		{1, 10, 1},
+		{2, 10, 2},
+		{3, 10, 3},
+		{4, 10, 4},
+		{5, 10, 5},
+		{6, 20, 6},
+		{7, 20, 7},
+		{8, 20, 8},
+		{9, 20, 9},
+		{10, 20, 10},
+		{11, 20, 11},
+		{12, 20, 12},
+		{13, 20, 13},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("equality_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, col1, col2 FROM t1 WHERE col1 = 20 ORDER BY id")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 rows, got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 6 {
+			t.Errorf("first row id: got %v, want 6", rows[0][0])
+		}
+	})
+
+	t.Run("and_range_both_bounds", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id")
+		if len(rows) != 13 {
+			t.Fatalf("want 13 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("and_equality_plus_secondary_filter", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows (ids 11,12,13), got %d", len(rows))
+		}
+		if rows[0][0].(int64) != 11 {
+			t.Errorf("first row id: got %v, want 11", rows[0][0])
+		}
+	})
+
+	t.Run("not_equal_filter", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, col1 FROM t1 WHERE col1 <> 10 ORDER BY id")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 rows, got %d", len(rows))
+		}
+		for _, r := range rows {
+			if r[1].(int64) == 10 {
+				t.Errorf("unexpected col1=10 in row %v", r)
+			}
+		}
+	})
+
+	_ = ctx
+}
+
 func TestFDB_JoinWithNotIn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

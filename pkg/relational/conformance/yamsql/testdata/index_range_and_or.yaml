@@ -1,0 +1,165 @@
+# Port of Java standard-tests.yamsql — AND/OR range predicates with index.
+# Tests index scan selection for range predicates (>=, <=) combined
+# with AND and OR, mirroring Java's compound comparison range behavior.
+
+schema: |
+  CREATE TABLE t1 (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  );
+  CREATE INDEX i1 ON t1 (col1);
+
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 1)
+  - INSERT INTO t1 VALUES (2, 10, 2)
+  - INSERT INTO t1 VALUES (3, 10, 3)
+  - INSERT INTO t1 VALUES (4, 10, 4)
+  - INSERT INTO t1 VALUES (5, 10, 5)
+  - INSERT INTO t1 VALUES (6, 20, 6)
+  - INSERT INTO t1 VALUES (7, 20, 7)
+  - INSERT INTO t1 VALUES (8, 20, 8)
+  - INSERT INTO t1 VALUES (9, 20, 9)
+  - INSERT INTO t1 VALUES (10, 20, 10)
+  - INSERT INTO t1 VALUES (11, 20, 11)
+  - INSERT INTO t1 VALUES (12, 20, 12)
+  - INSERT INTO t1 VALUES (13, 20, 13)
+
+tests:
+  - name: equality_filter_via_index
+    query: SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
+    rows:
+      - [6, 20, 6]
+      - [7, 20, 7]
+      - [8, 20, 8]
+      - [9, 20, 9]
+      - [10, 20, 10]
+      - [11, 20, 11]
+      - [12, 20, 12]
+      - [13, 20, 13]
+
+  - name: and_range_both_bounds
+    query: SELECT * FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
+    rows:
+      - [1, 10, 1]
+      - [2, 10, 2]
+      - [3, 10, 3]
+      - [4, 10, 4]
+      - [5, 10, 5]
+      - [6, 20, 6]
+      - [7, 20, 7]
+      - [8, 20, 8]
+      - [9, 20, 9]
+      - [10, 20, 10]
+      - [11, 20, 11]
+      - [12, 20, 12]
+      - [13, 20, 13]
+
+  - name: and_range_lower_bound_only
+    query: SELECT * FROM t1 WHERE col1 >= 15 ORDER BY id
+    rows:
+      - [6, 20, 6]
+      - [7, 20, 7]
+      - [8, 20, 8]
+      - [9, 20, 9]
+      - [10, 20, 10]
+      - [11, 20, 11]
+      - [12, 20, 12]
+      - [13, 20, 13]
+
+  - name: and_range_upper_bound_only
+    query: SELECT * FROM t1 WHERE col1 <= 15 ORDER BY id
+    rows:
+      - [1, 10, 1]
+      - [2, 10, 2]
+      - [3, 10, 3]
+      - [4, 10, 4]
+      - [5, 10, 5]
+
+  - name: and_range_empty_result
+    query: SELECT * FROM t1 WHERE col1 >= 30 ORDER BY id
+    rows: []
+
+  - name: case_when_with_in_list
+    query: |
+      SELECT id,
+             CASE WHEN col1 = 10 THEN 100
+                  WHEN col2 IN (6, 7, 8, 9) THEN 200
+                  ELSE 300
+             END AS newcol
+      FROM t1
+      ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 100]
+      - [3, 100]
+      - [4, 100]
+      - [5, 100]
+      - [6, 200]
+      - [7, 200]
+      - [8, 200]
+      - [9, 200]
+      - [10, 300]
+      - [11, 300]
+      - [12, 300]
+      - [13, 300]
+
+  - name: case_when_without_else_returns_null
+    query: |
+      SELECT id,
+             CASE WHEN col1 = 10 THEN 100
+                  WHEN col2 IN (6, 7, 8, 9) THEN 200
+             END AS newcol
+      FROM t1
+      ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 100]
+      - [3, 100]
+      - [4, 100]
+      - [5, 100]
+      - [6, 200]
+      - [7, 200]
+      - [8, 200]
+      - [9, 200]
+      - [10, null]
+      - [11, null]
+      - [12, null]
+      - [13, null]
+
+  - name: or_with_equality_on_indexed_col
+    query: SELECT id, col1 FROM t1 WHERE col1 = 10 OR col1 = 20 ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 10]
+      - [3, 10]
+      - [4, 10]
+      - [5, 10]
+      - [6, 20]
+      - [7, 20]
+      - [8, 20]
+      - [9, 20]
+      - [10, 20]
+      - [11, 20]
+      - [12, 20]
+      - [13, 20]
+
+  - name: and_equality_with_secondary_filter
+    query: SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id
+    rows:
+      - [11, 20, 11]
+      - [12, 20, 12]
+      - [13, 20, 13]
+
+  - name: not_equal_filter
+    query: SELECT id, col1 FROM t1 WHERE col1 <> 10 ORDER BY id
+    rows:
+      - [6, 20]
+      - [7, 20]
+      - [8, 20]
+      - [9, 20]
+      - [10, 20]
+      - [11, 20]
+      - [12, 20]
+      - [13, 20]
