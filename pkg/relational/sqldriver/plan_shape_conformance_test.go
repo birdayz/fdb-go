@@ -12446,6 +12446,52 @@ func TestFDB_UpdateWithWhereAndVerify(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithMultipleConditions — JOIN ON with multiple predicates
+func TestFDB_JoinWithMultipleConditions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jmcond",
+		"CREATE TABLE jmc_a(id BIGINT, x BIGINT, y STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jmc_b(id BIGINT, x BIGINT, y STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jmc_a VALUES (1, 10, 'foo'), (2, 20, 'bar'), (3, 10, 'bar')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO jmc_b VALUES
+		(10, 10, 'foo', 100), (20, 10, 'bar', 200), (30, 20, 'bar', 300), (40, 30, 'baz', 400)
+	`); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("join_on_two_columns", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.id, b.val
+			FROM jmc_a a JOIN jmc_b b ON a.x = b.x AND a.y = b.y
+			ORDER BY a.id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 matches, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 100 {
+			t.Errorf("a.id=1 (10,foo) matches b(10,foo)=100, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("join_two_col_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.y, SUM(b.val)
+			FROM jmc_a a JOIN jmc_b b ON a.x = b.x AND a.y = b.y
+			GROUP BY a.y ORDER BY a.y
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
