@@ -13638,6 +13638,49 @@ func TestFDB_WhereWithOrAndIn(t *testing.T) {
 	})
 }
 
+// TestFDB_AggregateWithWhereAndOrderBy — aggregate + WHERE + ORDER BY combined
+func TestFDB_AggregateWithWhereAndOrderBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "awwo", "CREATE TABLE awwo_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO awwo_t VALUES
+		(1, 'eng', 100), (2, 'eng', 120), (3, 'sales', 80),
+		(4, 'sales', 90), (5, 'hr', 70), (6, 'eng', 150)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("group_where_order", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT dept, SUM(salary) AS total
+			FROM awwo_t WHERE salary > 75
+			GROUP BY dept ORDER BY total DESC
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (eng, sales after filtering hr=70), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "eng" || toInt64(rows[0][1]) != 370 {
+			t.Errorf("first: eng total=100+120+150=370, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("having_and_where_combined", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT dept, COUNT(*), SUM(salary)
+			FROM awwo_t WHERE salary >= 80
+			GROUP BY dept HAVING COUNT(*) >= 2
+			ORDER BY dept
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (eng=3, sales=2 after WHERE>=80), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
