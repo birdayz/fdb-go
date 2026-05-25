@@ -11888,6 +11888,61 @@ func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithCTEAndAggregate — CTE used in JOIN with GROUP BY
+func TestFDB_JoinWithCTEAndAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jcag",
+		"CREATE TABLE jca_items(id BIGINT, cat STRING, price BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE jca_cats(name STRING, budget BIGINT, PRIMARY KEY(name))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO jca_items VALUES
+		(1, 'food', 10), (2, 'food', 20), (3, 'toys', 30), (4, 'toys', 40), (5, 'books', 5)
+	`); err != nil {
+		t.Fatalf("INSERT items: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jca_cats VALUES ('food', 50), ('toys', 100), ('books', 10)"); err != nil {
+		t.Fatalf("INSERT cats: %v", err)
+	}
+
+	t.Run("cte_join_budget_vs_actual", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH spending AS (
+				SELECT cat, SUM(price) AS total FROM jca_items GROUP BY cat
+			)
+			SELECT c.name, c.budget, s.total
+			FROM jca_cats c JOIN spending s ON c.name = s.cat
+			ORDER BY c.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "books" || toInt64(rows[0][1]) != 10 || toInt64(rows[0][2]) != 5 {
+			t.Errorf("books: want budget=10 total=5, got %v %v %v", rows[0][0], rows[0][1], rows[0][2])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "food" || toInt64(rows[1][1]) != 50 || toInt64(rows[1][2]) != 30 {
+			t.Errorf("food: want budget=50 total=30, got %v %v %v", rows[1][0], rows[1][1], rows[1][2])
+		}
+	})
+
+	t.Run("cte_join_over_budget", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH spending AS (
+				SELECT cat, SUM(price) AS total FROM jca_items GROUP BY cat
+			)
+			SELECT c.name FROM jca_cats c
+			JOIN spending s ON c.name = s.cat
+			WHERE s.total > c.budget
+		`)
+		if len(rows) != 0 {
+			t.Errorf("no category should be over budget, got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
