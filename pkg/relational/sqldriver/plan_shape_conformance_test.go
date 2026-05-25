@@ -14217,6 +14217,41 @@ func TestFDB_SelectWithArithmeticAndAlias(t *testing.T) {
 	})
 }
 
+// TestFDB_LeftJoinWithGroupByHavingOrder — LEFT JOIN full pipeline
+func TestFDB_LeftJoinWithGroupByHavingOrder(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ljgho",
+		"CREATE TABLE ljgho_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE ljgho_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ljgho_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO ljgho_b VALUES (10, 1, 100), (20, 1, 200), (30, 1, 300), (40, 2, 50)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("left_join_group_having_order", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name, COUNT(b.val), COALESCE(SUM(b.val), 0) AS total
+			FROM ljgho_a a LEFT JOIN ljgho_b b ON a.id = b.aid
+			GROUP BY a.name
+			HAVING COUNT(b.val) > 0
+			ORDER BY total DESC
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (x,y have matches; z excluded by HAVING), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "x" || toInt64(rows[0][2]) != 600 {
+			t.Errorf("first: x total=600, got %v %v", rows[0][0], rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
