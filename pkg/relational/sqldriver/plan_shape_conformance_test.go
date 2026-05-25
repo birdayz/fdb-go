@@ -18742,6 +18742,91 @@ func TestFDB_EmptyTableOps(t *testing.T) {
 	})
 }
 
+// TestFDB_SubqueryExistsWithAggregate — EXISTS subquery combined with aggregate in outer
+func TestFDB_SubqueryExistsWithAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sewa",
+		"CREATE TABLE sewa_orders(id BIGINT, cust STRING, total BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE sewa_returns(id BIGINT, order_id BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO sewa_orders VALUES
+		(1,'alice',100),(2,'bob',200),(3,'alice',150),(4,'carol',50)`); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO sewa_returns VALUES (10,1),(20,4)"); err != nil {
+		t.Fatalf("INSERT returns: %v", err)
+	}
+
+	t.Run("orders_with_returns_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM sewa_orders o
+			WHERE EXISTS (SELECT 1 FROM sewa_returns r WHERE r.order_id = o.id)
+		`)
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 orders with returns, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("orders_without_returns_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(total) FROM sewa_orders o
+			WHERE NOT EXISTS (SELECT 1 FROM sewa_returns r WHERE r.order_id = o.id)
+		`)
+		// orders without returns: id=2(200), id=3(150) → sum=350
+		if toInt64(rows[0][0]) != 350 {
+			t.Errorf("want 350, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_GroupByWithLimitOnResult — GROUP BY then LIMIT on grouped results
+func TestFDB_GroupByWithLimitOnResult(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gblr",
+		"CREATE TABLE gblr_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gblr_t VALUES
+		(1,'a',10),(2,'b',20),(3,'c',30),(4,'d',40),(5,'e',50),
+		(6,'a',15),(7,'b',25),(8,'c',35)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("top_3_groups_by_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT cat, SUM(val) FROM gblr_t GROUP BY cat ORDER BY SUM(val) DESC LIMIT 3
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		// c:65, e:50, b:45, d:40, a:25 → top 3: c, e, b
+		if toInt64(rows[0][1]) != 65 {
+			t.Errorf("top sum: want 65, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("bottom_2_groups", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT cat, SUM(val) FROM gblr_t GROUP BY cat ORDER BY SUM(val) ASC LIMIT 2
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		// a:25, d:40 → bottom 2
+		if toInt64(rows[0][1]) != 25 {
+			t.Errorf("bottom sum: want 25, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
