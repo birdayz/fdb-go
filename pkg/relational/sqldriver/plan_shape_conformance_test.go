@@ -11049,6 +11049,40 @@ func TestFDB_InsertMultiRow(t *testing.T) {
 	})
 }
 
+// TestFDB_AggregateWithNullGroups — aggregates when group key contains NULL
+func TestFDB_AggregateWithNullGroups(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "agng", "CREATE TABLE agng_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO agng_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, NULL, 30), (4, NULL, 40), (5, 'B', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("null_group_key", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM agng_t GROUP BY grp ORDER BY grp")
+		if len(rows) < 2 {
+			t.Fatalf("want at least 2 groups, got %d: %v", len(rows), rows)
+		}
+		t.Logf("NULL group results: %v", rows)
+	})
+
+	t.Run("count_star_vs_count_col", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*), COUNT(grp) FROM agng_t")
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("COUNT(*) should be 5, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("COUNT(grp) should be 3 (excludes NULLs), got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
