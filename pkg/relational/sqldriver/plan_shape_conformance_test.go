@@ -12299,6 +12299,49 @@ func TestFDB_InsertDuplicateAndRecover(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereInWithSubqueryResult — WHERE col IN (values) with aggregate results
+func TestFDB_WhereInWithSubqueryResult(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wisqr", "CREATE TABLE wisq_t(id BIGINT, val BIGINT, cat STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wisq_t VALUES
+		(1, 10, 'A'), (2, 20, 'B'), (3, 30, 'A'), (4, 40, 'C'), (5, 50, 'B')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("in_multiple_values", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM wisq_t WHERE val IN (10, 30, 50) ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("in_with_group_by", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT cat, SUM(val) FROM wisq_t WHERE cat IN ('A', 'B') GROUP BY cat ORDER BY cat")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 40 {
+			t.Errorf("A sum = 10+30 = 40, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 70 {
+			t.Errorf("B sum = 20+50 = 70, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("not_in_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wisq_t WHERE cat NOT IN ('A')")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("NOT IN A: want 3 (B,C,B), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
