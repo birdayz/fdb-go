@@ -15613,6 +15613,32 @@ func TestFDB_InsertAndVerifyOrder(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithMaxAndOrderBy — GROUP BY + MAX + ORDER BY MAX
+func TestFDB_GroupByWithMaxAndOrderBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbmob", "CREATE TABLE gbmob_t(id BIGINT, team STRING, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbmob_t VALUES
+		(1, 'red', 80), (2, 'red', 95), (3, 'blue', 70), (4, 'blue', 85), (5, 'green', 90)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("max_score_by_team", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT team, MAX(score) FROM gbmob_t GROUP BY team ORDER BY MAX(score) DESC")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "red" || toInt64(rows[0][1]) != 95 {
+			t.Errorf("top: red 95, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
