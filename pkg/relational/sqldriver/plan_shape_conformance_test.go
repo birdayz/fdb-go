@@ -15084,6 +15084,43 @@ func TestFDB_UpdateAndDeleteWithAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertSelectFromSameTable — INSERT...SELECT from same table with filter
+func TestFDB_InsertSelectFromSameTable(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "isst",
+		"CREATE TABLE isst_src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE isst_dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO isst_src VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("insert_select_with_filter", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO isst_dst SELECT id + 10, val * 2 FROM isst_src WHERE val >= 200")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2, got %d", n)
+		}
+	})
+
+	t.Run("verify_dst", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM isst_dst ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 12 || toInt64(rows[0][1]) != 400 {
+			t.Errorf("first: want id=12 val=400, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
