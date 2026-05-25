@@ -11992,6 +11992,53 @@ func TestFDB_CoalesceChain(t *testing.T) {
 	})
 }
 
+// TestFDB_BetweenWithGroupBy — BETWEEN combined with GROUP BY and HAVING
+func TestFDB_BetweenWithGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "btgb", "CREATE TABLE btgb_t(id BIGINT, score BIGINT, grade STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO btgb_t VALUES
+		(1, 95, 'A'), (2, 85, 'B'), (3, 75, 'C'), (4, 65, 'D'),
+		(5, 92, 'A'), (6, 88, 'B'), (7, 72, 'C'), (8, 55, 'F')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("between_filter_then_group", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grade, COUNT(*), SUM(score)
+			FROM btgb_t WHERE score BETWEEN 70 AND 95
+			GROUP BY grade ORDER BY grade
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (A,B,C in range 70-95), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("not_between_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM btgb_t WHERE score NOT BETWEEN 70 AND 90 ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (id=1:95, id=4:65, id=5:92, id=8:55), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("between_with_having", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grade, COUNT(*)
+			FROM btgb_t WHERE score BETWEEN 50 AND 100
+			GROUP BY grade HAVING COUNT(*) >= 2
+			ORDER BY grade
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (A=2, B=2, C=2), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
