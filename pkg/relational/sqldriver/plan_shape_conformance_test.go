@@ -13010,6 +13010,49 @@ func TestFDB_GroupByHavingWithMultipleConditions(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateSetArithmeticWithIndex — UPDATE arithmetic on indexed column
+func TestFDB_UpdateSetArithmeticWithIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "usawi",
+		"CREATE TABLE usai_t(id BIGINT, balance BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX sum_balance AS SELECT SUM(balance) FROM usai_t")
+	if _, err := db.ExecContext(ctx, "INSERT INTO usai_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("initial_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(balance) FROM usai_t")
+		if toInt64(rows[0][0]) != 600 {
+			t.Errorf("initial SUM should be 600, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("update_add_50", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE usai_t SET balance = balance + 50 WHERE id = 1"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT SUM(balance) FROM usai_t")
+		if toInt64(rows[0][0]) != 650 {
+			t.Errorf("after +50: SUM should be 650, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("update_subtract", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE usai_t SET balance = balance - 100 WHERE id = 3"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT balance FROM usai_t WHERE id = 3")
+		if toInt64(rows[0][0]) != 200 {
+			t.Errorf("id=3: 300-100=200, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
