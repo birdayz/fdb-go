@@ -19298,6 +19298,85 @@ func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
 	})
 }
 
+// TestFDB_CTETop3ViaOrderLimit — CTE with ORDER BY DESC LIMIT for top-N
+func TestFDB_CTETop3ViaOrderLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ct3ol",
+		"CREATE TABLE cwol_t(id BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cwol_t VALUES
+		(1,90),(2,70),(3,85),(4,95),(5,60),(6,80),(7,75)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("cte_order_desc", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH ranked AS (SELECT id, score FROM cwol_t)
+			SELECT id, score FROM ranked ORDER BY score DESC
+		`)
+		if len(rows) != 7 {
+			t.Fatalf("want 7, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 95 || toInt64(rows[1][1]) != 90 || toInt64(rows[2][1]) != 85 {
+			t.Errorf("want top [95 90 85], got [%v %v %v]", rows[0][1], rows[1][1], rows[2][1])
+		}
+	})
+
+	t.Run("cte_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH high AS (SELECT score FROM cwol_t WHERE score >= 80)
+			SELECT COUNT(*) FROM high
+		`)
+		// 90,85,95,80 → 4
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("want 4, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_UpdateWhereNotExists — UPDATE rows that have no match in another table
+func TestFDB_UpdateWhereNotExists(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uwne",
+		"CREATE TABLE uwne_items(id BIGINT, status STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE uwne_shipped(id BIGINT, item_id BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO uwne_items VALUES (1,'pending'),(2,'pending'),(3,'pending')"); err != nil {
+		t.Fatalf("INSERT items: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO uwne_shipped VALUES (10,1),(20,3)"); err != nil {
+		t.Fatalf("INSERT shipped: %v", err)
+	}
+
+	t.Run("mark_unshipped_cancelled", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `
+			UPDATE uwne_items SET status = 'cancelled'
+			WHERE NOT EXISTS (SELECT 1 FROM uwne_shipped s WHERE s.item_id = uwne_items.id)
+		`)
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, status FROM uwne_items ORDER BY id")
+		// id=1: shipped → pending, id=2: not shipped → cancelled, id=3: shipped → pending
+		if fmt.Sprintf("%v", rows[1][1]) != "cancelled" {
+			t.Errorf("id 2: want cancelled, got %v", rows[1][1])
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "pending" || fmt.Sprintf("%v", rows[2][1]) != "pending" {
+			t.Errorf("shipped items should stay pending: got [%v %v]", rows[0][1], rows[2][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
