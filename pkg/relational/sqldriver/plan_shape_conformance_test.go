@@ -12342,6 +12342,54 @@ func TestFDB_WhereInWithSubqueryResult(t *testing.T) {
 	})
 }
 
+// TestFDB_DeleteAllThenInsert — full table delete then repopulate
+func TestFDB_DeleteAllThenInsert(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dati", "CREATE TABLE dati_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO dati_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_all", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dati_t WHERE id > 0")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 deleted, got %d", n)
+		}
+	})
+
+	t.Run("empty_aggregates", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM dati_t")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("COUNT should be 0, got %v", rows[0][0])
+		}
+		if rows[0][1] != nil {
+			t.Errorf("SUM should be NULL, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("repopulate", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO dati_t VALUES (10, 1000), (20, 2000)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM dati_t")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("COUNT should be 2, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 3000 {
+			t.Errorf("SUM should be 3000, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
