@@ -17746,6 +17746,82 @@ func TestFDB_MultipleInsertsThenAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateWhereArithmetic — UPDATE with arithmetic condition in WHERE
+func TestFDB_UpdateWhereArithmetic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uwa",
+		"CREATE TABLE uwa_t(id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO uwa_t VALUES (1,5,20),(2,10,5),(3,3,100),(4,8,15)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_high_value_items", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE uwa_t SET price = price + 10 WHERE qty * price > 100")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		// qty*price: 100, 50, 300, 120 → >100: id=3(300), id=4(120)
+		if n != 2 {
+			t.Errorf("want 2 affected, got %d", n)
+		}
+	})
+
+	t.Run("verify_prices", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, price FROM uwa_t ORDER BY id")
+		wantPrice := []int64{20, 5, 110, 25}
+		for i, w := range wantPrice {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("id %d: want price %d, got %v", i+1, w, rows[i][1])
+			}
+		}
+	})
+}
+
+// TestFDB_CTEMultiple — multiple CTEs in one query
+func TestFDB_CTEMultiple(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctem",
+		"CREATE TABLE ctem_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ctem_t VALUES
+		(1,'a',10),(2,'b',20),(3,'a',30),(4,'b',40),(5,'c',50)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("two_ctes_joined", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH
+				high AS (SELECT id, cat, val FROM ctem_t WHERE val >= 30),
+				low AS (SELECT id, cat, val FROM ctem_t WHERE val < 30)
+			SELECT h.cat, COUNT(*) FROM high h
+			JOIN low l ON h.cat = l.cat
+			GROUP BY h.cat
+			ORDER BY h.cat
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
+		}
+		// high a:30 joined with low a:10 → 1 pair; high b:40 joined with low b:20 → 1 pair
+		if fmt.Sprintf("%v", rows[0][0]) != "a" || toInt64(rows[0][1]) != 1 {
+			t.Errorf("a: want 1, got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "b" || toInt64(rows[1][1]) != 1 {
+			t.Errorf("b: want 1, got %v", rows[1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
