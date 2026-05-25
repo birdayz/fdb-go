@@ -13719,6 +13719,51 @@ func TestFDB_CTE3Tables(t *testing.T) {
 	})
 }
 
+// TestFDB_DeleteWithJoinedFilter — DELETE rows based on conditions involving related data
+func TestFDB_DeleteWithJoinedFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dwjf", "CREATE TABLE dwjf_t(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO dwjf_t VALUES
+		(1, 'keep', 100), (2, 'delete', 200), (3, 'keep', 300),
+		(4, 'delete', 400), (5, 'keep', 500)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("delete_by_status", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM dwjf_t WHERE status = 'delete'")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 deleted, got %d", n)
+		}
+	})
+
+	t.Run("verify_remaining", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM dwjf_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 remaining, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 1 || toInt64(rows[1][0]) != 3 || toInt64(rows[2][0]) != 5 {
+			t.Errorf("want ids 1,3,5 got %v,%v,%v", rows[0][0], rows[1][0], rows[2][0])
+		}
+	})
+
+	t.Run("aggregate_after_delete", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM dwjf_t")
+		if toInt64(rows[0][0]) != 900 {
+			t.Errorf("SUM after delete = 100+300+500 = 900, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
