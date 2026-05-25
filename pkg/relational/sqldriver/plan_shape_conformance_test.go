@@ -13178,6 +13178,44 @@ func TestFDB_DerivedTableWithLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithCaseWhen — CASE WHEN expression in JOIN query
+func TestFDB_JoinWithCaseWhen(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwcw",
+		"CREATE TABLE jwcw_orders(id BIGINT, amount BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwcw_customers(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwcw_orders VALUES (1, 50), (2, 150), (3, 500)"); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwcw_customers VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')"); err != nil {
+		t.Fatalf("INSERT customers: %v", err)
+	}
+
+	t.Run("case_when_in_join_select", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT c.name,
+				CASE WHEN o.amount >= 200 THEN 'premium' ELSE 'standard' END AS tier
+			FROM jwcw_customers c
+			JOIN jwcw_orders o ON c.id = o.id
+			ORDER BY c.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "standard" {
+			t.Errorf("alice(50): should be standard, got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[2][1]) != "premium" {
+			t.Errorf("charlie(500): should be premium, got %v", rows[2][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
