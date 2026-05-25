@@ -18393,6 +18393,94 @@ func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateArithmeticAllRows — UPDATE all rows with arithmetic
+func TestFDB_UpdateArithmeticAllRows(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uaar",
+		"CREATE TABLE uaar_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO uaar_t VALUES (1,10),(2,20),(3,30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("double_all", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE uaar_t SET val = val * 2")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 affected, got %d", n)
+		}
+	})
+
+	t.Run("verify_doubled", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM uaar_t")
+		// original sum=60, doubled=120
+		if toInt64(rows[0][0]) != 120 {
+			t.Errorf("want 120, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("add_5_to_all", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "UPDATE uaar_t SET val = val + 5")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT val FROM uaar_t ORDER BY id")
+		// 20+5=25, 40+5=45, 60+5=65
+		want := []int64{25, 45, 65}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
+// TestFDB_GroupByBooleanColumn — GROUP BY on boolean values
+func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbba",
+		"CREATE TABLE gbba_t(id BIGINT, active BOOLEAN, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbba_t VALUES
+		(1,true,10),(2,false,20),(3,true,30),(4,false,40),(5,true,50)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("count_per_boolean", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT active, COUNT(*) FROM gbba_t GROUP BY active ORDER BY active")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d", len(rows))
+		}
+		// false=2, true=3
+		if toInt64(rows[0][1]) != 2 {
+			t.Errorf("false count: want 2, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 3 {
+			t.Errorf("true count: want 3, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("sum_per_boolean", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT active, SUM(val) FROM gbba_t GROUP BY active ORDER BY active")
+		// false: 20+40=60, true: 10+30+50=90
+		if toInt64(rows[0][1]) != 60 || toInt64(rows[1][1]) != 90 {
+			t.Errorf("want [60 90], got [%v %v]", rows[0][1], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
