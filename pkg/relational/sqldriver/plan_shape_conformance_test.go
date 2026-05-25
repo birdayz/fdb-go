@@ -11191,6 +11191,63 @@ func TestFDB_JoinWithLeftAndCrossVariants(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllThreeLeg — UNION ALL with three legs
+func TestFDB_UnionAllThreeLeg(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ua3l",
+		"CREATE TABLE u3a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE u3b(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE u3c(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO u3a VALUES (1, 10), (2, 20)"); err != nil {
+		t.Fatalf("INSERT u3a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO u3b VALUES (3, 30), (4, 40)"); err != nil {
+		t.Fatalf("INSERT u3b: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO u3c VALUES (5, 50)"); err != nil {
+		t.Fatalf("INSERT u3c: %v", err)
+	}
+
+	t.Run("three_way_union_all", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, val FROM u3a
+			UNION ALL SELECT id, val FROM u3b
+			UNION ALL SELECT id, val FROM u3c
+			ORDER BY id
+		`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5 (2+2+1), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 1 || toInt64(rows[4][0]) != 5 {
+			t.Errorf("want ids 1..5, got first=%v last=%v", rows[0][0], rows[4][0])
+		}
+	})
+
+	t.Run("aggregate_over_three_way", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(val), COUNT(*) FROM (
+				SELECT val FROM u3a
+				UNION ALL SELECT val FROM u3b
+				UNION ALL SELECT val FROM u3c
+			) AS combined
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 150 {
+			t.Errorf("SUM=10+20+30+40+50=150, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 5 {
+			t.Errorf("COUNT=5, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
