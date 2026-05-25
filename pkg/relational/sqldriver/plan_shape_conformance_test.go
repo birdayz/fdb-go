@@ -8451,6 +8451,241 @@ func TestFDB_OrderByDuplicate(t *testing.T) {
 	})
 }
 
+// TestFDB_MultiBranchCaseWhen — standard-tests.yamsql multi-branch CASE with IN
+func TestFDB_MultiBranchCaseWhen(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mbcw", "CREATE TABLE mbcw(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO mbcw VALUES
+		(1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5),
+		(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10),
+		(11, 20, 11), (12, 20, 12), (13, 20, 13)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("case_when_in_with_else", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN col1 = 10 THEN 100
+			                WHEN col2 IN (6,7,8,9) THEN 200
+			                ELSE 300 END AS newcol
+			FROM mbcw ORDER BY id
+		`)
+		if len(rows) != 13 {
+			t.Fatalf("want 13 rows, got %d", len(rows))
+		}
+		for i := 0; i < 5; i++ {
+			if toInt64(rows[i][1]) != 100 {
+				t.Errorf("id=%d: col1=10 → should be 100, got %v", i+1, rows[i][1])
+			}
+		}
+		for i := 5; i < 9; i++ {
+			if toInt64(rows[i][1]) != 200 {
+				t.Errorf("id=%d: col2 IN (6-9) → should be 200, got %v", i+1, rows[i][1])
+			}
+		}
+		for i := 9; i < 13; i++ {
+			if toInt64(rows[i][1]) != 300 {
+				t.Errorf("id=%d: else → should be 300, got %v", i+1, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("case_when_in_no_else_null", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN col1 = 10 THEN 100
+			                WHEN col2 IN (6,7,8,9) THEN 200 END AS newcol
+			FROM mbcw ORDER BY id
+		`)
+		if len(rows) != 13 {
+			t.Fatalf("want 13 rows, got %d", len(rows))
+		}
+		for i := 9; i < 13; i++ {
+			if rows[i][1] != nil {
+				t.Errorf("id=%d: no ELSE → should be NULL, got %v", i+1, rows[i][1])
+			}
+		}
+	})
+}
+
+// TestFDB_RangePredicates — OR/AND range combinations from standard-tests.yamsql
+func TestFDB_RangePredicates(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "rngpred", "CREATE TABLE rng(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO rng VALUES
+		(1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5),
+		(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10),
+		(11, 20, 11), (12, 20, 12), (13, 20, 13)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("eq_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 ORDER BY id")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 (col1=20), got %d", len(rows))
+		}
+	})
+
+	t.Run("range_and", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 >= 10 AND col1 <= 20 ORDER BY id")
+		if len(rows) != 13 {
+			t.Fatalf("want 13 (all), got %d", len(rows))
+		}
+	})
+
+	t.Run("range_or", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 >= 10 OR col1 <= 20 ORDER BY id")
+		if len(rows) != 13 {
+			t.Fatalf("want 13 (OR covers all), got %d", len(rows))
+		}
+	})
+
+	t.Run("duplicate_or", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 OR col1 = 20 ORDER BY id")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 (dedup OR), got %d", len(rows))
+		}
+	})
+
+	t.Run("duplicate_and", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 AND col1 = 20 ORDER BY id")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 (dedup AND), got %d", len(rows))
+		}
+	})
+
+	t.Run("or_of_equals", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM rng WHERE col1 = 10 OR col1 = 20 ORDER BY id")
+		if len(rows) != 13 {
+			t.Fatalf("want 13 (10 OR 20 = all), got %d", len(rows))
+		}
+	})
+
+	t.Run("complex_or_and", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM rng WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id")
+		if len(rows) != 13 {
+			t.Fatalf("want 13, got %d", len(rows))
+		}
+	})
+
+	t.Run("greater_than_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM rng WHERE col2 > 10 ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (col2>10: 11,12,13), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("less_than_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM rng WHERE col2 < 3 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (col2<3: 1,2), got %d", len(rows))
+		}
+	})
+
+	t.Run("not_equal", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM rng WHERE col1 <> 10 ORDER BY id")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 (col1<>10 = col1=20), got %d", len(rows))
+		}
+	})
+}
+
+// TestFDB_DerivedTableAggregateJoin — derived tables with aggregates and joins
+func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dtaj",
+		"CREATE TABLE orders(id BIGINT, customer STRING, amount BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE customers(id BIGINT, name STRING, region STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO orders VALUES
+		(1, 'alice', 100), (2, 'alice', 200), (3, 'bob', 150),
+		(4, 'bob', 250), (5, 'charlie', 300)
+	`); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO customers VALUES
+		(1, 'alice', 'east'), (2, 'bob', 'west'), (3, 'charlie', 'east')
+	`); err != nil {
+		t.Fatalf("INSERT customers: %v", err)
+	}
+
+	t.Run("derived_aggregate_in_from", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT d.customer, d.total
+			FROM (SELECT customer, SUM(amount) AS total FROM orders GROUP BY customer) AS d
+			ORDER BY d.total DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 400 {
+			t.Errorf("bob total should be 400, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("derived_with_having", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT customer, SUM(amount) AS total
+			FROM orders
+			GROUP BY customer
+			HAVING SUM(amount) > 200
+			ORDER BY total
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups with SUM>200 (alice=300,charlie=300,bob=400), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("join_with_derived_subquery_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, `
+			SELECT c.name, c.region, o.total
+			FROM customers c
+			JOIN (SELECT customer, SUM(amount) AS total FROM orders GROUP BY customer) AS o
+			ON c.name = o.customer
+		`)
+		if err == nil {
+			t.Errorf("expected error for JOIN with subquery table source, got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("count_distinct_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT COUNT(DISTINCT customer) FROM orders")
+		if err == nil {
+			t.Errorf("expected error for COUNT(DISTINCT), got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("sum_with_case_when", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(CASE WHEN amount > 200 THEN amount ELSE 0 END) FROM orders
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 550 {
+			t.Errorf("SUM(CASE) should be 250+300=550, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
