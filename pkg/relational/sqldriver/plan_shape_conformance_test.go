@@ -5267,3 +5267,43 @@ func TestFDB_CaseWhenInListCombined(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_TwoDerivedTablesCrossJoined(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "dtcross",
+		"CREATE TABLE t (id BIGINT NOT NULL, grp STRING, val BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id int
+		g  string
+		v  int
+	}{
+		{1, "A", 10}, {2, "A", 20}, {3, "B", 30},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, '%s', %d)", r.id, r.g, r.v))
+	}
+
+	t.Run("cross_join_derived", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT a.grp, a.total, b.cnt
+			 FROM (SELECT grp, SUM(val) AS total FROM t GROUP BY grp) a,
+			      (SELECT grp, COUNT(*) AS cnt FROM t GROUP BY grp) b
+			 WHERE a.grp = b.grp
+			 ORDER BY a.grp`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "A" || rows[0][1].(int64) != 30 || rows[0][2].(int64) != 2 {
+			t.Errorf("A: got %v, want [A, 30, 2]", rows[0])
+		}
+		if rows[1][0].(string) != "B" || rows[1][1].(int64) != 30 || rows[1][2].(int64) != 1 {
+			t.Errorf("B: got %v, want [B, 30, 1]", rows[1])
+		}
+	})
+
+	_ = ctx
+}
