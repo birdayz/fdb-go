@@ -13889,6 +13889,48 @@ func TestFDB_SelectWithMultipleJoins(t *testing.T) {
 	})
 }
 
+// TestFDB_InPredicateWithStrings — IN predicate with string values
+func TestFDB_InPredicateWithStrings(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ipws", "CREATE TABLE ipws_t(id BIGINT, color STRING, size STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ipws_t VALUES
+		(1, 'red', 'S'), (2, 'blue', 'M'), (3, 'red', 'L'),
+		(4, 'green', 'S'), (5, 'blue', 'XL'), (6, 'red', 'M')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("in_string_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM ipws_t WHERE color IN ('red', 'green') ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (red:1,3,6 + green:4), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("in_with_group_by", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT color, COUNT(*) FROM ipws_t
+			WHERE size IN ('S', 'M')
+			GROUP BY color ORDER BY color
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (blue:1, green:1, red:2), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("not_in_string", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM ipws_t WHERE color NOT IN ('red')")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("NOT IN red: want 3 (blue:2 + green:1), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
