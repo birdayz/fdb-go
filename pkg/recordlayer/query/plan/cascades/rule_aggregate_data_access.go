@@ -54,11 +54,16 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	scan := findFullScan(innerRef)
+	scan := findFullScanThroughFilter(innerRef)
 	if scan == nil {
 		return
 	}
 	scanTypes := scan.GetRecordTypes()
+
+	// Extract filter predicates from the GroupBy's inner when it wraps
+	// a Filter(pred, Scan). Predicates on group key columns become scan
+	// bounds on the aggregate index (bounded AISCAN).
+	innerFilterPreds := extractInnerFilterPredicates(innerRef)
 
 	// Path 1: single-aggregate match — one candidate covers the full GroupBy.
 	singleMatched := false
@@ -74,8 +79,8 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		scanPlan := aggCand.ToScanPlan(emptyPrefix, false)
+		prefix := buildAggScanPrefix(aggCand, innerFilterPreds)
+		scanPlan := aggCand.ToScanPlan(prefix, false)
 		idxPlan := extractIndexPlan(scanPlan)
 		if idxPlan == nil {
 			continue
@@ -98,7 +103,73 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Path 2: multi-aggregate intersection — multiple candidates, each
 	// covering one of the GroupBy's aggregates with identical grouping.
-	tryMultiAggregateIntersection(call, gb, candidates, scanTypes)
+	tryMultiAggregateIntersection(call, gb, candidates, scanTypes, innerFilterPreds)
+}
+
+// extractInnerFilterPredicates returns ComparisonPredicates from the
+// inner Reference's Filter expressions. Used by AggregateDataAccessRule
+// to push WHERE predicates on group keys into the aggregate index scan
+// range. Returns nil if no filter predicates are found.
+func extractInnerFilterPredicates(ref *expressions.Reference) []*predicates.ComparisonPredicate {
+	var result []*predicates.ComparisonPredicate
+	for _, m := range ref.Members() {
+		f, ok := m.(*expressions.LogicalFilterExpression)
+		if !ok {
+			continue
+		}
+		for _, p := range f.GetPredicates() {
+			if cp, ok := p.(*predicates.ComparisonPredicate); ok {
+				result = append(result, cp)
+			}
+		}
+	}
+	return result
+}
+
+// buildAggScanPrefix matches filter predicates against an aggregate
+// index candidate's group columns. For each group column that has an
+// equality predicate in the filter, creates a ComparisonRange bound
+// in the prefix map. This converts WHERE group_key = X into a bounded
+// AISCAN [EQUALS X] range.
+func buildAggScanPrefix(
+	cand *AggregateIndexMatchCandidate,
+	filterPreds []*predicates.ComparisonPredicate,
+) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
+	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+	if len(filterPreds) == 0 {
+		return prefix
+	}
+	for i, col := range cand.groupCols {
+		for _, cp := range filterPreds {
+			fv, ok := cp.Operand.(*values.FieldValue)
+			if !ok {
+				continue
+			}
+			if !eqFold(fv.Field, col) && !eqFold(fieldNameOnly(fv.Field), col) {
+				continue
+			}
+			if cp.Comparison.Type != predicates.ComparisonEquals {
+				continue
+			}
+			cr := predicates.EmptyComparisonRange()
+			result := cr.Merge(&cp.Comparison)
+			if result.Ok {
+				prefix[cand.aliases[i]] = result.Range
+			}
+			break
+		}
+	}
+	return prefix
+}
+
+// fieldNameOnly strips a "TABLE." prefix from a qualified field name.
+func fieldNameOnly(qualified string) string {
+	for i := len(qualified) - 1; i >= 0; i-- {
+		if qualified[i] == '.' {
+			return qualified[i+1:]
+		}
+	}
+	return qualified
 }
 
 // tryMultiAggregateIntersection attempts to satisfy a multi-aggregate
@@ -120,6 +191,7 @@ func tryMultiAggregateIntersection(
 	gb *expressions.GroupByExpression,
 	candidates []MatchCandidate,
 	scanTypes []string,
+	innerFilterPreds []*predicates.ComparisonPredicate,
 ) {
 	aggs := gb.GetAggregates()
 	if len(aggs) < 2 {
@@ -182,8 +254,8 @@ func tryMultiAggregateIntersection(
 	// Build child index scan plans.
 	childPlans := make([]plans.RecordQueryPlan, len(matched))
 	for i, mc := range matched {
-		emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
-		sp := mc.ToScanPlan(emptyPrefix, false)
+		prefix := buildAggScanPrefix(mc, innerFilterPreds)
+		sp := mc.ToScanPlan(prefix, false)
 		idxPlan := extractIndexPlan(sp)
 		if idxPlan == nil {
 			return

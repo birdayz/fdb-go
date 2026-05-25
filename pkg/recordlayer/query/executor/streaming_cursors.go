@@ -332,6 +332,12 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 		if agg.Alias != "" && agg.Alias != name {
 			result[agg.Alias] = val
 		}
+		if agg.OperandName != "" {
+			spaced := strings.ToUpper(agg.Function.String() + "(" + agg.OperandName + ")")
+			if spaced != name {
+				result[spaced] = val
+			}
+		}
 	}
 	return QueryResult{Datum: result}
 }

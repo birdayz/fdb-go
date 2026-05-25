@@ -2268,8 +2268,7 @@ func TestDistinctKey_NilPrimaryKey(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"A": 1}}
 	key := distinctKey(qr)
-	// Deterministic format: sorted keys with key=value separated by |
-	expected := "A=1"
+	expected := "A=int:1"
 	if key != expected {
 		t.Fatalf("expected %q, got %q", expected, key)
 	}
@@ -2285,7 +2284,7 @@ func TestDistinctKey_Deterministic(t *testing.T) {
 	if key1 != key2 {
 		t.Fatalf("non-deterministic: %q vs %q", key1, key2)
 	}
-	expected := "A=1|B=2|C=3"
+	expected := "A=int:1|B=int:2|C=int:3"
 	if key1 != expected {
 		t.Fatalf("expected %q, got %q", expected, key1)
 	}
@@ -4793,5 +4792,31 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 	}
 	if bufErr.Rows <= 5 {
 		t.Errorf("rows = %d, want > 5", bufErr.Rows)
+	}
+}
+
+func TestMemorySortCursor_BufferLimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	rows := make([]QueryResult, 10)
+	for i := range rows {
+		rows[i] = qr("n", int64(i))
+	}
+	inner := recordlayer.FromList(rows)
+
+	c := newMemorySortCursor(inner, []string{"n"}, nil)
+	c.maxBuf = 5
+	defer c.Close()
+
+	_, err := c.OnNext(context.Background())
+	if err == nil {
+		t.Fatal("expected SortBufferExceededError")
+	}
+	var bufErr *SortBufferExceededError
+	if !errors.As(err, &bufErr) {
+		t.Fatalf("expected *SortBufferExceededError, got %T: %v", err, err)
+	}
+	if bufErr.Limit != 5 {
+		t.Errorf("limit = %d, want 5", bufErr.Limit)
 	}
 }

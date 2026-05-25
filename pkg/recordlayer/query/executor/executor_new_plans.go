@@ -239,7 +239,7 @@ func executeUnorderedUnion(
 		}
 		cursors = append(cursors, c)
 	}
-	return applySkipLimit(newConcatResultCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executePredicatesFilter(
@@ -250,13 +250,13 @@ func executePredicatesFilter(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
 	preds := p.GetPredicates()
 	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0)
-	return &filterResultCursor{
+	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) bool {
 			var rowCtx any = qr.Datum
@@ -272,7 +272,8 @@ func executePredicatesFilter(
 			}
 			return true
 		},
-	}, nil
+	}
+	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeMap(
@@ -283,15 +284,16 @@ func executeMap(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
 	}
 	resultValue := p.GetResultValue()
-	return recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
-		mapped := resultValue.Evaluate(qr.Datum)
-		return QueryResult{Datum: mapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
-	}), nil
+	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
+		m := resultValue.Evaluate(qr.Datum)
+		return QueryResult{Datum: m, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
+	})
+	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeFirstOrDefault(
@@ -393,7 +395,48 @@ func executeInUnion(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	inSources := p.GetInSources()
+	bindingNames := p.GetBindingNames()
+	if len(inSources) == 0 || len(bindingNames) == 0 {
+		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
+	}
+
+	// Single binding dimension: execute inner once per IN value,
+	// merge-sort if comparison keys exist, otherwise concat.
+	if len(bindingNames) == 1 && len(inSources[0]) > 0 {
+		bindingID := values.NamedCorrelationIdentifier(bindingNames[0])
+		var cursors []recordlayer.RecordCursor[QueryResult]
+		for _, val := range inSources[0] {
+			boundCtx := evalCtx.WithBinding(bindingID, val)
+			cursor, err := ExecutePlan(ctx, p.GetInner(), store, boundCtx, nil, props.ClearSkipAndLimit())
+			if err != nil {
+				for _, c := range cursors {
+					c.Close()
+				}
+				return nil, err
+			}
+			cursors = append(cursors, cursor)
+		}
+		if len(cursors) == 1 {
+			return applySkipLimit(cursors[0], props.Skip, props.ReturnedRowLimit), nil
+		}
+		compKeys := p.GetComparisonKeys()
+		if len(compKeys) > 0 {
+			merged := &mergeSortCursor{
+				cursors:   cursors,
+				compKeys:  compKeys,
+				reverse:   p.IsReverse(),
+				dedup:     true,
+				peeked:    make([]QueryResult, len(cursors)),
+				hasPeeked: make([]bool, len(cursors)),
+				exhausted: make([]bool, len(cursors)),
+			}
+			return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
+		}
+		return applySkipLimit(newConcatCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+	}
+
+	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingNames))
 }
 
 func executeMergeSortUnion(
@@ -441,6 +484,7 @@ type mergeSortCursor struct {
 	hasPeeked []bool
 	exhausted []bool
 	lastKey   string
+	hasLast   bool
 	closed    bool
 }
 
@@ -471,10 +515,11 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 
 		if m.dedup {
 			key := m.extractKey(result)
-			if key == m.lastKey && m.lastKey != "" {
+			if m.hasLast && key == m.lastKey {
 				continue
 			}
 			m.lastKey = key
+			m.hasLast = true
 		}
 
 		return recordlayer.NewResultWithValue(result, &recordlayer.StartContinuation{}), nil
@@ -520,13 +565,19 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 	if len(m.compKeys) == 0 {
 		return ""
 	}
-	var b [64]byte
-	buf := b[:0]
-	for _, key := range m.compKeys {
+	t := make(tuple.Tuple, len(m.compKeys))
+	for i, key := range m.compKeys {
 		v := key.Evaluate(qr.Datum)
-		buf = append(buf, []byte(fmt.Sprintf("%v|", v))...)
+		switch tv := v.(type) {
+		case nil, int64, int, uint, uint64, float32, float64, string, []byte, bool:
+			t[i] = tv
+		case int32:
+			t[i] = int64(tv)
+		default:
+			t[i] = fmt.Sprintf("%T:%v", v, v)
+		}
 	}
-	return string(buf)
+	return string(t.Pack())
 }
 
 func (m *mergeSortCursor) Close() error {
@@ -555,28 +606,68 @@ func compareValues(a, b any) int {
 	}
 	switch av := a.(type) {
 	case int64:
-		bv := toFloat64(b)
-		if !math.IsNaN(bv) {
-			af := float64(av)
-			if af < bv {
+		switch bv := b.(type) {
+		case int64:
+			if av < bv {
 				return -1
 			}
-			if af > bv {
+			if av > bv {
 				return 1
 			}
 			return 0
+		case int32:
+			bv64 := int64(bv)
+			if av < bv64 {
+				return -1
+			}
+			if av > bv64 {
+				return 1
+			}
+			return 0
+		default:
+			bf := toFloat64(b)
+			if !math.IsNaN(bf) {
+				af := float64(av)
+				if af < bf {
+					return -1
+				}
+				if af > bf {
+					return 1
+				}
+				return 0
+			}
 		}
 	case int32:
-		bv := toFloat64(b)
-		if !math.IsNaN(bv) {
-			af := float64(av)
-			if af < bv {
+		av64 := int64(av)
+		switch bv := b.(type) {
+		case int64:
+			if av64 < bv {
 				return -1
 			}
-			if af > bv {
+			if av64 > bv {
 				return 1
 			}
 			return 0
+		case int32:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		default:
+			bf := toFloat64(b)
+			if !math.IsNaN(bf) {
+				af := float64(av)
+				if af < bf {
+					return -1
+				}
+				if af > bf {
+					return 1
+				}
+				return 0
+			}
 		}
 	case float64:
 		if math.IsNaN(av) {
@@ -714,46 +805,3 @@ func (c *prependResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 
 func (c *prependResultCursor) Close() error   { c.closed = true; return c.inner.Close() }
 func (c *prependResultCursor) IsClosed() bool { return c.closed }
-
-// concatResultCursor yields all results from cursors[0], then
-// cursors[1], etc.
-type concatResultCursor struct {
-	cursors []recordlayer.RecordCursor[QueryResult]
-	current int
-	closed  bool
-}
-
-func newConcatResultCursor(cursors []recordlayer.RecordCursor[QueryResult]) *concatResultCursor {
-	return &concatResultCursor{cursors: cursors}
-}
-
-func (c *concatResultCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	for c.current < len(c.cursors) {
-		result, err := c.cursors[c.current].OnNext(ctx)
-		if err != nil {
-			return result, err
-		}
-		if result.HasNext() {
-			return result, nil
-		}
-		c.current++
-	}
-	return recordlayer.NewResultNoNext[QueryResult](
-		recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
-}
-
-func (c *concatResultCursor) Close() error {
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	var firstErr error
-	for _, cursor := range c.cursors {
-		if err := cursor.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-func (c *concatResultCursor) IsClosed() bool { return c.closed }

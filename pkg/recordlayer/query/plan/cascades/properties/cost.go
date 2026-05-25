@@ -61,6 +61,11 @@ const (
 	// compare against this to pick rule outputs.
 	FilterSelectivity = 0.5
 
+	// RangeSelectivity is the fraction of rows a range predicate
+	// (col > X, col < Y, BETWEEN) retains. 0.33 assumes roughly
+	// one-third of the value domain is selected.
+	RangeSelectivity = 0.33
+
 	// DistinctSelectivity is the fraction of rows Distinct retains
 	// (i.e. the assumed unique rate). 0.7 means 30% of input rows are
 	// duplicates of an earlier row.
@@ -85,6 +90,36 @@ const (
 	StreamingAggCPU = 1.2 // cheaper than DistinctCPU (no hash table, pre-sorted input)
 	ScanCPU         = 0.1 // per-row sequential I/O cost for full table/index scans
 )
+
+// IndexColumnSelectivity returns the selectivity for a single index
+// column given the total table cardinality, comparison type, whether
+// the index is unique, and whether the cardinality came from real
+// statistics. Uses heuristic estimates:
+//   - With real stats, equality on unique: 1/N
+//   - With real stats, equality on non-unique: 1/√N
+//   - With real stats, range: RangeSelectivity (0.33)
+//   - Without real stats: FilterSelectivity (0.5) for equality,
+//     RangeSelectivity (0.33) for range
+//
+// The function returns a fraction in (0, 1].
+func IndexColumnSelectivity(tableCardinality float64, isEquality bool, isUnique bool, hasRealStats bool) float64 {
+	if !hasRealStats {
+		if isEquality {
+			return FilterSelectivity
+		}
+		return RangeSelectivity
+	}
+	if tableCardinality <= 1 {
+		return 1.0
+	}
+	if isEquality {
+		if isUnique {
+			return 1.0 / tableCardinality
+		}
+		return 1.0 / math.Sqrt(tableCardinality)
+	}
+	return RangeSelectivity
+}
 
 // Cost is a Go-native heuristic cost: a cardinality estimate plus a
 // CPU estimate. Lower is cheaper.
@@ -149,6 +184,16 @@ type DefaultStatistics struct{}
 // RecordTypeCardinality always returns LeafScanCardinality.
 func (DefaultStatistics) RecordTypeCardinality(_ string) float64 {
 	return LeafScanCardinality
+}
+
+// HasRealStats reports whether the statistics provider has real
+// per-type cardinalities (not just the default LeafScanCardinality).
+func HasRealStats(stats StatisticsProvider) bool {
+	if stats == nil {
+		return false
+	}
+	_, isDefault := stats.(DefaultStatistics)
+	return !isDefault
 }
 
 // FixedStatistics returns a fixed cardinality for every record type.

@@ -634,9 +634,8 @@ func executeDistinct(
 func distinctKey(qr QueryResult) string {
 	m, ok := qr.Datum.(map[string]any)
 	if !ok {
-		return fmt.Sprintf("%v", qr.Datum)
+		return fmt.Sprintf("%T:%v", qr.Datum, qr.Datum)
 	}
-	// Sort keys for deterministic output — map iteration order is random.
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -653,7 +652,7 @@ func distinctKey(qr QueryResult) string {
 		if v == nil {
 			sb.WriteString("\x00NULL\x00")
 		} else {
-			sb.WriteString(fmt.Sprintf("%v", v))
+			fmt.Fprintf(&sb, "%T:%v", v, v)
 		}
 	}
 	return sb.String()
@@ -879,7 +878,7 @@ func executeUnionStreaming(
 		}
 		cursors = append(cursors, c)
 	}
-	return applySkipLimit(newConcatResultCursor(cursors), props.Skip, props.ReturnedRowLimit), nil
+	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeUnionBuffered(
@@ -1381,7 +1380,9 @@ func isCountStar(agg expressions.AggregateSpec) bool {
 
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
-	if agg.Operand != nil {
+	if agg.OperandName != "" {
+		opName = strings.ReplaceAll(agg.OperandName, " ", "")
+	} else if agg.Operand != nil {
 		switch v := agg.Operand.(type) {
 		case *values.ConstantValue:
 			if v.Value == nil {

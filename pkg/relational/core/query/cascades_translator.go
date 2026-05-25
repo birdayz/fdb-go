@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -402,7 +403,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			return nil
 		}
 		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
-			spec.Operand = a.AggregateOperands[i]
+			if _, isArith := spec.Operand.(*values.ArithmeticValue); !isArith {
+				spec.Operand = a.AggregateOperands[i]
+			}
 		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])
@@ -472,10 +475,46 @@ func parseAggregateText(text string) (expressions.AggregateSpec, bool) {
 	if operandText == "*" {
 		operand = &values.ConstantValue{Value: nil, Typ: values.UnknownType}
 	} else {
-		operand = &values.FieldValue{Field: operandText, Typ: values.UnknownType}
+		operand = parseOperandValue(operandText)
 	}
 
-	return expressions.AggregateSpec{Function: fn, Operand: operand}, true
+	return expressions.AggregateSpec{Function: fn, Operand: operand, OperandName: operandText}, true
+}
+
+func parseOperandValue(text string) values.Value {
+	for _, op := range []struct {
+		sym string
+		op  values.ArithmeticOp
+	}{
+		{"+", values.OpAdd},
+		{"-", values.OpSub},
+		{"*", values.OpMul},
+		{"/", values.OpDiv},
+	} {
+		idx := strings.Index(text, op.sym)
+		if idx > 0 && idx < len(text)-1 {
+			left := strings.TrimSpace(text[:idx])
+			right := strings.TrimSpace(text[idx+1:])
+			if left != "" && right != "" {
+				return &values.ArithmeticValue{
+					Op:    op.op,
+					Left:  parseAtomValue(left),
+					Right: parseAtomValue(right),
+				}
+			}
+		}
+	}
+	return parseAtomValue(text)
+}
+
+func parseAtomValue(text string) values.Value {
+	if n, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return &values.ConstantValue{Value: n, Typ: values.NullableLong}
+	}
+	if f, err := strconv.ParseFloat(text, 64); err == nil {
+		return &values.ConstantValue{Value: f, Typ: values.NullableDouble}
+	}
+	return &values.FieldValue{Field: text, Typ: values.UnknownType}
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
