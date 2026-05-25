@@ -1381,7 +1381,9 @@ func isCountStar(agg expressions.AggregateSpec) bool {
 
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
-	if agg.Operand != nil {
+	if agg.OperandName != "" {
+		opName = strings.ReplaceAll(agg.OperandName, " ", "")
+	} else if agg.Operand != nil {
 		switch v := agg.Operand.(type) {
 		case *values.ConstantValue:
 			if v.Value == nil {

@@ -1646,6 +1646,9 @@ func aggOperandName(a expressions.AggregateSpec) string {
 	if cv, ok := a.Operand.(*values.ConstantValue); ok && cv.Value == nil {
 		return "*"
 	}
+	if a.OperandName != "" {
+		return strings.ReplaceAll(a.OperandName, " ", "")
+	}
 	return values.ExplainValue(a.Operand)
 }
 
