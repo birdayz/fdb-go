@@ -14943,6 +14943,42 @@ func TestFDB_CTEWithOrderByAndLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithMultipleAggregatesAndWhere — multiple aggregates with WHERE
+func TestFDB_SelectWithMultipleAggregatesAndWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "smaw", "CREATE TABLE smaw_t(id BIGINT, status STRING, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO smaw_t VALUES
+		(1, 'active', 100), (2, 'active', 200), (3, 'inactive', 50),
+		(4, 'active', 150), (5, 'inactive', 75)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("all_aggregates_filtered", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount)
+			FROM smaw_t WHERE status = 'active'
+		`)
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("COUNT active = 3, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 450 {
+			t.Errorf("SUM active = 100+200+150 = 450, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 100 {
+			t.Errorf("MIN active = 100, got %v", rows[0][2])
+		}
+		if toInt64(rows[0][3]) != 200 {
+			t.Errorf("MAX active = 200, got %v", rows[0][3])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
