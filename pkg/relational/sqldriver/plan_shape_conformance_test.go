@@ -6227,6 +6227,391 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	})
 }
 
+func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "distfrom1",
+		"CREATE TABLE t1 (id INTEGER NOT NULL, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 10, 1)",
+		"INSERT INTO t1 VALUES (2, 10, NULL)",
+		"INSERT INTO t1 VALUES (3, 10, 3)",
+		"INSERT INTO t1 VALUES (4, 10, NULL)",
+		"INSERT INTO t1 VALUES (5, 10, 5)",
+		"INSERT INTO t1 VALUES (6, 20, NULL)",
+		"INSERT INTO t1 VALUES (7, 20, NULL)",
+		"INSERT INTO t1 VALUES (8, 20, NULL)",
+		"INSERT INTO t1 VALUES (9, 20, 9)",
+		"INSERT INTO t1 VALUES (10, 20, 10)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("is_distinct_from_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE col2 IS DISTINCT FROM NULL ORDER BY id")
+		wantIDs := []int64{1, 3, 5, 9, 10}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("is_distinct_from_value", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE col1 IS DISTINCT FROM 10 ORDER BY id")
+		wantIDs := []int64{6, 7, 8, 9, 10}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("null_distinct_from_null_is_false", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE NULL IS DISTINCT FROM NULL")
+		if len(rows) != 0 {
+			t.Fatalf("NULL IS DISTINCT FROM NULL should be false, got %d rows", len(rows))
+		}
+	})
+
+	t.Run("value_distinct_from_same_value_is_false", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE 10 IS DISTINCT FROM 10")
+		if len(rows) != 0 {
+			t.Fatalf("10 IS DISTINCT FROM 10 should be false, got %d rows", len(rows))
+		}
+	})
+
+	t.Run("not_distinct_from_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE col2 IS NOT DISTINCT FROM NULL ORDER BY id")
+		wantIDs := []int64{2, 4, 6, 7, 8}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("not_distinct_from_value", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE col1 IS NOT DISTINCT FROM 20 ORDER BY id")
+		wantIDs := []int64{6, 7, 8, 9, 10}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("null_not_distinct_from_null_is_true", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT COUNT(*) FROM t1 WHERE NULL IS NOT DISTINCT FROM NULL")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 10 {
+			t.Fatalf("NULL IS NOT DISTINCT FROM NULL should be true (all 10 rows), got %v", rows)
+		}
+	})
+
+	t.Run("reversed_operand_order", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id FROM t1 WHERE NULL IS DISTINCT FROM col2 ORDER BY id")
+		wantIDs := []int64{1, 3, 5, 9, 10}
+		if len(rows) != len(wantIDs) {
+			t.Fatalf("want %d, got %d: %v", len(wantIDs), len(rows), rows)
+		}
+		for i, w := range wantIDs {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][0], w)
+			}
+		}
+	})
+
+	t.Run("distinct_from_with_group_by", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT col1, COUNT(*) FROM t1
+			 WHERE col2 IS DISTINCT FROM NULL
+			 GROUP BY col1 ORDER BY col1`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 10 || toInt64(rows[0][1]) != 3 {
+			t.Errorf("group 10: got %v, want (10, 3)", rows[0])
+		}
+		if toInt64(rows[1][0]) != 20 || toInt64(rows[1][1]) != 2 {
+			t.Errorf("group 20: got %v, want (20, 2)", rows[1])
+		}
+	})
+}
+
+func TestFDB_SelfJoinHierarchy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "selfjoin1",
+		"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, manager_id BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO emp VALUES (1, 'CEO', NULL)",
+		"INSERT INTO emp VALUES (2, 'VP', 1)",
+		"INSERT INTO emp VALUES (3, 'Director', 1)",
+		"INSERT INTO emp VALUES (4, 'Manager', 2)",
+		"INSERT INTO emp VALUES (5, 'Engineer', 4)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("self_join_parent_child", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT child.name, parent.name
+			 FROM emp child, emp parent
+			 WHERE child.manager_id = parent.id
+			 ORDER BY child.name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d: %v", len(rows), rows)
+		}
+		wantPairs := [][2]string{
+			{"Director", "CEO"},
+			{"Engineer", "Manager"},
+			{"Manager", "VP"},
+			{"VP", "CEO"},
+		}
+		for i, w := range wantPairs {
+			child := rows[i][0].(string)
+			parent := rows[i][1].(string)
+			if child != w[0] || parent != w[1] {
+				t.Errorf("row %d: got (%s, %s), want (%s, %s)",
+					i, child, parent, w[0], w[1])
+			}
+		}
+	})
+
+	t.Run("self_join_count_reports", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT mgr.name, COUNT(*) AS cnt
+			 FROM emp mgr, emp report
+			 WHERE report.manager_id = mgr.id
+			 GROUP BY mgr.name
+			 ORDER BY cnt DESC`)
+		if len(rows) < 1 {
+			t.Fatalf("want at least 1, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "CEO" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("top manager: got %v, want (CEO, 2)", rows[0])
+		}
+	})
+
+	t.Run("self_join_with_not_exists", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT e.name FROM emp e
+			 WHERE NOT EXISTS (SELECT 1 FROM emp r WHERE r.manager_id = e.id)
+			 ORDER BY e.name`)
+		wantLeaves := []string{"Director", "Engineer"}
+		if len(rows) != len(wantLeaves) {
+			t.Fatalf("want %d leaves, got %d: %v", len(wantLeaves), len(rows), rows)
+		}
+		for i, w := range wantLeaves {
+			if rows[i][0].(string) != w {
+				t.Errorf("row %d: got %v, want %s", i, rows[i][0], w)
+			}
+		}
+	})
+}
+
+func TestFDB_MultiColumnOrderBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "mcord1",
+		"CREATE TABLE items (id BIGINT NOT NULL, category STRING, name STRING, price BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO items VALUES (1, 'A', 'Widget', 100)",
+		"INSERT INTO items VALUES (2, 'B', 'Gadget', 200)",
+		"INSERT INTO items VALUES (3, 'A', 'Doohickey', 50)",
+		"INSERT INTO items VALUES (4, 'B', 'Thingamajig', 300)",
+		"INSERT INTO items VALUES (5, 'A', 'Whatchamacallit', 100)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("order_by_two_columns_asc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT category, name FROM items ORDER BY category, name")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "A" || rows[0][1].(string) != "Doohickey" {
+			t.Errorf("first: got (%v, %v), want (A, Doohickey)", rows[0][0], rows[0][1])
+		}
+		if rows[4][0].(string) != "B" || rows[4][1].(string) != "Thingamajig" {
+			t.Errorf("last: got (%v, %v), want (B, Thingamajig)", rows[4][0], rows[4][1])
+		}
+	})
+
+	t.Run("order_by_asc_desc", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT category, price FROM items ORDER BY category ASC, price DESC")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "A" || toInt64(rows[0][1]) != 100 {
+			t.Errorf("first A row: got (%v, %v), want (A, 100)", rows[0][0], rows[0][1])
+		}
+		if rows[3][0].(string) != "B" || toInt64(rows[3][1]) != 300 {
+			t.Errorf("first B row: got (%v, %v), want (B, 300)", rows[3][0], rows[3][1])
+		}
+	})
+
+	t.Run("group_by_with_order_by_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT category, COUNT(*), SUM(price)
+			 FROM items
+			 GROUP BY category
+			 ORDER BY SUM(price) DESC`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "B" || toInt64(rows[0][2]) != 500 {
+			t.Errorf("first: got %v, want (B, 2, 500)", rows[0])
+		}
+		if rows[1][0].(string) != "A" || toInt64(rows[1][2]) != 250 {
+			t.Errorf("second: got %v, want (A, 3, 250)", rows[1])
+		}
+	})
+
+	_ = ctx
+}
+
+func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "nullarith1",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO t1 VALUES (1, 10, 20)",
+		"INSERT INTO t1 VALUES (2, NULL, 30)",
+		"INSERT INTO t1 VALUES (3, 40, NULL)",
+		"INSERT INTO t1 VALUES (4, NULL, NULL)",
+		"INSERT INTO t1 VALUES (5, 50, 60)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("null_arithmetic_propagates", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, a + b FROM t1 ORDER BY id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 30 {
+			t.Errorf("row 1: 10+20=30, got %v", rows[0][1])
+		}
+		if rows[1][1] != nil {
+			t.Errorf("row 2: NULL+30 should be NULL, got %v", rows[1][1])
+		}
+		if rows[2][1] != nil {
+			t.Errorf("row 3: 40+NULL should be NULL, got %v", rows[2][1])
+		}
+		if rows[3][1] != nil {
+			t.Errorf("row 4: NULL+NULL should be NULL, got %v", rows[3][1])
+		}
+		if toInt64(rows[4][1]) != 110 {
+			t.Errorf("row 5: 50+60=110, got %v", rows[4][1])
+		}
+	})
+
+	t.Run("null_in_sum_skipped", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(a) FROM t1")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 100 {
+			t.Fatalf("want 100 (10+40+50), got %v", rows)
+		}
+	})
+
+	t.Run("count_col_skips_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(a), COUNT(b), COUNT(*) FROM t1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("COUNT(a): want 3, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("COUNT(b): want 3, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 5 {
+			t.Errorf("COUNT(*): want 5, got %v", rows[0][2])
+		}
+	})
+
+	t.Run("coalesce_with_arithmetic", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT id, COALESCE(a, 0) + COALESCE(b, 0) FROM t1 ORDER BY id")
+		wantSums := []int64{30, 30, 40, 0, 110}
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		for i, w := range wantSums {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: got %v, want %d", i, rows[i][1], w)
+			}
+		}
+	})
+
+	t.Run("min_max_with_nulls", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT MIN(a), MAX(a), MIN(b), MAX(b) FROM t1")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("MIN(a): want 10, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 50 {
+			t.Errorf("MAX(a): want 50, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 20 {
+			t.Errorf("MIN(b): want 20, got %v", rows[0][2])
+		}
+		if toInt64(rows[0][3]) != 60 {
+			t.Errorf("MAX(b): want 60, got %v", rows[0][3])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
