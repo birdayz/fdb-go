@@ -13102,6 +13102,49 @@ func TestFDB_CombinedDMLWorkflow(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithMultipleStringColumns — queries on multiple string columns
+func TestFDB_SelectWithMultipleStringColumns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "smsc", "CREATE TABLE smsc_t(id BIGINT, first_name STRING, last_name STRING, city STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO smsc_t VALUES
+		(1, 'alice', 'smith', 'nyc'),
+		(2, 'bob', 'jones', 'la'),
+		(3, 'charlie', 'smith', 'nyc'),
+		(4, 'david', 'jones', 'sf')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("group_by_last_name", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT last_name, COUNT(*) FROM smsc_t GROUP BY last_name ORDER BY last_name")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "jones" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("jones: want 2, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("filter_two_string_columns", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM smsc_t WHERE last_name = 'smith' AND city = 'nyc' ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (alice+charlie), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("group_by_city_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT city, COUNT(*) FROM smsc_t GROUP BY city ORDER BY city")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 cities, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
