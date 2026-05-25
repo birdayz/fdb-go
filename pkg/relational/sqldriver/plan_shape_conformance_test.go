@@ -15506,6 +15506,36 @@ func TestFDB_WhereWithGreaterAndLess(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateWithCoalesce — UPDATE SET using COALESCE
+func TestFDB_UpdateWithCoalesce(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uwcoal", "CREATE TABLE uwcoal_t(id BIGINT, val BIGINT, backup BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO uwcoal_t VALUES (1, NULL, 99), (2, 50, 99), (3, NULL, NULL)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_coalesce", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE uwcoal_t SET val = COALESCE(val, backup, 0)"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, val FROM uwcoal_t ORDER BY id")
+		if toInt64(rows[0][1]) != 99 {
+			t.Errorf("id=1: COALESCE(NULL, 99, 0) = 99, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 50 {
+			t.Errorf("id=2: COALESCE(50, 99, 0) = 50, got %v", rows[1][1])
+		}
+		if toInt64(rows[2][1]) != 0 {
+			t.Errorf("id=3: COALESCE(NULL, NULL, 0) = 0, got %v", rows[2][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
