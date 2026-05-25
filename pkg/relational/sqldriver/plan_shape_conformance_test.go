@@ -15875,6 +15875,49 @@ func TestFDB_SelectCountDistinctViaGroupBy(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithLeftAndInnerCompare — compare LEFT vs INNER JOIN results
+func TestFDB_JoinWithLeftAndInnerCompare(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jlic",
+		"CREATE TABLE jlic_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jlic_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jlic_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jlic_b VALUES (10, 1, 100), (20, 2, 200)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("inner_join_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM jlic_a a JOIN jlic_b b ON a.id = b.aid")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("INNER JOIN: want 2 matched, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("left_join_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM jlic_a a LEFT JOIN jlic_b b ON a.id = b.aid")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("LEFT JOIN: want 3 (2 matched + 1 unmatched), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("left_minus_inner", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name FROM jlic_a a LEFT JOIN jlic_b b ON a.id = b.aid
+			WHERE b.id IS NULL
+		`)
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "z" {
+			t.Errorf("unmatched: want z, got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
