@@ -8888,6 +8888,189 @@ func TestFDB_UpdateDeleteReturnCount(t *testing.T) {
 	})
 }
 
+// TestFDB_UnionAllEdgeCases — Java union.yamsql edge cases
+func TestFDB_UnionAllEdgeCases(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uaec",
+		"CREATE TABLE u1(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE u2(id BIGINT, col1 BIGINT, col2 BIGINT, col3 BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO u1 VALUES (1, 10, 1), (2, 10, 2), (6, 20, 6), (7, 20, 7)`); err != nil {
+		t.Fatalf("INSERT u1: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO u2 VALUES
+		(1, 1, 1, 100), (2, 1, 1, 1), (3, 1, 2, 2), (4, 1, 2, 200),
+		(5, 2, 1, 200), (6, 2, 1, 3), (7, 2, 1, 400), (8, 2, 1, 400), (9, 2, 1, 400)
+	`); err != nil {
+		t.Fatalf("INSERT u2: %v", err)
+	}
+
+	t.Run("union_all_self", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT col1, col2 FROM u1 UNION ALL SELECT col1, col2 FROM u1")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 (4+4 dupes), got %d", len(rows))
+		}
+	})
+
+	t.Run("union_all_star_self", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM u1 UNION ALL SELECT * FROM u1")
+		if len(rows) != 8 {
+			t.Fatalf("want 8 (4+4 dupes), got %d", len(rows))
+		}
+	})
+
+	t.Run("union_all_with_alias", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id AS w, col1 AS x, col2 AS y FROM u1 UNION ALL SELECT * FROM u1")
+		if len(rows) != 8 {
+			t.Fatalf("want 8, got %d", len(rows))
+		}
+	})
+
+	t.Run("union_all_column_count_mismatch", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT col1, col2 FROM u1 UNION ALL SELECT col1 FROM u1")
+		if err == nil {
+			t.Errorf("expected error for column count mismatch, got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("union_without_all_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT col1, col2 FROM u1 UNION SELECT col1, col2 FROM u1")
+		if err == nil {
+			t.Errorf("expected error for UNION (without ALL), got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+
+	t.Run("aggregate_over_union", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(a) AS total_a, SUM(b) AS total_b FROM (
+				SELECT SUM(col1) AS a, COUNT(*) AS b FROM u1
+				UNION ALL
+				SELECT SUM(col1) AS a, COUNT(*) AS b FROM u2
+			) AS x
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 13 {
+			t.Errorf("total_b should be 4+9=13, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("union_all_with_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, col1 FROM u1 WHERE col1 = 10 UNION ALL SELECT id, col1 FROM u1 WHERE col1 = 20")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (2+2), got %d", len(rows))
+		}
+	})
+}
+
+// TestFDB_InsertSelectReturningRows — INSERT ... SELECT and INSERT with expressions
+func TestFDB_InsertSelectReturningRows(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "isrr",
+		"CREATE TABLE src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO src VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
+		t.Fatalf("INSERT src: %v", err)
+	}
+
+	t.Run("insert_select_basic", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO dst SELECT * FROM src")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3 inserted, got %d", n)
+		}
+		rows := collectRows(t, db, "SELECT id, val FROM dst ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows in dst, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 100 {
+			t.Errorf("dst row 0 val should be 100, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("insert_select_with_where", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM dst WHERE id >= 1"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		res, err := db.ExecContext(ctx, "INSERT INTO dst SELECT * FROM src WHERE val > 150")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT WHERE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 inserted (200,300), got %d", n)
+		}
+	})
+}
+
+// TestFDB_ConcatExpressions — string concatenation and expressions in SELECT
+func TestFDB_ConcatExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "concat", "CREATE TABLE str_t(id BIGINT, first_name STRING, last_name STRING, age BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO str_t VALUES
+		(1, 'alice', 'smith', 30),
+		(2, 'bob', 'jones', 25),
+		(3, 'charlie', 'brown', 35)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("arithmetic_in_select", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, age * 2 FROM str_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 60 {
+			t.Errorf("30*2=60, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("arithmetic_in_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM str_t WHERE age + 5 > 32 ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (30+5=35>32, 35+5=40>32), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("avg_via_sum_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(age), COUNT(*), SUM(age) / COUNT(*) FROM str_t")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 90 {
+			t.Errorf("SUM(age) = 30+25+35 = 90, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("COUNT = 3, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 30 {
+			t.Errorf("AVG = 90/3 = 30, got %v", rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
