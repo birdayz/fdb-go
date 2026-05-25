@@ -19176,6 +19176,78 @@ func TestFDB_OrderByThreeColumnsLimit(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereMultipleInPredicates — multiple IN predicates with AND
+func TestFDB_WhereMultipleInPredicates(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wmip",
+		"CREATE TABLE wmip_t(id BIGINT, color STRING, size STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wmip_t VALUES
+		(1,'red','S'),(2,'blue','M'),(3,'red','L'),(4,'green','S'),(5,'blue','S')`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("color_in_and_size_in", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id FROM wmip_t WHERE color IN ('red') AND size IN ('S')
+			ORDER BY id
+		`)
+		// red+S: only id=1
+		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
+			t.Errorf("want [1], got %v", rows)
+		}
+	})
+
+	t.Run("size_s_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM wmip_t WHERE size IN ('S')")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("want 3, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_GroupByOrderByCountDesc — GROUP BY with ORDER BY COUNT DESC
+func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gocdl",
+		"CREATE TABLE gocdl_t(id BIGINT, word STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gocdl_t VALUES
+		(1,'the'),(2,'a'),(3,'the'),(4,'is'),(5,'the'),(6,'a'),(7,'was'),(8,'the')`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("most_frequent_word", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT word, COUNT(*) FROM gocdl_t GROUP BY word ORDER BY COUNT(*) DESC LIMIT 1
+		`)
+		if fmt.Sprintf("%v", rows[0][0]) != "the" || toInt64(rows[0][1]) != 4 {
+			t.Errorf("want [the 4], got %v", rows[0])
+		}
+	})
+
+	t.Run("all_words_ordered", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT word, COUNT(*) FROM gocdl_t GROUP BY word ORDER BY COUNT(*) DESC
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 distinct words, got %d", len(rows))
+		}
+		// the=4, a=2, is=1, was=1
+		if toInt64(rows[0][1]) != 4 || toInt64(rows[1][1]) != 2 {
+			t.Errorf("want counts [4 2 ...], got [%v %v ...]", rows[0][1], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
