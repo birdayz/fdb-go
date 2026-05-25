@@ -14003,6 +14003,48 @@ func TestFDB_WhereWithMultipleLikePatterns(t *testing.T) {
 	})
 }
 
+// TestFDB_DeleteAndReverifyAggregateIndex — delete rows and verify aggregate index stays correct
+func TestFDB_DeleteAndReverifyAggregateIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "drai",
+		"CREATE TABLE drai_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX drai_cnt AS SELECT COUNT(*) FROM drai_t GROUP BY grp "+
+			"CREATE INDEX drai_sum AS SELECT SUM(val) FROM drai_t GROUP BY grp")
+	if _, err := db.ExecContext(ctx, `INSERT INTO drai_t VALUES
+		(1, 'X', 10), (2, 'X', 20), (3, 'Y', 30), (4, 'Y', 40), (5, 'X', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("initial_state", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM drai_t GROUP BY grp ORDER BY grp")
+		if toInt64(rows[0][1]) != 3 || toInt64(rows[0][2]) != 80 {
+			t.Errorf("X: want cnt=3 sum=80, got %v %v", rows[0][1], rows[0][2])
+		}
+	})
+
+	t.Run("delete_and_verify", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM drai_t WHERE id IN (1, 3)"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM drai_t GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 2 || toInt64(rows[0][2]) != 70 {
+			t.Errorf("X after delete: want cnt=2 sum=70 (20+50), got %v %v", rows[0][1], rows[0][2])
+		}
+		if toInt64(rows[1][1]) != 1 || toInt64(rows[1][2]) != 40 {
+			t.Errorf("Y after delete: want cnt=1 sum=40, got %v %v", rows[1][1], rows[1][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
