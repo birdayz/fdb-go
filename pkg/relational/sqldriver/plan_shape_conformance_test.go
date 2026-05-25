@@ -14557,6 +14557,37 @@ func TestFDB_DeleteWithMultipleConditions(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithCaseInOrderBy — ORDER BY with CASE expression
+func TestFDB_SelectWithCaseInOrderBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "scob", "CREATE TABLE scob_t(id BIGINT, priority STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO scob_t VALUES
+		(1, 'low', 10), (2, 'high', 20), (3, 'medium', 30), (4, 'high', 40), (5, 'low', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_by_case_priority", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, priority, val
+			FROM scob_t
+			ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, val DESC
+		`)
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "high" {
+			t.Errorf("first should be high priority, got %v", rows[0][1])
+		}
+		t.Logf("priority order: %v", rows)
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
