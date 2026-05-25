@@ -14831,6 +14831,45 @@ func TestFDB_EndToEndWorkflow(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithNotExists — anti-join pattern via NOT EXISTS
+func TestFDB_JoinWithNotExists(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwne",
+		"CREATE TABLE jwne_products(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwne_orders(id BIGINT, product_id BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwne_products VALUES (1, 'widget'), (2, 'gadget'), (3, 'doohickey')"); err != nil {
+		t.Fatalf("INSERT products: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwne_orders VALUES (10, 1), (20, 1), (30, 2)"); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+
+	t.Run("products_never_ordered", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM jwne_products p
+			WHERE NOT EXISTS (SELECT 1 FROM jwne_orders o WHERE o.product_id = p.id)
+		`)
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "doohickey" {
+			t.Errorf("want doohickey, got %v", rows)
+		}
+	})
+
+	t.Run("products_with_orders_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM jwne_products p
+			WHERE EXISTS (SELECT 1 FROM jwne_orders o WHERE o.product_id = p.id)
+		`)
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 products with orders, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
