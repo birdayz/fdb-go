@@ -4380,3 +4380,63 @@ func TestFDB_CTEWithAggregateExpression(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_UnionWithAggExpr(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "unagg",
+		"CREATE TABLE t1 (id BIGINT NOT NULL, grp STRING, val BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT NOT NULL, grp STRING, val BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id int
+		g  string
+		v  int
+	}{
+		{1, "A", 10}, {2, "A", 20}, {3, "B", 30},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t1 VALUES (%d, '%s', %d)", r.id, r.g, r.v))
+	}
+	for _, r := range []struct {
+		id int
+		g  string
+		v  int
+	}{
+		{1, "A", 100}, {2, "B", 200},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, '%s', %d)", r.id, r.g, r.v))
+	}
+
+	t.Run("union_all_then_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT grp, SUM(val) AS total
+			 FROM (SELECT grp, val FROM t1 UNION ALL SELECT grp, val FROM t2) combined
+			 GROUP BY grp
+			 ORDER BY grp`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "A" || rows[0][1].(int64) != 130 {
+			t.Errorf("A: got %v, want [A, 130] (10+20+100)", rows[0])
+		}
+		if rows[1][0].(string) != "B" || rows[1][1].(int64) != 230 {
+			t.Errorf("B: got %v, want [B, 230] (30+200)", rows[1])
+		}
+	})
+
+	t.Run("separate_aggs_union", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT grp, SUM(val) FROM t1 GROUP BY grp
+			 UNION ALL
+			 SELECT grp, SUM(val) FROM t2 GROUP BY grp
+			 ORDER BY grp`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d: %v", len(rows), rows)
+		}
+	})
+
+	_ = ctx
+}
