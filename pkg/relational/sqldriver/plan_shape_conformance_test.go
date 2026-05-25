@@ -12771,6 +12771,46 @@ func TestFDB_LeftJoinWithAggregateAndHaving(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereOnJoinColumns — WHERE filtering on columns from both sides of JOIN
+func TestFDB_WhereOnJoinColumns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wojc",
+		"CREATE TABLE wj_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE wj_b(id BIGINT, a_id BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO wj_a VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO wj_b VALUES (10, 1, 100), (20, 2, 200), (30, 3, 300)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("where_on_left_table", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a.id, b.score FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE a.val > 15")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("where_on_right_table", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a.id, b.score FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE b.score >= 200")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("where_on_both_tables", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT a.id FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE a.val >= 20 AND b.score <= 200")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want id=2 (val=20>=20 AND score=200<=200), got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
