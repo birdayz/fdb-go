@@ -15572,6 +15572,47 @@ func TestFDB_JoinSumGroupByOrderDesc(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertAndVerifyOrder — INSERT preserves data, ORDER BY retrieves correctly
+func TestFDB_InsertAndVerifyOrder(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "iavo", "CREATE TABLE iavo_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO iavo_t VALUES
+		(5, 'eve', 95), (3, 'charlie', 85), (1, 'alice', 90),
+		(4, 'david', 75), (2, 'bob', 80)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_by_id", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, name FROM iavo_t ORDER BY id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 1 || fmt.Sprintf("%v", rows[0][1]) != "alice" {
+			t.Errorf("first by id: want 1 alice, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("order_by_score_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name, score FROM iavo_t ORDER BY score DESC")
+		if fmt.Sprintf("%v", rows[0][0]) != "eve" || toInt64(rows[0][1]) != 95 {
+			t.Errorf("top scorer: want eve 95, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+
+	t.Run("order_by_name", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT name FROM iavo_t ORDER BY name")
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" {
+			t.Errorf("first alphabetically: want alice, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
