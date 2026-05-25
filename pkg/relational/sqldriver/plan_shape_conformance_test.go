@@ -4484,3 +4484,71 @@ func TestFDB_ScalarSubqueryWithAggExpr(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_AggExprWithNulls(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "aggnull",
+		"CREATE TABLE items (id BIGINT NOT NULL, grp STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id   int
+		g    string
+		p, q *int64
+	}{
+		{1, "A", ptr(int64(10)), ptr(int64(5))},
+		{2, "A", ptr(int64(20)), nil},
+		{3, "B", nil, ptr(int64(3))},
+		{4, "B", ptr(int64(50)), ptr(int64(2))},
+	} {
+		if r.p == nil && r.q == nil {
+			db.ExecContext(ctx, fmt.Sprintf("INSERT INTO items (id, grp) VALUES (%d, '%s')", r.id, r.g))
+		} else if r.p == nil {
+			db.ExecContext(ctx, fmt.Sprintf("INSERT INTO items (id, grp, qty) VALUES (%d, '%s', %d)", r.id, r.g, *r.q))
+		} else if r.q == nil {
+			db.ExecContext(ctx, fmt.Sprintf("INSERT INTO items (id, grp, price) VALUES (%d, '%s', %d)", r.id, r.g, *r.p))
+		} else {
+			db.ExecContext(ctx, fmt.Sprintf("INSERT INTO items VALUES (%d, '%s', %d, %d)", r.id, r.g, *r.p, *r.q))
+		}
+	}
+
+	t.Run("sum_expr_skips_null_operand", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT grp, SUM(price * qty) FROM items GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		// A: id=1 has 10*5=50, id=2 has 20*NULL=NULL (skipped). SUM=50.
+		// B: id=3 has NULL*3=NULL (skipped), id=4 has 50*2=100. SUM=100.
+		if rows[0][1] == nil {
+			t.Errorf("A: SUM is NULL, want 50")
+		} else if rows[0][1].(int64) != 50 {
+			t.Errorf("A: got %v, want 50", rows[0][1])
+		}
+		if rows[1][1] == nil {
+			t.Errorf("B: SUM is NULL, want 100")
+		} else if rows[1][1].(int64) != 100 {
+			t.Errorf("B: got %v, want 100", rows[1][1])
+		}
+	})
+
+	t.Run("count_with_null_expr", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT grp, COUNT(price * qty) FROM items GROUP BY grp ORDER BY grp")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		// COUNT(expr) skips NULLs: A has 1 non-null, B has 1 non-null.
+		if rows[0][1].(int64) != 1 {
+			t.Errorf("A count: got %v, want 1", rows[0][1])
+		}
+		if rows[1][1].(int64) != 1 {
+			t.Errorf("B count: got %v, want 1", rows[1][1])
+		}
+	})
+
+	_ = ctx
+}
