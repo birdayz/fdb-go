@@ -10687,6 +10687,110 @@ func TestFDB_ErrorHandling(t *testing.T) {
 	})
 }
 
+// TestFDB_MultipleCTEs — multiple CTEs in single query
+func TestFDB_MultipleCTEs(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mctes", "CREATE TABLE mc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO mc_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40), (5, 'C', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("two_ctes", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH
+				totals AS (SELECT grp, SUM(val) AS total FROM mc_t GROUP BY grp),
+				counts AS (SELECT grp, COUNT(*) AS cnt FROM mc_t GROUP BY grp)
+			SELECT t.grp, t.total, c.cnt
+			FROM totals t JOIN counts c ON t.grp = c.grp
+			ORDER BY t.grp
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" || toInt64(rows[0][1]) != 30 || toInt64(rows[0][2]) != 2 {
+			t.Errorf("A: want total=30,cnt=2, got %v,%v,%v", rows[0][0], rows[0][1], rows[0][2])
+		}
+	})
+
+	t.Run("cte_referencing_earlier_cte", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH
+				base AS (SELECT * FROM mc_t WHERE val > 15),
+				summary AS (SELECT grp, COUNT(*) AS cnt FROM base GROUP BY grp)
+			SELECT * FROM summary ORDER BY grp
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+	})
+}
+
+// TestFDB_CaseWhenWithNull — CASE WHEN NULL edge cases
+func TestFDB_CaseWhenWithNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cwn", "CREATE TABLE cwn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO cwn_t VALUES (1, 10), (2, NULL), (3, 30)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("case_when_is_null", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN val IS NULL THEN 'missing' ELSE 'present' END
+			FROM cwn_t ORDER BY id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[1][1]) != "missing" {
+			t.Errorf("id=2 (NULL): want 'missing', got %v", rows[1][1])
+		}
+	})
+
+	t.Run("case_no_else_returns_null", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN val > 20 THEN 'big' END
+			FROM cwn_t ORDER BY id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if rows[0][1] != nil {
+			t.Errorf("id=1 (val=10): no match, no ELSE → NULL, got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[2][1]) != "big" {
+			t.Errorf("id=3 (val=30): want 'big', got %v", rows[2][1])
+		}
+	})
+
+	t.Run("coalesce_in_case", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN COALESCE(val, 0) > 5 THEN 'yes' ELSE 'no' END
+			FROM cwn_t ORDER BY id
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "yes" {
+			t.Errorf("id=1 (val=10>5): want 'yes', got %v", rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][1]) != "no" {
+			t.Errorf("id=2 (COALESCE(NULL,0)=0<5): want 'no', got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
