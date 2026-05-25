@@ -1,0 +1,69 @@
+# cte_java_patterns.yaml — CTE patterns from Java's cte.yamsql.
+# Tests basic CTEs, column aliases, multiple CTEs, unused CTEs,
+# nested CTEs, cross-product of CTEs, and error cases.
+name: cte_java_patterns
+schema_template: |
+  CREATE TABLE t1 (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t1 VALUES
+      (1, 10, 1),
+      (2, 10, 2),
+      (6, 20, 6),
+      (7, 20, 7)
+tests:
+  # Basic CTE with column subset
+  - query: WITH c1 AS (SELECT col1, col2 FROM t1) SELECT col1, col2 FROM c1 ORDER BY col2
+    rows:
+      - [10, 1]
+      - [10, 2]
+      - [20, 6]
+      - [20, 7]
+
+  # CTE with SELECT *
+  - query: WITH c1 AS (SELECT * FROM t1) SELECT * FROM c1 ORDER BY id
+    rows:
+      - [1, 10, 1]
+      - [2, 10, 2]
+      - [6, 20, 6]
+      - [7, 20, 7]
+
+  # Unused CTE — should not error, just ignore
+  - query: WITH ignored AS (SELECT * FROM t1) SELECT * FROM t1 ORDER BY id
+    rows:
+      - [1, 10, 1]
+      - [2, 10, 2]
+      - [6, 20, 6]
+      - [7, 20, 7]
+
+  # Two CTEs cross-joined
+  - query: WITH c1 AS (SELECT id, col1 FROM t1 WHERE id <= 2), c2 AS (SELECT id AS id2, col2 FROM t1 WHERE id >= 6) SELECT c1.id, c1.col1, c2.id2, c2.col2 FROM c1, c2 ORDER BY c1.id, c2.id2
+    rows:
+      - [1, 10, 6, 6]
+      - [1, 10, 7, 7]
+      - [2, 10, 6, 6]
+      - [2, 10, 7, 7]
+
+  # CTE with aggregate
+  - query: WITH totals AS (SELECT col1, SUM(col2) AS total FROM t1 GROUP BY col1) SELECT * FROM totals ORDER BY col1
+    rows:
+      - [10, 3]
+      - [20, 13]
+
+  # CTE with WHERE filter
+  - query: WITH filtered AS (SELECT * FROM t1 WHERE col1 = 20) SELECT id, col2 FROM filtered ORDER BY id
+    rows:
+      - [6, 6]
+      - [7, 7]
+
+  # Error: duplicate CTE name
+  - query: WITH c1 AS (SELECT id FROM t1), c1 AS (SELECT id FROM t1) SELECT * FROM c1
+    error: "42712"
+
+  # Error: CTE column count mismatch (more aliases than columns)
+  - query: WITH c1(w, x, y, z) AS (SELECT id, col1 FROM t1) SELECT * FROM c1
+    error: "42F10"
