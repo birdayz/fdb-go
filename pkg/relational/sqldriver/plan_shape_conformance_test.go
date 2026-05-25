@@ -15050,6 +15050,40 @@ func TestFDB_SelectWithAllColumnsAndFilter(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateAndDeleteWithAggregate — UPDATE + DELETE then verify aggregates
+func TestFDB_UpdateAndDeleteWithAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "udwa", "CREATE TABLE udwa_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO udwa_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_then_sum", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE udwa_t SET val = val * 2 WHERE id <= 3"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT SUM(val) FROM udwa_t")
+		if toInt64(rows[0][0]) != 210 {
+			t.Errorf("SUM after *2 for ids 1-3: 20+40+60+40+50 = 210, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("delete_then_count", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "DELETE FROM udwa_t WHERE val > 45"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM udwa_t")
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("COUNT after delete val>45: want 3, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
