@@ -12677,6 +12677,49 @@ func TestFDB_GroupByWithCoalesceAndCase(t *testing.T) {
 	})
 }
 
+// TestFDB_SumWithArithmeticExpressions — SUM of arithmetic expressions
+func TestFDB_SumWithArithmeticExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sumae", "CREATE TABLE sae_t(id BIGINT, qty BIGINT, price BIGINT, discount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO sae_t VALUES
+		(1, 10, 100, 5), (2, 20, 50, 10), (3, 5, 200, 0)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("sum_of_product", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(qty * price) FROM sae_t")
+		if toInt64(rows[0][0]) != 3000 {
+			t.Errorf("SUM(qty*price) = 1000+1000+1000 = 3000, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_of_difference", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(price - discount) FROM sae_t")
+		if toInt64(rows[0][0]) != 335 {
+			t.Errorf("SUM(price-discount) = 95+40+200 = 335, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("multiple_sum_expressions", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(qty), SUM(price), SUM(qty * price) FROM sae_t")
+		if toInt64(rows[0][0]) != 35 {
+			t.Errorf("SUM(qty) = 35, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 350 {
+			t.Errorf("SUM(price) = 350, got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 3000 {
+			t.Errorf("SUM(qty*price) = 3000, got %v", rows[0][2])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
