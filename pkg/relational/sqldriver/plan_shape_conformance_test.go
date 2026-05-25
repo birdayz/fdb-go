@@ -11683,6 +11683,51 @@ func TestFDB_OrderByWithNulls(t *testing.T) {
 	})
 }
 
+// TestFDB_EmptyStringVsNull — empty string is NOT NULL
+func TestFDB_EmptyStringVsNull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "esvn", "CREATE TABLE esvn_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO esvn_t VALUES (1, ''), (2, NULL), (3, 'hello')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("empty_string_is_not_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM esvn_t WHERE val IS NOT NULL ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (empty string + hello), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("first should be id=1 (empty string), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("null_is_null", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM esvn_t WHERE val IS NULL")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want id=2 (NULL), got %v", rows)
+		}
+	})
+
+	t.Run("empty_string_eq", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM esvn_t WHERE val = ''")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
+			t.Errorf("want id=1, got %v", rows)
+		}
+	})
+
+	t.Run("count_col_excludes_null_not_empty", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(val) FROM esvn_t")
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("COUNT(val) should be 2 (empty string counts, NULL doesn't), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
