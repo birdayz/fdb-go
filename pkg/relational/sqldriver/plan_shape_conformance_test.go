@@ -15639,6 +15639,37 @@ func TestFDB_GroupByWithMaxAndOrderBy(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectCountGroupByHavingLimit — COUNT + GROUP BY + HAVING + LIMIT
+func TestFDB_SelectCountGroupByHavingLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "scghl", "CREATE TABLE scghl_t(id BIGINT, tag STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO scghl_t VALUES
+		(1, 'go'), (2, 'go'), (3, 'go'), (4, 'java'), (5, 'java'),
+		(6, 'python'), (7, 'rust'), (8, 'rust'), (9, 'rust'), (10, 'rust')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("top_2_tags_by_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT tag, COUNT(*) AS cnt FROM scghl_t
+			GROUP BY tag HAVING COUNT(*) >= 2
+			ORDER BY cnt DESC LIMIT 2
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "rust" || toInt64(rows[0][1]) != 4 {
+			t.Errorf("first: rust 4, got %v %v", rows[0][0], rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
