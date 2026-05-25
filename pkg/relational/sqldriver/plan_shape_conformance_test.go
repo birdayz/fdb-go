@@ -10791,6 +10791,64 @@ func TestFDB_CaseWhenWithNull(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectExpressions — computed columns and aliases in SELECT
+func TestFDB_SelectExpressions(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "selexpr", "CREATE TABLE se_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO se_t VALUES (1, 10, 5), (2, 20, 3), (3, 30, 7)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("computed_column", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, price * qty AS total FROM se_t ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 50 {
+			t.Errorf("10*5=50, got %v", rows[0][1])
+		}
+		if toInt64(rows[2][1]) != 210 {
+			t.Errorf("30*7=210, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("sum_of_computed", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(price * qty) FROM se_t")
+		if toInt64(rows[0][0]) != 320 {
+			t.Errorf("SUM(price*qty)=50+60+210=320, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("order_by_expression", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, price * qty AS total FROM se_t ORDER BY price * qty DESC")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("highest total should be id=3 (210), got id=%v", rows[0][0])
+		}
+	})
+
+	t.Run("constant_expression_from_table", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT 1 + 2 + 3 FROM se_t LIMIT 1")
+		if toInt64(rows[0][0]) != 6 {
+			t.Errorf("1+2+3=6, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("where_on_computed", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM se_t WHERE price * qty > 100 ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
+			t.Errorf("only id=3 has price*qty=210>100, got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
