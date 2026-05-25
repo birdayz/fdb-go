@@ -12163,6 +12163,57 @@ func TestFDB_DistinctPatterns(t *testing.T) {
 	})
 }
 
+// TestFDB_NestedAggregateInDerived — aggregate over aggregate via derived table
+func TestFDB_NestedAggregateInDerived(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "nagd", "CREATE TABLE nagd_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO nagd_t VALUES
+		(1, 'eng', 100), (2, 'eng', 120), (3, 'eng', 80),
+		(4, 'sales', 90), (5, 'sales', 110),
+		(6, 'hr', 70)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("max_of_group_sums", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT MAX(total) FROM (
+				SELECT dept, SUM(salary) AS total FROM nagd_t GROUP BY dept
+			) AS dept_totals
+		`)
+		if toInt64(rows[0][0]) != 300 {
+			t.Errorf("MAX of group sums: eng=300,sales=200,hr=70 → 300, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("min_of_group_counts", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT MIN(cnt) FROM (
+				SELECT dept, COUNT(*) AS cnt FROM nagd_t GROUP BY dept
+			) AS dept_counts
+		`)
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("MIN of group counts: eng=3,sales=2,hr=1 → 1, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_of_group_sums", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(total) FROM (
+				SELECT dept, SUM(salary) AS total FROM nagd_t GROUP BY dept
+			) AS dept_totals
+		`)
+		if toInt64(rows[0][0]) != 570 {
+			t.Errorf("SUM of group sums: 300+200+70 = 570, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
