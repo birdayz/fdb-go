@@ -3746,3 +3746,227 @@ func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_LeftJoinWithAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ljoinagg",
+		"CREATE TABLE customers (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
+
+	for _, c := range []struct {
+		id   int
+		name string
+	}{
+		{1, "Alice"}, {2, "Bob"}, {3, "Charlie"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO customers VALUES (%d, '%s')", c.id, c.name)); err != nil {
+			t.Fatalf("INSERT customers: %v", err)
+		}
+	}
+	for _, o := range []struct {
+		id, cid, amount int
+	}{
+		{101, 1, 100}, {102, 1, 200}, {103, 2, 300},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, %d, %d)", o.id, o.cid, o.amount)); err != nil {
+			t.Fatalf("INSERT orders: %v", err)
+		}
+	}
+
+	t.Run("left_join_count_with_null", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, COUNT(o.id) AS order_count
+			 FROM customers c LEFT JOIN orders o ON c.id = o.cust_id
+			 GROUP BY c.name
+			 ORDER BY c.name`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Alice" || rows[0][1].(int64) != 2 {
+			t.Errorf("Alice: got %v, want [Alice, 2]", rows[0])
+		}
+		if rows[1][0].(string) != "Bob" || rows[1][1].(int64) != 1 {
+			t.Errorf("Bob: got %v, want [Bob, 1]", rows[1])
+		}
+		if rows[2][0].(string) != "Charlie" || rows[2][1].(int64) != 0 {
+			t.Errorf("Charlie: got %v, want [Charlie, 0]", rows[2])
+		}
+	})
+
+	t.Run("left_join_sum_with_coalesce", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, COALESCE(SUM(o.amount), 0) AS total
+			 FROM customers c LEFT JOIN orders o ON c.id = o.cust_id
+			 GROUP BY c.name
+			 ORDER BY c.name`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][1].(int64) != 300 {
+			t.Errorf("Alice total: got %v, want 300", rows[0][1])
+		}
+		if rows[2][1].(int64) != 0 {
+			t.Errorf("Charlie total: got %v, want 0", rows[2][1])
+		}
+	})
+
+	t.Run("left_join_having_filter", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, COUNT(o.id) AS cnt
+			 FROM customers c LEFT JOIN orders o ON c.id = o.cust_id
+			 GROUP BY c.name
+			 HAVING COUNT(o.id) > 0
+			 ORDER BY c.name`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows (Alice, Bob), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Alice" {
+			t.Errorf("first: got %v, want Alice", rows[0][0])
+		}
+	})
+
+	_ = ctx
+}
+
+func TestFDB_SelectStarWithJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "selstar",
+		"CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+
+	for _, d := range []struct {
+		id   int
+		name string
+	}{
+		{1, "Engineering"}, {2, "Sales"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name)); err != nil {
+			t.Fatalf("INSERT dept: %v", err)
+		}
+	}
+	for _, e := range []struct {
+		id, did, sal int
+		name         string
+	}{
+		{1, 1, 100, "Alice"}, {2, 1, 120, "Bob"}, {3, 2, 90, "Charlie"},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO emp VALUES (%d, '%s', %d, %d)", e.id, e.name, e.did, e.sal)); err != nil {
+			t.Fatalf("INSERT emp: %v", err)
+		}
+	}
+
+	t.Run("select_star_single_table", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM dept ORDER BY id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		if rows[0][1].(string) != "Engineering" {
+			t.Errorf("got %v, want Engineering", rows[0][1])
+		}
+	})
+
+	t.Run("inner_join_with_projection", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT e.name, d.name AS dept_name, e.salary
+			 FROM emp e, dept d
+			 WHERE e.dept_id = d.id
+			 ORDER BY e.name`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d", len(rows))
+		}
+		if rows[0][0].(string) != "Alice" || rows[0][1].(string) != "Engineering" {
+			t.Errorf("row 0: got %v, want [Alice, Engineering, ...]", rows[0])
+		}
+		if rows[2][0].(string) != "Charlie" || rows[2][1].(string) != "Sales" {
+			t.Errorf("row 2: got %v, want [Charlie, Sales, ...]", rows[2])
+		}
+	})
+
+	t.Run("subquery_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT d.name, sub.total
+			 FROM dept d,
+			      (SELECT dept_id, SUM(salary) AS total
+			       FROM emp GROUP BY dept_id) sub
+			 WHERE d.id = sub.dept_id
+			 ORDER BY d.name`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Engineering" || rows[0][1].(int64) != 220 {
+			t.Errorf("row 0: got %v, want [Engineering, 220]", rows[0])
+		}
+		if rows[1][0].(string) != "Sales" || rows[1][1].(int64) != 90 {
+			t.Errorf("row 1: got %v, want [Sales, 90]", rows[1])
+		}
+	})
+
+	_ = ctx
+}
+
+func TestFDB_DerivedTableArithmeticOnAggregates(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "dtagg",
+		"CREATE TABLE emp (id BIGINT NOT NULL, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
+
+	for _, e := range []struct {
+		id, did, sal int
+	}{
+		{1, 1, 100}, {2, 1, 200}, {3, 2, 300},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO emp VALUES (%d, %d, %d)", e.id, e.did, e.sal)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("direct_sum_div_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT dept_id, SUM(salary) / COUNT(*) AS avg FROM emp GROUP BY dept_id ORDER BY dept_id")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d", len(rows))
+		}
+		t.Logf("direct: %v", rows)
+		if rows[0][1].(int64) != 150 {
+			t.Errorf("dept 1 avg: got %v, want 150", rows[0][1])
+		}
+	})
+
+	t.Run("derived_table_sum_div_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT sub.dept_id, sub.avg_sal
+			 FROM (SELECT dept_id, SUM(salary) / COUNT(*) AS avg_sal
+			       FROM emp GROUP BY dept_id) sub
+			 ORDER BY sub.dept_id`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		t.Logf("derived: %v", rows)
+		if rows[0][1] == nil {
+			t.Errorf("dept 1 avg_sal is NULL — arithmetic on aggregates lost in derived table")
+		} else if rows[0][1].(int64) != 150 {
+			t.Errorf("dept 1 avg: got %v, want 150", rows[0][1])
+		}
+	})
+
+	_ = ctx
+}
