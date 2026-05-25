@@ -15279,6 +15279,42 @@ func TestFDB_GroupByCountWithFilter(t *testing.T) {
 	})
 }
 
+// TestFDB_LeftJoinWithCoalesceAndHavingFull — LEFT JOIN full pipeline
+func TestFDB_LeftJoinWithCoalesceAndHavingFull(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ljchf",
+		"CREATE TABLE ljchf_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE ljchf_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ljchf_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO ljchf_b VALUES (10, 1, 50), (20, 1, 60), (30, 2, 70)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("coalesce_sum_having_order", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name, COALESCE(SUM(b.val), 0) AS total, COUNT(b.val) AS cnt
+			FROM ljchf_a a LEFT JOIN ljchf_b b ON a.id = b.aid
+			GROUP BY a.name
+			HAVING COALESCE(SUM(b.val), 0) > 0
+			ORDER BY total DESC
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (x,y have matches; z excluded), got %d: %v", len(rows), rows)
+		}
+		t.Logf("LEFT JOIN COALESCE+HAVING results: %v", rows)
+		if fmt.Sprintf("%v", rows[0][0]) != "x" {
+			t.Errorf("first should be x, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
