@@ -12492,6 +12492,44 @@ func TestFDB_JoinWithMultipleConditions(t *testing.T) {
 	})
 }
 
+// TestFDB_CaseWhenInGroupBy — CASE WHEN expression used as GROUP BY key
+func TestFDB_CaseWhenInGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cwgb", "CREATE TABLE cwgb_t(id BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cwgb_t VALUES
+		(1, 95), (2, 85), (3, 75), (4, 65), (5, 55), (6, 45), (7, 35)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("case_when_group_by_expression_not_matched", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, `
+			SELECT
+				CASE WHEN score >= 90 THEN 'A'
+				     WHEN score >= 70 THEN 'B'
+				     WHEN score >= 50 THEN 'C'
+				     ELSE 'F' END AS grade,
+				COUNT(*)
+			FROM cwgb_t
+			GROUP BY CASE WHEN score >= 90 THEN 'A'
+			              WHEN score >= 70 THEN 'B'
+			              WHEN score >= 50 THEN 'C'
+			              ELSE 'F' END
+			ORDER BY grade
+		`)
+		if err != nil {
+			t.Logf("CASE WHEN expression GROUP BY not supported: %v", err)
+		} else {
+			t.Logf("CASE WHEN expression GROUP BY succeeded (unexpectedly)")
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
