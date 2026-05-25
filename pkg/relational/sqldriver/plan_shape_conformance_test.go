@@ -7344,6 +7344,145 @@ func TestFDB_ThreeWayJoin(t *testing.T) {
 	_ = ctx
 }
 
+func TestFDB_RecursiveCTEBasic(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "rcte1",
+		"CREATE TABLE nodes (id BIGINT NOT NULL, parent_id BIGINT, name STRING, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO nodes VALUES (1, NULL, 'root')",
+		"INSERT INTO nodes VALUES (2, 1, 'child1')",
+		"INSERT INTO nodes VALUES (3, 1, 'child2')",
+		"INSERT INTO nodes VALUES (4, 2, 'grandchild1')",
+		"INSERT INTO nodes VALUES (5, 2, 'grandchild2')",
+		"INSERT INTO nodes VALUES (6, 3, 'grandchild3')",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("recursive_cte_descendants", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`WITH RECURSIVE descendants AS (
+				SELECT id, parent_id, name FROM nodes WHERE id = 1
+				UNION ALL
+				SELECT n.id, n.parent_id, n.name
+				FROM nodes n, descendants d
+				WHERE n.parent_id = d.id
+			)
+			SELECT name FROM descendants ORDER BY id`)
+		if len(rows) < 1 {
+			t.Fatalf("want at least root, got 0")
+		}
+		if rows[0][0].(string) != "root" {
+			t.Errorf("first should be root, got %v", rows[0][0])
+		}
+		t.Logf("recursive CTE returned %d rows: %v", len(rows), rows)
+	})
+
+	t.Run("recursive_cte_leaf_count", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT n.name FROM nodes n
+			 WHERE NOT EXISTS (
+				SELECT 1 FROM nodes c WHERE c.parent_id = n.id
+			 )
+			 ORDER BY n.name`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 leaf nodes, got %d: %v", len(rows), rows)
+		}
+		want := []string{"grandchild1", "grandchild2", "grandchild3"}
+		for i, w := range want {
+			if rows[i][0].(string) != w {
+				t.Errorf("row %d: got %v, want %s", i, rows[i][0], w)
+			}
+		}
+	})
+}
+
+func TestFDB_WindowOfAggregation(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "winagg1",
+		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, year BIGINT, amount BIGINT, PRIMARY KEY (id))")
+
+	for _, q := range []string{
+		"INSERT INTO sales VALUES (1, 'US', 2023, 100)",
+		"INSERT INTO sales VALUES (2, 'US', 2023, 200)",
+		"INSERT INTO sales VALUES (3, 'US', 2024, 300)",
+		"INSERT INTO sales VALUES (4, 'EU', 2023, 150)",
+		"INSERT INTO sales VALUES (5, 'EU', 2024, 250)",
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	t.Run("group_by_two_cols", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT region, year, SUM(amount) AS total
+			 FROM sales
+			 GROUP BY region, year
+			 ORDER BY region, year`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 groups, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "EU" || toInt64(rows[0][1]) != 2023 || toInt64(rows[0][2]) != 150 {
+			t.Errorf("EU/2023: got %v", rows[0])
+		}
+		if rows[1][0].(string) != "EU" || toInt64(rows[1][1]) != 2024 || toInt64(rows[1][2]) != 250 {
+			t.Errorf("EU/2024: got %v", rows[1])
+		}
+		if rows[2][0].(string) != "US" || toInt64(rows[2][1]) != 2023 || toInt64(rows[2][2]) != 300 {
+			t.Errorf("US/2023: got %v", rows[2])
+		}
+		if rows[3][0].(string) != "US" || toInt64(rows[3][1]) != 2024 || toInt64(rows[3][2]) != 300 {
+			t.Errorf("US/2024: got %v", rows[3])
+		}
+	})
+
+	t.Run("having_on_multi_group", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT region, year, SUM(amount)
+			 FROM sales
+			 GROUP BY region, year
+			 HAVING SUM(amount) >= 250
+			 ORDER BY region, year`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (exclude EU/2023=150), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("derived_table_yearly_total", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT year, SUM(total) AS grand_total FROM (
+				SELECT region, year, SUM(amount) AS total
+				FROM sales
+				GROUP BY region, year
+			) AS yearly
+			GROUP BY year
+			ORDER BY year`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 years, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 2023 || toInt64(rows[0][1]) != 450 {
+			t.Errorf("2023: got %v, want (2023, 450)", rows[0])
+		}
+		if toInt64(rows[1][0]) != 2024 || toInt64(rows[1][1]) != 550 {
+			t.Errorf("2024: got %v, want (2024, 550)", rows[1])
+		}
+	})
+
+	_ = ctx
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
