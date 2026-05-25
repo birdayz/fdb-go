@@ -14079,6 +14079,40 @@ func TestFDB_JoinWithBetweenAndOrder(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByHavingOrderLimit — full pipeline: GROUP BY + HAVING + ORDER BY + LIMIT
+func TestFDB_GroupByHavingOrderLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ghol", "CREATE TABLE ghol_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ghol_t VALUES
+		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40),
+		(5, 'C', 50), (6, 'D', 5), (7, 'D', 15), (8, 'D', 25)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("full_pipeline", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT cat, SUM(val) AS total
+			FROM ghol_t
+			GROUP BY cat
+			HAVING SUM(val) > 20
+			ORDER BY total DESC
+			LIMIT 2
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (top 2 with SUM>20), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 70 {
+			t.Errorf("first should be B(70), got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
