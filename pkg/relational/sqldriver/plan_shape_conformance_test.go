@@ -14045,6 +14045,40 @@ func TestFDB_DeleteAndReverifyAggregateIndex(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithBetweenAndOrder — JOIN with BETWEEN filter and ORDER BY
+func TestFDB_JoinWithBetweenAndOrder(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwbo",
+		"CREATE TABLE jwbo_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwbo_b(id BIGINT, aid BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwbo_a VALUES (1, 'alice'), (2, 'bob')"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO jwbo_b VALUES (10, 1, 50), (20, 1, 80), (30, 2, 70), (40, 2, 90)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("join_between_order", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.name, b.score
+			FROM jwbo_a a JOIN jwbo_b b ON a.id = b.aid
+			WHERE b.score BETWEEN 60 AND 85
+			ORDER BY b.score
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (70,80), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 70 {
+			t.Errorf("first score should be 70, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
