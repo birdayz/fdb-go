@@ -18481,6 +18481,75 @@ func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEReferencedTwice — single CTE used twice in main query
+func TestFDB_CTEReferencedTwice(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "crt2",
+		"CREATE TABLE crt2_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO crt2_t VALUES (1,10),(2,20),(3,30),(4,40)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("cte_self_join", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH vals AS (SELECT id, val FROM crt2_t WHERE val >= 20)
+			SELECT a.id, b.id FROM vals a JOIN vals b ON a.val < b.val
+			ORDER BY a.id, b.id
+		`)
+		// vals: (2,20),(3,30),(4,40)
+		// pairs where a.val < b.val: (2,3),(2,4),(3,4)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 pairs, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 2 || toInt64(rows[0][1]) != 3 {
+			t.Errorf("pair 0: want (2,3), got (%v,%v)", rows[0][0], rows[0][1])
+		}
+	})
+}
+
+// TestFDB_SelectWithAlias — column alias in SELECT
+func TestFDB_SelectWithColumnAlias(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "swca",
+		"CREATE TABLE swca_t(id BIGINT, first_name STRING, last_name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO swca_t VALUES (1,'alice','smith'),(2,'bob','jones')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("alias_in_order_by", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT first_name AS fname FROM swca_t ORDER BY fname
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" {
+			t.Errorf("want alice first, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_alias", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) AS total FROM swca_t
+		`)
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
