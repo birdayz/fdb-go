@@ -18648,6 +18648,100 @@ func TestFDB_200RowDataset(t *testing.T) {
 	})
 }
 
+// TestFDB_JoinWithWhereOnBothTables — JOIN + WHERE filtering both tables
+func TestFDB_JoinWithWhereOnBothTables(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jwwb",
+		"CREATE TABLE jwwb_a(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE jwwb_b(id BIGINT, aid BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO jwwb_a VALUES
+		(1,'active',100),(2,'inactive',200),(3,'active',300)`); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO jwwb_b VALUES
+		(10,1,50),(11,1,80),(12,2,90),(13,3,30),(14,3,70)`); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("active_and_score_gt_60", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT a.id, b.score FROM jwwb_a a
+			JOIN jwwb_b b ON a.id = b.aid
+			WHERE a.status = 'active' AND b.score > 60
+			ORDER BY b.score
+		`)
+		// active: ids 1,3; score>60: b(11,1,80), b(14,3,70) → 2 rows
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 70 || toInt64(rows[1][1]) != 80 {
+			t.Errorf("want [70 80], got [%v %v]", rows[0][1], rows[1][1])
+		}
+	})
+
+	t.Run("count_all_joined", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM jwwb_a a JOIN jwwb_b b ON a.id = b.aid
+		`)
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("want 5, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_EmptyTableOperations — operations on empty table
+func TestFDB_EmptyTableOps(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "eto",
+		"CREATE TABLE eto_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+
+	t.Run("select_empty", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT * FROM eto_t")
+		if len(rows) != 0 {
+			t.Errorf("want 0 rows, got %d", len(rows))
+		}
+	})
+
+	t.Run("count_empty", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM eto_t")
+		if toInt64(rows[0][0]) != 0 {
+			t.Errorf("want 0, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("delete_empty", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "DELETE FROM eto_t WHERE id = 1")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 0 {
+			t.Errorf("want 0 deleted, got %d", n)
+		}
+	})
+
+	t.Run("update_empty", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE eto_t SET val = 999")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 0 {
+			t.Errorf("want 0 updated, got %d", n)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
