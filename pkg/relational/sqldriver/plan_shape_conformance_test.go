@@ -4315,3 +4315,68 @@ func TestFDB_DerivedTableJoinWithAggExpr(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_CTEWithAggregateExpression(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "cteagg",
+		"CREATE TABLE orders (id BIGINT NOT NULL, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+
+	for _, o := range []struct {
+		id         int
+		region     string
+		qty, price int
+	}{
+		{1, "US", 10, 100},
+		{2, "US", 20, 50},
+		{3, "EU", 5, 200},
+		{4, "EU", 15, 80},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO orders VALUES (%d, '%s', %d, %d)", o.id, o.region, o.qty, o.price))
+	}
+
+	t.Run("cte_with_sum_expr", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`WITH revenue AS (
+			   SELECT region, SUM(qty * price) AS total
+			   FROM orders GROUP BY region
+			 )
+			 SELECT region, total FROM revenue ORDER BY total DESC`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("total is NULL for %v", rows[0][0])
+		}
+		if rows[0][0].(string) != "EU" || rows[0][1].(int64) != 2200 {
+			t.Errorf("row 0: got %v, want [EU, 2200]", rows[0])
+		}
+		if rows[1][0].(string) != "US" || rows[1][1].(int64) != 2000 {
+			t.Errorf("row 1: got %v, want [US, 2000]", rows[1])
+		}
+	})
+
+	t.Run("cte_joined_with_table", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`WITH totals AS (
+			   SELECT region, SUM(qty) AS total_qty
+			   FROM orders GROUP BY region
+			 )
+			 SELECT o.id, t.total_qty
+			 FROM orders o, totals t
+			 WHERE o.region = t.region AND o.qty > 10
+			 ORDER BY o.id`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows (id=2 qty=20, id=4 qty=15), got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(int64) != 2 || rows[0][1].(int64) != 30 {
+			t.Errorf("row 0: got %v, want [2, 30]", rows[0])
+		}
+	})
+
+	_ = ctx
+}
