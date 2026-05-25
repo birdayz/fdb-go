@@ -9256,6 +9256,154 @@ func TestFDB_CrossJoinBasic(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithWherePush — GROUP BY queries with WHERE filters that can push down
+func TestFDB_GroupByWithWherePush(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbwp",
+		"CREATE TABLE sales(id BIGINT, region STRING, product STRING, qty BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO sales VALUES
+		(1, 'east', 'apples', 10), (2, 'east', 'bananas', 20),
+		(3, 'west', 'apples', 30), (4, 'west', 'bananas', 40),
+		(5, 'east', 'apples', 50), (6, 'north', 'cherries', 5)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("group_by_with_eq_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT product, SUM(qty) FROM sales WHERE region = 'east' GROUP BY product ORDER BY product")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (apples, bananas), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "apples" {
+			t.Errorf("first should be apples, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 60 {
+			t.Errorf("east apples = 10+50 = 60, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("group_by_with_range_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT region, COUNT(*) FROM sales WHERE qty > 15 GROUP BY region ORDER BY region")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (east=1, west=2), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("group_by_two_columns", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT region, product, SUM(qty) FROM sales GROUP BY region, product ORDER BY region, product")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 distinct region+product combos, got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("group_by_count_with_having_and_where", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT product, COUNT(*), SUM(qty)
+			FROM sales
+			WHERE region IN ('east', 'west')
+			GROUP BY product
+			HAVING COUNT(*) > 1
+			ORDER BY product
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 products with >1 sale in east+west, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "apples" {
+			t.Errorf("first should be apples, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("apples count should be 3, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("group_by_with_between", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT product, SUM(qty) FROM sales WHERE qty BETWEEN 10 AND 30 GROUP BY product ORDER BY product")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups (apples=10+30=40, bananas=20), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 40 {
+			t.Errorf("apples sum = 10+30 = 40, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 20 {
+			t.Errorf("bananas sum = 20, got %v", rows[1][1])
+		}
+	})
+}
+
+// TestFDB_JoinWithGroupBy — JOIN queries with GROUP BY
+func TestFDB_JoinWithGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jgb",
+		"CREATE TABLE dept(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE emp(id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'engineering'), (2, 'sales'), (3, 'hr')"); err != nil {
+		t.Fatalf("INSERT dept: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO emp VALUES
+		(1, 1, 100), (2, 1, 120), (3, 1, 130),
+		(4, 2, 80), (5, 2, 90),
+		(6, 3, 70)
+	`); err != nil {
+		t.Fatalf("INSERT emp: %v", err)
+	}
+
+	t.Run("join_group_by_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT d.name, COUNT(*)
+			FROM dept d JOIN emp e ON d.id = e.dept_id
+			GROUP BY d.name
+			ORDER BY d.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "engineering" {
+			t.Errorf("first should be engineering, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 3 {
+			t.Errorf("engineering count = 3, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("join_group_by_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT d.name, SUM(e.salary)
+			FROM dept d JOIN emp e ON d.id = e.dept_id
+			GROUP BY d.name
+			ORDER BY SUM(e.salary) DESC
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 350 {
+			t.Errorf("engineering sum = 100+120+130 = 350, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("join_with_having", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT d.name, COUNT(*), SUM(e.salary)
+			FROM dept d JOIN emp e ON d.id = e.dept_id
+			GROUP BY d.name
+			HAVING COUNT(*) > 1
+			ORDER BY d.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (engineering=3, sales=2), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
