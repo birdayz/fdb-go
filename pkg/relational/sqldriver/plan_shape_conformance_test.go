@@ -10317,6 +10317,123 @@ func TestFDB_MultiJoinWithFilter(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEWithJoin — CTE used in JOIN context
+func TestFDB_CTEWithJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctejn",
+		"CREATE TABLE cj_orders(id BIGINT, customer STRING, total BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE cj_customers(name STRING, tier STRING, PRIMARY KEY(name))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cj_orders VALUES
+		(1, 'alice', 100), (2, 'alice', 200), (3, 'bob', 50), (4, 'bob', 150), (5, 'charlie', 300)
+	`); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO cj_customers VALUES ('alice', 'gold'), ('bob', 'silver'), ('charlie', 'gold')"); err != nil {
+		t.Fatalf("INSERT customers: %v", err)
+	}
+
+	t.Run("cte_joined_with_table", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH order_totals AS (
+				SELECT customer, SUM(total) AS sum_total FROM cj_orders GROUP BY customer
+			)
+			SELECT c.name, c.tier, ot.sum_total
+			FROM cj_customers c
+			JOIN order_totals ot ON c.name = ot.customer
+			ORDER BY c.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "alice" || toInt64(rows[0][2]) != 300 {
+			t.Errorf("alice: want sum=300, got %v %v", rows[0][0], rows[0][2])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "bob" || toInt64(rows[1][2]) != 200 {
+			t.Errorf("bob: want sum=200, got %v %v", rows[1][0], rows[1][2])
+		}
+	})
+
+	t.Run("cte_with_having_joined", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH big_spenders AS (
+				SELECT customer, SUM(total) AS spend FROM cj_orders GROUP BY customer HAVING SUM(total) >= 200
+			)
+			SELECT c.tier, COUNT(*)
+			FROM cj_customers c
+			JOIN big_spenders bs ON c.name = bs.customer
+			GROUP BY c.tier
+			ORDER BY c.tier
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 tiers, got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "gold" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("gold: want 2 (alice=300, charlie=300), got %v %v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "silver" || toInt64(rows[1][1]) != 1 {
+			t.Errorf("silver: want 1 (bob=200), got %v %v", rows[1][0], rows[1][1])
+		}
+	})
+}
+
+// TestFDB_WhereSubqueryCorrelated — correlated subquery patterns
+func TestFDB_WhereSubqueryCorrelated(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wscr",
+		"CREATE TABLE ws_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE ws_child(id BIGINT, parent_id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ws_parent VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
+		t.Fatalf("INSERT parent: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ws_child VALUES
+		(10, 1, 100), (11, 1, 200), (12, 2, 50), (13, 2, 75)
+	`); err != nil {
+		t.Fatalf("INSERT child: %v", err)
+	}
+
+	t.Run("exists_with_children", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM ws_parent p
+			WHERE EXISTS (SELECT 1 FROM ws_child c WHERE c.parent_id = p.id)
+			ORDER BY p.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (p1,p2 have children), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("not_exists_no_children", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM ws_parent p
+			WHERE NOT EXISTS (SELECT 1 FROM ws_child c WHERE c.parent_id = p.id)
+		`)
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "p3" {
+			t.Errorf("want p3, got %v", rows)
+		}
+	})
+
+	t.Run("exists_with_filter_on_child", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM ws_parent p
+			WHERE EXISTS (SELECT 1 FROM ws_child c WHERE c.parent_id = p.id AND c.val > 100)
+			ORDER BY p.name
+		`)
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "p1" {
+			t.Errorf("want p1 (has child with val=200>100), got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
