@@ -4999,3 +4999,47 @@ func TestFDB_InsertSelectWithAggregate(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_ThreeWayJoinWithAggregateExpr(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "threeway",
+		"CREATE TABLE categories (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE products (id BIGINT NOT NULL, cat_id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE sales (id BIGINT NOT NULL, prod_id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
+
+	db.ExecContext(ctx, "INSERT INTO categories VALUES (1, 'Electronics')")
+	db.ExecContext(ctx, "INSERT INTO categories VALUES (2, 'Books')")
+	db.ExecContext(ctx, "INSERT INTO products VALUES (1, 1, 'Laptop')")
+	db.ExecContext(ctx, "INSERT INTO products VALUES (2, 1, 'Phone')")
+	db.ExecContext(ctx, "INSERT INTO products VALUES (3, 2, 'Novel')")
+	db.ExecContext(ctx, "INSERT INTO sales VALUES (1, 1, 2, 1000)")
+	db.ExecContext(ctx, "INSERT INTO sales VALUES (2, 1, 1, 1200)")
+	db.ExecContext(ctx, "INSERT INTO sales VALUES (3, 2, 5, 500)")
+	db.ExecContext(ctx, "INSERT INTO sales VALUES (4, 3, 10, 20)")
+
+	t.Run("category_revenue", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT c.name, SUM(s.qty * s.price) AS revenue
+			 FROM categories c, products p, sales s
+			 WHERE c.id = p.cat_id AND p.id = s.prod_id
+			 GROUP BY c.name
+			 ORDER BY revenue DESC`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		// Electronics: 2*1000 + 1*1200 + 5*500 = 5700
+		// Books: 10*20 = 200
+		if rows[0][0].(string) != "Electronics" || rows[0][1].(int64) != 5700 {
+			t.Errorf("row 0: got %v, want [Electronics, 5700]", rows[0])
+		}
+		if rows[1][0].(string) != "Books" || rows[1][1].(int64) != 200 {
+			t.Errorf("row 1: got %v, want [Books, 200]", rows[1])
+		}
+	})
+
+	_ = ctx
+}
