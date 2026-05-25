@@ -13053,6 +13053,55 @@ func TestFDB_UpdateSetArithmeticWithIndex(t *testing.T) {
 	})
 }
 
+// TestFDB_CombinedDMLWorkflow — INSERT + SELECT + UPDATE + DELETE + verify workflow
+func TestFDB_CombinedDMLWorkflow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cdml", "CREATE TABLE cdml_t(id BIGINT, name STRING, active BIGINT, PRIMARY KEY(id))")
+
+	t.Run("full_lifecycle", func(t *testing.T) {
+		// INSERT
+		if _, err := db.ExecContext(ctx, "INSERT INTO cdml_t VALUES (1, 'alice', 1), (2, 'bob', 1), (3, 'charlie', 0)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+
+		// SELECT verify
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM cdml_t")
+		if toInt64(rows[0][0]) != 3 {
+			t.Fatalf("after INSERT: want 3, got %v", rows[0][0])
+		}
+
+		// UPDATE
+		if _, err := db.ExecContext(ctx, "UPDATE cdml_t SET active = 0 WHERE name = 'bob'"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows = collectRows(t, db, "SELECT COUNT(*) FROM cdml_t WHERE active = 1")
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("after UPDATE: want 1 active, got %v", rows[0][0])
+		}
+
+		// DELETE
+		res, err := db.ExecContext(ctx, "DELETE FROM cdml_t WHERE active = 0")
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 deleted (bob+charlie inactive), got %d", n)
+		}
+
+		// Final verify
+		rows = collectRows(t, db, "SELECT name FROM cdml_t")
+		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "alice" {
+			t.Errorf("only alice should remain, got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
