@@ -4245,3 +4245,73 @@ func TestFDB_MinMaxExpressionArg(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_DerivedTableJoinWithAggExpr(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db := setupPlanShapeDB(t, "dtjnagg",
+		"CREATE TABLE products (id BIGINT NOT NULL, name STRING, category STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE orders (id BIGINT NOT NULL, product_id BIGINT, qty BIGINT, unit_price BIGINT, PRIMARY KEY (id))")
+
+	for _, p := range []struct {
+		id  int
+		n   string
+		cat string
+	}{
+		{1, "Widget", "A"}, {2, "Gadget", "A"}, {3, "Doohickey", "B"},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO products VALUES (%d, '%s', '%s')", p.id, p.n, p.cat))
+	}
+	for _, o := range []struct {
+		id, pid, qty, price int
+	}{
+		{1, 1, 10, 5}, {2, 1, 20, 5}, {3, 2, 5, 10}, {4, 3, 100, 1},
+	} {
+		db.ExecContext(ctx, fmt.Sprintf("INSERT INTO orders VALUES (%d, %d, %d, %d)", o.id, o.pid, o.qty, o.price))
+	}
+
+	t.Run("join_with_agg_derived_table", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT p.name, s.total
+			 FROM products p,
+			      (SELECT product_id, SUM(qty * unit_price) AS total
+			       FROM orders GROUP BY product_id) s
+			 WHERE p.id = s.product_id
+			 ORDER BY s.total DESC`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "Widget" || rows[0][1].(int64) != 150 {
+			t.Errorf("row 0: got %v, want [Widget, 150]", rows[0])
+		}
+		if rows[1][0].(string) != "Doohickey" || rows[1][1].(int64) != 100 {
+			t.Errorf("row 1: got %v, want [Doohickey, 100]", rows[1])
+		}
+		if rows[2][0].(string) != "Gadget" || rows[2][1].(int64) != 50 {
+			t.Errorf("row 2: got %v, want [Gadget, 50]", rows[2])
+		}
+	})
+
+	t.Run("category_revenue_via_join", func(t *testing.T) {
+		rows := collectRows(t, db,
+			`SELECT p.category, SUM(o.qty * o.unit_price) AS revenue
+			 FROM products p, orders o
+			 WHERE p.id = o.product_id
+			 GROUP BY p.category
+			 ORDER BY p.category`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][0].(string) != "A" || rows[0][1].(int64) != 200 {
+			t.Errorf("A: got %v, want [A, 200] (150+50)", rows[0])
+		}
+		if rows[1][0].(string) != "B" || rows[1][1].(int64) != 100 {
+			t.Errorf("B: got %v, want [B, 100]", rows[1])
+		}
+	})
+
+	_ = ctx
+}
