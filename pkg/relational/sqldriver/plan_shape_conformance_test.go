@@ -15315,6 +15315,35 @@ func TestFDB_LeftJoinWithCoalesceAndHavingFull(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithOrderByMultipleColumns — ORDER BY with 2+ columns
+func TestFDB_SelectWithOrderByMultipleColumns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "somc", "CREATE TABLE somc_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO somc_t VALUES
+		(1, 'B', 20), (2, 'A', 30), (3, 'B', 10), (4, 'A', 10), (5, 'C', 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("order_by_cat_then_val", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT cat, val FROM somc_t ORDER BY cat, val")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "A" || toInt64(rows[0][1]) != 10 {
+			t.Errorf("first: want A,10 got %v,%v", rows[0][0], rows[0][1])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "A" || toInt64(rows[1][1]) != 30 {
+			t.Errorf("second: want A,30 got %v,%v", rows[1][0], rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
