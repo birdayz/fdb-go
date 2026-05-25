@@ -18550,6 +18550,104 @@ func TestFDB_SelectWithColumnAlias(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereNestedBoolean — deeply nested AND/OR boolean logic
+func TestFDB_WhereNestedBoolean(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wnb",
+		"CREATE TABLE wnb_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wnb_t VALUES
+		(1,1,2,3,4),(2,5,6,7,8),(3,10,20,30,40),(4,0,0,0,0),(5,1,1,1,1)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("nested_and_or", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id FROM wnb_t
+			WHERE (a > 0 AND b > 0) AND (c > 5 OR d > 5)
+			ORDER BY id
+		`)
+		// id=1: a>0,b>0 → T; c=3>5=F, d=4>5=F → F → out
+		// id=2: a>0,b>0 → T; c=7>5=T → T → in
+		// id=3: a>0,b>0 → T; c=30>5=T → T → in
+		// id=4: a=0 → F → out
+		// id=5: a>0,b>0 → T; c=1>5=F, d=1>5=F → F → out
+		want := []int64{2, 3}
+		if len(rows) != len(want) {
+			t.Fatalf("want %d, got %d: %v", len(want), len(rows), rows)
+		}
+		for i, w := range want {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
+// TestFDB_200RowDataset — stress test with 200 rows
+func TestFDB_200RowDataset(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "r200",
+		"CREATE TABLE r200_t(id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY(id))")
+
+	for batch := 0; batch < 4; batch++ {
+		var b strings.Builder
+		for i := 0; i < 50; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			id := batch*50 + i + 1
+			fmt.Fprintf(&b, "(%d,%d,%d)", id, (id-1)%20+1, id)
+		}
+		if _, err := db.ExecContext(ctx, "INSERT INTO r200_t VALUES "+b.String()); err != nil {
+			t.Fatalf("INSERT batch %d: %v", batch, err)
+		}
+	}
+
+	t.Run("count_200", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM r200_t")
+		if toInt64(rows[0][0]) != 200 {
+			t.Errorf("want 200, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("sum_200", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM r200_t")
+		// 1+2+...+200 = 20100
+		if toInt64(rows[0][0]) != 20100 {
+			t.Errorf("want 20100, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("20_groups_10_each", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM r200_t GROUP BY grp ORDER BY grp")
+		if len(rows) != 20 {
+			t.Fatalf("want 20 groups, got %d", len(rows))
+		}
+		for _, r := range rows {
+			if toInt64(r[1]) != 10 {
+				t.Errorf("grp %v: want 10, got %v", r[0], r[1])
+			}
+		}
+	})
+
+	t.Run("top_1", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT val FROM r200_t ORDER BY val DESC LIMIT 1")
+		if toInt64(rows[0][0]) != 200 {
+			t.Errorf("want 200, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
