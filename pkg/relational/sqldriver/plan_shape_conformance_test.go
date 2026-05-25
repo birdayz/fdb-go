@@ -14428,6 +14428,43 @@ func TestFDB_UpdateConditionalAndVerifyAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_SelectWithWhereAndOrderByLimit — SELECT + WHERE + ORDER BY + LIMIT
+func TestFDB_SelectWithWhereAndOrderByLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "swol", "CREATE TABLE swol_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO swol_t VALUES
+		(1, 'A', 50), (2, 'B', 30), (3, 'A', 70), (4, 'B', 10),
+		(5, 'A', 90), (6, 'C', 60), (7, 'B', 80)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("top_2_cat_a_by_val", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM swol_t WHERE cat = 'A' ORDER BY val DESC LIMIT 2")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 90 || toInt64(rows[1][1]) != 70 {
+			t.Errorf("want 90,70 got %v,%v", rows[0][1], rows[1][1])
+		}
+	})
+
+	t.Run("bottom_3_all_by_val", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM swol_t ORDER BY val LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 10 {
+			t.Errorf("smallest should be 10, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
