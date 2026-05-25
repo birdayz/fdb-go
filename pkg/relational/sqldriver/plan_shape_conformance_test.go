@@ -11248,6 +11248,65 @@ func TestFDB_UnionAllThreeLeg(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByWithOrderByAndLimit — GROUP BY + ORDER BY + LIMIT combined
+func TestFDB_GroupByWithOrderByAndLimit(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbol", "CREATE TABLE gbol_t(id BIGINT, region STRING, revenue BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbol_t VALUES
+		(1, 'east', 100), (2, 'east', 200), (3, 'west', 50),
+		(4, 'west', 150), (5, 'north', 300), (6, 'south', 75), (7, 'south', 125)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("top_2_by_revenue", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, SUM(revenue) AS total
+			FROM gbol_t GROUP BY region
+			ORDER BY total DESC LIMIT 2
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (top 2), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 300 {
+			t.Errorf("top region total should be 300 (east or north), got %v", rows[0][1])
+		}
+	})
+
+	t.Run("bottom_1_by_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, COUNT(*) AS cnt
+			FROM gbol_t GROUP BY region
+			ORDER BY cnt LIMIT 1
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 1 {
+			t.Errorf("smallest group has 1 row (north), got %v", rows[0][1])
+		}
+	})
+
+	t.Run("all_groups_ordered", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT region, SUM(revenue) AS total
+			FROM gbol_t GROUP BY region
+			ORDER BY region
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 groups, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "east" {
+			t.Errorf("first alphabetically should be east, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
