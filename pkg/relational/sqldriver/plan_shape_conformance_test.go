@@ -18106,6 +18106,129 @@ func TestFDB_CountWithGroupByHavingCountEq(t *testing.T) {
 	})
 }
 
+// TestFDB_InsertSelectWithFilter — INSERT INTO...SELECT with WHERE filter
+func TestFDB_InsertSelectWithFilter(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "iswf",
+		"CREATE TABLE iswf_src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE iswf_dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO iswf_src VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
+		t.Fatalf("INSERT src: %v", err)
+	}
+
+	t.Run("insert_gt_25", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "INSERT INTO iswf_dst SELECT id, val FROM iswf_src WHERE val > 25")
+		if err != nil {
+			t.Fatalf("INSERT...SELECT: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 3 {
+			t.Errorf("want 3, got %d", n)
+		}
+	})
+
+	t.Run("verify_dst_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM iswf_dst")
+		if toInt64(rows[0][0]) != 120 {
+			t.Errorf("want 120 (30+40+50), got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_NullOrderingSortBehavior — NULL sort position in ASC/DESC
+func TestFDB_NullOrderingSortBehavior(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "obn",
+		"CREATE TABLE obn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO obn_t VALUES (1,30),(2,10),(3,null),(4,20),(5,null)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("nulls_in_asc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val ASC")
+		if len(rows) != 5 {
+			t.Fatalf("want 5, got %d", len(rows))
+		}
+		// NULLs sort first or last depending on implementation
+		// Just verify non-null values are in ascending order
+		var nonNulls []int64
+		for _, r := range rows {
+			if r[1] != nil {
+				nonNulls = append(nonNulls, toInt64(r[1]))
+			}
+		}
+		for i := 1; i < len(nonNulls); i++ {
+			if nonNulls[i] < nonNulls[i-1] {
+				t.Errorf("non-null values not in ASC order: %v", nonNulls)
+				break
+			}
+		}
+	})
+
+	t.Run("nulls_in_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val DESC")
+		var nonNulls []int64
+		for _, r := range rows {
+			if r[1] != nil {
+				nonNulls = append(nonNulls, toInt64(r[1]))
+			}
+		}
+		for i := 1; i < len(nonNulls); i++ {
+			if nonNulls[i] > nonNulls[i-1] {
+				t.Errorf("non-null values not in DESC order: %v", nonNulls)
+				break
+			}
+		}
+	})
+}
+
+// TestFDB_GroupByMultipleAggregates — COUNT+SUM+MIN+MAX in single query
+func TestFDB_GroupByMultipleAggregatesAll(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbma2",
+		"CREATE TABLE gbma2_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbma2_t VALUES
+		(1,'a',10),(2,'a',20),(3,'a',30),
+		(4,'b',100),(5,'b',200)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("all_aggs_per_group", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, COUNT(*), SUM(val), MIN(val), MAX(val) FROM gbma2_t
+			GROUP BY grp ORDER BY grp
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d", len(rows))
+		}
+		// a: cnt=3, sum=60, min=10, max=30
+		if toInt64(rows[0][1]) != 3 || toInt64(rows[0][2]) != 60 || toInt64(rows[0][3]) != 10 || toInt64(rows[0][4]) != 30 {
+			t.Errorf("a: want [3 60 10 30], got [%v %v %v %v]", rows[0][1], rows[0][2], rows[0][3], rows[0][4])
+		}
+		// b: cnt=2, sum=300, min=100, max=200
+		if toInt64(rows[1][1]) != 2 || toInt64(rows[1][2]) != 300 || toInt64(rows[1][3]) != 100 || toInt64(rows[1][4]) != 200 {
+			t.Errorf("b: want [2 300 100 200], got [%v %v %v %v]", rows[1][1], rows[1][2], rows[1][3], rows[1][4])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
