@@ -4000,18 +4000,22 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 	}
 
 	t.Run("nested_derived_with_aggregate_arithmetic", func(t *testing.T) {
-		// Same SUM(col*col) gap as above — accumulation correct but
-		// MapPlan FieldValue name mismatch.
 		rows := collectRows(t, db,
 			`SELECT sub.category, sub.total_value
 			 FROM (SELECT category, SUM(price * qty) AS total_value
 			       FROM items GROUP BY category) sub
-			 ORDER BY sub.category`)
-		t.Logf("SUM(price*qty) derived: %v", rows)
-		if len(rows) == 3 && rows[0][1] != nil {
-			if rows[0][0].(string) != "A" || rows[0][1].(int64) != 140 {
-				t.Errorf("A: got %v, want [A, 140]", rows[0])
-			}
+			 ORDER BY sub.total_value DESC`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("SUM(price*qty) is NULL")
+		}
+		if rows[0][0].(string) != "C" || rows[0][1].(int64) != 500 {
+			t.Errorf("row 0: got %v, want [C, 500]", rows[0])
+		}
+		if rows[2][0].(string) != "A" || rows[2][1].(int64) != 140 {
+			t.Errorf("row 2: got %v, want [A, 140]", rows[2])
 		}
 	})
 
@@ -4093,17 +4097,19 @@ func TestFDB_AggExprArgDirect(t *testing.T) {
 	})
 
 	t.Run("sum_col_times_col", func(t *testing.T) {
-		// SUM(col*col) accumulates correctly but the Cascades map
-		// projection FieldValue name-mismatch prevents the value from
-		// flowing through. The aggregate cursor stores under
-		// "SUM(PRICE*QTY)" but the MapPlan FieldValue uses a different
-		// key. Pinned as known gap — the accumulator DOES compute the
-		// right value (verified via debug).
 		rows := collectRows(t, db,
 			"SELECT cat, SUM(price * qty) AS tv FROM items GROUP BY cat ORDER BY cat")
-		t.Logf("sum(price*qty): %v", rows)
-		if len(rows) == 2 && rows[0][1] != nil && rows[0][1].(int64) != 110 {
-			t.Errorf("A sum: got %v, want 110", rows[0][1])
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("SUM(price*qty) is NULL for %v", rows[0][0])
+		}
+		if rows[0][1].(int64) != 110 {
+			t.Errorf("A: got %v, want 110 (10*5 + 20*3)", rows[0][1])
+		}
+		if rows[1][1].(int64) != 200 {
+			t.Errorf("B: got %v, want 200 (100*2)", rows[1][1])
 		}
 	})
 
