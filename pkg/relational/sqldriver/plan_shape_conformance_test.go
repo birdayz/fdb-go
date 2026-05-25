@@ -15177,6 +15177,40 @@ func TestFDB_WhereComparisonOperators(t *testing.T) {
 	})
 }
 
+// TestFDB_CTEWithUnionAll — CTE body uses UNION ALL
+func TestFDB_CTEWithUnionAll(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ctua",
+		"CREATE TABLE ctua_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE ctua_b(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO ctua_a VALUES (1, 10), (2, 20)"); err != nil {
+		t.Fatalf("INSERT a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO ctua_b VALUES (3, 30), (4, 40)"); err != nil {
+		t.Fatalf("INSERT b: %v", err)
+	}
+
+	t.Run("cte_union_all_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			WITH combined AS (
+				SELECT val FROM ctua_a UNION ALL SELECT val FROM ctua_b
+			)
+			SELECT COUNT(*), SUM(val) FROM combined
+		`)
+		if toInt64(rows[0][0]) != 4 {
+			t.Errorf("COUNT = 4, got %v", rows[0][0])
+		}
+		if toInt64(rows[0][1]) != 100 {
+			t.Errorf("SUM = 10+20+30+40 = 100, got %v", rows[0][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
