@@ -1,0 +1,137 @@
+# index_range_predicates_java.yaml — Index scan with range predicates
+# from Java's standard-tests.yamsql. Tests AND/OR predicate pushdown
+# into index scans, duplicate predicate elimination, and combined
+# range bounds.
+name: index_range_predicates_java
+schema_template: |
+  CREATE TABLE t1 (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX i1 ON t1 (col1)
+setup:
+  - INSERT INTO t1 VALUES
+      (1, 10, 1),
+      (2, 10, 2),
+      (3, 10, 3),
+      (4, 10, 4),
+      (5, 10, 5),
+      (6, 20, 6),
+      (7, 20, 7),
+      (8, 20, 8),
+      (9, 20, 9),
+      (10, 20, 10),
+      (11, 30, 11),
+      (12, 30, 12),
+      (13, 30, 13)
+tests:
+  # Simple equality on indexed column
+  - query: SELECT * FROM t1 WHERE col1 = 20 ORDER BY id
+    rows:
+      - [6, 20, 6]
+      - [7, 20, 7]
+      - [8, 20, 8]
+      - [9, 20, 9]
+      - [10, 20, 10]
+
+  # AND range: col1 >= 10 AND col1 <= 20 → combined range scan
+  - query: SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # Strict range: col1 > 10 AND col1 < 30
+  - query: SELECT id FROM t1 WHERE col1 > 10 AND col1 < 30 ORDER BY id
+    rows:
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # Duplicate OR: col1 = 20 OR col1 = 20 → deduplicated to single equality
+  - query: SELECT id FROM t1 WHERE col1 = 20 OR col1 = 20 ORDER BY id
+    rows:
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # Duplicate AND: col1 = 20 AND col1 = 20 → single equality
+  - query: SELECT id FROM t1 WHERE col1 = 20 AND col1 = 20 ORDER BY id
+    rows:
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # OR with different values: col1 = 10 OR col1 = 30
+  - query: SELECT id FROM t1 WHERE col1 = 10 OR col1 = 30 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+      - [11]
+      - [12]
+      - [13]
+
+  # Complex: (OR) AND (OR) → should still work correctly
+  - query: SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+      - [6]
+      - [7]
+      - [8]
+      - [9]
+      - [10]
+
+  # Greater than with ORDER BY on indexed column
+  - query: SELECT id, col1 FROM t1 WHERE col1 >= 20 ORDER BY col1, id
+    rows:
+      - [6, 20]
+      - [7, 20]
+      - [8, 20]
+      - [9, 20]
+      - [10, 20]
+      - [11, 30]
+      - [12, 30]
+      - [13, 30]
+
+  # Less than
+  - query: SELECT id FROM t1 WHERE col1 < 20 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # Not equals (no index pushdown — full scan + filter)
+  - query: SELECT id FROM t1 WHERE col1 <> 20 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+      - [11]
+      - [12]
+      - [13]
