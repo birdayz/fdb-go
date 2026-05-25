@@ -15344,6 +15344,44 @@ func TestFDB_SelectWithOrderByMultipleColumns(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByHavingSumMinMax — HAVING with SUM, MIN, MAX combined
+func TestFDB_GroupByHavingSumMinMax(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ghsmm", "CREATE TABLE ghsmm_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO ghsmm_t VALUES
+		(1, 'A', 10), (2, 'A', 90),
+		(3, 'B', 40), (4, 'B', 60),
+		(5, 'C', 25), (6, 'C', 35), (7, 'C', 40)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("having_max_gt_50", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, MAX(val) FROM ghsmm_t
+			GROUP BY grp HAVING MAX(val) > 50 ORDER BY grp
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (A max=90, B max=60), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("having_sum_and_min", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT grp, SUM(val), MIN(val) FROM ghsmm_t
+			GROUP BY grp HAVING SUM(val) >= 100 AND MIN(val) >= 10 ORDER BY grp
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (A: sum=100 min=10, B: sum=100 min=40, C: sum=100 min=25), got %d: %v", len(rows), rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
