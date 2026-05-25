@@ -1,0 +1,69 @@
+# cast_scalar_java.yaml — Scalar CAST patterns from Java's cast-tests.yamsql.
+# Tests type conversion between INT/STRING/DOUBLE/BOOLEAN, nested CAST,
+# CAST in arithmetic, CAST in WHERE, and CAST with aggregation.
+name: cast_scalar_java
+schema_template: |
+  CREATE TABLE test_cast (
+    id BIGINT NOT NULL,
+    num_col BIGINT,
+    str_col STRING,
+    bool_col BOOLEAN,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO test_cast VALUES
+      (1, 123, 'hello', true),
+      (2, 456, 'world', false),
+      (3, 789, '123', null)
+tests:
+  # INT → STRING
+  - query: SELECT CAST(num_col AS STRING) FROM test_cast WHERE id = 1
+    rows:
+      - ['123']
+
+  # INT → DOUBLE
+  - query: SELECT CAST(num_col AS DOUBLE) FROM test_cast WHERE id = 1
+    rows:
+      - [123.0]
+
+  # BOOLEAN → INT (true=1, false=0)
+  - query: SELECT CAST(bool_col AS BIGINT) FROM test_cast WHERE id = 1
+    rows:
+      - [1]
+  - query: SELECT CAST(bool_col AS BIGINT) FROM test_cast WHERE id = 2
+    rows:
+      - [0]
+
+  # STRING → INT (numeric string)
+  - query: SELECT CAST(str_col AS BIGINT) FROM test_cast WHERE id = 3
+    rows:
+      - [123]
+
+  # Nested CAST: INT → STRING → INT → DOUBLE
+  - query: SELECT CAST(CAST(CAST(num_col AS STRING) AS BIGINT) AS DOUBLE) FROM test_cast WHERE id = 1
+    rows:
+      - [123.0]
+
+  # CAST with arithmetic
+  - query: SELECT CAST(num_col AS DOUBLE) * 2.5 FROM test_cast WHERE id = 1
+    rows:
+      - [307.5]
+
+  # CAST in WHERE clause
+  - query: SELECT id FROM test_cast WHERE CAST(num_col AS STRING) = '123'
+    rows:
+      - [1]
+
+  # CAST with aggregation
+  - query: SELECT SUM(CAST(num_col AS DOUBLE)) FROM test_cast
+    rows:
+      - [1368.0]
+
+  # CAST NULL preserves NULL
+  - query: SELECT CAST(bool_col AS BIGINT) FROM test_cast WHERE id = 3
+    rows:
+      - [null]
+
+  # STRING → INT error (non-numeric)
+  - query: SELECT CAST(str_col AS BIGINT) FROM test_cast WHERE id = 1
+    error: "22018"
