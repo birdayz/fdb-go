@@ -12126,6 +12126,43 @@ func TestFDB_SelectWithAlias(t *testing.T) {
 	})
 }
 
+// TestFDB_DistinctPatterns — DISTINCT queries from Java patterns
+func TestFDB_DistinctPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sdist", "CREATE TABLE sd_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO sd_t VALUES
+		(1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'C', 30), (5, 'B', 20), (6, 'A', 40)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("distinct_single_column", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT DISTINCT cat FROM sd_t ORDER BY cat")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 distinct cats (A,B,C), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("distinct_two_columns", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT DISTINCT cat, val FROM sd_t ORDER BY cat, val")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 distinct (A,10),(A,40),(B,20),(C,30), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("count_distinct_via_derived_unsupported", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, "SELECT COUNT(*) FROM (SELECT DISTINCT cat FROM sd_t) AS d")
+		if err != nil {
+			t.Logf("COUNT over DISTINCT derived: %v", err)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
