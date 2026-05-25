@@ -17535,6 +17535,113 @@ func TestFDB_ComparisonOperatorCoverage(t *testing.T) {
 	}
 }
 
+// TestFDB_UnionAllDifferentFilters — UNION ALL with different WHERE on same table
+func TestFDB_UnionAllDifferentFilters(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uadf",
+		"CREATE TABLE uadf_t(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO uadf_t VALUES
+		(1,'a',10),(2,'b',20),(3,'a',30),(4,'c',40),(5,'b',50)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("union_a_and_b", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, val FROM uadf_t WHERE status = 'a'
+			UNION ALL
+			SELECT id, val FROM uadf_t WHERE status = 'b'
+			ORDER BY id
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		wantIds := []int64{1, 2, 3, 5}
+		for i, w := range wantIds {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want id %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+
+	t.Run("sum_over_union", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT SUM(val) FROM (
+				SELECT val FROM uadf_t WHERE status = 'a'
+				UNION ALL
+				SELECT val FROM uadf_t WHERE status = 'b'
+			) u
+		`)
+		// a: 10+30=40, b: 20+50=70 → total 110
+		if toInt64(rows[0][0]) != 110 {
+			t.Errorf("want 110, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_100RowDataset — larger dataset to stress aggregation
+func TestFDB_100RowDataset(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "r100",
+		"CREATE TABLE r100_t(id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY(id))")
+
+	var b strings.Builder
+	for i := 1; i <= 100; i++ {
+		if i > 1 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, "(%d,%d,%d)", i, (i-1)%10+1, i)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO r100_t VALUES "+b.String()); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("total_count", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM r100_t")
+		if toInt64(rows[0][0]) != 100 {
+			t.Errorf("want 100, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("total_sum", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(val) FROM r100_t")
+		// 1+2+...+100 = 5050
+		if toInt64(rows[0][0]) != 5050 {
+			t.Errorf("want 5050, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("group_count_10_each", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM r100_t GROUP BY grp ORDER BY grp")
+		if len(rows) != 10 {
+			t.Fatalf("want 10 groups, got %d", len(rows))
+		}
+		for _, r := range rows {
+			if toInt64(r[1]) != 10 {
+				t.Errorf("grp %v: want 10, got %v", r[0], r[1])
+			}
+		}
+	})
+
+	t.Run("top_10_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT val FROM r100_t ORDER BY val DESC LIMIT 10")
+		for i, w := range []int64{100, 99, 98, 97, 96, 95, 94, 93, 92, 91} {
+			if toInt64(rows[i][0]) != w {
+				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
