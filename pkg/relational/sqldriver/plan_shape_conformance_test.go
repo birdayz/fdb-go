@@ -12893,6 +12893,46 @@ func TestFDB_GroupByWithMinMaxBigint(t *testing.T) {
 	})
 }
 
+// TestFDB_OrderByWithLimitAndOffset — ORDER BY + LIMIT combinations
+func TestFDB_OrderByWithLimitAndOffset(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "oblim", "CREATE TABLE obl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	for i := 1; i <= 10; i++ {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO obl_t VALUES (%d, %d)", i, (11-i)*10)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	t.Run("top_3_by_val_desc", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM obl_t ORDER BY val DESC LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 100 {
+			t.Errorf("top val should be 100, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("bottom_1_by_val", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, val FROM obl_t ORDER BY val LIMIT 1")
+		if toInt64(rows[0][1]) != 10 {
+			t.Errorf("bottom val should be 10, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("limit_with_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM obl_t WHERE val >= 50 ORDER BY val LIMIT 3")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 from >=50, got %d", len(rows))
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
