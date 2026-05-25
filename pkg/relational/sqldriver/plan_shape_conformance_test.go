@@ -11346,6 +11346,54 @@ func TestFDB_CTEInDML(t *testing.T) {
 	})
 }
 
+// TestFDB_UpdateMultiColumn — UPDATE setting multiple columns at once
+func TestFDB_UpdateMultiColumn(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "updmc", "CREATE TABLE umc_t(id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO umc_t VALUES (1, 10, 'old', 100), (2, 20, 'old', 200)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("update_two_columns", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE umc_t SET a = 99, b = 'new' WHERE id = 1"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT a, b, c FROM umc_t WHERE id = 1")
+		if toInt64(rows[0][0]) != 99 {
+			t.Errorf("a should be 99, got %v", rows[0][0])
+		}
+		if fmt.Sprintf("%v", rows[0][1]) != "new" {
+			t.Errorf("b should be 'new', got %v", rows[0][1])
+		}
+		if toInt64(rows[0][2]) != 100 {
+			t.Errorf("c should be unchanged (100), got %v", rows[0][2])
+		}
+	})
+
+	t.Run("update_all_rows", func(t *testing.T) {
+		res, err := db.ExecContext(ctx, "UPDATE umc_t SET c = c + 1000")
+		if err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		n, _ := res.RowsAffected()
+		if n != 2 {
+			t.Errorf("want 2 updated, got %d", n)
+		}
+		rows := collectRows(t, db, "SELECT c FROM umc_t ORDER BY id")
+		if toInt64(rows[0][0]) != 1100 {
+			t.Errorf("id=1: c=100+1000=1100, got %v", rows[0][0])
+		}
+		if toInt64(rows[1][0]) != 1200 {
+			t.Errorf("id=2: c=200+1000=1200, got %v", rows[1][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
