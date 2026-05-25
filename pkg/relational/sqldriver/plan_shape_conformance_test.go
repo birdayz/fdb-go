@@ -11437,6 +11437,65 @@ func TestFDB_DerivedTableWithJoinAndAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithLikePatterns — LIKE pattern matching edge cases
+func TestFDB_WhereWithLikePatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "likep", "CREATE TABLE lp_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO lp_t VALUES
+		(1, 'alice'), (2, 'bob'), (3, 'charlie'), (4, 'alex'),
+		(5, 'alice_jones'), (6, 'ALICE'), (7, 'al')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("like_prefix", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'al%' ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 (alice, alex, alice_jones, al), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("like_suffix", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE '%ice' ORDER BY id")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (alice), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("like_contains", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE '%li%' ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (alice, charlie, alice_jones), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("like_exact", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'bob'")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
+			t.Errorf("want id=2, got %v", rows)
+		}
+	})
+
+	t.Run("not_like", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name NOT LIKE 'al%' ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (bob, charlie, ALICE), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("like_underscore_wildcard", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'a_' ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 7 {
+			t.Errorf("want id=7 (al matches a_), got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
