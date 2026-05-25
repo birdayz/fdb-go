@@ -13970,6 +13970,39 @@ func TestFDB_ExistsWithAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_WhereWithMultipleLikePatterns — multiple LIKE conditions
+func TestFDB_WhereWithMultipleLikePatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "wmlp", "CREATE TABLE wmlp_t(id BIGINT, name STRING, email STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO wmlp_t VALUES
+		(1, 'alice_smith', 'alice@example.com'),
+		(2, 'bob_jones', 'bob@test.org'),
+		(3, 'alice_jones', 'aj@example.com'),
+		(4, 'charlie_brown', 'cb@test.org')
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("like_or_like", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wmlp_t WHERE name LIKE 'alice%' OR name LIKE 'charlie%' ORDER BY id")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 (alice_smith, alice_jones, charlie_brown), got %d: %v", len(rows), rows)
+		}
+	})
+
+	t.Run("like_and_like", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM wmlp_t WHERE name LIKE '%jones' AND email LIKE '%example%' ORDER BY id")
+		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
+			t.Errorf("want id=3 (alice_jones + example.com), got %v", rows)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
