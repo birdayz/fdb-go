@@ -17179,6 +17179,111 @@ func TestFDB_ExistsCorrelatedSubquery(t *testing.T) {
 	})
 }
 
+// TestFDB_GroupByCoalesceCaseBucket — GROUP BY COALESCE for NULL regions + CASE bucketing
+func TestFDB_GroupByCoalesceCaseBucket(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "gbcc",
+		"CREATE TABLE gbcc_t(id BIGINT, region STRING, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO gbcc_t VALUES
+		(1,'east',100),(2,'west',200),(3,'east',150),(4,null,50),(5,null,75)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("coalesce_null_region", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COALESCE(region, 'unknown'), SUM(amount)
+			FROM gbcc_t GROUP BY COALESCE(region, 'unknown')
+			ORDER BY COALESCE(region, 'unknown')
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 groups, got %d: %v", len(rows), rows)
+		}
+		// east=250, unknown=125, west=200
+		if fmt.Sprintf("%v", rows[0][0]) != "east" || toInt64(rows[0][1]) != 250 {
+			t.Errorf("row 0: want [east 250], got %v", rows[0])
+		}
+	})
+
+	t.Run("case_bucket", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT CASE WHEN amount >= 150 THEN 'high' ELSE 'low' END AS bucket, COUNT(*)
+			FROM gbcc_t
+			GROUP BY CASE WHEN amount >= 150 THEN 'high' ELSE 'low' END
+			ORDER BY bucket
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 buckets, got %d: %v", len(rows), rows)
+		}
+		// high: 200,150 = 2; low: 100,50,75 = 3
+		if fmt.Sprintf("%v", rows[0][0]) != "high" || toInt64(rows[0][1]) != 2 {
+			t.Errorf("high: want 2, got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "low" || toInt64(rows[1][1]) != 3 {
+			t.Errorf("low: want 3, got %v", rows[1])
+		}
+	})
+}
+
+// TestFDB_JoinSameTableTwice — join same table as two different aliases
+func TestFDB_JoinSameTableTwice(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "jst2",
+		"CREATE TABLE jst2_t(id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO jst2_t VALUES
+		(1,0,'root'),(2,1,'child1'),(3,1,'child2'),(4,2,'grandchild1')`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("parent_child_pairs", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name, c.name FROM jst2_t p
+			JOIN jst2_t c ON p.id = c.parent_id
+			ORDER BY p.name, c.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 pairs, got %d: %v", len(rows), rows)
+		}
+		// child1→grandchild1, root→child1, root→child2
+		type pair struct{ parent, child string }
+		want := []pair{{"child1", "grandchild1"}, {"root", "child1"}, {"root", "child2"}}
+		for i, w := range want {
+			p := fmt.Sprintf("%v", rows[i][0])
+			c := fmt.Sprintf("%v", rows[i][1])
+			if p != w.parent || c != w.child {
+				t.Errorf("row %d: want [%s %s], got [%s %s]", i, w.parent, w.child, p, c)
+			}
+		}
+	})
+
+	t.Run("count_children_per_parent", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name, COUNT(*) FROM jst2_t p
+			JOIN jst2_t c ON p.id = c.parent_id
+			GROUP BY p.name
+			ORDER BY p.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 parents with children, got %d", len(rows))
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "child1" || toInt64(rows[0][1]) != 1 {
+			t.Errorf("child1: want 1 child, got %v", rows[0])
+		}
+		if fmt.Sprintf("%v", rows[1][0]) != "root" || toInt64(rows[1][1]) != 2 {
+			t.Errorf("root: want 2 children, got %v", rows[1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
