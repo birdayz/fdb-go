@@ -13931,6 +13931,45 @@ func TestFDB_InPredicateWithStrings(t *testing.T) {
 	})
 }
 
+// TestFDB_ExistsWithAggregate — EXISTS subquery combined with aggregate
+func TestFDB_ExistsWithAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "exagg",
+		"CREATE TABLE exa_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE exa_child(id BIGINT, pid BIGINT, val BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO exa_parent VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
+		t.Fatalf("INSERT parent: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO exa_child VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50)"); err != nil {
+		t.Fatalf("INSERT child: %v", err)
+	}
+
+	t.Run("count_parents_with_children", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM exa_parent p
+			WHERE EXISTS (SELECT 1 FROM exa_child c WHERE c.pid = p.id)
+		`)
+		if toInt64(rows[0][0]) != 2 {
+			t.Errorf("want 2 parents with children (p1, p2), got %v", rows[0][0])
+		}
+	})
+
+	t.Run("not_exists_count", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT COUNT(*) FROM exa_parent p
+			WHERE NOT EXISTS (SELECT 1 FROM exa_child c WHERE c.pid = p.id)
+		`)
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("want 1 parent without children (p3), got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
