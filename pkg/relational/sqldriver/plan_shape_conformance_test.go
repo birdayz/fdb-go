@@ -17382,6 +17382,67 @@ func TestFDB_SelectConstantExpression(t *testing.T) {
 	})
 }
 
+// TestFDB_MinMaxGroupByOrderByAggregate — MIN/MAX with GROUP BY, ORDER BY aggregate
+func TestFDB_MinMaxGroupByOrderByAggregate(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mmga",
+		"CREATE TABLE mmga_t(id BIGINT, team STRING, pts BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO mmga_t VALUES
+		(1,'a',10),(2,'a',50),(3,'a',30),
+		(4,'b',20),(5,'b',40),
+		(6,'c',5),(7,'c',15),(8,'c',25),(9,'c',35)`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("min_per_team_order_by_min", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT team, MIN(pts) FROM mmga_t GROUP BY team ORDER BY MIN(pts)
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 teams, got %d", len(rows))
+		}
+		// c:min=5, a:min=10, b:min=20
+		wantMin := []int64{5, 10, 20}
+		for i, w := range wantMin {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: want min %d, got %v", i, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("max_per_team_order_by_max_desc", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT team, MAX(pts) FROM mmga_t GROUP BY team ORDER BY MAX(pts) DESC
+		`)
+		// a:max=50, b:max=40, c:max=35
+		wantMax := []int64{50, 40, 35}
+		for i, w := range wantMax {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("row %d: want max %d, got %v", i, w, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("range_per_team", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT team, MAX(pts) - MIN(pts) AS spread FROM mmga_t
+			GROUP BY team ORDER BY team
+		`)
+		// a: 50-10=40, b: 40-20=20, c: 35-5=30
+		wantSpread := []int64{40, 20, 30}
+		for i, w := range wantSpread {
+			if toInt64(rows[i][1]) != w {
+				t.Errorf("team %v: want spread %d, got %v", rows[i][0], w, rows[i][1])
+			}
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
