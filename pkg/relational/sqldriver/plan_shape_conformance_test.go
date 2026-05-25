@@ -11943,6 +11943,55 @@ func TestFDB_JoinWithCTEAndAggregate(t *testing.T) {
 	})
 }
 
+// TestFDB_CoalesceChain — COALESCE with multiple fallbacks
+func TestFDB_CoalesceChain(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "coalch", "CREATE TABLE cc_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO cc_t VALUES
+		(1, 10, 20, 30), (2, NULL, 20, 30), (3, NULL, NULL, 30), (4, NULL, NULL, NULL)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("coalesce_three_args", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, c) FROM cc_t ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 10 {
+			t.Errorf("id=1: COALESCE(10,20,30)=10, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 20 {
+			t.Errorf("id=2: COALESCE(NULL,20,30)=20, got %v", rows[1][1])
+		}
+		if toInt64(rows[2][1]) != 30 {
+			t.Errorf("id=3: COALESCE(NULL,NULL,30)=30, got %v", rows[2][1])
+		}
+		if rows[3][1] != nil {
+			t.Errorf("id=4: COALESCE(NULL,NULL,NULL)=NULL, got %v", rows[3][1])
+		}
+	})
+
+	t.Run("coalesce_with_constant", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, c, 999) FROM cc_t ORDER BY id")
+		if toInt64(rows[3][1]) != 999 {
+			t.Errorf("id=4: COALESCE(NULL,NULL,NULL,999)=999, got %v", rows[3][1])
+		}
+	})
+
+	t.Run("coalesce_in_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT SUM(COALESCE(a, 0)) FROM cc_t")
+		if toInt64(rows[0][0]) != 10 {
+			t.Errorf("SUM(COALESCE(a,0)) = 10+0+0+0 = 10, got %v", rows[0][0])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
