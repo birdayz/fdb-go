@@ -4115,3 +4115,78 @@ func TestFDB_AggExprArgDirect(t *testing.T) {
 
 	_ = ctx
 }
+
+func TestFDB_AggregateExpressionVariants(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "aggvar",
+		"CREATE TABLE sales (id BIGINT NOT NULL, region STRING, units BIGINT, price BIGINT, discount BIGINT, PRIMARY KEY (id))")
+
+	for _, r := range []struct {
+		id                     int
+		region                 string
+		units, price, discount int
+	}{
+		{1, "US", 10, 100, 5},
+		{2, "US", 20, 50, 10},
+		{3, "EU", 5, 200, 0},
+		{4, "EU", 15, 80, 20},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO sales VALUES (%d, '%s', %d, %d, %d)",
+			r.id, r.region, r.units, r.price, r.discount)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	t.Run("sum_product", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT region, SUM(units * price) AS revenue FROM sales GROUP BY region ORDER BY region")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("revenue NULL for %v", rows[0][0])
+		}
+		if rows[0][1].(int64) != 2200 {
+			t.Errorf("EU: got %v, want 2200 (5*200+15*80)", rows[0][1])
+		}
+		if rows[1][1].(int64) != 2000 {
+			t.Errorf("US: got %v, want 2000 (10*100+20*50)", rows[1][1])
+		}
+	})
+
+	t.Run("sum_subtraction", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT region, SUM(price - discount) AS net FROM sales GROUP BY region ORDER BY region")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][1] == nil {
+			t.Fatalf("net NULL for %v", rows[0][0])
+		}
+		if rows[0][1].(int64) != 260 {
+			t.Errorf("EU: got %v, want 260 (200-0+80-20)", rows[0][1])
+		}
+		if rows[1][1].(int64) != 135 {
+			t.Errorf("US: got %v, want 135 (100-5+50-10)", rows[1][1])
+		}
+	})
+
+	t.Run("count_with_min_max", func(t *testing.T) {
+		rows := collectRows(t, db,
+			"SELECT region, COUNT(*), MIN(price), MAX(price) FROM sales GROUP BY region ORDER BY region")
+		if len(rows) != 2 {
+			t.Fatalf("want 2, got %d", len(rows))
+		}
+		if rows[0][1].(int64) != 2 || rows[0][2].(int64) != 80 || rows[0][3].(int64) != 200 {
+			t.Errorf("EU: got count=%v min=%v max=%v, want 2,80,200", rows[0][1], rows[0][2], rows[0][3])
+		}
+	})
+
+	_ = ctx
+}
