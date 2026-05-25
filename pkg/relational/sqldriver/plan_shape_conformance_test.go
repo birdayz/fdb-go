@@ -9576,6 +9576,122 @@ func TestFDB_NullSafeComparisons(t *testing.T) {
 	})
 }
 
+// TestFDB_SubqueryInWhere — subqueries in WHERE clause
+func TestFDB_SubqueryInWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "sqwh",
+		"CREATE TABLE products(id BIGINT, name STRING, price BIGINT, PRIMARY KEY(id)) "+
+			"CREATE TABLE orders_sq(id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO products VALUES (1, 'widget', 10), (2, 'gadget', 20), (3, 'doohickey', 30)"); err != nil {
+		t.Fatalf("INSERT products: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO orders_sq VALUES (1, 1, 5), (2, 1, 3), (3, 2, 10)"); err != nil {
+		t.Fatalf("INSERT orders: %v", err)
+	}
+
+	t.Run("exists_correlated", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM products p
+			WHERE EXISTS (SELECT 1 FROM orders_sq o WHERE o.product_id = p.id)
+			ORDER BY p.name
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (widget, gadget have orders), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "gadget" {
+			t.Errorf("first should be gadget, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("not_exists_correlated", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name FROM products p
+			WHERE NOT EXISTS (SELECT 1 FROM orders_sq o WHERE o.product_id = p.id)
+		`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (doohickey has no orders), got %d: %v", len(rows), rows)
+		}
+		if fmt.Sprintf("%v", rows[0][0]) != "doohickey" {
+			t.Errorf("should be doohickey, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("in_subquery_not_plannable", func(t *testing.T) {
+		_, err := db.QueryContext(ctx, `
+			SELECT name FROM products
+			WHERE id IN (SELECT product_id FROM orders_sq)
+			ORDER BY name
+		`)
+		if err == nil {
+			t.Errorf("expected error for IN (subquery), got nil")
+		} else {
+			t.Logf("expected error: %v", err)
+		}
+	})
+}
+
+// TestFDB_MultiTableJoinPatterns — various JOIN patterns
+func TestFDB_MultiTableJoinPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "mtjp",
+		"CREATE TABLE t_a(id BIGINT, val STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE t_b(id BIGINT, a_id BIGINT, score BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO t_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
+		t.Fatalf("INSERT t_a: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO t_b VALUES (10, 1, 100), (20, 1, 200), (30, 2, 150), (40, 2, 250)"); err != nil {
+		t.Fatalf("INSERT t_b: %v", err)
+	}
+
+	t.Run("inner_join_basic", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT t_a.val, t_b.score FROM t_a JOIN t_b ON t_a.id = t_b.a_id ORDER BY t_b.score")
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 100 {
+			t.Errorf("first score should be 100, got %v", rows[0][1])
+		}
+	})
+
+	t.Run("left_join_includes_unmatched", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT t_a.val, t_b.score FROM t_a LEFT JOIN t_b ON t_a.id = t_b.a_id ORDER BY t_a.id")
+		if len(rows) != 5 {
+			t.Fatalf("want 5 (4 matched + 1 unmatched z), got %d: %v", len(rows), rows)
+		}
+		if rows[4][1] != nil {
+			t.Errorf("z's score should be NULL (no match), got %v", rows[4][1])
+		}
+	})
+
+	t.Run("join_with_aggregate", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT t_a.val, SUM(t_b.score), COUNT(*)
+			FROM t_a JOIN t_b ON t_a.id = t_b.a_id
+			GROUP BY t_a.val
+			ORDER BY t_a.val
+		`)
+		if len(rows) != 2 {
+			t.Fatalf("want 2 (x,y), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 300 {
+			t.Errorf("x sum = 100+200 = 300, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 400 {
+			t.Errorf("y sum = 150+250 = 400, got %v", rows[1][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
