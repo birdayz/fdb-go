@@ -11579,6 +11579,73 @@ func TestFDB_MixedOperators(t *testing.T) {
 	})
 }
 
+// TestFDB_AggregateOverJoinWithNulls — aggregate over JOIN with NULL-producing LEFT JOIN
+func TestFDB_AggregateOverJoinWithNulls(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "agjn",
+		"CREATE TABLE aj_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
+			"CREATE TABLE aj_child(id BIGINT, parent_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, "INSERT INTO aj_parent VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
+		t.Fatalf("INSERT parent: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO aj_child VALUES (10, 1, 100), (20, 1, 200), (30, 2, 50)"); err != nil {
+		t.Fatalf("INSERT child: %v", err)
+	}
+
+	t.Run("left_join_sum_with_null_group", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name, SUM(c.amount) AS total
+			FROM aj_parent p LEFT JOIN aj_child c ON p.id = c.parent_id
+			GROUP BY p.name ORDER BY p.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][1]) != 300 {
+			t.Errorf("p1 sum = 100+200 = 300, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 50 {
+			t.Errorf("p2 sum = 50, got %v", rows[1][1])
+		}
+		if rows[2][1] != nil {
+			t.Errorf("p3 has no children → SUM should be NULL, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("left_join_count_col_excludes_null", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name, COUNT(c.amount)
+			FROM aj_parent p LEFT JOIN aj_child c ON p.id = c.parent_id
+			GROUP BY p.name ORDER BY p.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[2][1]) != 0 {
+			t.Errorf("p3 COUNT(c.amount) should be 0 (no children), got %v", rows[2][1])
+		}
+	})
+
+	t.Run("left_join_coalesce_sum", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT p.name, COALESCE(SUM(c.amount), 0) AS total
+			FROM aj_parent p LEFT JOIN aj_child c ON p.id = c.parent_id
+			GROUP BY p.name ORDER BY p.name
+		`)
+		if len(rows) != 3 {
+			t.Fatalf("want 3, got %d", len(rows))
+		}
+		if toInt64(rows[2][1]) != 0 {
+			t.Errorf("p3 COALESCE(NULL, 0) should be 0, got %v", rows[2][1])
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
