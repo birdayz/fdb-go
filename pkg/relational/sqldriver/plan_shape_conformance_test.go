@@ -10097,6 +10097,147 @@ func TestFDB_LargeDataSet(t *testing.T) {
 	})
 }
 
+// TestFDB_IndexScanPatterns — queries that should use index scans
+func TestFDB_IndexScanPatterns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ixsc",
+		"CREATE TABLE idx_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX status_idx ON idx_t (status)")
+	for i := 1; i <= 20; i++ {
+		status := "active"
+		if i%3 == 0 {
+			status = "inactive"
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO idx_t VALUES (%d, '%s', %d)", i, status, i*5)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	t.Run("index_eq_scan", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, score FROM idx_t WHERE status = 'inactive' ORDER BY id")
+		if len(rows) != 6 {
+			t.Fatalf("want 6 inactive (3,6,9,12,15,18), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("first inactive should be id=3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("count_via_index", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'active'")
+		if toInt64(rows[0][0]) != 14 {
+			t.Errorf("active count should be 14, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("aggregate_with_index_filter", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT status, SUM(score), MIN(score), MAX(score) FROM idx_t GROUP BY status ORDER BY status")
+		if len(rows) != 2 {
+			t.Fatalf("want 2 groups, got %d", len(rows))
+		}
+	})
+
+	t.Run("update_indexed_column", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "UPDATE idx_t SET status = 'archived' WHERE id = 3"); err != nil {
+			t.Fatalf("UPDATE: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'inactive'")
+		if toInt64(rows[0][0]) != 5 {
+			t.Errorf("after archiving id=3: inactive should be 5, got %v", rows[0][0])
+		}
+		rows = collectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'archived'")
+		if toInt64(rows[0][0]) != 1 {
+			t.Errorf("archived should be 1, got %v", rows[0][0])
+		}
+	})
+}
+
+// TestFDB_ComplexExpressionEvaluation — complex expressions in various positions
+func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "cxeval", "CREATE TABLE expr_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	if _, err := db.ExecContext(ctx, `INSERT INTO expr_t VALUES
+		(1, 10, 20, 30), (2, 40, 50, 60), (3, 70, 80, 90), (4, 100, 0, 50)
+	`); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	t.Run("arithmetic_chain", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, a + b + c FROM expr_t ORDER BY id")
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 60 {
+			t.Errorf("10+20+30=60, got %v", rows[0][1])
+		}
+		if toInt64(rows[1][1]) != 150 {
+			t.Errorf("40+50+60=150, got %v", rows[1][1])
+		}
+	})
+
+	t.Run("multiply_in_where", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id FROM expr_t WHERE a * b > 3000 ORDER BY id")
+		if len(rows) != 1 {
+			t.Fatalf("want 1 (70*80=5600>3000), got %d: %v", len(rows), rows)
+		}
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("should be id=3, got %v", rows[0][0])
+		}
+	})
+
+	t.Run("subtraction", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT id, a - b FROM expr_t ORDER BY id")
+		if toInt64(rows[0][1]) != -10 {
+			t.Errorf("10-20=-10, got %v", rows[0][1])
+		}
+		if toInt64(rows[3][1]) != 100 {
+			t.Errorf("100-0=100, got %v", rows[3][1])
+		}
+	})
+
+	t.Run("case_with_arithmetic", func(t *testing.T) {
+		rows := collectRows(t, db, `
+			SELECT id, CASE WHEN a + b > 100 THEN a * 2 ELSE b * 2 END
+			FROM expr_t ORDER BY id
+		`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 40 {
+			t.Errorf("id=1: a+b=30<100 → b*2=40, got %v", rows[0][1])
+		}
+		if toInt64(rows[2][1]) != 140 {
+			t.Errorf("id=3: a+b=150>100 → a*2=140, got %v", rows[2][1])
+		}
+	})
+
+	t.Run("nested_coalesce", func(t *testing.T) {
+		if _, err := db.ExecContext(ctx, "INSERT INTO expr_t(id, a) VALUES (5, 42)"); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+		rows := collectRows(t, db, "SELECT id, COALESCE(b, COALESCE(c, 999)) FROM expr_t WHERE id = 5")
+		if len(rows) != 1 {
+			t.Fatalf("want 1, got %d", len(rows))
+		}
+		if toInt64(rows[0][1]) != 999 {
+			t.Errorf("COALESCE(NULL, COALESCE(NULL, 999)) = 999, got %v", rows[0][1])
+		}
+		if _, err := db.ExecContext(ctx, "DELETE FROM expr_t WHERE id = 5"); err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+	})
+}
+
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
