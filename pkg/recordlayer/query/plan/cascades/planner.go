@@ -484,6 +484,8 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 			ref.SetWinner(expressions.NoProperties, bestPhys)
 		}
 	}
+
+	stampOrderingWinners(ref, p.costModel)
 }
 
 // promoteInJoinWinners walks all References and checks if an InJoin
