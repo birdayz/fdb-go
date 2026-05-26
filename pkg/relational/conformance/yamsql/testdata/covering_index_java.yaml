@@ -1,0 +1,66 @@
+# covering_index_java.yaml — Covering index optimization.
+# When a query only accesses columns in the index (+ PK), the planner
+# should use a covering scan (no Fetch needed). Tests that queries
+# correctly return results using covering paths.
+name: covering_index_java
+schema_template: |
+  CREATE TABLE products (
+    id BIGINT NOT NULL,
+    name STRING,
+    category STRING,
+    price BIGINT,
+    stock BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_cat_price ON products (category, price)
+  CREATE INDEX idx_name ON products (name)
+setup:
+  - INSERT INTO products VALUES
+      (1, 'Widget', 'A', 10, 100),
+      (2, 'Gadget', 'A', 20, 50),
+      (3, 'Doohickey', 'B', 15, 200),
+      (4, 'Thingamajig', 'B', 30, 75),
+      (5, 'Whatsit', 'C', 25, 150)
+tests:
+  # Query on indexed columns only — should use covering scan
+  - query: SELECT category, price FROM products WHERE category = 'A' ORDER BY price
+    plan_contains: IndexScan
+    rows:
+      - ['A', 10]
+      - ['A', 20]
+
+  # PK + index columns — still covering (PK always in index)
+  - query: SELECT id, category FROM products WHERE category = 'B' ORDER BY id
+    rows:
+      - [3, 'B']
+      - [4, 'B']
+
+  # Non-covering: needs stock column (not in index)
+  - query: SELECT category, price, stock FROM products WHERE category = 'A' ORDER BY price
+    rows:
+      - ['A', 10, 100]
+      - ['A', 20, 50]
+
+  # Covering with range scan
+  - query: SELECT category, price FROM products WHERE category >= 'B' ORDER BY category, price
+    rows:
+      - ['B', 15]
+      - ['B', 30]
+      - ['C', 25]
+
+  # Covering with name index
+  - query: SELECT id, name FROM products WHERE name = 'Widget'
+    rows:
+      - [1, 'Widget']
+
+  # COUNT using covering scan
+  - query: SELECT COUNT(*) FROM products WHERE category = 'A'
+    rows:
+      - [2]
+
+  # Aggregate on indexed column — covering
+  - query: SELECT category, MAX(price) FROM products GROUP BY category ORDER BY category
+    rows:
+      - ['A', 20]
+      - ['B', 30]
+      - ['C', 25]
