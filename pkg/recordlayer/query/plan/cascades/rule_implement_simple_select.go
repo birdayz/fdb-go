@@ -66,16 +66,8 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			(innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty())
 
 		if len(queryPredicates) == 0 && isSimpleResult && !needsQuantifierWrap {
-			// Yield inner plans directly when the Select is a no-op
-			// passthrough. Skip when the Reference also contains
-			// multi-quantifier alternatives (e.g. Select with Explode
-			// from InComparisonToExplode) — those produce InJoin/NLJ
-			// plans via other rules and should not be preempted by a
-			// bare inner plan from the 1-quantifier version.
-			if !hasMultiQuantifierSibling(call.Reference) {
-				for _, expr := range innerExprs {
-					call.YieldFinalExpression(expr)
-				}
+			for _, expr := range innerExprs {
+				call.YieldFinalExpression(expr)
 			}
 			continue
 		}
