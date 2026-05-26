@@ -445,9 +445,6 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 		}
 	}
 
-	// Prefer finalMembers (PLANNING-phase physical plans) over the
-	// full member set. This mirrors Java's OptimizeGroup which only
-	// considers finalMembers for plan selection.
 	candidates := ref.FinalMembers()
 	if len(candidates) == 0 {
 		candidates = ref.AllMembers()
