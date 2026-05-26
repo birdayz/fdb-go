@@ -79,7 +79,7 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 
 		currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 		currentQuant := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), currentRef)
-		currentPlan := pickBestInnerPlan(innerRef, innerPlans)
+		currentPlan := innerPlans[0]
 
 		if innerQuantifier.Kind() == expressions.QuantifierExistential {
 			fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(currentPlan, values.NewNullValue(values.UnknownType))
@@ -127,21 +127,6 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			call.YieldFinalExpression(mapWrapper)
 		}
 	}
-}
-
-// pickBestInnerPlan selects the inner plan from a partition's plans.
-// Prefers the winner from the inner Reference (which is the most
-// composed plan selected by the cost model) over the first plan.
-// Falls back to innerPlans[0] if no winner exists.
-func pickBestInnerPlan(innerRef *expressions.Reference, innerPlans []plans.RecordQueryPlan) plans.RecordQueryPlan {
-	if w := innerRef.Winner(expressions.NoProperties); w != nil {
-		if ph, ok := w.(physicalPlanExpression); ok {
-			if p := ph.GetRecordQueryPlan(); p != nil {
-				return p
-			}
-		}
-	}
-	return innerPlans[0]
 }
 
 func isQuantifiedObjectValueFor(v values.Value, q expressions.Quantifier) bool {
