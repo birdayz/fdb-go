@@ -76,7 +76,7 @@ func (w *physicalInJoinWrapper) HintCost(child []properties.Cost, _ properties.S
 	}
 	inListLen := float64(len(w.plan.GetInValues()))
 	if inListLen < 1 {
-		inListLen = 10
+		inListLen = 10 // parameterized IN — values not bound at plan time
 	}
 	// InJoin is a correlated index probe: for each IN value, the inner
 	// plan does an equality point-lookup returning ~1 row. The child's
