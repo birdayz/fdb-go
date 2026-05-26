@@ -774,6 +774,11 @@ func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visite
 		// ordering (enables sort elimination via per-properties winners
 		// in extraction).
 		for _, expr := range exprs {
+			if fw, ok := expr.(*physicalFetchFromPartialRecordWrapper); ok {
+				if fw.plan == nil || fw.plan.GetInner() == nil {
+					continue
+				}
+			}
 			ref.InsertFinal(expr)
 		}
 		stampOrderingWinners(ref, p.costModel)
