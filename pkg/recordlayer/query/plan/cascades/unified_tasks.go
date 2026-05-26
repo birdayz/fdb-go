@@ -48,6 +48,9 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 
 	if !t.Ref.NeedsExploration() {
 		t.Ref.CommitExploration()
+		if t.Phase == PhasePlanning {
+			computeRefPlanProperties(t.Ref)
+		}
 		return
 	}
 
