@@ -526,6 +526,9 @@ func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map
 		if !IsPhysicalInJoin(m) && !isPhysicalInUnion(m) {
 			continue
 		}
+		if isNilInnerFetch(m) {
+			continue
+		}
 		if p.costModel(m, existing) {
 			existing = m
 		}
