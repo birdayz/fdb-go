@@ -1,0 +1,77 @@
+# like_patterns_java.yaml — LIKE/NOT LIKE pattern matching.
+# Tests prefix, suffix, contains, exact, and escape patterns.
+name: like_patterns_java
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    name STRING,
+    code STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_name ON items (name)
+setup:
+  - INSERT INTO items VALUES
+      (1, 'apple', 'A001'),
+      (2, 'apricot', 'A002'),
+      (3, 'banana', 'B001'),
+      (4, 'blueberry', 'B002'),
+      (5, 'cherry', 'C001'),
+      (6, null, null),
+      (7, 'app', 'A010')
+tests:
+  # Prefix match: LIKE 'ap%'
+  - query: SELECT id, name FROM items WHERE name LIKE 'ap%' ORDER BY id
+    rows:
+      - [1, 'apple']
+      - [2, 'apricot']
+      - [7, 'app']
+
+  # Suffix match: LIKE '%ry'
+  - query: SELECT id, name FROM items WHERE name LIKE '%ry' ORDER BY id
+    rows:
+      - [5, 'cherry']
+
+  # Contains: LIKE '%an%'
+  - query: SELECT id, name FROM items WHERE name LIKE '%an%' ORDER BY id
+    rows:
+      - [3, 'banana']
+
+  # Exact match via LIKE (no wildcards)
+  - query: SELECT id FROM items WHERE name LIKE 'apple'
+    rows:
+      - [1]
+
+  # Single char wildcard: LIKE 'app__'
+  - query: SELECT id, name FROM items WHERE name LIKE 'app__' ORDER BY id
+    rows:
+      - [1, 'apple']
+
+  # NOT LIKE
+  - query: SELECT id, name FROM items WHERE name NOT LIKE 'a%' AND name IS NOT NULL ORDER BY id
+    rows:
+      - [3, 'banana']
+      - [4, 'blueberry']
+      - [5, 'cherry']
+
+  # LIKE with NULL column → no match (UNKNOWN)
+  - query: SELECT COUNT(*) FROM items WHERE name LIKE '%'
+    rows:
+      - [6]
+
+  # LIKE prefix on indexed column (plan should use index)
+  - query: SELECT id, name FROM items WHERE name LIKE 'bl%' ORDER BY id
+    plan_contains: IndexScan
+    rows:
+      - [4, 'blueberry']
+
+  # Code pattern match
+  - query: SELECT id, code FROM items WHERE code LIKE 'A%' AND code IS NOT NULL ORDER BY id
+    rows:
+      - [1, 'A001']
+      - [2, 'A002']
+      - [7, 'A010']
+
+  # LIKE with no match
+  - query: SELECT COUNT(*) FROM items WHERE name LIKE 'xyz%'
+    rows:
+      - [0]
