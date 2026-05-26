@@ -18,6 +18,12 @@ func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
 	if t.Phase.HasNextPhase() {
 		p.push(&InitiatePlannerPhaseTask{Phase: t.Phase.NextPhase(), RootRef: t.RootRef})
 	}
+
+	// Before PLANNING starts, adjust partial matches from REWRITING.
+	if t.Phase == PhasePlanning {
+		AdjustMatches(t.RootRef)
+	}
+
 	p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: t.RootRef})
 	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.RootRef})
 }
