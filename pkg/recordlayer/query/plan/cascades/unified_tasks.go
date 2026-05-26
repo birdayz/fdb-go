@@ -175,11 +175,16 @@ func (t *TransformImplTask) Run(p *Planner) {
 		}
 		t.Rule.OnMatch(call)
 
-		// Handle yields: final expressions are already in ref.InsertFinal
-		// via call.Yield. Push explore+optimize for each.
+		// Handle yields: insert into FinalMembers and push explore+optimize
+		// for genuinely new expressions. Skip re-exploration for
+		// FinalizeExpressionsRule yields (they're already-explored
+		// exploratory members promoted to final).
 		for _, y := range call.yielded {
-			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
-			p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+			t.Ref.InsertFinal(y)
+			if !isAlreadyExploratoryMember(t.Ref, y) {
+				p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+				p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+			}
 		}
 
 		// Handle constraint pushes: re-explore affected child References.
@@ -255,6 +260,18 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 		p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: childRef})
 		p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef})
 	}
+}
+
+// isAlreadyExploratoryMember checks if expr is already in the Reference's
+// exploratory members (by pointer identity). Used to skip re-exploration
+// of FinalizeExpressionsRule yields.
+func isAlreadyExploratoryMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	for _, m := range ref.Members() {
+		if m == expr {
+			return true
+		}
+	}
+	return false
 }
 
 // isPreOrderRule returns true for rules that should fire BEFORE child

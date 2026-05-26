@@ -44,9 +44,10 @@ type Reference struct {
 }
 
 // InitialOf returns a Reference holding the single expression e as its
-// only member. Equivalent to Java's `Reference.initialOf(e)`.
+// only member. The Reference starts at StageCanonical so REWRITING-
+// phase exploration doesn't need to advance it.
 func InitialOf(e RelationalExpression) *Reference {
-	return &Reference{members: []RelationalExpression{e}}
+	return &Reference{members: []RelationalExpression{e}, plannerStage: StageCanonical}
 }
 
 // Get returns the (first) member. For seed References this is the only
@@ -197,11 +198,8 @@ func (r *Reference) FinalMembers() []RelationalExpression {
 	return r.finalMembers
 }
 
-// InsertFinal adds e to the finalMembers set (PLANNING-phase physical
-// plans). Uses the same dedup logic as Insert. Also inserts into
-// members so that AllMembers remains a superset. Returns true if e was
-// newly added to finalMembers (regardless of whether it was already in
-// members). Mirrors Java's Reference.insertFinalExpression.
+// InsertFinal adds e to the finalMembers set only. Does NOT add to
+// exploratory members. Mirrors Java's Reference.insertFinalExpression.
 func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	if e == nil {
 		panic("Reference.InsertFinal: nil expression")
@@ -216,7 +214,6 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		}
 	}
 	r.finalMembers = append(r.finalMembers, e)
-	r.Insert(e)
 	return true
 }
 
@@ -238,7 +235,7 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 func (r *Reference) Stage() PlannerStage { return r.plannerStage }
 
 // NeedsExploration returns true if the Reference has never been explored
-// or if new members were added since the last exploration round.
+// or if new exploratory members were added since the last round.
 func (r *Reference) NeedsExploration() bool {
 	if r.explState == explorationNever {
 		return true
@@ -246,14 +243,14 @@ func (r *Reference) NeedsExploration() bool {
 	if r.explState == explorationDone {
 		return false
 	}
-	return len(r.members)+len(r.finalMembers) > r.explMemberCount
+	return len(r.members) > r.explMemberCount
 }
 
 // StartExploration marks exploration as in-progress and records the
-// current member count for convergence detection.
+// current exploratory member count for convergence detection.
 func (r *Reference) StartExploration() {
 	r.explState = explorationInProgress
-	r.explMemberCount = len(r.members) + len(r.finalMembers)
+	r.explMemberCount = len(r.members)
 }
 
 // CommitExploration marks exploration as converged.
