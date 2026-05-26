@@ -1,0 +1,59 @@
+# aggregate_expressions_java.yaml — Aggregates over expressions.
+# Tests SUM/COUNT/MIN/MAX of computed values, not just bare columns.
+name: aggregate_expressions_java
+schema_template: |
+  CREATE TABLE line_items (
+    id BIGINT NOT NULL,
+    order_id BIGINT,
+    qty BIGINT,
+    unit_price BIGINT,
+    discount BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO line_items VALUES
+      (1, 1, 2, 100, 10),
+      (2, 1, 3, 50, 0),
+      (3, 2, 1, 200, 20),
+      (4, 2, 5, 30, 5),
+      (5, 3, 10, 10, 0)
+tests:
+  # SUM of expression (qty * unit_price)
+  - query: SELECT SUM(qty * unit_price) FROM line_items
+    rows:
+      - [650]
+
+  # SUM of expression per group
+  - query: SELECT order_id, SUM(qty * unit_price) AS total FROM line_items GROUP BY order_id ORDER BY order_id
+    rows:
+      - [1, 350]
+      - [2, 350]
+      - [3, 100]
+
+  # SUM with subtraction (net = qty*price - discount)
+  - query: SELECT SUM(qty * unit_price - discount) FROM line_items
+    rows:
+      - [615]
+
+  # COUNT with expression in HAVING
+  - query: SELECT order_id, COUNT(*) FROM line_items GROUP BY order_id HAVING SUM(qty * unit_price) > 200 ORDER BY order_id
+    rows:
+      - [1, 2]
+      - [2, 2]
+
+  # MIN/MAX of expression
+  - query: SELECT MIN(qty * unit_price), MAX(qty * unit_price) FROM line_items
+    rows:
+      - [100, 200]
+
+  # Arithmetic in SELECT with aggregate
+  - query: SELECT order_id, SUM(qty * unit_price) / COUNT(*) AS avg_line FROM line_items GROUP BY order_id ORDER BY order_id
+    rows:
+      - [1, 175]
+      - [2, 175]
+      - [3, 100]
+
+  # Multiple expression aggregates
+  - query: SELECT SUM(qty), SUM(unit_price), SUM(qty * unit_price), SUM(discount) FROM line_items
+    rows:
+      - [21, 390, 650, 35]
