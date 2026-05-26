@@ -1,0 +1,66 @@
+# insert_select_java.yaml — INSERT...SELECT patterns.
+# Tests inserting rows from queries, including with WHERE filters,
+# aggregates, and expressions.
+name: insert_select_java
+schema_template: |
+  CREATE TABLE source (
+    id BIGINT NOT NULL,
+    val BIGINT,
+    cat STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE target (
+    id BIGINT NOT NULL,
+    val BIGINT,
+    cat STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE summary (
+    cat STRING NOT NULL,
+    total BIGINT,
+    cnt BIGINT,
+    PRIMARY KEY (cat)
+  )
+setup:
+  - INSERT INTO source VALUES
+      (1, 10, 'A'),
+      (2, 20, 'A'),
+      (3, 30, 'B'),
+      (4, 40, 'B'),
+      (5, 50, 'C')
+tests:
+  # INSERT...SELECT all rows
+  - query: INSERT INTO target SELECT * FROM source
+    rowcount: 5
+  - query: SELECT COUNT(*) FROM target
+    rows:
+      - [5]
+
+  # INSERT...SELECT with WHERE
+  - query: DELETE FROM target WHERE id > 0
+    rowcount: 5
+  - query: INSERT INTO target SELECT * FROM source WHERE cat = 'B'
+    rowcount: 2
+  - query: SELECT id, val FROM target ORDER BY id
+    rows:
+      - [3, 30]
+      - [4, 40]
+
+  # INSERT...SELECT with expression
+  - query: DELETE FROM target WHERE id > 0
+    rowcount: 2
+  - query: INSERT INTO target SELECT id + 100, val * 2, cat FROM source WHERE val <= 20
+    rowcount: 2
+  - query: SELECT id, val, cat FROM target ORDER BY id
+    rows:
+      - [101, 20, 'A']
+      - [102, 40, 'A']
+
+  # INSERT...SELECT with aggregate into summary table
+  - query: INSERT INTO summary SELECT cat, SUM(val), COUNT(*) FROM source GROUP BY cat
+    rowcount: 3
+  - query: SELECT cat, total, cnt FROM summary ORDER BY cat
+    rows:
+      - ['A', 30, 2]
+      - ['B', 70, 2]
+      - ['C', 50, 1]
