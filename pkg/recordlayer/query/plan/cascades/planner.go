@@ -81,6 +81,10 @@ type Planner struct {
 	// default 1e6 constant.
 	stats properties.StatisticsProvider
 
+	// constraintMap holds ordering constraints propagated during
+	// PLANNING's preorder rules. Shared across all tasks.
+	constraintMap *ConstraintMap
+
 	// events is the (optional) event handler. Nil = no events.
 	events PlannerEventHandler
 }
@@ -791,6 +795,60 @@ func (p *Planner) pop() Task {
 	t := p.stack[n-1]
 	p.stack = p.stack[:n-1]
 	return t
+}
+
+// rulesForPhase returns the expression and implementation rules for the
+// given planner phase.
+func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []ImplementationRule) {
+	switch phase {
+	case PhaseRewriting:
+		return p.rules, nil
+	case PhasePlanning:
+		return p.planningExpressionRules, p.implementationRules
+	default:
+		return nil, nil
+	}
+}
+
+// costModelForPhase returns the cost model comparator for the given phase.
+func (p *Planner) costModelForPhase(phase PlannerPhase) func(a, b expressions.RelationalExpression) bool {
+	switch phase {
+	case PhaseRewriting:
+		return RewritingCostModelLess
+	case PhasePlanning:
+		return p.costModel
+	default:
+		return p.costModel
+	}
+}
+
+// pushDataAccessTasks generates data access expressions (index scans)
+// from PartialMatches on the Reference. This is the Go equivalent of
+// Java's TransformMatchPartition tasks.
+func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.RelationalExpression) {
+	candidates := GetPartialMatchCandidatesTyped(ref)
+	if len(candidates) == 0 {
+		return
+	}
+
+	var requestedOrderings []*RequestedOrdering
+	if p.constraintMap != nil {
+		if orderings, ok := Get(p.constraintMap, ref, RequestedOrderingConstraintKey); ok {
+			requestedOrderings = orderings
+		}
+	}
+
+	for _, candidate := range candidates {
+		matches := GetPartialMatchesForCandidate(ref, candidate)
+		if len(matches) == 0 {
+			continue
+		}
+		exprs := DataAccessForMatchPartition(requestedOrderings, matches, p.ctx, nil)
+		for _, expr := range exprs {
+			ref.InsertFinal(expr)
+		}
+		stampOrderingWinners(ref, p.costModel)
+	}
 }
 
 // Task is the task-stack driver's unit of work. Tasks are Run
