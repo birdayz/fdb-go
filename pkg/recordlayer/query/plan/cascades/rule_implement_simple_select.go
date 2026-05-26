@@ -66,10 +66,8 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			(innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty())
 
 		if len(queryPredicates) == 0 && isSimpleResult && !needsQuantifierWrap {
-			if !referenceHasNonTrivialSiblings(call.Reference) {
-				for _, expr := range innerExprs {
-					call.YieldFinalExpression(expr)
-				}
+			for _, expr := range innerExprs {
+				call.YieldFinalExpression(expr)
 			}
 			continue
 		}
@@ -145,13 +143,35 @@ func hasMultiQuantifierSibling(ref *expressions.Reference) bool {
 // (joins/InJoin), or aggregation (StreamingAgg). When these exist, the
 // bare-plan passthrough should be suppressed to avoid stripping the
 // non-trivial semantics that other rules will compose.
+// isComposedPlan returns true for plan wrappers that represent complex
+// compositions (InJoin, InUnion, NLJ, FlatMap). These should NOT be
+// yielded through the bare-plan passthrough because they may break
+// ordering guarantees or compete incorrectly with simpler plans at the
+// parent level.
+func isComposedPlan(expr expressions.RelationalExpression) bool {
+	switch expr.(type) {
+	case *physicalInJoinWrapper, *physicalInUnionWrapper,
+		*physicalNestedLoopJoinWrapper, *physicalFlatMapWrapper:
+		return true
+	}
+	return isNilInnerFetch(expr)
+}
+
 func referenceHasNonTrivialSiblings(ref *expressions.Reference) bool {
 	for _, m := range ref.AllMembers() {
-		switch m.(type) {
+		switch v := m.(type) {
 		case *expressions.LogicalFilterExpression:
 			return true
 		case *expressions.LogicalDistinctExpression:
 			return true
+		case *expressions.SelectExpression:
+			if len(v.GetPredicates()) > 0 {
+				for _, p := range v.GetPredicates() {
+					if !predicates.IsTautology(p) {
+						return true
+					}
+				}
+			}
 		}
 		if len(m.GetQuantifiers()) > 1 {
 			return true

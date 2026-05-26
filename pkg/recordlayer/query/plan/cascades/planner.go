@@ -522,12 +522,23 @@ func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map
 	if _, isPhys := existing.(physicalPlanExpression); !isPhys {
 		return
 	}
+	existingProvidesOrdering := existingIsOrderingWinner(ref, existing)
 	for _, m := range ref.AllMembers() {
 		if !IsPhysicalInJoin(m) && !isPhysicalInUnion(m) {
 			continue
 		}
 		if isNilInnerFetch(m) {
 			continue
+		}
+		if existingProvidesOrdering {
+			if oh, ok := m.(orderingHinter); ok {
+				ord := oh.HintOrdering()
+				if !ord.IsKnown || len(ord.Keys) == 0 {
+					continue
+				}
+			} else {
+				continue
+			}
 		}
 		if p.costModel(m, existing) {
 			existing = m
@@ -587,6 +598,27 @@ func promoteByDataAccessCost(rootRef *expressions.Reference, stats properties.St
 		existingCounts = counts
 	}
 	rootRef.SetWinner(expressions.NoProperties, existing)
+}
+
+// existingIsOrderingWinner returns true if the given expression is the
+// ordering-specific winner for any non-empty ordering on this Reference.
+// When true, replacing the NoProperties winner would invalidate sort
+// elimination at a parent Sort level.
+func existingIsOrderingWinner(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	oh, ok := expr.(orderingHinter)
+	if !ok {
+		return false
+	}
+	ord := oh.HintOrdering()
+	if !ord.IsKnown || len(ord.Keys) == 0 {
+		return false
+	}
+	props := orderingToProps(ord)
+	if props.IsEmpty() {
+		return false
+	}
+	winner := ref.Winner(props)
+	return winner == expr
 }
 
 // isNilInnerFetch returns true if expr is a physicalFetchFromPartialRecordWrapper
