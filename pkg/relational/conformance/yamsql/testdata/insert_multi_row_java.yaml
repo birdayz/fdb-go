@@ -1,0 +1,59 @@
+# insert_multi_row_java.yaml — Multi-row INSERT patterns.
+# Tests inserting multiple rows in a single statement, verifying
+# row counts, ordering, and constraint behavior.
+name: insert_multi_row_java
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    name STRING,
+    val BIGINT,
+    PRIMARY KEY (id)
+  )
+setup: []
+tests:
+  # Multi-row INSERT
+  - query: INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30)
+    rowcount: 3
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+
+  # Verify order is preserved
+  - query: SELECT id, name, val FROM t ORDER BY id
+    rows:
+      - [1, 'a', 10]
+      - [2, 'b', 20]
+      - [3, 'c', 30]
+
+  # Insert more rows
+  - query: INSERT INTO t VALUES (4, 'd', 40), (5, 'e', 50)
+    rowcount: 2
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [5]
+
+  # Single row insert still works
+  - query: INSERT INTO t VALUES (6, 'f', 60)
+    rowcount: 1
+
+  # Verify all data
+  - query: SELECT SUM(val) FROM t
+    rows:
+      - [210]
+
+  # Duplicate in multi-row INSERT → error (first duplicate fails)
+  - query: INSERT INTO t VALUES (7, 'g', 70), (1, 'dup', 99)
+    error: "23505"
+
+  # Verify row 7 was NOT inserted (transaction rolled back)
+  - query: SELECT COUNT(*) FROM t WHERE id = 7
+    rows:
+      - [0]
+
+  # Insert with NULL values
+  - query: INSERT INTO t VALUES (8, null, null), (9, 'i', null)
+    rowcount: 2
+  - query: SELECT id, name, val FROM t WHERE id >= 8 ORDER BY id
+    rows:
+      - [8, null, null]
+      - [9, 'i', null]
