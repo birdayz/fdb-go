@@ -253,6 +253,12 @@ func (r *Reference) StartExploration() {
 	r.explMemberCount = len(r.members)
 }
 
+// ExplMemberCount returns the member count recorded at the last
+// StartExploration. Used to explore only NEW members on re-entry.
+func (r *Reference) ExplMemberCount() int {
+	return r.explMemberCount
+}
+
 // CommitExploration marks exploration as converged.
 func (r *Reference) CommitExploration() {
 	r.explState = explorationDone

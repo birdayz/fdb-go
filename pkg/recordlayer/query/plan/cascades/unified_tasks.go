@@ -27,8 +27,9 @@ func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
 // transition. Then pushes exploration tasks for all members.
 // Mirrors Java's CascadesPlanner.ExploreGroup.
 type ExploreGroupTask struct {
-	Phase PlannerPhase
-	Ref   *expressions.Reference
+	Phase  PlannerPhase
+	Ref    *expressions.Reference
+	Rounds int
 }
 
 func (t *ExploreGroupTask) Run(p *Planner) {
@@ -46,7 +47,7 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		t.Ref.AdvancePlannerStage(targetStage)
 	}
 
-	if !t.Ref.NeedsExploration() {
+	if !t.Ref.NeedsExploration() || t.Rounds > 8 {
 		t.Ref.CommitExploration()
 		if t.Phase == PhasePlanning {
 			computeRefPlanProperties(t.Ref)
@@ -54,12 +55,9 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		return
 	}
 
-	// Re-push this task to check convergence after exploration completes.
-	p.push(t)
+	// Re-push with incremented round counter.
+	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref, Rounds: t.Rounds + 1})
 
-	// Push exploration for all members (both final and exploratory).
-	// During PLANNING, also push OptimizeInputs to ensure child
-	// References get OptimizeGroupTask.
 	for _, expr := range t.Ref.FinalMembers() {
 		p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
