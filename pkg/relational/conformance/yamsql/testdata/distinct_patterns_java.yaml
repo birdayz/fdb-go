@@ -1,0 +1,79 @@
+# distinct_patterns_java.yaml — SELECT DISTINCT patterns.
+# Tests basic DISTINCT, DISTINCT with ORDER BY, DISTINCT with NULLs,
+# DISTINCT on multiple columns, and DISTINCT with expressions.
+name: distinct_patterns_java
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    cat STRING,
+    val BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES
+      (1, 'A', 10),
+      (2, 'B', 20),
+      (3, 'A', 10),
+      (4, 'B', 30),
+      (5, 'C', 20),
+      (6, null, 10),
+      (7, null, null),
+      (8, 'A', null)
+tests:
+  # Basic DISTINCT on single column
+  - query: SELECT DISTINCT cat FROM t WHERE cat IS NOT NULL ORDER BY cat
+    rows:
+      - ['A']
+      - ['B']
+      - ['C']
+
+  # DISTINCT includes NULL as a distinct value
+  - query: SELECT DISTINCT cat FROM t ORDER BY cat
+    rows:
+      - ['A']
+      - ['B']
+      - ['C']
+      - [null]
+
+  # DISTINCT on multiple columns
+  - query: SELECT DISTINCT cat, val FROM t WHERE cat IS NOT NULL ORDER BY cat, val
+    rows:
+      - ['A', 10]
+      - ['A', null]
+      - ['B', 20]
+      - ['B', 30]
+      - ['C', 20]
+
+  # DISTINCT with expression
+  - query: SELECT DISTINCT val * 2 FROM t WHERE val IS NOT NULL ORDER BY val * 2
+    rows:
+      - [20]
+      - [40]
+      - [60]
+
+  # DISTINCT preserves only unique rows (full row)
+  - query: SELECT DISTINCT cat, val FROM t ORDER BY cat, val
+    rows:
+      - ['A', 10]
+      - ['A', null]
+      - ['B', 20]
+      - ['B', 30]
+      - ['C', 20]
+      - [null, 10]
+      - [null, null]
+
+  # COUNT(DISTINCT col) — Go extension
+  - query: SELECT COUNT(DISTINCT cat) FROM t
+    rows:
+      - [3]
+
+  # DISTINCT + LIMIT
+  - query: SELECT DISTINCT val FROM t WHERE val IS NOT NULL ORDER BY val LIMIT 2
+    rows:
+      - [10]
+      - [20]
+
+  # DISTINCT on single value → 1 row
+  - query: SELECT DISTINCT 1 FROM t
+    rows:
+      - [1]
