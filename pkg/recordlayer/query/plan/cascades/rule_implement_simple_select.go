@@ -66,8 +66,10 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			(innerQuantifier.Kind() == expressions.QuantifierForEach && innerQuantifier.IsNullOnEmpty())
 
 		if len(queryPredicates) == 0 && isSimpleResult && !needsQuantifierWrap {
-			for _, expr := range innerExprs {
-				call.YieldFinalExpression(expr)
+			if !referenceHasNonTrivialSiblings(call.Reference) {
+				for _, expr := range innerExprs {
+					call.YieldFinalExpression(expr)
+				}
 			}
 			continue
 		}
@@ -131,6 +133,26 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 
 func hasMultiQuantifierSibling(ref *expressions.Reference) bool {
 	for _, m := range ref.AllMembers() {
+		if len(m.GetQuantifiers()) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// referenceHasNonTrivialSiblings returns true if the Reference contains
+// members with predicates (LogicalFilterExpression), multiple quantifiers
+// (joins/InJoin), or aggregation (StreamingAgg). When these exist, the
+// bare-plan passthrough should be suppressed to avoid stripping the
+// non-trivial semantics that other rules will compose.
+func referenceHasNonTrivialSiblings(ref *expressions.Reference) bool {
+	for _, m := range ref.AllMembers() {
+		switch m.(type) {
+		case *expressions.LogicalFilterExpression:
+			return true
+		case *expressions.LogicalDistinctExpression:
+			return true
+		}
 		if len(m.GetQuantifiers()) > 1 {
 			return true
 		}
