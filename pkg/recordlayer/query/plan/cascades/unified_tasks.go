@@ -54,13 +54,17 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 	// Re-push this task to check convergence after exploration completes.
 	p.push(t)
 
-	// Final members get exploreExpressionAndOptimizeInputs.
+	// Push exploration for all members (both final and exploratory).
+	// During PLANNING, also push OptimizeInputs to ensure child
+	// References get OptimizeGroupTask.
 	for _, expr := range t.Ref.FinalMembers() {
 		p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 	}
-	// Exploratory members get just exploreExpression.
 	for _, expr := range t.Ref.Members() {
+		if t.Phase == PhasePlanning {
+			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
+		}
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 	}
 
@@ -133,6 +137,18 @@ func (t *TransformExprTask) Run(p *Planner) {
 	if t.Ref == nil || t.Expr == nil || t.Rule == nil {
 		return
 	}
+
+	// During PLANNING, expression rules (BatchA) produce physical
+	// wrappers. Yield to BOTH exploratory (for rule matching and
+	// convergence detection) AND final (for OptimizeGroup selection).
+	var yieldFn func(expressions.RelationalExpression) bool
+	if t.Phase == PhasePlanning {
+		yieldFn = func(expr expressions.RelationalExpression) bool {
+			t.Ref.InsertFinal(expr)
+			return t.Ref.Insert(expr)
+		}
+	}
+
 	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
 	for _, b := range bindings {
 		call := &ExpressionRuleCall{
@@ -140,11 +156,14 @@ func (t *TransformExprTask) Run(p *Planner) {
 			Reference: t.Ref,
 			Context:   p.ctx,
 			memo:      p.memo,
+			yieldFn:   yieldFn,
 		}
 		t.Rule.OnMatch(call)
 
-		// Handle new exploratory yields: push ExploreExprTask for each.
 		for _, newExpr := range call.Yielded() {
+			if t.Phase == PhasePlanning {
+				p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
+			}
 			p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
 		}
 	}
@@ -219,10 +238,20 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
 	}
+
+	// Compute plan properties from final members so ToPlanPartitions
+	// can find physical plans during PLANNING.
+	if t.Phase == PhasePlanning {
+		computeRefPlanProperties(t.Ref)
+	}
+
 	costModel := p.costModelForPhase(t.Phase)
 
 	var bestFinal expressions.RelationalExpression
 	for _, m := range t.Ref.FinalMembers() {
+		if isNilInnerFetch(m) {
+			continue
+		}
 		if bestFinal == nil || costModel(m, bestFinal) {
 			bestFinal = m
 		}
@@ -230,11 +259,11 @@ func (t *OptimizeGroupTask) Run(p *Planner) {
 
 	if bestFinal != nil {
 		t.Ref.PruneWith(bestFinal)
+		t.Ref.SetWinner(expressions.NoProperties, bestFinal)
 	} else {
 		t.Ref.ClearFinalMembers()
 	}
 
-	// Also stamp ordering-specific winners for sort elimination.
 	if t.Phase == PhasePlanning {
 		stampOrderingWinners(t.Ref, costModel)
 	}
