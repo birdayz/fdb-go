@@ -1,0 +1,59 @@
+# error_codes_java.yaml — SQL error code conformance.
+# Tests that invalid queries produce the correct SQLSTATE error codes,
+# matching Java's behavior.
+name: error_codes_java
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    name STRING,
+    val BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE t2 (
+    id BIGINT NOT NULL,
+    ref_id BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20)
+  - INSERT INTO t2 VALUES (1, 1)
+tests:
+  # 42703: undefined column
+  - query: SELECT nonexistent FROM t
+    error: "42703"
+
+  # 42703: undefined column in WHERE
+  - query: SELECT id FROM t WHERE fake_col = 1
+    error: "42703"
+
+  # 42803: non-aggregated column not in GROUP BY
+  - query: SELECT name, SUM(val) FROM t GROUP BY id
+    error: "42803"
+
+  # 42F01: undefined table
+  - query: SELECT * FROM nonexistent_table
+    error: "42F01"
+
+  # 23505: duplicate primary key
+  - query: INSERT INTO t VALUES (1, 'dup', 99)
+    error: "23505"
+
+  # 42F64: UNION column count mismatch
+  - query: SELECT id, name FROM t UNION ALL SELECT id FROM t
+    error: "42F64"
+
+  # 0AF00: UNION without ALL (not supported)
+  - query: SELECT id FROM t UNION SELECT id FROM t2
+    error: "0AF00"
+
+  # 42712: duplicate CTE name
+  - query: WITH x AS (SELECT 1), x AS (SELECT 2) SELECT * FROM x
+    error: "42712"
+
+  # 42F10: CTE column alias count mismatch
+  - query: WITH x(a, b, c) AS (SELECT id FROM t) SELECT * FROM x
+    error: "42F10"
+
+  # 42601: syntax error — nested aggregate
+  - query: SELECT SUM(MAX(val)) FROM t
+    error: "42601"

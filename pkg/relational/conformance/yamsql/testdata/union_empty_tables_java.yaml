@@ -1,0 +1,70 @@
+# union_empty_tables_java.yaml — UNION ALL behavior on empty tables
+# from Java's union-empty-tables.yamsql. Tests that UNION ALL produces
+# correct results when one or both tables have no data.
+name: union_empty_tables_java
+schema_template: |
+  CREATE TABLE empty1 (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE empty2 (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE has_data (
+    id BIGINT NOT NULL,
+    col1 BIGINT,
+    col2 BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO has_data VALUES (1, 10, 100), (2, 20, 200)
+tests:
+  # UNION ALL of two empty tables → no rows
+  - query: SELECT col1, col2 FROM empty1 UNION ALL SELECT col1, col2 FROM empty2
+    rows: []
+
+  # SELECT * UNION ALL on empty tables
+  - query: SELECT * FROM empty1 UNION ALL SELECT * FROM empty1
+    rows: []
+
+  # Aggregate over empty UNION ALL
+  - query: SELECT SUM(col1), COUNT(*) FROM empty1
+    rows:
+      - [null, 0]
+
+  # SUM over UNION ALL of two empty tables
+  - query: SELECT SUM(x) FROM (SELECT col1 AS x FROM empty1 UNION ALL SELECT col1 AS x FROM empty2) AS t
+    rows:
+      - [null]
+
+  # COUNT over UNION ALL of two empty tables
+  - query: SELECT COUNT(*) FROM (SELECT col1 FROM empty1 UNION ALL SELECT col1 FROM empty2) AS t
+    rows:
+      - [0]
+
+  # UNION ALL: one empty + one with data
+  - query: SELECT col1, col2 FROM empty1 UNION ALL SELECT col1, col2 FROM has_data ORDER BY col1
+    rows:
+      - [10, 100]
+      - [20, 200]
+
+  # UNION ALL: data + empty
+  - query: SELECT col1, col2 FROM has_data UNION ALL SELECT col1, col2 FROM empty1 ORDER BY col1
+    rows:
+      - [10, 100]
+      - [20, 200]
+
+  # Aggregate over mixed empty/non-empty UNION ALL
+  - query: SELECT SUM(x) FROM (SELECT col1 AS x FROM has_data UNION ALL SELECT col1 AS x FROM empty1) AS t
+    rows:
+      - [30]
+
+  # COUNT over mixed
+  - query: SELECT COUNT(*) FROM (SELECT * FROM has_data UNION ALL SELECT * FROM empty1) AS t
+    rows:
+      - [2]

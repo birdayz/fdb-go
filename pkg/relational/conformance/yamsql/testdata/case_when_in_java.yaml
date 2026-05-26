@@ -1,0 +1,87 @@
+# case_when_in_java.yaml — CASE WHEN with IN predicate from Java's
+# standard-tests.yamsql. Tests multi-branch CASE with IN list,
+# CASE without ELSE (NULL fallback), and mixed predicate types.
+name: case_when_in_java
+schema_template: |
+  CREATE TABLE products (
+    id BIGINT NOT NULL,
+    category BIGINT,
+    price BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_category ON products (category)
+setup:
+  - INSERT INTO products VALUES
+      (1, 10, 100),
+      (2, 10, 200),
+      (3, 10, 300),
+      (4, 20, 150),
+      (5, 20, 250),
+      (6, 30, 500),
+      (7, 30, 700),
+      (8, 40, 50)
+tests:
+  # Multi-branch CASE with equality and IN predicates + ELSE
+  - query: |
+      SELECT id, CASE WHEN category = 10 THEN 'cheap'
+                      WHEN price IN (500, 700) THEN 'premium'
+                      ELSE 'regular' END AS tier
+      FROM products ORDER BY id
+    rows:
+      - [1, 'cheap']
+      - [2, 'cheap']
+      - [3, 'cheap']
+      - [4, 'regular']
+      - [5, 'regular']
+      - [6, 'premium']
+      - [7, 'premium']
+      - [8, 'regular']
+
+  # CASE without ELSE returns NULL for unmatched rows
+  - query: |
+      SELECT id, CASE WHEN category = 10 THEN 'A'
+                      WHEN category = 20 THEN 'B' END AS label
+      FROM products ORDER BY id
+    rows:
+      - [1, 'A']
+      - [2, 'A']
+      - [3, 'A']
+      - [4, 'B']
+      - [5, 'B']
+      - [6, null]
+      - [7, null]
+      - [8, null]
+
+  # CASE in WHERE clause
+  - query: |
+      SELECT id FROM products
+      WHERE CASE WHEN category = 10 THEN price > 150
+                 ELSE price > 400 END
+      ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [6]
+      - [7]
+
+  # CASE with GROUP BY
+  - query: |
+      SELECT CASE WHEN category <= 20 THEN 'low'
+                  ELSE 'high' END AS tier, COUNT(*)
+      FROM products GROUP BY tier ORDER BY tier
+    rows:
+      - ['high', 3]
+      - ['low', 5]
+
+  # Nested CASE
+  - query: |
+      SELECT id, CASE WHEN price > 400 THEN
+                   CASE WHEN category = 30 THEN 'premium-30'
+                        ELSE 'premium-other' END
+                 ELSE 'standard' END AS classification
+      FROM products WHERE id IN (5, 6, 7, 8) ORDER BY id
+    rows:
+      - [5, 'standard']
+      - [6, 'premium-30']
+      - [7, 'premium-30']
+      - [8, 'standard']

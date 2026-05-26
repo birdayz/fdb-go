@@ -1,0 +1,70 @@
+# join_aggregate_java.yaml — JOIN combined with GROUP BY/HAVING.
+# Tests real-world patterns: aggregate over joined tables, HAVING on
+# join aggregate, multiple joins with grouping.
+name: join_aggregate_java
+schema_template: |
+  CREATE TABLE customers (
+    id BIGINT NOT NULL,
+    name STRING,
+    tier STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE orders (
+    id BIGINT NOT NULL,
+    customer_id BIGINT,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO customers VALUES
+      (1, 'Alice', 'gold'),
+      (2, 'Bob', 'silver'),
+      (3, 'Charlie', 'gold'),
+      (4, 'Dave', 'bronze')
+  - INSERT INTO orders VALUES
+      (1, 1, 100),
+      (2, 1, 200),
+      (3, 1, 50),
+      (4, 2, 300),
+      (5, 3, 150),
+      (6, 3, 250)
+tests:
+  # SUM per customer via JOIN
+  - query: SELECT c.name, SUM(o.amount) FROM customers c, orders o WHERE c.id = o.customer_id GROUP BY c.name ORDER BY c.name
+    rows:
+      - ['Alice', 350]
+      - ['Bob', 300]
+      - ['Charlie', 400]
+
+  # COUNT orders per customer
+  - query: SELECT c.name, COUNT(*) FROM customers c, orders o WHERE c.id = o.customer_id GROUP BY c.name ORDER BY COUNT(*) DESC
+    rows:
+      - ['Alice', 3]
+      - ['Charlie', 2]
+      - ['Bob', 1]
+
+  # HAVING on join aggregate — customers with total > 300
+  - query: SELECT c.name, SUM(o.amount) AS total FROM customers c, orders o WHERE c.id = o.customer_id GROUP BY c.name HAVING SUM(o.amount) > 300 ORDER BY total
+    rows:
+      - ['Alice', 350]
+      - ['Charlie', 400]
+
+  # GROUP BY on joined column (tier)
+  - query: SELECT c.tier, SUM(o.amount), COUNT(*) FROM customers c, orders o WHERE c.id = o.customer_id GROUP BY c.tier ORDER BY c.tier
+    rows:
+      - ['gold', 750, 5]
+      - ['silver', 300, 1]
+
+  # MAX/MIN per group from join
+  - query: SELECT c.name, MIN(o.amount), MAX(o.amount) FROM customers c, orders o WHERE c.id = o.customer_id GROUP BY c.name ORDER BY c.name
+    rows:
+      - ['Alice', 50, 200]
+      - ['Bob', 300, 300]
+      - ['Charlie', 150, 250]
+
+  # Customers with no orders don't appear (INNER JOIN semantics)
+  - query: SELECT c.name FROM customers c, orders o WHERE c.id = o.customer_id GROUP BY c.name ORDER BY c.name
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Charlie']

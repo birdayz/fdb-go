@@ -65,8 +65,9 @@ tests:
     plan_contains: InJoin
     rows: []
 
-  # IN-list combined with another predicate
+  # IN-list combined with another predicate — InJoin + post-filter
   - query: SELECT id, name FROM items WHERE category IN ('books', 'electronics') AND price > 50 ORDER BY id
+    plan_contains: InJoin
     rows:
       - [2, 'Algorithms']
       - [3, 'Keyboard']

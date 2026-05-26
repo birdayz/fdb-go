@@ -1,0 +1,77 @@
+# limit_offset_java.yaml — LIMIT and OFFSET patterns.
+# Tests basic LIMIT, LIMIT with ORDER BY, LIMIT 0, LIMIT exceeding
+# table size, LIMIT with WHERE, and top-N patterns.
+name: limit_offset_java
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    name STRING,
+    price BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO items VALUES
+      (1, 'Alpha', 10),
+      (2, 'Beta', 20),
+      (3, 'Gamma', 30),
+      (4, 'Delta', 40),
+      (5, 'Epsilon', 50)
+tests:
+  # Basic LIMIT
+  - query: SELECT id FROM items ORDER BY id LIMIT 3
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # LIMIT with ORDER BY DESC (top-N expensive)
+  - query: SELECT name, price FROM items ORDER BY price DESC LIMIT 2
+    rows:
+      - ['Epsilon', 50]
+      - ['Delta', 40]
+
+  # LIMIT 0 → no rows
+  - query: SELECT id FROM items LIMIT 0
+    rows: []
+
+  # LIMIT exceeding table size → all rows
+  - query: SELECT id FROM items ORDER BY id LIMIT 100
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # LIMIT 1 → single row
+  - query: SELECT name FROM items ORDER BY price LIMIT 1
+    rows:
+      - ['Alpha']
+
+  # LIMIT with WHERE
+  - query: SELECT id, price FROM items WHERE price > 20 ORDER BY price LIMIT 2
+    rows:
+      - [3, 30]
+      - [4, 40]
+
+  # LIMIT with aggregate (aggregate computes over all, LIMIT on output)
+  - query: SELECT name, price FROM items ORDER BY price DESC LIMIT 3
+    rows:
+      - ['Epsilon', 50]
+      - ['Delta', 40]
+      - ['Gamma', 30]
+
+  # OFFSET (Go extension)
+  - query: SELECT id FROM items ORDER BY id LIMIT 2 OFFSET 2
+    rows:
+      - [3]
+      - [4]
+
+  # OFFSET beyond table → no rows
+  - query: SELECT id FROM items ORDER BY id LIMIT 10 OFFSET 100
+    rows: []
+
+  # LIMIT 1 OFFSET 0 → first row
+  - query: SELECT name FROM items ORDER BY id LIMIT 1 OFFSET 0
+    rows:
+      - ['Alpha']

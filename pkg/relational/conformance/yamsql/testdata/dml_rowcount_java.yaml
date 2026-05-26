@@ -1,0 +1,69 @@
+# dml_rowcount_java.yaml — INSERT/UPDATE/DELETE row count semantics.
+# Tests that DML operations return correct affected row counts,
+# including zero-row updates, multi-row inserts, and conditional deletes.
+name: dml_rowcount_java
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    val BIGINT,
+    status STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES
+      (1, 10, 'active'),
+      (2, 20, 'active'),
+      (3, 30, 'inactive'),
+      (4, 40, 'active'),
+      (5, 50, 'inactive')
+tests:
+  # UPDATE matching multiple rows
+  - query: UPDATE t SET val = val + 1 WHERE status = 'active'
+    rowcount: 3
+  - query: SELECT id, val FROM t WHERE status = 'active' ORDER BY id
+    rows:
+      - [1, 11]
+      - [2, 21]
+      - [4, 41]
+
+  # UPDATE matching no rows → rowcount 0
+  - query: UPDATE t SET val = 999 WHERE id = 99
+    rowcount: 0
+
+  # UPDATE single row
+  - query: UPDATE t SET status = 'deleted' WHERE id = 3
+    rowcount: 1
+
+  # DELETE matching multiple rows
+  - query: DELETE FROM t WHERE status = 'inactive'
+    rowcount: 1
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [4]
+
+  # DELETE matching no rows → rowcount 0
+  - query: DELETE FROM t WHERE id = 99
+    rowcount: 0
+
+  # DELETE single row
+  - query: DELETE FROM t WHERE id = 1
+    rowcount: 1
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+
+  # INSERT single row
+  - query: INSERT INTO t VALUES (10, 100, 'new')
+    rowcount: 1
+
+  # Verify final state
+  - query: SELECT id, val, status FROM t ORDER BY id
+    rows:
+      - [2, 21, 'active']
+      - [3, 30, 'deleted']
+      - [4, 41, 'active']
+      - [10, 100, 'new']
+
+  # INSERT duplicate PK → error
+  - query: INSERT INTO t VALUES (2, 999, 'dup')
+    error: "23505"

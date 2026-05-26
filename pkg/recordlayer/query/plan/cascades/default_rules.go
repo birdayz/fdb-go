@@ -133,6 +133,29 @@ func PlanningExplorationRules() []ExpressionRule {
 	}
 }
 
+// PlanningDataAccessRules returns the subset of BatchA rules that are
+// safe to fire during PLANNING's bottom-up implementation pass. These
+// are leaf-level rules (scan, index, values) that produce physical
+// wrappers without looking at sibling plans or making assumptions about
+// the query structure. Compound rules (union, intersection, NLJ, etc.)
+// are excluded because they inspect child References for physical plans
+// and can produce incorrect results when fired on EXPLORE-phase
+// artifacts that persist in the member set.
+//
+// This is the first step of the BatchA→PLANNING migration. Once
+// advancePlannerStage clears EXPLORE artifacts, the full BatchA set
+// can be activated.
+func PlanningDataAccessRules() []ExpressionRule {
+	return []ExpressionRule{
+		NewPrimaryScanRule(),
+		NewImplementValuesRule(),
+		NewImplementIndexScanRule(),
+		NewOrderedIndexScanRule(),
+		NewOrderedPrimaryScanRule(),
+		NewImplementExplodeRule(),
+	}
+}
+
 // BatchAExpressionRules returns the B5 Batch A physical-implementation
 // rules. These run in a second EXPLORE pass (after logical exploration
 // converges) so physical wrappers go into Members and the standard

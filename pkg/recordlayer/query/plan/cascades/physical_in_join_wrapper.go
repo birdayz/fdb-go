@@ -76,12 +76,16 @@ func (w *physicalInJoinWrapper) HintCost(child []properties.Cost, _ properties.S
 	}
 	inListLen := float64(len(w.plan.GetInValues()))
 	if inListLen < 1 {
-		inListLen = 10
+		inListLen = 10 // parameterized IN — values not bound at plan time
 	}
-	in := child[0].Cardinality
+	// InJoin is a correlated index probe: for each IN value, the inner
+	// plan does an equality point-lookup returning ~1 row. The child's
+	// standalone cardinality overstates this (it reports the index's
+	// selectivity against the full table). Use inListLen as the output
+	// cardinality (one row per IN value for well-distributed data).
 	return properties.Cost{
-		Cardinality: in * inListLen * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*inListLen*properties.FilterCPU) * physicalWrapperCostMultiplier,
+		Cardinality: inListLen * physicalWrapperCostMultiplier,
+		CPU:         inListLen * (properties.ScanCPU + properties.FetchCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

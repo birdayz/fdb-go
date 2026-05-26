@@ -1,0 +1,70 @@
+# recursive_cte_tree_java.yaml — Recursive CTE for tree traversal.
+# Tests hierarchical data traversal using WITH RECURSIVE.
+name: recursive_cte_tree_java
+schema_template: |
+  CREATE TABLE tree (
+    id BIGINT NOT NULL,
+    parent_id BIGINT,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO tree VALUES
+      (1, null, 'root'),
+      (2, 1, 'child1'),
+      (3, 1, 'child2'),
+      (4, 2, 'grandchild1'),
+      (5, 2, 'grandchild2'),
+      (6, 3, 'grandchild3')
+tests:
+  # Find all descendants of root (id=1) using recursive CTE
+  - query: |
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent_id, name FROM tree WHERE id = 1
+        UNION ALL
+        SELECT t.id, t.parent_id, t.name FROM tree t, descendants d WHERE t.parent_id = d.id
+      )
+      SELECT name FROM descendants ORDER BY id
+    rows:
+      - ['root']
+      - ['child1']
+      - ['child2']
+      - ['grandchild1']
+      - ['grandchild2']
+      - ['grandchild3']
+
+  # Find descendants of child1 (id=2)
+  - query: |
+      WITH RECURSIVE sub AS (
+        SELECT id, name FROM tree WHERE id = 2
+        UNION ALL
+        SELECT t.id, t.name FROM tree t, sub s WHERE t.parent_id = s.id
+      )
+      SELECT name FROM sub ORDER BY id
+    rows:
+      - ['child1']
+      - ['grandchild1']
+      - ['grandchild2']
+
+  # Count descendants per node (non-recursive, just leaf detection)
+  - query: |
+      SELECT t.name FROM tree t
+      WHERE NOT EXISTS (SELECT 1 FROM tree c WHERE c.parent_id = t.id)
+      ORDER BY t.name
+    rows:
+      - ['grandchild1']
+      - ['grandchild2']
+      - ['grandchild3']
+
+  # Find all ancestors of grandchild1 (id=4) going up
+  - query: |
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent_id, name FROM tree WHERE id = 4
+        UNION ALL
+        SELECT t.id, t.parent_id, t.name FROM tree t, ancestors a WHERE t.id = a.parent_id
+      )
+      SELECT name FROM ancestors ORDER BY id
+    rows:
+      - ['root']
+      - ['child1']
+      - ['grandchild1']

@@ -1,0 +1,65 @@
+# aggregate_order_by_java.yaml — Aggregate queries with ORDER BY.
+# Tests ordering by aggregate values, GROUP BY + ORDER BY combinations,
+# and ORDER BY on non-aggregated group keys.
+name: aggregate_order_by_java
+schema_template: |
+  CREATE TABLE scores (
+    id BIGINT NOT NULL,
+    player STRING,
+    game STRING,
+    score BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO scores VALUES
+      (1, 'Alice', 'chess', 100),
+      (2, 'Alice', 'go', 80),
+      (3, 'Alice', 'chess', 120),
+      (4, 'Bob', 'chess', 90),
+      (5, 'Bob', 'go', 110),
+      (6, 'Charlie', 'chess', 95),
+      (7, 'Charlie', 'go', 85),
+      (8, 'Charlie', 'chess', 105)
+tests:
+  # ORDER BY aggregate DESC (top scorers)
+  - query: SELECT player, SUM(score) AS total FROM scores GROUP BY player ORDER BY total DESC
+    rows:
+      - ['Alice', 300]
+      - ['Charlie', 285]
+      - ['Bob', 200]
+
+  # ORDER BY aggregate ASC
+  - query: SELECT player, COUNT(*) AS games FROM scores GROUP BY player ORDER BY games, player
+    rows:
+      - ['Bob', 2]
+      - ['Alice', 3]
+      - ['Charlie', 3]
+
+  # ORDER BY group key + aggregate
+  - query: SELECT game, player, SUM(score) AS total FROM scores GROUP BY game, player ORDER BY game, total DESC
+    rows:
+      - ['chess', 'Alice', 220]
+      - ['chess', 'Charlie', 200]
+      - ['chess', 'Bob', 90]
+      - ['go', 'Bob', 110]
+      - ['go', 'Charlie', 85]
+      - ['go', 'Alice', 80]
+
+  # ORDER BY group key only
+  - query: SELECT player, MAX(score) FROM scores GROUP BY player ORDER BY player
+    rows:
+      - ['Alice', 120]
+      - ['Bob', 110]
+      - ['Charlie', 105]
+
+  # LIMIT on aggregated result
+  - query: SELECT player, SUM(score) AS total FROM scores GROUP BY player ORDER BY total DESC LIMIT 2
+    rows:
+      - ['Alice', 300]
+      - ['Charlie', 285]
+
+  # ORDER BY with HAVING filter
+  - query: SELECT game, COUNT(*) AS cnt FROM scores GROUP BY game HAVING COUNT(*) > 2 ORDER BY cnt DESC
+    rows:
+      - ['chess', 5]
+      - ['go', 3]

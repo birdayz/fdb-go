@@ -1,0 +1,69 @@
+# select_expressions_java.yaml — SELECT with various expression types.
+# Tests arithmetic, string ops, CASE, and nested expressions in SELECT.
+name: select_expressions_java
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    a BIGINT,
+    b BIGINT,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES
+      (1, 10, 3, 'hello'),
+      (2, 20, 7, 'world'),
+      (3, 15, 0, null)
+tests:
+  # Arithmetic expressions
+  - query: SELECT id, a + b, a - b, a * b FROM t ORDER BY id
+    rows:
+      - [1, 13, 7, 30]
+      - [2, 27, 13, 140]
+      - [3, 15, 15, 0]
+
+  # Division and modulo
+  - query: SELECT id, a / b FROM t WHERE b > 0 ORDER BY id
+    rows:
+      - [1, 3]
+      - [2, 2]
+
+  - query: SELECT id, MOD(a, b) FROM t WHERE b > 0 ORDER BY id
+    rows:
+      - [1, 1]
+      - [2, 6]
+
+  # Constant expressions
+  - query: SELECT 1 + 2, 10 * 5, 100 / 4 FROM t WHERE id = 1
+    rows:
+      - [3, 50, 25]
+
+  # Mixed column + constant
+  - query: SELECT id, a * 2 + 1 FROM t ORDER BY id
+    rows:
+      - [1, 21]
+      - [2, 41]
+      - [3, 31]
+
+  # Nested CASE in expression
+  - query: SELECT id, a + CASE WHEN b > 5 THEN 100 ELSE 0 END FROM t ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 120]
+      - [3, 15]
+
+  # String || concatenation with column
+  - query: SELECT id, name || '!' FROM t WHERE name IS NOT NULL ORDER BY id
+    rows:
+      - [1, 'hello!']
+      - [2, 'world!']
+
+  # Expression aliases
+  - query: SELECT a * b AS product, a + b AS total FROM t WHERE id = 1
+    rows:
+      - [30, 13]
+
+  # Negative values
+  - query: SELECT id, -a, a * -1 FROM t WHERE id = 1
+    rows:
+      - [1, -10, -10]

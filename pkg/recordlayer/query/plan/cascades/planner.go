@@ -51,6 +51,14 @@ type Planner struct {
 	// into Reference.Members via Insert.
 	implementationRules []ImplementationRule
 
+	// planningExpressionRules are ExpressionRules that fire during
+	// PLANNING (not EXPLORE). They yield into InsertFinal so their
+	// results go to finalMembers and are authoritative for plan
+	// selection. This is the "BatchA→PLANNING migration": scan/filter/
+	// agg rules that produce physical wrappers fire here with full
+	// constraint and ordering information available.
+	planningExpressionRules []ExpressionRule
+
 	// exploreCount[ref] = member count at last saturation check on
 	// `ref`. SaturationCheckTask short-circuits when count hasn't grown.
 	exploreCount map[*expressions.Reference]int
@@ -221,6 +229,17 @@ func orderingToProps(ord properties.Ordering) expressions.PhysicalProperties {
 // after the REWRITING phase converges. Returns p for chaining.
 func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 	p.implementationRules = rules
+	return p
+}
+
+// WithPlanningExpressionRules adds ExpressionRules that fire during
+// PLANNING's bottom-up implementation pass. Unlike EXPLORE-phase
+// expression rules (which yield to members via Insert), these yield
+// to finalMembers via InsertFinal. This is the BatchA→PLANNING
+// migration: physical scan/filter/agg wrappers are produced during
+// PLANNING where constraint and ordering information is available.
+func (p *Planner) WithPlanningExpressionRules(rules []ExpressionRule) *Planner {
+	p.planningExpressionRules = rules
 	return p
 }
 
@@ -571,15 +590,15 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 		}
 	}
 
-	// Fixpoint: fire implementation rules until no new members are
-	// produced. Rules like MergeProjectionAndFetchRule match physical
-	// expressions yielded by other rules (e.g. ImplementProjectionRule
-	// yields Projection(Fetch(IndexScan)), MergeProjectionAndFetchRule
-	// matches it and yields CoveringIndexScan). Without fixpoint, the
-	// second rule never sees the first rule's output.
+	// Fixpoint: fire planning expression rules (BatchA) and
+	// implementation rules until no new members are produced.
+	// Planning expression rules produce physical scan/filter wrappers;
+	// implementation rules consume them to produce higher-level plans
+	// (InJoin, Sort elimination, etc.). Both yield to InsertFinal.
 	const maxFixpointRounds = 8
 	for round := 0; round < maxFixpointRounds; round++ {
 		before := len(ref.AllMembers())
+		p.firePlanningExprRules(ref)
 		for _, rule := range p.implementationRules {
 			FireImplementationRuleWithContext(rule, ref, p.ctx, p.memo, cm)
 		}
@@ -589,6 +608,32 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 	}
 
 	computeRefPlanProperties(ref)
+}
+
+// firePlanningExprRules fires planningExpressionRules (BatchA) against
+// a Reference during PLANNING. Yields go to InsertFinal so they land
+// in finalMembers — authoritative for plan selection.
+func (p *Planner) firePlanningExprRules(ref *expressions.Reference) {
+	if len(p.planningExpressionRules) == 0 {
+		return
+	}
+	for _, rule := range p.planningExpressionRules {
+		for _, member := range ref.AllMembers() {
+			bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
+			for _, b := range bindings {
+				call := &ExpressionRuleCall{
+					Bindings:  b,
+					Reference: ref,
+					Context:   p.ctx,
+					memo:      p.memo,
+					yieldFn: func(expr expressions.RelationalExpression) bool {
+						return ref.InsertFinal(expr)
+					},
+				}
+				rule.OnMatch(call)
+			}
+		}
+	}
 }
 
 // generateDataAccessWithConstraints walks the expression DAG bottom-up
