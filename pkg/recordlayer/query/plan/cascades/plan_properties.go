@@ -307,13 +307,62 @@ func computeRefPlanProperties(ref *expressions.Reference) {
 	if len(members) == 0 {
 		members = ref.AllMembers()
 	}
-	pm := NewPlanPropertiesMap()
+
+	physicals := make([]physicalPlanExpression, 0, len(members))
 	for _, m := range members {
 		if ph, ok := m.(physicalPlanExpression); ok {
-			pm.Add(ph)
+			physicals = append(physicals, ph)
 		}
 	}
+
+	subsumed := filterSubsumedPlans(physicals)
+
+	pm := NewPlanPropertiesMap()
+	for _, ph := range subsumed {
+		pm.Add(ph)
+	}
 	ref.SetPlanProperties(pm)
+}
+
+// filterSubsumedPlans removes physical plans whose inner plan is also
+// a separate member of the same set. E.g., if the set contains both
+// StreamingAgg and Projection(StreamingAgg), the raw StreamingAgg is
+// subsumed by the Projection and excluded. This ensures
+// ImplementSimpleSelectRule picks the most composed inner plan.
+func filterSubsumedPlans(physicals []physicalPlanExpression) []physicalPlanExpression {
+	if len(physicals) <= 1 {
+		return physicals
+	}
+
+	innerPlans := make(map[plans.RecordQueryPlan]bool)
+	for _, ph := range physicals {
+		plan := ph.GetRecordQueryPlan()
+		if plan == nil {
+			continue
+		}
+		for _, child := range plan.GetChildren() {
+			if child != nil {
+				innerPlans[child] = true
+			}
+		}
+	}
+
+	if len(innerPlans) == 0 {
+		return physicals
+	}
+
+	result := make([]physicalPlanExpression, 0, len(physicals))
+	for _, ph := range physicals {
+		plan := ph.GetRecordQueryPlan()
+		if plan != nil && innerPlans[plan] {
+			continue
+		}
+		result = append(result, ph)
+	}
+	if len(result) == 0 {
+		return physicals
+	}
+	return result
 }
 
 // GetRefPlanPropertiesMap retrieves the PlanPropertiesMap from a Reference,
