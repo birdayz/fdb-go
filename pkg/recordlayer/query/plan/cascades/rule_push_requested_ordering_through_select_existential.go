@@ -16,6 +16,7 @@ import (
 //
 // Ports Java's PushRequestedOrderingThroughSelectExistentialRule.
 type PushRequestedOrderingThroughSelectExistentialRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

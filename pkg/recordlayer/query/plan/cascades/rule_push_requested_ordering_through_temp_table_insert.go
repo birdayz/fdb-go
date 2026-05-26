@@ -19,6 +19,7 @@ import (
 //
 // Ports Java's PushRequestedOrderingThroughInsertTempTableRule.
 type PushRequestedOrderingThroughTempTableInsertRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

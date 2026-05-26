@@ -12,6 +12,7 @@ import (
 //
 // Ports Java's PushRequestedOrderingThroughRecursiveUnionRule.
 type PushRequestedOrderingThroughRecursiveUnionRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

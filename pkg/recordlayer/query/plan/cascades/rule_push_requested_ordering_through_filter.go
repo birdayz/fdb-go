@@ -21,6 +21,7 @@ import (
 // Java's SelectExpression with a single ForEach quantifier and
 // predicates only).
 type PushRequestedOrderingThroughFilterRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

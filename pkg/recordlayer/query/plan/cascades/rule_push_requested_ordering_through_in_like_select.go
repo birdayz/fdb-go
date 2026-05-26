@@ -20,6 +20,7 @@ import (
 //
 // Ports Java's PushRequestedOrderingThroughInLikeSelectRule.
 type PushRequestedOrderingThroughInLikeSelectRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

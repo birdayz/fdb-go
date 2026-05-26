@@ -19,6 +19,7 @@ import (
 //
 // Ports Java's PushRequestedOrderingThroughSortRule.
 type PushRequestedOrderingThroughSortRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

@@ -13,6 +13,7 @@ import (
 //
 // Ports Java's PushReferencedFieldsThroughFilterRule.
 type PushReferencedFieldsThroughFilterRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 
@@ -47,6 +48,7 @@ func (r *PushReferencedFieldsThroughFilterRule) OnMatch(call *ImplementationRule
 //
 // Ports Java's PushReferencedFieldsThroughSelectRule.
 type PushReferencedFieldsThroughSelectRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 
@@ -81,6 +83,7 @@ func (r *PushReferencedFieldsThroughSelectRule) OnMatch(call *ImplementationRule
 //
 // Ports Java's PushReferencedFieldsThroughDistinctRule.
 type PushReferencedFieldsThroughDistinctRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 
@@ -114,6 +117,7 @@ func (r *PushReferencedFieldsThroughDistinctRule) OnMatch(call *ImplementationRu
 //
 // Ports Java's PushReferencedFieldsThroughUniqueRule.
 type PushReferencedFieldsThroughUniqueRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

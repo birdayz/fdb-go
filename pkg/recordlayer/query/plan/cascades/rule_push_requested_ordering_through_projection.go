@@ -26,6 +26,7 @@ import (
 // Ports Java's PushRequestedOrderingThroughSelectRule (for the
 // projection case).
 type PushRequestedOrderingThroughProjectionRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

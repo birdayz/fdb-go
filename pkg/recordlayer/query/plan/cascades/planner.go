@@ -304,29 +304,32 @@ func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {
 //   - err: nil on success; ErrPlannerCapHit if EXPLORE hit MaxTasks
 //     (no OPTIMIZE attempted); extraction error otherwise.
 func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
-	tasks, conv := p.Explore(rootRef)
-	if !conv {
-		return nil, tasks, ErrPlannerCapHit
+	if rootRef == nil {
+		return nil, 0, nil
+	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
+	p.constraintMap = NewConstraintMap()
+
+	// One task-stack drives both REWRITING and PLANNING phases.
+	// InitiatePlannerPhase(REWRITING) pushes ExploreGroup + OptimizeGroup
+	// for REWRITING, then chains to InitiatePlannerPhase(PLANNING).
+	p.push(&InitiatePlannerPhaseTask{Phase: PhaseRewriting, RootRef: rootRef})
+
+	for len(p.stack) > 0 {
+		if p.tasksRun >= p.MaxTasks {
+			return nil, p.tasksRun, ErrPlannerCapHit
+		}
+		task := p.pop()
+		task.Run(p)
+		p.tasksRun++
 	}
 
-	// MATCHING phase: after EXPLORE converges, adjust partial matches
-	// by absorbing candidate-side-only expressions (AdjustMatchRule).
-	// No-op when no PartialMatches were created during EXPLORE.
-	AdjustMatches(rootRef)
-
-	// PLANNING phase: constraint propagation → data access → implementation.
-	p.runPlanningPhase(rootRef)
-
-	// Re-optimize all References to pick up PLANNING-phase results.
-	// FinalMembers now contains physical plans from BatchA +
-	// implementation rules. The winner is set to the best physical plan.
-	p.reoptimizeAll(rootRef)
-
-	p.promoteInJoinWinners(rootRef)
-	promoteByDataAccessCost(rootRef, p.stats)
-
+	// After the task-stack drains, each Reference's FinalMembers has
+	// been pruned to exactly one physical plan by OptimizeGroup.
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
-	return plan, tasks, err
+	return plan, p.tasksRun, err
 }
 
 // ErrPlannerCapHit signals that Explore exited via the MaxTasks
