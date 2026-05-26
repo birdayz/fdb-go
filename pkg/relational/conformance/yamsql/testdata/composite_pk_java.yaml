@@ -1,0 +1,68 @@
+# composite_pk_java.yaml — Composite primary key patterns.
+# Tests tables with multi-column PKs: point lookups, range scans,
+# prefix scans, and INSERT/UPDATE/DELETE behavior.
+name: composite_pk_java
+schema_template: |
+  CREATE TABLE events (
+    year BIGINT NOT NULL,
+    month BIGINT NOT NULL,
+    day BIGINT NOT NULL,
+    description STRING,
+    PRIMARY KEY (year, month, day)
+  )
+setup:
+  - INSERT INTO events VALUES
+      (2024, 1, 1, 'New Year'),
+      (2024, 1, 15, 'MLK Day'),
+      (2024, 2, 14, 'Valentine'),
+      (2024, 3, 17, 'St Patrick'),
+      (2024, 12, 25, 'Christmas'),
+      (2025, 1, 1, 'New Year 2025')
+tests:
+  # Full PK point lookup
+  - query: SELECT description FROM events WHERE year = 2024 AND month = 1 AND day = 1
+    rows:
+      - ['New Year']
+
+  # Prefix scan: year only
+  - query: SELECT month, day, description FROM events WHERE year = 2025 ORDER BY month, day
+    rows:
+      - [1, 1, 'New Year 2025']
+
+  # Prefix scan: year + month
+  - query: SELECT day, description FROM events WHERE year = 2024 AND month = 1 ORDER BY day
+    rows:
+      - [1, 'New Year']
+      - [15, 'MLK Day']
+
+  # Range on leading PK column
+  - query: SELECT year, month, day FROM events WHERE year >= 2024 AND year <= 2024 AND month >= 2 ORDER BY year, month, day
+    rows:
+      - [2024, 2, 14]
+      - [2024, 3, 17]
+      - [2024, 12, 25]
+
+  # UPDATE with full PK
+  - query: UPDATE events SET description = 'Updated' WHERE year = 2024 AND month = 2 AND day = 14
+    rowcount: 1
+  - query: SELECT description FROM events WHERE year = 2024 AND month = 2 AND day = 14
+    rows:
+      - ['Updated']
+
+  # DELETE with full PK
+  - query: DELETE FROM events WHERE year = 2024 AND month = 3 AND day = 17
+    rowcount: 1
+  - query: SELECT COUNT(*) FROM events
+    rows:
+      - [5]
+
+  # INSERT duplicate PK → error
+  - query: INSERT INTO events VALUES (2024, 1, 1, 'Duplicate')
+    error: "23505"
+
+  # ORDER BY PK columns
+  - query: SELECT year, month, day FROM events ORDER BY year DESC, month DESC, day DESC LIMIT 3
+    rows:
+      - [2025, 1, 1]
+      - [2024, 12, 25]
+      - [2024, 2, 14]
