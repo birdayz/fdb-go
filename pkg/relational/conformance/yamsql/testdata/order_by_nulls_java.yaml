@@ -1,0 +1,86 @@
+# order_by_nulls_java.yaml — ORDER BY with NULL values and multiple
+# columns. Tests SQL standard NULL ordering behavior (NULLs sort last
+# in ASC, first in DESC in most implementations).
+name: order_by_nulls_java
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    category STRING,
+    price BIGINT,
+    rating BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO items VALUES
+      (1, 'A', 100, 5),
+      (2, 'B', null, 3),
+      (3, 'A', 200, null),
+      (4, null, 150, 4),
+      (5, 'B', 50, null),
+      (6, null, null, null)
+tests:
+  # ORDER BY column with NULLs — ASC (NULLs last)
+  - query: SELECT id, price FROM items ORDER BY price, id
+    rows:
+      - [5, 50]
+      - [1, 100]
+      - [4, 150]
+      - [3, 200]
+      - [2, null]
+      - [6, null]
+
+  # ORDER BY DESC — NULLs first
+  - query: SELECT id, price FROM items ORDER BY price DESC, id
+    rows:
+      - [2, null]
+      - [6, null]
+      - [3, 200]
+      - [4, 150]
+      - [1, 100]
+      - [5, 50]
+
+  # Multi-column ORDER BY with NULLs in both columns
+  - query: SELECT id, category, price FROM items ORDER BY category, price, id
+    rows:
+      - [1, 'A', 100]
+      - [3, 'A', 200]
+      - [5, 'B', 50]
+      - [2, 'B', null]
+      - [4, null, 150]
+      - [6, null, null]
+
+  # ORDER BY with WHERE filtering NULLs
+  - query: SELECT id, price FROM items WHERE price IS NOT NULL ORDER BY price
+    rows:
+      - [5, 50]
+      - [1, 100]
+      - [4, 150]
+      - [3, 200]
+
+  # ORDER BY + LIMIT with NULLs
+  - query: SELECT id, price FROM items ORDER BY price, id LIMIT 3
+    rows:
+      - [5, 50]
+      - [1, 100]
+      - [4, 150]
+
+  # ORDER BY DESC + LIMIT — NULLs first, then highest
+  - query: SELECT id FROM items ORDER BY rating DESC, id LIMIT 3
+    rows:
+      - [3]
+      - [5]
+      - [6]
+
+  # GROUP BY with ORDER BY on aggregate
+  - query: SELECT category, COUNT(*) AS cnt FROM items WHERE category IS NOT NULL GROUP BY category ORDER BY cnt DESC
+    rows:
+      - ['A', 2]
+      - ['B', 2]
+
+  # Mixed ASC/DESC
+  - query: SELECT id, category, price FROM items WHERE category IS NOT NULL ORDER BY category ASC, price DESC, id
+    rows:
+      - [3, 'A', 200]
+      - [1, 'A', 100]
+      - [2, 'B', null]
+      - [5, 'B', 50]
