@@ -1,0 +1,78 @@
+# group_by_having_java.yaml — GROUP BY + HAVING patterns from Java's
+# groupby-tests.yamsql. Tests grouped aggregates, HAVING filters,
+# multiple aggregates, GROUP BY with ORDER BY, and error cases.
+name: group_by_having_java
+schema_template: |
+  CREATE TABLE sales (
+    id BIGINT NOT NULL,
+    region STRING,
+    product STRING,
+    amount BIGINT,
+    qty BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO sales VALUES
+      (1, 'East', 'Widget', 100, 5),
+      (2, 'East', 'Widget', 200, 3),
+      (3, 'East', 'Gadget', 150, 2),
+      (4, 'West', 'Widget', 300, 7),
+      (5, 'West', 'Gadget', 250, 4),
+      (6, 'West', 'Gadget', 100, 1),
+      (7, 'North', 'Widget', 50, 10)
+tests:
+  # Basic GROUP BY with single aggregate
+  - query: SELECT region, SUM(amount) FROM sales GROUP BY region ORDER BY region
+    rows:
+      - ['East', 450]
+      - ['North', 50]
+      - ['West', 650]
+
+  # GROUP BY with HAVING
+  - query: SELECT region, SUM(amount) FROM sales GROUP BY region HAVING SUM(amount) > 100 ORDER BY region
+    rows:
+      - ['East', 450]
+      - ['West', 650]
+
+  # Multiple aggregates
+  - query: SELECT region, COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM sales GROUP BY region ORDER BY region
+    rows:
+      - ['East', 3, 450, 100, 200]
+      - ['North', 1, 50, 50, 50]
+      - ['West', 3, 650, 100, 300]
+
+  # GROUP BY multiple columns
+  - query: SELECT region, product, SUM(amount) FROM sales GROUP BY region, product ORDER BY region, product
+    rows:
+      - ['East', 'Gadget', 150]
+      - ['East', 'Widget', 300]
+      - ['North', 'Widget', 50]
+      - ['West', 'Gadget', 350]
+      - ['West', 'Widget', 300]
+
+  # HAVING with COUNT
+  - query: SELECT region FROM sales GROUP BY region HAVING COUNT(*) > 1 ORDER BY region
+    rows:
+      - ['East']
+      - ['West']
+
+  # HAVING with multiple conditions
+  - query: SELECT product, SUM(amount), COUNT(*) FROM sales GROUP BY product HAVING SUM(amount) > 200 AND COUNT(*) >= 3 ORDER BY product
+    rows:
+      - ['Gadget', 500, 3]
+      - ['Widget', 650, 4]
+
+  # GROUP BY with ORDER BY aggregate
+  - query: SELECT region, SUM(amount) AS total FROM sales GROUP BY region ORDER BY total DESC
+    rows:
+      - ['West', 650]
+      - ['East', 450]
+      - ['North', 50]
+
+  # Error: non-aggregated column not in GROUP BY
+  - query: SELECT region, product, SUM(amount) FROM sales GROUP BY region
+    error: "42803"
+
+  # Error: unknown column
+  - query: SELECT nonexistent FROM sales GROUP BY region
+    error: "42703"
