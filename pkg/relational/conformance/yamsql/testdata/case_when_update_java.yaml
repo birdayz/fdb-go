@@ -1,0 +1,57 @@
+# case_when_update_java.yaml — CASE WHEN in UPDATE SET from Java's
+# case-when.yamsql. Tests CASE in projections, UPDATE SET with CASE,
+# boolean CASE condition, and nested CASE expressions.
+name: case_when_update_java
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    val BIGINT,
+    label BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO items VALUES
+      (1, 10, 100),
+      (2, 20, 200),
+      (3, 30, 300)
+tests:
+  # CASE in SELECT projection
+  - query: SELECT id, CASE WHEN val > 15 THEN 'high' ELSE 'low' END FROM items ORDER BY id
+    rows:
+      - [1, 'low']
+      - [2, 'high']
+      - [3, 'high']
+
+  # UPDATE SET with CASE — only matching rows get the value, others get NULL
+  - query: UPDATE items SET label = CASE WHEN id = 1 THEN 9999 END
+    rowcount: 3
+  - query: SELECT id, label FROM items ORDER BY id
+    rows:
+      - [1, 9999]
+      - [2, null]
+      - [3, null]
+
+  # UPDATE SET with CASE ELSE — fix the nulls
+  - query: UPDATE items SET label = CASE WHEN label IS NULL THEN 5555 ELSE 1111 END
+    rowcount: 3
+  - query: SELECT id, label FROM items ORDER BY id
+    rows:
+      - [1, 1111]
+      - [2, 5555]
+      - [3, 5555]
+
+  # Nested CASE in UPDATE
+  - query: UPDATE items SET label = CASE WHEN CASE WHEN label = 1111 THEN 5555 ELSE 1111 END > 4000 THEN 7777 ELSE 3333 END
+    rowcount: 3
+  - query: SELECT id, label FROM items ORDER BY id
+    rows:
+      - [1, 7777]
+      - [2, 3333]
+      - [3, 3333]
+
+  # CASE with multiple WHEN branches
+  - query: SELECT id, CASE WHEN val = 10 THEN 'ten' WHEN val = 20 THEN 'twenty' WHEN val = 30 THEN 'thirty' END FROM items ORDER BY id
+    rows:
+      - [1, 'ten']
+      - [2, 'twenty']
+      - [3, 'thirty']
