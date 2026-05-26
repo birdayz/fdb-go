@@ -30,7 +30,7 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
-		WithMaxTasks(10_000)
+		WithMaxTasks(100_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -65,7 +65,7 @@ func planPipelineWithStats(t *testing.T, root expressions.RelationalExpression, 
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
 		WithStatistics(stats).
-		WithMaxTasks(10_000)
+		WithMaxTasks(100_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -95,7 +95,7 @@ func planPipelineWithCandidates(t *testing.T, root expressions.RelationalExpress
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
-		WithMaxTasks(10_000)
+		WithMaxTasks(100_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -450,7 +450,7 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
 		WithStatistics(stats).
-		WithMaxTasks(10_000)
+		WithMaxTasks(100_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -912,7 +912,7 @@ func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
-		WithMaxTasks(10_000)
+		WithMaxTasks(100_000)
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)

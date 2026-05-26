@@ -35,6 +35,7 @@ type Reference struct {
 	plannerStage    PlannerStage
 	explState       explorationState
 	explMemberCount int
+	explRounds      int
 
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
@@ -228,6 +229,8 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.finalMembers = r.finalMembers[:0]
 	r.planProperties = nil
 	r.explState = explorationNever
+	r.explRounds = 0
+	r.explMemberCount = 0
 	r.winners = nil
 }
 
@@ -251,7 +254,11 @@ func (r *Reference) NeedsExploration() bool {
 func (r *Reference) StartExploration() {
 	r.explState = explorationInProgress
 	r.explMemberCount = len(r.members)
+	r.explRounds++
 }
+
+// ExplRounds returns how many exploration rounds have been started.
+func (r *Reference) ExplRounds() int { return r.explRounds }
 
 // ExplMemberCount returns the member count recorded at the last
 // StartExploration. Used to explore only NEW members on re-entry.
@@ -262,6 +269,23 @@ func (r *Reference) ExplMemberCount() int {
 // CommitExploration marks exploration as converged.
 func (r *Reference) CommitExploration() {
 	r.explState = explorationDone
+}
+
+// ContainsExactly returns true if expr is a member of this Reference
+// (by pointer identity). Used by transform tasks to skip rules on
+// expressions that have been removed or replaced.
+func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
+	for _, m := range r.members {
+		if m == expr {
+			return true
+		}
+	}
+	for _, m := range r.finalMembers {
+		if m == expr {
+			return true
+		}
+	}
+	return false
 }
 
 // PruneWith replaces final members with the single best expression.

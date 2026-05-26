@@ -27,9 +27,8 @@ func (t *InitiatePlannerPhaseTask) Run(p *Planner) {
 // transition. Then pushes exploration tasks for all members.
 // Mirrors Java's CascadesPlanner.ExploreGroup.
 type ExploreGroupTask struct {
-	Phase  PlannerPhase
-	Ref    *expressions.Reference
-	Rounds int
+	Phase PlannerPhase
+	Ref   *expressions.Reference
 }
 
 func (t *ExploreGroupTask) Run(p *Planner) {
@@ -47,7 +46,8 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		t.Ref.AdvancePlannerStage(targetStage)
 	}
 
-	if !t.Ref.NeedsExploration() || t.Rounds > 8 {
+	const maxRoundsPerRef = 10
+	if !t.Ref.NeedsExploration() || t.Ref.ExplRounds() >= maxRoundsPerRef {
 		t.Ref.CommitExploration()
 		if t.Phase == PhasePlanning {
 			computeRefPlanProperties(t.Ref)
@@ -55,8 +55,7 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		return
 	}
 
-	// Re-push with incremented round counter.
-	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref, Rounds: t.Rounds + 1})
+	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref})
 
 	for _, expr := range t.Ref.FinalMembers() {
 		p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
@@ -94,10 +93,16 @@ func (t *ExploreExprTask) Run(p *Planner) {
 	}
 
 	// 2. Push non-preorder implementation rules.
+	// Skip FinalizeExpressionsRule for expressions already in finals.
 	for i := len(implRules) - 1; i >= 0; i-- {
 		rule := implRules[i]
 		if isPreOrderRule(rule) {
 			continue
+		}
+		if _, ok := rule.(*FinalizeExpressionsRule); ok {
+			if isFinalMember(t.Ref, t.Expr) {
+				continue
+			}
 		}
 		p.push(&TransformImplTask{Phase: t.Phase, Ref: t.Ref, Expr: t.Expr, Rule: rule})
 	}
@@ -136,6 +141,9 @@ type TransformExprTask struct {
 
 func (t *TransformExprTask) Run(p *Planner) {
 	if t.Ref == nil || t.Expr == nil || t.Rule == nil {
+		return
+	}
+	if !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
 
@@ -182,6 +190,9 @@ type TransformImplTask struct {
 
 func (t *TransformImplTask) Run(p *Planner) {
 	if t.Ref == nil || t.Expr == nil || t.Rule == nil {
+		return
+	}
+	if !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
 	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
@@ -290,6 +301,16 @@ func (t *OptimizeInputsTask) Run(p *Planner) {
 		p.push(&OptimizeGroupTask{Phase: t.Phase, Ref: childRef})
 		p.push(&ExploreGroupTask{Phase: t.Phase, Ref: childRef})
 	}
+}
+
+// isFinalMember checks if expr is already in the Reference's final members.
+func isFinalMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	for _, m := range ref.FinalMembers() {
+		if m == expr {
+			return true
+		}
+	}
+	return false
 }
 
 // isAlreadyExploratoryMember checks if expr is already in the Reference's
