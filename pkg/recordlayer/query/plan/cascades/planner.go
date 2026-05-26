@@ -318,11 +318,6 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// implementation rules. The winner is set to the best physical plan.
 	p.reoptimizeAll(rootRef)
 
-	// Post-PLANNING promotion: these passes promote InJoin/InUnion
-	// and FlatMap plans when they have lower data access cost. With
-	// advancePlannerStage clearing EXPLORE artifacts, these are safety
-	// nets for edge cases where the cost model without statistics
-	// doesn't distinguish InJoin vs Filter+Scan.
 	p.promoteInJoinWinners(rootRef)
 	promoteByDataAccessCost(rootRef, p.stats)
 
@@ -379,43 +374,6 @@ func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 			}
 		}
 	}
-}
-
-// advancePlannerStage transitions all References from EXPLORE to
-// PLANNING. Each Reference keeps only the best logical expression
-// (the EXPLORE-phase winner) as the canonical seed for PLANNING.
-// All other exploratory members are cleared. Winners are cleared.
-// PartialMatches are preserved (data access rules consume them).
-//
-// Mirrors Java's Reference.advancePlannerStage which clears
-// exploratoryMembers, promotes finalMembers as the new seed, and
-// clears finalMembers. In Go, EXPLORE doesn't produce finals, so
-// the winner (best logical) serves as the canonical form.
-func (p *Planner) advancePlannerStage(rootRef *expressions.Reference) {
-	visited := make(map[*expressions.Reference]bool)
-	p.advanceRecursive(rootRef, visited)
-	if p.memo != nil {
-		for ref := range p.memo.References() {
-			p.advanceRecursive(ref, visited)
-		}
-	}
-}
-
-func (p *Planner) advanceRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
-	if ref == nil || visited[ref] {
-		return
-	}
-	visited[ref] = true
-
-	for _, m := range ref.AllMembers() {
-		for _, q := range m.GetQuantifiers() {
-			if childRef := q.GetRangesOver(); childRef != nil {
-				p.advanceRecursive(childRef, visited)
-			}
-		}
-	}
-
-	ref.ClearWinners()
 }
 
 // reoptimizeAll re-runs OptimizeGroup on every reachable Reference
@@ -519,23 +477,12 @@ func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map
 	if _, isPhys := existing.(physicalPlanExpression); !isPhys {
 		return
 	}
-	existingProvidesOrdering := existingIsOrderingWinner(ref, existing)
 	for _, m := range ref.AllMembers() {
 		if !IsPhysicalInJoin(m) && !isPhysicalInUnion(m) {
 			continue
 		}
 		if isNilInnerFetch(m) {
 			continue
-		}
-		if existingProvidesOrdering {
-			if oh, ok := m.(orderingHinter); ok {
-				ord := oh.HintOrdering()
-				if !ord.IsKnown || len(ord.Keys) == 0 {
-					continue
-				}
-			} else {
-				continue
-			}
 		}
 		if p.costModel(m, existing) {
 			existing = m
@@ -597,27 +544,6 @@ func promoteByDataAccessCost(rootRef *expressions.Reference, stats properties.St
 	rootRef.SetWinner(expressions.NoProperties, existing)
 }
 
-// existingIsOrderingWinner returns true if the given expression is the
-// ordering-specific winner for any non-empty ordering on this Reference.
-// When true, replacing the NoProperties winner would invalidate sort
-// elimination at a parent Sort level.
-func existingIsOrderingWinner(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
-	oh, ok := expr.(orderingHinter)
-	if !ok {
-		return false
-	}
-	ord := oh.HintOrdering()
-	if !ord.IsKnown || len(ord.Keys) == 0 {
-		return false
-	}
-	props := orderingToProps(ord)
-	if props.IsEmpty() {
-		return false
-	}
-	winner := ref.Winner(props)
-	return winner == expr
-}
-
 // isNilInnerFetch returns true if expr is a physicalFetchFromPartialRecordWrapper
 // whose embedded plan has a nil inner. These are push-through-fetch shells
 // created by rules like PushInJoinThroughFetchRule — they're assembled
@@ -629,20 +555,6 @@ func isNilInnerFetch(expr expressions.RelationalExpression) bool {
 		return false
 	}
 	return fw.plan != nil && fw.plan.GetInner() == nil
-}
-
-// reExplorePlanning re-runs the task-stack with PlanningExplorationRules
-// to re-derive logical alternatives from the canonical seed after
-// advancePlannerStage. Uses the existing Explore infrastructure with a
-// temporary rule set swap.
-func (p *Planner) reExplorePlanning(rootRef *expressions.Reference, rules []ExpressionRule) {
-	savedRules := p.rules
-	savedCount := p.exploreCount
-	p.rules = rules
-	p.exploreCount = make(map[*expressions.Reference]int)
-	p.Explore(rootRef)
-	p.rules = savedRules
-	p.exploreCount = savedCount
 }
 
 func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
