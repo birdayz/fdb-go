@@ -1,0 +1,71 @@
+# exists_subquery_java.yaml — EXISTS and NOT EXISTS subquery patterns.
+# Tests correlated EXISTS, NOT EXISTS, EXISTS with aggregate,
+# and multiple EXISTS conditions.
+name: exists_subquery_java
+schema_template: |
+  CREATE TABLE customers (
+    id BIGINT NOT NULL,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE orders (
+    id BIGINT NOT NULL,
+    customer_id BIGINT,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO customers VALUES
+      (1, 'Alice'),
+      (2, 'Bob'),
+      (3, 'Charlie'),
+      (4, 'Dave')
+  - INSERT INTO orders VALUES
+      (101, 1, 100),
+      (102, 1, 200),
+      (103, 2, 150),
+      (104, 3, 300)
+tests:
+  # EXISTS — customers who have at least one order
+  - query: SELECT name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY name
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Charlie']
+
+  # NOT EXISTS — customers without any orders
+  - query: SELECT name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY name
+    rows:
+      - ['Dave']
+
+  # EXISTS with additional WHERE filter
+  - query: SELECT name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.amount > 200) ORDER BY name
+    rows:
+      - ['Charlie']
+
+  # NOT EXISTS with filter — customers without large orders
+  - query: SELECT name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.amount >= 200) ORDER BY name
+    rows:
+      - ['Bob']
+      - ['Dave']
+
+  # EXISTS in combination with other predicates
+  - query: SELECT name FROM customers c WHERE c.id > 1 AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY name
+    rows:
+      - ['Bob']
+      - ['Charlie']
+
+  # COUNT of customers with orders (EXISTS in subquery-like pattern)
+  - query: SELECT COUNT(*) FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
+    rows:
+      - [3]
+
+  # NOT EXISTS with empty orders table behavior
+  - query: DELETE FROM orders WHERE id > 0
+    rowcount: 4
+  - query: SELECT name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY name
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Charlie']
+      - ['Dave']
