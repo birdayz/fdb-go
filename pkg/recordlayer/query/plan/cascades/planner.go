@@ -376,6 +376,11 @@ func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 	}
 }
 
+// advancePlannerStage transitions from EXPLORE to PLANNING.
+// Each Reference's FinalMembers contains the canonical form (set by
+// OptimizeReferenceTask). AdvancePlannerStage promotes it as the sole
+// member and clears everything else. Then re-explores to re-derive
+// all logical alternatives from the canonical seed.
 // reoptimizeAll re-runs OptimizeGroup on every reachable Reference
 // bottom-up after the PLANNING phase. Implementation rules insert
 // physical plans into Members; the cost model (criterion #1: physical
@@ -959,10 +964,6 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	}
 	best := p.OptimizeGroup(t.Ref, expressions.NoProperties)
 
-	// Stamp ordering-specific winners: for each physical member that
-	// provides a known ordering, store it as winner for those ordering
-	// properties. If multiple members provide the same ordering, the
-	// cost model picks the better one.
 	stampOrderingWinners(t.Ref, p.costModel)
 
 	if p.events != nil {
