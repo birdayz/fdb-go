@@ -1,0 +1,79 @@
+# multi_table_where_join_java.yaml — Multi-table FROM with WHERE join.
+# Tests implicit join (comma-separated FROM), 3-table joins, and
+# various join predicate patterns.
+name: multi_table_where_join_java
+schema_template: |
+  CREATE TABLE regions (
+    id BIGINT NOT NULL,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE stores (
+    id BIGINT NOT NULL,
+    region_id BIGINT,
+    store_name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE sales (
+    id BIGINT NOT NULL,
+    store_id BIGINT,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO regions VALUES (1, 'North'), (2, 'South')
+  - INSERT INTO stores VALUES (10, 1, 'Store A'), (20, 1, 'Store B'), (30, 2, 'Store C')
+  - INSERT INTO sales VALUES (100, 10, 500), (101, 10, 300), (102, 20, 700), (103, 30, 200)
+tests:
+  # 2-table implicit join
+  - query: SELECT s.store_name, r.name FROM stores s, regions r WHERE s.region_id = r.id ORDER BY s.store_name
+    rows:
+      - ['Store A', 'North']
+      - ['Store B', 'North']
+      - ['Store C', 'South']
+
+  # 3-table join — region → store → sales
+  - query: |
+      SELECT r.name, s.store_name, sa.amount
+      FROM regions r, stores s, sales sa
+      WHERE s.region_id = r.id AND sa.store_id = s.id
+      ORDER BY sa.amount
+    rows:
+      - ['South', 'Store C', 200]
+      - ['North', 'Store A', 300]
+      - ['North', 'Store A', 500]
+      - ['North', 'Store B', 700]
+
+  # 3-table join with aggregate
+  - query: |
+      SELECT r.name, SUM(sa.amount) AS total
+      FROM regions r, stores s, sales sa
+      WHERE s.region_id = r.id AND sa.store_id = s.id
+      GROUP BY r.name ORDER BY r.name
+    rows:
+      - ['North', 1500]
+      - ['South', 200]
+
+  # 3-table join with HAVING
+  - query: |
+      SELECT r.name, COUNT(*) AS cnt
+      FROM regions r, stores s, sales sa
+      WHERE s.region_id = r.id AND sa.store_id = s.id
+      GROUP BY r.name HAVING COUNT(*) > 1
+    rows:
+      - ['North', 3]
+
+  # 2-table with additional non-join predicate
+  - query: SELECT s.store_name, sa.amount FROM stores s, sales sa WHERE sa.store_id = s.id AND sa.amount > 400 ORDER BY sa.amount
+    rows:
+      - ['Store A', 500]
+      - ['Store B', 700]
+
+  # Self-join on stores (same region)
+  - query: |
+      SELECT s1.store_name, s2.store_name
+      FROM stores s1, stores s2
+      WHERE s1.region_id = s2.region_id AND s1.id < s2.id
+      ORDER BY s1.store_name
+    rows:
+      - ['Store A', 'Store B']
