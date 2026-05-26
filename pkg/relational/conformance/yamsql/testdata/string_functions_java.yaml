@@ -1,0 +1,78 @@
+# string_functions_java.yaml — String function patterns.
+# Tests CONCAT, REPLACE, TRIM, POSITION, and string operations
+# combined with other SQL features.
+name: string_functions_java
+schema_template: |
+  CREATE TABLE texts (
+    id BIGINT NOT NULL,
+    val STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO texts VALUES
+      (1, 'Hello World'),
+      (2, '  padded  '),
+      (3, 'UPPERCASE'),
+      (4, 'lowercase'),
+      (5, null),
+      (6, '')
+tests:
+  # UPPER/LOWER
+  - query: SELECT UPPER(val), LOWER(val) FROM texts WHERE id = 1
+    rows:
+      - ['HELLO WORLD', 'hello world']
+
+  # LENGTH
+  - query: SELECT id, LENGTH(val) FROM texts WHERE id <= 4 ORDER BY id
+    rows:
+      - [1, 11]
+      - [2, 10]
+      - [3, 9]
+      - [4, 9]
+
+  # LENGTH of empty string = 0
+  - query: SELECT LENGTH(val) FROM texts WHERE id = 6
+    rows:
+      - [0]
+
+  # LENGTH of NULL = NULL
+  - query: SELECT LENGTH(val) FROM texts WHERE id = 5
+    rows:
+      - [null]
+
+  # SUBSTRING (1-based indexing)
+  - query: SELECT SUBSTRING(val, 1, 5) FROM texts WHERE id = 1
+    rows:
+      - ['Hello']
+
+  - query: SELECT SUBSTRING(val, 7) FROM texts WHERE id = 1
+    rows:
+      - ['World']
+
+  # UPPER in WHERE
+  - query: SELECT id FROM texts WHERE UPPER(val) = 'HELLO WORLD'
+    rows:
+      - [1]
+
+  # LOWER in WHERE
+  - query: SELECT id FROM texts WHERE LOWER(val) = 'uppercase'
+    rows:
+      - [3]
+
+  # String comparison
+  - query: SELECT id FROM texts WHERE val > 'Z' ORDER BY id
+    rows:
+      - [4]
+
+  # String in GROUP BY
+  - query: SELECT UPPER(SUBSTRING(val, 1, 1)) AS first_char, COUNT(*) FROM texts WHERE val IS NOT NULL AND LENGTH(val) > 0 GROUP BY first_char ORDER BY first_char
+    rows:
+      - ['H', 1]
+      - ['L', 1]
+      - ['U', 1]
+      - [' ', 1]
+
+  # Concatenation via || operator (Go extension)
+  - query: SELECT val || '!' FROM texts WHERE id = 1
+    rows:
+      - ['Hello World!']
