@@ -1,0 +1,67 @@
+# update_delete_where_java.yaml — UPDATE and DELETE with complex WHERE.
+# Tests UPDATE with arithmetic, CASE, multiple columns, and DELETE
+# with various predicates including BETWEEN, IN, LIKE.
+name: update_delete_where_java
+schema_template: |
+  CREATE TABLE inventory (
+    id BIGINT NOT NULL,
+    product STRING,
+    qty BIGINT,
+    price BIGINT,
+    active BOOLEAN,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO inventory VALUES
+      (1, 'Widget', 100, 10, true),
+      (2, 'Gadget', 50, 25, true),
+      (3, 'Doohickey', 200, 5, false),
+      (4, 'Thingamajig', 0, 100, true),
+      (5, 'Whatsit', 75, 15, false)
+tests:
+  # UPDATE with arithmetic expression
+  - query: UPDATE inventory SET price = price * 2 WHERE qty > 50
+    rowcount: 2
+  - query: SELECT id, price FROM inventory WHERE qty > 50 ORDER BY id
+    rows:
+      - [1, 20]
+      - [3, 10]
+
+  # UPDATE with CASE expression
+  - query: UPDATE inventory SET active = CASE WHEN qty > 0 THEN true ELSE false END
+    rowcount: 5
+  - query: SELECT id, active FROM inventory ORDER BY id
+    rows:
+      - [1, true]
+      - [2, true]
+      - [3, true]
+      - [4, false]
+      - [5, true]
+
+  # DELETE with IN predicate
+  - query: DELETE FROM inventory WHERE id IN (3, 5)
+    rowcount: 2
+  - query: SELECT COUNT(*) FROM inventory
+    rows:
+      - [3]
+
+  # DELETE with BETWEEN
+  - query: DELETE FROM inventory WHERE price BETWEEN 20 AND 30
+    rowcount: 2
+  - query: SELECT id, product FROM inventory ORDER BY id
+    rows:
+      - [4, 'Thingamajig']
+
+  # UPDATE remaining row
+  - query: UPDATE inventory SET qty = qty + 10, product = 'Updated' WHERE id = 4
+    rowcount: 1
+  - query: SELECT * FROM inventory
+    rows:
+      - [4, 'Updated', 10, 100, false]
+
+  # DELETE with LIKE
+  - query: DELETE FROM inventory WHERE product LIKE 'Up%'
+    rowcount: 1
+  - query: SELECT COUNT(*) FROM inventory
+    rows:
+      - [0]
