@@ -32,8 +32,9 @@ type Reference struct {
 	members      []RelationalExpression
 	finalMembers []RelationalExpression
 
-	plannerStage PlannerStage
-	explState    explorationState
+	plannerStage    PlannerStage
+	explState       explorationState
+	explMemberCount int
 
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
@@ -236,15 +237,23 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 // Stage returns the current planner stage.
 func (r *Reference) Stage() PlannerStage { return r.plannerStage }
 
-// NeedsExploration returns true if the Reference should be explored in
-// the current phase (not yet started or new members added).
+// NeedsExploration returns true if the Reference has never been explored
+// or if new members were added since the last exploration round.
 func (r *Reference) NeedsExploration() bool {
-	return r.explState != explorationDone
+	if r.explState == explorationNever {
+		return true
+	}
+	if r.explState == explorationDone {
+		return false
+	}
+	return len(r.members)+len(r.finalMembers) > r.explMemberCount
 }
 
-// StartExploration marks exploration as in-progress.
+// StartExploration marks exploration as in-progress and records the
+// current member count for convergence detection.
 func (r *Reference) StartExploration() {
 	r.explState = explorationInProgress
+	r.explMemberCount = len(r.members) + len(r.finalMembers)
 }
 
 // CommitExploration marks exploration as converged.
