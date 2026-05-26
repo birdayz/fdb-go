@@ -72,12 +72,13 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
@@ -150,12 +151,13 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 

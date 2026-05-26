@@ -131,8 +131,10 @@ func FuzzPlanner_Aggregation_NoPanic(f *testing.F) {
 			ctx = &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 		}
 
-		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+		rules := DefaultExpressionRules()
+		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
 		p.MaxTasks = 50_000
 
 		plan, _, err := p.Plan(topRef)

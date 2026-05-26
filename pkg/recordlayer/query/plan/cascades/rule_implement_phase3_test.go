@@ -19,8 +19,10 @@ func TestImplementTempTableScan_PlannerProducesPhysicalScan(t *testing.T) {
 	scan := expressions.NewTempTableScanExpression(alias)
 	ref := expressions.InitialOf(scan)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -49,8 +51,10 @@ func TestImplementTempTableScan_ExplainNotEmpty(t *testing.T) {
 	scan := expressions.NewTempTableScanExpression(alias)
 	ref := expressions.InitialOf(scan)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -84,8 +88,10 @@ func TestImplementTempTableInsert_Fires(t *testing.T) {
 	)
 	ref := expressions.InitialOf(insert)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -136,8 +142,10 @@ func TestImplementTempTableInsert_OwningFlag(t *testing.T) {
 			)
 			ref := expressions.InitialOf(insert)
 
-			rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-			p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+			rules := DefaultExpressionRules()
+			p := NewPlanner(rules, EmptyPlanContext()).
+				WithPlanningExpressionRules(BatchAExpressionRules()).
+				WithImplementationRules(DefaultImplementationRules())
 			plan, _, err := p.Plan(ref)
 			if err != nil {
 				t.Fatalf("Plan: %v", err)
@@ -210,8 +218,10 @@ func TestImplementRecursiveDfsJoin_Fires_PreorderStrategy(t *testing.T) {
 
 	ref := buildRecursiveUnionTree(expressions.TraversalPreorder)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -241,8 +251,10 @@ func TestImplementRecursiveDfsJoin_Fires_AnyStrategy(t *testing.T) {
 
 	ref := buildRecursiveUnionTree(expressions.TraversalAny)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -264,8 +276,10 @@ func TestImplementRecursiveDfsJoin_Declines_LevelStrategy(t *testing.T) {
 
 	ref := buildRecursiveUnionTree(expressions.TraversalLevel)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -298,8 +312,10 @@ func TestImplementRecursiveLevelUnion_Fires_LevelStrategy(t *testing.T) {
 
 	ref := buildRecursiveUnionTree(expressions.TraversalLevel)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -338,8 +354,10 @@ func TestImplementRecursiveLevelUnion_Fires_AnyStrategy(t *testing.T) {
 
 	ref := buildRecursiveUnionTree(expressions.TraversalAny)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}

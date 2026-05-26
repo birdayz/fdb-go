@@ -531,7 +531,7 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -559,7 +559,9 @@ func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
 		)
 		ref := expressions.InitialOf(sort)
 
-		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
 		p.Plan(ref)
 	}
 }
@@ -576,7 +578,7 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -598,7 +600,9 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 		)
 		ref := expressions.InitialOf(gb)
 
-		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
 		p.Plan(ref)
 	}
 }
@@ -615,7 +619,7 @@ func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -631,7 +635,9 @@ func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
 		)
 		ref := expressions.InitialOf(gb)
 
-		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
 		p.Plan(ref)
 	}
 }

@@ -33,8 +33,9 @@ func TestPlanChoice_IndexScanChosenOverFullScan(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {

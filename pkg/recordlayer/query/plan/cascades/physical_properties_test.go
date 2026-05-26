@@ -175,8 +175,9 @@ func TestSortElimination_ViaChildOrderingWinner(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	// Run BatchA rules (PrimaryScanRule will produce physicalScanWrapper).
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules())
 	p.Explore(sortRef)
 
 	// Now manually stamp an ordered index scan as the ordering winner
@@ -256,9 +257,10 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	rules = append(rules, MatchingRules()...)
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(sortRef)
 	if err != nil {
@@ -301,9 +303,12 @@ func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx)
-	p.Explore(sortRef)
+	rules := DefaultExpressionRules()
+	rules = append(rules, MatchingRules()...)
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+	p.Plan(sortRef)
 
 	// OrderedIndexScanRule produces an ordered index scan at the sort
 	// level. stampOrderingWinners detects the ordering and stamps it.

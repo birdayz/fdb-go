@@ -222,11 +222,9 @@ func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	// PLUS the existing logical-rewrite rules. The combination
 	// generates both logical alternatives AND physical
 	// implementations.
-	rules := append(
-		cascades.DefaultExpressionRules(),
-		cascades.BatchAExpressionRules()...,
-	)
-	p := cascades.NewPlanner(rules, nil)
+	rules := cascades.DefaultExpressionRules()
+	p := cascades.NewPlanner(rules, nil).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules())
 	if _, conv := p.Explore(ref); !conv {
 		t.Fatal("Planner did not converge")
 	}
@@ -272,9 +270,9 @@ func TestEndToEnd_InsertFromScan_DMLPipeline(t *testing.T) {
 	ref := expressions.InitialOf(expr)
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
-	rules = append(rules, cascades.BatchAExpressionRules()...)
-	rules = append(rules, cascades.DMLImplementationRules()...)
-	p := cascades.NewPlanner(rules, nil)
+	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
+	p := cascades.NewPlanner(rules, nil).
+		WithPlanningExpressionRules(planningRules)
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
@@ -317,9 +315,9 @@ func TestEndToEnd_DeleteWithFilter_DMLPipeline(t *testing.T) {
 	ref := expressions.InitialOf(expr)
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
-	rules = append(rules, cascades.BatchAExpressionRules()...)
-	rules = append(rules, cascades.DMLImplementationRules()...)
-	p := cascades.NewPlanner(rules, nil)
+	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
+	p := cascades.NewPlanner(rules, nil).
+		WithPlanningExpressionRules(planningRules)
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
@@ -371,11 +369,9 @@ func TestEndToEnd_RealisticSQLShape_DistinctSortFilterScan(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(
-		cascades.DefaultExpressionRules(),
-		cascades.BatchAExpressionRules()...,
-	)
-	p := cascades.NewPlanner(rules, nil)
+	rules := cascades.DefaultExpressionRules()
+	p := cascades.NewPlanner(rules, nil).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules())
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
@@ -413,12 +409,10 @@ func TestEndToEnd_FullPipelineToPhysicalPlan(t *testing.T) {
 	}
 	ref := expressions.InitialOf(expr)
 
-	rules := append(
-		cascades.DefaultExpressionRules(),
-		cascades.BatchAExpressionRules()...,
-	)
+	rules := cascades.DefaultExpressionRules()
 	p := cascades.NewPlanner(rules, nil).
-		WithImplementationRules(cascades.DefaultImplementationRules())
+		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules())
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
@@ -549,9 +543,9 @@ func TestEndToEnd_UnionAll_TwoScans(t *testing.T) {
 	ref := expressions.InitialOf(expr)
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
-	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, nil).
-		WithImplementationRules(cascades.DefaultImplementationRules())
+		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules())
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
@@ -633,9 +627,9 @@ func TestEndToEnd_PlanPrefersIndexScanOverFullScan(t *testing.T) {
 	})
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.MatchingRules()...)
-	rules = append(rules, cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, ctx).
-		WithImplementationRules(cascades.DefaultImplementationRules())
+		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules())
 	plan, tasks, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)

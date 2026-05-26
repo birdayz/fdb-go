@@ -15,7 +15,7 @@ func TestE2E_ScanOnlyPlan(t *testing.T) {
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	rootRef := expressions.InitialOf(scan)
 
-	p := NewPlanner(allRules(), nil).WithImplementationRules(DefaultImplementationRules())
+	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -42,7 +42,7 @@ func TestE2E_FilterOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(filter)
 
-	p := NewPlanner(allRules(), nil).WithImplementationRules(DefaultImplementationRules())
+	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -77,7 +77,7 @@ func TestE2E_SortOverFilterOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(sort)
 
-	p := NewPlanner(allRules(), nil).WithImplementationRules(DefaultImplementationRules())
+	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -96,7 +96,7 @@ func TestE2E_DistinctOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(distinct)
 
-	p := NewPlanner(allRules(), nil).WithImplementationRules(DefaultImplementationRules())
+	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -115,7 +115,7 @@ func TestE2E_LimitOverScan(t *testing.T) {
 	)
 	rootRef := expressions.InitialOf(limit)
 
-	p := NewPlanner(allRules(), nil).WithImplementationRules(DefaultImplementationRules())
+	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -135,7 +135,7 @@ func TestE2E_UnionOfTwoScans(t *testing.T) {
 	})
 	rootRef := expressions.InitialOf(union)
 
-	p := NewPlanner(allRules(), nil).WithImplementationRules(DefaultImplementationRules())
+	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -190,8 +190,9 @@ func TestE2E_SortEliminationThroughFilter(t *testing.T) {
 		},
 	}
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 
 	best, _, err := p.Plan(rootRef)
@@ -295,8 +296,10 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(selRef); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -367,8 +370,10 @@ func TestE2E_JoinCommutativitySkippedForLeftJoin(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(selRef); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}

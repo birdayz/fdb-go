@@ -35,14 +35,11 @@ func containsPhysical(ref *expressions.Reference, predicate func(expressions.Rel
 	return walk(ref)
 }
 
-// allRules composes DefaultExpressionRules + BatchAExpressionRules +
-// DMLImplementationRules into the full rule set used for end-to-end
-// planner tests.
+// allRules returns the EXPLORE-phase rule set for end-to-end planner
+// tests. BatchA and DML rules fire during PLANNING via
+// WithPlanningExpressionRules.
 func allRules() []ExpressionRule {
-	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, DMLImplementationRules()...)
-	return rules
+	return DefaultExpressionRules()
 }
 
 // exploreAndVerify runs the planner on ref (EXPLORE + PLANNING) and fatals if
@@ -53,7 +50,10 @@ func exploreAndVerify(t *testing.T, ref *expressions.Reference, rules []Expressi
 	if ctx == nil {
 		ctx = EmptyPlanContext()
 	}
-	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	planningRules := append(BatchAExpressionRules(), DMLImplementationRules()...)
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(planningRules).
+		WithImplementationRules(DefaultImplementationRules())
 	_, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -82,7 +82,7 @@ func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 	)
 	ref := expressions.InitialOf(sel)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalNestedLoopJoin) {
@@ -103,7 +103,7 @@ func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 	limit := expressions.NewLogicalLimitExpression(10, 0, q)
 	ref := expressions.InitialOf(limit)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalLimit) {
@@ -130,7 +130,7 @@ func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 	)
 	ref := expressions.InitialOf(groupBy)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalStreamingAgg) {
@@ -172,7 +172,7 @@ func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 	)
 	ref := expressions.InitialOf(recUnion)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalRecursiveDfsJoin) {
@@ -196,7 +196,7 @@ func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	)
 	ref := expressions.InitialOf(proj)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalProjection := func(expr expressions.RelationalExpression) bool {
@@ -264,7 +264,7 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{q1, q2})
 	ref := expressions.InitialOf(union)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalUnion := func(expr expressions.RelationalExpression) bool {
@@ -296,7 +296,7 @@ func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing
 	)
 	ref := expressions.InitialOf(intersection)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalIntersection) {
@@ -323,7 +323,7 @@ func TestPlanner_SortOverScanStaysLogical(t *testing.T) {
 	)
 	ref := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	hasLogicalSort := false
@@ -354,7 +354,7 @@ func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 	)
 	ref := expressions.InitialOf(filter)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalFilter) {
@@ -375,7 +375,7 @@ func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 	typeFilter := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, q)
 	ref := expressions.InitialOf(typeFilter)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalTypeFilter := func(expr expressions.RelationalExpression) bool {
@@ -401,8 +401,9 @@ func TestPlanner_DistinctOverScanElided(t *testing.T) {
 	distinct := expressions.NewLogicalDistinctExpression(q)
 	ref := expressions.InitialOf(distinct)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, nil).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
 		WithMaxTasks(10_000)
 	best, _, err := p.Plan(ref)
@@ -497,7 +498,7 @@ func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 	)
 	ref := expressions.InitialOf(recUnion)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	if !containsPhysical(ref, IsPhysicalRecursiveLevelUnion) {
@@ -516,7 +517,7 @@ func TestPlanner_ValuesProducesPhysicalValues(t *testing.T) {
 	})
 	ref := expressions.InitialOf(vals)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
 	isPhysicalValues := func(expr expressions.RelationalExpression) bool {

@@ -50,7 +50,7 @@ func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 		return rootRef, ctx
 	}
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	rules = append(rules, MatchingRules()...)
 	implRules := DefaultImplementationRules()
 
@@ -58,6 +58,7 @@ func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		ref, ctx := buildTree()
 		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(implRules).
 			WithMaxTasks(10_000)
 		best, _, err := p.Plan(ref)

@@ -78,7 +78,7 @@ func FuzzPlanner_E2E_NoPanic(f *testing.F) {
 			current = expressions.InitialOf(proj)
 		}
 
-		p := NewPlanner(allRules(), nil).WithImplementationRules(DefaultImplementationRules())
+		p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
 		_, _, _ = p.Plan(current)
 	})
 }

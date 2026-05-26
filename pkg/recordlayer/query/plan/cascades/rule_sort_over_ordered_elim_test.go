@@ -49,8 +49,9 @@ func TestSortElim_IndexProvidesSortOrder(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(sortRef)
 	if err != nil {
@@ -108,8 +109,9 @@ func TestSortElim_MultiKeySortMatchesIndex(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(sortRef)
 	if err != nil {
@@ -166,8 +168,9 @@ func TestSortElim_PartialSortKeyMatch(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(sortRef)
 	if err != nil {
@@ -226,8 +229,9 @@ func TestSortElim_RangeScanProvidesSortOrder(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(sortRef)
 	if err != nil {
@@ -281,8 +285,9 @@ func TestSortElim_SortKeyNotProvidedByIndex(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(sortRef)
 	if err != nil {
@@ -327,8 +332,9 @@ func TestSortElim_DescSortEliminated(t *testing.T) {
 	)
 	sortRef := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(sortRef)
 	if err != nil {

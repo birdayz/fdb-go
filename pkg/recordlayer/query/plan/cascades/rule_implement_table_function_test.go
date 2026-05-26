@@ -47,8 +47,10 @@ func TestImplementTableFunction_ViaPlanner(t *testing.T) {
 	tf := expressions.NewTableFunctionExpression(stream)
 	ref := expressions.InitialOf(tf)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -72,8 +74,10 @@ func TestImplementTableFunction_PlanOutput(t *testing.T) {
 	tf := expressions.NewTableFunctionExpression(stream)
 	ref := expressions.InitialOf(tf)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)

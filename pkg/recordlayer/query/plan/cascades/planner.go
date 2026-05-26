@@ -313,20 +313,16 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// PLANNING phase: constraint propagation → data access → implementation.
 	p.runPlanningPhase(rootRef)
 
-	// Re-optimize all References to pick up implementation rule results.
-	// Implementation rules insert physical plans into Members; the cost
-	// model (criterion #1: physical beats non-physical) ensures they win
-	// over logical EXPLORE-phase winners.
+	// Re-optimize all References to pick up PLANNING-phase results.
+	// FinalMembers now contains physical plans from BatchA +
+	// implementation rules. The winner is set to the best physical plan.
 	p.reoptimizeAll(rootRef)
 
 	// Post-PLANNING promotion: these passes promote InJoin/InUnion
 	// and FlatMap plans when they have lower data access cost. With
-	// finalMembers, reoptimizeAll already prefers them when real
-	// statistics are available (all FDB integration tests pass without
-	// these passes). They remain for unit tests that lack statistics —
-	// without stats, the ordinal cost model criteria tie on InJoin vs
-	// Filter+Scan. Removing these requires either statistics-aware
-	// unit tests or full advancePlannerStage.
+	// advancePlannerStage clearing EXPLORE artifacts, these are safety
+	// nets for edge cases where the cost model without statistics
+	// doesn't distinguish InJoin vs Filter+Scan.
 	p.promoteInJoinWinners(rootRef)
 	promoteByDataAccessCost(rootRef, p.stats)
 
@@ -383,6 +379,43 @@ func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 			}
 		}
 	}
+}
+
+// advancePlannerStage transitions all References from EXPLORE to
+// PLANNING. Each Reference keeps only the best logical expression
+// (the EXPLORE-phase winner) as the canonical seed for PLANNING.
+// All other exploratory members are cleared. Winners are cleared.
+// PartialMatches are preserved (data access rules consume them).
+//
+// Mirrors Java's Reference.advancePlannerStage which clears
+// exploratoryMembers, promotes finalMembers as the new seed, and
+// clears finalMembers. In Go, EXPLORE doesn't produce finals, so
+// the winner (best logical) serves as the canonical form.
+func (p *Planner) advancePlannerStage(rootRef *expressions.Reference) {
+	visited := make(map[*expressions.Reference]bool)
+	p.advanceRecursive(rootRef, visited)
+	if p.memo != nil {
+		for ref := range p.memo.References() {
+			p.advanceRecursive(ref, visited)
+		}
+	}
+}
+
+func (p *Planner) advanceRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+
+	for _, m := range ref.AllMembers() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.advanceRecursive(childRef, visited)
+			}
+		}
+	}
+
+	ref.ClearWinners()
 }
 
 // reoptimizeAll re-runs OptimizeGroup on every reachable Reference
@@ -545,6 +578,20 @@ func promoteByDataAccessCost(rootRef *expressions.Reference, stats properties.St
 	rootRef.SetWinner(expressions.NoProperties, existing)
 }
 
+// reExplorePlanning re-runs the task-stack with PlanningExplorationRules
+// to re-derive logical alternatives from the canonical seed after
+// advancePlannerStage. Uses the existing Explore infrastructure with a
+// temporary rule set swap.
+func (p *Planner) reExplorePlanning(rootRef *expressions.Reference, rules []ExpressionRule) {
+	savedRules := p.rules
+	savedCount := p.exploreCount
+	p.rules = rules
+	p.exploreCount = make(map[*expressions.Reference]int)
+	p.Explore(rootRef)
+	p.rules = savedRules
+	p.exploreCount = savedCount
+}
+
 func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
 	if ref == nil || visited[ref] {
 		return
@@ -613,26 +660,45 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 // firePlanningExprRules fires planningExpressionRules (BatchA) against
 // a Reference during PLANNING. Yields go to InsertFinal so they land
 // in finalMembers — authoritative for plan selection.
+//
+// For SelectExpressions with ChildrenAsSet (commutative joins), also
+// fires each rule on the swapped-quantifier variant. Mirrors
+// FireImplementationRuleWithContext's join commutativity exploration.
 func (p *Planner) firePlanningExprRules(ref *expressions.Reference) {
 	if len(p.planningExpressionRules) == 0 {
 		return
 	}
+	yieldFn := func(expr expressions.RelationalExpression) bool {
+		return ref.InsertFinal(expr)
+	}
 	for _, rule := range p.planningExpressionRules {
 		for _, member := range ref.AllMembers() {
-			bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
-			for _, b := range bindings {
-				call := &ExpressionRuleCall{
-					Bindings:  b,
-					Reference: ref,
-					Context:   p.ctx,
-					memo:      p.memo,
-					yieldFn: func(expr expressions.RelationalExpression) bool {
-						return ref.InsertFinal(expr)
-					},
+			p.firePlanningExprRuleOnMember(rule, ref, member, yieldFn)
+
+			if sel, ok := member.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
+				qs := sel.GetQuantifiers()
+				if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
+					qs[0].Kind() == expressions.QuantifierForEach &&
+					qs[1].Kind() == expressions.QuantifierForEach {
+					swapped := sel.WithSwappedQuantifiers()
+					p.firePlanningExprRuleOnMember(rule, ref, swapped, yieldFn)
 				}
-				rule.OnMatch(call)
 			}
 		}
+	}
+}
+
+func (p *Planner) firePlanningExprRuleOnMember(rule ExpressionRule, ref *expressions.Reference, member expressions.RelationalExpression, yieldFn func(expressions.RelationalExpression) bool) {
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
+	for _, b := range bindings {
+		call := &ExpressionRuleCall{
+			Bindings:  b,
+			Reference: ref,
+			Context:   p.ctx,
+			memo:      p.memo,
+			yieldFn:   yieldFn,
+		}
+		rule.OnMatch(call)
 	}
 }
 

@@ -92,6 +92,12 @@ func (r *Reference) SetWinner(propsKey any, expr RelationalExpression) {
 	r.winners[propsKey] = expr
 }
 
+// ClearWinners removes all stored winners. Used by advancePlannerStage
+// to discard EXPLORE-phase winners before PLANNING.
+func (r *Reference) ClearWinners() {
+	r.winners = nil
+}
+
 // HasWinner reports whether a winner exists for the given properties.
 func (r *Reference) HasWinner(propsKey any) bool {
 	if r.winners == nil {

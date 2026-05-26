@@ -156,10 +156,12 @@ func PlanningDataAccessRules() []ExpressionRule {
 	}
 }
 
-// BatchAExpressionRules returns the B5 Batch A physical-implementation
-// rules. These run in a second EXPLORE pass (after logical exploration
-// converges) so physical wrappers go into Members and the standard
-// OPTIMIZE path stamps bestMember correctly.
+// BatchAExpressionRules returns the physical-implementation rules
+// (PrimaryScanRule, ImplementFilterRule, etc.). These fire during the
+// PLANNING phase via WithPlanningExpressionRules. They yield to
+// InsertFinal so their results land in FinalMembers.
+//
+// Matches Java's PlanningRuleSet.IMPLEMENTATION_RULES.
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),

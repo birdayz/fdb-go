@@ -320,9 +320,10 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 	)
 	ref := expressions.InitialOf(filter)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	rules = append(rules, NewInComparisonToExplodeRule())
-	p := NewPlanner(rules, ctx)
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules())
 	if _, conv := p.Explore(ref); !conv {
 		t.Fatal("planner did not converge")
 	}

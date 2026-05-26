@@ -297,13 +297,14 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 			"Cascades planner could not plan query")
 	}
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	stats := g.fetchTableStatistics(ctx, md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
 		WithStatistics(stats).
 		WithMaxTasks(100_000)
 
@@ -336,6 +337,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		}
 		subPlanner := cascades.NewPlanner(rules, planCtx).
 			WithImplementationRules(cascades.DefaultImplementationRules()).
+			WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
 			WithStatistics(stats).
 			WithMaxTasks(100_000)
 		subBest, _, subErr := subPlanner.Plan(subRef)
@@ -582,13 +584,15 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}
 
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
 	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	dmlStats := g.fetchTableStatistics(ctx, md)
+	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(planningRules).
 		WithStatistics(dmlStats).
 		WithMaxTasks(100_000)
 

@@ -44,8 +44,9 @@ func FuzzPlanner_RecursiveDfsJoin_NoPanic(f *testing.F) {
 
 		rootRef := expressions.InitialOf(recUnion)
 
-		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, EmptyPlanContext())
+		rules := DefaultExpressionRules()
+		p := NewPlanner(rules, EmptyPlanContext()).
+			WithPlanningExpressionRules(BatchAExpressionRules())
 		p.Explore(rootRef)
 	})
 }

@@ -17,6 +17,7 @@ import (
 func planWithImplRules(t *testing.T, rootRef *expressions.Reference, implRules []ImplementationRule) *Planner {
 	t.Helper()
 	p := NewPlanner(allRules(), nil).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(implRules)
 	_, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -192,7 +193,7 @@ func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// After PLANNING, PrimaryScanRule (via BatchAExpressionRules fired during
-	// EXPLORE) inserts a physicalScanWrapper into Members. Verify it is present.
+	// PLANNING) inserts a physicalScanWrapper into Members. Verify it is present.
 	all := rootRef.AllMembers()
 	if len(all) == 0 {
 		t.Fatal("root Reference has no members for leaf expression")
