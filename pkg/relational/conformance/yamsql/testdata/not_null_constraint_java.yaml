@@ -1,0 +1,42 @@
+# not_null_constraint_java.yaml — NOT NULL constraint enforcement.
+# Tests that NOT NULL columns reject NULL inserts and updates.
+name: not_null_constraint_java
+schema_template: |
+  CREATE TABLE items (
+    id BIGINT NOT NULL,
+    name STRING NOT NULL,
+    optional_val BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO items VALUES (1, 'first', 10), (2, 'second', null)
+tests:
+  # Verify initial data
+  - query: SELECT id, name, optional_val FROM items ORDER BY id
+    rows:
+      - [1, 'first', 10]
+      - [2, 'second', null]
+
+  # NULL in optional column is fine
+  - query: INSERT INTO items VALUES (3, 'third', null)
+    rowcount: 1
+
+  # NULL in NOT NULL column (name) → error
+  - query: INSERT INTO items VALUES (4, null, 10)
+    error: "23502"
+
+  # UPDATE setting NOT NULL column to NULL → error
+  - query: UPDATE items SET name = null WHERE id = 1
+    error: "23502"
+
+  # UPDATE setting optional column to NULL is fine
+  - query: UPDATE items SET optional_val = null WHERE id = 1
+    rowcount: 1
+  - query: SELECT optional_val FROM items WHERE id = 1
+    rows:
+      - [null]
+
+  # Verify table state after operations
+  - query: SELECT COUNT(*) FROM items
+    rows:
+      - [3]
