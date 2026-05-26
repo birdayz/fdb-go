@@ -360,12 +360,11 @@ func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 	// phase with ordering constraints.
 	p.generateDataAccessWithConstraints(rootRef, cm)
 
-	// Pass 3: bottom-up implementation. Children are implemented
-	// first (with constraints from Pass 1 available), then parents.
-	// Visit ALL Memo references to ensure data access expressions
-	// generated in Pass 2 (which may be in non-root-reachable
-	// references created during exploration) get properly implemented.
-	if len(p.implementationRules) > 0 {
+	// Pass 3: bottom-up implementation. BatchA rules and implementation
+	// rules fire together in a fixpoint loop per Reference. Children
+	// are implemented first (with constraints from Pass 1 available),
+	// then parents.
+	if len(p.implementationRules) > 0 || len(p.planningExpressionRules) > 0 {
 		visited := make(map[*expressions.Reference]bool)
 		p.implementBottomUp(rootRef, visited, cm)
 		if p.memo != nil {
@@ -607,11 +606,6 @@ func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*exp
 		}
 	}
 
-	// Fixpoint: fire planning expression rules (BatchA) and
-	// implementation rules until no new members are produced.
-	// Planning expression rules produce physical scan/filter wrappers;
-	// implementation rules consume them to produce higher-level plans
-	// (InJoin, Sort elimination, etc.). Both yield to InsertFinal.
 	const maxFixpointRounds = 8
 	for round := 0; round < maxFixpointRounds; round++ {
 		before := len(ref.AllMembers())
