@@ -46,9 +46,14 @@ type Planner struct {
 	ctx   PlanContext
 	memo  *Memo
 
+	// rewritingImplRules run during PhaseRewriting. They yield
+	// final expressions (FinalizeExpressionsRule promotes exploratory
+	// to final for OptimizeGroup selection).
+	rewritingImplRules []ImplementationRule
+
 	// implementationRules run during PhasePlanning after the
 	// REWRITING phase converges. They yield physical expressions
-	// into Reference.Members via Insert.
+	// into FinalMembers via InsertFinal.
 	implementationRules []ImplementationRule
 
 	// planningExpressionRules are ExpressionRules that fire during
@@ -123,12 +128,13 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		ctx = EmptyPlanContext()
 	}
 	return &Planner{
-		rules:        rules,
-		ctx:          ctx,
-		memo:         nil, // initialized lazily on first Explore call
-		exploreCount: make(map[*expressions.Reference]int),
-		costModel:    PlanningCostModelLess,
-		MaxTasks:     100_000,
+		rules:              rules,
+		rewritingImplRules: []ImplementationRule{NewFinalizeExpressionsRule()},
+		ctx:                ctx,
+		memo:               nil,
+		exploreCount:       make(map[*expressions.Reference]int),
+		costModel:          PlanningCostModelLess,
+		MaxTasks:           100_000,
 	}
 }
 
@@ -805,7 +811,7 @@ func (p *Planner) pop() Task {
 func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []ImplementationRule) {
 	switch phase {
 	case PhaseRewriting:
-		return p.rules, nil
+		return p.rules, p.rewritingImplRules
 	case PhasePlanning:
 		return p.planningExpressionRules, p.implementationRules
 	default:
