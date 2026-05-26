@@ -78,9 +78,9 @@ func (w *physicalFetchFromPartialRecordWrapper) WithChildren(qs []expressions.Qu
 			w.plan.GetResultType(),
 			w.plan.GetFetchIndexRecords(),
 		)
-		return &physicalFetchFromPartialRecordWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+		return NewPhysicalFetchFromPartialRecordWrapper(newPlan, qs[0]), nil
 	}
-	return &physicalFetchFromPartialRecordWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+	return NewPhysicalFetchFromPartialRecordWrapper(w.plan, qs[0]), nil
 }
 
 func (w *physicalFetchFromPartialRecordWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {

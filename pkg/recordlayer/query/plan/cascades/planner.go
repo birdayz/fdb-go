@@ -457,6 +457,9 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 	if existing == nil {
 		var best expressions.RelationalExpression
 		for _, m := range candidates {
+			if isNilInnerFetch(m) {
+				continue
+			}
 			if best == nil || p.costModel(m, best) {
 				best = m
 			}
@@ -468,6 +471,9 @@ func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*e
 		var bestPhys expressions.RelationalExpression
 		for _, m := range candidates {
 			if _, ok := m.(physicalPlanExpression); !ok {
+				continue
+			}
+			if isNilInnerFetch(m) {
 				continue
 			}
 			if bestPhys == nil || p.costModel(m, bestPhys) {
@@ -576,6 +582,19 @@ func promoteByDataAccessCost(rootRef *expressions.Reference, stats properties.St
 		existingCounts = counts
 	}
 	rootRef.SetWinner(expressions.NoProperties, existing)
+}
+
+// isNilInnerFetch returns true if expr is a physicalFetchFromPartialRecordWrapper
+// whose embedded plan has a nil inner. These are push-through-fetch shells
+// created by rules like PushInJoinThroughFetchRule — they're assembled
+// into valid plans during extraction via WithChildren, but should never
+// be selected as standalone winners.
+func isNilInnerFetch(expr expressions.RelationalExpression) bool {
+	fw, ok := expr.(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		return false
+	}
+	return fw.plan != nil && fw.plan.GetInner() == nil
 }
 
 // reExplorePlanning re-runs the task-stack with PlanningExplorationRules
