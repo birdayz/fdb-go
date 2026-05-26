@@ -1,0 +1,75 @@
+# join_patterns_java.yaml — JOIN patterns from Java test coverage.
+# Tests INNER JOIN, LEFT JOIN, self-join, multi-table join, and
+# join with aggregate.
+name: join_patterns_java
+schema_template: |
+  CREATE TABLE departments (
+    id BIGINT NOT NULL,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE employees (
+    id BIGINT NOT NULL,
+    name STRING,
+    dept_id BIGINT,
+    salary BIGINT,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO departments VALUES
+      (1, 'Engineering'),
+      (2, 'Sales'),
+      (3, 'HR')
+  - INSERT INTO employees VALUES
+      (1, 'Alice', 1, 100),
+      (2, 'Bob', 1, 120),
+      (3, 'Charlie', 2, 90),
+      (4, 'Dave', 2, 95),
+      (5, 'Eve', null, 80)
+tests:
+  # INNER JOIN
+  - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id ORDER BY e.name
+    rows:
+      - ['Alice', 'Engineering']
+      - ['Bob', 'Engineering']
+      - ['Charlie', 'Sales']
+      - ['Dave', 'Sales']
+
+  # LEFT JOIN — includes employees without department
+  - query: SELECT e.name, d.name FROM employees e LEFT JOIN departments d ON e.dept_id = d.id ORDER BY e.name
+    rows:
+      - ['Alice', 'Engineering']
+      - ['Bob', 'Engineering']
+      - ['Charlie', 'Sales']
+      - ['Dave', 'Sales']
+      - ['Eve', null]
+
+  # JOIN with aggregate — department totals
+  - query: SELECT d.name, COUNT(*), SUM(e.salary) FROM employees e, departments d WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name
+    rows:
+      - ['Engineering', 2, 220]
+      - ['Sales', 2, 185]
+
+  # Self-join — find employees in same department
+  - query: SELECT e1.name, e2.name FROM employees e1, employees e2 WHERE e1.dept_id = e2.dept_id AND e1.id < e2.id ORDER BY e1.name, e2.name
+    rows:
+      - ['Alice', 'Bob']
+      - ['Charlie', 'Dave']
+
+  # Multi-table — all combinations with filter
+  - query: SELECT e.name, d.name FROM employees e, departments d WHERE e.dept_id = d.id AND e.salary > 95 ORDER BY e.salary DESC
+    rows:
+      - ['Bob', 'Engineering']
+      - ['Alice', 'Engineering']
+
+  # JOIN returning no rows (no match)
+  - query: SELECT e.name FROM employees e, departments d WHERE e.dept_id = d.id AND d.name = 'HR'
+    rows: []
+
+  # CROSS JOIN (no condition) with LIMIT
+  - query: SELECT e.name, d.name FROM employees e, departments d ORDER BY e.id, d.id LIMIT 4
+    rows:
+      - ['Alice', 'Engineering']
+      - ['Alice', 'Sales']
+      - ['Alice', 'HR']
+      - ['Bob', 'Engineering']
