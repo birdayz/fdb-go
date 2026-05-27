@@ -89,19 +89,29 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	call.YieldFinalExpression(newPhysicalInMemorySortWrapper(sortPlan, innerQ))
 
 	// Also yield InMemorySort alternatives for InJoin/InUnion members
-	// that aren't the first physical. These correlated plans may have
-	// much lower cardinality (e.g., InJoin(IndexScan) vs Filter(Scan))
-	// and sorting their small output is cheaper than sorting a full scan.
+	// and restricted Fetch plans (index scans with bound predicates).
+	// These selective plans may have much lower cardinality than the
+	// first physical plan, and sorting their small output is cheaper
+	// than sorting a full scan.
 	for _, m := range innerRef.AllMembers() {
 		if m == innerExpr {
 			continue
 		}
-		if !IsPhysicalInJoin(m) {
-			if _, ok := m.(*physicalInUnionWrapper); !ok {
-				continue
-			}
+		ph, ok := m.(physicalPlanExpression)
+		if !ok {
+			continue
 		}
-		ph := m.(physicalPlanExpression)
+		wrap := false
+		if IsPhysicalInJoin(m) {
+			wrap = true
+		} else if _, ok := m.(*physicalInUnionWrapper); ok {
+			wrap = true
+		} else if isRestrictedFetch(ph) {
+			wrap = true
+		}
+		if !wrap {
+			continue
+		}
 		altPlan := plans.NewRecordQueryInMemorySortPlan(ph.GetRecordQueryPlan(), planKeys)
 		altQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
 		call.YieldFinalExpression(newPhysicalInMemorySortWrapper(altPlan, altQ))
@@ -123,6 +133,30 @@ func (m *inMemorySortMatcher) BindMatches(outer *matching.PlannerBindings, in an
 		return nil
 	}
 	return []*matching.PlannerBindings{outer.Bind(m, in)}
+}
+
+// isRestrictedFetch reports whether a physical plan is a Fetch wrapping
+// an IndexScan with at least one non-empty comparison range (a selective
+// index lookup, not a full scan).
+func isRestrictedFetch(ph physicalPlanExpression) bool {
+	fetchPlan, ok := ph.GetRecordQueryPlan().(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		return false
+	}
+	inner := fetchPlan.GetInner()
+	if inner == nil {
+		return false
+	}
+	idxPlan, ok := inner.(*plans.RecordQueryIndexPlan)
+	if !ok {
+		return false
+	}
+	for _, cr := range idxPlan.GetScanComparisons() {
+		if cr != nil && !cr.IsEmpty() {
+			return true
+		}
+	}
+	return false
 }
 
 var _ ImplementationRule = (*ImplementInMemorySortRule)(nil)

@@ -69,9 +69,17 @@ func PrepareMatchesAndCompensations(
 
 		satisfying, scanDir := SatisfiesAnyRequestedOrderings(pm, requestedOrderings)
 		if satisfying == nil && len(requestedOrderings) > 0 {
-			// Requested orderings exist but the match satisfies none —
-			// skip this match. Ports Java's `if (satisfyingOrderingsPairOptional.isEmpty()) continue;`
-			continue
+			// Requested orderings exist but the match satisfies none.
+			// Java skips all such matches (no in-memory sort fallback).
+			// Go extension: keep the match if it produces a restricted
+			// scan (non-empty bound parameter prefix). These are
+			// selective index lookups that ImplementInMemorySortRule can
+			// wrap, often far cheaper than an ordered full table scan.
+			// Matches with empty prefix (full index scans) are skipped —
+			// they provide neither selectivity nor ordering.
+			if !hasRestrictedScan(pm) {
+				continue
+			}
 		}
 		reverseScan := scanDir != nil && *scanDir == ScanDirectionReverse
 
@@ -401,6 +409,21 @@ func boundPredicateCount(pm PartialMatch) int {
 		return len(pmi.GetBoundSargableAliases())
 	}
 	return len(pm.GetMatchInfo().GetMatchedOrderingParts())
+}
+
+// hasRestrictedScan reports whether the PartialMatch produces a scan
+// plan with a non-empty bound parameter prefix (i.e., the scan
+// actually restricts the key range). Full index scans (empty prefix)
+// provide no selectivity advantage and should not be accepted as
+// unordered alternatives.
+func hasRestrictedScan(pm PartialMatch) bool {
+	pmi, ok := pm.(*PartialMatchImpl)
+	if !ok {
+		return false
+	}
+	bindings := pmi.GetBoundParameterPrefixMap()
+	prefix := pm.GetMatchCandidate().ComputeBoundParameterPrefixMap(bindings)
+	return len(prefix) > 0
 }
 
 // SatisfiesRequestedOrdering checks if a PartialMatch's matched

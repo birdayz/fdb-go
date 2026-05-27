@@ -1025,3 +1025,50 @@ func TestPipeline_UnionWithProjection(t *testing.T) {
 		t.Fatalf("expected Union in plan, got: %s", plan)
 	}
 }
+
+// TestPipeline_SortOnDifferentColumnThanFilter verifies that when a
+// WHERE predicate uses one indexed column (A) and ORDER BY uses a
+// different column (B), the planner produces IndexScan(A=val) +
+// InMemorySort(B) rather than a full primary scan. This is the core
+// pattern behind the "order_by_pk_index_filter" perf regression.
+func TestPipeline_SortOnDifferentColumnThanFilter(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "A", Typ: values.UnknownType},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
+			),
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "B", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(filterRef),
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	proj := expressions.NewLogicalProjectionExpression(
+		[]values.Value{
+			&values.FieldValue{Field: "B", Typ: values.UnknownType},
+			&values.FieldValue{Field: "A", Typ: values.UnknownType},
+		},
+		expressions.ForEachQuantifier(sortRef),
+	)
+
+	plan := planPipeline(t, proj, idx("idx_a", "A"))
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "IndexScan") {
+		t.Fatalf("expected IndexScan for selective A=42 lookup, got: %s", plan)
+	}
+	if !strings.Contains(plan, "InMemorySort") {
+		t.Fatalf("expected InMemorySort for B ordering, got: %s", plan)
+	}
+}
