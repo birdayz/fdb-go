@@ -137,37 +137,3 @@ func requestedOrderingToProps(ordering *RequestedOrdering) expressions.PhysicalP
 	}
 	return expressions.OrderingFromNameDir(names, desc)
 }
-
-// stampWinnersEarly stamps winners on a Reference after its physical
-// plans are available but before parent rules fire. Called at
-// ExploreGroupTask convergence and implementBottomUp completion.
-// Re-stamps are safe — later OptimizeGroupTask / reoptimizeAll will
-// refine winners with the full member set.
-func stampWinnersEarly(ref *expressions.Reference, costModel func(a, b expressions.RelationalExpression) bool) {
-	if ref == nil {
-		return
-	}
-	candidates := ref.FinalMembers()
-	if len(candidates) == 0 {
-		candidates = ref.AllMembers()
-	}
-	var best expressions.RelationalExpression
-	for _, m := range candidates {
-		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		if isNilInnerFetch(m) {
-			continue
-		}
-		if best == nil || costModel(m, best) {
-			best = m
-		}
-	}
-	if best != nil {
-		existing := ref.Winner(expressions.NoProperties)
-		if existing == nil || costModel(best, existing) {
-			ref.SetWinner(expressions.NoProperties, best)
-		}
-	}
-	stampOrderingWinners(ref, costModel)
-}

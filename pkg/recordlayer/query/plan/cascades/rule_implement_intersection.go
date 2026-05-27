@@ -47,7 +47,6 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 	if len(children) == 0 {
 		return
 	}
-
 	innerPlans := make([]plans.RecordQueryPlan, 0, len(children))
 	winners := make([]expressions.RelationalExpression, 0, len(children))
 	for _, q := range children {

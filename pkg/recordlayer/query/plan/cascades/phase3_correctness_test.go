@@ -405,7 +405,7 @@ func TestPlanner_DistinctOverScanElided(t *testing.T) {
 	p := NewPlanner(rules, nil).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
-		WithMaxTasks(100_000)
+		WithMaxTasks(1_000)
 	best, _, err := p.Plan(ref)
 	if err != nil {
 		t.Fatalf("Plan failed: %v", err)

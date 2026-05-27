@@ -159,7 +159,7 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 		p := NewPlanner(rules, ctx).
 			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(implRules).
-			WithMaxTasks(100_000)
+			WithMaxTasks(20_000)
 		best, _, planErr := p.Plan(rootRef)
 		if planErr != nil {
 			return result{err: true}

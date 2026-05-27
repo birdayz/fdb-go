@@ -296,8 +296,6 @@ func TestEndToEnd_ThreeWayIntersection(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// TODO(plan quality): planner does not yet produce a 3-way physical
-	// intersection for this case; accept any successful plan for now.
 	// Walk all members looking for a physical intersection with 3 children.
 	found3Way := false
 	var walkRef func(r *expressions.Reference, visited map[*expressions.Reference]bool)
@@ -320,8 +318,13 @@ func TestEndToEnd_ThreeWayIntersection(t *testing.T) {
 		}
 	}
 	walkRef(ref, map[*expressions.Reference]bool{})
+	// IndexIntersectionRule is a Go-only logical rule not present in Java.
+	// Java produces intersections via MatchLeafRule + MatchIntermediateRule +
+	// ImplementIntersectionRule during PLANNING. Until Go's matching
+	// infrastructure supports this path, the REWRITING phase may prune the
+	// original filter before PLANNING can derive the 3-way intersection.
 	if !found3Way {
-		t.Logf("planner did not produce a 3-way physical intersection (plan quality TODO)")
+		t.Logf("3-way intersection not produced (requires matching infrastructure port)")
 	}
 }
 
@@ -718,10 +721,12 @@ func TestEndToEnd_CompoundIndexBeatsIntersection(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	// TODO(plan quality): planner currently picks an intersection plan instead of
-	// the compound index; accept intersection as a correct (if suboptimal) plan.
+	// The REWRITING cost model prefers intersections (predicates pushed
+	// deeper) over the original filter. After pruning, PLANNING can't
+	// try the compound index. Proper fix: port Java's match-then-implement
+	// intersection path which operates entirely during PLANNING.
 	if cascades.IsPhysicalIntersection(plan) {
-		t.Logf("planner chose intersection instead of compound index (plan quality TODO): %T", plan)
+		t.Logf("intersection chosen over compound index (requires matching infrastructure port)")
 		return
 	}
 	if !cascades.IsPhysicalIndexScan(plan) && !cascades.IsPhysicalFetchFromPartialRecord(plan) {
@@ -729,7 +734,7 @@ func TestEndToEnd_CompoundIndexBeatsIntersection(t *testing.T) {
 	}
 	indexName := cascades.PhysicalIndexScanName(plan)
 	if indexName != "Order$status_amount" {
-		t.Fatalf("expected compound index (Order$status_amount), got %q — planner chose intersection or single-column index instead", indexName)
+		t.Fatalf("expected compound index (Order$status_amount), got %q — planner chose single-column index instead", indexName)
 	}
 }
 
@@ -1834,16 +1839,17 @@ func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {
 		t.Fatal("Plan returned nil")
 	}
 
-	// TODO(plan quality): DISTINCT over GROUP BY is not yet eliminated by the
-	// planner; accept physicalDistinctWrapper wrapping a streaming agg for now.
-	if cascades.IsPhysicalStreamingAgg(plan) {
-		return
-	}
+	// DistinctOverGroupByElimRule fires during REWRITING but may lose the
+	// hash tiebreak to the Distinct(GroupBy) alternative. The fix is a
+	// REWRITING cost model that prefers fewer operators when all other
+	// criteria tie, not moving logical rules to PLANNING.
 	if cascades.IsPhysicalDistinct(plan) {
-		t.Logf("DISTINCT not eliminated over GROUP BY (plan quality TODO): %T", plan)
+		t.Logf("DISTINCT not eliminated over GROUP BY (REWRITING cost model tiebreak)")
 		return
 	}
-	t.Fatalf("expected streaming agg or distinct wrapper, got %T", plan)
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg (DISTINCT should be eliminated), got %T", plan)
+	}
 }
 
 func TestEndToEnd_LimitOverScan(t *testing.T) {

@@ -561,19 +561,6 @@ func promoteByDataAccessCost(rootRef *expressions.Reference, stats properties.St
 	rootRef.SetWinner(expressions.NoProperties, existing)
 }
 
-// isNilInnerFetch returns true if expr is a physicalFetchFromPartialRecordWrapper
-// whose embedded plan has a nil inner. These are push-through-fetch shells
-// created by rules like PushInJoinThroughFetchRule — they're assembled
-// into valid plans during extraction via WithChildren, but should never
-// be selected as standalone winners.
-func isNilInnerFetch(expr expressions.RelationalExpression) bool {
-	fw, ok := expr.(*physicalFetchFromPartialRecordWrapper)
-	if !ok {
-		return false
-	}
-	return fw.plan != nil && fw.plan.GetInner() == nil
-}
-
 func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
 	if ref == nil || visited[ref] {
 		return

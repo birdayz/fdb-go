@@ -59,7 +59,7 @@ func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 		p := NewPlanner(rules, ctx).
 			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(implRules).
-			WithMaxTasks(100_000)
+			WithMaxTasks(3_500)
 		best, _, err := p.Plan(ref)
 		if err != nil {
 			t.Fatalf("run %d: Plan failed: %v", i, err)
