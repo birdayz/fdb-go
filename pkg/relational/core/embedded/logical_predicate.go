@@ -3590,13 +3590,19 @@ func qualifyBareFields(p predicates.QueryPredicate, qualifier string) {
 }
 
 func qualifyBareFieldValue(v values.Value, qualifier string) {
+	corr := values.NamedCorrelationIdentifier(qualifier)
 	values.WalkValue(v, func(node values.Value) bool {
 		if fv, ok := node.(*values.FieldValue); ok {
 			if fv.Child != nil {
 				return false
 			}
-			if !parseColRef(fv.Field).isQualified() {
-				fv.Field = qualifier + "." + fv.Field
+			ref := parseColRef(fv.Field)
+			if !ref.isQualified() {
+				fv.Child = values.NewQuantifiedObjectValue(corr)
+			} else {
+				fv.Field = ref.col
+				fv.Child = values.NewQuantifiedObjectValue(
+					values.NamedCorrelationIdentifier(ref.table))
 			}
 		}
 		return true

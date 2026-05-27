@@ -147,9 +147,6 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 //   - 0 if it only references alias0
 //   - 1 if it only references alias1
 //   - -1 if it references both, neither, or has no FieldValue refs
-//
-// The check walks the predicate's entire Value tree looking for
-// FieldValue nodes whose Field starts with "ALIAS." (dot-separated).
 func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) int {
 	upper0 := strings.ToUpper(alias0)
 	upper1 := strings.ToUpper(alias1)
