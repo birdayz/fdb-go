@@ -1,26 +1,32 @@
 package cascades
 
+import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+
 // PlannerPhase drives the multi-phase planning lifecycle.
 // Java's CascadesPlanner runs REWRITING first (exploration rules,
 // RewritingCostModel), then PLANNING (implementation rules,
-// PlanningCostModel). Each phase has its own rule set.
+// PlanningCostModel). Each phase has its own rule set and cost model.
 //
 // Ports Java's com.apple.foundationdb.record.query.plan.cascades.PlannerPhase.
 type PlannerPhase int
 
 const (
-	// PhaseRewriting applies exploration/transformation rules that
-	// rewrite the logical expression DAG. All expressions produced
-	// are exploratory. Uses ExpressionRules.
 	PhaseRewriting PlannerPhase = iota
-
-	// PhasePlanning applies implementation rules that convert
-	// logical expressions to physical (implementation) expressions.
-	// Uses ImplementationCascadesRules. Each rule inserts physical
-	// expressions into Members via ref.Insert; winners on the
-	// Reference select the cheapest physical plan.
 	PhasePlanning
 )
+
+// TargetStage returns the PlannerStage that References should reach
+// after this phase completes. Mirrors Java's PlannerPhase.getTargetPlannerStage().
+func (p PlannerPhase) TargetStage() expressions.PlannerStage {
+	switch p {
+	case PhaseRewriting:
+		return expressions.StageCanonical
+	case PhasePlanning:
+		return expressions.StagePlanned
+	default:
+		return expressions.StageInitial
+	}
+}
 
 func (p PlannerPhase) String() string {
 	switch p {

@@ -81,6 +81,11 @@ func buildLogicalPlanForQueryBody(body antlrgen.IQueryExpressionBodyContext) log
 // flatten into [A, B, C] when all levels share the same quantifier
 // — makes the Explain output read left-to-right. Mixed quantifiers
 // keep the original nesting.
+//
+// Trailing ORDER BY: the ANTLR grammar greedily attaches a trailing
+// ORDER BY to the rightmost SimpleTable, but SQL standard says it
+// applies to the whole UNION result. Strip it from the right branch
+// and wrap the union in a LogicalSort.
 func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOperator {
 	if setQ == nil {
 		return nil
@@ -89,7 +94,22 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 		return nil
 	}
 	left := buildLogicalPlanForQueryBody(setQ.GetLeft())
-	right := buildLogicalPlanForQueryBody(setQ.GetRight())
+
+	// Lift ORDER BY from the right branch before building it.
+	var liftedOrder []orderByClause
+	var right logical.LogicalOperator
+	if rb, ok := setQ.GetRight().(*antlrgen.QueryTermDefaultContext); ok {
+		if simpleTable, ok := rb.QueryTerm().(*antlrgen.SimpleTableContext); ok {
+			if sq, err := extractFromSimpleTable(simpleTable); err == nil {
+				liftedOrder = sq.orderBy
+				sq.orderBy = nil
+				right = buildLogicalPlanForSelect(sq)
+			}
+		}
+	}
+	if right == nil && liftedOrder == nil {
+		right = buildLogicalPlanForQueryBody(setQ.GetRight())
+	}
 	if left == nil || right == nil {
 		return nil
 	}

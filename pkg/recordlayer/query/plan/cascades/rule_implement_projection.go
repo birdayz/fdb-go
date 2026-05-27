@@ -64,27 +64,44 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		if idxW := findIndexScanWrapper(fetchInnerRef); idxW != nil {
 			coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
-			call.Yield(&physicalIndexScanWrapper{
+			coveringIdxW := &physicalIndexScanWrapper{
 				plan:        coveredPlan,
 				columnNames: idxW.columnNames,
 				unique:      idxW.unique,
 				covering:    true,
-			})
+			}
+			coveringRef := call.MemoizeExpression(coveringIdxW)
+			cq := expressions.ForEachQuantifier(coveringRef)
+			wrapPlan := plans.NewRecordQueryProjectionPlanWithAliases(
+				projectedValues, proj.GetAliases(), coveredPlan)
+			call.Yield(NewPhysicalProjectionWrapper(wrapPlan, cq))
 		}
 	}
 
-	// Normal path: wrap the first physical inner plan in a Projection.
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
-		return
+	// Normal path: for each requested ordering, wrap the child winner.
+	orderings := call.GetRequestedOrderings()
+	if len(orderings) == 0 {
+		orderings = []*RequestedOrdering{PreserveOrdering()}
 	}
-	projPlan := plans.NewRecordQueryProjectionPlanWithAliases(proj.GetProjectedValues(), proj.GetAliases(), innerPlan)
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
-		return
+
+	seen := make(map[expressions.RelationalExpression]bool)
+	for _, ordering := range orderings {
+		winner := getWinnerForOrdering(innerRef, ordering)
+		if winner == nil {
+			continue
+		}
+		if seen[winner] {
+			continue
+		}
+		seen[winner] = true
+		ph, ok := winner.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		projPlan := plans.NewRecordQueryProjectionPlanWithAliases(proj.GetProjectedValues(), proj.GetAliases(), ph.GetRecordQueryPlan())
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+		call.Yield(NewPhysicalProjectionWrapper(projPlan, innerQ))
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-	call.Yield(NewPhysicalProjectionWrapper(projPlan, innerQ))
 }
 
 var _ ExpressionRule = (*ImplementProjectionRule)(nil)

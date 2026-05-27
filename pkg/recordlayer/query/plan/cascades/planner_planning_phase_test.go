@@ -17,6 +17,7 @@ import (
 func planWithImplRules(t *testing.T, rootRef *expressions.Reference, implRules []ImplementationRule) *Planner {
 	t.Helper()
 	p := NewPlanner(allRules(), nil).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(implRules)
 	_, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -192,7 +193,7 @@ func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
 	// After PLANNING, PrimaryScanRule (via BatchAExpressionRules fired during
-	// EXPLORE) inserts a physicalScanWrapper into Members. Verify it is present.
+	// PLANNING) inserts a physicalScanWrapper into Members. Verify it is present.
 	all := rootRef.AllMembers()
 	if len(all) == 0 {
 		t.Fatal("root Reference has no members for leaf expression")
@@ -271,7 +272,7 @@ func TestPlanner_PlanningPhase_PropertiesComputedOnReference(t *testing.T) {
 // 6. Planner without implementation rules skips PLANNING phase.
 // ---------------------------------------------------------------------------
 
-func TestPlanner_PlanningPhase_SkippedWhenNoImplRules(t *testing.T) {
+func TestPlanner_PlanningPhase_AlwaysRuns(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -282,17 +283,18 @@ func TestPlanner_PlanningPhase_SkippedWhenNoImplRules(t *testing.T) {
 		),
 	)
 
-	// No WithImplementationRules — PLANNING phase is skipped.
+	// No WithImplementationRules — PLANNING still runs (data access,
+	// plan properties, etc. are always computed).
 	p := NewPlanner(allRules(), nil)
 	_, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// PlanProperties should NOT be set since PLANNING phase was skipped.
+	// PLANNING always computes plan properties on leaf References.
 	pm := GetRefPlanPropertiesMap(scanRef)
-	if pm != nil {
-		t.Fatal("PlanProperties should be nil when PLANNING phase is skipped")
+	if pm == nil {
+		t.Fatal("PlanProperties should be set — PLANNING always runs")
 	}
 }
 

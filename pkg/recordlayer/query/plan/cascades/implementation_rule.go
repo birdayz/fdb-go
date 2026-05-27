@@ -22,13 +22,14 @@ type ImplementationRule interface {
 //
 // Ports Java's ImplementationCascadesRuleCall.
 type ImplementationRuleCall struct {
-	Bindings       *matching.PlannerBindings
-	Reference      *expressions.Reference
-	Context        PlanContext
-	Constraints    *ConstraintMap
-	memo           *Memo
-	yielded        []expressions.RelationalExpression
-	constraintOnly bool
+	Bindings             *matching.PlannerBindings
+	Reference            *expressions.Reference
+	Context              PlanContext
+	Constraints          *ConstraintMap
+	memo                 *Memo
+	yielded              []expressions.RelationalExpression
+	constraintOnly       bool
+	constraintPushedRefs []*expressions.Reference
 }
 
 // Yield records a final expression to be inserted into the
@@ -70,6 +71,7 @@ func (c *ImplementationRuleCall) PushConstraint(
 	orderings []*RequestedOrdering,
 ) {
 	Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings)
+	c.constraintPushedRefs = append(c.constraintPushedRefs, childRef)
 }
 
 // MemoizeFinalExpressionsFromOther creates a new Reference containing

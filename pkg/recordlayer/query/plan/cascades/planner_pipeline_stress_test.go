@@ -141,8 +141,6 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 	}
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
 	implRules := DefaultImplementationRules()
 	ctx := NewPlanContextFromIndexDefs(indexes)
 
@@ -159,8 +157,9 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 		}()
 		rootRef := expressions.InitialOf(root)
 		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(implRules).
-			WithMaxTasks(5_000)
+			WithMaxTasks(20_000)
 		best, _, planErr := p.Plan(rootRef)
 		if planErr != nil {
 			return result{err: true}
@@ -292,8 +291,6 @@ func FuzzPipeline_NoPanic(f *testing.F) {
 	f.Add(make([]byte, 16))
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
 	implRules := DefaultImplementationRules()
 
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -311,6 +308,7 @@ func FuzzPipeline_NoPanic(f *testing.F) {
 			&stubIndexDef{name: "idx_x", columns: []string{"X"}, recordTypes: []string{"T"}},
 		})
 		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(implRules).
 			WithMaxTasks(2_000)
 

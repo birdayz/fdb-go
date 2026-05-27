@@ -3278,6 +3278,13 @@ func resolveProjectionTypes(op logical.LogicalOperator, md *recordlayer.RecordMe
 
 // buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
 // — same flattening logic, threads md to each branch.
+//
+// Trailing ORDER BY: the ANTLR grammar greedily attaches a trailing
+// ORDER BY to the rightmost SimpleTable, but SQL standard says it
+// applies to the whole UNION result. Mirror the lift in execUnion
+// (union.go): strip ORDER BY from the right branch's selectQuery
+// before building it, then wrap the final LogicalUnion in a
+// LogicalSort using the lifted keys.
 func buildLogicalPlanForUnionWithCatalog(
 	setQ *antlrgen.SetQueryContext,
 	md *recordlayer.RecordMetaData,

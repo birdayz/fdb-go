@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -61,14 +62,24 @@ func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions
 		}
 	}
 
-	// Adjust partial matches on this ref.
-	for _, candAny := range ref.GetPartialMatchCandidates() {
-		cand := candAny.(MatchCandidate)
-		// Snapshot the current matches — adjustPartialMatch may append
-		// new matches; we must not iterate those.
-		matches := GetPartialMatchesForCandidate(ref, cand)
-		for _, pm := range matches {
-			adjustPartialMatch(ref, cand, pm)
+	// Adjust partial matches on this ref. Loop until stable because
+	// each adjustment may create new PMs that need further adjustment
+	// (e.g., absorbing SelectExpression creates a PM that then absorbs
+	// MatchableSortExpression). Mirrors Java's event-driven
+	// AdjustMatchRule which re-fires on each new PartialMatch.
+	for round := 0; round < 8; round++ {
+		progress := false
+		for _, candAny := range ref.GetPartialMatchCandidates() {
+			cand := candAny.(MatchCandidate)
+			matches := GetPartialMatchesForCandidate(ref, cand)
+			for _, pm := range matches {
+				if adjustPartialMatch(ref, cand, pm) {
+					progress = true
+				}
+			}
+		}
+		if !progress {
+			break
 		}
 	}
 }
@@ -83,28 +94,21 @@ func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions
 // Java's default Optional.empty() return).
 //
 // Mirrors Java's AdjustMatchRule.onMatch + matchWithCandidate.
-func adjustPartialMatch(queryRef *expressions.Reference, candidate MatchCandidate, pm PartialMatch) {
+func adjustPartialMatch(queryRef *expressions.Reference, candidate MatchCandidate, pm PartialMatch) bool {
 	pmi, ok := pm.(*PartialMatchImpl)
 	if !ok {
-		return
+		return false
 	}
 
 	traversal := candidate.GetTraversal()
 	if traversal == nil {
-		return
+		return false
 	}
 
-	// Java calls matchCandidate.findReferencingExpressions(ImmutableList.of(queryReference)).
-	// That method internally looks up partial matches for THIS candidate
-	// on the query reference, gets each partial match's candidate ref,
-	// and walks UP from those candidate refs in the traversal.
-	//
-	// Since we already have the specific PartialMatch, we can go
-	// directly: find parent (ref, expr) pairs for this match's
-	// candidate ref.
 	candidateRef := pmi.GetCandidateRef()
 	parentPairs := traversal.GetParentRefPairs(candidateRef)
 
+	added := false
 	for _, parent := range parentPairs {
 		parentRef := parent.ref
 		parentExpr := parent.expr
@@ -114,11 +118,6 @@ func adjustPartialMatch(queryRef *expressions.Reference, candidate MatchCandidat
 			continue
 		}
 
-		// Create a new PartialMatch at the SAME query ref/expression
-		// but with the PARENT candidate ref. This mirrors Java's
-		// call.yieldPartialMatch which creates a new PartialMatch
-		// using the incomplete match's query expression and alias map,
-		// but the new candidate reference and adjusted match info.
 		newPM := NewPartialMatch(
 			pmi.GetBoundAliasMap(),
 			candidate,
@@ -127,8 +126,11 @@ func adjustPartialMatch(queryRef *expressions.Reference, candidate MatchCandidat
 			parentRef,
 			adjustedMI,
 		)
-		AddPartialMatchForCandidate(queryRef, candidate, newPM)
+		if AddPartialMatchForCandidate(queryRef, candidate, newPM) {
+			added = true
+		}
 	}
+	return added
 }
 
 // matchWithCandidate checks whether a candidate expression can be
@@ -181,11 +183,15 @@ func matchWithCandidate(pm *PartialMatchImpl, candidateExpr expressions.Relation
 		return adjuster.AdjustMatch(pm)
 	}
 
-	// MatchableSortExpression lives in the expressions package which
-	// cannot import cascades (circular dependency). Handle its
-	// adjustMatch logic here via type assertion.
+	// MatchableSortExpression and SelectExpression live in the
+	// expressions package which cannot import cascades (circular
+	// dependency). Handle their adjustMatch logic here via type
+	// assertion.
 	if mse, ok := candidateExpr.(*expressions.MatchableSortExpression); ok {
 		return adjustMatchForMatchableSort(mse, pm)
+	}
+	if sel, ok := candidateExpr.(*expressions.SelectExpression); ok {
+		return adjustMatchForSelect(sel, pm)
 	}
 
 	// Default: Java's RelationalExpression.adjustMatch returns
@@ -262,6 +268,61 @@ func adjustMatchForMatchableSort(mse *expressions.MatchableSortExpression, pm *P
 	// pass through the child's group-by mappings unchanged. This is
 	// correct for non-aggregate indexes (which have empty group-by
 	// mappings) and will be refined when Value.pullUp lands.
+	groupByMappings := childMatchInfo.GetGroupByMappings()
+
+	return NewAdjustedBuilder(childMatchInfo).
+		SetMaxMatchMap(adjustedMaxMatchMap).
+		SetMatchedOrderingParts(orderingParts).
+		SetGroupByMappings(groupByMappings).
+		Build()
+}
+
+// adjustMatchForSelect implements the adjustMatch logic for
+// SelectExpression in the candidate traversal. Ports Java's
+// SelectExpression.adjustMatch.
+//
+// The method is a near-pass-through: it adjusts the MaxMatchMap for the
+// inner alias so that the match can walk through the Select to the
+// MatchableSortExpression above. The predicate guard bails if any
+// Select predicate is constrained (non-empty range on a Placeholder).
+func adjustMatchForSelect(sel *expressions.SelectExpression, pm *PartialMatchImpl) MatchInfo {
+	childMatchInfo := pm.GetMatchInfo()
+	maxMatchMap := childMatchInfo.GetMaxMatchMap()
+	if maxMatchMap == nil {
+		return nil
+	}
+
+	preds := sel.GetPredicates()
+	for _, pred := range preds {
+		if ph, ok := pred.(*predicates.Placeholder); ok {
+			if !ph.GetComparisonRange().IsEmpty() {
+				return nil
+			}
+			continue
+		}
+		if _, ok := pred.(*predicates.ConstantPredicate); ok {
+			continue
+		}
+		return nil
+	}
+
+	qs := sel.GetQuantifiers()
+	if len(qs) != 1 {
+		return nil
+	}
+	innerAlias := qs[0].GetAlias()
+	rangedOver := map[values.CorrelationIdentifier]struct{}{innerAlias: {}}
+
+	adjustedMaxMatchMap, ok := maxMatchMap.AdjustMaybe(
+		innerAlias,
+		sel.GetResultValue(),
+		rangedOver,
+	)
+	if !ok {
+		return nil
+	}
+
+	orderingParts := childMatchInfo.GetMatchedOrderingParts()
 	groupByMappings := childMatchInfo.GetGroupByMappings()
 
 	return NewAdjustedBuilder(childMatchInfo).

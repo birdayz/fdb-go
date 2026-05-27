@@ -35,6 +35,7 @@ import (
 //
 // Ports Java's PushRequestedOrderingThroughGroupByRule.
 type PushRequestedOrderingThroughGroupByRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

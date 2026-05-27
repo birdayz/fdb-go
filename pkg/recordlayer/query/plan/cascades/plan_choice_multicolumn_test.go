@@ -40,8 +40,9 @@ func TestPlanChoice_MultiColumnIndexPrefix(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -107,8 +108,9 @@ func TestPlanChoice_NoIndexForNonMatchingColumn(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -161,8 +163,9 @@ func TestPlanChoice_UniqueIndexPointLookup(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -217,8 +220,9 @@ func TestPlanChoice_PicksBestIndexAmongMultiple(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -270,8 +274,9 @@ func TestPlanChoice_InequalityRangeScan(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -334,8 +339,9 @@ func TestPlanChoice_EqualityPlusInequality(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -395,8 +401,9 @@ func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 		},
 	})
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
 	bestExpr, _, err := p.Plan(rootRef)
 	if err != nil {

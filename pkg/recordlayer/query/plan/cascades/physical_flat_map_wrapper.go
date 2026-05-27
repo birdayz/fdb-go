@@ -40,6 +40,13 @@ func (w *physicalFlatMapWrapper) GetQuantifiers() []expressions.Quantifier {
 func (w *physicalFlatMapWrapper) CanCorrelate() bool  { return true }
 func (w *physicalFlatMapWrapper) ChildrenAsSet() bool { return false }
 
+// GetCorrelatedToWithoutChildren returns empty for join FlatMaps.
+// JoinMergeResultValue stores OuterAlias/InnerAlias as struct fields
+// (not as QuantifiedObjectValue children), so GetCorrelatedToOfValue
+// finds nothing. This is correct for joins — correlations flow
+// through quantifier children. When correlated subqueries are ported,
+// JoinMergeResultValue.Children() must return QOV nodes so external
+// correlations propagate.
 func (w *physicalFlatMapWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}
 }
@@ -98,6 +105,12 @@ func (w *physicalFlatMapWrapper) WithChildren(qs []expressions.Quantifier) (expr
 
 func (w *physicalFlatMapWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
+}
+
+// IsPhysicalFlatMap reports whether expr is a physicalFlatMapWrapper.
+func IsPhysicalFlatMap(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalFlatMapWrapper)
+	return ok
 }
 
 var (

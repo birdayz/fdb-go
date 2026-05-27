@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -36,7 +37,15 @@ func (w *physicalPredicatesFilterWrapper) CanCorrelate() bool  { return false }
 func (w *physicalPredicatesFilterWrapper) ChildrenAsSet() bool { return false }
 
 func (w *physicalPredicatesFilterWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	if w.plan != nil {
+		for _, p := range w.plan.GetPredicates() {
+			for k := range predicates.GetCorrelatedToOfPredicate(p) {
+				out[k] = struct{}{}
+			}
+		}
+	}
+	return out
 }
 
 func (w *physicalPredicatesFilterWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
@@ -61,7 +70,12 @@ func (w *physicalPredicatesFilterWrapper) WithChildren(qs []expressions.Quantifi
 		return nil, fmt.Errorf("physicalPredicatesFilterWrapper.WithChildren: expected 1, got %d", len(qs))
 	}
 	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		newPlan := plans.NewRecordQueryPredicatesFilterPlan(innerPlan, w.plan.GetPredicates())
+		var newPlan *plans.RecordQueryPredicatesFilterPlan
+		if alias := w.plan.GetInnerAlias(); alias.Name() != "" {
+			newPlan = plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerPlan, w.plan.GetPredicates(), alias)
+		} else {
+			newPlan = plans.NewRecordQueryPredicatesFilterPlan(innerPlan, w.plan.GetPredicates())
+		}
 		return &physicalPredicatesFilterWrapper{plan: newPlan, innerQuant: qs[0]}, nil
 	}
 	return &physicalPredicatesFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil

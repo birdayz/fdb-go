@@ -41,18 +41,16 @@ func (r *ImplementTypeFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
+	winner := getWinnerForOrdering(innerRef, PreserveOrdering())
+	if winner == nil {
 		return
 	}
-
-	tfPlan := plans.NewRecordQueryTypeFilterPlan(tf.GetRecordTypes(), innerPlan)
-
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
+	ph, ok := winner.(physicalPlanExpression)
+	if !ok {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+	tfPlan := plans.NewRecordQueryTypeFilterPlan(tf.GetRecordTypes(), ph.GetRecordQueryPlan())
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 	call.Yield(NewPhysicalTypeFilterWrapper(tfPlan, innerQ))
 }
 

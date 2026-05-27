@@ -20,8 +20,6 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 	rootRef := expressions.InitialOf(root)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
 
 	var ctx PlanContext
 	if len(indexes) > 0 {
@@ -29,8 +27,9 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 	}
 
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
-		WithMaxTasks(10_000)
+		WithMaxTasks(7_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -54,8 +53,6 @@ func planPipelineWithStats(t *testing.T, root expressions.RelationalExpression, 
 	rootRef := expressions.InitialOf(root)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
 
 	var ctx PlanContext
 	if len(indexes) > 0 {
@@ -63,9 +60,10 @@ func planPipelineWithStats(t *testing.T, root expressions.RelationalExpression, 
 	}
 
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
 		WithStatistics(stats).
-		WithMaxTasks(10_000)
+		WithMaxTasks(7_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -88,14 +86,13 @@ func planPipelineWithCandidates(t *testing.T, root expressions.RelationalExpress
 	rootRef := expressions.InitialOf(root)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
 
 	ctx := NewPlanContextFromMatchCandidates(candidates)
 
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
-		WithMaxTasks(10_000)
+		WithMaxTasks(2_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -442,15 +439,14 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 
 	rootRef := expressions.InitialOf(groupBy)
 	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
 
 	stats := properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}}
 	ctx := NewPlanContextFromMatchCandidates([]MatchCandidate{aggCand})
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
 		WithStatistics(stats).
-		WithMaxTasks(10_000)
+		WithMaxTasks(2_000)
 
 	best, _, err := p.Plan(rootRef)
 	if err != nil {
@@ -907,10 +903,9 @@ func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
 
 	rootRef := expressions.InitialOf(proj)
 	rules := DefaultExpressionRules()
-	rules = append(rules, BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
 	ctx := NewPlanContextFromIndexDefs([]IndexDef{idx("idx_a", "A")})
 	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules()).
 		WithMaxTasks(10_000)
 	best, _, err := p.Plan(rootRef)
@@ -1028,5 +1023,115 @@ func TestPipeline_UnionWithProjection(t *testing.T) {
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "Union") {
 		t.Fatalf("expected Union in plan, got: %s", plan)
+	}
+}
+
+// TestPipeline_SortOnDifferentColumnThanFilter verifies that when a
+// WHERE predicate uses one indexed column (A) and ORDER BY uses a
+// different column (B), the planner produces IndexScan(A=val) +
+// InMemorySort(B) rather than a full primary scan. This is the core
+// pattern behind the "order_by_pk_index_filter" perf regression.
+func TestPipeline_SortOnDifferentColumnThanFilter(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "A", Typ: values.UnknownType},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
+			),
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "B", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(filterRef),
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	proj := expressions.NewLogicalProjectionExpression(
+		[]values.Value{
+			&values.FieldValue{Field: "B", Typ: values.UnknownType},
+			&values.FieldValue{Field: "A", Typ: values.UnknownType},
+		},
+		expressions.ForEachQuantifier(sortRef),
+	)
+
+	plan := planPipeline(t, proj, idx("idx_a", "A"))
+	t.Logf("plan: %s", plan)
+	if !strings.Contains(plan, "IndexScan") {
+		t.Fatalf("expected IndexScan for selective A=42 lookup, got: %s", plan)
+	}
+	if !strings.Contains(plan, "InMemorySort") {
+		t.Fatalf("expected InMemorySort for B ordering, got: %s", plan)
+	}
+}
+
+// TestPipeline_GroupBySortWithIndex verifies that GROUP BY A ORDER BY A
+// with an index on A uses the index for ordered input to streaming
+// aggregation, avoiding InMemorySort on the full table. This is the
+// "group_by_customer_having" perf regression pattern.
+func TestPipeline_GroupBySortWithIndex(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "CNT"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	groupByRef := expressions.InitialOf(groupBy)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(groupByRef),
+	)
+
+	plan := planPipeline(t, sort, idx("idx_a", "A"))
+	t.Logf("plan (no HAVING): %s", plan)
+	if strings.Contains(plan, "InMemorySort") && strings.Contains(plan, "Scan(T)") {
+		t.Fatalf("plan uses InMemorySort over full Scan — should use IndexScan for ordering: %s", plan)
+	}
+
+	// Now the full regression pattern: GROUP BY A HAVING CNT > 5 ORDER BY A
+	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	groupBy2 := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "CNT"},
+		},
+		expressions.ForEachQuantifier(expressions.InitialOf(scan2)),
+	)
+	havingFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "CNT", Typ: values.UnknownType},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5)),
+			),
+		},
+		expressions.ForEachQuantifier(expressions.InitialOf(groupBy2)),
+	)
+	sort2 := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(expressions.InitialOf(havingFilter)),
+	)
+
+	plan2 := planPipeline(t, sort2, idx("idx_a", "A"))
+	t.Logf("plan (with HAVING): %s", plan2)
+	if strings.Contains(plan2, "InMemorySort") && strings.Contains(plan2, "Scan(T)") {
+		t.Fatalf("plan with HAVING uses InMemorySort over full Scan — should use IndexScan: %s", plan2)
 	}
 }

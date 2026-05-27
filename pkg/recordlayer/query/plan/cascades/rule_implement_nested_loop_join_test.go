@@ -34,8 +34,10 @@ func TestImplementNestedLoopJoin_Fires(t *testing.T) {
 
 	// NLJ fires during PLANNING phase (ImplementationRule). Run Plan() to
 	// trigger both EXPLORE and PLANNING; physical wrappers land in Members.
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(selRef); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -93,8 +95,10 @@ func TestImplementNestedLoopJoin_PlanOutput(t *testing.T) {
 	selRef := expressions.InitialOf(sel)
 
 	// Plan the join.
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, EmptyPlanContext()).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, EmptyPlanContext()).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	plan, _, err := p.Plan(selRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -102,8 +106,8 @@ func TestImplementNestedLoopJoin_PlanOutput(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !IsPhysicalNestedLoopJoin(plan) {
-		t.Fatalf("expected NLJ plan, got %T", plan)
+	if !IsPhysicalNestedLoopJoin(plan) && !IsPhysicalFlatMap(plan) {
+		t.Fatalf("expected NLJ or FlatMap plan, got %T", plan)
 	}
 
 	// Verify explain output.

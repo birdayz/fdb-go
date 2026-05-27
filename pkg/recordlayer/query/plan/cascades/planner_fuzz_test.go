@@ -100,10 +100,10 @@ func FuzzPlanner_PlanFullPipeline(f *testing.F) {
 		expr := buildFuzzExpression(b, 0, 0)
 		ref := expressions.InitialOf(expr)
 		rules := selectRules(b)
-		p := NewPlanner(rules, nil)
-		// MaxTasks low enough to surface non-termination but high
-		// enough for the seed expression shapes to converge.
-		p.MaxTasks = 5_000
+		p := NewPlanner(rules, nil).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
+		p.MaxTasks = 100_000
 
 		plan, _, err := p.Plan(ref)
 		if err != nil && err != ErrPlannerCapHit {
@@ -134,7 +134,7 @@ func FuzzPlanner_MemoConsistency(f *testing.F) {
 		ref := expressions.InitialOf(expr)
 		rules := selectRules(b)
 		p := NewPlanner(rules, nil)
-		p.MaxTasks = 5_000
+		p.MaxTasks = 100_000
 
 		_, conv := p.Explore(ref)
 		if !conv {

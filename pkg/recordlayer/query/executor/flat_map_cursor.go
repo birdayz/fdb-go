@@ -97,7 +97,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 					c.innerCursor.Close()
 					c.innerCursor = nil
 					cont := c.buildContinuation(result.GetContinuation(), false)
-					return recordlayer.NewResultWithValue(*c.currentOuter, cont), nil
+					row := qualifyOuterRow(*c.currentOuter, c.outerAlias.Name())
+					return recordlayer.NewResultWithValue(row, cont), nil
 				}
 
 				// NOT EXISTS: inner has a match → outer row excluded.
@@ -128,7 +129,8 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			// NOT EXISTS: inner exhausted with no match → emit outer row.
 			if c.notExistsMode && !c.innerHadMatch {
 				cont := c.buildContinuation(innerCont, false)
-				return recordlayer.NewResultWithValue(*c.currentOuter, cont), nil
+				row := qualifyOuterRow(*c.currentOuter, c.outerAlias.Name())
+				return recordlayer.NewResultWithValue(row, cont), nil
 			}
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.

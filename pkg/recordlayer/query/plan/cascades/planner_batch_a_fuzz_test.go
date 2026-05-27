@@ -8,8 +8,8 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// FuzzPlanner_WithBatchA_NoPanic pins that the Planner with the
-// FULL rule set — DefaultExpressionRules + BatchAExpressionRules —
+// FuzzPlanner_WithBatchA_NoPanic pins that the Planner with
+// DefaultExpressionRules (EXPLORE) + BatchAExpressionRules (PLANNING)
 // terminates and doesn't panic on random expression trees. The
 // existing FuzzPlanner_PlanFullPipeline drives a smaller logical-
 // only set; this one specifically stresses the implement rules
@@ -52,10 +52,12 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 		expr := buildFuzzExpression(b, 0, 0)
 		ref := expressions.InitialOf(expr)
 
-		// Combine logical-rewrite + Batch A read-side implement rules.
-		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+		// Combine logical-rewrite rules; Batch A rules fire during PLANNING.
+		rules := DefaultExpressionRules()
 
-		p := NewPlanner(rules, nil).WithImplementationRules(DefaultImplementationRules())
+		p := NewPlanner(rules, nil).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
 		p.MaxTasks = 50_000
 
 		plan, _, err := p.Plan(ref)
@@ -168,8 +170,10 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 			topRef = expressions.InitialOf(gb)
 		}
 
-		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-		p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+		rules := DefaultExpressionRules()
+		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
 		p.MaxTasks = 50_000
 
 		plan, _, err := p.Plan(topRef)

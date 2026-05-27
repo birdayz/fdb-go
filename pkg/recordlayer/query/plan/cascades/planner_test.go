@@ -487,14 +487,13 @@ func TestPlanner_GenerateDataAccess_InsertsScans(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// After Plan, the Reference should have at least 2 members:
-	// the original scan + the data-access-generated scanPlanExpression.
-	members := ref.Members()
+	// After Plan, AllMembers should have at least 2 (original + data access scan).
+	members := ref.AllMembers()
 	if len(members) < 2 {
 		t.Fatalf("after Plan: expected >= 2 members (original + data access scan), got %d", len(members))
 	}
 
-	// Find the scanPlanExpression among the members.
+	// Find the scanPlanExpression among all members.
 	var found *scanPlanExpression
 	for _, m := range members {
 		if spe, ok := m.(*scanPlanExpression); ok {
@@ -561,7 +560,7 @@ func TestPlanner_GenerateDataAccess_BottomUp(t *testing.T) {
 	// The inner Reference should have a scanPlanExpression (data access
 	// phase processed it bottom-up, before the parent).
 	var found bool
-	for _, m := range scanRef.Members() {
+	for _, m := range scanRef.AllMembers() {
 		if _, ok := m.(*scanPlanExpression); ok {
 			found = true
 			break

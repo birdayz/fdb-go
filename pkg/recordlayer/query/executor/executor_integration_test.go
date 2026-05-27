@@ -1410,6 +1410,7 @@ func TestIntegration_NestedLoopJoin_CrossJoin(t *testing.T) {
 			nil,
 			plans.JoinInner,
 			"ORDER", "CUSTOMER",
+			nil,
 		)
 
 		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1482,6 +1483,7 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 			},
 			plans.JoinInner,
 			"ORDER", "CUSTOMER",
+			nil,
 		)
 
 		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1552,6 +1554,7 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 			},
 			plans.JoinLeftOuter,
 			"ORDER", "CUSTOMER",
+			nil,
 		)
 
 		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -3219,7 +3222,7 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 
 		scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
 		scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner, "ORDER", "ORDER")
+		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner, "ORDER", "ORDER", nil)
 		proj := plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
 				&values.FieldValue{Field: "ORDER_ID", Typ: values.TypeInt},

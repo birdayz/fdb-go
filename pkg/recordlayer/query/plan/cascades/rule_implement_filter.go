@@ -50,19 +50,30 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
-		return
+
+	orderings := call.GetRequestedOrderings()
+	if len(orderings) == 0 {
+		orderings = []*RequestedOrdering{PreserveOrdering()}
 	}
 
-	filterPlan := plans.NewRecordQueryFilterPlan(f.GetPredicates(), innerPlan)
-
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
-		return
+	seen := make(map[expressions.RelationalExpression]bool)
+	for _, ordering := range orderings {
+		winner := getWinnerForOrdering(innerRef, ordering)
+		if winner == nil {
+			continue
+		}
+		if seen[winner] {
+			continue
+		}
+		seen[winner] = true
+		ph, ok := winner.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		filterPlan := plans.NewRecordQueryFilterPlan(f.GetPredicates(), ph.GetRecordQueryPlan())
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+		call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-	call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
 }
 
 var _ ExpressionRule = (*ImplementFilterRule)(nil)

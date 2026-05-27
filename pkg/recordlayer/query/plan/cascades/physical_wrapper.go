@@ -704,6 +704,13 @@ func (w *physicalFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expr
 
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
 
+// IsPhysicalDistinct reports whether the given RelationalExpression is
+// a physicalDistinctWrapper.
+func IsPhysicalDistinct(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalDistinctWrapper)
+	return ok
+}
+
 // physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
 // the RelationalExpression interface.
 type physicalDistinctWrapper struct {

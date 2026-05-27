@@ -39,18 +39,16 @@ func (r *ImplementInsertRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
+	winner := getWinnerForOrdering(innerRef, PreserveOrdering())
+	if winner == nil {
 		return
 	}
-
-	insPlan := plans.NewRecordQueryInsertPlan(innerPlan, ins.GetTargetRecordType(), ins.GetTargetType())
-
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
+	ph, ok := winner.(physicalPlanExpression)
+	if !ok {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+	insPlan := plans.NewRecordQueryInsertPlan(ph.GetRecordQueryPlan(), ins.GetTargetRecordType(), ins.GetTargetType())
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 	call.Yield(NewPhysicalInsertWrapper(insPlan, innerQ))
 }
 

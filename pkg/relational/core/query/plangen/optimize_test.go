@@ -214,8 +214,8 @@ func FuzzConvertAndPlan(f *testing.F) {
 	f.Add(uint64(0xff), "", "", uint8(255))
 	f.Add(uint64(42), "42", "'hello'", uint8(10))
 	f.Add(uint64(7), "UPPER(x)", "1 + 2", uint8(4))
-	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
-	rules = append(rules, cascades.DMLImplementationRules()...)
+	rules := cascades.DefaultExpressionRules()
+	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)
 	f.Fuzz(func(t *testing.T, seed uint64, name1, name2 string, shape uint8) {
 		op := buildFuzzOp(seed, name1, name2, shape)
 		if op == nil {
@@ -226,7 +226,8 @@ func FuzzConvertAndPlan(f *testing.F) {
 			return
 		}
 		ref := expressions.InitialOf(got)
-		p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+		p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
+			WithPlanningExpressionRules(planningRules)
 		plan, _, _ := p.Plan(ref)
 		_ = plan
 	})

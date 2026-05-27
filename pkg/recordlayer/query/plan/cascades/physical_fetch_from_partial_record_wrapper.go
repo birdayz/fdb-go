@@ -78,9 +78,9 @@ func (w *physicalFetchFromPartialRecordWrapper) WithChildren(qs []expressions.Qu
 			w.plan.GetResultType(),
 			w.plan.GetFetchIndexRecords(),
 		)
-		return &physicalFetchFromPartialRecordWrapper{plan: newPlan, innerQuant: qs[0]}, nil
+		return NewPhysicalFetchFromPartialRecordWrapper(newPlan, qs[0]), nil
 	}
-	return &physicalFetchFromPartialRecordWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+	return NewPhysicalFetchFromPartialRecordWrapper(w.plan, qs[0]), nil
 }
 
 func (w *physicalFetchFromPartialRecordWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
@@ -140,6 +140,33 @@ func GetPhysicalFetchFromPartialRecordPlan(expr expressions.RelationalExpression
 		return nil
 	}
 	return w.plan
+}
+
+// isNilInnerFetch reports whether expr is a physicalFetchFromPartialRecordWrapper
+// whose embedded plan has a nil inner.
+//
+// Push-through-fetch rules (PushInJoinThroughFetchRule, PushFilterThroughFetchRule,
+// PushDistinctThroughFetchRule, PushSetOperationThroughFetchRule) create these
+// "shell" wrappers as part of the Cascades pattern: the wrapper's quantifier
+// tracks the real child reference, while plan.GetInner() is nil because the
+// plan is a template that gets assembled during extraction via WithChildren.
+//
+// This nil-inner state is architecturally intentional — setting the inner at
+// rule time would introduce stale plan references (the inner's own children
+// haven't been extracted yet), leading to incorrect explain output and plan
+// quality regressions. The Cascades framework resolves this during plan
+// extraction when WithChildren populates the inner from the quantifier graph.
+//
+// However, nil-inner fetch shells must NOT be selected as standalone winners
+// before extraction, because callers that inspect plan.GetInner() (e.g.
+// PhysicalIndexScanName, Explain) would get nil. Every site that selects a
+// "best" candidate from a set of physical expressions must call this guard.
+func isNilInnerFetch(expr expressions.RelationalExpression) bool {
+	fw, ok := expr.(*physicalFetchFromPartialRecordWrapper)
+	if !ok {
+		return false
+	}
+	return fw.plan != nil && fw.plan.GetInner() == nil
 }
 
 var (

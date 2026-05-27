@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -34,21 +33,27 @@ import (
 //
 // The planner is single-threaded (Java's is too).
 type Planner struct {
-	// stack MUST be LIFO. The bottom-up exploration invariant —
-	// children-before-parent — depends on stack-pop returning the
-	// most-recently-pushed Task. ExploreReferenceTask pushes the
-	// SaturationCheckTask FIRST (deepest), then per-rule
-	// TransformReferenceTasks, then per-member ExploreExpressionTasks
-	// (topmost). LIFO pop order: ExploreExpression runs first
-	// (descends to leaves), then rules fire, then saturation check.
+	// stack MUST be LIFO. Two task architectures share it:
+	// - Plan() uses unified tasks: InitiatePlannerPhaseTask →
+	//   ExploreGroupTask/OptimizeGroupTask → ExploreExprTask/
+	//   TransformExprTask/TransformImplTask/OptimizeInputsTask.
+	// - Explore() uses legacy tasks: ExploreReferenceTask →
+	//   SaturationCheckTask/TransformReferenceTask.
+	// Both depend on LIFO pop order for bottom-up exploration
+	// (children before parents).
 	stack []Task
 	rules []ExpressionRule
 	ctx   PlanContext
 	memo  *Memo
 
+	// rewritingImplRules run during PhaseRewriting. They yield
+	// final expressions (FinalizeExpressionsRule promotes exploratory
+	// to final for OptimizeGroup selection).
+	rewritingImplRules []ImplementationRule
+
 	// implementationRules run during PhasePlanning after the
 	// REWRITING phase converges. They yield physical expressions
-	// into Reference.Members via Insert.
+	// into FinalMembers via InsertFinal.
 	implementationRules []ImplementationRule
 
 	// planningExpressionRules are ExpressionRules that fire during
@@ -80,6 +85,10 @@ type Planner struct {
 	// set, the cost model uses real record counts instead of the
 	// default 1e6 constant.
 	stats properties.StatisticsProvider
+
+	// constraintMap holds ordering constraints propagated during
+	// PLANNING's preorder rules. Shared across all tasks.
+	constraintMap *ConstraintMap
 
 	// events is the (optional) event handler. Nil = no events.
 	events PlannerEventHandler
@@ -119,12 +128,13 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		ctx = EmptyPlanContext()
 	}
 	return &Planner{
-		rules:        rules,
-		ctx:          ctx,
-		memo:         nil, // initialized lazily on first Explore call
-		exploreCount: make(map[*expressions.Reference]int),
-		costModel:    PlanningCostModelLess,
-		MaxTasks:     100_000,
+		rules:              rules,
+		rewritingImplRules: []ImplementationRule{NewFinalizeExpressionsRule()},
+		ctx:                ctx,
+		memo:               nil,
+		exploreCount:       make(map[*expressions.Reference]int),
+		costModel:          PlanningCostModelLess,
+		MaxTasks:           100_000,
 	}
 }
 
@@ -239,7 +249,7 @@ func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 // migration: physical scan/filter/agg wrappers are produced during
 // PLANNING where constraint and ordering information is available.
 func (p *Planner) WithPlanningExpressionRules(rules []ExpressionRule) *Planner {
-	p.planningExpressionRules = rules
+	p.planningExpressionRules = append(PlanningExplorationRules(), rules...)
 	return p
 }
 
@@ -277,61 +287,47 @@ func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {
 	return p
 }
 
-// Plan runs the full EXPLORE → OPTIMIZE pipeline on `rootRef` and
+// Plan runs the unified two-phase REWRITING → PLANNING pipeline and
 // returns the cost-cheapest extracted plan tree.
 //
-// EXPLORE: drives the task-stack to convergence (Explore method).
-// OPTIMIZE: extracts the cheapest member at every reachable Reference
-//
-//	via the cost-aware comparator + WithChildren-or-switch
-//	rebuild path (delegates to properties.ExtractBestPlan).
-//
-// Equivalent to:
-//
-//	tasks, conv := p.Explore(rootRef)
-//	if !conv { return nil, tasks, ErrPlannerCapHit }
-//	plan, err := properties.ExtractBestPlan(rootRef)
-//	return plan, tasks, err
+// Pushes InitiatePlannerPhaseTask{PhaseRewriting} which chains to
+// PhasePlanning via the unified task types (ExploreGroupTask,
+// TransformExprTask, TransformImplTask, OptimizeGroupTask,
+// OptimizeInputsTask). After the stack drains, extracts the best
+// plan via properties.ExtractBestPlanFromSelector.
 //
 // Returns:
-//   - plan: the extracted RelationalExpression (singleton-Reference
-//     tree); nil if rootRef is empty.
-//   - tasks: total tasks executed during EXPLORE.
+//   - plan: the extracted RelationalExpression; nil if rootRef is empty.
+//   - tasks: total tasks executed across both phases.
 //   - err: nil on success; ErrPlannerCapHit if EXPLORE hit MaxTasks
 //     (no OPTIMIZE attempted); extraction error otherwise.
 func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
-	tasks, conv := p.Explore(rootRef)
-	if !conv {
-		return nil, tasks, ErrPlannerCapHit
+	if rootRef == nil {
+		return nil, 0, nil
+	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
+	p.constraintMap = NewConstraintMap()
+
+	// One task-stack drives both REWRITING and PLANNING phases.
+	// InitiatePlannerPhase(REWRITING) pushes ExploreGroup + OptimizeGroup
+	// for REWRITING, then chains to InitiatePlannerPhase(PLANNING).
+	p.push(&InitiatePlannerPhaseTask{Phase: PhaseRewriting, RootRef: rootRef})
+
+	for len(p.stack) > 0 {
+		if p.tasksRun >= p.MaxTasks {
+			return nil, p.tasksRun, ErrPlannerCapHit
+		}
+		task := p.pop()
+		task.Run(p)
+		p.tasksRun++
 	}
 
-	// MATCHING phase: after EXPLORE converges, adjust partial matches
-	// by absorbing candidate-side-only expressions (AdjustMatchRule).
-	// No-op when no PartialMatches were created during EXPLORE.
-	AdjustMatches(rootRef)
-
-	// PLANNING phase: constraint propagation → data access → implementation.
-	p.runPlanningPhase(rootRef)
-
-	// Re-optimize all References to pick up implementation rule results.
-	// Implementation rules insert physical plans into Members; the cost
-	// model (criterion #1: physical beats non-physical) ensures they win
-	// over logical EXPLORE-phase winners.
-	p.reoptimizeAll(rootRef)
-
-	// Post-PLANNING promotion: these passes promote InJoin/InUnion
-	// and FlatMap plans when they have lower data access cost. With
-	// finalMembers, reoptimizeAll already prefers them when real
-	// statistics are available (all FDB integration tests pass without
-	// these passes). They remain for unit tests that lack statistics —
-	// without stats, the ordinal cost model criteria tie on InJoin vs
-	// Filter+Scan. Removing these requires either statistics-aware
-	// unit tests or full advancePlannerStage.
-	p.promoteInJoinWinners(rootRef)
-	promoteByDataAccessCost(rootRef, p.stats)
-
+	// After the task-stack drains, each Reference's FinalMembers has
+	// been pruned to exactly one physical plan by OptimizeGroup.
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
-	return plan, tasks, err
+	return plan, p.tasksRun, err
 }
 
 // ErrPlannerCapHit signals that Explore exited via the MaxTasks
@@ -344,375 +340,6 @@ type plannerErr string
 
 // Error returns the message.
 func (e plannerErr) Error() string { return string(e) }
-
-// runPlanningPhase fires implementation rules bottom-up on every
-// Reference in the Memo. Leaf References first, then parents.
-// Each rule inserts expressions into Members via ref.Insert.
-//
-// Phase sequence (matches Java's CascadesPlanner):
-//  1. Top-down constraint propagation (ordering constraints)
-//  2. Data access generation (uses propagated ordering constraints)
-//  3. Bottom-up implementation (children before parents)
-func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
-	cm := NewConstraintMap()
-
-	// Pass 1: top-down constraint propagation. Rules that push
-	// ordering constraints (e.g., DistinctUnionRule) fire here so
-	// child References receive constraints before implementation.
-	if len(p.implementationRules) > 0 {
-		p.propagateConstraints(rootRef, make(map[*expressions.Reference]bool), cm)
-	}
-
-	// Pass 2: data access generation. Runs after constraint
-	// propagation so requestedOrderings are available. Ports Java's
-	// architecture where data access rules fire during the PLANNING
-	// phase with ordering constraints.
-	p.generateDataAccessWithConstraints(rootRef, cm)
-
-	// Pass 3: bottom-up implementation. Children are implemented
-	// first (with constraints from Pass 1 available), then parents.
-	// Visit ALL Memo references to ensure data access expressions
-	// generated in Pass 2 (which may be in non-root-reachable
-	// references created during exploration) get properly implemented.
-	if len(p.implementationRules) > 0 {
-		visited := make(map[*expressions.Reference]bool)
-		p.implementBottomUp(rootRef, visited, cm)
-		if p.memo != nil {
-			for ref := range p.memo.References() {
-				p.implementBottomUp(ref, visited, cm)
-			}
-		}
-	}
-}
-
-// reoptimizeAll re-runs OptimizeGroup on every reachable Reference
-// bottom-up after the PLANNING phase. Implementation rules insert
-// physical plans into Members; the cost model (criterion #1: physical
-// beats non-physical) ensures they replace logical EXPLORE-phase winners.
-func (p *Planner) reoptimizeAll(rootRef *expressions.Reference) {
-	visited := make(map[*expressions.Reference]bool)
-	p.reoptimizeRecursive(rootRef, visited)
-	if p.memo != nil {
-		for ref := range p.memo.References() {
-			p.reoptimizeRecursive(ref, visited)
-		}
-	}
-}
-
-func (p *Planner) reoptimizeRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
-	if ref == nil || visited[ref] {
-		return
-	}
-	visited[ref] = true
-	for _, m := range ref.AllMembers() {
-		for _, q := range m.GetQuantifiers() {
-			if childRef := q.GetRangesOver(); childRef != nil {
-				p.reoptimizeRecursive(childRef, visited)
-			}
-		}
-	}
-
-	// Prefer finalMembers (PLANNING-phase physical plans) over the
-	// full member set. This mirrors Java's OptimizeGroup which only
-	// considers finalMembers for plan selection.
-	candidates := ref.FinalMembers()
-	if len(candidates) == 0 {
-		candidates = ref.AllMembers()
-	}
-
-	existing := ref.Winner(expressions.NoProperties)
-	if existing == nil {
-		var best expressions.RelationalExpression
-		for _, m := range candidates {
-			if best == nil || p.costModel(m, best) {
-				best = m
-			}
-		}
-		if best != nil {
-			ref.SetWinner(expressions.NoProperties, best)
-		}
-	} else if _, isPhys := existing.(physicalPlanExpression); !isPhys {
-		var bestPhys expressions.RelationalExpression
-		for _, m := range candidates {
-			if _, ok := m.(physicalPlanExpression); !ok {
-				continue
-			}
-			if bestPhys == nil || p.costModel(m, bestPhys) {
-				bestPhys = m
-			}
-		}
-		if bestPhys != nil {
-			ref.SetWinner(expressions.NoProperties, bestPhys)
-		}
-	}
-}
-
-// promoteInJoinWinners walks all References and checks if an InJoin
-// or InUnion physical member is cheaper than the current NoProperties
-// winner under the cost model. These plans are produced during PLANNING
-// by ImplementInJoinRule/ImplementInUnionRule and may be cheaper than
-// the EXPLORE-phase winner (e.g., InJoin(IndexScan) vs Filter(Scan)).
-func (p *Planner) promoteInJoinWinners(rootRef *expressions.Reference) {
-	visited := make(map[*expressions.Reference]bool)
-	p.promoteInJoinRecursive(rootRef, visited)
-	if p.memo != nil {
-		for ref := range p.memo.References() {
-			p.promoteInJoinRecursive(ref, visited)
-		}
-	}
-}
-
-func (p *Planner) promoteInJoinRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
-	if ref == nil || visited[ref] {
-		return
-	}
-	visited[ref] = true
-	for _, m := range ref.AllMembers() {
-		for _, q := range m.GetQuantifiers() {
-			if childRef := q.GetRangesOver(); childRef != nil {
-				p.promoteInJoinRecursive(childRef, visited)
-			}
-		}
-	}
-	existing := ref.Winner(expressions.NoProperties)
-	if existing == nil {
-		return
-	}
-	if _, isPhys := existing.(physicalPlanExpression); !isPhys {
-		return
-	}
-	for _, m := range ref.AllMembers() {
-		if !IsPhysicalInJoin(m) && !isPhysicalInUnion(m) {
-			continue
-		}
-		if p.costModel(m, existing) {
-			existing = m
-		}
-	}
-	ref.SetWinner(expressions.NoProperties, existing)
-}
-
-func isPhysicalInUnion(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalInUnionWrapper)
-	return ok
-}
-
-func promoteByDataAccessCost(rootRef *expressions.Reference, stats properties.StatisticsProvider) {
-	if rootRef == nil {
-		return
-	}
-	existing := rootRef.Winner(expressions.NoProperties)
-	if existing == nil {
-		return
-	}
-	if _, ok := existing.(physicalPlanExpression); !ok {
-		return
-	}
-	existingCounts := findExpressionsByType(existing, stats)
-	if existingCounts.maxDataAccessCardinality < 0 {
-		return
-	}
-	_, existingIsProj := existing.(*physicalProjectionWrapper)
-	for _, m := range rootRef.AllMembers() {
-		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		counts := findExpressionsByType(m, stats)
-		if counts.maxDataAccessCardinality < 0 {
-			continue
-		}
-		if counts.maxDataAccessCardinality > existingCounts.maxDataAccessCardinality {
-			continue
-		}
-		if counts.maxDataAccessCardinality == existingCounts.maxDataAccessCardinality {
-			if counts.flatMapCount == 0 || existingCounts.flatMapCount > 0 {
-				continue
-			}
-		}
-		// Don't replace a winner that includes InMemorySort with a
-		// candidate that drops the sort — the query's ORDER BY requires it.
-		if counts.inMemorySortCount < existingCounts.inMemorySortCount {
-			continue
-		}
-		if existingIsProj {
-			if _, ok := m.(*physicalProjectionWrapper); !ok {
-				continue
-			}
-		}
-		existing = m
-		existingCounts = counts
-	}
-	rootRef.SetWinner(expressions.NoProperties, existing)
-}
-
-func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
-	if ref == nil || visited[ref] {
-		return
-	}
-	visited[ref] = true
-
-	for _, rule := range p.implementationRules {
-		for _, member := range ref.AllMembers() {
-			bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
-			for _, b := range bindings {
-				call := &ImplementationRuleCall{
-					Bindings:       b,
-					Reference:      ref,
-					Context:        p.ctx,
-					Constraints:    cm,
-					constraintOnly: true,
-				}
-				rule.OnMatch(call)
-			}
-		}
-	}
-
-	for _, m := range ref.Members() {
-		for _, q := range m.GetQuantifiers() {
-			if childRef := q.GetRangesOver(); childRef != nil {
-				p.propagateConstraints(childRef, visited, cm)
-			}
-		}
-	}
-}
-
-func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
-	if ref == nil || visited[ref] {
-		return
-	}
-	visited[ref] = true
-
-	for _, m := range ref.Members() {
-		for _, q := range m.GetQuantifiers() {
-			if childRef := q.GetRangesOver(); childRef != nil {
-				p.implementBottomUp(childRef, visited, cm)
-			}
-		}
-	}
-
-	// Fixpoint: fire planning expression rules (BatchA) and
-	// implementation rules until no new members are produced.
-	// Planning expression rules produce physical scan/filter wrappers;
-	// implementation rules consume them to produce higher-level plans
-	// (InJoin, Sort elimination, etc.). Both yield to InsertFinal.
-	const maxFixpointRounds = 8
-	for round := 0; round < maxFixpointRounds; round++ {
-		before := len(ref.AllMembers())
-		p.firePlanningExprRules(ref)
-		for _, rule := range p.implementationRules {
-			FireImplementationRuleWithContext(rule, ref, p.ctx, p.memo, cm)
-		}
-		if len(ref.AllMembers()) == before {
-			break
-		}
-	}
-
-	computeRefPlanProperties(ref)
-}
-
-// firePlanningExprRules fires planningExpressionRules (BatchA) against
-// a Reference during PLANNING. Yields go to InsertFinal so they land
-// in finalMembers — authoritative for plan selection.
-func (p *Planner) firePlanningExprRules(ref *expressions.Reference) {
-	if len(p.planningExpressionRules) == 0 {
-		return
-	}
-	for _, rule := range p.planningExpressionRules {
-		for _, member := range ref.AllMembers() {
-			bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
-			for _, b := range bindings {
-				call := &ExpressionRuleCall{
-					Bindings:  b,
-					Reference: ref,
-					Context:   p.ctx,
-					memo:      p.memo,
-					yieldFn: func(expr expressions.RelationalExpression) bool {
-						return ref.InsertFinal(expr)
-					},
-				}
-				rule.OnMatch(call)
-			}
-		}
-	}
-}
-
-// generateDataAccessWithConstraints walks the expression DAG bottom-up
-// and generates data access expressions (index scans) from
-// PartialMatches. Uses ordering constraints from the ConstraintMap
-// (propagated during Pass 1) to inform scan direction selection.
-//
-// This is the Go equivalent of Java's WithPrimaryKeyDataAccessRule
-// which extends CascadesRule<MatchPartition>. Rather than modelling
-// MatchPartition as a rule trigger, we run this as an explicit pass
-// within the PLANNING phase — architecturally equivalent since Java's
-// data access rules fire during the same phase as constraint
-// propagation.
-func (p *Planner) generateDataAccessWithConstraints(rootRef *expressions.Reference, cm *ConstraintMap) {
-	visited := map[*expressions.Reference]bool{}
-	p.generateDataAccessRecursive(rootRef, visited, cm)
-	if p.memo != nil {
-		for ref := range p.memo.References() {
-			p.generateDataAccessRecursive(ref, visited, cm)
-		}
-	}
-}
-
-// generateDataAccessRecursive recurses children first (bottom-up),
-// then generates data access expressions for the current Reference.
-func (p *Planner) generateDataAccessRecursive(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
-	if ref == nil || visited[ref] {
-		return
-	}
-	visited[ref] = true
-
-	// Recurse children first so leaf scans are processed before
-	// parent operators that depend on them.
-	for _, m := range ref.AllMembers() {
-		for _, q := range m.GetQuantifiers() {
-			if childRef := q.GetRangesOver(); childRef != nil {
-				p.generateDataAccessRecursive(childRef, visited, cm)
-			}
-		}
-	}
-
-	// Collect all MatchCandidates that have PartialMatches on this ref.
-	candidates := GetPartialMatchCandidatesTyped(ref)
-	if len(candidates) == 0 {
-		return
-	}
-
-	// Read ordering constraints propagated during Pass 1.
-	var requestedOrderings []*RequestedOrdering
-	if cm != nil {
-		if orderings, ok := Get(cm, ref, RequestedOrderingConstraintKey); ok {
-			requestedOrderings = orderings
-		}
-	}
-
-	for _, candidate := range candidates {
-		matches := GetPartialMatchesForCandidate(ref, candidate)
-		if len(matches) == 0 {
-			continue
-		}
-
-		exprs := DataAccessForMatchPartition(
-			requestedOrderings,
-			matches,
-			p.ctx,
-			nil, // intersector (single-scan only)
-		)
-
-		// Insert generated expressions as final members so Pass 3
-		// (bottom-up implementation) and ToPlanPartitions see them.
-		// Also stamp ordering winners for physical scans that provide
-		// ordering (enables sort elimination via per-properties winners
-		// in extraction).
-		for _, expr := range exprs {
-			ref.InsertFinal(expr)
-		}
-		stampOrderingWinners(ref, p.costModel)
-	}
-}
 
 // Explore drives the task-stack until convergence (no rule yields a
 // new member anywhere in the DAG) or the MaxTasks cap is hit.
@@ -756,6 +383,60 @@ func (p *Planner) pop() Task {
 	t := p.stack[n-1]
 	p.stack = p.stack[:n-1]
 	return t
+}
+
+// rulesForPhase returns the expression and implementation rules for the
+// given planner phase.
+func (p *Planner) rulesForPhase(phase PlannerPhase) ([]ExpressionRule, []ImplementationRule) {
+	switch phase {
+	case PhaseRewriting:
+		return p.rules, p.rewritingImplRules
+	case PhasePlanning:
+		return p.planningExpressionRules, p.implementationRules
+	default:
+		return nil, nil
+	}
+}
+
+// costModelForPhase returns the cost model comparator for the given phase.
+func (p *Planner) costModelForPhase(phase PlannerPhase) func(a, b expressions.RelationalExpression) bool {
+	switch phase {
+	case PhaseRewriting:
+		return RewritingCostModelLess
+	case PhasePlanning:
+		return p.costModel
+	default:
+		return p.costModel
+	}
+}
+
+// pushDataAccessTasks generates data access expressions (index scans)
+// from PartialMatches on the Reference. This is the Go equivalent of
+// Java's TransformMatchPartition tasks.
+func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.RelationalExpression) {
+	candidates := GetPartialMatchCandidatesTyped(ref)
+	if len(candidates) == 0 {
+		return
+	}
+
+	var requestedOrderings []*RequestedOrdering
+	if p.constraintMap != nil {
+		if orderings, ok := Get(p.constraintMap, ref, RequestedOrderingConstraintKey); ok {
+			requestedOrderings = orderings
+		}
+	}
+
+	for _, candidate := range candidates {
+		matches := GetPartialMatchesForCandidate(ref, candidate)
+		if len(matches) == 0 {
+			continue
+		}
+		exprs := DataAccessForMatchPartition(requestedOrderings, matches, p.ctx, nil)
+		for _, expr := range exprs {
+			ref.InsertFinal(expr)
+		}
+		stampOrderingWinners(ref, p.costModel)
+	}
 }
 
 // Task is the task-stack driver's unit of work. Tasks are Run
@@ -923,10 +604,6 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 	}
 	best := p.OptimizeGroup(t.Ref, expressions.NoProperties)
 
-	// Stamp ordering-specific winners: for each physical member that
-	// provides a known ordering, store it as winner for those ordering
-	// properties. If multiple members provide the same ordering, the
-	// cost model picks the better one.
 	stampOrderingWinners(t.Ref, p.costModel)
 
 	if p.events != nil {

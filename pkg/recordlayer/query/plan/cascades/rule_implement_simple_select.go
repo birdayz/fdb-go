@@ -104,7 +104,7 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		}
 
 		if len(queryPredicates) > 0 {
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlan(currentPlan, queryPredicates)
+			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(currentPlan, queryPredicates, innerQuantifier.GetAlias())
 			filterWrapper := NewPhysicalPredicatesFilterWrapper(filterPlan, currentQuant)
 			filterRef := call.MemoizeFinalExpression(filterWrapper)
 			currentQuant = expressions.NewPhysicalQuantifier(filterRef)

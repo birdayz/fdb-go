@@ -186,8 +186,10 @@ func TestOrderedIndexScan_PlannerIntegration(t *testing.T) {
 	)
 	ref := expressions.InitialOf(sort)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}

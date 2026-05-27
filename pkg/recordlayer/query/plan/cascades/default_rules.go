@@ -46,11 +46,9 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewFilterDedupPredicatesRule(),
 		NewPushFilterThroughDistinctRule(),
 		NewPushFilterThroughTypeFilterRule(),
-		NewPushFilterThroughSortRule(),
 		NewPushFilterThroughUnionRule(),
 		NewPushFilterThroughIntersectionRule(),
 		NewPushFilterThroughGroupByRule(),
-		NewPushFilterThroughProjectionRule(),
 		NewPushFilterBelowJoinRule(),
 		NewDistinctMergeRule(),
 		NewDistinctOverSortElimRule(),
@@ -71,11 +69,20 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
 		NewPushProjectionBelowJoinRule(),
-		NewPullFilterAboveProjectionRule(),
+		// PullFilterAboveSortRule REMOVED: Go-only rule not in Java.
+		// Pulling Filter above Sort changes the correlation structure and
+		// caused InJoin to wrap Sort inside it, then InJoin.HintOrdering
+		// falsely claimed ordering → sort eliminated → wrong results.
+		// PushFilterThroughSortRule REMOVED: Go-only rule not in Java.
+		// Same class of issue as PullFilterAboveSortRule.
+		// PullFilterAboveProjectionRule REMOVED: Go-only rule not in Java.
+		// Pulling Filter above Projection put Filter where it couldn't
+		// find projected columns, causing resolution failures.
+		// PushFilterThroughProjectionRule REMOVED: Go-only rule not in Java.
+		// Same class of issue as PullFilterAboveProjectionRule.
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),
-		NewPullFilterAboveSortRule(),
 		NewUnsortedSortElimRule(),
 		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
@@ -115,6 +122,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPartitionBinarySelectRule(),
 		NewDecorrelateValuesRule(),
 		NewPullUpNullOnEmptyRule(),
+		NewMatchLeafRule(),
+		NewMatchIntermediateRule(),
 	}
 }
 
@@ -156,10 +165,12 @@ func PlanningDataAccessRules() []ExpressionRule {
 	}
 }
 
-// BatchAExpressionRules returns the B5 Batch A physical-implementation
-// rules. These run in a second EXPLORE pass (after logical exploration
-// converges) so physical wrappers go into Members and the standard
-// OPTIMIZE path stamps bestMember correctly.
+// BatchAExpressionRules returns the physical-implementation rules
+// (PrimaryScanRule, ImplementFilterRule, etc.). These fire during the
+// PLANNING phase via WithPlanningExpressionRules. They yield to
+// InsertFinal so their results land in FinalMembers.
+//
+// Matches Java's PlanningRuleSet.IMPLEMENTATION_RULES.
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),

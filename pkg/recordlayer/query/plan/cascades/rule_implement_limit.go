@@ -33,19 +33,29 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
-		return
+	orderings := call.GetRequestedOrderings()
+	if len(orderings) == 0 {
+		orderings = []*RequestedOrdering{PreserveOrdering()}
 	}
 
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
-		return
+	seen := make(map[expressions.RelationalExpression]bool)
+	for _, ordering := range orderings {
+		winner := getWinnerForOrdering(innerRef, ordering)
+		if winner == nil {
+			continue
+		}
+		if seen[winner] {
+			continue
+		}
+		seen[winner] = true
+		ph, ok := winner.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		limitPlan := plans.NewRecordQueryLimitPlan(ph.GetRecordQueryPlan(), lim.GetLimit(), lim.GetOffset())
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+		call.Yield(newPhysicalLimitWrapper(limitPlan, innerQ))
 	}
-
-	limitPlan := plans.NewRecordQueryLimitPlan(innerPlan, lim.GetLimit(), lim.GetOffset())
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-	call.Yield(newPhysicalLimitWrapper(limitPlan, innerQ))
 }
 
 var _ ExpressionRule = (*ImplementLimitRule)(nil)

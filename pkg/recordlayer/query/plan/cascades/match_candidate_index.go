@@ -99,6 +99,46 @@ func (c *ValueIndexScanMatchCandidate) GetRecordTypes() []string { return c.reco
 // IsUnique reports whether the index enforces uniqueness.
 func (c *ValueIndexScanMatchCandidate) IsUnique() bool { return c.unique }
 
+// ComputeMatchedOrderingParts computes ordering parts for each index
+// column, using bound comparison ranges from the match info. Ports
+// Java's ValueIndexLikeMatchCandidate.computeMatchedOrderingParts.
+func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
+	matchInfo MatchInfo,
+	sortParameterIDs []values.CorrelationIdentifier,
+	isReverse bool,
+) []*MatchedOrderingPart {
+	regularInfo := matchInfo.GetRegularMatchInfo()
+	bindings := regularInfo.GetParameterBindingMap()
+
+	var parts []*MatchedOrderingPart
+	for _, paramID := range sortParameterIDs {
+		idx := -1
+		for i, alias := range c.sargableAliases {
+			if alias == paramID {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 || idx >= len(c.columnNames) {
+			break
+		}
+
+		cr := bindings[paramID]
+		colValue := &values.FieldValue{
+			Field: c.columnNames[idx],
+			Typ:   values.UnknownType,
+		}
+
+		sortOrder := MatchedSortOrderAscending
+		if isReverse {
+			sortOrder = MatchedSortOrderDescending
+		}
+
+		parts = append(parts, NewMatchedOrderingPart(paramID, colValue, cr, sortOrder))
+	}
+	return parts
+}
+
 // ComputeBoundParameterPrefixMap walks the sargable aliases in order
 // and collects the longest prefix that satisfies index scan
 // discipline:
@@ -251,6 +291,9 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 	}
 }
 
-var _ MatchCandidate = (*ValueIndexScanMatchCandidate)(nil)
+var (
+	_ MatchCandidate        = (*ValueIndexScanMatchCandidate)(nil)
+	_ OrderingPartsComputer = (*ValueIndexScanMatchCandidate)(nil)
+)
 
 // Interface compliance also checked in match_candidate_interfaces.go.

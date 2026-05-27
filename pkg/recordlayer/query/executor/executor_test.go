@@ -869,7 +869,7 @@ func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
 		&values.ConstantValue{Value: "hello", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 	})
 
-	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross, "", "")
+	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross, "", "", nil)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -905,6 +905,7 @@ func TestExecuteNestedLoopJoin_InnerJoin_WithPredicate(t *testing.T) {
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		plans.JoinInner,
 		"", "",
+		nil,
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -937,6 +938,7 @@ func TestExecuteNestedLoopJoin_InnerJoin_PredicateRejects(t *testing.T) {
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinInner,
 		"", "",
+		nil,
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -969,6 +971,7 @@ func TestExecuteNestedLoopJoin_LeftOuter_NoInnerMatch(t *testing.T) {
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		plans.JoinLeftOuter,
 		"", "",
+		nil,
 	)
 	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {

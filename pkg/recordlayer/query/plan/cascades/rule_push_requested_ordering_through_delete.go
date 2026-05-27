@@ -18,6 +18,7 @@ import (
 //
 // Ports Java's PushRequestedOrderingThroughDeleteRule.
 type PushRequestedOrderingThroughDeleteRule struct {
+	preOrderMarker
 	matcher matching.BindingMatcher
 }
 

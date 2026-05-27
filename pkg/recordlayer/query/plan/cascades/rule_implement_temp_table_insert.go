@@ -29,22 +29,22 @@ func (r *ImplementTempTableInsertRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
+	winner := getWinnerForOrdering(innerRef, PreserveOrdering())
+	if winner == nil {
 		return
 	}
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
+	ph, ok := winner.(physicalPlanExpression)
+	if !ok {
 		return
 	}
 
 	plan := plans.NewRecordQueryTempTableInsertPlan(
-		innerPlan,
+		ph.GetRecordQueryPlan(),
 		insert.GetTempTableAlias(),
 		insert.IsOwning(),
 	)
 
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 	call.Yield(newPhysicalTempTableInsertWrapper(plan, innerQ))
 }
 

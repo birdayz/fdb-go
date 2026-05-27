@@ -287,6 +287,10 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
+	if opsA.nljPredicateCount != opsB.nljPredicateCount {
+		return intCompare(opsB.nljPredicateCount, opsA.nljPredicateCount)
+	}
+
 	// Fall back to the scalar cost model when all multi-criteria tie.
 	// This avoids the hash tiebreak picking semantically broken plans
 	// (see D-4 wiring investigation). The scalar model's per-operator
@@ -332,6 +336,7 @@ type expressionCounts struct {
 	predicatesFilterCount    int
 	unmatchedFieldCount      int
 	inMemorySortCount        int
+	nljPredicateCount        int
 	maxDataAccessCardinality float64 // -1 means unknown (no data access found)
 }
 
@@ -412,6 +417,7 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		counts.flatMapCount++
 	case *physicalNestedLoopJoinWrapper:
 		counts.nestedLoopJoinCount++
+		counts.nljPredicateCount += len(w.plan.GetPredicates())
 	case *physicalFetchFromPartialRecordWrapper:
 		counts.fetchCount++
 	case *physicalInMemorySortWrapper:

@@ -50,16 +50,16 @@ func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 		return rootRef, ctx
 	}
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	rules = append(rules, MatchingRules()...)
+	rules := DefaultExpressionRules()
 	implRules := DefaultImplementationRules()
 
 	var firstPlan string
 	for i := 0; i < 20; i++ {
 		ref, ctx := buildTree()
 		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
 			WithImplementationRules(implRules).
-			WithMaxTasks(10_000)
+			WithMaxTasks(3_500)
 		best, _, err := p.Plan(ref)
 		if err != nil {
 			t.Fatalf("run %d: Plan failed: %v", i, err)

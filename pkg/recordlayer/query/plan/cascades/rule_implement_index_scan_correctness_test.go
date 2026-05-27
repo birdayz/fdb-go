@@ -456,8 +456,10 @@ func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
 	)
 	filterRef := expressions.InitialOf(filter)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	best, _, err := p.Plan(filterRef)
 	if err != nil {
 		t.Fatalf("planner error: %v", err)
@@ -517,8 +519,10 @@ func TestIndexScan_CostComparison(t *testing.T) {
 	)
 	ref := expressions.InitialOf(filter)
 
-	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
-	p := NewPlanner(rules, ctx).WithImplementationRules(DefaultImplementationRules())
+	rules := DefaultExpressionRules()
+	p := NewPlanner(rules, ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 	if _, _, err := p.Plan(ref); err != nil {
 		t.Fatalf("Plan: %v", err)
 	}

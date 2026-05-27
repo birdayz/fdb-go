@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -55,7 +56,15 @@ func (w *physicalNestedLoopJoinWrapper) CanCorrelate() bool  { return false }
 func (w *physicalNestedLoopJoinWrapper) ChildrenAsSet() bool { return false }
 
 func (w *physicalNestedLoopJoinWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	if w.plan != nil {
+		for _, p := range w.plan.GetPredicates() {
+			for k := range predicates.GetCorrelatedToOfPredicate(p) {
+				out[k] = struct{}{}
+			}
+		}
+	}
+	return out
 }
 
 func (w *physicalNestedLoopJoinWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {

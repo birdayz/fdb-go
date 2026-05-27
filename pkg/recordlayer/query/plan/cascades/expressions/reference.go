@@ -1,31 +1,54 @@
 package expressions
 
+// PlannerStage tracks which planner phase has processed a Reference.
+type PlannerStage int
+
+const (
+	StageInitial   PlannerStage = iota // client-created, no planner transformations
+	StageCanonical                     // result of REWRITING phase
+	StagePlanned                       // result of PLANNING phase
+)
+
+// Precedes returns true if s comes before other in the stage order.
+func (s PlannerStage) Precedes(other PlannerStage) bool { return s < other }
+
+// exploration state tracks per-Reference exploration progress within a phase.
+type explorationState int
+
+const (
+	explorationNever      explorationState = iota // never explored in current phase
+	explorationInProgress                         // exploration tasks pushed, not yet converged
+	explorationDone                               // exploration converged
+)
+
 // Reference is the planner's handle on an equivalence class of
 // RelationalExpressions — Cascades' "memo group".
 //
-// Members holds all expressions (logical and physical) inserted during
-// EXPLORE/REWRITING. FinalMembers holds physical plans produced during
-// the PLANNING phase (implementation rules + data access generation).
-// This mirrors Java's Reference which maintains exploratoryMembers and
-// finalMembers as separate sets.
+// Members holds exploratory expressions (logical rewrites, physical
+// wrappers from ExpressionRules). FinalMembers holds final expressions
+// (physical plans from ImplementationRules). Mirrors Java's Reference
+// which maintains exploratoryMembers and finalMembers as separate sets.
 type Reference struct {
 	members      []RelationalExpression
 	finalMembers []RelationalExpression
+
+	plannerStage    PlannerStage
+	explState       explorationState
+	explMemberCount int
+	explRounds      int
 
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
 
 	// winners stores per-properties best plans following Graefe 1995 §2.
-	// Key is a comparable PhysicalProperties value (defined in the
-	// cascades package; stored as any here to avoid circular imports).
-	// Populated by OptimizeGroup(ref, props) during planning.
 	winners map[any]RelationalExpression
 }
 
 // InitialOf returns a Reference holding the single expression e as its
-// only member. Equivalent to Java's `Reference.initialOf(e)`.
+// only member. The Reference starts at StageCanonical so REWRITING-
+// phase exploration doesn't need to advance it.
 func InitialOf(e RelationalExpression) *Reference {
-	return &Reference{members: []RelationalExpression{e}}
+	return &Reference{members: []RelationalExpression{e}, plannerStage: StageCanonical}
 }
 
 // Get returns the (first) member. For seed References this is the only
@@ -44,9 +67,16 @@ func (r *Reference) Members() []RelationalExpression {
 	return r.members
 }
 
-// AllMembers returns all members of this Reference.
+// AllMembers returns all members of this Reference — both exploratory
+// and final. Mirrors Java's getAllMembers() which unions the two sets.
 func (r *Reference) AllMembers() []RelationalExpression {
-	return r.members
+	if len(r.finalMembers) == 0 {
+		return r.members
+	}
+	all := make([]RelationalExpression, 0, len(r.members)+len(r.finalMembers))
+	all = append(all, r.members...)
+	all = append(all, r.finalMembers...)
+	return all
 }
 
 // GetBest returns the cheapest member of this Reference under the
@@ -92,6 +122,12 @@ func (r *Reference) SetWinner(propsKey any, expr RelationalExpression) {
 	r.winners[propsKey] = expr
 }
 
+// ClearWinners removes all stored winners. Used by advancePlannerStage
+// to discard EXPLORE-phase winners before PLANNING.
+func (r *Reference) ClearWinners() {
+	r.winners = nil
+}
+
 // HasWinner reports whether a winner exists for the given properties.
 func (r *Reference) HasWinner(propsKey any) bool {
 	if r.winners == nil {
@@ -99,6 +135,12 @@ func (r *Reference) HasWinner(propsKey any) bool {
 	}
 	_, ok := r.winners[propsKey]
 	return ok
+}
+
+// GetWinners returns the winners map for iteration. Returns nil if no
+// winners are stored. Callers must not mutate the map.
+func (r *Reference) GetWinners() map[any]RelationalExpression {
+	return r.winners
 }
 
 // Insert adds e to the equivalence class if no existing member already
@@ -170,11 +212,8 @@ func (r *Reference) FinalMembers() []RelationalExpression {
 	return r.finalMembers
 }
 
-// InsertFinal adds e to the finalMembers set (PLANNING-phase physical
-// plans). Uses the same dedup logic as Insert. Also inserts into
-// members so that AllMembers remains a superset. Returns true if e was
-// newly added to finalMembers (regardless of whether it was already in
-// members). Mirrors Java's Reference.insertFinalExpression.
+// InsertFinal adds e to the finalMembers set only. Does NOT add to
+// exploratory members. Mirrors Java's Reference.insertFinalExpression.
 func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	if e == nil {
 		panic("Reference.InsertFinal: nil expression")
@@ -189,20 +228,94 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		}
 	}
 	r.finalMembers = append(r.finalMembers, e)
-	r.Insert(e)
 	return true
 }
 
-// AdvancePlannerStage transitions this Reference from EXPLORE to PLANNING.
-// Replaces members with keep, clears finalMembers and planProperties.
-// Winners are preserved — they represent the best EXPLORE-phase physical
-// plans and should only be upgraded (not replaced) by PLANNING-phase
-// alternatives. PartialMatchMap is also preserved (data access generation
-// uses it in PLANNING). Mirrors Java's Reference.advancePlannerStageUnchecked.
-func (r *Reference) AdvancePlannerStage(keep []RelationalExpression) {
-	r.members = append(r.members[:0], keep...)
+// AdvancePlannerStage transitions this Reference to a new planner stage.
+// Clears exploratory members, promotes final members as the new
+// exploratory seed, clears finals and plan properties, resets
+// exploration state. PartialMatchMap is preserved (data access rules
+// consume it in PLANNING). Mirrors Java's advancePlannerStageUnchecked.
+func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
+	r.plannerStage = newStage
+	r.members = append(r.members[:0], r.finalMembers...)
 	r.finalMembers = r.finalMembers[:0]
 	r.planProperties = nil
+	r.explState = explorationNever
+	r.explRounds = 0
+	r.explMemberCount = 0
+	r.winners = nil
+}
+
+// Stage returns the current planner stage.
+func (r *Reference) Stage() PlannerStage { return r.plannerStage }
+
+// SetStage updates the planner stage without clearing members. Used
+// when a Reference created ad-hoc during a phase (by rule yields)
+// has no finals to promote — its members are already valid at the
+// target stage level.
+func (r *Reference) SetStage(s PlannerStage) { r.plannerStage = s }
+
+// NeedsExploration returns true if the Reference has never been explored
+// or if new exploratory members were added since the last round.
+func (r *Reference) NeedsExploration() bool {
+	if r.explState == explorationNever {
+		return true
+	}
+	if r.explState == explorationDone {
+		return false
+	}
+	return len(r.members) > r.explMemberCount
+}
+
+// StartExploration marks exploration as in-progress and records the
+// current exploratory member count for convergence detection.
+func (r *Reference) StartExploration() {
+	r.explState = explorationInProgress
+	r.explMemberCount = len(r.members)
+	r.explRounds++
+}
+
+// ExplRounds returns how many exploration rounds have been started.
+func (r *Reference) ExplRounds() int { return r.explRounds }
+
+// ExplMemberCount returns the member count recorded at the last
+// StartExploration. Used to explore only NEW members on re-entry.
+func (r *Reference) ExplMemberCount() int {
+	return r.explMemberCount
+}
+
+// CommitExploration marks exploration as converged.
+func (r *Reference) CommitExploration() {
+	r.explState = explorationDone
+}
+
+// ContainsExactly returns true if expr is a member of this Reference
+// (by pointer identity). Used by transform tasks to skip rules on
+// expressions that have been removed or replaced.
+func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
+	for _, m := range r.members {
+		if m == expr {
+			return true
+		}
+	}
+	for _, m := range r.finalMembers {
+		if m == expr {
+			return true
+		}
+	}
+	return false
+}
+
+// PruneWith replaces final members with the single best expression.
+// Mirrors Java's Reference.pruneWith.
+func (r *Reference) PruneWith(expr RelationalExpression) {
+	r.finalMembers = append(r.finalMembers[:0], expr)
+}
+
+// ClearFinalMembers removes all final members.
+func (r *Reference) ClearFinalMembers() {
+	r.finalMembers = r.finalMembers[:0]
 }
 
 // GetPlanProperties returns the planner-phase property map stored on this Reference.

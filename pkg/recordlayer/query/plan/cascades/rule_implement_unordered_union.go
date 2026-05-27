@@ -1,8 +1,11 @@
 package cascades
 
 import (
+	"strings"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
@@ -63,15 +66,31 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 			newQuantifiers = append(newQuantifiers,
 				expressions.NewPhysicalQuantifier(newRef))
 
-			for _, pe := range planExprs {
-				if ph, ok := pe.(physicalPlanExpression); ok {
-					childPlans = append(childPlans, ph.GetRecordQueryPlan())
-				}
+			if ph, ok := planExprs[0].(physicalPlanExpression); ok {
+				childPlans = append(childPlans, ph.GetRecordQueryPlan())
 			}
 		}
 
 		if len(childPlans) < 2 {
 			continue
+		}
+
+		// SQL standard: UNION result uses the first branch's column
+		// names. Wrap non-first branches with a MapPlan that renames
+		// columns when they differ. This is the Cascades-native
+		// approach — column renaming is a plan-level operation, not
+		// an executor band-aid.
+		firstCols := physicalPlanColumnNames(childPlans[0])
+		if len(firstCols) > 0 {
+			for i := 1; i < len(childPlans); i++ {
+				branchCols := physicalPlanColumnNames(childPlans[i])
+				if len(branchCols) == len(firstCols) && !colNamesEqual(branchCols, firstCols) {
+					childPlans[i] = plans.NewRecordQueryMapPlan(
+						childPlans[i],
+						columnRenameValue(branchCols, firstCols),
+					)
+				}
+			}
 		}
 
 		unionPlan := plans.NewRecordQueryUnorderedUnionPlan(childPlans)
@@ -97,4 +116,81 @@ func (m *logicalUnionMatcher) BindMatches(outer *matching.PlannerBindings, in an
 // partition lists. Delegates to the generic CrossProduct.
 func crossProductPartitions(childPartitions [][]*PlanPartition) [][]*PlanPartition {
 	return CrossProduct(childPartitions)
+}
+
+// physicalPlanColumnNames extracts column names from a physical plan
+// by unwrapping through inner plans to find a ProjectionPlan or
+// MapPlan with extractable column info. Returns nil when names can't
+// be determined.
+func physicalPlanColumnNames(p plans.RecordQueryPlan) []string {
+	type inner interface{ GetInner() plans.RecordQueryPlan }
+	for {
+		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
+			projs := proj.GetProjections()
+			names := make([]string, len(projs))
+			aliases := proj.GetAliases()
+			for i, v := range projs {
+				if i < len(aliases) && aliases[i] != "" {
+					names[i] = strings.ToUpper(aliases[i])
+				} else {
+					names[i] = unionProjectionColumnName(v)
+				}
+			}
+			return names
+		}
+		if mp, ok := p.(*plans.RecordQueryMapPlan); ok {
+			if rv := mp.GetResultValue(); rv != nil {
+				if rcv, ok := rv.(*values.RecordConstructorValue); ok {
+					names := make([]string, len(rcv.Fields))
+					for i, f := range rcv.Fields {
+						names[i] = strings.ToUpper(f.Name)
+					}
+					return names
+				}
+			}
+		}
+		if ip, ok := p.(inner); ok {
+			p = ip.GetInner()
+		} else {
+			break
+		}
+	}
+	if rt, ok := p.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
+		names := make([]string, len(rt.Fields))
+		for i, f := range rt.Fields {
+			names[i] = strings.ToUpper(f.Name)
+		}
+		return names
+	}
+	return nil
+}
+
+func unionProjectionColumnName(v values.Value) string {
+	if fv, ok := v.(*values.FieldValue); ok {
+		return strings.ToUpper(fv.Field)
+	}
+	return strings.ToUpper(values.ExplainValue(v))
+}
+
+func colNamesEqual(a, b []string) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// columnRenameValue builds a RecordConstructorValue that renames
+// columns positionally from src to dst names. When evaluated against
+// a datum map, each field reads src[i] and writes to dst[i].
+func columnRenameValue(srcCols, dstCols []string) *values.RecordConstructorValue {
+	fields := make([]values.RecordConstructorField, len(dstCols))
+	for i := range dstCols {
+		fields[i] = values.RecordConstructorField{
+			Name:  dstCols[i],
+			Value: &values.FieldValue{Field: srcCols[i]},
+		}
+	}
+	return values.NewRecordConstructorValue(fields...)
 }

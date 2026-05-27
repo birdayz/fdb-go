@@ -31,8 +31,16 @@ func (r *RemoveProjectionRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Find the inner physical plan and yield it directly, removing
-	// the projection layer.
+	// Java's RemoveProjectionRule removes projections over physical
+	// plans. Only safe when the projection is an identity mapping
+	// (all columns passed through unchanged). A projection that
+	// selects a subset of columns (like SELECT status FROM orders)
+	// changes the output shape and MUST NOT be removed — it affects
+	// DISTINCT, GROUP BY, and other shape-dependent operators above.
+	if !projW.plan.IsIdentity() {
+		return
+	}
+
 	innerExpr := findPhysicalExpr(innerRef)
 	if innerExpr == nil {
 		return
