@@ -120,58 +120,6 @@ func FuzzInExplode_NoPanic(f *testing.F) {
 	})
 }
 
-// FuzzNWayIntersection_NoPanic exercises the IndexIntersectionRule with
-// varying numbers of predicates and candidates (up to 5 each) to
-// ensure the N-way enumeration doesn't panic or produce invalid state.
-func FuzzNWayIntersection_NoPanic(f *testing.F) {
-	f.Add(byte(2), byte(2), byte(0))
-	f.Add(byte(5), byte(5), byte(42))
-	f.Add(byte(1), byte(3), byte(255))
-	f.Add(byte(4), byte(1), byte(128))
-
-	colPool := []string{"A", "B", "C", "D", "E", "F", "G"}
-
-	f.Fuzz(func(t *testing.T, numPreds, numCands, seed byte) {
-		nPreds := int(numPreds%5) + 2
-		nCands := int(numCands%5) + 1
-
-		var candidates []MatchCandidate
-		for c := 0; c < nCands; c++ {
-			col := colPool[(int(seed)+c)%len(colPool)]
-			alias := values.UniqueCorrelationIdentifier()
-			candidates = append(candidates, NewValueIndexScanMatchCandidate(
-				"idx_"+col,
-				[]string{"T"},
-				[]string{col},
-				[]values.CorrelationIdentifier{alias},
-				values.UnknownType,
-				false,
-				nil,
-			))
-		}
-		ctx := &indexTestPlanContext{candidates: candidates}
-
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-		scanRef := expressions.InitialOf(scan)
-		q := expressions.ForEachQuantifier(scanRef)
-
-		preds := make([]predicates.QueryPredicate, nPreds)
-		for i := range preds {
-			col := colPool[(int(seed)+i)%len(colPool)]
-			preds[i] = predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: col, Typ: values.TypeInt},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)),
-			)
-		}
-
-		filter := expressions.NewLogicalFilterExpression(preds, q)
-		filterRef := expressions.InitialOf(filter)
-
-		rule := NewIndexIntersectionRule()
-		FireExpressionRuleWithMemo(rule, filterRef, ctx, nil)
-	})
-}
-
 // FuzzOrderedIndexScan_NoPanic exercises the OrderedIndexScanRule with
 // random sort key / index column combinations to ensure no panics.
 func FuzzOrderedIndexScan_NoPanic(f *testing.F) {

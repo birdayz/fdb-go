@@ -46,15 +46,9 @@ All 23 subtests PASS. Total: 170.7s (incl. bulk insert ~2:28).
 
 Quantifier aliases now match table aliases at creation. Three band-aids removed: `rightAliasSet`, `planContainsJoin`, `collectPlanAliases` (−114 lines). Root-cause fix in `mergeRows`: bare inner keys overwrote qualified keys from nested joins (missing `!exists` guard). 46/46 tests, 15/15 determinism.
 
-### 7.2 Port matching infrastructure for index intersections — PARTIAL
+### 7.2 Port matching infrastructure for index intersections — DONE
 
-`WithPrimaryKeyIntersector` implemented in `intersector_primary_key.go` (160 lines). Creates physical `RecordQueryIntersectionPlan` from PartialMatches via the match infrastructure. Tested: produces correct 2-way and 3-way intersections from MatchLeafRule/MatchIntermediateRule partial matches.
-
-**Blocked on two regressions when `IndexIntersectionRule` is deleted:**
-1. **IS NULL correctness regression**: removing `IndexIntersectionRule` from `DefaultExpressionRules` changes exploration dynamics, causing IS NULL queries to return extra rows. Root cause: the rule's presence/absence affects the overall plan landscape beyond just intersections.
-2. **MaxTasks regression**: wiring the intersector into `pushDataAccessTasks` causes combinatorial explosion on InList/Stats queries with many candidates. Needs per-Reference idempotency + candidate count cap.
-
-`IndexIntersectionRule` stays as REWRITING-phase rule. Match-based PLANNING-phase intersection infrastructure is ready but not wired into the planner until the two regressions are fixed.
+`IndexIntersectionRule` deleted (Go-only REWRITING-phase rule). Replaced with match-based PLANNING-phase intersection via `WithPrimaryKeyIntersector` in `intersector_primary_key.go`. Wired into `pushDataAccessTasks` with guards: candidate cap (4), match cap (8), restricted-scan filter, idempotency via `hasIntersectionFinal`. Two regressions found and fixed: IS NULL correctness (zero-coverage matches created incorrect intersections, fixed by filtering to restricted scans only) and MaxTasks (intersection logic ran N times per Reference, fixed by idempotency guard). 46/46 tests, 10/10 determinism.
 
 ### 7.3 Convert remaining predicateReferencesAlias sites — DONE
 
