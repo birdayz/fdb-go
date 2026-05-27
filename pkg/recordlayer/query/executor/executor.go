@@ -191,6 +191,13 @@ func executeScan(
 		// When the PK uses RecordTypeKey() as its first component, FDB
 		// keys are prefixed with the record type discriminator. Prepend
 		// it so the scan range matches the actual key structure.
+		//
+		// After prepending, constrain TreeStart/TreeEnd endpoints to
+		// the record-type prefix. Without this, an inequality like
+		// order_id > 0 with HighEndpoint=TreeEnd would scan past
+		// this record type into other record types' key ranges —
+		// the subspace contains ALL record types interleaved by their
+		// RecordTypeKey prefix.
 		types := p.GetRecordTypes()
 		if len(types) == 1 {
 			md := store.GetMetaData()
@@ -198,6 +205,16 @@ func executeScan(
 			if rt != nil && rt.PrimaryKey != nil && recordlayer.KeyExpressionHasRecordTypePrefix(rt.PrimaryKey) {
 				rtk := rt.GetRecordTypeKey()
 				tupleRange = tupleRange.Prepend(tuple.Tuple{rtk})
+				// Clamp unbounded endpoints to the record-type prefix so
+				// the scan stays within this type's key range.
+				if tupleRange.HighEndpoint == recordlayer.EndpointTypeTreeEnd {
+					tupleRange.High = tuple.Tuple{rtk}
+					tupleRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
+				}
+				if tupleRange.LowEndpoint == recordlayer.EndpointTypeTreeStart {
+					tupleRange.Low = tuple.Tuple{rtk}
+					tupleRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
+				}
 			}
 		}
 
