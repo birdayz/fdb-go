@@ -33,13 +33,14 @@ import (
 //
 // The planner is single-threaded (Java's is too).
 type Planner struct {
-	// stack MUST be LIFO. The bottom-up exploration invariant —
-	// children-before-parent — depends on stack-pop returning the
-	// most-recently-pushed Task. ExploreReferenceTask pushes the
-	// SaturationCheckTask FIRST (deepest), then per-rule
-	// TransformReferenceTasks, then per-member ExploreExpressionTasks
-	// (topmost). LIFO pop order: ExploreExpression runs first
-	// (descends to leaves), then rules fire, then saturation check.
+	// stack MUST be LIFO. Two task architectures share it:
+	// - Plan() uses unified tasks: InitiatePlannerPhaseTask →
+	//   ExploreGroupTask/OptimizeGroupTask → ExploreExprTask/
+	//   TransformExprTask/TransformImplTask/OptimizeInputsTask.
+	// - Explore() uses legacy tasks: ExploreReferenceTask →
+	//   SaturationCheckTask/TransformReferenceTask.
+	// Both depend on LIFO pop order for bottom-up exploration
+	// (children before parents).
 	stack []Task
 	rules []ExpressionRule
 	ctx   PlanContext
@@ -286,26 +287,18 @@ func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {
 	return p
 }
 
-// Plan runs the full EXPLORE → OPTIMIZE pipeline on `rootRef` and
+// Plan runs the unified two-phase REWRITING → PLANNING pipeline and
 // returns the cost-cheapest extracted plan tree.
 //
-// EXPLORE: drives the task-stack to convergence (Explore method).
-// OPTIMIZE: extracts the cheapest member at every reachable Reference
-//
-//	via the cost-aware comparator + WithChildren-or-switch
-//	rebuild path (delegates to properties.ExtractBestPlan).
-//
-// Equivalent to:
-//
-//	tasks, conv := p.Explore(rootRef)
-//	if !conv { return nil, tasks, ErrPlannerCapHit }
-//	plan, err := properties.ExtractBestPlan(rootRef)
-//	return plan, tasks, err
+// Pushes InitiatePlannerPhaseTask{PhaseRewriting} which chains to
+// PhasePlanning via the unified task types (ExploreGroupTask,
+// TransformExprTask, TransformImplTask, OptimizeGroupTask,
+// OptimizeInputsTask). After the stack drains, extracts the best
+// plan via properties.ExtractBestPlanFromSelector.
 //
 // Returns:
-//   - plan: the extracted RelationalExpression (singleton-Reference
-//     tree); nil if rootRef is empty.
-//   - tasks: total tasks executed during EXPLORE.
+//   - plan: the extracted RelationalExpression; nil if rootRef is empty.
+//   - tasks: total tasks executed across both phases.
 //   - err: nil on success; ErrPlannerCapHit if EXPLORE hit MaxTasks
 //     (no OPTIMIZE attempted); extraction error otherwise.
 func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
