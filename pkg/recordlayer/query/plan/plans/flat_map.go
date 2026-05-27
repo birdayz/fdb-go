@@ -25,7 +25,6 @@ type RecordQueryFlatMapPlan struct {
 	leftOuter                    bool
 	existsMode                   bool
 	notExistsMode                bool
-	sqlColumnOrderReversed       bool
 }
 
 func NewRecordQueryFlatMapPlan(
@@ -58,16 +57,12 @@ func (p *RecordQueryFlatMapPlan) GetResultValue() values.Value                { 
 func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 	return p.inheritOuterRecordProperties
 }
-func (p *RecordQueryFlatMapPlan) IsLeftOuter() bool              { return p.leftOuter }
-func (p *RecordQueryFlatMapPlan) SetLeftOuter(v bool)            { p.leftOuter = v }
-func (p *RecordQueryFlatMapPlan) IsExists() bool                 { return p.existsMode }
-func (p *RecordQueryFlatMapPlan) SetExists(v bool)               { p.existsMode = v }
-func (p *RecordQueryFlatMapPlan) IsNotExists() bool              { return p.notExistsMode }
-func (p *RecordQueryFlatMapPlan) SetNotExists(v bool)            { p.notExistsMode = v }
-func (p *RecordQueryFlatMapPlan) IsSQLColumnOrderReversed() bool { return p.sqlColumnOrderReversed }
-func (p *RecordQueryFlatMapPlan) SetSQLColumnOrderReversed(v bool) {
-	p.sqlColumnOrderReversed = v
-}
+func (p *RecordQueryFlatMapPlan) IsLeftOuter() bool   { return p.leftOuter }
+func (p *RecordQueryFlatMapPlan) SetLeftOuter(v bool) { p.leftOuter = v }
+func (p *RecordQueryFlatMapPlan) IsExists() bool      { return p.existsMode }
+func (p *RecordQueryFlatMapPlan) SetExists(v bool)    { p.existsMode = v }
+func (p *RecordQueryFlatMapPlan) IsNotExists() bool   { return p.notExistsMode }
+func (p *RecordQueryFlatMapPlan) SetNotExists(v bool) { p.notExistsMode = v }
 
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)

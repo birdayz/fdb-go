@@ -1523,43 +1523,18 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	if outerCols == nil && innerCols == nil {
 		return nil
 	}
-	// When outer and inner share column names (e.g. SELECT * FROM a, b
-	// where both have "id"), the merged row map's bare keys hold the
-	// inner side's values (last-write-wins in mergeRows). To read the
-	// correct values for each side, qualify bare column names with the
-	// join alias so the ResultSet reads "A.ID" / "B.ID" from the map
-	// instead of both hitting the bare "ID" key. Already-qualified
-	// columns (from a nested NLJ) are left as-is to avoid double-
-	// qualification like "B.A.ID".
+
 	outerAlias := strings.ToUpper(nlj.GetOuterAlias())
 	innerAlias := strings.ToUpper(nlj.GetInnerAlias())
 
-	// Determine SQL-level first/second based on whether the physical
-	// join direction was swapped by the ChildrenAsSet optimization.
-	// When reversed, inner columns come first in SQL order.
 	firstCols, secondCols := outerCols, innerCols
 	firstAlias, secondAlias := outerAlias, innerAlias
-	if nlj.IsSQLColumnOrderReversed() {
+	if joinResultValueIsReversed(nlj.GetResultValue(), outerAlias, innerAlias) {
 		firstCols, secondCols = innerCols, outerCols
 		firstAlias, secondAlias = innerAlias, outerAlias
 	}
 
-	cols := make([]executor.ColumnDef, 0, len(firstCols)+len(secondCols))
-	for _, c := range firstCols {
-		qual := c
-		if firstAlias != "" && !parseColRef(c.Name).isQualified() {
-			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
-		}
-		cols = append(cols, qual)
-	}
-	for _, c := range secondCols {
-		qual := c
-		if secondAlias != "" && !parseColRef(c.Name).isQualified() {
-			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
-		}
-		cols = append(cols, qual)
-	}
-	return cols
+	return qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
 }
 
 func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -1574,11 +1549,30 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 
 	firstCols, secondCols := outerCols, innerCols
 	firstAlias, secondAlias := outerAlias, innerAlias
-	if fm.IsSQLColumnOrderReversed() {
+	if joinResultValueIsReversed(fm.GetResultValue(), outerAlias, innerAlias) {
 		firstCols, secondCols = innerCols, outerCols
 		firstAlias, secondAlias = innerAlias, outerAlias
 	}
 
+	return qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
+}
+
+// joinResultValueIsReversed checks whether the plan's resultValue
+// indicates that the SQL-level column order is opposite to the physical
+// outer/inner assignment. The resultValue (a JoinMergeResultValue)
+// carries the SQL-level aliases and is invariant under commutative swap,
+// so comparing its OuterAlias against the physical outerAlias tells us
+// whether columns need to be emitted in reversed order.
+func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias string) bool {
+	jmrv, ok := rv.(*values.JoinMergeResultValue)
+	if !ok || jmrv == nil {
+		return false
+	}
+	sqlFirst := strings.ToUpper(jmrv.OuterAlias.Name())
+	return sqlFirst != "" && sqlFirst == physInnerAlias
+}
+
+func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAlias, secondAlias string) []executor.ColumnDef {
 	cols := make([]executor.ColumnDef, 0, len(firstCols)+len(secondCols))
 	for _, c := range firstCols {
 		qual := c

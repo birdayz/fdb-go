@@ -97,6 +97,24 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	leftAlias := leftQuantifier.GetAlias()
 	rightAlias := rightQuantifier.GetAlias()
 
+	// Build alias sets including both quantifier and table (source)
+	// aliases. GetCorrelatedToOfPredicate returns table aliases from
+	// FieldValue QOV nodes; quantifier aliases come from GetAlias().
+	// Both must be checked for correct predicate classification.
+	rightAliasSet := map[values.CorrelationIdentifier]struct{}{rightAlias: {}}
+	origAliases := sel.GetSourceAliases()
+	if len(origAliases) >= 2 {
+		origQ := sel.GetQuantifiers()
+		for i, q := range origQ {
+			if i < len(origAliases) && origAliases[i] != "" {
+				tableCorr := values.NamedCorrelationIdentifier(origAliases[i])
+				if q.GetAlias() == rightAlias {
+					rightAliasSet[tableCorr] = struct{}{}
+				}
+			}
+		}
+	}
+
 	// Compute transitive correlation order.
 	fullCorrelationOrder := computeTransitiveCorrelationOrder(sel.GetQuantifiers())
 
@@ -113,7 +131,13 @@ func (r *PartitionBinarySelectRule) tryPartition(
 
 	for _, pred := range sel.GetPredicates() {
 		correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
-		_, correlatedToRight := correlatedTo[rightAlias]
+		correlatedToRight := false
+		for corrID := range correlatedTo {
+			if _, ok := rightAliasSet[corrID]; ok {
+				correlatedToRight = true
+				break
+			}
+		}
 		if correlatedToRight {
 			// Predicate depends on right → must go to right.
 			rightPredicates = append(rightPredicates, pred)
@@ -188,7 +212,6 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	// have been absorbed into the sub-SelectExpressions).
 	// Propagate sourceAliases from the original Select, reordered to
 	// match the new quantifier order (left, right may be swapped).
-	origAliases := sel.GetSourceAliases()
 	var newAliases []string
 	if len(origAliases) >= 2 {
 		origQ := sel.GetQuantifiers()

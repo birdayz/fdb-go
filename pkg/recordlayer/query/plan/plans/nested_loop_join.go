@@ -20,17 +20,13 @@ import (
 // which is the underlying implementation of nested-loop joins in the
 // Record Layer.
 type RecordQueryNestedLoopJoinPlan struct {
-	outer      RecordQueryPlan
-	inner      RecordQueryPlan
-	predicates []predicates.QueryPredicate
-	joinType   JoinType
-	outerAlias string
-	innerAlias string
-	// sqlColumnOrderReversed is true when the physical outer/inner
-	// assignment was swapped relative to the SQL FROM-clause order.
-	// When true, SELECT * should emit inner columns before outer
-	// columns to match SQL semantics.
-	sqlColumnOrderReversed bool
+	outer       RecordQueryPlan
+	inner       RecordQueryPlan
+	predicates  []predicates.QueryPredicate
+	joinType    JoinType
+	outerAlias  string
+	innerAlias  string
+	resultValue values.Value
 }
 
 // JoinType distinguishes inner vs outer vs cross joins.
@@ -70,16 +66,18 @@ func NewRecordQueryNestedLoopJoinPlan(
 	joinPredicates []predicates.QueryPredicate,
 	joinType JoinType,
 	outerAlias, innerAlias string,
+	resultValue values.Value,
 ) *RecordQueryNestedLoopJoinPlan {
 	preds := make([]predicates.QueryPredicate, len(joinPredicates))
 	copy(preds, joinPredicates)
 	return &RecordQueryNestedLoopJoinPlan{
-		outer:      outer,
-		inner:      inner,
-		predicates: preds,
-		joinType:   joinType,
-		outerAlias: outerAlias,
-		innerAlias: innerAlias,
+		outer:       outer,
+		inner:       inner,
+		predicates:  preds,
+		joinType:    joinType,
+		outerAlias:  outerAlias,
+		innerAlias:  innerAlias,
+		resultValue: resultValue,
 	}
 }
 
@@ -89,22 +87,12 @@ func (p *RecordQueryNestedLoopJoinPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.outer, p.inner}
 }
 
-func (p *RecordQueryNestedLoopJoinPlan) GetOuter() RecordQueryPlan { return p.outer }
-func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan { return p.inner }
-func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType     { return p.joinType }
-func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string     { return p.outerAlias }
-func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string     { return p.innerAlias }
-
-// IsSQLColumnOrderReversed reports whether the physical outer/inner
-// assignment was swapped relative to the SQL FROM-clause order.
-func (p *RecordQueryNestedLoopJoinPlan) IsSQLColumnOrderReversed() bool {
-	return p.sqlColumnOrderReversed
-}
-
-// SetSQLColumnOrderReversed marks the plan as having reversed column order.
-func (p *RecordQueryNestedLoopJoinPlan) SetSQLColumnOrderReversed(v bool) {
-	p.sqlColumnOrderReversed = v
-}
+func (p *RecordQueryNestedLoopJoinPlan) GetOuter() RecordQueryPlan    { return p.outer }
+func (p *RecordQueryNestedLoopJoinPlan) GetInner() RecordQueryPlan    { return p.inner }
+func (p *RecordQueryNestedLoopJoinPlan) GetJoinType() JoinType        { return p.joinType }
+func (p *RecordQueryNestedLoopJoinPlan) GetOuterAlias() string        { return p.outerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetInnerAlias() string        { return p.innerAlias }
+func (p *RecordQueryNestedLoopJoinPlan) GetResultValue() values.Value { return p.resultValue }
 
 func (p *RecordQueryNestedLoopJoinPlan) GetPredicates() []predicates.QueryPredicate {
 	return p.predicates

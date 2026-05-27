@@ -125,10 +125,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			sel.GetPredicates(),
 			joinType,
 			leftAlias, rightAlias,
+			sel.GetResultValue(),
 		)
-		if sel.IsQuantifiersSwapped() {
-			joinPlan.SetSQLColumnOrderReversed(true)
-		}
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
 		call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, leftQ, rightQ))
@@ -145,30 +143,6 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			leftPlan, rightPlan, leftCorr, rightCorr,
 			leftExpr, rightExpr, joinType)
 	}
-}
-
-// findBestNonCorrelatedPhysicalExpr returns the cheapest physical member
-// that is NOT correlated to the given alias. Used by EXISTS NLJ to avoid
-// materializing a correlated inner plan (which would lock in one outer
-// row's correlation value).
-func findBestNonCorrelatedPhysicalExpr(ref *expressions.Reference, outerAlias values.CorrelationIdentifier) expressions.RelationalExpression {
-	var best expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		if isNilInnerFetch(m) {
-			continue
-		}
-		corr := m.GetCorrelatedToWithoutChildren()
-		if _, hasOuter := corr[outerAlias]; hasOuter {
-			continue
-		}
-		if best == nil || PlanningCostModelLess(m, best) {
-			best = m
-		}
-	}
-	return best
 }
 
 func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.CorrelationIdentifier) bool {
@@ -190,19 +164,27 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	joinType plans.JoinType,
 ) {
 	preds := flattenAndPredicates(sel.GetPredicates())
-	innerAliasStr := innerCorr.String()
 
-	// For multi-table inners, predicates may reference TABLE aliases
-	// inside the inner join (e.g., "O.CUST_ID") rather than the
-	// quantifier alias ("q$123"). Collect all aliases from the inner
-	// plan's scan nodes so the classifier can detect cross-scope refs.
-	innerTableAliases := collectPlanAliases(innerPlan)
+	// Build the set of aliases owned by the inner side: the inner
+	// quantifier alias plus all table aliases from join nodes inside
+	// the inner plan tree. A predicate is a join predicate if its
+	// correlation set overlaps this inner alias set.
+	innerAliases := map[values.CorrelationIdentifier]struct{}{innerCorr: {}}
+	for _, a := range collectPlanAliases(innerPlan) {
+		innerAliases[values.NamedCorrelationIdentifier(a)] = struct{}{}
+	}
 
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
-		if predicateReferencesAlias(pred, innerAliasStr) {
-			joinPreds = append(joinPreds, pred)
-		} else if referencesAnyAlias(pred, innerTableAliases) {
+		corrSet := predicates.GetCorrelatedToOfPredicate(pred)
+		isJoin := false
+		for corrID := range corrSet {
+			if _, ok := innerAliases[corrID]; ok {
+				isJoin = true
+				break
+			}
+		}
+		if isJoin {
 			joinPreds = append(joinPreds, pred)
 		} else {
 			outerPreds = append(outerPreds, pred)
@@ -229,9 +211,6 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	switch joinType {
 	case plans.JoinLeftOuter:
 		flatMapPlan.SetLeftOuter(true)
-	}
-	if sel.IsQuantifiersSwapped() {
-		flatMapPlan.SetSQLColumnOrderReversed(true)
 	}
 
 	outerQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
@@ -266,15 +245,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 	outerPlan := outerPh.GetRecordQueryPlan()
 
-	// The EXISTS NLJ materializes the inner once. If the inner plan is
-	// correlated to the outer scope (e.g., a FlatMap with a predicate
-	// referencing c.id from the EXISTS outer), materialization locks in
-	// one outer row's value. Pick a non-correlated inner when possible.
-	outerCorr := quants[0].GetAlias()
-	innerExpr := findBestNonCorrelatedPhysicalExpr(innerRef, outerCorr)
-	if innerExpr == nil {
-		innerExpr = getWinnerForOrdering(innerRef, PreserveOrdering())
-	}
+	innerExpr := getWinnerForOrdering(innerRef, PreserveOrdering())
 	if innerExpr == nil {
 		return
 	}
@@ -284,17 +255,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 	innerPlan := innerPh.GetRecordQueryPlan()
 
-	// Wrap the existential inner in FirstOrDefault — returns one row
-	// or null.
-	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(innerPlan, values.NewNullValue(values.UnknownType))
-	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
-		expressions.NamedPhysicalQuantifier(quants[1].GetAlias(), call.MemoizeExpression(innerExpr)))
-	fodRef := call.MemoizeExpression(fodWrapper)
-
 	// Separate predicates into EXISTS-related and non-EXISTS.
-	// Non-EXISTS predicates become NLJ join predicates evaluated
-	// against the merged outer+inner row; EXISTS/NOT-EXISTS drives
-	// the join type.
 	allPreds := sel.GetPredicates()
 	var regularPreds []predicates.QueryPredicate
 	negated := false
@@ -320,7 +281,6 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 
 	outerMemoRef := call.MemoizeExpression(outerExpr)
-	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), outerMemoRef)
 
 	// Extract source aliases for datum qualification.
 	aliases := sel.GetSourceAliases()
@@ -332,20 +292,58 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		innerAlias = aliases[1]
 	}
 
-	// Try FlatMap for correlated EXISTS: if a correlated predicate
-	// matches the inner table's PK or index, use a correlated scan.
-	// Residual predicates are stripped of inner alias prefix and
-	// wrapped inside the inner plan as a filter.
+	// Try correlated-scan FlatMap: if a correlated predicate matches the
+	// inner table's PK or index, use a correlated scan (fast path).
 	if len(regularPreds) > 0 && !sel.IsQuantifiersSwapped() {
 		if r.tryExistsFlatMap(call, sel, outerPlan, innerPlan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, regularPreds) {
 			return
 		}
 	}
 
-	// Fallback: NLJ with predicate filtering.
-	// Split predicates: inner-referencing go to NLJ (evaluated against
-	// merged outer+inner row), outer-only go as a filter on the outer
-	// plan (they're WHERE predicates, not join predicates).
+	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), outerMemoRef)
+
+	// When the inner contains a join (NLJ or FlatMap node), use FlatMap
+	// instead of NLJ. The NLJ materializes the inner once, but the
+	// winner plan from the inner reference may lack proper alias
+	// qualification — mergeRows produces unqualified keys and EXISTS-
+	// level predicates fail to resolve qualified references like
+	// P.CAT_ID. FlatMap re-executes per outer row with full bindings,
+	// avoiding this. Single-table inners (scans, filters on scans)
+	// are safe with NLJ because the merged row always has both sides'
+	// qualified columns.
+	if planContainsJoin(innerPlan) {
+		outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
+		innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
+
+		var fmInner plans.RecordQueryPlan = innerPlan
+		if len(regularPreds) > 0 {
+			fmInner = plans.NewRecordQueryPredicatesFilterPlan(innerPlan, regularPreds)
+		}
+
+		flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+			outerPlan, fmInner,
+			outerCorrelation, innerCorrelation,
+			sel.GetResultValue(), true,
+		)
+		switch joinType {
+		case plans.JoinExists:
+			flatMapPlan.SetExists(true)
+		case plans.JoinNotExists:
+			flatMapPlan.SetNotExists(true)
+		}
+
+		leftQ := expressions.ForEachQuantifier(outerMemoRef)
+		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+		call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+		return
+	}
+
+	// Non-correlated: NLJ with materialized inner (one-shot).
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(innerPlan, values.NewNullValue(values.UnknownType))
+	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
+		expressions.NamedPhysicalQuantifier(quants[1].GetAlias(), call.MemoizeExpression(innerExpr)))
+	fodRef := call.MemoizeExpression(fodWrapper)
+
 	var joinPreds []predicates.QueryPredicate
 	var outerOnlyPreds []predicates.QueryPredicate
 	for _, p := range regularPreds {
@@ -375,6 +373,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		joinPreds,
 		joinType,
 		outerAlias, innerAlias,
+		sel.GetResultValue(),
 	)
 
 	fodQuant := expressions.NewPhysicalQuantifier(fodRef)
@@ -484,6 +483,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		joinPreds,
 		joinType,
 		leftAlias, rightAlias,
+		sel.GetResultValue(),
 	)
 
 	// Step 2: build EXISTS semi-join on top.
@@ -507,6 +507,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		existPreds,
 		existJoinType,
 		"", existAlias,
+		nil,
 	)
 
 	// Build quantifiers for the physical wrapper. The wrapper needs
@@ -647,10 +648,6 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		case plans.JoinNotExists:
 			flatMapPlan.SetNotExists(true)
 		}
-		if sel.IsQuantifiersSwapped() {
-			flatMapPlan.SetSQLColumnOrderReversed(true)
-		}
-
 		var outerPreds, innerOnlyPreds, abovePreds []predicates.QueryPredicate
 		for pi, p := range preds {
 			if matchedPreds[pi] {
@@ -670,21 +667,18 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		if len(innerOnlyPreds) > 0 {
 			stripped := stripAliasFromPredicates(innerOnlyPreds, innerPrefix)
 			innerWithFilter := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan.GetInner(), stripped)
-			wasReversed := flatMapPlan.IsSQLColumnOrderReversed()
 			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
 				flatMapPlan.GetOuter(), innerWithFilter,
 				flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
 				flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
 			)
 			flatMapPlan.SetLeftOuter(true)
-			flatMapPlan.SetSQLColumnOrderReversed(wasReversed)
 		}
 
 		if len(outerPreds) > 0 {
 			stripped := stripAliasFromPredicates(outerPreds, outerPrefix)
 			outerPlan := flatMapPlan.GetOuter()
 			outerPlan = tryPushPredicatesIntoScan(outerPlan, stripped, call.Context, leftAlias)
-			wasReversed := flatMapPlan.IsSQLColumnOrderReversed()
 			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
 				outerPlan, flatMapPlan.GetInner(),
 				flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
@@ -698,7 +692,6 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			case plans.JoinNotExists:
 				flatMapPlan.SetNotExists(true)
 			}
-			flatMapPlan.SetSQLColumnOrderReversed(wasReversed)
 		}
 
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
@@ -779,10 +772,6 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			case plans.JoinNotExists:
 				flatMapPlan.SetNotExists(true)
 			}
-			if sel.IsQuantifiersSwapped() {
-				flatMapPlan.SetSQLColumnOrderReversed(true)
-			}
-
 			var innerOnlyResiduals, otherResiduals []predicates.QueryPredicate
 			for _, p := range preds {
 				if p == pred {
@@ -799,14 +788,12 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			if len(innerOnlyResiduals) > 0 {
 				stripped := stripAliasFromPredicates(innerOnlyResiduals, innerPrefix)
 				innerWithFilter := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan.GetInner(), stripped)
-				wasReversed := flatMapPlan.IsSQLColumnOrderReversed()
 				flatMapPlan = plans.NewRecordQueryFlatMapPlan(
 					flatMapPlan.GetOuter(), innerWithFilter,
 					flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
 					flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
 				)
 				flatMapPlan.SetLeftOuter(true)
-				flatMapPlan.SetSQLColumnOrderReversed(wasReversed)
 			}
 			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
@@ -949,10 +936,6 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			case plans.JoinNotExists:
 				flatMapPlan.SetNotExists(true)
 			}
-			if sel.IsQuantifiersSwapped() {
-				flatMapPlan.SetSQLColumnOrderReversed(true)
-			}
-
 			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
 			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 			call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
@@ -1027,14 +1010,29 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	case plans.JoinNotExists:
 		flatMapPlan.SetNotExists(true)
 	}
-	if sel.IsQuantifiersSwapped() {
-		flatMapPlan.SetSQLColumnOrderReversed(true)
-	}
-
 	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
 	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
 	return true
+}
+
+// planContainsJoin walks the plan tree and returns true if any node is
+// a NLJ or FlatMap — i.e. the plan represents a multi-table join, not
+// just a single scan or filter-on-scan.
+func planContainsJoin(p plans.RecordQueryPlan) bool {
+	if p == nil {
+		return false
+	}
+	switch p.(type) {
+	case *plans.RecordQueryNestedLoopJoinPlan, *plans.RecordQueryFlatMapPlan:
+		return true
+	}
+	for _, child := range p.GetChildren() {
+		if planContainsJoin(child) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectPlanAliases extracts join aliases from a plan tree's NLJ and
@@ -1065,15 +1063,6 @@ func collectPlanAliases(p plans.RecordQueryPlan) []string {
 		aliases = append(aliases, collectPlanAliases(child)...)
 	}
 	return aliases
-}
-
-func referencesAnyAlias(pred predicates.QueryPredicate, aliases []string) bool {
-	for _, alias := range aliases {
-		if predicateReferencesAlias(pred, alias) {
-			return true
-		}
-	}
-	return false
 }
 
 // stripAliasFromPredicates delegates to stripAliasPrefixFromPredicates
