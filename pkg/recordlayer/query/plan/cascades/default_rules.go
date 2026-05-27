@@ -69,6 +69,17 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
 		NewPushProjectionBelowJoinRule(),
+		// PullFilterAboveSortRule REMOVED: Go-only rule not in Java.
+		// Pulling Filter above Sort changes the correlation structure and
+		// caused InJoin to wrap Sort inside it, then InJoin.HintOrdering
+		// falsely claimed ordering → sort eliminated → wrong results.
+		// PushFilterThroughSortRule REMOVED: Go-only rule not in Java.
+		// Same class of issue as PullFilterAboveSortRule.
+		// PullFilterAboveProjectionRule REMOVED: Go-only rule not in Java.
+		// Pulling Filter above Projection put Filter where it couldn't
+		// find projected columns, causing resolution failures.
+		// PushFilterThroughProjectionRule REMOVED: Go-only rule not in Java.
+		// Same class of issue as PullFilterAboveProjectionRule.
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),

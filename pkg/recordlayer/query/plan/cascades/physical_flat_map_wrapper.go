@@ -40,6 +40,13 @@ func (w *physicalFlatMapWrapper) GetQuantifiers() []expressions.Quantifier {
 func (w *physicalFlatMapWrapper) CanCorrelate() bool  { return true }
 func (w *physicalFlatMapWrapper) ChildrenAsSet() bool { return false }
 
+// GetCorrelatedToWithoutChildren returns empty. Java's
+// RecordQueryFlatMapPlan returns resultValue.getCorrelatedTo() here,
+// which matters for correlated subqueries where the result value
+// references outer correlations. For current Go usage (joins only),
+// the result value's correlations are inner/outer aliases which are
+// children — excluded by the "WithoutChildren" semantics. Revisit
+// when correlated subqueries are ported.
 func (w *physicalFlatMapWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}
 }
