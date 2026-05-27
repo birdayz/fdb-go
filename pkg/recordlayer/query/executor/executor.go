@@ -959,6 +959,7 @@ func planColumnNames(p plans.RecordQueryPlan) []string {
 }
 
 func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
+	sawMap := false
 	for {
 		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
 			projs := proj.GetProjections()
@@ -973,6 +974,9 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 			}
 			return names
 		}
+		if _, ok := p.(*plans.RecordQueryMapPlan); ok {
+			sawMap = true
+		}
 		if ip, ok := p.(innerPlanAccessor); ok {
 			p = ip.GetInner()
 		} else {
@@ -986,7 +990,7 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 		}
 		return names
 	}
-	if md != nil {
+	if md != nil && !sawMap {
 		if scan, ok := p.(*plans.RecordQueryScanPlan); ok && len(scan.GetRecordTypes()) == 1 {
 			rt := md.GetRecordType(scan.GetRecordTypes()[0])
 			if rt != nil && rt.Descriptor != nil {

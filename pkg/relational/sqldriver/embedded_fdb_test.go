@@ -3231,9 +3231,13 @@ func TestFDB_UnionAllDifferentColumnNames(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	_, err = db.ExecContext(ctx, `INSERT INTO a VALUES (1, 10), (2, 20)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO a VALUES (1, 10)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO b VALUES (1, 100), (2, 200)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO a VALUES (2, 20)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO b VALUES (1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO b VALUES (2, 200)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// Test 1: Simple UNION ALL with different column names, no ORDER BY.
