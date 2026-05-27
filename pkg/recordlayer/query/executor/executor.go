@@ -919,22 +919,25 @@ func executeUnionBuffered(
 		if err != nil {
 			return nil, err
 		}
-		if branchIdx == 0 && firstBranchKeys == nil && len(items) > 0 {
-			if m, ok := items[0].Datum.(map[string]any); ok {
-				firstBranchKeys = mapKeysOrdered(m)
+		branchKeys := planColumnNames(inner)
+		if branchIdx == 0 {
+			firstBranchKeys = branchKeys
+			if len(firstBranchKeys) == 0 && len(items) > 0 {
+				if m, ok := items[0].Datum.(map[string]any); ok {
+					firstBranchKeys = mapKeysOrdered(m)
+				}
 			}
 		}
 		if branchIdx > 0 && len(firstBranchKeys) > 0 {
-			srcKeys := planColumnNamesWithMD(inner, md)
-			if srcKeys == nil && len(items) > 0 {
+			targetKeys := firstBranchKeys
+			srcKeys := branchKeys
+			if len(srcKeys) == 0 && len(items) > 0 {
 				if m, ok := items[0].Datum.(map[string]any); ok {
 					srcKeys = mapKeysOrdered(m)
 				}
 			}
-			if srcKeys != nil {
-				for i := range items {
-					items[i] = remapUnionColumnsByPosition(items[i], srcKeys, firstBranchKeys)
-				}
+			for i := range items {
+				items[i] = remapUnionColumnsByPosition(items[i], srcKeys, targetKeys)
 			}
 		}
 		all = append(all, items...)
@@ -1001,34 +1004,9 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 
 func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
 	m, ok := qr.Datum.(map[string]any)
-	if !ok || len(srcKeys) != len(targetKeys) {
-		return qr
-	}
-	needsRemap := false
-	for i := range srcKeys {
-		if srcKeys[i] != targetKeys[i] {
-			needsRemap = true
-			break
-		}
-	}
-	if !needsRemap {
-		return qr
-	}
-	remapped := make(map[string]any, len(m))
-	for i, srcKey := range srcKeys {
-		if v, ok := m[srcKey]; ok {
-			remapped[targetKeys[i]] = v
-		}
-	}
-	return QueryResult{Datum: remapped, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
-}
-
-func remapUnionColumns(qr QueryResult, targetKeys []string) QueryResult {
-	m, ok := qr.Datum.(map[string]any)
 	if !ok {
 		return qr
 	}
-	srcKeys := mapKeysOrdered(m)
 	if len(srcKeys) != len(targetKeys) {
 		return qr
 	}

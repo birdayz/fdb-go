@@ -3206,6 +3206,95 @@ func TestFDB_UnionAll(t *testing.T) {
 	g.Expect(labels).To(gomega.ConsistOf("alpha", "beta"))
 }
 
+// TestFDB_UnionAllDifferentColumnNames verifies that UNION ALL with
+// differently-named columns across branches produces correct results.
+// The left branch's column names become the result schema, and right-
+// branch values are mapped positionally. ORDER BY on the result uses
+// the left branch's column names.
+func TestFDB_UnionAllDifferentColumnNames(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_union_diffcol")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_diffcol")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE udcol_tmpl "+
+		"CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_diffcol/s WITH TEMPLATE udcol_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_union_diffcol?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO a VALUES (1, 10), (2, 20)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO b VALUES (1, 100), (2, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Test 1: Simple UNION ALL with different column names, no ORDER BY.
+	{
+		rows, err := db.QueryContext(ctx, `SELECT v FROM a UNION ALL SELECT w FROM b`)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		var vals []int64
+		for rows.Next() {
+			var v int64
+			g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+			vals = append(vals, v)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		rows.Close()
+		sort.Slice(vals, func(i, j int) bool { return vals[i] < vals[j] })
+		g.Expect(vals).To(gomega.Equal([]int64{10, 20, 100, 200}))
+	}
+
+	// Test 2: UNION ALL with ORDER BY on left branch's column names.
+	{
+		rows, err := db.QueryContext(ctx, `SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY id, v`)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		type row struct{ id, v int64 }
+		var got []row
+		for rows.Next() {
+			var r row
+			g.Expect(rows.Scan(&r.id, &r.v)).To(gomega.Succeed())
+			got = append(got, r)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		rows.Close()
+		g.Expect(got).To(gomega.Equal([]row{
+			{1, 10},
+			{1, 100},
+			{2, 20},
+			{2, 200},
+		}))
+	}
+
+	// Test 3: ORDER BY DESC on union.
+	{
+		rows, err := db.QueryContext(ctx, `SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC`)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		type row struct{ id, v int64 }
+		var got []row
+		for rows.Next() {
+			var r row
+			g.Expect(rows.Scan(&r.id, &r.v)).To(gomega.Succeed())
+			got = append(got, r)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		rows.Close()
+		g.Expect(got).To(gomega.Equal([]row{
+			{2, 200},
+			{1, 100},
+			{2, 20},
+			{1, 10},
+		}))
+	}
+}
+
 // TestFDB_UnionDistinctRejected pins Java alignment: plain UNION
 // (without ALL) is rejected by fdb-relational with verbatim
 // "only UNION ALL is supported" because the planner has no
