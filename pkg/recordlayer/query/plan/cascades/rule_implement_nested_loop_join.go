@@ -165,26 +165,10 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 ) {
 	preds := flattenAndPredicates(sel.GetPredicates())
 
-	// Build the set of aliases owned by the inner side: the inner
-	// quantifier alias plus all table aliases from join nodes inside
-	// the inner plan tree. A predicate is a join predicate if its
-	// correlation set overlaps this inner alias set.
-	innerAliases := map[values.CorrelationIdentifier]struct{}{innerCorr: {}}
-	for _, a := range collectPlanAliases(innerPlan) {
-		innerAliases[values.NamedCorrelationIdentifier(a)] = struct{}{}
-	}
-
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
 		corrSet := predicates.GetCorrelatedToOfPredicate(pred)
-		isJoin := false
-		for corrID := range corrSet {
-			if _, ok := innerAliases[corrID]; ok {
-				isJoin = true
-				break
-			}
-		}
-		if isJoin {
+		if _, ok := corrSet[innerCorr]; ok {
 			joinPreds = append(joinPreds, pred)
 		} else {
 			outerPreds = append(outerPreds, pred)
@@ -301,42 +285,6 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 
 	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), outerMemoRef)
-
-	// When the inner contains a join (NLJ or FlatMap node), use FlatMap
-	// instead of NLJ. The NLJ materializes the inner once, but the
-	// winner plan from the inner reference may lack proper alias
-	// qualification — mergeRows produces unqualified keys and EXISTS-
-	// level predicates fail to resolve qualified references like
-	// P.CAT_ID. FlatMap re-executes per outer row with full bindings,
-	// avoiding this. Single-table inners (scans, filters on scans)
-	// are safe with NLJ because the merged row always has both sides'
-	// qualified columns.
-	if planContainsJoin(innerPlan) {
-		outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
-		innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
-
-		var fmInner plans.RecordQueryPlan = innerPlan
-		if len(regularPreds) > 0 {
-			fmInner = plans.NewRecordQueryPredicatesFilterPlan(innerPlan, regularPreds)
-		}
-
-		flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-			outerPlan, fmInner,
-			outerCorrelation, innerCorrelation,
-			sel.GetResultValue(), true,
-		)
-		switch joinType {
-		case plans.JoinExists:
-			flatMapPlan.SetExists(true)
-		case plans.JoinNotExists:
-			flatMapPlan.SetNotExists(true)
-		}
-
-		leftQ := expressions.ForEachQuantifier(outerMemoRef)
-		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-		call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
-		return
-	}
 
 	// Non-correlated: NLJ with materialized inner (one-shot).
 	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(innerPlan, values.NewNullValue(values.UnknownType))
@@ -1014,55 +962,6 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
 	return true
-}
-
-// planContainsJoin walks the plan tree and returns true if any node is
-// a NLJ or FlatMap — i.e. the plan represents a multi-table join, not
-// just a single scan or filter-on-scan.
-func planContainsJoin(p plans.RecordQueryPlan) bool {
-	if p == nil {
-		return false
-	}
-	switch p.(type) {
-	case *plans.RecordQueryNestedLoopJoinPlan, *plans.RecordQueryFlatMapPlan:
-		return true
-	}
-	for _, child := range p.GetChildren() {
-		if planContainsJoin(child) {
-			return true
-		}
-	}
-	return false
-}
-
-// collectPlanAliases extracts join aliases from a plan tree's NLJ and
-// FlatMap nodes. Used to detect cross-scope predicate references in
-// multi-table inner plans.
-func collectPlanAliases(p plans.RecordQueryPlan) []string {
-	if p == nil {
-		return nil
-	}
-	var aliases []string
-	if nlj, ok := p.(*plans.RecordQueryNestedLoopJoinPlan); ok {
-		if a := nlj.GetOuterAlias(); a != "" {
-			aliases = append(aliases, a)
-		}
-		if a := nlj.GetInnerAlias(); a != "" {
-			aliases = append(aliases, a)
-		}
-	}
-	if fm, ok := p.(*plans.RecordQueryFlatMapPlan); ok {
-		if a := fm.GetOuterAlias().Name(); a != "" {
-			aliases = append(aliases, a)
-		}
-		if a := fm.GetInnerAlias().Name(); a != "" {
-			aliases = append(aliases, a)
-		}
-	}
-	for _, child := range p.GetChildren() {
-		aliases = append(aliases, collectPlanAliases(child)...)
-	}
-	return aliases
 }
 
 // stripAliasFromPredicates delegates to stripAliasPrefixFromPredicates

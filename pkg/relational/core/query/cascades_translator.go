@@ -182,14 +182,10 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	}
 
 	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
-		outerQ := expressions.ForEachQuantifier(innerRef)
+		outerAlias := sourceAlias(f.Input)
+		outerQ := t.namedQuantifier(outerAlias, innerRef)
 		quantifiers := []expressions.Quantifier{outerQ}
 
-		// Split the predicate into non-EXISTS parts (regular predicates
-		// like c.id < 10) and EXISTS parts (ExistsPredicate nodes).
-		// Regular predicates go into the SelectExpression's predicate list
-		// directly. EXISTS predicates (ExistsPredicate or NOT(ExistsPredicate))
-		// must ALSO be included so the rule can detect EXISTS vs NOT EXISTS.
 		allPreds := splitNonExistsPredicates(f.Predicate)
 		allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 		for _, esq := range f.ExistsSubqueries {
@@ -205,7 +201,6 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 
 		var sourceAliases []string
-		outerAlias := sourceAlias(f.Input)
 		if outerAlias != "" {
 			sourceAliases = []string{outerAlias}
 			for _, esq := range f.ExistsSubqueries {
@@ -229,7 +224,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	}
 	return expressions.NewLogicalFilterExpression(
 		preds,
-		expressions.ForEachQuantifier(innerRef),
+		t.namedQuantifier(sourceAlias(f.Input), innerRef),
 	)
 }
 
@@ -280,17 +275,6 @@ func isBareFieldPredicate(p predicates.QueryPredicate) bool {
 	return isField
 }
 
-func (t *cascadesTranslator) translateLimit(l *logical.LogicalLimit) expressions.RelationalExpression {
-	innerRef := t.translateRef(l.Input)
-	if innerRef == nil {
-		return nil
-	}
-	return expressions.NewLogicalLimitExpression(
-		l.Limit, l.Offset,
-		expressions.ForEachQuantifier(innerRef),
-	)
-}
-
 func (t *cascadesTranslator) translateUnion(u *logical.LogicalUnion) expressions.RelationalExpression {
 	quantifiers := make([]expressions.Quantifier, 0, len(u.Inputs))
 	for _, branch := range u.Inputs {
@@ -326,7 +310,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	}
 	return expressions.NewLogicalSortExpression(
 		sortKeys,
-		expressions.ForEachQuantifier(innerRef),
+		t.namedQuantifier(sourceAlias(s.Input), innerRef),
 	)
 }
 
@@ -359,7 +343,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	return expressions.NewLogicalProjectionExpressionWithAliases(
 		projected,
 		p.Aliases,
-		expressions.ForEachQuantifier(innerRef),
+		t.namedQuantifier(sourceAlias(p.Input), innerRef),
 	)
 }
 
@@ -369,7 +353,7 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 		return nil
 	}
 	return expressions.NewLogicalDistinctExpression(
-		expressions.ForEachQuantifier(innerRef))
+		t.namedQuantifier(sourceAlias(d.Input), innerRef))
 }
 
 // Go extension: Java's fdb-relational 4.11.1.0 does not support GROUP BY;
@@ -415,7 +399,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	groupBy := expressions.NewGroupByExpression(
 		groupKeys,
 		aggSpecs,
-		expressions.ForEachQuantifier(innerRef),
+		t.namedQuantifier(sourceAlias(a.Input), innerRef),
 	)
 	if a.HavingPredicate == nil {
 		return groupBy
@@ -735,6 +719,14 @@ func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryP
 		return result
 	}
 	return nil
+}
+
+func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Reference) expressions.Quantifier {
+	if alias != "" {
+		return expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier(alias), ref)
+	}
+	return expressions.ForEachQuantifier(ref)
 }
 
 func sourceAlias(op logical.LogicalOperator) string {
