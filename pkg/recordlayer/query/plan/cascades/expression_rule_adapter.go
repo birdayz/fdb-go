@@ -30,10 +30,11 @@ func (a *expressionRuleAdapter) OnMatch(implCall *ImplementationRuleCall) {
 		return
 	}
 	call := &ExpressionRuleCall{
-		Bindings:  implCall.Bindings,
-		Reference: implCall.Reference,
-		Context:   implCall.Context,
-		memo:      implCall.memo,
+		Bindings:    implCall.Bindings,
+		Reference:   implCall.Reference,
+		Context:     implCall.Context,
+		Constraints: implCall.Constraints,
+		memo:        implCall.memo,
 		yieldFn: func(expr expressions.RelationalExpression) bool {
 			implCall.Yield(expr)
 			return true

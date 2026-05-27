@@ -177,11 +177,12 @@ func (t *TransformExprTask) Run(p *Planner) {
 		bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), expr)
 		for _, b := range bindings {
 			call := &ExpressionRuleCall{
-				Bindings:  b,
-				Reference: t.Ref,
-				Context:   p.ctx,
-				memo:      p.memo,
-				yieldFn:   yieldFn,
+				Bindings:    b,
+				Reference:   t.Ref,
+				Context:     p.ctx,
+				Constraints: p.constraintMap,
+				memo:        p.memo,
+				yieldFn:     yieldFn,
 			}
 			t.Rule.OnMatch(call)
 

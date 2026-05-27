@@ -46,15 +46,17 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	initialPlan := findPhysicalPlan(initialRef)
-	recursivePlan := findPhysicalPlan(recursiveRef)
-	if initialPlan == nil || recursivePlan == nil {
+	initialWinner := getWinnerForOrdering(initialRef, PreserveOrdering())
+	recursiveWinner := getWinnerForOrdering(recursiveRef, PreserveOrdering())
+	if initialWinner == nil || recursiveWinner == nil {
 		return
 	}
-
-	initialExpr := findPhysicalExpr(initialRef)
-	recursiveExpr := findPhysicalExpr(recursiveRef)
-	if initialExpr == nil || recursiveExpr == nil {
+	initPh, ok := initialWinner.(physicalPlanExpression)
+	if !ok {
+		return
+	}
+	recPh, ok := recursiveWinner.(physicalPlanExpression)
+	if !ok {
 		return
 	}
 
@@ -71,18 +73,18 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	var plan *plans.RecordQueryRecursiveDfsJoinPlan
 	if recUnion.IsDistinct() {
 		plan = plans.NewRecordQueryRecursiveDfsJoinPlanDistinct(
-			initialPlan, recursivePlan,
+			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
 			priorCorrelation, strategy,
 		)
 	} else {
 		plan = plans.NewRecordQueryRecursiveDfsJoinPlan(
-			initialPlan, recursivePlan,
+			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
 			priorCorrelation, strategy,
 		)
 	}
 
-	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialExpr))
-	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveExpr))
+	rootQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
+	childQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
 	call.Yield(newPhysicalRecursiveDfsJoinWrapper(plan, rootQ, childQ))
 }
 

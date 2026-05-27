@@ -669,11 +669,12 @@ func (p *Planner) firePlanningExprRuleOnMember(rule ExpressionRule, ref *express
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
 	for _, b := range bindings {
 		call := &ExpressionRuleCall{
-			Bindings:  b,
-			Reference: ref,
-			Context:   p.ctx,
-			memo:      p.memo,
-			yieldFn:   yieldFn,
+			Bindings:    b,
+			Reference:   ref,
+			Context:     p.ctx,
+			Constraints: p.constraintMap,
+			memo:        p.memo,
+			yieldFn:     yieldFn,
 		}
 		rule.OnMatch(call)
 	}

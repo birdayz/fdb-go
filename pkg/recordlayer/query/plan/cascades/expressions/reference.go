@@ -137,6 +137,12 @@ func (r *Reference) HasWinner(propsKey any) bool {
 	return ok
 }
 
+// GetWinners returns the winners map for iteration. Returns nil if no
+// winners are stored. Callers must not mutate the map.
+func (r *Reference) GetWinners() map[any]RelationalExpression {
+	return r.winners
+}
+
 // Insert adds e to the equivalence class if no existing member already
 // matches. Returns true if the member was inserted, false if a duplicate
 // was found.

@@ -38,6 +38,7 @@ type ExpressionRuleCall struct {
 	Bindings    *matching.PlannerBindings
 	Reference   *expressions.Reference
 	Context     PlanContext
+	Constraints *ConstraintMap
 	memo        *Memo
 	yieldedExps []expressions.RelationalExpression
 	yieldFn     func(expressions.RelationalExpression) bool
@@ -113,6 +114,17 @@ func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpres
 		return ref
 	}
 	return expressions.InitialOf(expr)
+}
+
+// GetRequestedOrderings returns the requested orderings for this
+// Reference from the constraint map, if available. Returns nil if no
+// ordering constraint is set or no constraint map is present.
+func (c *ExpressionRuleCall) GetRequestedOrderings() []*RequestedOrdering {
+	orderings, ok := Get(c.Constraints, c.Reference, RequestedOrderingConstraintKey)
+	if !ok {
+		return nil
+	}
+	return orderings
 }
 
 // Yielded returns the expressions the rule has yielded so far,

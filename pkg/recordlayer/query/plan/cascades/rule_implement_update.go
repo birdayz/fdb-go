@@ -41,18 +41,16 @@ func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
+	winner := getWinnerForOrdering(innerRef, PreserveOrdering())
+	if winner == nil {
 		return
 	}
-
-	updPlan := plans.NewRecordQueryUpdatePlan(innerPlan, upd.GetTargetRecordType(), upd.GetTransforms())
-
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
+	ph, ok := winner.(physicalPlanExpression)
+	if !ok {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+	updPlan := plans.NewRecordQueryUpdatePlan(ph.GetRecordQueryPlan(), upd.GetTargetRecordType(), upd.GetTransforms())
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 	call.Yield(NewPhysicalUpdateWrapper(updPlan, innerQ))
 }
 

@@ -45,35 +45,37 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	initialPlan := findPhysicalPlan(initialRef)
-	recursivePlan := findPhysicalPlan(recursiveRef)
-	if initialPlan == nil || recursivePlan == nil {
+	initialWinner := getWinnerForOrdering(initialRef, PreserveOrdering())
+	recursiveWinner := getWinnerForOrdering(recursiveRef, PreserveOrdering())
+	if initialWinner == nil || recursiveWinner == nil {
 		return
 	}
-
-	initialExpr := findPhysicalExpr(initialRef)
-	recursiveExpr := findPhysicalExpr(recursiveRef)
-	if initialExpr == nil || recursiveExpr == nil {
+	initPh, ok := initialWinner.(physicalPlanExpression)
+	if !ok {
+		return
+	}
+	recPh, ok := recursiveWinner.(physicalPlanExpression)
+	if !ok {
 		return
 	}
 
 	var plan *plans.RecordQueryRecursiveLevelUnionPlan
 	if recUnion.IsDistinct() {
 		plan = plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
-			initialPlan, recursivePlan,
+			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
 			recUnion.GetTempTableScanAlias(),
 			recUnion.GetTempTableInsertAlias(),
 		)
 	} else {
 		plan = plans.NewRecordQueryRecursiveLevelUnionPlan(
-			initialPlan, recursivePlan,
+			initPh.GetRecordQueryPlan(), recPh.GetRecordQueryPlan(),
 			recUnion.GetTempTableScanAlias(),
 			recUnion.GetTempTableInsertAlias(),
 		)
 	}
 
-	initQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialExpr))
-	recQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveExpr))
+	initQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
+	recQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
 	call.Yield(newPhysicalRecursiveLevelUnionWrapper(plan, initQ, recQ))
 }
 
