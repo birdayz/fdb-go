@@ -90,10 +90,13 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		leftAlias = aliases[0]
 		rightAlias = aliases[1]
 	}
+	if leftAlias == "" {
+		leftAlias = quants[0].GetAlias().Name()
+	}
+	if rightAlias == "" {
+		rightAlias = quants[1].GetAlias().Name()
+	}
 
-	// Map the expression-level JoinType to the plans-level JoinType.
-	// The expressions package defines its own JoinType to avoid a
-	// circular dependency (plans imports expressions).
 	var joinType plans.JoinType
 	switch sel.GetJoinType() {
 	case expressions.JoinLeftOuter:
@@ -104,30 +107,102 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		joinType = plans.JoinInner
 	}
 
-	// Try FlatMap path: if the inner side is a full scan and we can
-	// push an equi-join predicate into a correlated PK scan, emit a
-	// FlatMap plan (Java's RecordQueryFlatMapPlan). This turns O(N×M)
-	// into O(N×logM) via correlated index probes.
+	// Try correlated scan FlatMap first (optimization: O(N×logM)).
 	if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType) {
 		return
 	}
 
-	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		leftPlan, rightPlan,
-		sel.GetPredicates(),
-		joinType,
-		leftAlias, rightAlias,
-	)
-	// When the SelectExpression was created via WithSwappedQuantifiers
-	// (ChildrenAsSet permutation), mark the plan so column derivation
-	// can restore the original SQL FROM-clause column ordering.
-	if sel.IsQuantifiersSwapped() {
-		joinPlan.SetSQLColumnOrderReversed(true)
+	leftCorr := values.NamedCorrelationIdentifier(leftAlias)
+	rightCorr := values.NamedCorrelationIdentifier(rightAlias)
+
+	leftDepsRight := referenceIsCorrelatedTo(leftRef, quants[1].GetAlias())
+	rightDepsLeft := referenceIsCorrelatedTo(rightRef, quants[0].GetAlias())
+	canSwap := joinType != plans.JoinLeftOuter
+	hasCorrelation := leftDepsRight || rightDepsLeft
+
+	if !hasCorrelation {
+		// Uncorrelated: NLJ is correct and simpler.
+		joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
+			leftPlan, rightPlan,
+			sel.GetPredicates(),
+			joinType,
+			leftAlias, rightAlias,
+		)
+		if sel.IsQuantifiersSwapped() {
+			joinPlan.SetSQLColumnOrderReversed(true)
+		}
+		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
+		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, leftQ, rightQ))
 	}
 
-	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
-	call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, leftQ, rightQ))
+	// Correlated FlatMap: for PartitionBinarySelectRule output where
+	// predicates are absorbed into sub-Selects creating correlation.
+	if leftDepsRight && !rightDepsLeft && canSwap {
+		r.yieldGeneralFlatMap(call, sel,
+			rightPlan, leftPlan, rightCorr, leftCorr,
+			rightExpr, leftExpr, joinType)
+	} else if rightDepsLeft && !leftDepsRight {
+		r.yieldGeneralFlatMap(call, sel,
+			leftPlan, rightPlan, leftCorr, rightCorr,
+			leftExpr, rightExpr, joinType)
+	}
+}
+
+func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.CorrelationIdentifier) bool {
+	for _, m := range ref.AllMembers() {
+		corr := m.GetCorrelatedToWithoutChildren()
+		if _, ok := corr[targetAlias]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	outerPlan, innerPlan plans.RecordQueryPlan,
+	outerCorr, innerCorr values.CorrelationIdentifier,
+	outerExpr, innerExpr expressions.RelationalExpression,
+	joinType plans.JoinType,
+) {
+	preds := flattenAndPredicates(sel.GetPredicates())
+	innerAliasStr := innerCorr.String()
+	var outerPreds, joinPreds []predicates.QueryPredicate
+	for _, pred := range preds {
+		if predicateReferencesAlias(pred, innerAliasStr) {
+			joinPreds = append(joinPreds, pred)
+		} else {
+			outerPreds = append(outerPreds, pred)
+		}
+	}
+
+	var innerWrapped plans.RecordQueryPlan = innerPlan
+	if len(joinPreds) > 0 {
+		innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			innerPlan, joinPreds, innerCorr)
+	}
+
+	var outerWrapped plans.RecordQueryPlan = outerPlan
+	if len(outerPreds) > 0 {
+		outerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			outerPlan, outerPreds, outerCorr)
+	}
+
+	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+		outerWrapped, innerWrapped,
+		outerCorr, innerCorr,
+		sel.GetResultValue(), false,
+	)
+	switch joinType {
+	case plans.JoinLeftOuter:
+		flatMapPlan.SetLeftOuter(true)
+	}
+
+	outerQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
 }
 
 // implementExistentialSelect handles a SelectExpression with a

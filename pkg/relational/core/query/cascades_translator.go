@@ -541,8 +541,15 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	if rightRef == nil {
 		return nil
 	}
-	leftQ := expressions.ForEachQuantifier(leftRef)
-	rightQ := expressions.ForEachQuantifier(rightRef)
+	leftAlias := sourceAlias(left)
+	rightAlias := sourceAlias(right)
+
+	// Use named quantifiers so aliases match the predicate QOV
+	// correlations created by the SQL resolver.
+	leftQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(leftAlias), leftRef)
+	rightQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(rightAlias), rightRef)
 
 	var preds []predicates.QueryPredicate
 	if j.OnPredicate != nil {
@@ -551,10 +558,6 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		}
 	}
 
-	leftAlias := sourceAlias(left)
-	rightAlias := sourceAlias(right)
-
-	// Map logical join kind to the expressions-level JoinType.
 	var joinType expressions.JoinType
 	switch kind {
 	case logical.JoinLeft:
@@ -614,13 +617,16 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		return nil
 	}
 
-	leftQ := expressions.ForEachQuantifier(leftRef)
-	rightQ := expressions.ForEachQuantifier(rightRef)
+	leftAlias := sourceAlias(left)
+	rightAlias := sourceAlias(right)
+
+	leftQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(leftAlias), leftRef)
+	rightQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(rightAlias), rightRef)
 	quantifiers := []expressions.Quantifier{leftQ, rightQ}
 
-	// Combine join ON predicates + filter WHERE predicates. Flatten
-	// any top-level AND so the NLJ rule can split join predicates
-	// from EXISTS predicates at the individual predicate level.
+	// Combine join ON predicates + filter WHERE predicates.
 	var allPreds []predicates.QueryPredicate
 	if j.OnPredicate != nil {
 		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
@@ -648,8 +654,6 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 	}
 
-	leftAlias := sourceAlias(left)
-	rightAlias := sourceAlias(right)
 	sourceAliases := []string{leftAlias, rightAlias}
 	for _, esq := range f.ExistsSubqueries {
 		sourceAliases = append(sourceAliases, sourceAlias(esq.Plan))

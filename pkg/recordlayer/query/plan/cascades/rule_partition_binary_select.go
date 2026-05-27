@@ -186,21 +186,32 @@ func (r *PartitionBinarySelectRule) tryPartition(
 
 	// Build the outer SelectExpression with no predicates (all predicates
 	// have been absorbed into the sub-SelectExpressions).
-	outerBuilder := NewGraphExpansionBuilder()
-	outerBuilder.AddQuantifier(newLeftQuantifier)
-	outerBuilder.AddQuantifier(newRightQuantifier)
-
-	outerSealed := outerBuilder.Build().Seal()
-	newSelectExpr := outerSealed.BuildSelectWithResultValue(sel.GetResultValue())
-	if sel.GetJoinType() != expressions.JoinInner {
-		newSelectExpr = expressions.NewSelectExpressionWithJoinType(
-			sel.GetResultValue(),
-			newSelectExpr.GetQuantifiers(),
-			newSelectExpr.GetPredicates(),
-			newSelectExpr.GetSourceAliases(),
-			sel.GetJoinType(),
-		)
+	// Propagate sourceAliases from the original Select, reordered to
+	// match the new quantifier order (left, right may be swapped).
+	origAliases := sel.GetSourceAliases()
+	var newAliases []string
+	if len(origAliases) >= 2 {
+		origQ := sel.GetQuantifiers()
+		am := map[values.CorrelationIdentifier]string{}
+		for i, q := range origQ {
+			if i < len(origAliases) {
+				am[q.GetAlias()] = origAliases[i]
+			}
+		}
+		la := am[leftQuantifier.GetAlias()]
+		ra := am[rightQuantifier.GetAlias()]
+		if la != "" && ra != "" {
+			newAliases = []string{la, ra}
+		}
 	}
+
+	newSelectExpr := expressions.NewSelectExpressionWithJoinType(
+		sel.GetResultValue(),
+		[]expressions.Quantifier{newLeftQuantifier, newRightQuantifier},
+		nil,
+		newAliases,
+		sel.GetJoinType(),
+	)
 
 	call.Yield(newSelectExpr)
 }
