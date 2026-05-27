@@ -107,10 +107,10 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		joinType = plans.JoinInner
 	}
 
-	// Try correlated scan FlatMap first (optimization: O(N×logM)).
-	if r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType) {
-		return
-	}
+	// Correlated scan FlatMap: O(N×logM) via correlated PK/index probes.
+	// Yield as an alternative — do NOT early-return. The cost model
+	// compares this against the NLJ below and picks the better plan.
+	r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType)
 
 	leftCorr := values.NamedCorrelationIdentifier(leftAlias)
 	rightCorr := values.NamedCorrelationIdentifier(rightAlias)
@@ -121,7 +121,9 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	hasCorrelation := leftDepsRight || rightDepsLeft
 
 	if !hasCorrelation {
-		// Uncorrelated: NLJ is correct and simpler.
+		// NLJ: materialize inner once, cross-join with predicate filter.
+		// Better than FlatMap for non-indexed joins (1 scan vs N scans).
+		// The cost model picks FlatMap+index when available.
 		joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
 			leftPlan, rightPlan,
 			sel.GetPredicates(),
