@@ -121,13 +121,19 @@ func TestReference_InsertFinal_Dedup(t *testing.T) {
 	}
 }
 
-func TestReference_InsertFinal_AlsoInMembers(t *testing.T) {
+func TestReference_InsertFinal_NotInExploratoryMembers(t *testing.T) {
 	t.Parallel()
 	r := &Reference{}
 	e := &stubExpr{name: "a"}
 	r.InsertFinal(e)
-	if len(r.Members()) != 1 || r.Members()[0] != e {
-		t.Fatalf("InsertFinal should also add to Members, got %v", r.Members())
+	if len(r.Members()) != 0 {
+		t.Fatalf("InsertFinal should NOT add to exploratory Members, got %v", r.Members())
+	}
+	if len(r.FinalMembers()) != 1 || r.FinalMembers()[0] != e {
+		t.Fatalf("InsertFinal should add to FinalMembers, got %v", r.FinalMembers())
+	}
+	if len(r.AllMembers()) != 1 || r.AllMembers()[0] != e {
+		t.Fatalf("AllMembers should include final, got %v", r.AllMembers())
 	}
 }
 

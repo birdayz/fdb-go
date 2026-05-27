@@ -74,7 +74,6 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
-	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
@@ -153,7 +152,6 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
-	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).

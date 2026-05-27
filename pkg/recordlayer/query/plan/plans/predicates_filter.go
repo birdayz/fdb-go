@@ -20,6 +20,7 @@ import (
 type RecordQueryPredicatesFilterPlan struct {
 	inner      RecordQueryPlan
 	predicates []predicates.QueryPredicate
+	innerAlias values.CorrelationIdentifier
 }
 
 // NewRecordQueryPredicatesFilterPlan constructs a predicates filter
@@ -31,8 +32,26 @@ func NewRecordQueryPredicatesFilterPlan(inner RecordQueryPlan, preds []predicate
 	}
 }
 
+// NewRecordQueryPredicatesFilterPlanWithAlias constructs a predicates
+// filter that binds the current row as a correlation under innerAlias
+// before evaluating predicates. Mirrors Java's evalFilter which calls
+// context.withBinding(CORRELATION, getInner().getAlias(), queryResult).
+func NewRecordQueryPredicatesFilterPlanWithAlias(inner RecordQueryPlan, preds []predicates.QueryPredicate, alias values.CorrelationIdentifier) *RecordQueryPredicatesFilterPlan {
+	return &RecordQueryPredicatesFilterPlan{
+		inner:      inner,
+		predicates: append([]predicates.QueryPredicate(nil), preds...),
+		innerAlias: alias,
+	}
+}
+
 // GetInner returns the wrapped inner plan.
 func (p *RecordQueryPredicatesFilterPlan) GetInner() RecordQueryPlan { return p.inner }
+
+// GetInnerAlias returns the correlation alias under which the current
+// row is bound during predicate evaluation. Zero value means no binding.
+func (p *RecordQueryPredicatesFilterPlan) GetInnerAlias() values.CorrelationIdentifier {
+	return p.innerAlias
+}
 
 // GetPredicates returns the predicate list (read-only).
 func (p *RecordQueryPredicatesFilterPlan) GetPredicates() []predicates.QueryPredicate {

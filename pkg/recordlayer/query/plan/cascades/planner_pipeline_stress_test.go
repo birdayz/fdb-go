@@ -141,7 +141,6 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 	}
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 	implRules := DefaultImplementationRules()
 	ctx := NewPlanContextFromIndexDefs(indexes)
 
@@ -292,7 +291,6 @@ func FuzzPipeline_NoPanic(f *testing.F) {
 	f.Add(make([]byte, 16))
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 	implRules := DefaultImplementationRules()
 
 	f.Fuzz(func(t *testing.T, b []byte) {

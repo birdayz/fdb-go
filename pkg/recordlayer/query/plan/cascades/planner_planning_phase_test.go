@@ -272,7 +272,7 @@ func TestPlanner_PlanningPhase_PropertiesComputedOnReference(t *testing.T) {
 // 6. Planner without implementation rules skips PLANNING phase.
 // ---------------------------------------------------------------------------
 
-func TestPlanner_PlanningPhase_SkippedWhenNoImplRules(t *testing.T) {
+func TestPlanner_PlanningPhase_AlwaysRuns(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -283,17 +283,18 @@ func TestPlanner_PlanningPhase_SkippedWhenNoImplRules(t *testing.T) {
 		),
 	)
 
-	// No WithImplementationRules — PLANNING phase is skipped.
+	// No WithImplementationRules — PLANNING still runs (data access,
+	// plan properties, etc. are always computed).
 	p := NewPlanner(allRules(), nil)
 	_, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	// PlanProperties should NOT be set since PLANNING phase was skipped.
+	// PLANNING always computes plan properties on leaf References.
 	pm := GetRefPlanPropertiesMap(scanRef)
-	if pm != nil {
-		t.Fatal("PlanProperties should be nil when PLANNING phase is skipped")
+	if pm == nil {
+		t.Fatal("PlanProperties should be set — PLANNING always runs")
 	}
 }
 

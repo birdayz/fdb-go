@@ -1,8 +1,10 @@
 package cascades
 
 import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // MergeProjectionAndFetchRule removes both a LogicalProjectionExpression
@@ -88,12 +90,17 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	if idxW, ok := fetchInnerExpr.(*physicalIndexScanWrapper); ok && !idxW.covering {
 		coveredPlan := idxW.plan.WithCovering(idxW.columnNames)
-		call.Yield(&physicalIndexScanWrapper{
+		coveringIdxW := &physicalIndexScanWrapper{
 			plan:        coveredPlan,
 			columnNames: idxW.columnNames,
 			unique:      idxW.unique,
 			covering:    true,
-		})
+		}
+		coveringRef := expressions.InitialOf(coveringIdxW)
+		innerQ := expressions.ForEachQuantifier(coveringRef)
+		wrapPlan := plans.NewRecordQueryProjectionPlanWithAliases(
+			projectedValues, projW.plan.GetAliases(), coveredPlan)
+		call.Yield(NewPhysicalProjectionWrapper(wrapPlan, innerQ))
 		return
 	}
 	call.Yield(fetchInnerExpr)

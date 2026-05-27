@@ -258,7 +258,6 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
@@ -304,7 +303,6 @@ func TestOptimizeReferenceTask_StampsOrderingWinner(t *testing.T) {
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())

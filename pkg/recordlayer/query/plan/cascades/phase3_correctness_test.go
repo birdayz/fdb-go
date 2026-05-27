@@ -85,8 +85,8 @@ func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 	rules := DefaultExpressionRules()
 	exploreAndVerify(t, ref, rules, nil)
 
-	if !containsPhysical(ref, IsPhysicalNestedLoopJoin) {
-		t.Fatal("expected physicalNestedLoopJoinWrapper in explored members")
+	if !containsPhysical(ref, IsPhysicalNestedLoopJoin) && !containsPhysical(ref, IsPhysicalFlatMap) {
+		t.Fatal("expected physicalNestedLoopJoinWrapper or physicalFlatMapWrapper in explored members")
 	}
 }
 

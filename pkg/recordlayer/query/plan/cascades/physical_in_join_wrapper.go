@@ -90,16 +90,11 @@ func (w *physicalInJoinWrapper) HintCost(child []properties.Cost, _ properties.S
 }
 
 func (w *physicalInJoinWrapper) HintOrdering() properties.Ordering {
-	ref := w.innerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.Ordering{}
-	}
-	for _, m := range ref.AllMembers() {
-		o := properties.EstimateOrdering(m)
-		if o.IsKnown {
-			return o
-		}
-	}
+	// InJoin iterates IN-values one at a time. Each batch preserves
+	// the inner scan's ordering, but the GLOBAL result ordering depends
+	// on the IN-source order, not the inner scan. Don't claim the
+	// inner's ordering — it would cause sort elimination to remove a
+	// necessary ORDER BY.
 	return properties.Ordering{}
 }
 

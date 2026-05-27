@@ -299,7 +299,6 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
-	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	stats := g.fetchTableStatistics(ctx, md)
 	planner := cascades.NewPlanner(rules, planCtx).
@@ -586,7 +585,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
-	rules = append(rules, cascades.MatchingRules()...)
 	planCtx := buildCascadesPlanContext(md)
 	dmlStats := g.fetchTableStatistics(ctx, md)
 	planningRules := append(cascades.BatchAExpressionRules(), cascades.DMLImplementationRules()...)

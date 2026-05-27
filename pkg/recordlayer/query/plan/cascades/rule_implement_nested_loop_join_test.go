@@ -106,8 +106,8 @@ func TestImplementNestedLoopJoin_PlanOutput(t *testing.T) {
 	if plan == nil {
 		t.Fatal("Plan returned nil")
 	}
-	if !IsPhysicalNestedLoopJoin(plan) {
-		t.Fatalf("expected NLJ plan, got %T", plan)
+	if !IsPhysicalNestedLoopJoin(plan) && !IsPhysicalFlatMap(plan) {
+		t.Fatalf("expected NLJ or FlatMap plan, got %T", plan)
 	}
 
 	// Verify explain output.

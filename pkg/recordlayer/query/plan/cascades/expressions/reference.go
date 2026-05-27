@@ -67,9 +67,16 @@ func (r *Reference) Members() []RelationalExpression {
 	return r.members
 }
 
-// AllMembers returns all members of this Reference.
+// AllMembers returns all members of this Reference — both exploratory
+// and final. Mirrors Java's getAllMembers() which unions the two sets.
 func (r *Reference) AllMembers() []RelationalExpression {
-	return r.members
+	if len(r.finalMembers) == 0 {
+		return r.members
+	}
+	all := make([]RelationalExpression, 0, len(r.members)+len(r.finalMembers))
+	all = append(all, r.members...)
+	all = append(all, r.finalMembers...)
+	return all
 }
 
 // GetBest returns the cheapest member of this Reference under the
@@ -236,6 +243,12 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 
 // Stage returns the current planner stage.
 func (r *Reference) Stage() PlannerStage { return r.plannerStage }
+
+// SetStage updates the planner stage without clearing members. Used
+// when a Reference created ad-hoc during a phase (by rule yields)
+// has no finals to promote — its members are already valid at the
+// target stage level.
+func (r *Reference) SetStage(s PlannerStage) { r.plannerStage = s }
 
 // NeedsExploration returns true if the Reference has never been explored
 // or if new exploratory members were added since the last round.

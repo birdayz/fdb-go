@@ -49,7 +49,11 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		if targetStage.Precedes(refStage) {
 			return
 		}
-		t.Ref.AdvancePlannerStage(targetStage)
+		if len(t.Ref.FinalMembers()) > 0 {
+			t.Ref.AdvancePlannerStage(targetStage)
+		} else {
+			t.Ref.SetStage(targetStage)
+		}
 	}
 
 	const maxRoundsPerRef = 10
@@ -63,11 +67,16 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 
 	p.push(&ExploreGroupTask{Phase: t.Phase, Ref: t.Ref})
 
-	for _, expr := range t.Ref.FinalMembers() {
-		p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
-		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
-	}
-	for _, expr := range t.Ref.Members() {
+	// Only explore NEW members added since the last round. On the
+	// first round (explMemberCount=0), this explores all members.
+	// On subsequent rounds, only newly-added members are explored.
+	// This matches Java's convergence behavior and avoids exponential
+	// task growth from re-exploring already-explored members.
+	startIdx := t.Ref.ExplMemberCount()
+
+	members := t.Ref.Members()
+	for i := startIdx; i < len(members); i++ {
+		expr := members[i]
 		if t.Phase == PhasePlanning {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
@@ -164,22 +173,37 @@ func (t *TransformExprTask) Run(p *Planner) {
 		}
 	}
 
-	bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
-	for _, b := range bindings {
-		call := &ExpressionRuleCall{
-			Bindings:  b,
-			Reference: t.Ref,
-			Context:   p.ctx,
-			memo:      p.memo,
-			yieldFn:   yieldFn,
-		}
-		t.Rule.OnMatch(call)
-
-		for _, newExpr := range call.Yielded() {
-			if t.Phase == PhasePlanning {
-				p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
+	fireExprRule := func(expr expressions.RelationalExpression) {
+		bindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), expr)
+		for _, b := range bindings {
+			call := &ExpressionRuleCall{
+				Bindings:  b,
+				Reference: t.Ref,
+				Context:   p.ctx,
+				memo:      p.memo,
+				yieldFn:   yieldFn,
 			}
-			p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
+			t.Rule.OnMatch(call)
+
+			for _, newExpr := range call.Yielded() {
+				if t.Phase == PhasePlanning {
+					p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
+				}
+				p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
+			}
+		}
+	}
+
+	fireExprRule(t.Expr)
+
+	if t.Phase == PhasePlanning {
+		if sel, ok := t.Expr.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
+			qs := sel.GetQuantifiers()
+			if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
+				qs[0].Kind() == expressions.QuantifierForEach &&
+				qs[1].Kind() == expressions.QuantifierForEach {
+				fireExprRule(sel.WithSwappedQuantifiers())
+			}
 		}
 	}
 }
@@ -233,14 +257,33 @@ func (t *TransformImplTask) Run(p *Planner) {
 	}
 
 	// Also fire on swapped quantifiers for join commutativity.
+	// The swapped expression is NOT a member of the Reference, so
+	// it must bypass the ContainsExactly guard. Fire the rule
+	// directly on the swapped expression.
 	if sel, ok := t.Expr.(*expressions.SelectExpression); ok && sel.ChildrenAsSet() {
 		qs := sel.GetQuantifiers()
 		if len(qs) >= 2 && sel.GetJoinType() != expressions.JoinLeftOuter &&
 			qs[0].Kind() == expressions.QuantifierForEach &&
 			qs[1].Kind() == expressions.QuantifierForEach {
 			swapped := sel.WithSwappedQuantifiers()
-			t2 := &TransformImplTask{Phase: t.Phase, Ref: t.Ref, Expr: swapped, Rule: t.Rule}
-			t2.Run(p)
+			swapBindings := t.Rule.Matcher().BindMatches(matching.NewBindings(), swapped)
+			for _, b := range swapBindings {
+				call := &ImplementationRuleCall{
+					Bindings:    b,
+					Reference:   t.Ref,
+					Context:     p.ctx,
+					Constraints: p.constraintMap,
+					memo:        p.memo,
+				}
+				t.Rule.OnMatch(call)
+				for _, y := range call.yielded {
+					t.Ref.InsertFinal(y)
+					if !isAlreadyExploratoryMember(t.Ref, y) {
+						p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+						p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+					}
+				}
+			}
 		}
 	}
 }

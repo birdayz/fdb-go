@@ -255,14 +255,20 @@ func executePredicatesFilter(
 		return nil, err
 	}
 	preds := p.GetPredicates()
-	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0)
+	innerAlias := p.GetInnerAlias()
+	hasInnerAlias := innerAlias.Name() != ""
+	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 || hasInnerAlias)
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) bool {
 			var rowCtx any = qr.Datum
 			if needsRowCtx {
 				if m, ok := qr.Datum.(map[string]any); ok {
-					rowCtx = evalCtx.RowContext(m)
+					ec := evalCtx
+					if hasInnerAlias {
+						ec = ec.WithBinding(innerAlias, m)
+					}
+					rowCtx = ec.RowContext(m)
 				}
 			}
 			for _, pred := range preds {

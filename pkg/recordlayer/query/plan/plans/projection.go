@@ -38,6 +38,18 @@ func (p *RecordQueryProjectionPlan) GetAliases() []string           { return p.a
 
 func (p *RecordQueryProjectionPlan) GetInner() RecordQueryPlan { return p.inner }
 
+// IsIdentity returns true if this projection passes all columns
+// through unchanged (a QuantifiedObjectValue that references the
+// inner's alias). An identity projection can be removed without
+// changing the output shape.
+func (p *RecordQueryProjectionPlan) IsIdentity() bool {
+	if len(p.projections) != 1 {
+		return false
+	}
+	_, ok := p.projections[0].(*values.QuantifiedObjectValue)
+	return ok
+}
+
 func (p *RecordQueryProjectionPlan) GetResultType() values.Type { return values.UnknownType }
 
 func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {

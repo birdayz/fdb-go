@@ -20,7 +20,6 @@ func planPipeline(t *testing.T, root expressions.RelationalExpression, indexes .
 	rootRef := expressions.InitialOf(root)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 
 	var ctx PlanContext
 	if len(indexes) > 0 {
@@ -54,7 +53,6 @@ func planPipelineWithStats(t *testing.T, root expressions.RelationalExpression, 
 	rootRef := expressions.InitialOf(root)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 
 	var ctx PlanContext
 	if len(indexes) > 0 {
@@ -88,7 +86,6 @@ func planPipelineWithCandidates(t *testing.T, root expressions.RelationalExpress
 	rootRef := expressions.InitialOf(root)
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 
 	ctx := NewPlanContextFromMatchCandidates(candidates)
 
@@ -442,7 +439,6 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 
 	rootRef := expressions.InitialOf(groupBy)
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 
 	stats := properties.MapStatistics{PerType: map[string]float64{"T": 1_000_000}}
 	ctx := NewPlanContextFromMatchCandidates([]MatchCandidate{aggCand})
@@ -907,7 +903,6 @@ func TestPipeline_InListExplodeWithProjectionAndSort(t *testing.T) {
 
 	rootRef := expressions.InitialOf(proj)
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 	ctx := NewPlanContextFromIndexDefs([]IndexDef{idx("idx_a", "A")})
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).

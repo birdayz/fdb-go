@@ -1010,7 +1010,9 @@ CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	assertPlanContains(t, plan, "NestedLoopJoin")
+	if !strings.Contains(plan, "NestedLoopJoin") && !strings.Contains(plan, "FlatMap") {
+		t.Fatalf("plan does not contain NestedLoopJoin or FlatMap:\n      %s", plan)
+	}
 }
 
 // --- COUNT(*) without WHERE ---

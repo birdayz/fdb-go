@@ -249,7 +249,7 @@ func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
 // migration: physical scan/filter/agg wrappers are produced during
 // PLANNING where constraint and ordering information is available.
 func (p *Planner) WithPlanningExpressionRules(rules []ExpressionRule) *Planner {
-	p.planningExpressionRules = rules
+	p.planningExpressionRules = append(PlanningExplorationRules(), rules...)
 	return p
 }
 

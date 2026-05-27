@@ -59,53 +59,75 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Logical-level fallback: if projected columns cover a unique key,
-	// ALL physical plans are guaranteed distinct. This only fires when
-	// innerRef.Get() returns a logical expression (e.g. during tests
-	// without a full PLANNING phase). During normal planning, Get()
-	// returns physical wrappers which findRecordTypes doesn't handle,
-	// so allDistinct stays false and the per-member PropDistinctRecords
-	// check below is the primary path.
-	allDistinct := false
+	// Check if projected columns cover a unique key (PK or unique index).
+	// If so, ALL plans are distinct regardless of their physical
+	// properties. This must check the Projection expression specifically,
+	// not just innerRef.Get() which might return a Filter or other
+	// expression merged into the same Reference during REWRITING.
+	pkDistinct := false
 	if call.Context != nil {
-		innerExpr := innerRef.Get()
-		allDistinct = distinctEliminatedByUniqueKey(innerExpr, call.Context)
-	}
-
-	// Use the winner from the inner ref if available — it represents
-	// the fully composed physical plan including projections.
-	// Fall back to scanning AllMembers for physical plans.
-	pm := GetRefPlanPropertiesMap(innerRef)
-
-	var candidates []expressions.RelationalExpression
-	if w := innerRef.Winner(expressions.NoProperties); w != nil {
-		if _, ok := w.(physicalPlanExpression); ok {
-			candidates = []expressions.RelationalExpression{w}
-		}
-	}
-	if len(candidates) == 0 {
-		for _, m := range innerRef.AllMembers() {
-			if _, ok := m.(physicalPlanExpression); ok {
-				candidates = append(candidates, m)
+		for _, m := range innerRef.Members() {
+			if proj, ok := m.(*expressions.LogicalProjectionExpression); ok {
+				pkDistinct = distinctEliminatedByUniqueKey(proj, call.Context)
+				break
 			}
 		}
 	}
 
-	for _, m := range candidates {
-		ph := m.(physicalPlanExpression)
+	// Java-aligned: use PlanPartitions filtered by StoredRecord. Each
+	// partition is evaluated independently — if its plans are already
+	// distinct (PK-level), the Distinct is absorbed; otherwise wrapped.
+	// Mirrors Java's ImplementDistinctRule which uses
+	// filterPlanPartitions(StoredRecordProperty.storedRecord()).
+	partitions := ToPlanPartitions(innerRef)
 
-		isDistinct := allDistinct
-		if !isDistinct && pm != nil {
-			props := pm.GetProperties(m)
-			isDistinct = props.GetBool(properties.PropDistinctRecords)
+	handled := false
+	for _, partition := range partitions {
+		if !partition.GetPartitionPropertiesMap().GetBool(properties.PropStoredRecord) {
+			continue
+		}
+		handled = true
+
+		if pkDistinct || partition.IsDistinct() {
+			for _, expr := range partition.GetExpressions() {
+				call.YieldFinalExpression(expr)
+			}
+		} else {
+			rolled := RollUpPlanPartitions([]*PlanPartition{partition})
+			for _, rp := range rolled {
+				for _, expr := range rp.GetExpressions() {
+					ph := expr.(physicalPlanExpression)
+					distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
+					innerQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+					call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
+				}
+			}
+		}
+	}
+
+	// Logical-level fallback: if projected columns cover a unique key,
+	// ALL physical plans are guaranteed distinct. This fires when no
+	// StoredRecord partitions were found (e.g. unit tests without full
+	// PLANNING, or when the fallback partitioner doesn't set properties).
+	if !handled {
+		allDistinct := false
+		if call.Context != nil {
+			innerExpr := innerRef.Get()
+			allDistinct = distinctEliminatedByUniqueKey(innerExpr, call.Context)
 		}
 
-		if isDistinct {
-			call.YieldFinalExpression(m)
-		} else {
-			distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
-			innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
-			call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
+		for _, m := range innerRef.AllMembers() {
+			ph, ok := m.(physicalPlanExpression)
+			if !ok {
+				continue
+			}
+			if allDistinct {
+				call.YieldFinalExpression(m)
+			} else {
+				distPlan := plans.NewRecordQueryDistinctPlan(ph.GetRecordQueryPlan())
+				innerQ := expressions.ForEachQuantifier(expressions.InitialOf(m))
+				call.YieldFinalExpression(NewPhysicalDistinctWrapper(distPlan, innerQ))
+			}
 		}
 	}
 }

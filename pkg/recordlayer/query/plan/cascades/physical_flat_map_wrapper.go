@@ -100,6 +100,12 @@ func (w *physicalFlatMapWrapper) WithQuantifiers(_ []expressions.Quantifier) exp
 	return w
 }
 
+// IsPhysicalFlatMap reports whether expr is a physicalFlatMapWrapper.
+func IsPhysicalFlatMap(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalFlatMapWrapper)
+	return ok
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalFlatMapWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalFlatMapWrapper)(nil)

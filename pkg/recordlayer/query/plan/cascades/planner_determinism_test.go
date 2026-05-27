@@ -51,7 +51,6 @@ func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 	}
 
 	rules := DefaultExpressionRules()
-	rules = append(rules, MatchingRules()...)
 	implRules := DefaultImplementationRules()
 
 	var firstPlan string

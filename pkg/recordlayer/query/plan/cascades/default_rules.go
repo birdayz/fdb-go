@@ -46,11 +46,9 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewFilterDedupPredicatesRule(),
 		NewPushFilterThroughDistinctRule(),
 		NewPushFilterThroughTypeFilterRule(),
-		NewPushFilterThroughSortRule(),
 		NewPushFilterThroughUnionRule(),
 		NewPushFilterThroughIntersectionRule(),
 		NewPushFilterThroughGroupByRule(),
-		NewPushFilterThroughProjectionRule(),
 		NewPushFilterBelowJoinRule(),
 		NewDistinctMergeRule(),
 		NewDistinctOverSortElimRule(),
@@ -71,11 +69,9 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
 		NewPushProjectionBelowJoinRule(),
-		NewPullFilterAboveProjectionRule(),
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),
-		NewPullFilterAboveSortRule(),
 		NewUnsortedSortElimRule(),
 		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
@@ -115,6 +111,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPartitionBinarySelectRule(),
 		NewDecorrelateValuesRule(),
 		NewPullUpNullOnEmptyRule(),
+		NewMatchLeafRule(),
+		NewMatchIntermediateRule(),
 	}
 }
 

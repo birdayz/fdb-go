@@ -449,6 +449,9 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *UnmatchedAggregateValue:
 		bv, ok := b.(*UnmatchedAggregateValue)
 		return ok && av.UnmatchedID == bv.UnmatchedID
+	case *JoinMergeResultValue:
+		bv, ok := b.(*JoinMergeResultValue)
+		return ok && av.OuterAlias == bv.OuterAlias && av.InnerAlias == bv.InnerAlias
 	default:
 		panic(fmt.Sprintf("EqualsWithoutChildren: unhandled Value type %T", a))
 	}

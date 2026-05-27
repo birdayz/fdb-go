@@ -63,10 +63,8 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 			newQuantifiers = append(newQuantifiers,
 				expressions.NewPhysicalQuantifier(newRef))
 
-			for _, pe := range planExprs {
-				if ph, ok := pe.(physicalPlanExpression); ok {
-					childPlans = append(childPlans, ph.GetRecordQueryPlan())
-				}
+			if ph, ok := planExprs[0].(physicalPlanExpression); ok {
+				childPlans = append(childPlans, ph.GetRecordQueryPlan())
 			}
 		}
 
