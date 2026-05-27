@@ -117,15 +117,7 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 	if innerUnion, ok := left.(*logical.LogicalUnion); ok && !innerUnion.Distinct {
 		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
 	}
-<<<<<<< Updated upstream
 	return logical.NewUnion(inputs, false)
-=======
-	var op logical.LogicalOperator = logical.NewUnion(inputs, distinct)
-	if len(liftedOrder) > 0 {
-		op = logical.NewSort(op, orderByToSortKeys(liftedOrder))
-	}
-	return op
->>>>>>> Stashed changes
 }
 
 // Phase 3 logical-plan builder — narrow-scope seed.

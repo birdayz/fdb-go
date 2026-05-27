@@ -2653,7 +2653,6 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if err != nil {
 		return nil, err
 	}
-<<<<<<< Updated upstream
 
 	// The grammar attaches a trailing ORDER BY / LIMIT / OFFSET to
 	// the rightmost simpleTable. For a UNION, those clauses apply to
@@ -2664,11 +2663,6 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	var lifted unionLiftedClauses
 	var right logical.LogicalOperator
 	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, cteScopes)
-=======
-	// Lift ORDER BY from the right branch before building it.
-	var liftedOrder []orderByClause
-	right, liftedOrder, err := buildUnionRightBranchWithCatalog(setQ.GetRight(), md, cteScopes)
->>>>>>> Stashed changes
 	if err != nil {
 		return nil, err
 	}
@@ -2698,7 +2692,6 @@ func buildLogicalPlanForUnionWithCTECatalog(
 	if err := validateUnionColumnCounts(inputs); err != nil {
 		return nil, err
 	}
-<<<<<<< Updated upstream
 	if err := validateUnionColumnTypes(inputs, md); err != nil {
 		return nil, err
 	}
@@ -2815,13 +2808,6 @@ func buildUnionRightBranchStrippingOrderBy(
 		return nil, lifted, err
 	}
 	return op, lifted, nil
-=======
-	var op logical.LogicalOperator = logical.NewUnion(inputs, distinct)
-	if len(liftedOrder) > 0 {
-		op = logical.NewSort(op, orderByToSortKeys(liftedOrder))
-	}
-	return op, nil
->>>>>>> Stashed changes
 }
 
 // upgradeSortKeyValues walks the logical plan's LogicalSort and resolves
@@ -3314,16 +3300,10 @@ func buildLogicalPlanForUnionWithCatalog(
 		return nil, err
 	}
 
-<<<<<<< Updated upstream
 	// Same ORDER BY / LIMIT stripping as the CTE-catalog variant.
 	var lifted unionLiftedClauses
 	var right logical.LogicalOperator
 	right, lifted, err = buildUnionRightBranchStrippingOrderBy(setQ.GetRight(), md, nil)
-=======
-	// Lift ORDER BY from the right branch before building it.
-	var liftedOrder []orderByClause
-	right, liftedOrder, err := buildUnionRightBranchWithCatalog(setQ.GetRight(), md, nil)
->>>>>>> Stashed changes
 	if err != nil {
 		return nil, err
 	}
@@ -3350,7 +3330,6 @@ func buildLogicalPlanForUnionWithCatalog(
 	if err := validateUnionColumnCounts(inputs); err != nil {
 		return nil, err
 	}
-<<<<<<< Updated upstream
 	if err := validateUnionColumnTypes(inputs, md); err != nil {
 		return nil, err
 	}
@@ -3688,78 +3667,4 @@ func collectScanTableNamesInner(op logical.LogicalOperator, names map[string]boo
 	for _, ch := range op.Children() {
 		collectScanTableNamesInner(ch, names)
 	}
-=======
-	var op logical.LogicalOperator = logical.NewUnion(inputs, distinct)
-	if len(liftedOrder) > 0 {
-		op = logical.NewSort(op, orderByToSortKeys(liftedOrder))
-	}
-	return op, nil
-}
-
-// buildUnionRightBranchWithCatalog builds the right branch of a UNION
-// with ORDER BY stripped and returned separately. The ANTLR grammar
-// attaches a trailing ORDER BY to the rightmost SimpleTable, but SQL
-// standard says it applies to the whole UNION result. This mirrors the
-// lift logic in execUnion (union.go).
-func buildUnionRightBranchWithCatalog(
-	body antlrgen.IQueryExpressionBodyContext,
-	md *recordlayer.RecordMetaData,
-	cteScopes map[string]semantic.ScopeSource,
-) (logical.LogicalOperator, []orderByClause, error) {
-	if body == nil {
-		return nil, nil, nil
-	}
-	if rb, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
-		simpleTable, ok := rb.QueryTerm().(*antlrgen.SimpleTableContext)
-		if !ok {
-			op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, cteScopes)
-			return op, nil, err
-		}
-		sq, err := extractFromSimpleTable(simpleTable)
-		if err != nil {
-			return nil, nil, err
-		}
-		// Lift ORDER BY from the right branch.
-		lifted := sq.orderBy
-		sq.orderBy = nil
-		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-			return nil, nil, api.NewError(api.ErrCodeUndefinedFunction,
-				"Unsupported operator "+fn)
-		}
-		if err := validateQualifiedStarSources(sq, md); err != nil {
-			return nil, nil, err
-		}
-		var op logical.LogicalOperator
-		if len(cteScopes) > 0 {
-			op, err = buildLogicalPlanForSelectWithCTECatalog(sq, md, cteScopes)
-		} else {
-			op, err = buildLogicalPlanForSelectWithCatalog(sq, md)
-		}
-		return op, lifted, err
-	}
-	// Nested SetQuery (e.g. A UNION B UNION C) — recurse without lifting.
-	op, err := buildLogicalPlanForQueryBodyWithCTECatalog(body, md, cteScopes)
-	return op, nil, err
-}
-
-// orderByToSortKeys converts parsed ORDER BY clauses to LogicalSort keys.
-func orderByToSortKeys(obs []orderByClause) []logical.SortKey {
-	keys := make([]logical.SortKey, 0, len(obs))
-	for _, ob := range obs {
-		dir := logical.SortAsc
-		if !ob.ascending {
-			dir = logical.SortDesc
-		}
-		e := ob.colName
-		if e == "" && ob.rawExpr != nil {
-			e = ob.rawExpr.GetText()
-		}
-		nullsFirst := ob.ascending
-		if ob.nullsFirst != nil {
-			nullsFirst = *ob.nullsFirst
-		}
-		keys = append(keys, logical.SortKey{Expr: e, Dir: dir, NullsFirst: nullsFirst})
-	}
-	return keys
->>>>>>> Stashed changes
 }
