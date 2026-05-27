@@ -22,6 +22,7 @@ go_library(
         "implementation_rule.go",
         "in_source.go",
         "index_expansion.go",
+        "intersector_primary_key.go",
         "match_candidate_index.go",
         "match_candidate_interfaces.go",
         "match_info.go",

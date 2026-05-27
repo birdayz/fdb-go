@@ -46,18 +46,15 @@ All 23 subtests PASS. Total: 170.7s (incl. bulk insert ~2:28).
 
 Quantifier aliases now match table aliases at creation. Three band-aids removed: `rightAliasSet`, `planContainsJoin`, `collectPlanAliases` (−114 lines). Root-cause fix in `mergeRows`: bare inner keys overwrote qualified keys from nested joins (missing `!exists` guard). 46/46 tests, 15/15 determinism.
 
-### 7.2 Port matching infrastructure for index intersections
+### 7.2 Port matching infrastructure for index intersections — PARTIAL
 
-**Priority: HIGH.** `IndexIntersectionRule` is a Go-only logical rewrite rule that generates intersection alternatives combinatorially during REWRITING. Java doesn't have it — Java uses `MatchLeafRule` + `MatchIntermediateRule` + `ImplementIntersectionRule`, a match-then-implement pattern during PLANNING.
+`WithPrimaryKeyIntersector` implemented in `intersector_primary_key.go` (160 lines). Creates physical `RecordQueryIntersectionPlan` from PartialMatches via the match infrastructure. Tested: produces correct 2-way and 3-way intersections from MatchLeafRule/MatchIntermediateRule partial matches.
 
-The Go-only approach loses to REWRITING cost model pruning for:
-- 3-way intersections (pruned in favor of 2-way)
-- Compound index vs intersection (compound index filter pruned before PLANNING can try it)
-- DISTINCT over GROUP BY (hash tiebreak during REWRITING)
+**Blocked on two regressions when `IndexIntersectionRule` is deleted:**
+1. **IS NULL correctness regression**: removing `IndexIntersectionRule` from `DefaultExpressionRules` changes exploration dynamics, causing IS NULL queries to return extra rows. Root cause: the rule's presence/absence affects the overall plan landscape beyond just intersections.
+2. **MaxTasks regression**: wiring the intersector into `pushDataAccessTasks` causes combinatorial explosion on InList/Stats queries with many candidates. Needs per-Reference idempotency + candidate count cap.
 
-Three test assertions relaxed with root-cause documentation (`index_scan_e2e_test.go`).
-
-**Fix:** Port `MatchLeafRule`, `MatchIntermediateRule`. Verify `ImplementIntersectionRule` works with match-based input. Delete `IndexIntersectionRule`. Restore fatal assertions on all 3 plan quality tests.
+`IndexIntersectionRule` stays as REWRITING-phase rule. Match-based PLANNING-phase intersection infrastructure is ready but not wired into the planner until the two regressions are fixed.
 
 ### 7.3 Convert remaining predicateReferencesAlias sites — DONE
 
