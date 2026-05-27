@@ -42,17 +42,9 @@ All 23 subtests PASS. Total: 170.7s (incl. bulk insert ~2:28).
 
 ## Phase 7: Cascades alignment — close remaining Java divergences
 
-### 7.1 Unify alias namespaces
+### 7.1 Unify alias namespaces — DONE
 
-**Priority: HIGH.** Quantifier aliases (`q$0`, `q$1`) and table aliases (`R`, `P`, `C`) are separate namespaces. Java unifies them — the quantifier alias IS the table alias. Go's split causes:
-
-- `PartitionBinarySelectRule` needs `rightAliasSet` workaround to match predicate correlations (table aliases) against quantifier aliases
-- `planContainsJoin` guard in EXISTS compensates for alias qualification gaps in materialized multi-table inners
-- `predicateReferencesAlias` string matching persists in ~10 call sites because correlation-set classification only finds QOV-based (table alias) references
-
-**Fix:** At quantifier creation in the SQL translator (`cascades_translator.go`), use `NamedCorrelationIdentifier(tableAlias)` as the quantifier alias instead of `UniqueCorrelationIdentifier()`. Audit every `GetAlias()` consumer. This collapses three workarounds into zero.
-
-**Verification:** Remove `rightAliasSet` expansion from `PartitionBinarySelectRule`. Remove `planContainsJoin` guard. Convert remaining `predicateReferencesAlias` sites to `GetCorrelatedToOfPredicate`. All 46 test targets pass.
+Quantifier aliases now match table aliases at creation. Three band-aids removed: `rightAliasSet`, `planContainsJoin`, `collectPlanAliases` (−114 lines). Root-cause fix in `mergeRows`: bare inner keys overwrote qualified keys from nested joins (missing `!exists` guard). 46/46 tests, 15/15 determinism.
 
 ### 7.2 Port matching infrastructure for index intersections
 
@@ -67,17 +59,9 @@ Three test assertions relaxed with root-cause documentation (`index_scan_e2e_tes
 
 **Fix:** Port `MatchLeafRule`, `MatchIntermediateRule`. Verify `ImplementIntersectionRule` works with match-based input. Delete `IndexIntersectionRule`. Restore fatal assertions on all 3 plan quality tests.
 
-### 7.3 Convert remaining predicateReferencesAlias sites
+### 7.3 Convert remaining predicateReferencesAlias sites — DONE
 
-**Priority: MEDIUM.** Blocked on 7.1 (alias namespace unification). `yieldGeneralFlatMap` uses correlation-set classification (Phase 2 of RFC-005). The following paths still use string-based `predicateReferencesAlias`:
-
-- `implementExistentialSelect` NLJ fallback (line ~347)
-- `implementJoinWithExistential` (line ~461)
-- `tryFlatMapPlan` residual classification (~6 sites)
-- `tryExistsFlatMap` residual classification (~2 sites)
-- `buildExistsFlatMap` residual classification (~2 sites)
-
-Both approaches produce identical results for QOV-based FieldValues (the common case). Legacy flat FieldValues (`Field: "ALIAS.COL"`, nil Child) are only found in non-predicate contexts (ORDER BY, GROUP BY, projections). Safe to convert after 7.1 confirms all predicate FieldValues use QOV children.
+All 8 `predicateReferencesAlias` calls in the NLJ rule converted to `GetCorrelatedToOfPredicate` correlation-set checks. Function deleted. Root-cause fix: `qualifyBareFieldValue` in EXISTS builder now produces QOV-based FieldValues instead of flat strings. `walkPredicateFieldValues`/`fieldValueAliasAndCol` survive in push-filter/push-projection rules (handle both QOV and flat FieldValues for unit test compatibility).
 
 ### 7.4 FlatMap wrapper correlation propagation
 
