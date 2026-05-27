@@ -1072,3 +1072,66 @@ func TestPipeline_SortOnDifferentColumnThanFilter(t *testing.T) {
 		t.Fatalf("expected InMemorySort for B ordering, got: %s", plan)
 	}
 }
+
+// TestPipeline_GroupBySortWithIndex verifies that GROUP BY A ORDER BY A
+// with an index on A uses the index for ordered input to streaming
+// aggregation, avoiding InMemorySort on the full table. This is the
+// "group_by_customer_having" perf regression pattern.
+func TestPipeline_GroupBySortWithIndex(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	groupBy := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "CNT"},
+		},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	groupByRef := expressions.InitialOf(groupBy)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(groupByRef),
+	)
+
+	plan := planPipeline(t, sort, idx("idx_a", "A"))
+	t.Logf("plan (no HAVING): %s", plan)
+	if strings.Contains(plan, "InMemorySort") && strings.Contains(plan, "Scan(T)") {
+		t.Fatalf("plan uses InMemorySort over full Scan — should use IndexScan for ordering: %s", plan)
+	}
+
+	// Now the full regression pattern: GROUP BY A HAVING CNT > 5 ORDER BY A
+	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	groupBy2 := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1)}, Alias: "CNT"},
+		},
+		expressions.ForEachQuantifier(expressions.InitialOf(scan2)),
+	)
+	havingFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "CNT", Typ: values.UnknownType},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5)),
+			),
+		},
+		expressions.ForEachQuantifier(expressions.InitialOf(groupBy2)),
+	)
+	sort2 := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "A", Typ: values.UnknownType}},
+		},
+		expressions.ForEachQuantifier(expressions.InitialOf(havingFilter)),
+	)
+
+	plan2 := planPipeline(t, sort2, idx("idx_a", "A"))
+	t.Logf("plan (with HAVING): %s", plan2)
+	if strings.Contains(plan2, "InMemorySort") && strings.Contains(plan2, "Scan(T)") {
+		t.Fatalf("plan with HAVING uses InMemorySort over full Scan — should use IndexScan: %s", plan2)
+	}
+}

@@ -50,19 +50,15 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
-		return
+	for _, m := range innerRef.AllMembers() {
+		ph, ok := m.(physicalPlanExpression)
+		if !ok {
+			continue
+		}
+		filterPlan := plans.NewRecordQueryFilterPlan(f.GetPredicates(), ph.GetRecordQueryPlan())
+		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(m))
+		call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
 	}
-
-	filterPlan := plans.NewRecordQueryFilterPlan(f.GetPredicates(), innerPlan)
-
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
-		return
-	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-	call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
 }
 
 var _ ExpressionRule = (*ImplementFilterRule)(nil)
