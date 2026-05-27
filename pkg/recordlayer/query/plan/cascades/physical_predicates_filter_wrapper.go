@@ -70,7 +70,12 @@ func (w *physicalPredicatesFilterWrapper) WithChildren(qs []expressions.Quantifi
 		return nil, fmt.Errorf("physicalPredicatesFilterWrapper.WithChildren: expected 1, got %d", len(qs))
 	}
 	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
-		newPlan := plans.NewRecordQueryPredicatesFilterPlan(innerPlan, w.plan.GetPredicates())
+		var newPlan *plans.RecordQueryPredicatesFilterPlan
+		if alias := w.plan.GetInnerAlias(); alias.Name() != "" {
+			newPlan = plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerPlan, w.plan.GetPredicates(), alias)
+		} else {
+			newPlan = plans.NewRecordQueryPredicatesFilterPlan(innerPlan, w.plan.GetPredicates())
+		}
 		return &physicalPredicatesFilterWrapper{plan: newPlan, innerQuant: qs[0]}, nil
 	}
 	return &physicalPredicatesFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
