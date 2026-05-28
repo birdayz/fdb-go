@@ -1,6 +1,6 @@
 # RFC-030: Context Cancellation in Executor Cursors
 
-**Status:** Draft
+**Status:** Implemented
 **P0.3** — fix before deploying anywhere
 
 ## Problem

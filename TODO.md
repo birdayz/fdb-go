@@ -32,8 +32,7 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 
 - [x] **P0.1 NLJ memory bomb.** Fixed in PR #203 — `CollectAllBounded` with configurable materialization limit (default 100K rows) on all 6 `CollectAll` sites. `MaterializationLimitExceededError` typed error. All cursor leaks on error path fixed. 11 regression tests. RFC-028.
 - [x] **P0.2 Plan cache serves wrong plans.** Fixed in RFC-029 — cache keys on normalized SQL string directly (was uint64 FNV-64a hash with no text comparison on hit → collision = wrong plan). Scalar subquery staleness was a non-issue: `scalarSubqueryBinding` stores plans not results, re-evaluated per page fetch. `QueryHash` retained for tests only.
-- [ ] **P0.3 No context cancellation in executor.** Zero `ctx.Err()`/`ctx.Done()` checks in non-test executor code. `flatMapCursor.OnNext` passes ctx to children but never checks it → a cancelled request spins until the 5s FDB timeout or an incidental child error. Every Go service sets request deadlines via context.
-  - **Fix:** check `ctx.Err()` at the top of every cursor `OnNext` loop iteration. Mechanical but critical.
+- [x] **P0.3 No context cancellation in executor.** Fixed in RFC-030 — `ctx.Err()` checks at the top of every cursor OnNext loop and drain function (44 sites across 19 files). `autoContinuingCursor` was the worst offender (created new FDB transactions on cancelled contexts). All cursor combinators, executor cursors, utility drains, DML drains, legacy query path drains, and iterator adapters now respect Go context cancellation. 24 unit tests verify prompt cancellation.
 
 ### P1 — fix before relying on the optimizer for real workloads (plan quality)
 
