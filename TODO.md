@@ -54,8 +54,14 @@ Quantifier aliases now match table aliases at creation. Three band-aids removed:
 
 All 8 `predicateReferencesAlias` calls in the NLJ rule converted to `GetCorrelatedToOfPredicate` correlation-set checks. Function deleted. Root-cause fix: `qualifyBareFieldValue` in EXISTS builder now produces QOV-based FieldValues instead of flat strings. `walkPredicateFieldValues`/`fieldValueAliasAndCol` survive in push-filter/push-projection rules (handle both QOV and flat FieldValues for unit test compatibility).
 
-### 7.4 FlatMap wrapper correlation propagation
+### 7.4 FlatMap wrapper correlation propagation — NOT NEEDED (Graefe confirmed)
 
-**Priority: LOW.** `physicalFlatMapWrapper.GetCorrelatedToWithoutChildren()` returns empty. `JoinMergeResultValue` stores `OuterAlias`/`InnerAlias` as struct fields, not as `QuantifiedObjectValue` children — `GetCorrelatedToOfValue` finds nothing. Correct for joins (correlations flow through quantifier children). When correlated subqueries are ported, `JoinMergeResultValue.Children()` must return QOV nodes.
+Graefe confirmed: `GetCorrelatedToWithoutChildren()` returning empty is correct for BOTH joins AND correlated subqueries. Correlations flow through quantifier children in both cases. `JoinMergeResultValue.Children()` does NOT need QOV nodes.
+
+For correlated scalar subqueries (Go-only extension, Java rejects at grammar level), the correct Cascades architecture is:
+1. `ForEachNullOnEmpty` quantifier (already exists: `ForEachNullOnEmptyQuantifier`)
+2. `RecordQueryFirstOrDefaultPlan` with NULL default (already exists)
+3. Correlated `BuildScalar` fallback (needs: full inner plan with outer scope, correlation predicate extraction)
+4. NLJ rule: detect NullOnEmpty → wrap inner with FirstOrDefault + FlatMap
 
 NLJ wrapper correlation propagation (walks predicates) is already correct and active.
