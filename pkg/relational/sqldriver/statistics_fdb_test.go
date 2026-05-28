@@ -85,9 +85,10 @@ func TestFDB_StatisticsDrivenPlanSelection(t *testing.T) {
 		t.Parallel()
 		db := setupPlanShapeDB(t, "stats_empty", ddl)
 
-		// No data inserted. fetchTableStatistics reads count = 0 for
-		// ORDERS, which MapStatistics clamps to 1. Planning must still
-		// succeed without errors.
+		// No data inserted. The atomic-ADD count key was never written,
+		// so fetchTableStatistics gets empty bytes for all types →
+		// returns nil → planner uses DefaultStatistics (1e6).
+		// Planning must still succeed without errors.
 		q := "SELECT id, amount FROM orders WHERE customer_id = 1"
 		plan := planExplainVia(t, ctx, db, q)
 		t.Logf("empty table plan: %s", plan)

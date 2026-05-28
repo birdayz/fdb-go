@@ -183,7 +183,14 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 // Uses ReadTransact under the hood — no write conflict ranges, no commit
 // round-trip. Suitable for statistics, metadata reads, or any read-only
 // operation where a full read-write transaction would waste a commit.
-func (d *FDBDatabase) RunRead(fn func(rtx fdb.ReadTransaction) (any, error)) (any, error) {
+//
+// ctx is accepted for API consistency with Run and for caller-side
+// cancellation checks; the underlying FDB ReadTransact uses the
+// database-level context for the transaction itself.
+func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransaction) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return d.transactor.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
 		rtx.Options().SetReadSystemKeys()
 		return fn(rtx)
