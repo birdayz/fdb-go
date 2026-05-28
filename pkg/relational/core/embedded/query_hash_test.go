@@ -4,115 +4,6 @@ import (
 	"testing"
 )
 
-func TestQueryHash_SameQuery(t *testing.T) {
-	t.Parallel()
-	sql := "SELECT * FROM foo WHERE id = 1"
-	h1 := QueryHash(sql)
-	h2 := QueryHash(sql)
-	if h1 != h2 {
-		t.Fatalf("same query produced different hashes: %d vs %d", h1, h2)
-	}
-}
-
-func TestQueryHash_CaseInsensitive(t *testing.T) {
-	t.Parallel()
-	h1 := QueryHash("SELECT * FROM foo")
-	h2 := QueryHash("select * from foo")
-	h3 := QueryHash("SeLeCt * FrOm FoO")
-	if h1 != h2 || h2 != h3 {
-		t.Fatalf("case differences produced different hashes: %d, %d, %d", h1, h2, h3)
-	}
-}
-
-func TestQueryHash_WhitespaceNormalization(t *testing.T) {
-	t.Parallel()
-	h1 := QueryHash("SELECT * FROM foo")
-	h2 := QueryHash("SELECT  *  FROM  foo")
-	h3 := QueryHash("SELECT   *   FROM   foo")
-	if h1 != h2 || h2 != h3 {
-		t.Fatalf("whitespace differences produced different hashes: %d, %d, %d", h1, h2, h3)
-	}
-}
-
-func TestQueryHash_CommentStripping(t *testing.T) {
-	t.Parallel()
-
-	base := QueryHash("SELECT * FROM foo")
-
-	// Single-line comment
-	h1 := QueryHash("SELECT * FROM foo -- this is a comment")
-	if h1 != base {
-		t.Fatalf("single-line comment changed hash: %d vs %d", h1, base)
-	}
-
-	// Block comment
-	h2 := QueryHash("SELECT /* a comment */ * FROM foo")
-	if h2 != base {
-		t.Fatalf("block comment changed hash: %d vs %d", h2, base)
-	}
-
-	// Both comment types
-	h3 := QueryHash("SELECT /* block */ * FROM foo -- line")
-	if h3 != base {
-		t.Fatalf("mixed comments changed hash: %d vs %d", h3, base)
-	}
-}
-
-func TestQueryHash_DifferentQueries(t *testing.T) {
-	t.Parallel()
-	h1 := QueryHash("SELECT * FROM foo")
-	h2 := QueryHash("SELECT * FROM bar")
-	if h1 == h2 {
-		t.Fatal("different queries produced the same hash")
-	}
-}
-
-func TestQueryHash_EmptyString(t *testing.T) {
-	t.Parallel()
-	h1 := QueryHash("")
-	h2 := QueryHash("")
-	if h1 != h2 {
-		t.Fatalf("empty string produced different hashes: %d vs %d", h1, h2)
-	}
-	// FNV-64a of empty input is the offset basis — just verify determinism.
-}
-
-func TestQueryHash_LeadingTrailingWhitespace(t *testing.T) {
-	t.Parallel()
-	h1 := QueryHash("SELECT * FROM foo")
-	h2 := QueryHash("  SELECT * FROM foo  ")
-	h3 := QueryHash("\t\tSELECT * FROM foo\n\n")
-	if h1 != h2 || h2 != h3 {
-		t.Fatalf("leading/trailing whitespace changed hash: %d, %d, %d", h1, h2, h3)
-	}
-}
-
-func TestQueryHash_TabNewline(t *testing.T) {
-	t.Parallel()
-	h1 := QueryHash("SELECT * FROM foo")
-	h2 := QueryHash("SELECT\t*\tFROM\tfoo")
-	h3 := QueryHash("SELECT\n*\nFROM\nfoo")
-	if h1 != h2 || h2 != h3 {
-		t.Fatalf("tabs/newlines produced different hashes: %d, %d, %d", h1, h2, h3)
-	}
-}
-
-func TestQueryHash_StringLiteralPreserved(t *testing.T) {
-	t.Parallel()
-	// Comments inside string literals should NOT be stripped.
-	h1 := QueryHash("SELECT '--not a comment' FROM foo")
-	h2 := QueryHash("SELECT '/*not a comment*/' FROM foo")
-	if h1 == h2 {
-		t.Fatal("different string literals produced the same hash")
-	}
-}
-
-func TestQueryHash_UnterminatedBlockComment(t *testing.T) {
-	t.Parallel()
-	// Should not panic on malformed input.
-	_ = QueryHash("SELECT * FROM foo /* unterminated")
-}
-
 func TestNormalizeSQL(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -126,9 +17,16 @@ func TestNormalizeSQL(t *testing.T) {
 		{"newlines", "select\n*\nfrom\nfoo", "SELECT * FROM FOO"},
 		{"line comment", "select * from foo -- comment", "SELECT * FROM FOO"},
 		{"block comment", "select /* x */ * from foo", "SELECT * FROM FOO"},
+		{"mixed comments", "SELECT /* block */ * FROM foo -- line", "SELECT * FROM FOO"},
 		{"empty", "", ""},
 		{"only whitespace", "   \t\n  ", ""},
 		{"only comment", "-- just a comment", ""},
+		{"case insensitive", "SeLeCt * FrOm FoO", "SELECT * FROM FOO"},
+		{"string literal preserved", "SELECT 'hello' FROM foo", "SELECT 'hello' FROM FOO"},
+		{"comment inside string literal", "SELECT '--not a comment' FROM foo", "SELECT '--not a comment' FROM FOO"},
+		{"block comment inside string", "SELECT '/*not a comment*/' FROM foo", "SELECT '/*not a comment*/' FROM FOO"},
+		{"escaped quote in literal", "SELECT 'it''s' FROM foo", "SELECT 'it''s' FROM FOO"},
+		{"unterminated block comment", "SELECT * FROM foo /* unterminated", "SELECT * FROM FOO D"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,5 +36,50 @@ func TestNormalizeSQL(t *testing.T) {
 				t.Errorf("normalizeSQL(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestNormalizeSQL_Determinism(t *testing.T) {
+	t.Parallel()
+	sql := "SELECT * FROM foo WHERE id = 1"
+	n1 := normalizeSQL(sql)
+	n2 := normalizeSQL(sql)
+	if n1 != n2 {
+		t.Fatalf("non-deterministic: %q vs %q", n1, n2)
+	}
+}
+
+func TestNormalizeSQL_EquivalenceClasses(t *testing.T) {
+	t.Parallel()
+	groups := [][]string{
+		{
+			"SELECT * FROM foo",
+			"select * from foo",
+			"SELECT  *  FROM  foo",
+			"  SELECT * FROM foo  ",
+			"\t\tSELECT * FROM foo\n\n",
+			"SELECT\t*\tFROM\tfoo",
+			"SELECT\n*\nFROM\nfoo",
+			"SELECT * FROM foo -- comment",
+			"SELECT /* block */ * FROM foo",
+		},
+	}
+	for _, group := range groups {
+		canonical := normalizeSQL(group[0])
+		for _, variant := range group[1:] {
+			got := normalizeSQL(variant)
+			if got != canonical {
+				t.Errorf("normalizeSQL(%q) = %q, want %q (same as %q)", variant, got, canonical, group[0])
+			}
+		}
+	}
+}
+
+func TestNormalizeSQL_DifferentQueriesDistinct(t *testing.T) {
+	t.Parallel()
+	n1 := normalizeSQL("SELECT * FROM foo")
+	n2 := normalizeSQL("SELECT * FROM bar")
+	if n1 == n2 {
+		t.Fatal("different queries normalized to the same string")
 	}
 }

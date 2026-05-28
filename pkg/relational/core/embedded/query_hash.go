@@ -1,27 +1,9 @@
 package embedded
 
 import (
-	"hash/fnv"
 	"strings"
 	"unicode"
 )
-
-// QueryHash computes a deterministic hash of a SQL query string
-// for plan cache lookup. Normalizes the SQL before hashing:
-// - Strips single-line comments (-- to end of line)
-// - Strips block comments (/* ... */)
-// - Collapses sequences of whitespace to single spaces
-// - Uppercases all characters (SQL is case-insensitive)
-// - Trims leading/trailing whitespace
-//
-// Two SQL strings that differ only in case, whitespace, or comments
-// will hash to the same key.
-func QueryHash(sql string) uint64 {
-	normalized := normalizeSQL(sql)
-	h := fnv.New64a()
-	h.Write([]byte(normalized))
-	return h.Sum64()
-}
 
 // normalizeSQL strips comments, collapses whitespace, uppercases
 // characters outside single-quoted string literals, and trims.

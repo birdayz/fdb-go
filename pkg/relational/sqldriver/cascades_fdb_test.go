@@ -2530,15 +2530,10 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 	}
 	t.Logf("normalized variants all return correct results")
 
-	// Verify that the normalization actually produces the same hash.
-	canonicalHash := embedded.QueryHash(selectQuery)
-	for _, v := range variants {
-		h := embedded.QueryHash(v)
-		if h != canonicalHash {
-			t.Fatalf("QueryHash(%q) = %d, want %d (same as canonical)", v, h, canonicalHash)
-		}
-	}
-	t.Logf("all variants hash to %d", canonicalHash)
+	// Verify that the normalization produces the same cache key.
+	// The plan cache now keys on normalized SQL strings directly
+	// (RFC-029), so normalization equivalence is tested by the cache
+	// hits above — different-case/whitespace variants all hit.
 
 	// --- Step 4: DDL invalidates the cache ---
 	// Creating a new schema template is a DDL statement that triggers
