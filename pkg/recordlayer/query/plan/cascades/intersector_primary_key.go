@@ -57,6 +57,10 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 			}
 		}
 
+		// Cap at 3-way: 4-way intersections have diminishing returns
+		// (each additional leg adds scan I/O but rarely improves
+		// selectivity beyond 3 independent predicates) and the
+		// candidate cap of 4 already limits the input size.
 		if len(accesses) >= 3 {
 			for i := 0; i < len(accesses)-2; i++ {
 				for j := i + 1; j < len(accesses)-1; j++ {

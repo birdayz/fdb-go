@@ -2059,6 +2059,26 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 		}
 	})
 
+	t.Run("cte_with_exists", func(t *testing.T) {
+		// CTE-derived table + correlated EXISTS: the CTE alias
+		// becomes the quantifier alias via sourceAlias. Currently
+		// the EXISTS correlation can't resolve CTE columns across
+		// the subquery boundary. When this starts working, flip
+		// to a correctness assertion: want [Alice Bob].
+		err := expectError(t, db,
+			`WITH active AS (
+			   SELECT id, name FROM customers WHERE active = true
+			 )
+			 SELECT a.name FROM active a
+			 WHERE EXISTS (
+			   SELECT 1 FROM orders o WHERE o.customer_id = a.id AND o.status = 'shipped'
+			 )
+			 ORDER BY a.name`)
+		if err == nil {
+			t.Fatal("CTE + EXISTS now works — update this test to assert correctness")
+		}
+	})
+
 	t.Run("multi_table_count", func(t *testing.T) {
 		rows := collectRows(t, db,
 			`SELECT COUNT(*) FROM customers c, orders o

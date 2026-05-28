@@ -3589,6 +3589,10 @@ func qualifyBareFields(p predicates.QueryPredicate, qualifier string) {
 	})
 }
 
+// qualifyBareFieldValue mutates FieldValue nodes in place, setting
+// Child to a QOV. Safe because buildCorrelatedExists constructs a
+// fresh predicate tree via resolver.WalkPredicate for each call —
+// these FieldValues are never shared or memoized.
 func qualifyBareFieldValue(v values.Value, qualifier string) {
 	corr := values.NamedCorrelationIdentifier(qualifier)
 	values.WalkValue(v, func(node values.Value) bool {
