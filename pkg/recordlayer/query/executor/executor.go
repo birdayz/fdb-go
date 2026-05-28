@@ -1817,6 +1817,7 @@ func executeRecursiveLevelUnion(
 			return nil, fmt.Errorf("executor: recursive level union recursive: %w", err)
 		}
 		items, err := CollectAllBounded(ctx, recursiveCursor, props.GetMaterializationLimit(), "recursive CTE recursive level")
+		recursiveCursor.Close()
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive collect: %w", err)
 		}
