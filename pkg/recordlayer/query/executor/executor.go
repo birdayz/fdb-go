@@ -1150,6 +1150,7 @@ func executeNestedLoopJoin(
 		return nil, err
 	}
 	innerRows, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "nested loop join inner side")
+	innerCursor.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -1759,6 +1760,7 @@ func executeRecursiveLevelUnion(
 
 	var allResults []QueryResult
 	items, err := CollectAllBounded(ctx, initialCursor, props.GetMaterializationLimit(), "recursive CTE initial state")
+	initialCursor.Close()
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive level union initial collect: %w", err)
 	}
@@ -1863,6 +1865,7 @@ func executeRecursiveDfsJoin(
 	}
 
 	rootRows, err := CollectAllBounded(ctx, rootCursor, props.GetMaterializationLimit(), "recursive DFS join root")
+	rootCursor.Close()
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive dfs join root collect: %w", err)
 	}
@@ -1936,6 +1939,7 @@ func dfsVisit(
 	}
 
 	children, err := CollectAllBounded(ctx, childCursor, props.GetMaterializationLimit(), "recursive DFS children")
+	childCursor.Close()
 	if err != nil {
 		return fmt.Errorf("recursive DFS collect children: %w", err)
 	}
@@ -2050,7 +2054,7 @@ type MaterializationLimitExceededError struct {
 }
 
 func (e *MaterializationLimitExceededError) Error() string {
-	return fmt.Sprintf("materialization limit exceeded (%d rows): %s; consider adding an index on the join column or increasing the materialization limit", e.Limit, e.Context)
+	return fmt.Sprintf("materialization limit exceeded (%d rows): %s; consider adding an index or increasing the materialization limit", e.Limit, e.Context)
 }
 
 // CollectAll drains a cursor into a slice.
@@ -2071,7 +2075,7 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 
 // CollectAllBounded drains a cursor into a slice, returning a
 // MaterializationLimitExceededError if the number of rows exceeds limit.
-func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, context string) ([]QueryResult, error) {
+func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, opName string) ([]QueryResult, error) {
 	var results []QueryResult
 	for {
 		result, err := cursor.OnNext(ctx)
@@ -2083,7 +2087,7 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 		}
 		results = append(results, result.GetValue())
 		if len(results) >= limit {
-			return nil, &MaterializationLimitExceededError{Limit: limit, Context: context}
+			return nil, &MaterializationLimitExceededError{Limit: limit, Context: opName}
 		}
 	}
 	return results, nil
