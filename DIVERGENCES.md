@@ -20,12 +20,12 @@ Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional
 **Java:** Fires on all SelectExpressions including those with Existential quantifiers.
 **Go:** Now fires on all SelectExpressions (matching Java). Hash-based dedup prevents the infinite normalization loop that previously required an existential guard.
 
-### WithPrimaryKeyDataAccessRule is an explicit planner pass
+### WithPrimaryKeyDataAccessRule is an explicit planner pass (UPDATED Phase 7.2)
 
-**Java:** `CascadesRule<MatchPartition>`, fired via match-partition rule infrastructure.
-**Go:** Explicit pass in `Planner.generateDataAccessWithConstraints()`.
+**Java:** `CascadesRule<MatchPartition>`, fired via match-partition rule infrastructure. `createIntersectionAndCompensation` aggregates cross-candidate matches into physical intersection plans during PLANNING.
+**Go (Phase 7.2):** Explicit pass in `Planner.pushDataAccessTasks()`. `WithPrimaryKeyIntersector` creates physical `RecordQueryIntersectionPlan` from cross-candidate `PartialMatch` pairs. `IndexIntersectionRule` (Go-only REWRITING rule) deleted. Guards: candidate cap (4), match cap (8), restricted-scan filter, idempotency.
 
-No functional difference — same timing, same inputs, same outputs.
+Same timing and inputs. Go creates physical plans directly (single intersection strategy); Java goes through `LogicalIntersectionExpression` → `ImplementIntersectionRule` (supports multiple strategies).
 
 ### Type mismatch detection: eval-time vs compile-time
 
@@ -67,15 +67,16 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 Correctness improvement — ensures ORDER BY works even when no index satisfies it.
 
-### FieldValue: string-qualified names vs CorrelationIdentifier-based resolution (CORRECTNESS GAP)
+### FieldValue: string-qualified names vs CorrelationIdentifier-based resolution (PARTIALLY CLOSED)
 
 **Java:** Column references resolve to `FieldValue(QuantifiedObjectValue(correlationId), "column")`. The table qualification is a structural `CorrelationIdentifier`, not a string prefix. When predicates move between scopes, Java calls `Value.rebase(AliasMap)` to retarget correlations. No string manipulation.
 
-**Go:** Column references resolve to `FieldValue{Field: "TABLE.COLUMN"}` — a string-qualified flat field. When predicates move between scopes (EXISTS outer push-down, FlatMap), Go uses `stripAliasFromPredicate` to string-strip the table prefix. This is fragile: it only handles predicate types it knows about, and silently passes unknown types through unchanged — producing wrong results when the unstripped qualification doesn't match the row's unqualified keys.
+**Go (Phase 7.1 + 7.3):** Three improvements landed:
+1. **Quantifier aliases unified with table aliases** (7.1): `ForEachQuantifier` in the translator uses `NamedCorrelationIdentifier(tableAlias)`. `GetCorrelatedToOfPredicate` and `GetAlias()` return the same identifiers. Three band-aids removed (`rightAliasSet`, `planContainsJoin`, `collectPlanAliases`).
+2. **EXISTS predicates use QOV-based FieldValues** (7.3): `qualifyBareFieldValue` now produces `FieldValue(QOV(alias), "column")` instead of flat `"ALIAS.COLUMN"`. All `predicateReferencesAlias` calls in the NLJ rule replaced with `GetCorrelatedToOfPredicate` correlation-set checks.
+3. **SQL resolver produces QOV-based FieldValues** for multi-source scopes (JOIN, correlated EXISTS).
 
-**Impact:** OR predicates in EXISTS outer WHERE silently drop rows. Any compound predicate (AND of OR, nested NOT) in outer-only position fails the same way. `stripAliasFromPredicate` was extended to handle AND/OR/NOT (nightshift-97 stash), but the function is fundamentally a band-aid.
-
-**Fix:** Align with Java — resolve to `FieldValue(QOV(correlation), "column")` in the translator. Remove `stripAliasFromPredicate` entirely. Same root cause as `JoinMergeResultValue → RecordConstructorValue`: translator needs schema metadata to produce correlation-based field references.
+**Remaining:** Single-source scopes produce flat `FieldValue{Field: "COLUMN"}` (no QOV child). `stripAliasPrefixFromPredicates` still used for push-filter-below-join (strips alias for child-scope evaluation). `walkPredicateFieldValues` + `fieldValueAliasAndCol` survive in push-filter/push-projection rules (handle both QOV and flat formats).
 
 ### FieldValue: composition vs multi-step FieldPath
 

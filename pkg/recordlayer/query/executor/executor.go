@@ -1225,7 +1225,10 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 			continue
 		}
 		if innerQual != "" {
-			merged[innerQual+"."+strings.ToUpper(k)] = v
+			qualKey := innerQual + "." + strings.ToUpper(k)
+			if _, exists := merged[qualKey]; !exists {
+				merged[qualKey] = v
+			}
 		}
 		if innerAlias != "" && innerType != "" && innerAlias != innerType {
 			qualKey := innerType + "." + strings.ToUpper(k)

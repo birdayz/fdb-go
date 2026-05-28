@@ -97,52 +97,21 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	leftAlias := leftQuantifier.GetAlias()
 	rightAlias := rightQuantifier.GetAlias()
 
-	// Build alias sets including both quantifier and table (source)
-	// aliases. GetCorrelatedToOfPredicate returns table aliases from
-	// FieldValue QOV nodes; quantifier aliases come from GetAlias().
-	// Both must be checked for correct predicate classification.
-	rightAliasSet := map[values.CorrelationIdentifier]struct{}{rightAlias: {}}
-	origAliases := sel.GetSourceAliases()
-	if len(origAliases) >= 2 {
-		origQ := sel.GetQuantifiers()
-		for i, q := range origQ {
-			if i < len(origAliases) && origAliases[i] != "" {
-				tableCorr := values.NamedCorrelationIdentifier(origAliases[i])
-				if q.GetAlias() == rightAlias {
-					rightAliasSet[tableCorr] = struct{}{}
-				}
-			}
-		}
-	}
-
-	// Compute transitive correlation order.
 	fullCorrelationOrder := computeTransitiveCorrelationOrder(sel.GetQuantifiers())
 
 	leftDeps := fullCorrelationOrder[leftAlias]
 	if _, leftDependsOnRight := leftDeps[rightAlias]; leftDependsOnRight {
-		// Left depends on right — cannot push join predicates to right.
-		// The opposite ordering (where this quantifier is right) will handle it.
 		return
 	}
 
-	// Classify predicates.
 	var leftPredicates []predicates.QueryPredicate
 	var rightPredicates []predicates.QueryPredicate
 
 	for _, pred := range sel.GetPredicates() {
 		correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
-		correlatedToRight := false
-		for corrID := range correlatedTo {
-			if _, ok := rightAliasSet[corrID]; ok {
-				correlatedToRight = true
-				break
-			}
-		}
-		if correlatedToRight {
-			// Predicate depends on right → must go to right.
+		if _, ok := correlatedTo[rightAlias]; ok {
 			rightPredicates = append(rightPredicates, pred)
 		} else {
-			// Predicate depends on left or is independent → goes to left.
 			leftPredicates = append(leftPredicates, pred)
 		}
 	}
@@ -208,24 +177,13 @@ func (r *PartitionBinarySelectRule) tryPartition(
 		)
 	}
 
-	// Build the outer SelectExpression with no predicates (all predicates
-	// have been absorbed into the sub-SelectExpressions).
-	// Propagate sourceAliases from the original Select, reordered to
-	// match the new quantifier order (left, right may be swapped).
+	// Propagate sourceAliases in the new quantifier order. After alias
+	// unification, quantifier aliases ARE the source aliases.
+	la := leftQuantifier.GetAlias().Name()
+	ra := rightQuantifier.GetAlias().Name()
 	var newAliases []string
-	if len(origAliases) >= 2 {
-		origQ := sel.GetQuantifiers()
-		am := map[values.CorrelationIdentifier]string{}
-		for i, q := range origQ {
-			if i < len(origAliases) {
-				am[q.GetAlias()] = origAliases[i]
-			}
-		}
-		la := am[leftQuantifier.GetAlias()]
-		ra := am[rightQuantifier.GetAlias()]
-		if la != "" && ra != "" {
-			newAliases = []string{la, ra}
-		}
+	if la != "" && ra != "" {
+		newAliases = []string{la, ra}
 	}
 
 	newSelectExpr := expressions.NewSelectExpressionWithJoinType(

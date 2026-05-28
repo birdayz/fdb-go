@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"sort"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -437,6 +439,57 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 		stampOrderingWinners(ref, p.costModel)
 	}
+
+	// Cross-candidate intersection: aggregate matches from different
+	// indexes and create physical intersection plans during PLANNING.
+	// Creates RecordQueryIntersectionPlan directly (not logical) because
+	// there's only one intersection strategy (PK-based). If merge or
+	// hash intersection is added, this should yield LogicalIntersectionExpression
+	// and let ImplementIntersectionRule choose the strategy.
+	//
+	// Guards: candidate cap (4) and match cap (8) prevent combinatorial
+	// explosion in MaximumCoverageMatches for queries with many indexes
+	// (e.g., InList with 5+ candidates). hasIntersectionFinal prevents
+	// re-creation when pushDataAccessTasks fires multiple times per ref.
+	if len(candidates) >= 2 && len(candidates) <= 4 && !hasIntersectionFinal(ref) {
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].CandidateName() < candidates[j].CandidateName()
+		})
+		var allMatches []PartialMatch
+		for _, candidate := range candidates {
+			allMatches = append(allMatches, GetPartialMatchesForCandidate(ref, candidate)...)
+		}
+		// Only include matches with non-empty bound parameter prefix
+		// (i.e., matches that actually restrict the scan). Zero-coverage
+		// matches produce full index scans that don't help with intersection.
+		var restrictedMatches []PartialMatch
+		for _, m := range allMatches {
+			if hasRestrictedScan(m) {
+				restrictedMatches = append(restrictedMatches, m)
+			}
+		}
+		if len(restrictedMatches) >= 2 && len(restrictedMatches) <= 8 {
+			bestMatches := MaximumCoverageMatches(restrictedMatches, requestedOrderings, p.ctx)
+			if len(bestMatches) >= 2 {
+				result := WithPrimaryKeyIntersector(p.ctx)(bestMatches, requestedOrderings)
+				if result != nil && result.IsViable() {
+					for _, expr := range result.GetExpressions() {
+						ref.InsertFinal(expr)
+					}
+					stampOrderingWinners(ref, p.costModel)
+				}
+			}
+		}
+	}
+}
+
+func hasIntersectionFinal(ref *expressions.Reference) bool {
+	for _, m := range ref.FinalMembers() {
+		if IsPhysicalIntersection(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // Task is the task-stack driver's unit of work. Tasks are Run

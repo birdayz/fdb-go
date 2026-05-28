@@ -6,47 +6,62 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## Stress test 1M baseline (2026-05-27)
+
+**Run command:** `bazelisk test //pkg/relational/sqldriver/stress:stress_test --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"`
+
+| Query | Rows | Time | Threshold |
+|-------|------|------|-----------|
+| pk_lookup_first | 1 | 1.5ms | <5ms |
+| pk_lookup_middle | 1 | 1.5ms | <5ms |
+| pk_lookup_last | 1 | 1.7ms | <5ms |
+| index_customer_eq (8 rows) | 8 | 9.1ms | <10ms |
+| index_amount_range (100K rows) | 100017 | 196ms | |
+| index_status_count | 1 | 362ms | |
+| full_scan_count | 1000000 | 3.1s | ~3s/1M |
+| full_scan_filter | 1 | 534ms | |
+| group_by_status | 4 | 5.25s | |
+| group_by_status_count_only | 4 | 1.9ms | |
+| sum_by_status | 4 | 2.0ms | |
+| group_by_customer_having | 47271 | 107ms | |
+| join_10_outer | 10 | 4.1ms | |
+| order_by_pk_full (1M rows) | 1000000 | 3.33s | ~3s/1M |
+| order_by_pk_index_filter | 8 | 3.4ms | |
+| scan_all_narrow (1M rows) | 1000000 | 3.33s | ~3s/1M |
+| scan_all_wide (1M rows) | 1000000 | 3.66s | ~3s/1M |
+| in_list | 46 | 10ms | <10ms |
+| needle_in_haystack_pk | 1 | 2.0ms | <5ms |
+| needle_in_haystack_filter | 1 | 2.4ms | <5ms |
+| full_scan_sparse_filter | 97 | 3.0s | ~3s/1M |
+| update_by_index | 8 | 4.0ms | |
+| delete_single_row | 1 | 2.3ms | |
+
+All 23 subtests PASS. Total: 170.7s (incl. bulk insert ~2:28).
+
+---
+
 ## Phase 7: Cascades alignment — close remaining Java divergences
 
-### 7.1 Unify alias namespaces
+### 7.1 Unify alias namespaces — DONE
 
-**Priority: HIGH.** Quantifier aliases (`q$0`, `q$1`) and table aliases (`R`, `P`, `C`) are separate namespaces. Java unifies them — the quantifier alias IS the table alias. Go's split causes:
+Quantifier aliases now match table aliases at creation. Three band-aids removed: `rightAliasSet`, `planContainsJoin`, `collectPlanAliases` (−114 lines). Root-cause fix in `mergeRows`: bare inner keys overwrote qualified keys from nested joins (missing `!exists` guard). 46/46 tests, 15/15 determinism.
 
-- `PartitionBinarySelectRule` needs `rightAliasSet` workaround to match predicate correlations (table aliases) against quantifier aliases
-- `planContainsJoin` guard in EXISTS compensates for alias qualification gaps in materialized multi-table inners
-- `predicateReferencesAlias` string matching persists in ~10 call sites because correlation-set classification only finds QOV-based (table alias) references
+### 7.2 Port matching infrastructure for index intersections — DONE
 
-**Fix:** At quantifier creation in the SQL translator (`cascades_translator.go`), use `NamedCorrelationIdentifier(tableAlias)` as the quantifier alias instead of `UniqueCorrelationIdentifier()`. Audit every `GetAlias()` consumer. This collapses three workarounds into zero.
+`IndexIntersectionRule` deleted (Go-only REWRITING-phase rule). Replaced with match-based PLANNING-phase intersection via `WithPrimaryKeyIntersector` in `intersector_primary_key.go`. Wired into `pushDataAccessTasks` with guards: candidate cap (4), match cap (8), restricted-scan filter, idempotency via `hasIntersectionFinal`. Two regressions found and fixed: IS NULL correctness (zero-coverage matches created incorrect intersections, fixed by filtering to restricted scans only) and MaxTasks (intersection logic ran N times per Reference, fixed by idempotency guard). 46/46 tests, 10/10 determinism.
 
-**Verification:** Remove `rightAliasSet` expansion from `PartitionBinarySelectRule`. Remove `planContainsJoin` guard. Convert remaining `predicateReferencesAlias` sites to `GetCorrelatedToOfPredicate`. All 46 test targets pass.
+### 7.3 Convert remaining predicateReferencesAlias sites — DONE
 
-### 7.2 Port matching infrastructure for index intersections
+All 8 `predicateReferencesAlias` calls in the NLJ rule converted to `GetCorrelatedToOfPredicate` correlation-set checks. Function deleted. Root-cause fix: `qualifyBareFieldValue` in EXISTS builder now produces QOV-based FieldValues instead of flat strings. `walkPredicateFieldValues`/`fieldValueAliasAndCol` survive in push-filter/push-projection rules (handle both QOV and flat FieldValues for unit test compatibility).
 
-**Priority: HIGH.** `IndexIntersectionRule` is a Go-only logical rewrite rule that generates intersection alternatives combinatorially during REWRITING. Java doesn't have it — Java uses `MatchLeafRule` + `MatchIntermediateRule` + `ImplementIntersectionRule`, a match-then-implement pattern during PLANNING.
+### 7.4 FlatMap wrapper correlation propagation — NOT NEEDED (Graefe confirmed)
 
-The Go-only approach loses to REWRITING cost model pruning for:
-- 3-way intersections (pruned in favor of 2-way)
-- Compound index vs intersection (compound index filter pruned before PLANNING can try it)
-- DISTINCT over GROUP BY (hash tiebreak during REWRITING)
+Graefe confirmed: `GetCorrelatedToWithoutChildren()` returning empty is correct for BOTH joins AND correlated subqueries. Correlations flow through quantifier children in both cases. `JoinMergeResultValue.Children()` does NOT need QOV nodes.
 
-Three test assertions relaxed with root-cause documentation (`index_scan_e2e_test.go`).
-
-**Fix:** Port `MatchLeafRule`, `MatchIntermediateRule`. Verify `ImplementIntersectionRule` works with match-based input. Delete `IndexIntersectionRule`. Restore fatal assertions on all 3 plan quality tests.
-
-### 7.3 Convert remaining predicateReferencesAlias sites
-
-**Priority: MEDIUM.** Blocked on 7.1 (alias namespace unification). `yieldGeneralFlatMap` uses correlation-set classification (Phase 2 of RFC-005). The following paths still use string-based `predicateReferencesAlias`:
-
-- `implementExistentialSelect` NLJ fallback (line ~347)
-- `implementJoinWithExistential` (line ~461)
-- `tryFlatMapPlan` residual classification (~6 sites)
-- `tryExistsFlatMap` residual classification (~2 sites)
-- `buildExistsFlatMap` residual classification (~2 sites)
-
-Both approaches produce identical results for QOV-based FieldValues (the common case). Legacy flat FieldValues (`Field: "ALIAS.COL"`, nil Child) are only found in non-predicate contexts (ORDER BY, GROUP BY, projections). Safe to convert after 7.1 confirms all predicate FieldValues use QOV children.
-
-### 7.4 FlatMap wrapper correlation propagation
-
-**Priority: LOW.** `physicalFlatMapWrapper.GetCorrelatedToWithoutChildren()` returns empty. `JoinMergeResultValue` stores `OuterAlias`/`InnerAlias` as struct fields, not as `QuantifiedObjectValue` children — `GetCorrelatedToOfValue` finds nothing. Correct for joins (correlations flow through quantifier children). When correlated subqueries are ported, `JoinMergeResultValue.Children()` must return QOV nodes.
+For correlated scalar subqueries (Go-only extension, Java rejects at grammar level), the correct Cascades architecture is:
+1. `ForEachNullOnEmpty` quantifier (already exists: `ForEachNullOnEmptyQuantifier`)
+2. `RecordQueryFirstOrDefaultPlan` with NULL default (already exists)
+3. Correlated `BuildScalar` fallback (needs: full inner plan with outer scope, correlation predicate extraction)
+4. NLJ rule: detect NullOnEmpty → wrap inner with FirstOrDefault + FlatMap
 
 NLJ wrapper correlation propagation (walks predicates) is already correct and active.
