@@ -7,11 +7,18 @@ description: Pick the next unchecked TODO.md item, write an RFC, get it reviewed
 
 Pick the next unchecked item from TODO.md and drive it from RFC through implementation to merged PR. Every step has mandatory review gates.
 
-## Step 0: Find the next item
+## Step 0: Find the next item and set the goal
 
 1. Read `TODO.md`.
 2. Find the **lowest-numbered unchecked item** whose gates are satisfied. Priority order: P0 > P1 > P2 > Phase items.
 3. State clearly which item you're working on.
+4. Ask the user to set a `/goal` reflecting the work, so the harness keeps driving it to completion across turns. `/goal` is a built-in CLI command — you cannot invoke it; output the exact line for the user to paste:
+
+   ```
+   /goal <item-id>: <short description> — RFC written, reviewed (Graefe+Torvalds ACK), implemented, tests green, PR created, @claude LGTM
+   ```
+
+   Example: `/goal P1.2: QOV-based FieldValue migration — RFC written, Graefe+Torvalds ACK, all stripAlias calls eliminated, tests green, PR merged with @claude LGTM`
 
 ## Step 1: Load the query-engine skill
 
