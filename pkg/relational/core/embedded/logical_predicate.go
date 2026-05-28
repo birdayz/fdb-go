@@ -3774,14 +3774,23 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 
 	var scalarCol string
 	if isAggregate {
-		// Build aggregate on top of the correlated filter.
-		var groupKeys []string
 		if len(sq.groupBy) > 0 {
-			groupKeys = sq.groupBy
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: GROUP BY in inner query not yet supported",
+			}
 		}
+		if sq.havingExpr != nil {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: HAVING in inner query not yet supported",
+			}
+		}
+
+		// Build aggregate on top of the correlated filter.
+		// No GROUP BY — the aggregate covers the entire filtered set
+		// and produces exactly 1 row (the scalar subquery contract).
 		if sq.countStar {
 			scalarCol = "COUNT(*)"
-			innerOp = logical.NewAggregate(innerOp, groupKeys, []string{"COUNT(*)"}, []string{scalarCol}, "")
+			innerOp = logical.NewAggregate(innerOp, nil, []string{"COUNT(*)"}, []string{scalarCol}, "")
 		} else {
 			agg := sq.aggCols[0]
 			if agg.aggArg != "" {
@@ -3790,20 +3799,18 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
 			}
 			aggText := agg.aggFunc + "(" + agg.aggArg + ")"
-			innerOp = logical.NewAggregate(innerOp, groupKeys, []string{aggText}, []string{scalarCol}, "")
-		}
-
-		if sq.havingExpr != nil {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: HAVING in inner query not yet supported",
-			}
+			innerOp = logical.NewAggregate(innerOp, nil, []string{aggText}, []string{scalarCol}, "")
 		}
 	} else {
 		// Non-aggregate correlated scalar subquery.
-		// The scalar column is the first projected column.
 		if len(sq.projCols) == 0 {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 				Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
+			}
+		}
+		if len(sq.projCols) > 1 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("scalar subquery must return exactly one column, got %d", len(sq.projCols)),
 			}
 		}
 		scalarCol = strings.ToUpper(sq.projCols[0])

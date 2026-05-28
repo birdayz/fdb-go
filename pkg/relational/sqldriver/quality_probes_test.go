@@ -569,12 +569,31 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("having_rejected", func(t *testing.T) {
-		// Shape 3: HAVING in correlated scalar subquery is not yet supported.
+		// HAVING in correlated scalar subquery requires PredicatePushDownRule
+		// changes (AliasMap conflict on correlation alias). Rejected for now.
 		err := expectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id HAVING COUNT(*) > 1)
 			FROM customers c ORDER BY name`)
 		if err == nil {
 			t.Fatal("expected error for HAVING in correlated scalar subquery")
+		}
+	})
+
+	t.Run("group_by_rejected", func(t *testing.T) {
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for GROUP BY in correlated scalar subquery")
+		}
+	})
+
+	t.Run("multi_column_rejected", func(t *testing.T) {
+		err := expectError(t, db, `SELECT name,
+			(SELECT status, amount FROM orders o WHERE o.customer_id = c.id LIMIT 1)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for multi-column scalar subquery")
 		}
 	})
 }
