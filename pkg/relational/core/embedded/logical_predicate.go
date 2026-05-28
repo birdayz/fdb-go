@@ -3803,6 +3803,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 	} else {
 		// Non-aggregate correlated scalar subquery.
+		if len(sq.groupBy) > 0 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: GROUP BY without aggregate in inner query not supported",
+			}
+		}
 		if len(sq.projCols) == 0 {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 				Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
@@ -3832,8 +3837,9 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 
 		// SQL standard: scalar subquery must return at most 1 row.
-		// Use the user's LIMIT if specified, otherwise enforce LIMIT 1.
-		if sq.limit > 0 {
+		// Use the user's LIMIT if specified (limit < 0 = no limit),
+		// otherwise enforce LIMIT 1.
+		if sq.limit >= 0 {
 			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
 		} else {
 			innerOp = logical.NewLimit(innerOp, 1, 0)

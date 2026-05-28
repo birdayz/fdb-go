@@ -520,7 +520,8 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 
 	t.Run("non_aggregate_implicit_limit", func(t *testing.T) {
 		// Shape 1 variant: no explicit LIMIT — system enforces LIMIT 1.
-		// Charlie has exactly 1 order, so this should return it.
+		// Uses Charlie (id=3) who has exactly 1 order, so the result is
+		// deterministic regardless of which row LIMIT 1 picks.
 		rows := collectRows(t, db, `SELECT name,
 			(SELECT status FROM orders o WHERE o.customer_id = c.id)
 			FROM customers c WHERE c.id = 3`)
@@ -568,9 +569,24 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("scalar_in_coalesce", func(t *testing.T) {
+		// Regression test for replaceScalarSubqueryRef deep-walk:
+		// ScalarSubqueryValue nested inside COALESCE must be replaced.
+		rows := collectRows(t, db, `SELECT name,
+			COALESCE((SELECT status FROM orders o WHERE o.customer_id = c.id ORDER BY o.id ASC LIMIT 1), 'none')
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		for _, r := range rows {
+			status := fmt.Sprintf("%v", r[1])
+			if status == "" || status == "<nil>" {
+				t.Errorf("%v: expected non-null status from COALESCE, got %v", r[0], r[1])
+			}
+		}
+	})
+
 	t.Run("having_rejected", func(t *testing.T) {
-		// HAVING in correlated scalar subquery requires PredicatePushDownRule
-		// changes (AliasMap conflict on correlation alias). Rejected for now.
 		err := expectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id HAVING COUNT(*) > 1)
 			FROM customers c ORDER BY name`)
@@ -579,12 +595,21 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("group_by_rejected", func(t *testing.T) {
+	t.Run("group_by_aggregate_rejected", func(t *testing.T) {
 		err := expectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c ORDER BY name`)
 		if err == nil {
 			t.Fatal("expected error for GROUP BY in correlated scalar subquery")
+		}
+	})
+
+	t.Run("group_by_non_aggregate_rejected", func(t *testing.T) {
+		err := expectError(t, db, `SELECT name,
+			(SELECT status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status LIMIT 1)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for GROUP BY without aggregate in correlated scalar subquery")
 		}
 	})
 
