@@ -4823,3 +4823,173 @@ func TestMemorySortCursor_BufferLimitExceeded(t *testing.T) {
 		t.Errorf("limit = %d, want 5", bufErr.Limit)
 	}
 }
+
+// --- CollectAllBounded regression tests ---
+
+func TestCollectAllBounded_UnderLimit(t *testing.T) {
+	t.Parallel()
+	rows := make([]QueryResult, 5)
+	for i := range rows {
+		rows[i] = qr("n", int64(i))
+	}
+	cursor := recordlayer.FromList(rows)
+
+	results, err := CollectAllBounded(context.Background(), cursor, 10, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 5 {
+		t.Errorf("got %d results, want 5", len(results))
+	}
+}
+
+func TestCollectAllBounded_ExactlyAtLimit(t *testing.T) {
+	t.Parallel()
+	rows := make([]QueryResult, 10)
+	for i := range rows {
+		rows[i] = qr("n", int64(i))
+	}
+	cursor := recordlayer.FromList(rows)
+
+	_, err := CollectAllBounded(context.Background(), cursor, 10, "test")
+	if err == nil {
+		t.Fatal("expected MaterializationLimitExceededError at exactly limit rows")
+	}
+	var mlErr *MaterializationLimitExceededError
+	if !errors.As(err, &mlErr) {
+		t.Fatalf("expected *MaterializationLimitExceededError, got %T: %v", err, err)
+	}
+	if mlErr.Limit != 10 {
+		t.Errorf("limit = %d, want 10", mlErr.Limit)
+	}
+	if mlErr.Context != "test" {
+		t.Errorf("context = %q, want %q", mlErr.Context, "test")
+	}
+}
+
+func TestCollectAllBounded_OverLimit(t *testing.T) {
+	t.Parallel()
+	rows := make([]QueryResult, 20)
+	for i := range rows {
+		rows[i] = qr("n", int64(i))
+	}
+	cursor := recordlayer.FromList(rows)
+
+	_, err := CollectAllBounded(context.Background(), cursor, 10, "nested loop join inner side")
+	if err == nil {
+		t.Fatal("expected MaterializationLimitExceededError")
+	}
+	var mlErr *MaterializationLimitExceededError
+	if !errors.As(err, &mlErr) {
+		t.Fatalf("expected *MaterializationLimitExceededError, got %T: %v", err, err)
+	}
+	if mlErr.Limit != 10 {
+		t.Errorf("limit = %d, want 10", mlErr.Limit)
+	}
+	if mlErr.Context != "nested loop join inner side" {
+		t.Errorf("context = %q, want %q", mlErr.Context, "nested loop join inner side")
+	}
+	if !strings.Contains(mlErr.Error(), "10 rows") {
+		t.Errorf("error message missing row count: %q", mlErr.Error())
+	}
+	if !strings.Contains(mlErr.Error(), "adding an index") {
+		t.Errorf("error message missing actionable advice: %q", mlErr.Error())
+	}
+}
+
+func TestCollectAllBounded_EmptyCursor(t *testing.T) {
+	t.Parallel()
+	cursor := recordlayer.FromList([]QueryResult{})
+
+	results, err := CollectAllBounded(context.Background(), cursor, 5, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("got %d results, want 0", len(results))
+	}
+}
+
+func TestCollectAllBounded_LimitOne(t *testing.T) {
+	t.Parallel()
+	rows := []QueryResult{qr("n", int64(1)), qr("n", int64(2))}
+	cursor := recordlayer.FromList(rows)
+
+	_, err := CollectAllBounded(context.Background(), cursor, 1, "test")
+	if err == nil {
+		t.Fatal("expected MaterializationLimitExceededError with limit=1 and 2 rows")
+	}
+	var mlErr *MaterializationLimitExceededError
+	if !errors.As(err, &mlErr) {
+		t.Fatalf("expected *MaterializationLimitExceededError, got %T: %v", err, err)
+	}
+	if mlErr.Limit != 1 {
+		t.Errorf("limit = %d, want 1", mlErr.Limit)
+	}
+}
+
+func TestCollectAllBounded_OneBelowLimit(t *testing.T) {
+	t.Parallel()
+	rows := make([]QueryResult, 9)
+	for i := range rows {
+		rows[i] = qr("n", int64(i))
+	}
+	cursor := recordlayer.FromList(rows)
+
+	results, err := CollectAllBounded(context.Background(), cursor, 10, "test")
+	if err != nil {
+		t.Fatalf("unexpected error with 9 rows and limit 10: %v", err)
+	}
+	if len(results) != 9 {
+		t.Errorf("got %d results, want 9", len(results))
+	}
+}
+
+func TestMaterializationLimitExceededError_ErrorsAs(t *testing.T) {
+	t.Parallel()
+	orig := &MaterializationLimitExceededError{Limit: 42, Context: "buffered union branch"}
+	wrapped := fmt.Errorf("executor: %w", orig)
+
+	var mlErr *MaterializationLimitExceededError
+	if !errors.As(wrapped, &mlErr) {
+		t.Fatal("errors.As failed on wrapped MaterializationLimitExceededError")
+	}
+	if mlErr.Limit != 42 {
+		t.Errorf("limit = %d, want 42", mlErr.Limit)
+	}
+	if mlErr.Context != "buffered union branch" {
+		t.Errorf("context = %q, want %q", mlErr.Context, "buffered union branch")
+	}
+}
+
+func TestGetMaterializationLimit_Default(t *testing.T) {
+	t.Parallel()
+	props := recordlayer.DefaultExecuteProperties()
+	if props.GetMaterializationLimit() != recordlayer.DefaultMaterializationLimit {
+		t.Errorf("default = %d, want %d", props.GetMaterializationLimit(), recordlayer.DefaultMaterializationLimit)
+	}
+}
+
+func TestGetMaterializationLimit_Custom(t *testing.T) {
+	t.Parallel()
+	props := recordlayer.DefaultExecuteProperties().WithMaterializationLimit(500)
+	if props.GetMaterializationLimit() != 500 {
+		t.Errorf("custom = %d, want 500", props.GetMaterializationLimit())
+	}
+}
+
+func TestGetMaterializationLimit_ZeroFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	props := recordlayer.DefaultExecuteProperties().WithMaterializationLimit(0)
+	if props.GetMaterializationLimit() != recordlayer.DefaultMaterializationLimit {
+		t.Errorf("zero = %d, want default %d", props.GetMaterializationLimit(), recordlayer.DefaultMaterializationLimit)
+	}
+}
+
+func TestGetMaterializationLimit_NegativeFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+	props := recordlayer.DefaultExecuteProperties().WithMaterializationLimit(-1)
+	if props.GetMaterializationLimit() != recordlayer.DefaultMaterializationLimit {
+		t.Errorf("negative = %d, want default %d", props.GetMaterializationLimit(), recordlayer.DefaultMaterializationLimit)
+	}
+}
