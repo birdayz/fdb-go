@@ -10,15 +10,47 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ### vs Java (correctness/feature parity)
 
-- [ ] **Correlated filter without index is broken.** QOV predicates in `Filter(Scan)` don't evaluate correctly — only the `IndexScan` path works. Any join/subquery that falls back to Filter(Scan) instead of IndexScan silently returns zero rows. **Correctness bug.**
+- [x] **Correlated filter without index.** Fixed in 56874f23 — ImplementFilterRule sets innerAlias on RecordQueryPredicatesFilterPlan. All correlated paths (scalar subquery, EXISTS, JOIN) work without indexes. 14+ integration tests verify.
 - [ ] **No RIGHT/FULL OUTER JOIN.** Only LEFT OUTER is implemented.
-- [ ] **Limited correlated scalar subquery shapes.** Only single-table aggregate (COUNT/SUM/MIN/MAX/AVG) with index on correlation column. No correlated non-aggregate, no multi-table inner, no HAVING in correlated inner.
+- [x] **Correlated scalar subquery shapes widened.** Non-aggregate (ORDER BY + LIMIT), multi-table inner FROM (JOINs), multi-column validation, deep-walk replaceScalarSubqueryRef. GROUP BY/HAVING rejected with clear errors (PredicatePushDownRule AliasMap conflict). CorrelatedExistsError propagation fixed.
 - [ ] **No window functions.** No `ROW_NUMBER()`, `RANK()`, `LAG/LEAD`.
+- [ ] **GROUP BY/HAVING in correlated scalar subqueries.** Requires PredicatePushDownRule to treat GroupByExpression as a barrier (AliasMap.Compose conflict on correlation alias). Per Graefe: runtime cardinality assertions incompatible with continuation-based pagination — use Java's FirstOrDefault pattern.
+- [ ] **PlanVisitor resolver lacks SubqueryPlanner.** Scalar subquery error messages don't propagate through step (2) projection resolution because the resolver has no SubqueryPlanner. workaround: errors propagate through upgradeProjectionValues (step 12) instead.
 
 ### Beyond Java (Go-only improvements)
 
 - [ ] **Full Graefe Memo with cross-group merging.** Neither Java nor Go implements the Cascades paper's cross-Reference equivalence class merging. Per-Reference dedup suffices for current workloads (CRUD, simple joins, aggregates). Full Memo would unlock optimal multi-way join ordering (5+ tables) and redundant subexpression elimination. Significant effort — the `B3` follow-on in codebase comments.
 - [x] **Correlated scalar subqueries.** Go-only extension — Java rejects at grammar level. Implemented via FlatMap with JoinTypeLeftOuter.
+
+---
+
+## Production readiness (Graefe review, 2026-05-28)
+
+The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING, 16-criteria cost model, match-candidate infra all well-ported. The production risks are all at the **boundaries**: planner↔executor, executor↔runtime, system↔operator. Priority tiers below.
+
+### P0 — fix before deploying anywhere (correctness/availability)
+
+- [ ] **P0.1 NLJ memory bomb.** `executeNestedLoopJoin` (`executor/executor.go:1148-1153`) calls `CollectAll` to drain the *entire* inner cursor into `[]QueryResult` with no bound. Fires whenever no PK/index matches the join predicate (every ad-hoc join on a fresh schema). Runs with `ClearRowAndTimeLimits()` so it ignores the 5s FDB scan limiter → transaction times out with a cryptic FDB error. Same `CollectAll` pattern in `executeUnionBuffered` (line 917), recursive CTE (lines 1761/1817/1865/1938), in-memory sort. Stress suite hides this because its joins hit indexed FlatMap paths.
+  - **Fix (30 min):** hard materialization limit on NLJ + clear error when exceeded.
+  - **Fix (correct):** convert NLJ to cursor-based re-execution like FlatMap (matches Java — FlatMap for everything).
+- [ ] **P0.2 Plan cache serves wrong plans.** `plan_cache.go` keys on a `uint64` SQL hash and `Get()` never compares the stored SQL text on a hit → hash collisions serve the wrong plan (correctness/corruption vector over a service lifetime). Separately, cached `scalarSubs` pre-evaluated subquery results go stale when parameters change → wrong results for parameterized queries.
+  - **Fix:** compare full SQL string on hash hit (or key the map on the string); invalidate/re-evaluate scalar subquery bindings when parameters change. Java keys on normalized plan-structure hash to avoid both.
+- [ ] **P0.3 No context cancellation in executor.** Zero `ctx.Err()`/`ctx.Done()` checks in non-test executor code. `flatMapCursor.OnNext` passes ctx to children but never checks it → a cancelled request spins until the 5s FDB timeout or an incidental child error. Every Go service sets request deadlines via context.
+  - **Fix:** check `ctx.Err()` at the top of every cursor `OnNext` loop iteration. Mechanical but critical.
+
+### P1 — fix before relying on the optimizer for real workloads (plan quality)
+
+- [ ] **P1.1 Wire statistics from FDB.** `StatisticsProvider` exists but `DefaultStatistics` returns `1e6` for everything → cost model flies blind. Picks correctly for CRUD by accident (ordinal tie-breaking dominates); picks randomly for competing access paths of similar shape, and *wrong* when a small table has a large index (or vice versa). The count index already exists in Go (maintained on writes).
+  - **Fix:** wire `StatisticsProvider` to read `RecordMetaData.getRecordCountIndex()` at plan time. ~1 FDB read per record type, ~1ms planning overhead. **Single highest-leverage change for plan quality.**
+- [ ] **P1.2 Complete QOV-based FieldValue migration.** 9 `stripAlias*` calls in the NLJ rule; `mergeRows` (line 1171) does string-based key qualification (`outerQual + "." + COL`). Works today by accident on simple shapes; breaks on 3+ table joins / self-joins / correlated subqueries with ambiguous column names (wrong-prefix strip or no strip). Java uses `Value.rebase(AliasMap)` — structural `CorrelationIdentifier` retargeting, zero string manipulation.
+  - **Fix:** every predicate/value carries `FieldValue(QOV(correlationId), "column")`; delete all `stripAlias*`. Highest-leverage *architectural* cleanup — eliminates a whole bug class.
+
+### P2 — fix before scaling operations
+
+- [ ] **P2.1 Plan cache LRU is O(n) per hit.** `PlanCache.promote()` linear-scans the LRU order slice under a write lock on every cache hit. Fine at 256 entries; `PLAN_CACHE_PRIMARY_MAX_ENTRIES=1024` makes it a concurrency contention point.
+  - **Fix (20 min):** `container/list` doubly-linked list for O(1) promote.
+- [ ] **P2.2 Operational debuggability.** No query logging, no slow-query log, no plan-in-error-message, no planning history. `PlannerEventHandler` exists but nil by default. First production question ("what plan did it pick?") requires re-running with EXPLAIN under the same data/params.
+  - **Fix:** optional planning-metrics hook (nil = silent) logging SQL (truncated), plan hash, planning duration, cache hit/miss, estimated cost. Sample ~1% in production to structured output.
 
 ---
 

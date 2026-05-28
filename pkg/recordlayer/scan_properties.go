@@ -116,7 +116,15 @@ type ExecuteProperties struct {
 	// Skip is the number of records to skip before returning results.
 	// Matches Java's ExecuteProperties.getSkip().
 	Skip int
+
+	// MaterializationLimit caps the number of rows that may be buffered
+	// in memory by operators that materialize an entire relation (NLJ
+	// inner, UNION buffered, recursive CTE levels). Zero means use
+	// DefaultMaterializationLimit.
+	MaterializationLimit int
 }
+
+const DefaultMaterializationLimit = 100_000
 
 // DefaultExecuteProperties returns properties with sensible defaults
 func DefaultExecuteProperties() ExecuteProperties {
@@ -173,6 +181,21 @@ func (e ExecuteProperties) ClearRowAndTimeLimits() ExecuteProperties {
 	e.ReturnedRowLimit = 0
 	e.TimeLimit = 0
 	return e
+}
+
+// WithMaterializationLimit returns a copy with the specified materialization limit.
+func (e ExecuteProperties) WithMaterializationLimit(limit int) ExecuteProperties {
+	e.MaterializationLimit = limit
+	return e
+}
+
+// GetMaterializationLimit returns the effective materialization limit,
+// falling back to DefaultMaterializationLimit when zero.
+func (e ExecuteProperties) GetMaterializationLimit() int {
+	if e.MaterializationLimit > 0 {
+		return e.MaterializationLimit
+	}
+	return DefaultMaterializationLimit
 }
 
 // ClearSkipAndLimit returns a copy with skip and row limit cleared.
