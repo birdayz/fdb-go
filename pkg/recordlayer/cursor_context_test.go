@@ -337,6 +337,30 @@ var _ = Describe("Cursor context cancellation", func() {
 	})
 
 	// ---------------------------------------------------------------
+	// autoContinuingCursor — CRITICAL: creates new FDB txns on dead ctx
+	// ---------------------------------------------------------------
+	Describe("autoContinuingCursor", func() {
+		It("stops on pre-cancelled context without opening any transaction", func() {
+			// With a pre-cancelled context, the ctx.Err() check at the top of the
+			// loop fires immediately. The runner/generator are never called —
+			// no FDB transaction is opened on a dead request.
+			var generatorCalls atomic.Int64
+			cursor := NewAutoContinuingCursor[int](
+				nil, // runner is never called
+				func(_ *FDBRecordContext, _ []byte) RecordCursor[int] {
+					generatorCalls.Add(1)
+					return &infiniteCursor{}
+				},
+				0,
+			)
+
+			_, err := cursor.OnNext(cancelledCtx())
+			Expect(err).To(Equal(context.Canceled))
+			Expect(generatorCalls.Load()).To(Equal(int64(0)))
+		})
+	})
+
+	// ---------------------------------------------------------------
 	// Edge case: context cancelled between calls (not pre-cancelled)
 	// ---------------------------------------------------------------
 	Describe("mid-iteration cancellation", func() {
