@@ -617,6 +617,11 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		if len(abovePreds) > 0 {
 			flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
 			flatMapRef := call.MemoizeExpression(flatMapWrapper)
+			// No alias binding: abovePreds reference BOTH correlations
+			// (cross-join predicates), and the FlatMap emits merged rows
+			// with qualified "ALIAS.COL" keys. The predicates resolve via
+			// the qualified-key datum path in evaluateCorrelated — binding
+			// the merged row under one alias would misresolve the other.
 			aboveFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, abovePreds)
 			call.Yield(NewPhysicalPredicatesFilterWrapper(aboveFilterPlan, expressions.ForEachQuantifier(flatMapRef)))
 		} else {
@@ -720,6 +725,10 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			if len(otherResiduals) > 0 {
 				flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
 				flatMapRef := call.MemoizeExpression(flatMapWrapper)
+				// No alias binding: otherResiduals reference both correlations
+				// (cross-join predicates) over the merged-row FlatMap output;
+				// they resolve via the qualified-key datum path (see the PK
+				// branch above for the full rationale).
 				aboveFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, otherResiduals)
 				call.Yield(NewPhysicalPredicatesFilterWrapper(aboveFilterPlan, expressions.ForEachQuantifier(flatMapRef)))
 			} else {
@@ -831,10 +840,9 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				}
 			}
 
-			existInnerCorr2 := values.NamedCorrelationIdentifier(innerAlias)
 			var innerWithFilter plans.RecordQueryPlan = correlatedIndexScan
 			if len(innerResiduals) > 0 {
-				innerWithFilter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedIndexScan, innerResiduals, existInnerCorr2)
+				innerWithFilter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedIndexScan, innerResiduals, existInnerCorr)
 			}
 
 			var outerWithFilter plans.RecordQueryPlan = outerPlan
@@ -842,7 +850,7 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				outerWithFilter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
 			}
 
-			innerCorrelation := existInnerCorr2
+			innerCorrelation := existInnerCorr
 			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
 				outerWithFilter, innerWithFilter,
 				outerCorrelation, innerCorrelation,
