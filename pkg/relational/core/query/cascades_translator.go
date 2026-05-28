@@ -68,8 +68,11 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	case *logical.LogicalFilter:
 		return t.translateFilter(o)
 	case *logical.LogicalLimit:
-		// LIMIT/OFFSET applied post-execution by paginatingRows.
-		// Skip the LogicalLimit wrapper — just translate its child.
+		// Top-level LIMIT/OFFSET is applied post-execution by paginatingRows.
+		// Skip the LogicalLimit wrapper here — inner-plan limits (e.g.
+		// inside correlated scalar subqueries) are handled by
+		// translateProjectWithCorrelatedScalar which peels the
+		// LogicalLimit and emits a LogicalLimitExpression.
 		return t.translateOp(o.Input)
 	case *logical.LogicalUnion:
 		return t.translateUnion(o)
@@ -364,10 +367,30 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	outerAlias := sourceAlias(p.Input)
 	outerQ := t.namedQuantifier(outerAlias, outerRef)
 
-	innerRef := t.translateRef(csq.InnerPlan)
+	// Peel LogicalLimit from the inner plan — translateOp skips it,
+	// but for correlated scalar subqueries the limit must be in the
+	// Cascades plan so the inner side returns at most N rows per
+	// outer row.
+	innerPlan := csq.InnerPlan
+	var innerLimit *logical.LogicalLimit
+	if lim, ok := innerPlan.(*logical.LogicalLimit); ok {
+		innerLimit = lim
+		innerPlan = lim.Input
+	}
+
+	innerRef := t.translateRef(innerPlan)
 	if innerRef == nil {
 		return nil
 	}
+
+	// Wrap with LogicalLimitExpression if the inner plan had a LIMIT.
+	if innerLimit != nil {
+		innerAlias := sourceAlias(innerPlan)
+		limitQ := t.namedQuantifier(innerAlias, innerRef)
+		limitExpr := expressions.NewLogicalLimitExpression(innerLimit.Limit, innerLimit.Offset, limitQ)
+		innerRef = expressions.InitialOf(limitExpr)
+	}
+
 	innerQ := t.namedQuantifier(csq.InnerAlias, innerRef)
 
 	resultValue := values.NewJoinMergeResultValue(
@@ -406,11 +429,13 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 }
 
 func replaceScalarSubqueryRef(v values.Value, csq logical.CorrelatedScalarSubquery, innerCorr values.CorrelationIdentifier) values.Value {
-	if ssq, ok := v.(*values.ScalarSubqueryValue); ok && ssq.Alias == csq.Alias {
-		qualifiedName := strings.ToUpper(innerCorr.Name()) + "." + strings.ToUpper(csq.ScalarCol)
-		return &values.FieldValue{Field: qualifiedName, Typ: values.UnknownType}
-	}
-	return v
+	return values.Replace(v, func(node values.Value) values.Value {
+		if ssq, ok := node.(*values.ScalarSubqueryValue); ok && ssq.Alias == csq.Alias {
+			qualifiedName := strings.ToUpper(innerCorr.Name()) + "." + strings.ToUpper(csq.ScalarCol)
+			return &values.FieldValue{Field: qualifiedName, Typ: values.UnknownType}
+		}
+		return node
+	})
 }
 
 func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {

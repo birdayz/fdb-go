@@ -483,6 +483,149 @@ func TestFDB_QualityProbe_ScalarSubquery(t *testing.T) {
 	})
 }
 
+func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
+	t.Parallel()
+	db := qualityProbeDB(t, "cssqs")
+
+	t.Run("non_aggregate_with_limit", func(t *testing.T) {
+		// Shape 1: non-aggregate correlated scalar subquery.
+		// Get the highest-amount order status per customer.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT status FROM orders o WHERE o.customer_id = c.id ORDER BY o.amount DESC LIMIT 1)
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// Alice(id=1): orders 10(100.50,'shipped'), 11(200.00,'pending') → highest amount is 200.00 → 'pending'
+		// Bob(id=2): orders 12(50.25,'shipped'), 13(75.00,'cancelled') → highest amount is 75.00 → 'cancelled'
+		// Charlie(id=3): order 14(300.00,'shipped') → 'shipped'
+		// Diana(id=4): order 15(null,'pending') → 'pending'
+		expected := []struct {
+			name   string
+			status string
+		}{
+			{"Alice", "pending"},
+			{"Bob", "cancelled"},
+			{"Charlie", "shipped"},
+			{"Diana", "pending"},
+		}
+		for i, exp := range expected {
+			name := fmt.Sprintf("%v", rows[i][0])
+			status := fmt.Sprintf("%v", rows[i][1])
+			if name != exp.name || status != exp.status {
+				t.Errorf("row %d: want (%s, %s), got (%s, %s)", i, exp.name, exp.status, name, status)
+			}
+		}
+	})
+
+	t.Run("non_aggregate_implicit_limit", func(t *testing.T) {
+		// Shape 1 variant: no explicit LIMIT — system enforces LIMIT 1.
+		// Uses Charlie (id=3) who has exactly 1 order, so the result is
+		// deterministic regardless of which row LIMIT 1 picks.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT status FROM orders o WHERE o.customer_id = c.id)
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		name := fmt.Sprintf("%v", rows[0][0])
+		status := fmt.Sprintf("%v", rows[0][1])
+		if name != "Charlie" || status != "shipped" {
+			t.Errorf("want (Charlie, shipped), got (%s, %s)", name, status)
+		}
+	})
+
+	t.Run("aggregate_with_join", func(t *testing.T) {
+		// Shape 2: aggregate correlated scalar subquery with JOIN in inner.
+		// Count items per customer (through orders→items join).
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id)
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// Alice(id=1): orders 10,11 → items 100,101,102 → 3
+		// Bob(id=2): orders 12 → items 103 → 1
+		// Charlie(id=3): order 14 → items 104,105 → 2
+		// Diana(id=4): order 15 → no items → 0
+		expected := []struct {
+			name  string
+			count int64
+		}{
+			{"Alice", 3},
+			{"Bob", 1},
+			{"Charlie", 2},
+			{"Diana", 0},
+		}
+		for i, exp := range expected {
+			name := fmt.Sprintf("%v", rows[i][0])
+			cnt, ok := rows[i][1].(int64)
+			if !ok {
+				t.Fatalf("row %d: count not int64, got %T (%v)", i, rows[i][1], rows[i][1])
+			}
+			if name != exp.name || cnt != exp.count {
+				t.Errorf("row %d: want (%s, %d), got (%s, %d)", i, exp.name, exp.count, name, cnt)
+			}
+		}
+	})
+
+	t.Run("scalar_in_coalesce", func(t *testing.T) {
+		// Regression test for replaceScalarSubqueryRef deep-walk:
+		// ScalarSubqueryValue nested inside COALESCE must be replaced.
+		rows := collectRows(t, db, `SELECT name,
+			COALESCE((SELECT status FROM orders o WHERE o.customer_id = c.id ORDER BY o.id ASC LIMIT 1), 'none')
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		for _, r := range rows {
+			status := fmt.Sprintf("%v", r[1])
+			if status == "" || status == "<nil>" {
+				t.Errorf("%v: expected non-null status from COALESCE, got %v", r[0], r[1])
+			}
+		}
+	})
+
+	t.Run("having_rejected", func(t *testing.T) {
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id HAVING COUNT(*) > 1)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for HAVING in correlated scalar subquery")
+		}
+		if !strings.Contains(err.Error(), "HAVING") {
+			t.Errorf("error should mention HAVING, got: %v", err)
+		}
+	})
+
+	t.Run("group_by_aggregate_rejected", func(t *testing.T) {
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for GROUP BY in correlated scalar subquery")
+		}
+	})
+
+	t.Run("group_by_non_aggregate_rejected", func(t *testing.T) {
+		err := expectError(t, db, `SELECT name,
+			(SELECT status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status LIMIT 1)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for GROUP BY without aggregate in correlated scalar subquery")
+		}
+	})
+
+	t.Run("multi_column_rejected", func(t *testing.T) {
+		err := expectError(t, db, `SELECT name,
+			(SELECT status, amount FROM orders o WHERE o.customer_id = c.id LIMIT 1)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for multi-column scalar subquery")
+		}
+	})
+}
+
 func TestFDB_QualityProbe_UpdateDeleteComplex(t *testing.T) {
 	t.Parallel()
 	db := qualityProbeDB(t, "udc")

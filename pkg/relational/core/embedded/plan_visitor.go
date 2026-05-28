@@ -428,7 +428,14 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		for i, col := range sq.projCols {
 			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				if proj != nil {
-					if wv, walkErr := resolver.WalkExpression(sq.projExprs[i]); walkErr == nil && wv != nil {
+					wv, walkErr := resolver.WalkExpression(sq.projExprs[i])
+					if walkErr != nil {
+						var corrErr *CorrelatedExistsError
+						if errors.As(walkErr, &corrErr) {
+							return nil, corrErr
+						}
+					}
+					if walkErr == nil && wv != nil {
 						if proj.ProjectedValues == nil {
 							proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 						}
@@ -556,7 +563,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 	}
 
-	// (7) Detect overflow numeric literals in projection expressions.
+	// (7) Detect overflow numeric literals and correlated-subquery
+	// rejections in projection expressions.
 	if resolver != nil && len(sq.projExprs) > 0 {
 		for _, e := range sq.projExprs {
 			if e == nil {
@@ -570,6 +578,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				var binErr *expr.InvalidBinaryLiteralError
 				if errors.As(walkErr, &binErr) {
 					return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+				}
+				var corrErr *CorrelatedExistsError
+				if errors.As(walkErr, &corrErr) {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 				}
 			}
 		}

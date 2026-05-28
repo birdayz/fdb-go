@@ -882,7 +882,14 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		for i, col := range sq.projCols {
 			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				if proj != nil {
-					if v, walkErr := resolver.WalkExpression(sq.projExprs[i]); walkErr == nil && v != nil {
+					v, walkErr := resolver.WalkExpression(sq.projExprs[i])
+					if walkErr != nil {
+						var corrErr *CorrelatedExistsError
+						if errors.As(walkErr, &corrErr) {
+							return nil, walkErr
+						}
+					}
+					if walkErr == nil && v != nil {
 						if proj.ProjectedValues == nil {
 							proj.ProjectedValues = make([]values.Value, len(proj.Projections))
 						}
@@ -1014,7 +1021,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
-	// Detect overflow numeric literals in projection expressions.
+	// Detect overflow numeric literals and correlated-subquery rejections
+	// in projection expressions.
 	if resolver != nil && len(sq.projExprs) > 0 {
 		for _, e := range sq.projExprs {
 			if e == nil {
@@ -1028,6 +1036,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				var binErr *expr.InvalidBinaryLiteralError
 				if errors.As(walkErr, &binErr) {
 					return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+				}
+				var corrErr *CorrelatedExistsError
+				if errors.As(walkErr, &corrErr) {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 				}
 			}
 		}
@@ -1810,12 +1822,13 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		}
 		v, err := resolver.WalkExpressionForProjection(e)
 		if err != nil {
-			// Propagate real semantic errors (e.g. 42703 undefined
-			// column from a correlated scalar subquery). Only
-			// UnsupportedExpressionShapeError should be swallowed.
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) {
 				return err
+			}
+			var corrErr *CorrelatedExistsError
+			if errors.As(err, &corrErr) {
+				return api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 			}
 			continue
 		}
@@ -3673,29 +3686,20 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 	}
 
-	if !sq.countStar && len(sq.aggCols) == 0 {
-		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-			Message: "correlated scalar subquery: only aggregate subqueries (COUNT/SUM/MIN/MAX/AVG) are supported",
-		}
-	}
 	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 			Message: "correlated scalar subquery: WHERE clause required for correlation",
 		}
 	}
-	if len(sq.joins) > 0 {
-		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-			Message: "correlated scalar subquery: JOINs in inner query not yet supported",
-		}
-	}
+
+	isAggregate := sq.countStar || len(sq.aggCols) > 0
 
 	innerAlias := sq.tableAlias
 	if innerAlias == "" {
 		innerAlias = sq.tableName
 	}
-	scanOp := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
 
-	// Walk WHERE with outer+inner scope (same as buildCorrelatedExists).
+	// Build scope first so the resolver can walk ON clauses.
 	cat := rlcatalog.Wrap(p.md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
@@ -3716,7 +3720,54 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
 	})
 
+	// Add join tables to scope so the resolver can resolve their columns.
+	for _, j := range sq.joins {
+		jAlias := j.alias
+		if jAlias == "" {
+			jAlias = j.tableName
+		}
+		jTbl, jErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(j.tableName, "."), false))
+		if jErr != nil {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("correlated scalar subquery: resolve join table %q: %v", j.tableName, jErr), Cause: jErr,
+			}
+		}
+		jAliasID := semantic.NewUnquoted(jAlias)
+		_ = innerScope.AddSource(semantic.ScopeSource{
+			Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
+		})
+	}
+
 	resolver := expr.New(analyzer, innerScope)
+
+	// Build the scan + join tree. Walk each join's ON clause with the
+	// resolver so the join predicate is properly attached.
+	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+	for _, j := range sq.joins {
+		right := logical.LogicalOperator(logical.NewScan(j.tableName, j.alias))
+		var kind logical.JoinKind
+		switch j.joinType {
+		case joinTypeLeft:
+			kind = logical.JoinLeft
+		case joinTypeRight:
+			kind = logical.JoinRight
+		default:
+			kind = logical.JoinInner
+		}
+		var joinPred predicates.QueryPredicate
+		if j.onExpr != nil {
+			walked, wErr := resolver.WalkPredicate(j.onExpr)
+			if wErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: walk ON clause: %v", wErr), Cause: wErr,
+				}
+			}
+			joinPred = walked
+		}
+		op = logical.NewJoinWithPredicate(op, right, kind, joinPred)
+	}
+
+	// Walk WHERE with outer+inner scope.
 	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
 	if walkErr != nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
@@ -3728,26 +3779,84 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	qualifyBareFields(pred, innerCorr)
 	pred = predicates.SimplifyPredicateValues(pred)
 
-	// Build Filter(correlated_pred, Scan) — predicate INSIDE inner plan.
-	var innerOp logical.LogicalOperator = scanOp
+	// Build Filter(correlated_pred, JoinTree) — predicate INSIDE inner plan.
+	var innerOp logical.LogicalOperator = op
 	if pred != nil {
-		innerOp = logical.NewFilterWithPredicate(scanOp, pred, "")
+		innerOp = logical.NewFilterWithPredicate(op, pred, "")
 	}
 
-	// Build aggregate on top of the correlated filter.
 	var scalarCol string
-	if sq.countStar {
-		scalarCol = "COUNT(*)"
-		innerOp = logical.NewAggregate(innerOp, nil, []string{"COUNT(*)"}, []string{scalarCol}, "")
-	} else {
-		agg := sq.aggCols[0]
-		if agg.aggArg != "" {
-			scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(agg.aggArg) + ")"
-		} else {
-			scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
+	if isAggregate {
+		if len(sq.groupBy) > 0 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: GROUP BY in inner query not yet supported",
+			}
 		}
-		aggText := agg.aggFunc + "(" + agg.aggArg + ")"
-		innerOp = logical.NewAggregate(innerOp, nil, []string{aggText}, []string{scalarCol}, "")
+		if sq.havingExpr != nil {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: HAVING in inner query not yet supported",
+			}
+		}
+
+		// Build aggregate on top of the correlated filter.
+		// No GROUP BY — the aggregate covers the entire filtered set
+		// and produces exactly 1 row (the scalar subquery contract).
+		if sq.countStar {
+			scalarCol = "COUNT(*)"
+			innerOp = logical.NewAggregate(innerOp, nil, []string{"COUNT(*)"}, []string{scalarCol}, "")
+		} else {
+			agg := sq.aggCols[0]
+			if agg.aggArg != "" {
+				scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(agg.aggArg) + ")"
+			} else {
+				scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
+			}
+			aggText := agg.aggFunc + "(" + agg.aggArg + ")"
+			innerOp = logical.NewAggregate(innerOp, nil, []string{aggText}, []string{scalarCol}, "")
+		}
+	} else {
+		// Non-aggregate correlated scalar subquery.
+		if len(sq.groupBy) > 0 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: GROUP BY without aggregate in inner query not supported",
+			}
+		}
+		if len(sq.projCols) == 0 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
+			}
+		}
+		if len(sq.projCols) > 1 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("scalar subquery must return exactly one column, got %d", len(sq.projCols)),
+			}
+		}
+		scalarCol = strings.ToUpper(sq.projCols[0])
+
+		// Add ORDER BY if present.
+		if len(sq.orderBy) > 0 {
+			keys := make([]logical.SortKey, len(sq.orderBy))
+			for i, ob := range sq.orderBy {
+				dir := logical.SortAsc
+				if !ob.ascending {
+					dir = logical.SortDesc
+				}
+				keys[i] = logical.SortKey{Expr: ob.colName, Dir: dir}
+				if ob.nullsFirst != nil {
+					keys[i].NullsFirst = *ob.nullsFirst
+				}
+			}
+			innerOp = logical.NewSort(innerOp, keys)
+		}
+
+		// SQL standard: scalar subquery must return at most 1 row.
+		// Use the user's LIMIT if specified (limit < 0 = no limit),
+		// otherwise enforce LIMIT 1.
+		if sq.limit >= 0 {
+			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
+		} else {
+			innerOp = logical.NewLimit(innerOp, 1, 0)
+		}
 	}
 
 	alias := values.UniqueCorrelationIdentifier()
