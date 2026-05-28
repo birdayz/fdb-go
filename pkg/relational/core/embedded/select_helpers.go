@@ -577,6 +577,9 @@ func (c *EmbeddedConnection) scanTableToMaps(
 
 	var rows []map[string]driver.Value
 	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		result, nextErr := cursor.OnNext(ctx)
 		if nextErr != nil {
 			return nil, nextErr

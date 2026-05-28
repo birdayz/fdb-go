@@ -665,6 +665,9 @@ func evaluateBitmapValueAggregate(
 	wrote := false
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		r, err := cursor.OnNext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("evaluate bitmap_value aggregate: %w", err)

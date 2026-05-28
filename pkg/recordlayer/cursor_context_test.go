@@ -314,26 +314,16 @@ var _ = Describe("Cursor context cancellation", func() {
 	// ---------------------------------------------------------------
 	Describe("intersectionCursor", func() {
 		It("stops on pre-cancelled context during convergence", func() {
-			// Two infinite cursors with keys that never match —
-			// one produces tuple{1}, tuple{3}, tuple{5}... and the
-			// other produces tuple{2}, tuple{4}, tuple{6}...
-			// The intersection convergence loop never terminates.
-			evenInner := &infiniteCursor{}
-			oddInner := &infiniteCursor{}
-
-			// Wrap to produce non-overlapping keys.
-			evenCursor := &filterCursor[int]{
-				inner:     evenInner,
-				predicate: func(int) bool { return true },
-			}
-			oddCursor := &filterCursor[int]{
-				inner:     oddInner,
-				predicate: func(int) bool { return true },
-			}
+			// Two infinite cursors with a shared monotonic key counter.
+			// Each child gets a distinct key on every advance, so the
+			// intersection convergence loop never finds a match and
+			// loops forever — unless ctx cancellation stops it.
+			cursor1 := &infiniteCursor{}
+			cursor2 := &infiniteCursor{}
 
 			keyIdx := 0
 			cursor := Intersection[int](
-				[]RecordCursor[int]{evenCursor, oddCursor},
+				[]RecordCursor[int]{cursor1, cursor2},
 				func(v int) tuple.Tuple {
 					keyIdx++
 					return tuple.Tuple{keyIdx}

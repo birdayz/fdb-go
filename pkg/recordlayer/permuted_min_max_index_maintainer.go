@@ -371,6 +371,9 @@ func evaluatePermutedMinMaxAggregate(
 
 	var result tuple.Tuple
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		r, err := cursor.OnNext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("evaluate permuted aggregate: %w", err)
