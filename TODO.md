@@ -30,9 +30,7 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 
 ### P0 — fix before deploying anywhere (correctness/availability)
 
-- [ ] **P0.1 NLJ memory bomb.** `executeNestedLoopJoin` (`executor/executor.go:1148-1153`) calls `CollectAll` to drain the *entire* inner cursor into `[]QueryResult` with no bound. Fires whenever no PK/index matches the join predicate (every ad-hoc join on a fresh schema). Runs with `ClearRowAndTimeLimits()` so it ignores the 5s FDB scan limiter → transaction times out with a cryptic FDB error. Same `CollectAll` pattern in `executeUnionBuffered` (line 917), recursive CTE (lines 1761/1817/1865/1938), in-memory sort. Stress suite hides this because its joins hit indexed FlatMap paths.
-  - **Fix (30 min):** hard materialization limit on NLJ + clear error when exceeded.
-  - **Fix (correct):** convert NLJ to cursor-based re-execution like FlatMap (matches Java — FlatMap for everything).
+- [x] **P0.1 NLJ memory bomb.** Fixed in PR #203 — `CollectAllBounded` with configurable materialization limit (default 100K rows) on all 6 `CollectAll` sites. `MaterializationLimitExceededError` typed error. All cursor leaks on error path fixed. 11 regression tests. RFC-028.
 - [ ] **P0.2 Plan cache serves wrong plans.** `plan_cache.go` keys on a `uint64` SQL hash and `Get()` never compares the stored SQL text on a hit → hash collisions serve the wrong plan (correctness/corruption vector over a service lifetime). Separately, cached `scalarSubs` pre-evaluated subquery results go stale when parameters change → wrong results for parameterized queries.
   - **Fix:** compare full SQL string on hash hit (or key the map on the string); invalidate/re-evaluate scalar subquery bindings when parameters change. Java keys on normalized plan-structure hash to avoid both.
 - [ ] **P0.3 No context cancellation in executor.** Zero `ctx.Err()`/`ctx.Done()` checks in non-test executor code. `flatMapCursor.OnNext` passes ctx to children but never checks it → a cancelled request spins until the 5s FDB timeout or an incidental child error. Every Go service sets request deadlines via context.
