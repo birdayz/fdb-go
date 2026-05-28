@@ -914,7 +914,7 @@ func executeUnionBuffered(
 		if err != nil {
 			return nil, err
 		}
-		items, err := CollectAll(ctx, cursor)
+		items, err := CollectAllBounded(ctx, cursor, props.GetMaterializationLimit(), "buffered union branch")
 		cursor.Close()
 		if err != nil {
 			return nil, err
@@ -1149,7 +1149,7 @@ func executeNestedLoopJoin(
 	if err != nil {
 		return nil, err
 	}
-	innerRows, err := CollectAll(ctx, innerCursor)
+	innerRows, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "nested loop join inner side")
 	if err != nil {
 		return nil, err
 	}
@@ -1758,7 +1758,7 @@ func executeRecursiveLevelUnion(
 	}
 
 	var allResults []QueryResult
-	items, err := CollectAll(ctx, initialCursor)
+	items, err := CollectAllBounded(ctx, initialCursor, props.GetMaterializationLimit(), "recursive CTE initial state")
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive level union initial collect: %w", err)
 	}
@@ -1814,7 +1814,7 @@ func executeRecursiveLevelUnion(
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive: %w", err)
 		}
-		items, err := CollectAll(ctx, recursiveCursor)
+		items, err := CollectAllBounded(ctx, recursiveCursor, props.GetMaterializationLimit(), "recursive CTE recursive level")
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive collect: %w", err)
 		}
@@ -1862,7 +1862,7 @@ func executeRecursiveDfsJoin(
 		return nil, fmt.Errorf("executor: recursive dfs join root: %w", err)
 	}
 
-	rootRows, err := CollectAll(ctx, rootCursor)
+	rootRows, err := CollectAllBounded(ctx, rootCursor, props.GetMaterializationLimit(), "recursive DFS join root")
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive dfs join root collect: %w", err)
 	}
@@ -1935,7 +1935,7 @@ func dfsVisit(
 		return fmt.Errorf("recursive DFS child plan: %w", err)
 	}
 
-	children, err := CollectAll(ctx, childCursor)
+	children, err := CollectAllBounded(ctx, childCursor, props.GetMaterializationLimit(), "recursive DFS children")
 	if err != nil {
 		return fmt.Errorf("recursive DFS collect children: %w", err)
 	}
@@ -2042,6 +2042,17 @@ func (c *sortResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursorRe
 func (c *sortResultCursor) Close() error   { return nil }
 func (c *sortResultCursor) IsClosed() bool { return false }
 
+// MaterializationLimitExceededError is returned when an operator tries to
+// buffer more rows in memory than the configured materialization limit.
+type MaterializationLimitExceededError struct {
+	Limit   int
+	Context string
+}
+
+func (e *MaterializationLimitExceededError) Error() string {
+	return fmt.Sprintf("materialization limit exceeded (%d rows): %s; consider adding an index on the join column or increasing the materialization limit", e.Limit, e.Context)
+}
+
 // CollectAll drains a cursor into a slice.
 func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult]) ([]QueryResult, error) {
 	var results []QueryResult
@@ -2054,6 +2065,26 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 			break
 		}
 		results = append(results, result.GetValue())
+	}
+	return results, nil
+}
+
+// CollectAllBounded drains a cursor into a slice, returning a
+// MaterializationLimitExceededError if the number of rows exceeds limit.
+func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, context string) ([]QueryResult, error) {
+	var results []QueryResult
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !result.HasNext() {
+			break
+		}
+		results = append(results, result.GetValue())
+		if len(results) >= limit {
+			return nil, &MaterializationLimitExceededError{Limit: limit, Context: context}
+		}
 	}
 	return results, nil
 }

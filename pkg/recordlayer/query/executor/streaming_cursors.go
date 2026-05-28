@@ -435,7 +435,7 @@ func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 			), nil
 		}
 		c.buf = append(c.buf, result.GetValue())
-		if len(c.buf) > limit {
+		if len(c.buf) >= limit {
 			return recordlayer.RecordCursorResult[QueryResult]{}, &SortBufferExceededError{
 				Rows:  len(c.buf),
 				Limit: limit,
@@ -526,7 +526,7 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 			), nil
 		}
 		c.buf = append(c.buf, result.GetValue())
-		if len(c.buf) > limit {
+		if len(c.buf) >= limit {
 			return recordlayer.RecordCursorResult[QueryResult]{}, &SortBufferExceededError{
 				Rows:  len(c.buf),
 				Limit: limit,

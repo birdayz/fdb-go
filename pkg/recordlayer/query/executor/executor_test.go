@@ -4793,8 +4793,8 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 	if bufErr.Limit != 5 {
 		t.Errorf("limit = %d, want 5", bufErr.Limit)
 	}
-	if bufErr.Rows <= 5 {
-		t.Errorf("rows = %d, want > 5", bufErr.Rows)
+	if bufErr.Rows != 5 {
+		t.Errorf("rows = %d, want 5", bufErr.Rows)
 	}
 }
 
