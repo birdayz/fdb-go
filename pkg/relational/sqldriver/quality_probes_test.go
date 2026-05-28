@@ -593,6 +593,9 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for HAVING in correlated scalar subquery")
 		}
+		if !strings.Contains(err.Error(), "HAVING") {
+			t.Errorf("error should mention HAVING, got: %v", err)
+		}
 	})
 
 	t.Run("group_by_aggregate_rejected", func(t *testing.T) {
