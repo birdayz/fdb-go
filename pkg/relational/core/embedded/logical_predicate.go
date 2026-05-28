@@ -3673,29 +3673,20 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 	}
 
-	if !sq.countStar && len(sq.aggCols) == 0 {
-		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-			Message: "correlated scalar subquery: only aggregate subqueries (COUNT/SUM/MIN/MAX/AVG) are supported",
-		}
-	}
 	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 			Message: "correlated scalar subquery: WHERE clause required for correlation",
 		}
 	}
-	if len(sq.joins) > 0 {
-		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-			Message: "correlated scalar subquery: JOINs in inner query not yet supported",
-		}
-	}
+
+	isAggregate := sq.countStar || len(sq.aggCols) > 0
 
 	innerAlias := sq.tableAlias
 	if innerAlias == "" {
 		innerAlias = sq.tableName
 	}
-	scanOp := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
 
-	// Walk WHERE with outer+inner scope (same as buildCorrelatedExists).
+	// Build scope first so the resolver can walk ON clauses.
 	cat := rlcatalog.Wrap(p.md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
@@ -3716,7 +3707,54 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
 	})
 
+	// Add join tables to scope so the resolver can resolve their columns.
+	for _, j := range sq.joins {
+		jAlias := j.alias
+		if jAlias == "" {
+			jAlias = j.tableName
+		}
+		jTbl, jErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(j.tableName, "."), false))
+		if jErr != nil {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("correlated scalar subquery: resolve join table %q: %v", j.tableName, jErr), Cause: jErr,
+			}
+		}
+		jAliasID := semantic.NewUnquoted(jAlias)
+		_ = innerScope.AddSource(semantic.ScopeSource{
+			Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
+		})
+	}
+
 	resolver := expr.New(analyzer, innerScope)
+
+	// Build the scan + join tree. Walk each join's ON clause with the
+	// resolver so the join predicate is properly attached.
+	op := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+	for _, j := range sq.joins {
+		right := logical.LogicalOperator(logical.NewScan(j.tableName, j.alias))
+		var kind logical.JoinKind
+		switch j.joinType {
+		case joinTypeLeft:
+			kind = logical.JoinLeft
+		case joinTypeRight:
+			kind = logical.JoinRight
+		default:
+			kind = logical.JoinInner
+		}
+		var joinPred predicates.QueryPredicate
+		if j.onExpr != nil {
+			walked, wErr := resolver.WalkPredicate(j.onExpr)
+			if wErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: walk ON clause: %v", wErr), Cause: wErr,
+				}
+			}
+			joinPred = walked
+		}
+		op = logical.NewJoinWithPredicate(op, right, kind, joinPred)
+	}
+
+	// Walk WHERE with outer+inner scope.
 	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
 	if walkErr != nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
@@ -3728,26 +3766,71 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	qualifyBareFields(pred, innerCorr)
 	pred = predicates.SimplifyPredicateValues(pred)
 
-	// Build Filter(correlated_pred, Scan) — predicate INSIDE inner plan.
-	var innerOp logical.LogicalOperator = scanOp
+	// Build Filter(correlated_pred, JoinTree) — predicate INSIDE inner plan.
+	var innerOp logical.LogicalOperator = op
 	if pred != nil {
-		innerOp = logical.NewFilterWithPredicate(scanOp, pred, "")
+		innerOp = logical.NewFilterWithPredicate(op, pred, "")
 	}
 
-	// Build aggregate on top of the correlated filter.
 	var scalarCol string
-	if sq.countStar {
-		scalarCol = "COUNT(*)"
-		innerOp = logical.NewAggregate(innerOp, nil, []string{"COUNT(*)"}, []string{scalarCol}, "")
-	} else {
-		agg := sq.aggCols[0]
-		if agg.aggArg != "" {
-			scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(agg.aggArg) + ")"
-		} else {
-			scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
+	if isAggregate {
+		// Build aggregate on top of the correlated filter.
+		var groupKeys []string
+		if len(sq.groupBy) > 0 {
+			groupKeys = sq.groupBy
 		}
-		aggText := agg.aggFunc + "(" + agg.aggArg + ")"
-		innerOp = logical.NewAggregate(innerOp, nil, []string{aggText}, []string{scalarCol}, "")
+		if sq.countStar {
+			scalarCol = "COUNT(*)"
+			innerOp = logical.NewAggregate(innerOp, groupKeys, []string{"COUNT(*)"}, []string{scalarCol}, "")
+		} else {
+			agg := sq.aggCols[0]
+			if agg.aggArg != "" {
+				scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(agg.aggArg) + ")"
+			} else {
+				scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
+			}
+			aggText := agg.aggFunc + "(" + agg.aggArg + ")"
+			innerOp = logical.NewAggregate(innerOp, groupKeys, []string{aggText}, []string{scalarCol}, "")
+		}
+
+		if sq.havingExpr != nil {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: HAVING in inner query not yet supported",
+			}
+		}
+	} else {
+		// Non-aggregate correlated scalar subquery.
+		// The scalar column is the first projected column.
+		if len(sq.projCols) == 0 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
+			}
+		}
+		scalarCol = strings.ToUpper(sq.projCols[0])
+
+		// Add ORDER BY if present.
+		if len(sq.orderBy) > 0 {
+			keys := make([]logical.SortKey, len(sq.orderBy))
+			for i, ob := range sq.orderBy {
+				dir := logical.SortAsc
+				if !ob.ascending {
+					dir = logical.SortDesc
+				}
+				keys[i] = logical.SortKey{Expr: ob.colName, Dir: dir}
+				if ob.nullsFirst != nil {
+					keys[i].NullsFirst = *ob.nullsFirst
+				}
+			}
+			innerOp = logical.NewSort(innerOp, keys)
+		}
+
+		// SQL standard: scalar subquery must return at most 1 row.
+		// Use the user's LIMIT if specified, otherwise enforce LIMIT 1.
+		if sq.limit > 0 {
+			innerOp = logical.NewLimit(innerOp, sq.limit, sq.offset)
+		} else {
+			innerOp = logical.NewLimit(innerOp, 1, 0)
+		}
 	}
 
 	alias := values.UniqueCorrelationIdentifier()

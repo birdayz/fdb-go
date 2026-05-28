@@ -119,9 +119,10 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			c.innerCursor.Close()
 			c.innerCursor = nil
 
-			if reason != recordlayer.SourceExhausted {
-				// Inner hit time limit — serialize FlatMapContinuation
-				// with prior outer position + inner position for resume.
+			if reason.IsOutOfBand() {
+				// Inner hit a scan/time/byte limit — serialize
+				// FlatMapContinuation with current outer + inner
+				// position so the next page resumes correctly.
 				cont := c.buildContinuation(innerCont, true)
 				return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
 			}
