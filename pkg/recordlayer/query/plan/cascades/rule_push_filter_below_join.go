@@ -101,24 +101,25 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	// Build the new quantifiers, wrapping each side with a filter
-	// if there are predicates to push to it. Strip the alias prefix
-	// from field values so the pushed predicate resolves against the
-	// unqualified column names of the child scan.
+	// if there are predicates to push to it. Use NamedForEachQuantifier
+	// so the filter's inner quantifier alias matches the predicate's
+	// QOV correlation — ImplementFilterRule uses this alias for WithAlias
+	// binding at execution time.
 	newQ0 := quantifiers[0]
 	if len(pushTo0) > 0 {
 		innerRef0 := quantifiers[0].GetRangesOver()
-		rebased0 := stripAliasPrefixFromPredicates(pushTo0, aliases[0])
-		pushed0 := expressions.NewLogicalFilterExpression(rebased0,
-			expressions.ForEachQuantifier(innerRef0))
+		filterInnerQ0 := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier(aliases[0]), innerRef0)
+		pushed0 := expressions.NewLogicalFilterExpression(pushTo0, filterInnerQ0)
 		newQ0 = expressions.ForEachQuantifier(call.MemoizeExpression(pushed0))
 	}
 
 	newQ1 := quantifiers[1]
 	if len(pushTo1) > 0 {
 		innerRef1 := quantifiers[1].GetRangesOver()
-		rebased1 := stripAliasPrefixFromPredicates(pushTo1, aliases[1])
-		pushed1 := expressions.NewLogicalFilterExpression(rebased1,
-			expressions.ForEachQuantifier(innerRef1))
+		filterInnerQ1 := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier(aliases[1]), innerRef1)
+		pushed1 := expressions.NewLogicalFilterExpression(pushTo1, filterInnerQ1)
 		newQ1 = expressions.ForEachQuantifier(call.MemoizeExpression(pushed1))
 	}
 
@@ -200,78 +201,6 @@ func walkValueForFieldValues(v values.Value, visit func(*values.FieldValue)) {
 			visit(fv)
 		}
 		return true
-	})
-}
-
-// stripAliasPrefixFromPredicates returns a deep copy of preds where
-// every FieldValue whose Field starts with "ALIAS." has the alias
-// prefix stripped (e.g., "D.DNAME" → "DNAME"). This is necessary
-// because after pushdown the predicate evaluates against unqualified
-// rows from the child scan, not the join's qualified row context.
-func stripAliasPrefixFromPredicates(preds []predicates.QueryPredicate, alias string) []predicates.QueryPredicate {
-	prefix := strings.ToUpper(alias) + "."
-	out := make([]predicates.QueryPredicate, len(preds))
-	for i, p := range preds {
-		out[i] = stripAliasPredicate(p, prefix)
-	}
-	return out
-}
-
-// stripAliasPredicate recursively strips the alias prefix from
-// FieldValues in a single predicate.
-func stripAliasPredicate(p predicates.QueryPredicate, prefix string) predicates.QueryPredicate {
-	switch pp := p.(type) {
-	case *predicates.ComparisonPredicate:
-		newOp := stripAliasValue(pp.Operand, prefix)
-		newComp := pp.Comparison
-		if newComp.Operand != nil {
-			newComp.Operand = stripAliasValue(newComp.Operand, prefix)
-		}
-		return predicates.NewComparisonPredicate(newOp, newComp)
-	case *predicates.AndPredicate:
-		children := pp.Children()
-		newChildren := make([]predicates.QueryPredicate, len(children))
-		for i, c := range children {
-			newChildren[i] = stripAliasPredicate(c, prefix)
-		}
-		return predicates.NewAnd(newChildren...)
-	case *predicates.OrPredicate:
-		children := pp.Children()
-		newChildren := make([]predicates.QueryPredicate, len(children))
-		for i, c := range children {
-			newChildren[i] = stripAliasPredicate(c, prefix)
-		}
-		return predicates.NewOr(newChildren...)
-	case *predicates.NotPredicate:
-		return predicates.NewNot(stripAliasPredicate(pp.Child, prefix))
-	case *predicates.ValuePredicate:
-		return &predicates.ValuePredicate{Value: stripAliasValue(pp.Value, prefix)}
-	default:
-		// ConstantPredicate, ExistsPredicate, etc. — no field refs.
-		return p
-	}
-}
-
-// stripAliasValue returns a copy of v where FieldValues with the
-// alias prefix have it stripped. Non-FieldValue nodes and FieldValues
-// without the prefix are returned unchanged.
-//
-// Uses values.MapFieldValues to recursively walk ALL value types
-// (ArithmeticValue, CastValue, ScalarFunctionValue, etc.) and strip
-// the alias prefix from any FieldValue at any depth. This handles
-// arbitrarily nested expressions like UPPER(A.NAME), A.X + B.Y,
-// CAST(A.COL AS INT), etc.
-func stripAliasValue(v values.Value, prefix string) values.Value {
-	if v == nil {
-		return nil
-	}
-	upperAlias := strings.ToUpper(strings.TrimSuffix(prefix, "."))
-	return values.MapFieldValues(v, func(fv *values.FieldValue) values.Value {
-		fvAlias, col := fieldValueAliasAndCol(fv)
-		if fvAlias == upperAlias {
-			return &values.FieldValue{Field: col, Typ: fv.Typ}
-		}
-		return fv
 	})
 }
 
