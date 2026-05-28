@@ -10,6 +10,9 @@ func ForEach[T any](ctx context.Context, cursor RecordCursor[T], fn func(T) erro
 	defer func() { _ = cursor.Close() }()
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
 			return err
@@ -43,6 +46,9 @@ func AsListWithContinuation[T any](ctx context.Context, cursor RecordCursor[T]) 
 	defer func() { _ = cursor.Close() }()
 	var results []T
 	for {
+		if err := ctx.Err(); err != nil {
+			return results, nil, err
+		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
 			return results, nil, err
@@ -84,6 +90,9 @@ func GetCount[T any](ctx context.Context, cursor RecordCursor[T]) (int, error) {
 	defer func() { _ = cursor.Close() }()
 	count := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
 			return count, err
@@ -101,6 +110,9 @@ func Reduce[T any, R any](ctx context.Context, cursor RecordCursor[T], initial R
 	defer func() { _ = cursor.Close() }()
 	acc := initial
 	for {
+		if err := ctx.Err(); err != nil {
+			return acc, err
+		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
 			return acc, err

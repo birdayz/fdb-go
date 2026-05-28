@@ -73,6 +73,9 @@ func (c *dedupCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[T]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return result, err

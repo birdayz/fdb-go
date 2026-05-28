@@ -155,6 +155,7 @@ go_test(
         "cursor_combinator_edge_test.go",
         "cursor_combinator_test.go",
         "cursor_combinators_test.go",
+        "cursor_context_test.go",
         "cursor_functions_test.go",
         "cursor_seq_test.go",
         "cursor_test.go",

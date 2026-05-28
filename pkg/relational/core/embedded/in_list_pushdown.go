@@ -387,6 +387,9 @@ type pkCompositeInListCursor struct {
 
 func (c *pkCompositeInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+		}
 		if c.current != nil {
 			result, err := c.current.OnNext(ctx)
 			if err != nil {
@@ -601,6 +604,9 @@ type secondaryIndexCompositeInListCursor struct {
 
 func (c *secondaryIndexCompositeInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+		}
 		if c.current != nil {
 			result, err := c.current.OnNext(ctx)
 			if err != nil {
@@ -794,6 +800,9 @@ type secondaryIndexInListCursor struct {
 
 func (c *secondaryIndexInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+		}
 		if c.current != nil {
 			result, err := c.current.OnNext(ctx)
 			if err != nil {
@@ -878,6 +887,9 @@ type pkInListCursor struct {
 
 func (c *pkInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+		}
 		if c.current != nil {
 			result, err := c.current.OnNext(ctx)
 			if err != nil {

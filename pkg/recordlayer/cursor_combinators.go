@@ -21,6 +21,9 @@ type filterCursor[T any] struct {
 
 func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[T]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return result, err
@@ -57,6 +60,9 @@ type skipCursor[T any] struct {
 
 func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
 	for c.remaining > 0 {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[T]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return result, err
@@ -558,6 +564,9 @@ func (c *flatMapCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResult[V]
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[V]{}, err
+		}
 		// If we have an active inner cursor, try to get from it
 		if c.inner != nil {
 			result, err := c.inner.OnNext(ctx)
@@ -774,6 +783,9 @@ func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResul
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[T]{}, err
+		}
 		result, err := c.onNextWithRetry(ctx, 0)
 		if err != nil {
 			return RecordCursorResult[T]{}, err

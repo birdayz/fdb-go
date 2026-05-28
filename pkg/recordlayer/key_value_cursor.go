@@ -149,7 +149,7 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	}
 
 	// Read the next complete record (handles unsplit, split, and version-skip)
-	record, lastKey, err := c.readNextRecord()
+	record, lastKey, err := c.readNextRecord(ctx)
 	if err != nil {
 		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 	}
@@ -204,12 +204,15 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 // Handles unsplit records (suffix 0), split records (suffixes 1, 2, ...),
 // and skips version keys (suffix -1).
 // Returns (nil, nil, nil) when the iterator is exhausted.
-func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.Key, error) {
+func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[proto.Message], fdb.Key, error) {
 	recordsSubspace := c.recordsSubspace
 
 	prefixLen := c.prefixLength
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		// Get the next KV pair (from buffer or iterator)
 		kv, ok, err := c.nextKV()
 		if err != nil {
@@ -290,7 +293,7 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			if pkErr != nil {
 				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
 			}
-			return c.readSplitRecord(recordsSubspace, primaryKey, kv, suffix)
+			return c.readSplitRecord(ctx, recordsSubspace, primaryKey, kv, suffix)
 
 		default:
 			// Unknown suffix — skip
@@ -395,6 +398,7 @@ type splitChunk struct {
 // Handles both forward and reverse scans — chunks are sorted by suffix before reassembly.
 // Returns the reassembled record and the last key (in scan order) for continuation.
 func (c *keyValueCursor) readSplitRecord(
+	ctx context.Context,
 	recordsSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	firstKV fdb.KeyValue,
@@ -407,6 +411,9 @@ func (c *keyValueCursor) readSplitRecord(
 
 	// Collect remaining chunks for this primary key
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		kv, ok, kvErr := c.nextKV()
 		if kvErr != nil {
 			return nil, nil, kvErr
