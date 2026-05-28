@@ -241,11 +241,11 @@ func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 		t.Fatalf("ImplementFilterRule yielded %d without constraints, want 1", len(yielded))
 	}
 
-	wrap, ok := yielded[0].(*physicalFilterWrapper)
+	wrap, ok := yielded[0].(*physicalPredicatesFilterWrapper)
 	if !ok {
-		t.Fatalf("yielded[0] = %T, want *physicalFilterWrapper", yielded[0])
+		t.Fatalf("yielded[0] = %T, want *physicalPredicatesFilterWrapper", yielded[0])
 	}
-	if wrap.GetPlan() == nil {
+	if wrap.plan == nil {
 		t.Fatal("FilterPlan is nil")
 	}
 }

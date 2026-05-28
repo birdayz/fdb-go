@@ -238,6 +238,7 @@ go_test(
         "graph_expansion_test.go",
         "group_by_mappings_test.go",
         "index_expansion_test.go",
+        "intersector_primary_key_test.go",
         "match_candidate_index_test.go",
         "match_info_test.go",
         "matched_ordering_part_test.go",

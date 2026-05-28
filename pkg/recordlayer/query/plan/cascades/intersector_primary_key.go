@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -126,7 +127,7 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 		}
 		if commonTypes == nil {
 			commonTypes = types
-		} else if !stringSliceEqual(commonTypes, types) {
+		} else if !slices.Equal(commonTypes, types) {
 			return nil
 		}
 	}
@@ -148,18 +149,6 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 		}
 	}
 	return result
-}
-
-func stringSliceEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {

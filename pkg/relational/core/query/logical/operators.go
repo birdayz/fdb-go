@@ -28,6 +28,19 @@ type ScalarSubquery struct {
 	Plan  LogicalOperator
 }
 
+// CorrelatedScalarSubquery pairs a correlation alias with a logical
+// plan for a correlated scalar subquery like
+// `(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id)`.
+// The inner plan has the correlation predicate baked in as a filter
+// child of the aggregate — the executor re-evaluates it per outer
+// row via FlatMap. Carried on LogicalProject.
+type CorrelatedScalarSubquery struct {
+	Alias      values.CorrelationIdentifier
+	InnerPlan  LogicalOperator
+	InnerAlias string
+	ScalarCol  string // output column name from the inner aggregate
+}
+
 // --- Leaf operators (no children) ----------------------------------
 
 // LogicalScan reads a single table. Empty Alias means "use the table
@@ -113,12 +126,13 @@ func (f *LogicalFilter) Explain(indent string) string {
 // returns nil for the whole query. Non-nil slots are used directly
 // as projection Values in the Cascades plan.
 type LogicalProject struct {
-	Input            LogicalOperator
-	Projections      []string
-	Aliases          []string         // parallel to Projections; "" means no alias
-	ProjectedValues  []values.Value   // parallel to Projections; nil slot = walker declined
-	IsComputed       []bool           // parallel to Projections; true = expression, not plain column ref
-	ScalarSubqueries []ScalarSubquery // subquery plans for scalar subqueries in projections
+	Input                      LogicalOperator
+	Projections                []string
+	Aliases                    []string                   // parallel to Projections; "" means no alias
+	ProjectedValues            []values.Value             // parallel to Projections; nil slot = walker declined
+	IsComputed                 []bool                     // parallel to Projections; true = expression, not plain column ref
+	ScalarSubqueries           []ScalarSubquery           // uncorrelated scalar subquery plans (pre-evaluated)
+	CorrelatedScalarSubqueries []CorrelatedScalarSubquery // correlated scalar subquery plans (re-evaluated per outer row via FlatMap)
 }
 
 func NewProject(input LogicalOperator, projs, aliases []string) *LogicalProject {

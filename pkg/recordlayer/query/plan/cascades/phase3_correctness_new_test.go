@@ -154,17 +154,9 @@ func TestPhase3_FilterOnly(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	foundFilter := false
-	for _, f := range rootRef.Members() {
-		if _, ok := f.(*physicalFilterWrapper); ok {
-			foundFilter = true
-		}
-	}
+	foundFilter := containsPhysical(rootRef, IsPhysicalFilter)
 	if !foundFilter {
-		foundFilter = containsPhysical(rootRef, IsPhysicalFilter)
-	}
-	if !foundFilter {
-		t.Fatal("expected physicalFilterWrapper somewhere in the explored graph")
+		t.Fatal("expected physical filter wrapper somewhere in the explored graph")
 	}
 }
 
@@ -455,10 +447,10 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 	}
 
 	for _, expr := range filterExprs {
-		if _, ok := expr.(*physicalFilterWrapper); ok {
+		if IsPhysicalFilter(expr) {
 			props := filterPM.GetProperties(expr)
 			if props == nil {
-				t.Fatal("GetProperties returned nil for physicalFilterWrapper")
+				t.Fatal("GetProperties returned nil for physical filter wrapper")
 			}
 			if !props.GetBool(properties.PropDistinctRecords) {
 				t.Fatal("filter over distinct scan must inherit PropDistinctRecords=true")
@@ -467,10 +459,9 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 		}
 	}
 
-	// If no physicalFilterWrapper found, check what we do have.
 	types := make([]string, len(filterExprs))
 	for i, e := range filterExprs {
 		types[i] = fmt.Sprintf("%T", e)
 	}
-	t.Fatalf("no physicalFilterWrapper found in filterRef PlanPropertiesMap, got types: %v", types)
+	t.Fatalf("no physical filter wrapper found in filterRef PlanPropertiesMap, got types: %v", types)
 }

@@ -1088,8 +1088,13 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		if proj := findProjection(op); proj != nil {
 			proj.ScalarSubqueries = existsPlanner.scalarSubqueries
 		}
-		// Reset scalar subqueries so WHERE walk starts fresh.
 		existsPlanner.scalarSubqueries = nil
+	}
+	if existsPlanner != nil && len(existsPlanner.correlatedScalarSubqueries) > 0 {
+		if proj := findProjection(op); proj != nil {
+			proj.CorrelatedScalarSubqueries = existsPlanner.correlatedScalarSubqueries
+		}
+		existsPlanner.correlatedScalarSubqueries = nil
 	}
 
 	if sq.havingExpr != nil {
@@ -3381,13 +3386,14 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData) map
 }
 
 type existsSubqueryPlanner struct {
-	md                *recordlayer.RecordMetaData
-	outerScopes       map[string]semantic.ScopeSource
-	cteScopes         map[string]semantic.ScopeSource
-	cteBodies         map[string]logical.LogicalOperator // CTE name → body plan, for wrapping scalar subquery plans
-	subqueries        []logical.ExistsSubquery
-	scalarSubqueries  []logical.ScalarSubquery
-	lastJoinPredicate predicates.QueryPredicate
+	md                         *recordlayer.RecordMetaData
+	outerScopes                map[string]semantic.ScopeSource
+	cteScopes                  map[string]semantic.ScopeSource
+	cteBodies                  map[string]logical.LogicalOperator // CTE name → body plan, for wrapping scalar subquery plans
+	subqueries                 []logical.ExistsSubquery
+	scalarSubqueries           []logical.ScalarSubquery
+	correlatedScalarSubqueries []logical.CorrelatedScalarSubquery
+	lastJoinPredicate          predicates.QueryPredicate
 }
 
 func (p *existsSubqueryPlanner) BuildExists(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
@@ -3613,18 +3619,26 @@ func qualifyBareFieldValue(v values.Value, qualifier string) {
 	})
 }
 
-// NOTE: qualifyBareFieldValue mutates FieldValue.Field in place. This is
-// safe because buildCorrelatedExists constructs a fresh predicate tree via
-// resolver.WalkPredicate each call. Do NOT call on shared/memoized trees.
-
 func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: nil query context")
 	}
 	innerOp, err := buildLogicalPlanForQueryWithCTECatalog(q, p.md, p.cteScopes)
+
+	isUndefinedCol := false
 	if err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeUndefinedColumn {
+			isUndefinedCol = true
+		}
+	}
+	if err != nil && (!isUndefinedCol || len(p.outerScopes) == 0) {
 		return values.CorrelationIdentifier{}, err
 	}
+	if isUndefinedCol {
+		return p.buildCorrelatedScalar(q)
+	}
+
 	if innerOp == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf("scalar subquery: inner query could not be planned")
 	}
@@ -3638,6 +3652,110 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	p.scalarSubqueries = append(p.scalarSubqueries, logical.ScalarSubquery{
 		Alias: alias,
 		Plan:  innerOp,
+	})
+	return alias, nil
+}
+
+func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
+	if q == nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
+	}
+	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("correlated scalar subquery: unsupported query body shape %T", q.QueryExpressionBody()),
+		}
+	}
+	sq, err := extractFromQueryTerm(body)
+	if err != nil || sq == nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("correlated scalar subquery: %v", err), Cause: err,
+		}
+	}
+
+	if !sq.countStar && len(sq.aggCols) == 0 {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: only aggregate subqueries (COUNT/SUM/MIN/MAX/AVG) are supported",
+		}
+	}
+	if sq.whereExpr == nil || sq.whereExpr.Expression() == nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: WHERE clause required for correlation",
+		}
+	}
+	if len(sq.joins) > 0 {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: "correlated scalar subquery: JOINs in inner query not yet supported",
+		}
+	}
+
+	innerAlias := sq.tableAlias
+	if innerAlias == "" {
+		innerAlias = sq.tableName
+	}
+	scanOp := logical.LogicalOperator(logical.NewScan(sq.tableName, innerAlias))
+
+	// Walk WHERE with outer+inner scope (same as buildCorrelatedExists).
+	cat := rlcatalog.Wrap(p.md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+
+	outerScope := semantic.NewScope(nil)
+	for _, src := range p.outerScopes {
+		_ = outerScope.AddSource(src)
+	}
+
+	innerScope := semantic.NewScope(outerScope)
+	tbl, tblErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
+	if tblErr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("correlated scalar subquery: resolve table %q: %v", sq.tableName, tblErr), Cause: tblErr,
+		}
+	}
+	aliasID := semantic.NewUnquoted(innerAlias)
+	_ = innerScope.AddSource(semantic.ScopeSource{
+		Table: tbl, Alias: aliasID, CorrelationName: aliasID.Name(),
+	})
+
+	resolver := expr.New(analyzer, innerScope)
+	pred, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
+	if walkErr != nil {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("correlated scalar subquery: walk predicate: %v", walkErr), Cause: walkErr,
+		}
+	}
+
+	innerCorr := strings.ToUpper(aliasID.Name())
+	qualifyBareFields(pred, innerCorr)
+	pred = predicates.SimplifyPredicateValues(pred)
+
+	// Build Filter(correlated_pred, Scan) — predicate INSIDE inner plan.
+	var innerOp logical.LogicalOperator = scanOp
+	if pred != nil {
+		innerOp = logical.NewFilterWithPredicate(scanOp, pred, "")
+	}
+
+	// Build aggregate on top of the correlated filter.
+	var scalarCol string
+	if sq.countStar {
+		scalarCol = "COUNT(*)"
+		innerOp = logical.NewAggregate(innerOp, nil, []string{"COUNT(*)"}, []string{scalarCol}, "")
+	} else {
+		agg := sq.aggCols[0]
+		if agg.aggArg != "" {
+			scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(agg.aggArg) + ")"
+		} else {
+			scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
+		}
+		aggText := agg.aggFunc + "(" + agg.aggArg + ")"
+		innerOp = logical.NewAggregate(innerOp, nil, []string{aggText}, []string{scalarCol}, "")
+	}
+
+	alias := values.UniqueCorrelationIdentifier()
+	p.correlatedScalarSubqueries = append(p.correlatedScalarSubqueries, logical.CorrelatedScalarSubquery{
+		Alias:      alias,
+		InnerPlan:  innerOp,
+		InnerAlias: strings.ToUpper(innerAlias),
+		ScalarCol:  scalarCol,
 	})
 	return alias, nil
 }

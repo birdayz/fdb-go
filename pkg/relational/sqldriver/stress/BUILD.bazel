@@ -8,7 +8,10 @@ go_test(
         "recordlayer_bench_test.go",
         "stress_test.go",
     ],
-    tags = ["stress"],
+    tags = [
+        "manual",
+        "stress",
+    ],
     deps = [
         "//gen",
         "//pkg/fdbgo/client",

@@ -450,15 +450,35 @@ func TestFDB_QualityProbe_ScalarSubquery(t *testing.T) {
 		}
 	})
 
-	t.Run("correlated_scalar_subquery_rejects", func(t *testing.T) {
-		// Correlated scalar subqueries in SELECT list are not yet
-		// supported — the correlation reference can't resolve across
-		// the subquery boundary in the current architecture.
-		err := expectError(t, db, `SELECT name,
+	t.Run("correlated_scalar_subquery_count", func(t *testing.T) {
+		rows := collectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id)
 			FROM customers c ORDER BY name`)
-		if err == nil {
-			t.Fatal("expected correlated scalar subquery rejection")
+		if len(rows) != 4 {
+			t.Fatalf("want 4, got %d", len(rows))
+		}
+		// Alice(id=1): orders 10,11 → 2
+		// Bob(id=2): orders 12,13 → 2
+		// Charlie(id=3): order 14 → 1
+		// Diana(id=4): order 15 → 1
+		expected := []struct {
+			name  string
+			count int64
+		}{
+			{"Alice", 2},
+			{"Bob", 2},
+			{"Charlie", 1},
+			{"Diana", 1},
+		}
+		for i, exp := range expected {
+			name := fmt.Sprintf("%v", rows[i][0])
+			cnt, ok := rows[i][1].(int64)
+			if !ok {
+				t.Fatalf("row %d: count not int64, got %T (%v)", i, rows[i][1], rows[i][1])
+			}
+			if name != exp.name || cnt != exp.count {
+				t.Errorf("row %d: want (%s, %d), got (%s, %d)", i, exp.name, exp.count, name, cnt)
+			}
 		}
 	})
 }

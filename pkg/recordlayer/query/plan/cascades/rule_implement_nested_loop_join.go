@@ -146,13 +146,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 }
 
 func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.CorrelationIdentifier) bool {
-	for _, m := range ref.AllMembers() {
-		corr := m.GetCorrelatedToWithoutChildren()
-		if _, ok := corr[targetAlias]; ok {
-			return true
-		}
-	}
-	return false
+	_, ok := ref.GetCorrelatedTo()[targetAlias]
+	return ok
 }
 
 func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(

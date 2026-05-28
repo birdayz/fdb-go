@@ -616,6 +616,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 		existsPlanner.scalarSubqueries = nil
 	}
+	if len(existsPlanner.correlatedScalarSubqueries) > 0 {
+		if proj := findProjection(op); proj != nil {
+			proj.CorrelatedScalarSubqueries = existsPlanner.correlatedScalarSubqueries
+		}
+		existsPlanner.correlatedScalarSubqueries = nil
+	}
 
 	// (14) Upgrade HAVING predicate.
 	if sq.havingExpr != nil {

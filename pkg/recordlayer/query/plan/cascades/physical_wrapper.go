@@ -53,10 +53,13 @@ func GetPhysicalMultiIntersectionPlan(expr expressions.RelationalExpression) *pl
 }
 
 // IsPhysicalFilter reports whether the given RelationalExpression is
-// a physicalFilterWrapper.
+// a physical filter wrapper (either legacy or predicates-based).
 func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
-	_, ok := expr.(*physicalFilterWrapper)
-	return ok
+	switch expr.(type) {
+	case *physicalFilterWrapper, *physicalPredicatesFilterWrapper:
+		return true
+	}
+	return false
 }
 
 // IsPhysicalInsert reports whether the given RelationalExpression is

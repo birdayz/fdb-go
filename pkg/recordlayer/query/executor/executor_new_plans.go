@@ -257,10 +257,19 @@ func executePredicatesFilter(
 	preds := p.GetPredicates()
 	innerAlias := p.GetInnerAlias()
 	hasInnerAlias := innerAlias.Name() != ""
-	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 || hasInnerAlias)
+	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0)
 	filtered := &filterResultCursor{
 		inner: inner,
-		pred: func(qr QueryResult) bool {
+		pred: func(qr QueryResult) (keep bool) {
+			defer func() {
+				if r := recover(); r != nil {
+					switch r.(type) {
+					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError, *values.ScalarTypeMismatchError, *values.InvalidCastError:
+						panic(r)
+					}
+					keep = false
+				}
+			}()
 			var rowCtx any = qr.Datum
 			if needsRowCtx {
 				if m, ok := qr.Datum.(map[string]any); ok {

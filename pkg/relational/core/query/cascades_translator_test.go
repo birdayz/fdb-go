@@ -536,3 +536,45 @@ func FuzzTranslateToCascades(f *testing.F) {
 		TranslateToCascades(op)
 	})
 }
+
+func TestSourceAlias(t *testing.T) {
+	t.Parallel()
+	t.Run("scan_with_alias", func(t *testing.T) {
+		t.Parallel()
+		got := sourceAlias(logical.NewScan("orders", "o"))
+		if got != "O" {
+			t.Errorf("want O, got %s", got)
+		}
+	})
+	t.Run("scan_no_alias", func(t *testing.T) {
+		t.Parallel()
+		got := sourceAlias(logical.NewScan("orders", ""))
+		if got != "ORDERS" {
+			t.Errorf("want ORDERS, got %s", got)
+		}
+	})
+	t.Run("cte_returns_cte_name", func(t *testing.T) {
+		t.Parallel()
+		inner := logical.NewScan("real_table", "")
+		body := logical.NewScan("real_table", "")
+		cte := logical.NewCTE("my_cte", body, inner, false)
+		got := sourceAlias(cte)
+		if got != "MY_CTE" {
+			t.Errorf("want MY_CTE, got %s", got)
+		}
+	})
+	t.Run("filter_wrapping_scan", func(t *testing.T) {
+		t.Parallel()
+		got := sourceAlias(logical.NewFilter(logical.NewScan("t", "a"), "x=1"))
+		if got != "A" {
+			t.Errorf("want A, got %s", got)
+		}
+	})
+	t.Run("nil_returns_empty", func(t *testing.T) {
+		t.Parallel()
+		got := sourceAlias(nil)
+		if got != "" {
+			t.Errorf("want empty, got %s", got)
+		}
+	})
+}

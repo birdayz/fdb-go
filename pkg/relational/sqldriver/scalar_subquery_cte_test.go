@@ -81,11 +81,70 @@ func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 	})
 }
 
-// TestFDB_CorrelatedScalarSubqueryError verifies that a correlated scalar
-// subquery referencing an outer table errors with 42703 (undefined column),
-// not 0AF00 (Cascades planner failure). Java rejects the correlation
-// reference at the semantic scope level because the inner query has no
-// access to the outer table's columns.
+// TestFDB_CorrelatedScalarSubqueryNoIndex verifies that correlated
+// scalar subqueries work correctly even WITHOUT an index on the
+// correlation column. The planner falls back to Filter(Scan) instead
+// of IndexScan; the filter must bind the inner row under its alias
+// so QOV-based predicates resolve correctly.
+func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_corrssq_noidx")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_corrssq_noidx")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE corrssq_noidx_tmpl "+
+			"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_corrssq_noidx/s WITH TEMPLATE corrssq_noidx_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_corrssq_noidx?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO emp VALUES (1, 'Alice')")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO emp VALUES (2, 'Bob')")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO project VALUES (10, 1)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO project VALUES (11, 1)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO project VALUES (12, 2)")).Error().NotTo(gomega.HaveOccurred())
+
+	t.Run("correlated_count_no_index", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp ORDER BY fname")
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+
+		var results []struct {
+			name  string
+			count int64
+		}
+		for rows.Next() {
+			var name string
+			var count int64
+			g.Expect(rows.Scan(&name, &count)).To(gomega.Succeed())
+			results = append(results, struct {
+				name  string
+				count int64
+			}{name, count})
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		g.Expect(results).To(gomega.HaveLen(2))
+		g.Expect(results[0].name).To(gomega.Equal("Alice"))
+		g.Expect(results[0].count).To(gomega.Equal(int64(2)))
+		g.Expect(results[1].name).To(gomega.Equal("Bob"))
+		g.Expect(results[1].count).To(gomega.Equal(int64(1)))
+	})
+}
+
+// TestFDB_CorrelatedScalarSubquery verifies that correlated scalar
+// subqueries referencing outer tables execute correctly via FlatMap
+// when an index exists on the correlation column (IndexScan path).
 func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -99,7 +158,8 @@ func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE corrssq_tmpl "+
 			"CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX idx_project_emp ON project (emp_id)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_corrssq/s WITH TEMPLATE corrssq_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -108,13 +168,36 @@ func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// Correlated scalar subquery: inner WHERE references outer table "emp".
-	// Java rejects this with 42703 because the inner scope has no source
-	// for "emp".
-	t.Run("correlated_scalar_subquery_42703", func(t *testing.T) {
-		_, err := db.QueryContext(ctx,
-			"SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp")
-		g.Expect(err).To(gomega.HaveOccurred())
-		g.Expect(err.Error()).To(gomega.ContainSubstring("42703"))
+	g.Expect(db.ExecContext(ctx, "INSERT INTO emp VALUES (1, 'Alice')")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO emp VALUES (2, 'Bob')")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO project VALUES (10, 1)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO project VALUES (11, 1)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO project VALUES (12, 2)")).Error().NotTo(gomega.HaveOccurred())
+
+	t.Run("correlated_scalar_subquery_count", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx,
+			"SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp ORDER BY fname")
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+
+		var results []struct {
+			name  string
+			count int64
+		}
+		for rows.Next() {
+			var name string
+			var count int64
+			g.Expect(rows.Scan(&name, &count)).To(gomega.Succeed())
+			results = append(results, struct {
+				name  string
+				count int64
+			}{name, count})
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		g.Expect(results).To(gomega.HaveLen(2))
+		g.Expect(results[0].name).To(gomega.Equal("Alice"))
+		g.Expect(results[0].count).To(gomega.Equal(int64(2)))
+		g.Expect(results[1].name).To(gomega.Equal("Bob"))
+		g.Expect(results[1].count).To(gomega.Equal(int64(1)))
 	})
 }

@@ -1,5 +1,7 @@
 package expressions
 
+import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+
 // PlannerStage tracks which planner phase has processed a Reference.
 type PlannerStage int
 
@@ -42,6 +44,8 @@ type Reference struct {
 
 	// winners stores per-properties best plans following Graefe 1995 §2.
 	winners map[any]RelationalExpression
+
+	correlatedToCache map[values.CorrelationIdentifier]struct{}
 }
 
 // InitialOf returns a Reference holding the single expression e as its
@@ -203,6 +207,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		}
 	}
 	r.members = append(r.members, e)
+	r.correlatedToCache = nil
 	return true
 }
 
@@ -228,6 +233,7 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		}
 	}
 	r.finalMembers = append(r.finalMembers, e)
+	r.correlatedToCache = nil
 	return true
 }
 
@@ -375,6 +381,40 @@ func (r *Reference) GetPartialMatchCandidates() []any {
 	for k := range r.partialMatchMap {
 		result = append(result, k)
 	}
+	return result
+}
+
+// GetCorrelatedTo returns the full (transitive) set of correlation
+// identifiers this Reference depends on. Unions each member's own
+// correlations with its children's correlations, excluding aliases
+// bound by each member's own quantifiers. Result is cached after
+// first computation.
+func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	if r.correlatedToCache != nil {
+		return r.correlatedToCache
+	}
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for _, m := range r.AllMembers() {
+		for k := range m.GetCorrelatedToWithoutChildren() {
+			result[k] = struct{}{}
+		}
+		ownAliases := make(map[values.CorrelationIdentifier]struct{})
+		for _, q := range m.GetQuantifiers() {
+			ownAliases[q.GetAlias()] = struct{}{}
+		}
+		for _, q := range m.GetQuantifiers() {
+			childRef := q.GetRangesOver()
+			if childRef == nil {
+				continue
+			}
+			for k := range childRef.GetCorrelatedTo() {
+				if _, bound := ownAliases[k]; !bound {
+					result[k] = struct{}{}
+				}
+			}
+		}
+	}
+	r.correlatedToCache = result
 	return result
 }
 

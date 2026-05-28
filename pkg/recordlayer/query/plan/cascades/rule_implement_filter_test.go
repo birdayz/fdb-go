@@ -37,11 +37,11 @@ func TestImplementFilterRule_FiresAfterScanImplemented(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalFilterWrapper)
+	wrap, ok := yielded[0].(*physicalPredicatesFilterWrapper)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalFilterWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *physicalPredicatesFilterWrapper", yielded[0])
 	}
-	plan := wrap.GetPlan()
+	plan := wrap.plan
 	if plan == nil {
 		t.Fatal("wrapper has no plan")
 	}
@@ -109,8 +109,8 @@ func TestBatchA_CostExtraction_PicksPhysicalOverLogical(t *testing.T) {
 	if best == nil {
 		t.Fatal("BestMember returned nil")
 	}
-	if _, ok := best.(*physicalFilterWrapper); !ok {
-		t.Fatalf("BestMember = %T, want *physicalFilterWrapper (cost-driven extraction should pick physical)", best)
+	if _, ok := best.(*physicalPredicatesFilterWrapper); !ok {
+		t.Fatalf("BestMember = %T, want *physicalPredicatesFilterWrapper (cost-driven extraction should pick physical)", best)
 	}
 }
 
@@ -144,11 +144,11 @@ func TestImplementFilterRule_FiresOnFilterOverDistinct(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Distinct)", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalFilterWrapper)
+	wrap, ok := yielded[0].(*physicalPredicatesFilterWrapper)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalFilterWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *physicalPredicatesFilterWrapper", yielded[0])
 	}
-	innerPlan := wrap.GetPlan().GetInner()
+	innerPlan := wrap.plan.GetInner()
 	if _, ok := innerPlan.(*plans.RecordQueryDistinctPlan); !ok {
 		t.Fatalf("filter inner plan = %T, want *RecordQueryDistinctPlan", innerPlan)
 	}
@@ -188,9 +188,9 @@ func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Intersection)", len(yielded))
 	}
-	wrap := yielded[0].(*physicalFilterWrapper)
-	if _, ok := wrap.GetPlan().GetInner().(*plans.RecordQueryIntersectionPlan); !ok {
-		t.Fatalf("inner = %T, want *RecordQueryIntersectionPlan", wrap.GetPlan().GetInner())
+	wrap := yielded[0].(*physicalPredicatesFilterWrapper)
+	if _, ok := wrap.plan.GetInner().(*plans.RecordQueryIntersectionPlan); !ok {
+		t.Fatalf("inner = %T, want *RecordQueryIntersectionPlan", wrap.plan.GetInner())
 	}
 }
 
@@ -230,11 +230,11 @@ func TestImplementFilterRule_FiresOverPhysicalUnion(t *testing.T) {
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Union)", len(yielded))
 	}
-	wrap, ok := yielded[0].(*physicalFilterWrapper)
+	wrap, ok := yielded[0].(*physicalPredicatesFilterWrapper)
 	if !ok {
-		t.Fatalf("yield = %T, want *physicalFilterWrapper", yielded[0])
+		t.Fatalf("yield = %T, want *physicalPredicatesFilterWrapper", yielded[0])
 	}
-	innerPlan := wrap.GetPlan().GetInner()
+	innerPlan := wrap.plan.GetInner()
 	if _, ok := innerPlan.(*plans.RecordQueryUnionPlan); !ok {
 		t.Fatalf("filter inner plan = %T, want *RecordQueryUnionPlan", innerPlan)
 	}
@@ -263,15 +263,14 @@ func TestPlannerWithBatchA_ImplementsFilterOverScan(t *testing.T) {
 		t.Fatal("planner did not converge")
 	}
 
-	// Look for a physicalFilterWrapper in the top-level Reference.
 	foundPhysFilter := false
 	for _, m := range ref.Members() {
-		if _, ok := m.(*physicalFilterWrapper); ok {
+		if _, ok := m.(*physicalPredicatesFilterWrapper); ok {
 			foundPhysFilter = true
 			break
 		}
 	}
 	if !foundPhysFilter {
-		t.Fatalf("planner did not produce a physical FilterPlan wrapper after Batch A rules; %d members", len(ref.Members()))
+		t.Fatalf("planner did not produce a physical PredicatesFilterPlan wrapper after rules; %d members", len(ref.Members()))
 	}
 }

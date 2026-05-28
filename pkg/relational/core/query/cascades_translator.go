@@ -323,6 +323,13 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		})
 	}
 
+	if len(p.CorrelatedScalarSubqueries) > 1 {
+		return nil
+	}
+	if len(p.CorrelatedScalarSubqueries) == 1 {
+		return t.translateProjectWithCorrelatedScalar(p)
+	}
+
 	innerRef := t.translateRef(p.Input)
 	if innerRef == nil {
 		return nil
@@ -345,6 +352,65 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		p.Aliases,
 		t.namedQuantifier(sourceAlias(p.Input), innerRef),
 	)
+}
+
+func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.LogicalProject) expressions.RelationalExpression {
+	csq := p.CorrelatedScalarSubqueries[0]
+
+	outerRef := t.translateRef(p.Input)
+	if outerRef == nil {
+		return nil
+	}
+	outerAlias := sourceAlias(p.Input)
+	outerQ := t.namedQuantifier(outerAlias, outerRef)
+
+	innerRef := t.translateRef(csq.InnerPlan)
+	if innerRef == nil {
+		return nil
+	}
+	innerQ := t.namedQuantifier(csq.InnerAlias, innerRef)
+
+	resultValue := values.NewJoinMergeResultValue(
+		outerQ.GetAlias(),
+		innerQ.GetAlias(),
+	)
+
+	joinSelect := expressions.NewSelectExpressionWithJoinType(
+		resultValue,
+		[]expressions.Quantifier{outerQ, innerQ},
+		nil,
+		[]string{outerAlias, csq.InnerAlias},
+		expressions.JoinLeftOuter,
+	)
+	joinRef := expressions.InitialOf(joinSelect)
+
+	projected := make([]values.Value, len(p.Projections))
+	innerCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
+	for i, col := range p.Projections {
+		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
+			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerCorr)
+			continue
+		}
+		if i < len(p.IsComputed) && p.IsComputed[i] {
+			return nil
+		}
+		projected[i] = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+	}
+
+	projQ := t.namedQuantifier("", joinRef)
+	return expressions.NewLogicalProjectionExpressionWithAliases(
+		projected,
+		p.Aliases,
+		projQ,
+	)
+}
+
+func replaceScalarSubqueryRef(v values.Value, csq logical.CorrelatedScalarSubquery, innerCorr values.CorrelationIdentifier) values.Value {
+	if ssq, ok := v.(*values.ScalarSubqueryValue); ok && ssq.Alias == csq.Alias {
+		qualifiedName := strings.ToUpper(innerCorr.Name()) + "." + strings.ToUpper(csq.ScalarCol)
+		return &values.FieldValue{Field: qualifiedName, Typ: values.UnknownType}
+	}
+	return v
 }
 
 func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {

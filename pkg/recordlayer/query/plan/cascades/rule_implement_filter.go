@@ -7,25 +7,23 @@ import (
 )
 
 // ImplementFilterRule implements a logical LogicalFilterExpression
-// as a physical RecordQueryFilterPlan, provided the inner
+// as a physical RecordQueryPredicatesFilterPlan, provided the inner
 // Quantifier's Reference contains at least one physical-plan member.
 //
 //	Filter([P], inner-with-physical-member)
-//	  →  FilterPlan([P], inner-physical)
+//	  →  PredicatesFilterPlan([P], inner-physical, innerAlias)
+//
+// Matches Java's ImplementFilterRule which creates
+// RecordQueryPredicatesFilterPlan with a physical quantifier morphed
+// from the logical inner quantifier, preserving the alias. The alias
+// is critical for correlated predicates: the executor binds the
+// current row under innerAlias so QOV-based predicates can resolve.
 //
 // The "with-physical-member" guard ensures the rule fires only AFTER
 // the inner has been implemented (i.e. PrimaryScanRule or another
 // implement rule has yielded a physical wrapper into the inner's
 // Reference). This avoids producing partial physical plans that
 // reference still-logical inner trees.
-//
-// Java's task-stack planner orders OPTIMIZE bottom-up so children
-// are always implemented first. Our seed FixpointApply / Planner
-// don't enforce strict order; the guard substitutes for that.
-//
-// The yielded wrapper's inner Quantifier ranges over the SAME
-// Reference as the logical filter's inner Quantifier — Memo sharing
-// via MemoizeExpression ensures cross-Reference dedup.
 type ImplementFilterRule struct {
 	matcher matching.BindingMatcher
 }
@@ -70,9 +68,10 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		if !ok {
 			continue
 		}
-		filterPlan := plans.NewRecordQueryFilterPlan(f.GetPredicates(), ph.GetRecordQueryPlan())
+		innerAlias := f.GetInner().GetAlias()
+		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAlias(ph.GetRecordQueryPlan(), f.GetPredicates(), innerAlias)
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-		call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
+		call.Yield(NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ))
 	}
 }
 

@@ -56,6 +56,13 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 		}
 	}
 
+	// Cap exploration rounds to prevent divergence from rule cycles
+	// (A→B→A) that keep inserting new members. Java's Cascades relies
+	// on memo dedup to reach a fixpoint; Go's per-Reference dedup is
+	// weaker (pointer-identity fast path + structural fallback), so
+	// pathological rule interactions can produce distinct-but-equivalent
+	// members indefinitely. 10 rounds is well above the 2–3 needed for
+	// typical queries and safely below the MaxTasks budget.
 	const maxRoundsPerRef = 10
 	if !t.Ref.NeedsExploration() || t.Ref.ExplRounds() >= maxRoundsPerRef {
 		t.Ref.CommitExploration()
