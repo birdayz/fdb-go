@@ -507,6 +507,9 @@ func (m *mergeSortCursor) IsClosed() bool { return m.closed }
 
 func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		if err := m.fillPeekBuffers(ctx); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
@@ -744,6 +747,9 @@ func newConcatCursor[T any](cursors []recordlayer.RecordCursor[T]) *concatCursor
 
 func (c *concatCursor[T]) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[T], error) {
 	for c.idx < len(c.cursors) {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[T]{}, err
+		}
 		result, err := c.cursors[c.idx].OnNext(ctx)
 		if err != nil {
 			return result, err

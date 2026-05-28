@@ -505,6 +505,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			colTypes = []string{"BIGINT"}
 			var count int64
 			for {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
 				result, nextErr := cursor.OnNext(ctx)
 				if nextErr != nil {
 					return nil, nextErr
@@ -660,6 +663,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			groups := map[string]*groupState{}
 
 			for {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
 				result, nextErr := cursor.OnNext(ctx)
 				if nextErr != nil {
 					return nil, nextErr
@@ -1132,6 +1138,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		}
 
 		for {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			if earlyTermTarget >= 0 && int64(len(data)) >= earlyTermTarget {
 				break
 			}

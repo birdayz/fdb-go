@@ -493,8 +493,11 @@ type rtreeScanCursor struct {
 	closed            bool
 }
 
-func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		// Row limit check BEFORE fetching — avoids wasting an FDB read when
 		// the limit is already reached.
 		if c.limit > 0 && c.delivered >= c.limit {
@@ -625,6 +628,9 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		// Check row limit before proceeding.
 		if c.limit > 0 && c.totalDelivered >= c.limit {
 			// We've hit the global row limit. Return limit-reached.

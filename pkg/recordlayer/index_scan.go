@@ -701,6 +701,9 @@ type indexRecordCursor struct {
 
 func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBIndexedRecord], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[*FDBIndexedRecord]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return RecordCursorResult[*FDBIndexedRecord]{}, err

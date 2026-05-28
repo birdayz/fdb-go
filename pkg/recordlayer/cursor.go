@@ -221,6 +221,9 @@ func Seq[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq[T] {
 	return func(yield func(T) bool) {
 		defer func() { _ = cursor.Close() }()
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			result, err := cursor.OnNext(ctx)
 			if err != nil || !result.HasNext() {
 				return
@@ -237,6 +240,10 @@ func Seq2[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, error
 	return func(yield func(T, error) bool) {
 		defer func() { _ = cursor.Close() }()
 		for {
+			if err := ctx.Err(); err != nil {
+				yield(*new(T), err)
+				return
+			}
 			result, err := cursor.OnNext(ctx)
 			if err != nil {
 				yield(*new(T), err)
@@ -257,6 +264,9 @@ func SeqWithContinuation[T any](cursor RecordCursor[T], ctx context.Context) ite
 	return func(yield func(T, RecordCursorContinuation) bool) {
 		defer func() { _ = cursor.Close() }()
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			result, err := cursor.OnNext(ctx)
 			if err != nil || !result.HasNext() {
 				return

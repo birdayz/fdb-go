@@ -314,6 +314,9 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 
 	// Merge-intersection loop: advance non-maximal cursors until all agree
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[T]{}, err
+		}
 		// Check if any child is exhausted
 		for _, child := range c.children {
 			if !child.hasResult {

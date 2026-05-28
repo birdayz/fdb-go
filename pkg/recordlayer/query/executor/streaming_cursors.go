@@ -122,6 +122,9 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 
 	// Pull records from inner, accumulate, detect group breaks.
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -414,6 +417,9 @@ func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		limit = DefaultMaxSortBufferRows
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -505,6 +511,9 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		limit = DefaultMaxSortBufferRows
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -717,6 +726,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		if c.currentOuter == nil {
 			if c.outerExhausted {
 				return recordlayer.NewResultNoNext[QueryResult](
@@ -758,6 +770,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		if c.hashIndex != nil {
 			// Hash join path: iterate only matching inner rows.
 			for c.innerIdx < len(c.innerMatches) {
+				if err := ctx.Err(); err != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, err
+				}
 				innerRow := c.innerRows[c.innerMatches[c.innerIdx]]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
@@ -782,6 +797,9 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		} else {
 			// Linear scan path (fallback).
 			for c.innerIdx < len(c.innerRows) {
+				if err := ctx.Err(); err != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, err
+				}
 				innerRow := c.innerRows[c.innerIdx]
 				c.innerIdx++
 

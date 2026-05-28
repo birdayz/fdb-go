@@ -399,6 +399,9 @@ type indexFetchCursor struct {
 
 func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		result, err := c.inner.OnNext(ctx)
 		if err != nil {
 			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
@@ -1430,6 +1433,9 @@ func executeDelete(
 
 	var results []QueryResult
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, err := innerCursor.OnNext(ctx)
 		if err != nil {
 			return nil, err
@@ -1467,6 +1473,9 @@ func executeInsert(
 
 	var results []QueryResult
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, err := innerCursor.OnNext(ctx)
 		if err != nil {
 			return nil, err
@@ -1504,6 +1513,9 @@ func executeUpdate(
 
 	var results []QueryResult
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, err := innerCursor.OnNext(ctx)
 		if err != nil {
 			return nil, err
@@ -2004,6 +2016,9 @@ func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.Rec
 		}
 	}()
 	for {
+		if err = ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		result, err = c.inner.OnNext(ctx)
 		if err != nil {
 			return result, err
@@ -2062,6 +2077,9 @@ func (e *MaterializationLimitExceededError) Error() string {
 func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult]) ([]QueryResult, error) {
 	var results []QueryResult
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
 			return nil, err
@@ -2079,6 +2097,9 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, opName string) ([]QueryResult, error) {
 	var results []QueryResult
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
 			return nil, err

@@ -71,6 +71,9 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 	recordsSubspace := c.store.subspace.Sub(RecordKey)
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[tuple.Tuple]{}, err
+		}
 		hasNext := false
 		if c.peekedHasMore != nil {
 			hasNext = *c.peekedHasMore

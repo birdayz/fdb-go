@@ -82,6 +82,9 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 		// If we have an active inner cursor, pull from it.
 		if c.innerCursor != nil {
 			result, err := c.innerCursor.OnNext(ctx)
