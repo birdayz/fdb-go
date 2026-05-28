@@ -36,7 +36,7 @@ Get(sql string) (plans.RecordQueryPlan, []scalarSubqueryBinding, bool)
 Put(sql string, plan plans.RecordQueryPlan, subs []scalarSubqueryBinding)
 ```
 
-Both methods normalize the SQL internally via `normalizeSQL()`. Callers pass raw SQL; the cache owns normalization. This eliminates the `QueryHash()` function from the cache hot path (it becomes dead code for cache purposes, retained for other uses if any).
+Both methods normalize the SQL internally via `normalizeSQL()`. Callers pass raw SQL; the cache owns normalization. `QueryHash()` was deleted as dead code — no production or test callers remain.
 
 ### Internal representation
 
