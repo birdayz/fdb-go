@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
@@ -1044,11 +1047,24 @@ func translateExecError(err error) error {
 }
 
 // fetchTableStatistics reads per-record-type row counts from FDB using a
-// snapshot transaction. Returns nil (use defaults) on any error — statistics
-// are best-effort; a failed stats read should never prevent query planning.
+// read-only snapshot transaction. Returns nil (use defaults) on any error —
+// statistics are best-effort; a failed stats read should never prevent
+// query planning.
+//
+// Only returns real statistics when the metadata uses RecordTypeKeyExpression
+// as the count key (the default for multi-table SQL schemas). For intermingled
+// schemas (EmptyKey), per-type counts are unavailable — returns nil rather
+// than fabricating an equal distribution that would mislead the cost model.
 func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *recordlayer.RecordMetaData) properties.StatisticsProvider {
 	c := g.c
 	if c.sess == nil || c.sess.DB == nil || md == nil {
+		return nil
+	}
+	countKey := md.GetRecordCountKey()
+	if countKey == nil {
+		return nil
+	}
+	if !recordlayer.IsRecordTypeExpression(countKey) {
 		return nil
 	}
 	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
@@ -1056,36 +1072,21 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 		return nil
 	}
 
-	result, runErr := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		store, storeErr := c.newStoreBuilder().
-			SetContext(rctx).
-			SetSubspace(ss).
-			SetMetaDataProvider(md).
-			Open()
-		if storeErr != nil {
-			return nil, storeErr
-		}
+	countSubspace := ss.Sub(recordlayer.RecordCountKey)
+	result, runErr := c.sess.DB.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
 		counts := make(map[string]float64)
-		if recordlayer.IsRecordTypeExpression(md.GetRecordCountKey()) {
-			for name := range md.RecordTypes() {
-				count, countErr := store.GetSnapshotRecordCountForRecordType(name)
-				if countErr != nil {
-					return nil, countErr
-				}
-				counts[name] = float64(count)
+		for name := range md.RecordTypes() {
+			rt := md.GetRecordType(name)
+			if rt == nil {
+				continue
 			}
-		} else {
-			total, countErr := store.GetRecordCount()
-			if countErr != nil {
-				return nil, countErr
+			fdbKey := countSubspace.Pack(tuple.Tuple{rt.GetRecordTypeKey()})
+			value, readErr := rtx.Snapshot().Get(fdbKey).Get()
+			if readErr != nil {
+				return nil, readErr
 			}
-			nTypes := len(md.RecordTypes())
-			if nTypes < 1 {
-				nTypes = 1
-			}
-			perType := float64(total) / float64(nTypes)
-			for name := range md.RecordTypes() {
-				counts[name] = perType
+			if len(value) >= 8 {
+				counts[name] = float64(int64(binary.LittleEndian.Uint64(value)))
 			}
 		}
 		return counts, nil

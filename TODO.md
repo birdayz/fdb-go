@@ -36,8 +36,7 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 
 ### P1 — fix before relying on the optimizer for real workloads (plan quality)
 
-- [ ] **P1.1 Wire statistics from FDB.** `StatisticsProvider` exists but `DefaultStatistics` returns `1e6` for everything → cost model flies blind. Picks correctly for CRUD by accident (ordinal tie-breaking dominates); picks randomly for competing access paths of similar shape, and *wrong* when a small table has a large index (or vice versa). The count index already exists in Go (maintained on writes).
-  - **Fix:** wire `StatisticsProvider` to read `RecordMetaData.getRecordCountIndex()` at plan time. ~1 FDB read per record type, ~1ms planning overhead. **Single highest-leverage change for plan quality.**
+- [x] **P1.1 Wire statistics from FDB.** Fixed in RFC-031 — `fetchTableStatistics` was already wired (nightshift-100) but had two bugs: used read-write transactions for read-only stats (wasted commit), and fabricated equal-distribution counts for intermingled schemas. Fixed: `FDBDatabase.RunRead()` for no-commit snapshot reads, dropped intermingled fallback (returns nil → safe DefaultStatistics). E2E FDB integration test proves full pipeline: count maintenance → stats read → cost model → plan selection → execution.
 - [ ] **P1.2 Complete QOV-based FieldValue migration.** 9 `stripAlias*` calls in the NLJ rule; `mergeRows` (line 1171) does string-based key qualification (`outerQual + "." + COL`). Works today by accident on simple shapes; breaks on 3+ table joins / self-joins / correlated subqueries with ambiguous column names (wrong-prefix strip or no strip). Java uses `Value.rebase(AliasMap)` — structural `CorrelationIdentifier` retargeting, zero string manipulation.
   - **Fix:** every predicate/value carries `FieldValue(QOV(correlationId), "column")`; delete all `stripAlias*`. Highest-leverage *architectural* cleanup — eliminates a whole bug class.
 

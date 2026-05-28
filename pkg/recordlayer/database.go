@@ -179,6 +179,24 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	return result, nil
 }
 
+// RunRead executes a read-only function with automatic retry but no commit.
+// Uses ReadTransact under the hood — no write conflict ranges, no commit
+// round-trip. Suitable for statistics, metadata reads, or any read-only
+// operation where a full read-write transaction would waste a commit.
+//
+// ctx is accepted for API consistency with Run and for caller-side
+// cancellation checks; the underlying FDB ReadTransact uses the
+// database-level context for the transaction itself.
+func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransaction) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return d.transactor.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		rtx.Options().SetReadSystemKeys()
+		return fn(rtx)
+	})
+}
+
 // RunWithWeakReads is like Run but applies weak read semantics to the transaction.
 // If IsCausalReadRisky is set, the transaction reads from any replica.
 // Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
