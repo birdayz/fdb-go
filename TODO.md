@@ -31,8 +31,7 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 ### P0 — fix before deploying anywhere (correctness/availability)
 
 - [x] **P0.1 NLJ memory bomb.** Fixed in PR #203 — `CollectAllBounded` with configurable materialization limit (default 100K rows) on all 6 `CollectAll` sites. `MaterializationLimitExceededError` typed error. All cursor leaks on error path fixed. 11 regression tests. RFC-028.
-- [ ] **P0.2 Plan cache serves wrong plans.** `plan_cache.go` keys on a `uint64` SQL hash and `Get()` never compares the stored SQL text on a hit → hash collisions serve the wrong plan (correctness/corruption vector over a service lifetime). Separately, cached `scalarSubs` pre-evaluated subquery results go stale when parameters change → wrong results for parameterized queries.
-  - **Fix:** compare full SQL string on hash hit (or key the map on the string); invalidate/re-evaluate scalar subquery bindings when parameters change. Java keys on normalized plan-structure hash to avoid both.
+- [x] **P0.2 Plan cache serves wrong plans.** Fixed in RFC-029 — cache keys on normalized SQL string directly (was uint64 FNV-64a hash with no text comparison on hit → collision = wrong plan). Scalar subquery staleness was a non-issue: `scalarSubqueryBinding` stores plans not results, re-evaluated per page fetch. `QueryHash` retained for tests only.
 - [ ] **P0.3 No context cancellation in executor.** Zero `ctx.Err()`/`ctx.Done()` checks in non-test executor code. `flatMapCursor.OnNext` passes ctx to children but never checks it → a cancelled request spins until the 5s FDB timeout or an incidental child error. Every Go service sets request deadlines via context.
   - **Fix:** check `ctx.Err()` at the top of every cursor `OnNext` loop iteration. Mechanical but critical.
 

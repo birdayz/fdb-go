@@ -246,13 +246,9 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 
 // planSelectCascades runs the full Cascades pipeline for a query.
 func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (query.Plan, error) {
-	// Check plan cache before running the full Cascades pipeline.
-	// Use the query text for hashing since we don't have the original
-	// full SQL here — GetText() is stable for cache-key purposes.
 	sqlText := q.GetText()
-	sqlHash := QueryHash(sqlText)
 	if g.cache != nil {
-		if cachedPlan, cachedSubs, ok := g.cache.Get(sqlHash); ok {
+		if cachedPlan, cachedSubs, ok := g.cache.Get(sqlText); ok {
 			return &cascadesPlan{
 				conn:             g.c,
 				md:               md,
@@ -362,11 +358,8 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 
 	sqlLimit, sqlOffset := extractLimitOffset(logicalOp)
 
-	// Cache the planned result for future queries with the same SQL.
-	// Don't cache LIMIT/OFFSET queries — the limit is applied post-execution
-	// and not stored in the cached plan.
 	if g.cache != nil && sqlLimit < 0 && sqlOffset == 0 {
-		g.cache.Put(sqlHash, sqlText, physPlan, scalarSubs)
+		g.cache.Put(sqlText, physPlan, scalarSubs)
 	}
 	return &cascadesPlan{
 		conn:             g.c,

@@ -27,11 +27,10 @@ func TestPlanCache_HitReturnsSamePlan(t *testing.T) {
 
 	plan := &stubPlan{label: "select-all"}
 	sql := "SELECT * FROM t"
-	h := QueryHash(sql)
 
-	c.Put(h, sql, plan, nil)
+	c.Put(sql, plan, nil)
 
-	got, subs, ok := c.Get(h)
+	got, subs, ok := c.Get(sql)
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -47,7 +46,7 @@ func TestPlanCache_MissReturnsNil(t *testing.T) {
 	t.Parallel()
 	c := NewPlanCache(16)
 
-	got, subs, ok := c.Get(12345)
+	got, subs, ok := c.Get("SELECT nonexistent")
 	if ok {
 		t.Fatal("expected cache miss")
 	}
@@ -63,40 +62,33 @@ func TestPlanCache_LRUEviction(t *testing.T) {
 	t.Parallel()
 	c := NewPlanCache(3)
 
-	// Fill cache to capacity.
-	for i := uint64(1); i <= 3; i++ {
-		c.Put(i, "sql", &stubPlan{label: "plan"}, nil)
-	}
+	c.Put("SQL_1", &stubPlan{label: "plan"}, nil)
+	c.Put("SQL_2", &stubPlan{label: "plan"}, nil)
+	c.Put("SQL_3", &stubPlan{label: "plan"}, nil)
 
-	// All three should be present.
-	for i := uint64(1); i <= 3; i++ {
-		if _, _, ok := c.Get(i); !ok {
-			t.Fatalf("expected hash %d to be cached", i)
+	for _, sql := range []string{"SQL_1", "SQL_2", "SQL_3"} {
+		if _, _, ok := c.Get(sql); !ok {
+			t.Fatalf("expected %s to be cached", sql)
 		}
 	}
 
-	// Access hash 1 to promote it — makes hash 2 the LRU.
-	c.Get(1)
+	// Access SQL_1 to promote it — makes SQL_2 the LRU.
+	c.Get("SQL_1")
 
-	// Insert a 4th entry — hash 2 (LRU) should be evicted.
-	c.Put(4, "sql", &stubPlan{label: "plan4"}, nil)
+	// Insert a 4th entry — SQL_2 (LRU) should be evicted.
+	c.Put("SQL_4", &stubPlan{label: "plan4"}, nil)
 
-	// Hash 2 should be evicted (it was LRU after the Get(1) promotion).
-	if _, _, ok := c.Get(2); ok {
-		t.Fatal("expected hash 2 to be evicted")
+	if _, _, ok := c.Get("SQL_2"); ok {
+		t.Fatal("expected SQL_2 to be evicted")
 	}
-
-	// Hash 1 should still be present (was promoted by Get).
-	if _, _, ok := c.Get(1); !ok {
-		t.Fatal("expected hash 1 to still be cached")
+	if _, _, ok := c.Get("SQL_1"); !ok {
+		t.Fatal("expected SQL_1 to still be cached")
 	}
-
-	// Hash 3 and 4 should be present.
-	if _, _, ok := c.Get(3); !ok {
-		t.Fatal("expected hash 3 to still be cached")
+	if _, _, ok := c.Get("SQL_3"); !ok {
+		t.Fatal("expected SQL_3 to still be cached")
 	}
-	if _, _, ok := c.Get(4); !ok {
-		t.Fatal("expected hash 4 to still be cached")
+	if _, _, ok := c.Get("SQL_4"); !ok {
+		t.Fatal("expected SQL_4 to still be cached")
 	}
 }
 
@@ -104,20 +96,20 @@ func TestPlanCache_LRUEviction_Simple(t *testing.T) {
 	t.Parallel()
 	c := NewPlanCache(2)
 
-	c.Put(1, "a", &stubPlan{label: "a"}, nil)
-	c.Put(2, "b", &stubPlan{label: "b"}, nil)
+	c.Put("a", &stubPlan{label: "a"}, nil)
+	c.Put("b", &stubPlan{label: "b"}, nil)
 
-	// Cache is full. Insert 3 → evicts 1.
-	c.Put(3, "c", &stubPlan{label: "c"}, nil)
+	// Cache is full. Insert c → evicts a.
+	c.Put("c", &stubPlan{label: "c"}, nil)
 
-	if _, _, ok := c.Get(1); ok {
-		t.Fatal("expected hash 1 to be evicted")
+	if _, _, ok := c.Get("a"); ok {
+		t.Fatal("expected 'a' to be evicted")
 	}
-	if _, _, ok := c.Get(2); !ok {
-		t.Fatal("expected hash 2 to still be cached")
+	if _, _, ok := c.Get("b"); !ok {
+		t.Fatal("expected 'b' to still be cached")
 	}
-	if _, _, ok := c.Get(3); !ok {
-		t.Fatal("expected hash 3 to still be cached")
+	if _, _, ok := c.Get("c"); !ok {
+		t.Fatal("expected 'c' to still be cached")
 	}
 }
 
@@ -125,22 +117,21 @@ func TestPlanCache_Invalidate(t *testing.T) {
 	t.Parallel()
 	c := NewPlanCache(16)
 
-	c.Put(1, "a", &stubPlan{label: "a"}, nil)
-	c.Put(2, "b", &stubPlan{label: "b"}, nil)
+	c.Put("a", &stubPlan{label: "a"}, nil)
+	c.Put("b", &stubPlan{label: "b"}, nil)
 
 	c.Invalidate()
 
-	if _, _, ok := c.Get(1); ok {
-		t.Fatal("expected hash 1 to be gone after invalidate")
+	if _, _, ok := c.Get("a"); ok {
+		t.Fatal("expected 'a' to be gone after invalidate")
 	}
-	if _, _, ok := c.Get(2); ok {
-		t.Fatal("expected hash 2 to be gone after invalidate")
+	if _, _, ok := c.Get("b"); ok {
+		t.Fatal("expected 'b' to be gone after invalidate")
 	}
 
-	// Cache should be usable after invalidation.
-	c.Put(3, "c", &stubPlan{label: "c"}, nil)
-	if _, _, ok := c.Get(3); !ok {
-		t.Fatal("expected hash 3 to be cached after re-use")
+	c.Put("c", &stubPlan{label: "c"}, nil)
+	if _, _, ok := c.Get("c"); !ok {
+		t.Fatal("expected 'c' to be cached after re-use")
 	}
 }
 
@@ -148,16 +139,16 @@ func TestPlanCache_Stats(t *testing.T) {
 	t.Parallel()
 	c := NewPlanCache(16)
 
-	c.Put(1, "a", &stubPlan{label: "a"}, nil)
+	c.Put("a", &stubPlan{label: "a"}, nil)
 
 	// 2 hits
-	c.Get(1)
-	c.Get(1)
+	c.Get("a")
+	c.Get("a")
 
 	// 3 misses
-	c.Get(2)
-	c.Get(3)
-	c.Get(4)
+	c.Get("b")
+	c.Get("c")
+	c.Get("d")
 
 	hits, misses := c.Stats()
 	if hits != 2 {
@@ -178,21 +169,25 @@ func TestPlanCache_ConcurrentGetPut(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
+	sqls := make([]string, goroutines*opsPerGoroutine)
+	for i := range sqls {
+		sqls[i] = "SELECT " + string(rune('A'+(i%26))) + " FROM t WHERE id = " + string(rune('0'+(i%10)))
+	}
+
 	for g := 0; g < goroutines; g++ {
 		g := g
 		go func() {
 			defer wg.Done()
 			for i := 0; i < opsPerGoroutine; i++ {
-				h := uint64(g*opsPerGoroutine + i)
-				c.Put(h, "sql", &stubPlan{label: "p"}, nil)
-				c.Get(h)
+				sql := sqls[g*opsPerGoroutine+i]
+				c.Put(sql, &stubPlan{label: "p"}, nil)
+				c.Get(sql)
 			}
 		}()
 	}
 
 	wg.Wait()
 
-	// Verify stats are consistent (no panics, no data races).
 	hits, misses := c.Stats()
 	total := hits + misses
 	if total != goroutines*opsPerGoroutine {
@@ -207,10 +202,10 @@ func TestPlanCache_PutUpdatesExisting(t *testing.T) {
 	plan1 := &stubPlan{label: "v1"}
 	plan2 := &stubPlan{label: "v2"}
 
-	c.Put(1, "sql", plan1, nil)
-	c.Put(1, "sql", plan2, nil)
+	c.Put("sql", plan1, nil)
+	c.Put("sql", plan2, nil)
 
-	got, _, ok := c.Get(1)
+	got, _, ok := c.Get("sql")
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -243,9 +238,9 @@ func TestPlanCache_ScalarSubqueryBindings(t *testing.T) {
 		{alias: alias, plan: &stubPlan{label: "sub1"}},
 	}
 
-	c.Put(1, "sql", plan, subs)
+	c.Put("sql", plan, subs)
 
-	gotPlan, gotSubs, ok := c.Get(1)
+	gotPlan, gotSubs, ok := c.Get("sql")
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -257,16 +252,68 @@ func TestPlanCache_ScalarSubqueryBindings(t *testing.T) {
 	}
 }
 
+// TestPlanCache_NormalizationHit verifies that SQL strings differing only
+// in case, whitespace, or comments hit the same cache entry.
+func TestPlanCache_NormalizationHit(t *testing.T) {
+	t.Parallel()
+	c := NewPlanCache(16)
+
+	plan := &stubPlan{label: "normalized"}
+	c.Put("SELECT * FROM foo", plan, nil)
+
+	variants := []string{
+		"select * from foo",
+		"SELECT  *  FROM  foo",
+		"  SELECT * FROM foo  ",
+		"SELECT * FROM foo -- comment",
+	}
+	for _, v := range variants {
+		got, _, ok := c.Get(v)
+		if !ok {
+			t.Fatalf("expected cache hit for %q", v)
+		}
+		if got != plan {
+			t.Fatalf("wrong plan for %q", v)
+		}
+	}
+}
+
+// TestPlanCache_NoHashCollision verifies that distinct SQL strings
+// always return their own plans, even if they would have collided
+// under the old uint64 hash scheme.
+func TestPlanCache_NoHashCollision(t *testing.T) {
+	t.Parallel()
+	c := NewPlanCache(256)
+
+	planA := &stubPlan{label: "plan_A"}
+	planB := &stubPlan{label: "plan_B"}
+
+	sqlA := "SELECT a FROM tableA WHERE id = 1"
+	sqlB := "SELECT b FROM tableB WHERE id = 2"
+
+	c.Put(sqlA, planA, nil)
+	c.Put(sqlB, planB, nil)
+
+	gotA, _, okA := c.Get(sqlA)
+	gotB, _, okB := c.Get(sqlB)
+
+	if !okA || gotA != planA {
+		t.Fatal("sqlA returned wrong plan")
+	}
+	if !okB || gotB != planB {
+		t.Fatal("sqlB returned wrong plan")
+	}
+}
+
 func BenchmarkPlanCache_Hit(b *testing.B) {
 	c := NewPlanCache(256)
 	plan := &stubPlan{label: "select-all"}
 	sql := "SELECT * FROM Item WHERE item_id = 42"
-	h := QueryHash(sql)
-	c.Put(h, sql, plan, nil)
+	c.Put(sql, plan, nil)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.Get(h)
+		c.Get(sql)
 	}
 }
 
@@ -275,6 +322,6 @@ func BenchmarkPlanCache_Miss(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.Get(99999)
+		c.Get("SELECT nonexistent_query_99999")
 	}
 }
