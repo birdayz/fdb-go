@@ -1,6 +1,6 @@
 # RFC 029 — Plan Cache Hash Collision Fix
 
-**Status:** Draft
+**Status:** Implemented
 **Scope:** Fix P0.2 — plan cache keyed on uint64 hash serves wrong plans on collision.
 
 ## Problem
@@ -51,9 +51,8 @@ type PlanCache struct {
 }
 
 type planCacheEntry struct {
-    normalizedSQL string
-    plan          plans.RecordQueryPlan
-    scalarSubs    []scalarSubqueryBinding
+    plan       plans.RecordQueryPlan
+    scalarSubs []scalarSubqueryBinding
 }
 ```
 
@@ -75,7 +74,7 @@ The LRU `promote()` remains O(n) with a linear scan — identical to current beh
 
 ## What about `QueryHash`?
 
-`QueryHash()` and `normalizeSQL()` remain in `query_hash.go`. `QueryHash` is still used by the integration test for normalization verification. `normalizeSQL` is now also called by the cache internally. No dead code created.
+`QueryHash()` was deleted — no production or test callers remain after the cache key change. `normalizeSQL()` remains in `query_hash.go` and is called internally by the cache. Tests were rewritten to exercise `normalizeSQL` directly.
 
 ## Non-goals
 

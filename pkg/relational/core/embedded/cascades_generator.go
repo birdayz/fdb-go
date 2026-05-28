@@ -358,6 +358,8 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 
 	sqlLimit, sqlOffset := extractLimitOffset(logicalOp)
 
+	// Don't cache LIMIT/OFFSET queries — the limit is applied post-execution
+	// and is not stored in the cached plan.
 	if g.cache != nil && sqlLimit < 0 && sqlOffset == 0 {
 		g.cache.Put(sqlText, physPlan, scalarSubs)
 	}
