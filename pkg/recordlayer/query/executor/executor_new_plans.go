@@ -246,6 +246,14 @@ func executeUnorderedUnion(
 // (multiple quantifiers' columns under qualified "ALIAS.COL" keys) rather
 // than single-table rows. A filter over such a plan resolves QOV
 // predicates through the qualified-key path, not an alias binding.
+//
+// This list must stay in sync with the code that WRITES qualified
+// "ALIAS.COL" keys: mergeRows (executor.go) for the NLJ cursor, and
+// qualifyOuterRow (used by the FlatMap cursor in flat_map_cursor.go).
+// Those are the only two sites that emit merged rows today. A future
+// merged-row operator (e.g. a hash/merge join) MUST be added here, or a
+// filter over it would bind the merged row under one alias and bare-
+// resolve qov(b).col to the wrong quantifier (see DIVERGENCES.md).
 func producesMergedRows(p plans.RecordQueryPlan) bool {
 	switch p.(type) {
 	case *plans.RecordQueryNestedLoopJoinPlan, *plans.RecordQueryFlatMapPlan:
