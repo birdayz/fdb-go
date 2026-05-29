@@ -75,14 +75,18 @@ Cascades-faithful (Java: `RewritingRuleSet` = normalization only; `PlanningRuleS
 associativities become competing members of one Reference, `OptimizeGroup` costs them —
 Graefe '95 §2.3 memoized AND/OR-graph search).
 
-1. **REWRITING normalizes to a flat select; it must NOT promote a partitioned associativity.**
-   The REWRITING-promoted seed for a join must be the **canonical flat N-quantifier
-   `SelectExpression`** (via `SelectMergeRule`). Concretely: remove `PartitionSelectRule`/
-   `PartitionBinarySelectRule` from the REWRITING set (`DefaultExpressionRules`) so REWRITING
-   does not generate partitioned alternatives, AND verify `RewritingCostModelLess`/
-   `FinalizeExpressionsRule` deterministically promote the flat merge (Graefe: "the
-   load-bearing assumption"). Add an assertion test: the promoted PLANNING seed for the
-   3-way probe has quantifier count == 3 (flat).
+1. **REWRITING normalizes to flat selects; it must produce NO partitioned associativity.**
+   The guarantee is NOT "a cost-cull deterministically promotes the flat merge" — Graefe
+   corrected this: `AdvancePlannerStage` (reference.go:363) does `members = finalMembers`,
+   a **set-copy of ALL finalMembers** (no single-winner cull in Go; `FinalizeExpressionsRule`
+   yields every member). The actual, sufficient guarantee is: **with `PartitionSelectRule`/
+   `PartitionBinarySelectRule` removed from the REWRITING set (`DefaultExpressionRules`
+   120-121), REWRITING cannot generate any partitioned member** — every relational
+   alternative it produces for the join is flat (post-`SelectMergeRule`). So whatever set is
+   promoted is entirely flat. Multiple flat members (e.g. predicate-normalized variants) are
+   fine and expected. **Guard (Graefe):** assert the promoted PLANNING member set contains
+   **no** `SelectExpression` with ≤2 quantifiers standing in for the 3-way join (i.e. no
+   partitioned member) — NOT "exactly one member, count==3".
 2. **PLANNING re-enumerates from the flat seed.** `PlanningExplorationRules` already lists
    `PartitionSelectRule` and is already wired (planner.go:254) — once the seed is flat, it
    fires (instrumented "0 fires in PLANNING" must become ">0 on the 3-quantifier seed") and
@@ -120,6 +124,14 @@ FROM-orders → byte-identical EXPLAIN; (b) cost-optimal — drives from the sma
 EXPLAIN-pinned, differing from FROM-order; (c) cost-monotonicity — perturb a table's count,
 the chosen order flips; (d) determinism 10×; (e) shared sub-products merged (PR-A). Plus
 the full no-regression gate above.
+
+**Mechanism assertions (Graefe — survive canonicalization):** a bare "PartitionSelectRule
+fires >0 in PLANNING" is necessary but insufficient (a memoized graph can fire once then
+dedup). Pin instead, via a planner-level (non-FDB) test: (i) the promoted PLANNING seed set
+for the 3-way join contains no partitioned (≤2-quantifier) member; (ii) at `OptimizeGroup`
+the join Reference ends with **≥2 distinct associativity members** competing; (iii) the
+winner is the one `compareJoinOrdering`/best-member-cost selects — explicitly NOT member-0
+(guards against an extraction path silently using first-member `CostLessWith`).
 
 ## Status progression
 
