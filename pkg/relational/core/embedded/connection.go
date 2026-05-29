@@ -639,10 +639,13 @@ func translateFDBError(err error) error {
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
 			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
 	}
-	// UPDATE that relocates a row to a key with no existing record — most
-	// commonly UPDATE of a PK column (Java rejects with "record does not
-	// exist"). Also the deleted naive path's mapping; the Cascades executor
-	// returns the raw record-layer error otherwise.
+	// Execution-time "no record at this key" — most commonly UPDATE of a PK
+	// column, whose save targets the new (nonexistent) key. This is Java's
+	// exact path and code: Java has no plan-time PK guard; the in-place save
+	// throws RecordDoesNotExistException, which ExceptionUtil does NOT map,
+	// so it surfaces as ErrorCode.UNKNOWN. (The deleted Go naive path's
+	// plan-time ErrCodeUnsupportedOperation reject was a Go-only divergence —
+	// do not reintroduce it.)
 	var notExistErr *recordlayer.RecordDoesNotExistError
 	if errors.As(err, &notExistErr) {
 		return api.WrapError(api.ErrCodeUnknown, "record does not exist", err)

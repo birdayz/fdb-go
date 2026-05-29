@@ -65,9 +65,13 @@ func TestFDB_DMLCascades_ParamsIndexAndPK(t *testing.T) {
 		t.Fatalf("index inconsistent after UPDATE: age=30 count=%d (want 0), age=31 count=%d (want 1)", cnt30, cnt31)
 	}
 
-	// (3) UPDATE of a PK column is rejected with a typed *api.Error (Java:
-	// "record does not exist" — relocating to a key with no existing row),
-	// and leaves the original row intact.
+	// (3) UPDATE of a PK column fails at execution with a typed *api.Error.
+	// This is Java's exact behavior: no plan-time PK guard — the in-place
+	// save targets the new key, throws RecordDoesNotExistException, which
+	// Java's ExceptionUtil leaves unmapped → ErrorCode.UNKNOWN (Go:
+	// ErrCodeUnknown). Pin the code, not just the type — a future
+	// translateFDBError change must be caught (this class of bug has
+	// already shipped CI-green once).
 	_, errPK := db.ExecContext(ctx, "UPDATE T SET id = 99 WHERE id = 1")
 	if errPK == nil {
 		t.Fatal("UPDATE of a PK column was not rejected")
@@ -75,6 +79,9 @@ func TestFDB_DMLCascades_ParamsIndexAndPK(t *testing.T) {
 	var apiErr *api.Error
 	if !errors.As(errPK, &apiErr) {
 		t.Fatalf("UPDATE-PK error is not *api.Error: %T %v", errPK, errPK)
+	}
+	if apiErr.Code != api.ErrCodeUnknown {
+		t.Fatalf("UPDATE-PK error code = %s, want %s (Java ErrorCode.UNKNOWN)", apiErr.Code, api.ErrCodeUnknown)
 	}
 	var c1, c99 int64
 	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM T WHERE id = 1").Scan(&c1)

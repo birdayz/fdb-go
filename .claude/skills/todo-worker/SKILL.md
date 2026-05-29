@@ -131,38 +131,51 @@ Post a comment tagging @claude with context:
 gh pr comment <PR#> --body "@claude Please review this PR. <1-2 sentence summary of what changed and why>. See RFC-NNN for the full analysis."
 ```
 
-Then wait for @claude's response:
+Then wait for @claude's review to **complete**:
 
 ```bash
-# Wait for the review to land
-until [ "$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq 'length')" -gt <current_count> ]; do sleep 10; done
+# @claude posts ONE comment and edits it in place through several states:
+#   "Claude Code is working…" stub → a "### Tasks" checklist with unchecked
+#   "- [ ]" boxes → the final review. Length heuristics are unreliable.
+# Done = the latest claude[bot] comment has NO unchecked "- [ ]" boxes and
+# no working/in-progress marker.
+base=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
+while :; do
+  sleep 20
+  cnt=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
+  body=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|last|.body')
+  [ "$cnt" -gt "$base" ] || continue                                   # new comment appeared?
+  printf '%s' "$body" | grep -qF -- "- [ ]" && continue                # tasks still pending
+  printf '%s' "$body" | grep -qiE "working|in progress|get back to you" && continue
+  break                                                                # review complete
+done
 ```
-
-**Note:** @claude's "working" spinner updates in-place. Wait for the comment body length to exceed ~500 chars to get the full review, not just the spinner.
 
 ### Handling @claude findings:
 
-- **LGTM with no findings** → tell the user it's ready to merge.
-- **LGTM with minor findings** → fix each finding, commit, push, then post a follow-up comment:
+- **LGTM with no findings** → proceed to Step 11.
+- **LGTM with minor findings** / **Blocking findings** → fix each finding, commit, push, then re-request and **wait for a fresh completed review**:
   ```bash
-  gh pr comment <PR#> --body "Addressed findings: [list what was fixed]."
+  gh pr comment <PR#> --body "Addressed findings: [list]. Latest HEAD <sha>."
+  gh pr comment <PR#> --body "@claude Please re-review — findings addressed in <sha>."
   ```
-  Then re-request review:
-  ```bash
-  gh pr comment <PR#> --body "@claude Please re-review — findings addressed in latest commit."
-  ```
-  Wait for @claude's re-review. Iterate until clean LGTM.
-- **Blocking findings** → same flow but the fix is mandatory before proceeding.
+  Iterate until a clean LGTM **on the current HEAD**.
 
 ## Step 11: Done
 
-Tell the user the PR is ready to merge. Provide the PR URL.
+The item is done only when **@claude's clean LGTM is the LAST comment on the PR and was posted against the current HEAD commit.**
+
+- **A prior LGTM does NOT cover later commits.** Every time you push more commits (even a one-line fix or a reviewer-requested change), the earlier approval is stale — you MUST re-request and wait for a new completed review on the new HEAD. Verify the SHA @claude reviewed matches HEAD.
+- **Do not post anything to the PR after @claude's final LGTM** — that would make your comment the last word instead of the approval. If you must comment after, re-request review again so @claude's LGTM is restored as the final comment.
+- Only then tell the user the PR is ready to merge, with the URL.
 
 ## Key rules
 
 - **Never ship with a NAK** from Graefe, Torvalds, or @claude.
 - **Every review cycle is parallel** — Graefe and Torvalds always launch together.
-- **@claude iteration is sequential** — fix findings, push, re-request, wait.
+- **@claude iteration is sequential** — fix findings, push, re-request, wait for a completed review.
+- **The final LGTM must be on the final code.** Re-request after every push; "done" = @claude's clean LGTM is the last PR comment, on the current HEAD. A stale approval on an earlier commit doesn't count.
+- **A discovered bug is not fixed until a regression test pins it.** Reviewer catches (Graefe/Torvalds/@claude) that the suite missed are doubly important: fix the bug AND add the test that should have caught it.
 - **RFC status progression**: Draft → Implemented (update when the code ships).
 - **Commits pass pre-commit hooks** — never `--no-verify`.
 - **One logical change per commit** — don't batch unrelated fixes.
