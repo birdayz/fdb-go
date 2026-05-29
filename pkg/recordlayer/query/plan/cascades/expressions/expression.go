@@ -187,9 +187,12 @@ const MaxPermutationChildren = 8
 // return false rather than panic.
 //
 // This non-panicking compose is the shared spine of both child-matching
-// paths. It replaces the bare AliasMap.Compose (which panics on conflict,
-// matching Java's strict contract) and the recover-based guard
-// matchChildrenPermuted previously used. Conflicts arise legitimately once
+// paths and mirrors Java, whose `AliasMap.combineMaybe` returns
+// Optional.empty() on conflict (semanticEquals enumerates alias maps and
+// simply skips inconsistent ones — it never composes a conflicting map).
+// It replaces the bare AliasMap.Compose (the panicking `combine` variant)
+// and the recover-based guard matchChildrenPermuted previously used.
+// Conflicts arise legitimately once
 // References are shared (e.g. after RFC-037 cross-group merging, where two
 // child Quantifiers can resolve to the same canonical Reference): the
 // positional pairing then maps one alias to two partners, which is simply
