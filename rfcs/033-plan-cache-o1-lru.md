@@ -93,10 +93,51 @@ unchanged. This is a pure internal data-structure swap.
 - All existing `plan_cache_test.go` tests must pass unchanged — they pin the
   LRU semantics (eviction order, promote-on-hit, promote-on-update, stats,
   concurrency, normalization, scalar-sub bindings).
-- Add `BenchmarkPlanCache_HitLargeCache` (maxSize=1024, key in the middle of
-  the LRU order) to demonstrate the constant-time hit independent of position —
-  the old code's cost scaled with key position; the new code's does not.
-- Add a focused test asserting eviction order across an interleaved
-  get/put/update sequence at a small capacity (tightens the existing coverage
-  around promote-on-update interacting with eviction).
-- `go test -race` via `just test` for the concurrent test (already present).
+- `BenchmarkPlanCache_HitLargeCache` (maxSize=1024) demonstrates the hit cost is
+  independent of cache size — the old code's cost scaled with entry count; the
+  new code's does not.
+- `TestPlanCache_InterleavedEvictionOrder` pins promote-on-update interacting
+  with eviction (the bug a naive rewrite introduces: evicting the just-updated
+  key instead of the genuine LRU victim).
+
+### Correctness / race hardening
+
+- `TestPlanCache_DifferentialModel` — a long randomized Get/Put/Invalidate
+  sequence (5 cache sizes × 4 seeds × 4000 ops) run against an independent
+  reference LRU (`lruOracle`), asserting after **every** operation that the two
+  agree on membership and hit/miss verdicts, that a hit returns the plan stored
+  under that key, and that the internal list/map invariants hold (`checkInvariants`:
+  `ll.Len() == len(items)`, no duplicate keys, map↔element consistency,
+  `Len() <= maxSize`). Any recency-tracking divergence from a textbook LRU fails
+  immediately.
+- `TestPlanCache_RaceSameKey` / `TestPlanCache_RaceInvalidate` — `-race` stress.
+  The first reads the values returned by `Get` (plan + bindings) **after** the
+  lock is released while other goroutines update those same keys, proving the
+  central correctness claim: `Put` swaps in a fresh `*planCacheEntry` rather than
+  mutating in place, so a pointer captured under the lock is immutable and
+  race-free. The second races `Invalidate` against Get/Put/Stats. Both verified
+  clean under `go test -race`.
+- Edge cases: `TestPlanCache_MaxSizeOne` (degenerate single-slot),
+  `TestPlanCache_EvictionExactBoundary` (no eviction at maxSize, exactly one at
+  maxSize+1), `TestPlanCache_NilPlanStored`, `TestPlanCache_UpdateReplacesSubs`.
+
+### Planner-level benchmark (what the cache actually buys)
+
+`BenchmarkPlannerPlanVsCache` isolates the cache's value at the inner layer —
+full Cascades planning vs a warm cache hit, **no FDB, no execution**, SQL parsed
+once up front (parsing happens on both hit and miss paths in production, so it's
+excluded from both). Measured numbers:
+
+| Scenario | Full planning (miss) | Cache hit | Speedup | allocs/op |
+|----------|---------------------:|----------:|--------:|----------:|
+| point_lookup   |   571 µs |  0.69 µs |  ~820× | 8061 → 3 |
+| index_equality |   639 µs |  0.84 µs |  ~760× | 9268 → 3 |
+| index_range    |   815 µs |  0.67 µs | ~1200× | 11796 → 3 |
+| group_by_agg   |   281 µs |  0.83 µs |  ~340× | 4402 → 3 |
+| two_table_join | 1874 µs |  1.34 µs | ~1400× | 28188 → 3 |
+
+A cache hit costs sub-µs to ~1.3 µs (`normalizeSQL` + map lookup + `MoveToBack`)
+versus 0.28–1.87 ms for full Cascades planning — a 300×–1400× saving and a
+collapse from thousands of allocations to 3. This is precisely the hot path
+P2.1 makes O(1): every one of these hits previously also paid the O(n) slice
+scan under the lock.
