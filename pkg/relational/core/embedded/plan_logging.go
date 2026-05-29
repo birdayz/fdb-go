@@ -152,7 +152,10 @@ func (s *planLogScope) finish(err error) {
 		info.PlanHash = plans.PlanHash(s.plan)
 		info.PlanExplain = s.plan.Explain()
 	}
-	if s.g.cache != nil {
+	// Match Java's RelationalLoggingUtil: primaryCacheNumEntries is reported
+	// only for HIT/MISS (the cache was consulted/mutated); SKIP and
+	// INCONCLUSIVE carry 0.
+	if s.g.cache != nil && (s.cache == PlanCacheHit || s.cache == PlanCacheMiss) {
 		info.CacheNumEntries = s.g.cache.Len()
 	}
 	if thresh := s.g.c.slowQueryThresholdMicros; thresh > 0 {
