@@ -238,22 +238,56 @@ function of the (deterministic) task schedule. Pinned by a 10×-repeat plan-hash
 4. **correlatedToCache (Torvalds #2):** merged-group `GetCorrelatedTo()` == survivor's
    pre-merge value; an ancestor's cache is invalidated (recomputes, not stale).
 5. **Scope tripwire (§0):** merging a Reference carrying a partial match / winner panics.
-6. **Merge fires e2e (optimization proof, not just rows):** a query whose REWRITING yields the
-   *same* scan+filter subexpression in two independently-derived References (self-join / shared
-   sub-product). Assert a `Memo` stats hook (`MergeCount() > 0`, post-plan live-`refs` strictly
-   below the no-merge baseline) **and** correct rows. A BAD test checks rows only (passes via
-   the un-merged path).
-7. **Determinism:** the e2e query planned 10× with `--nocache_test_results`, identical plan
-   hash each run (per skill: non-deterministic plan = bug).
-8. **Multi-way join (5 tables):** assert live-group count is bounded (shared sub-products
-   merged) and the plan is correct — the headline capability the item names.
-9. **No-regression:** existing 46 targets green; 1M stress baseline within thresholds (no
-   merges on simple/single-table queries ⇒ no perf delta; `Canonical()` is one nil-check).
+6. **Merge fires through the real planner (`TestMemoMerge_FiresThroughRealPlanner`):** a
+   `Union(Filter(P,Distinct(scan)), Distinct(Filter(P,scan)))` query where
+   `PushFilterThroughDistinctRule` rewrites one branch into the other's form; assert
+   `MergeCount() > 0` and the two branches share a canonical group. Proves the optimization
+   fires via actual rule application, not just a direct `Integrate` call.
+7. **Determinism:** merge scenarios run 50× (unit) + the cascades suite 10× with
+   `--nocache_test_results` — identical results (per skill: non-deterministic plan = bug).
+8. **Multi-way join / broad reach — NOT proven here.** Gated on alias-normalized equivalence
+   (see Reach). Today only same-aliased siblings merge, which is rare for rule-rewritten
+   sub-expressions; so the 5-table-join "headline" benefit is deferred with TODO 7.1, not
+   claimed. Pinning it now would be a fake checkbox.
+9. **No-regression:** existing 46 targets green; 1M stress baseline within thresholds (merges
+   are rare and never on simple/single-table queries ⇒ no perf delta; `Canonical()` is one
+   nil-check).
 10. **Fuzz:** merge invariant — after any sequence of merges, `Canonical()` is acyclic, no live
     Reference forwards, and `GetCorrelatedTo()` of a merged group equals the survivor's.
 
+## Reach (measured, honest)
+
+This PR lands a **correct and sound** merge mechanism that fires through the real planner, but
+its *practical reach on current workloads is narrow*, and it is important not to overclaim:
+
+* Merge fires when a yielded expression matches a member of a sibling group under
+  `EqualsWithoutChildren` (alias-sensitive) **and** the same canonical child References
+  (`sameChildRefs`, pointer identity).
+* The memo's **interning is also alias-sensitive** (`MemoizeExpression` →
+  `EqualsWithoutChildren`). Rules that rewrite a sub-expression mint **fresh quantifier
+  aliases** (e.g. `PushFilterThroughDistinctRule` builds its pushed `Filter` with a new
+  `ForEachQuantifier`). So two genuinely-equivalent sibling rewrites end up over **different**
+  child References (each interned separately), and the pointer-keyed candidate narrowing in
+  `findEquivalentRef` does not surface them as merge candidates.
+* **Consequence:** on a benchmark of K equivalent `UNION` branches, exactly **one** pair merges
+  regardless of K — planner-time savings are marginal (~2%), and there is **no** "slow-without /
+  fast-with" stress test to be had from this PR alone. The executed plan is identical either
+  way, so there is no *execution*-time effect by construction.
+* The merge's real payoff (broad redundant-subexpression elimination, multi-way join-order
+  sharing) is gated on **alias-normalized equivalence across the memo** — i.e. canonicalizing
+  quantifier aliases so equivalent-but-differently-aliased sub-expressions intern to one child
+  Reference. That is the open **alias-namespace unification** work (TODO 7.1, HIGH), a separate
+  and larger change. Once it lands, this merge infrastructure begins firing broadly with no
+  further changes here.
+
+The value of *this* PR is therefore the **correct, deterministic, well-tested merge
+infrastructure** (union-find, transparent forwarding, recursive bottom-up re-merge, cycle and
+scope guards) — the mechanism Cascades requires — not a present-day performance win.
+
 ## Out of scope (Future Work, tracked in TODO.md)
 
+* **Alias-normalized equivalence (TODO 7.1)** — the lever that makes merging fire broadly; see
+  Reach above. Without it, merges are rare.
 * Reduction-rule-triggered merges (§3.6 bare-leaf substitutes).
 * Cost-model exploitation of shared sub-products for full N-way join-order optimality (the
   merge makes the *sharing* correct; squeezing the last bit of join-order quality is a
