@@ -2261,6 +2261,11 @@ func buildLogicalPlanForDeleteWithCatalog(
 	// and aliasing the predicate, so refs bind to the resolved scan
 	// (which resolveQualifiedTableNames also reduces to the bare name).
 	bare := bareTableName(tableName)
+	// Prefer the subquery-aware path so DELETE … WHERE EXISTS(…) plans
+	// through Cascades; fall back to the plain predicate builder.
+	if upgradeDMLWhereWithCatalog(op, md, bare, w) {
+		return op
+	}
 	pred, ok := buildWherePredicateForTable(md, bare, bare, w)
 	if !ok {
 		return op
@@ -2277,6 +2282,49 @@ func bareTableName(name string) string {
 		return name[dot+1:]
 	}
 	return name
+}
+
+// upgradeDMLWhereWithCatalog upgrades the WHERE filter of a single-table
+// DML plan (DELETE / UPDATE) to a real predicate with full EXISTS / scalar
+// subquery support — the same machinery the SELECT path uses (an
+// existsSubqueryPlanner installed on the resolver). This is what lets
+// `DELETE … WHERE EXISTS(…)` plan through Cascades like SELECT; the plain
+// buildWherePredicateForTable has no SubqueryPlanner and declines the
+// EXISTS shape. Returns false when the WHERE can't be resolved (caller
+// falls back to the plain predicate builder).
+func upgradeDMLWhereWithCatalog(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	tableName string,
+	whereExpr antlrgen.IWhereExprContext,
+) bool {
+	if op == nil || md == nil || whereExpr == nil || whereExpr.Expression() == nil {
+		return false
+	}
+	sq := &selectQuery{tableName: tableName, tableAlias: tableName, limit: -1}
+	resolver := buildSelectScope(sq, md, nil)
+	if resolver == nil {
+		return false
+	}
+	existsPlanner := &existsSubqueryPlanner{
+		md:          md,
+		outerScopes: buildOuterScopeSources(sq, md),
+	}
+	resolver.SetSubqueryPlanner(existsPlanner)
+	walked, err := resolver.WalkPredicate(whereExpr.Expression())
+	if err != nil || walked == nil {
+		return false
+	}
+	if !upgradeFirstFilter(op, predicates.SimplifyPredicateValues(walked)) {
+		return false
+	}
+	if len(existsPlanner.subqueries) > 0 {
+		upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+	}
+	if len(existsPlanner.scalarSubqueries) > 0 {
+		upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+	}
+	return true
 }
 
 // buildLogicalPlanForUpdateWithCatalog is the catalog-aware variant
