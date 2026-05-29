@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -35,7 +36,7 @@ func (e *LogicalValuesExpression) GetCorrelatedToWithoutChildren() map[values.Co
 	return map[values.CorrelationIdentifier]struct{}{}
 }
 
-func (e *LogicalValuesExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+func (e *LogicalValuesExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*LogicalValuesExpression)
 	if !ok {
 		return false
@@ -43,8 +44,11 @@ func (e *LogicalValuesExpression) EqualsWithoutChildren(other RelationalExpressi
 	if len(e.columns) != len(o.columns) {
 		return false
 	}
+	// Alias-aware column-Value equality (RFC-040 040.2). Inert under the
+	// memo's empty-alias path until PR-A.
+	vm := aliases.ToValuesAliasMap()
 	for i := range e.columns {
-		if values.ExplainValue(e.columns[i]) != values.ExplainValue(o.columns[i]) {
+		if !values.SemanticEqualsUnderAliasMap(e.columns[i], o.columns[i], vm) {
 			return false
 		}
 	}
@@ -54,8 +58,10 @@ func (e *LogicalValuesExpression) EqualsWithoutChildren(other RelationalExpressi
 func (e *LogicalValuesExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("values|"))
+	var buf [8]byte
 	for _, v := range e.columns {
-		h.Write([]byte(values.ExplainValue(v)))
+		binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(v))
+		h.Write(buf[:])
 		h.Write([]byte{0})
 	}
 	return h.Sum64()
