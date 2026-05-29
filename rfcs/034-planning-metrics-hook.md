@@ -186,10 +186,12 @@ The real query path (`planSelect:218`) passes `true`.
 ```go
 func (g *cascadesGenerator) planSelectCascades(
     ctx, q, md, logMetrics bool) (plan query.Plan, err error) {
-    sqlText := q.GetText()
     var ls *planLogScope
     if logMetrics {
-        ls = g.beginPlanLog(ctx, sqlText) // nil if logger unset
+        // canonicalTextOf recovers the original whitespace-preserved SQL from
+        // the token interval; q.GetText() (still the cache key) would log
+        // token-concatenated garbage like "SELECTid=1FROMorders".
+        ls = g.beginPlanLog(ctx, canonicalTextOf(q)) // nil if logger unset
     }
     defer func() { ls.finish(err) }()
     // cache hit:        ls.setPlan(cachedPlan); ls.setCache(PlanCacheHit)
