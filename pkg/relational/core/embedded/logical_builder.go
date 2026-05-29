@@ -265,6 +265,8 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			kind = logical.JoinLeft
 		case joinTypeRight:
 			kind = logical.JoinRight
+		case joinTypeFull:
+			kind = logical.JoinFull
 		default:
 			kind = logical.JoinInner
 		}

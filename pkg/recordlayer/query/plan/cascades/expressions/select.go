@@ -18,6 +18,10 @@ const (
 	JoinInner     JoinType = iota
 	JoinLeftOuter          // LEFT OUTER JOIN — unmatched outer rows emit NULLs for inner columns
 	JoinCross              // CROSS JOIN — no predicate, cartesian product
+	// JoinFullOuter — FULL OUTER JOIN. Unmatched rows from BOTH sides
+	// are emitted NULL-padded on the opposite side. Go-only extension
+	// (Java has no outer joins). Maps to plans.JoinFullOuter.
+	JoinFullOuter
 )
 
 // SelectExpression is the FROM-list / JOIN anchor — the one logical

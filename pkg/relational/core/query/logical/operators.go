@@ -288,6 +288,7 @@ const (
 	JoinInner JoinKind = iota
 	JoinLeft
 	JoinRight
+	JoinFull // FULL OUTER JOIN (Go-only extension; Java has no outer joins)
 )
 
 func (k JoinKind) String() string {
@@ -296,6 +297,8 @@ func (k JoinKind) String() string {
 		return "LeftJoin"
 	case JoinRight:
 		return "RightJoin"
+	case JoinFull:
+		return "FullJoin"
 	default:
 		return "InnerJoin"
 	}

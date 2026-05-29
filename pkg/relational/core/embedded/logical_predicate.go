@@ -3595,6 +3595,8 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 			kind = logical.JoinLeft
 		case joinTypeRight:
 			kind = logical.JoinRight
+		case joinTypeFull:
+			kind = logical.JoinFull
 		default:
 			kind = logical.JoinInner
 		}

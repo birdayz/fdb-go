@@ -591,6 +591,16 @@ type nljCursor struct {
 	outerMatched   bool
 	outerExhausted bool
 	closed         bool
+
+	// FULL OUTER JOIN drain state. matchedInner[i] is set when
+	// innerRows[i] passes the join predicates against any outer row;
+	// after the outer side is exhausted, the drain phase emits every
+	// unmatched inner row NULL-padded on the left (symmetric to the
+	// LEFT-OUTER unmatched-outer emission). Allocated only for
+	// JoinFullOuter — other join types pay nothing.
+	matchedInner []bool
+	draining     bool
+	drainIdx     int
 }
 
 func newNLJCursor(
@@ -609,6 +619,9 @@ func newNLJCursor(
 		innerAlias: innerAlias,
 		preds:      preds,
 		evalCtx:    evalCtx,
+	}
+	if joinType == plans.JoinFullOuter {
+		c.matchedInner = make([]bool, len(innerRows))
 	}
 	c.tryBuildHashIndex(innerAlias)
 	return c
@@ -731,6 +744,27 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		}
 		if c.currentOuter == nil {
 			if c.outerExhausted {
+				// FULL OUTER drain: after the outer side is exhausted,
+				// emit every inner row that matched no outer row,
+				// NULL-padded on the left (outer columns absent →
+				// resolve to NULL downstream). Symmetric to the
+				// LEFT-OUTER unmatched-outer emission below.
+				if c.joinType == plans.JoinFullOuter {
+					for c.drainIdx < len(c.innerRows) {
+						if err := ctx.Err(); err != nil {
+							return recordlayer.RecordCursorResult[QueryResult]{}, err
+						}
+						i := c.drainIdx
+						c.drainIdx++
+						if c.matchedInner[i] {
+							continue
+						}
+						return recordlayer.NewResultWithValue(
+							qualifyOuterRow(c.innerRows[i], c.innerAlias),
+							nonEndContinuation,
+						), nil
+					}
+				}
 				return recordlayer.NewResultNoNext[QueryResult](
 					recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
 				), nil
@@ -742,10 +776,10 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 			if !result.HasNext() {
 				reason := result.GetNoNextReason()
 				if reason == recordlayer.SourceExhausted {
+					// Loop back to the top so the FULL OUTER drain
+					// (above) runs before reporting exhaustion.
 					c.outerExhausted = true
-					return recordlayer.NewResultNoNext[QueryResult](
-						recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
-					), nil
+					continue
 				}
 				return recordlayer.NewResultNoNext[QueryResult](
 					reason, result.GetContinuation(),
@@ -773,15 +807,19 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				if err := ctx.Err(); err != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, err
 				}
-				innerRow := c.innerRows[c.innerMatches[c.innerIdx]]
+				idx := c.innerMatches[c.innerIdx]
+				innerRow := c.innerRows[idx]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
 				if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
 					continue
 				}
+				if c.matchedInner != nil {
+					c.matchedInner[idx] = true
+				}
 				c.outerMatched = true
 				switch c.joinType {
-				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross:
+				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
 					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
 				case plans.JoinExists:
 					row := qualifyOuterRow(*c.currentOuter, c.outerAlias)
@@ -800,17 +838,21 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				if err := ctx.Err(); err != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, err
 				}
-				innerRow := c.innerRows[c.innerIdx]
+				idx := c.innerIdx
+				innerRow := c.innerRows[idx]
 				c.innerIdx++
 
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
 				if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
 					continue
 				}
+				if c.matchedInner != nil {
+					c.matchedInner[idx] = true
+				}
 				c.outerMatched = true
 
 				switch c.joinType {
-				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross:
+				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
 					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
 				case plans.JoinExists:
 					row := qualifyOuterRow(*c.currentOuter, c.outerAlias)
@@ -835,7 +877,7 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 
 		if !matched {
 			switch c.joinType {
-			case plans.JoinLeftOuter:
+			case plans.JoinLeftOuter, plans.JoinFullOuter:
 				return recordlayer.NewResultWithValue(
 					qualifyOuterRow(outerRow, c.outerAlias), nonEndContinuation,
 				), nil

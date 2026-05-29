@@ -38,6 +38,14 @@ const (
 	JoinCross
 	JoinExists    // semi-join for EXISTS subqueries
 	JoinNotExists // anti semi-join for NOT EXISTS subqueries
+	// JoinFullOuter — FULL OUTER JOIN: every left row (matched or
+	// NULL-padded right) plus every right row that matched no left row
+	// (NULL-padded left). Go-only query extension; Java's SQL layer has
+	// no outer joins. Appended (not inserted) to keep prior iota values
+	// stable. Implemented only by the materialized nested-loop cursor,
+	// never the correlated FlatMap path (which cannot observe global
+	// inner-match state).
+	JoinFullOuter
 )
 
 func (jt JoinType) String() string {
@@ -52,6 +60,8 @@ func (jt JoinType) String() string {
 		return "EXISTS"
 	case JoinNotExists:
 		return "NOT EXISTS"
+	case JoinFullOuter:
+		return "FULL OUTER"
 	}
 	return "UNKNOWN"
 }

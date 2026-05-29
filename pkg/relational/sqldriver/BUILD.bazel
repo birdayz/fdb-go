@@ -31,6 +31,7 @@ go_test(
         "driver_test.go",
         "embedded_fdb_errors_test.go",
         "embedded_fdb_test.go",
+        "full_outer_join_fdb_test.go",
         "group_by_derived_probe_test.go",
         "having_probe_test.go",
         "noncorrelated_exists_fdb_test.go",
