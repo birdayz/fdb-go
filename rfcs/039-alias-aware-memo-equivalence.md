@@ -1,6 +1,20 @@
 # RFC-039: Alias-aware memo equivalence (PR-A of the RFC-038 epic)
 
-**Status:** Accepted v4. Graefe ACK, Torvalds ACK — a faithful port of Java
+**Status:** IMPLEMENTED. `expressions.MemoEqual` ported and wired into the memo's
+three structural-equivalence compare sites (`memoizeNonLeaf`, `refContains`,
+`findEquivalentRef`), replacing the alias-sensitive
+`EqualsWithoutChildren(empty)+sameChildRefs` pair. Implementation review:
+Graefe ACK, Torvalds ACK. Review caught and fixed: an un-Java `seen` cycle
+guard (dropped — Java's `containsAllInMemo` is guardless, the memo DAG is
+acyclic via the merge `reachable`/`mergeable` guard), exploratory-only child
+containment (now matches Java's exploratory↦exploratory **and** final↦final
+two-call structure), and a missing external-correlation negative test (added:
+two filters correlated to different outer aliases must NOT intern). Activation
+proven by `memo_activation_test` (K=6 alias-variant filters → 1 shared
+Reference) with zero plan-shape regression (plandiff conformance green) and
+no perf regression (stress-1M before/after within noise).
+
+Design accepted v4 (Graefe ACK, Torvalds ACK) — a faithful port of Java
 `Reference.isMemoizedExpression` (correlatedTo → canCorrelate → bindIdentities/combine →
 directional `containsAllInMemo` with capped `ChildrenAsSet` permutation → `equalsWithoutChildren`
 under the built alias map). Review caught, across 4 rounds: dropped `correlatedTo` guard,
