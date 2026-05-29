@@ -367,12 +367,24 @@ func (u *LogicalUnion) Explain(indent string) string {
 // --- DML -----------------------------------------------------------
 
 // LogicalInsert describes an INSERT into Table. Source is the row-
-// producing child (values list or a SELECT); Columns is the
-// projected-column list (may be empty to mean "all columns").
+// producing child (a SELECT); Columns is the projected-column list
+// (may be empty to mean "all columns").
+//
+// ValuesArray holds the literal VALUES rows as a Cascades array Value
+// (an ArrayConstructorValue of one RecordConstructorValue per row),
+// mutually exclusive with Source. The translator wraps it in an
+// ExplodeExpression so INSERT … VALUES streams through the same
+// Cascades path as INSERT … SELECT — matching Java's
+// RecordConstructorValue → array → Explode → Insert shape. It is a
+// typed Value rather than a child operator because the rows are built
+// from evaluated literals (parameters are already substituted at plan
+// time), which needs the connection's evaluation context the pure
+// logical builder lacks.
 type LogicalInsert struct {
-	Table   string
-	Columns []string
-	Source  LogicalOperator
+	Table       string
+	Columns     []string
+	Source      LogicalOperator
+	ValuesArray values.Value
 }
 
 func NewInsert(table string, cols []string, source LogicalOperator) *LogicalInsert {
@@ -406,10 +418,15 @@ type LogicalUpdate struct {
 	Input  LogicalOperator // the scan + filter producing target rows
 }
 
-// Assignment is one SET clause entry.
+// Assignment is one SET clause entry. Expr is the canonical text (used
+// for explain and as a fallback); Value is the resolved RHS expression
+// Value (populated by the catalog-aware builder) that the executor
+// evaluates against each target row. A nil Value means the text builder
+// ran without catalog resolution.
 type Assignment struct {
 	Column string
 	Expr   string // canonical text
+	Value  values.Value
 }
 
 func NewUpdate(target string, sets []Assignment, input LogicalOperator) *LogicalUpdate {

@@ -2256,12 +2256,75 @@ func buildLogicalPlanForDeleteWithCatalog(
 	if w == nil || tableName == "" {
 		return op
 	}
-	pred, ok := buildWherePredicateForTable(md, tableName, "", w)
+	// A DML statement runs inside a single schema's store, so the record
+	// type is the bare name; strip any schema qualifier before resolving
+	// and aliasing the predicate, so refs bind to the resolved scan
+	// (which resolveQualifiedTableNames also reduces to the bare name).
+	bare := bareTableName(tableName)
+	// Prefer the subquery-aware path so DELETE … WHERE EXISTS(…) plans
+	// through Cascades; fall back to the plain predicate builder.
+	if upgradeDMLWhereWithCatalog(op, md, bare, w) {
+		return op
+	}
+	pred, ok := buildWherePredicateForTable(md, bare, bare, w)
 	if !ok {
 		return op
 	}
 	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
 	return op
+}
+
+// bareTableName strips a leading schema qualifier ("s1.T" → "T"). Used so
+// DML predicate resolution and correlation aliases match the resolved
+// (bare) scan name.
+func bareTableName(name string) string {
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+		return name[dot+1:]
+	}
+	return name
+}
+
+// upgradeDMLWhereWithCatalog upgrades the WHERE filter of a single-table
+// DML plan (DELETE / UPDATE) to a real predicate with full EXISTS / scalar
+// subquery support — the same machinery the SELECT path uses (an
+// existsSubqueryPlanner installed on the resolver). This is what lets
+// `DELETE … WHERE EXISTS(…)` plan through Cascades like SELECT; the plain
+// buildWherePredicateForTable has no SubqueryPlanner and declines the
+// EXISTS shape. Returns false when the WHERE can't be resolved (caller
+// falls back to the plain predicate builder).
+func upgradeDMLWhereWithCatalog(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	tableName string,
+	whereExpr antlrgen.IWhereExprContext,
+) bool {
+	if op == nil || md == nil || whereExpr == nil || whereExpr.Expression() == nil {
+		return false
+	}
+	sq := &selectQuery{tableName: tableName, tableAlias: tableName, limit: -1}
+	resolver := buildSelectScope(sq, md, nil)
+	if resolver == nil {
+		return false
+	}
+	existsPlanner := &existsSubqueryPlanner{
+		md:          md,
+		outerScopes: buildOuterScopeSources(sq, md),
+	}
+	resolver.SetSubqueryPlanner(existsPlanner)
+	walked, err := resolver.WalkPredicate(whereExpr.Expression())
+	if err != nil || walked == nil {
+		return false
+	}
+	if !upgradeFirstFilter(op, predicates.SimplifyPredicateValues(walked)) {
+		return false
+	}
+	if len(existsPlanner.subqueries) > 0 {
+		upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
+	}
+	if len(existsPlanner.scalarSubqueries) > 0 {
+		upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
+	}
+	return true
 }
 
 // buildLogicalPlanForUpdateWithCatalog is the catalog-aware variant
@@ -2275,19 +2338,47 @@ func buildLogicalPlanForUpdateWithCatalog(
 	if op == nil || md == nil || upd == nil {
 		return op
 	}
+	updOp, ok := op.(*logical.LogicalUpdate)
+	if !ok {
+		return op
+	}
 	tableName := ""
 	if tn := upd.TableName(); tn != nil && tn.FullId() != nil {
 		tableName = functions.FullIdToName(tn.FullId())
 	}
-	w := upd.WhereExpr()
-	if w == nil || tableName == "" {
+	if tableName == "" {
 		return op
 	}
-	pred, ok := buildWherePredicateForTable(md, tableName, "", w)
-	if !ok {
-		return op
+	bare := bareTableName(tableName)
+
+	// Resolve each SET RHS expression to a real Value against the target
+	// table (e.g. `price / 2` → Divide(FieldValue(PRICE), 2)) so the
+	// executor evaluates it per row instead of choking on raw text. The
+	// iteration mirrors buildLogicalPlanForUpdate's append order/skip.
+	if resolver := buildSelectScope(&selectQuery{tableName: bare, tableAlias: bare, limit: -1}, md, nil); resolver != nil {
+		idx := 0
+		for _, el := range upd.AllUpdatedElement() {
+			if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
+				continue
+			}
+			if idx < len(updOp.Sets) {
+				if v, err := resolver.WalkExpression(el.Expression()); err == nil && v != nil {
+					updOp.Sets[idx].Value = v
+				}
+			}
+			idx++
+		}
 	}
-	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
+
+	// Upgrade the WHERE filter with EXISTS/scalar subquery support; fall
+	// back to the plain predicate builder. No WHERE → UPDATE all rows.
+	if w := upd.WhereExpr(); w != nil {
+		if !upgradeDMLWhereWithCatalog(op, md, bare, w) {
+			if pred, ok := buildWherePredicateForTable(md, bare, bare, w); ok {
+				_ = upgradeFirstFilter(op, pred)
+			}
+		}
+	}
 	return op
 }
 
@@ -2347,7 +2438,39 @@ func buildLogicalPlanForInsertWithCatalog(
 	if upgraded, err := buildLogicalPlanForSelectWithCatalog(sq, md); err == nil && upgraded != nil {
 		insertOp.Source = upgraded
 	}
+	alignInsertSelectColumns(insertOp, md)
 	return insertOp
+}
+
+// alignInsertSelectColumns sets the SELECT projection's output aliases to
+// the INSERT target columns positionally. INSERT … SELECT is positional —
+// the SELECT's i-th output feeds the target's i-th column regardless of
+// the SELECT output's own name (e.g. `INSERT INTO t(id,total) SELECT id,
+// price*qty`) — so the projected row datum ends up keyed by the target
+// column names and executeInsert can build the target record by name.
+func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.RecordMetaData) {
+	proj := findProjection(insertOp.Source)
+	if proj == nil || len(proj.Projections) == 0 {
+		return
+	}
+	targetCols := insertOp.Columns
+	if len(targetCols) == 0 {
+		rt := md.GetRecordType(bareTableName(insertOp.Table))
+		if rt == nil {
+			return
+		}
+		fields := rt.Descriptor.Fields()
+		targetCols = make([]string, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			targetCols[i] = string(fields.Get(i).Name())
+		}
+	}
+	if proj.Aliases == nil {
+		proj.Aliases = make([]string, len(proj.Projections))
+	}
+	for i := 0; i < len(proj.Projections) && i < len(targetCols); i++ {
+		proj.Aliases[i] = targetCols[i]
+	}
 }
 
 // buildLogicalPlanForQueryWithCTECatalog is like

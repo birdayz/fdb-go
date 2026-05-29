@@ -304,15 +304,14 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		nljOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
 	}
 
-	var nljInner plans.RecordQueryPlan
-	if len(joinPreds) > 0 {
-		nljInner = innerPlan
-	} else {
-		nljInner = fodPlan
-	}
-
+	// A semi-join (EXISTS / NOT EXISTS) decides on the *presence* of inner
+	// rows, so the inner must be the raw subquery plan — the FlatMap cursor
+	// checks "did the inner yield a row". FirstOrDefault always yields one
+	// row (the real first or a NULL default), which would make a
+	// non-correlated EXISTS always true and NOT EXISTS always false. The
+	// correlated path already used innerPlan; use it unconditionally.
 	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		nljOuter, nljInner,
+		nljOuter, innerPlan,
 		joinPreds,
 		joinType,
 		outerAlias, innerAlias,

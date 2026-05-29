@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -1471,29 +1472,120 @@ func executeInsert(
 		return nil, err
 	}
 
-	var results []QueryResult
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	// Materialize the inner rows BEFORE writing any record so that
+	// INSERT … SELECT reading the target table doesn't re-scan its own
+	// freshly-inserted rows (the Halloween problem). Bounded by the
+	// materialization limit, the same guard the other buffering operators
+	// use. (Note: a single INSERT that paginates across transactions can
+	// still re-read across page boundaries — that extreme case is a known
+	// limitation, RFC-035.)
+	innerRows, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "INSERT source")
+	innerCursor.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolved lazily on the first computed-row datum.
+	var targetDesc protoreflect.MessageDescriptor
+
+	results := make([]QueryResult, 0, len(innerRows))
+	for _, qr := range innerRows {
+		// INSERT always coerces the inner result to the target type (Java's
+		// InsertExpression computation value), so build from the row datum
+		// — INSERT … VALUES (Explode of literal RecordConstructors) and
+		// INSERT … SELECT (projection aliased to the target columns) both
+		// produce a datum keyed by the target column names. A datum-less
+		// stored record (rare) is saved as-is.
+		var msg proto.Message
+		switch datum := qr.Datum.(type) {
+		case map[string]any:
+			if targetDesc == nil {
+				rt := store.GetMetaData().GetRecordType(p.GetTargetRecordType())
+				if rt == nil {
+					return nil, fmt.Errorf("executor: INSERT target record type %q not found", p.GetTargetRecordType())
+				}
+				targetDesc = rt.Descriptor
+			}
+			msg, err = buildInsertRecord(targetDesc, datum)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			if qr.Record == nil || qr.Record.Record == nil {
+				continue
+			}
+			msg = qr.Record.Record
 		}
-		result, err := innerCursor.OnNext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if !result.HasNext() {
-			break
-		}
-		qr := result.GetValue()
-		if qr.Record == nil || qr.Record.Record == nil {
-			continue
-		}
-		stored, err := store.SaveRecordWithOptions(qr.Record.Record, recordlayer.RecordExistenceCheckErrorIfExists)
+
+		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
 		if err != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", err)
 		}
 		results = append(results, FromStoredRecord(stored))
 	}
 	return recordlayer.FromList(results), nil
+}
+
+// buildInsertRecord materializes a proto message of the target record
+// type from a computed row datum (column name → value). Used when the
+// INSERT inner produces computed rows (the literal-VALUES Explode, or a
+// projected SELECT) rather than stored records.
+//
+// It iterates the TARGET fields and pulls each from the datum
+// (case-insensitively), ignoring datum keys that don't name a target
+// column. This matters for INSERT … SELECT: the projection is aliased to
+// the target columns, but the datum also carries the projection's own
+// output names — those extra keys must be ignored, not error.
+//
+// For INSERT … VALUES, arity / NOT NULL / "expected Record but got
+// Primitive" are enforced at plan time (buildInsertValuesArray). For
+// INSERT … SELECT, a NULL projected into a NOT NULL column is NOT caught
+// here — it falls through to the record store's Required-field marshal at
+// save time (a less precise error than the plan-time NOT_NULL_VIOLATION).
+// This matches Java, where proto enforcement is the backstop for dynamic
+// sources; it's intentional, not an oversight.
+func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any) (proto.Message, error) {
+	msg := dynamicpb.NewMessage(desc)
+	refl := msg.ProtoReflect()
+	folded := make(map[string]any, len(datum))
+	for k, v := range datum {
+		folded[strings.ToLower(k)] = v
+	}
+	fields := desc.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		v, ok := folded[strings.ToLower(string(fd.Name()))]
+		if !ok || v == nil {
+			continue // absent / NULL → leave field unset (SQL NULL)
+		}
+		// INSERT … VALUES pre-converts each field to a protoreflect.Value
+		// at plan time (the relational ConvertToProtoValue handles enums
+		// and nested records that goToProtoValue cannot); set it verbatim.
+		// Projected-SELECT rows carry plain Go values, converted here.
+		if pv, ok := v.(protoreflect.Value); ok {
+			refl.Set(fd, pv)
+			continue
+		}
+		pv, err := goToProtoValue(fd, v)
+		if err != nil {
+			return nil, err
+		}
+		refl.Set(fd, pv)
+	}
+	return msg, nil
+}
+
+// fieldByNameFold resolves a proto field by name, case-insensitively.
+// Computed-row datums key columns by the SQL identifier casing, which
+// need not match the proto descriptor's field-name casing.
+func fieldByNameFold(fields protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		if strings.EqualFold(string(fd.Name()), name) {
+			return fd
+		}
+	}
+	return nil
 }
 
 func executeUpdate(
@@ -1534,6 +1626,9 @@ func executeUpdate(
 
 		for _, t := range transforms {
 			fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(t.FieldPath)))
+			if fd == nil {
+				fd = fieldByNameFold(desc.Fields(), t.FieldPath)
+			}
 			if fd == nil {
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}

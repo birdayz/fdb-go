@@ -1117,11 +1117,18 @@ func logicalOpReferencesCTE(op logical.LogicalOperator, cteName string) bool {
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {
 	var innerRef *expressions.Reference
-	if ins.Source != nil {
+	switch {
+	case ins.Source != nil:
+		// INSERT … SELECT: the source plan produces the rows.
 		innerRef = t.translateRef(ins.Source)
 		if innerRef == nil {
 			return nil
 		}
+	case ins.ValuesArray != nil:
+		// INSERT … VALUES: explode the literal array of records into a
+		// stream, matching Java (ExplodeExpression over the array Value).
+		explode := expressions.NewExplodeExpression(ins.ValuesArray)
+		innerRef = expressions.InitialOf(explode)
 	}
 	var q expressions.Quantifier
 	if innerRef != nil {
@@ -1140,9 +1147,17 @@ func (t *cascadesTranslator) translateUpdate(upd *logical.LogicalUpdate) express
 	}
 	transforms := make([]expressions.UpdateTransform, len(upd.Sets))
 	for i, a := range upd.Sets {
+		// Prefer the catalog-resolved RHS Value (evaluated per row by the
+		// executor); fall back to the canonical text only when the builder
+		// ran without catalog resolution (then the executor cannot evaluate
+		// it — but this keeps the structure for explain/legacy paths).
+		newVal := a.Value
+		if newVal == nil {
+			newVal = &values.ConstantValue{Value: a.Expr, Typ: values.UnknownType}
+		}
 		transforms[i] = expressions.UpdateTransform{
 			FieldPath: strings.ToUpper(a.Column),
-			NewValue:  &values.ConstantValue{Value: a.Expr, Typ: values.UnknownType},
+			NewValue:  newVal,
 		}
 	}
 	var q expressions.Quantifier
@@ -1184,6 +1199,17 @@ func FindUnsupportedFunction(op logical.LogicalOperator) string {
 	if f, ok := op.(*logical.LogicalFilter); ok && f.Predicate != nil {
 		if fn := findUnsafeFuncInPredicate(f.Predicate); fn != "" {
 			return fn
+		}
+	}
+	if u, ok := op.(*logical.LogicalUpdate); ok {
+		// UPDATE SET RHS expressions must reject unsupported functions
+		// just like projections, matching the naive path.
+		for _, a := range u.Sets {
+			if a.Value != nil {
+				if fn := findUnsafeFuncInValue(a.Value); fn != "" {
+					return fn
+				}
+			}
 		}
 	}
 	for _, child := range op.Children() {

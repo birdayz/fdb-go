@@ -2436,6 +2436,90 @@ func TestIntegration_InsertPlan_DuplicateError(t *testing.T) {
 	}
 }
 
+// TestIntegration_InsertPlan_ValuesExplode proves the INSERT VALUES
+// Cascades shape: RecordQueryInsertPlan over a RecordQueryExplodePlan
+// of an array of literal RecordConstructorValues. The explode streams
+// computed-row datums (no stored Record), and executeInsert's
+// Datum→message bridge materializes each as a target-type record. This
+// is the executor end of the INSERT VALUES path (RFC-035, Gap C).
+func TestIntegration_InsertPlan_ValuesExplode(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	// VALUES (7001, 42), (7002, 43) — order_id is int64, price is int32.
+	// The int32 column is fed an int64 literal; goToProtoValue narrows it.
+	mkRow := func(id, price int64) *values.RecordConstructorValue {
+		return values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "order_id", Value: &values.ConstantValue{Value: id, Typ: values.NullableLong}},
+			values.RecordConstructorField{Name: "price", Value: &values.ConstantValue{Value: price, Typ: values.NullableLong}},
+		)
+	}
+	arr := values.NewArrayConstructorValue(values.UnknownType, []values.Value{mkRow(7001, 42), mkRow(7002, 43)})
+	explode := plans.NewRecordQueryExplodePlan(arr)
+	ins := plans.NewRecordQueryInsertPlan(explode, "Order", nil)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+		cursor, err := ExecutePlan(ctx, ins, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			return nil, err
+		}
+		defer cursor.Close()
+		inserted, err := CollectAll(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(inserted) != 2 {
+			t.Fatalf("INSERT VALUES emitted %d rows, want 2", len(inserted))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("execute INSERT VALUES: %v", err)
+	}
+
+	// Verify both rows persisted with correct values via a scan.
+	_, err = testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			return nil, err
+		}
+		defer cursor.Close()
+		rows, err := CollectAll(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		got := map[int64]int64{}
+		for _, r := range rows {
+			o, ok := r.Record.Record.(*gen.Order)
+			if !ok {
+				t.Fatalf("scanned record type = %T, want *gen.Order", r.Record.Record)
+			}
+			got[o.GetOrderId()] = int64(o.GetPrice())
+		}
+		if got[7001] != 42 || got[7002] != 43 {
+			t.Fatalf("persisted rows = %v, want {7001:42, 7002:43}", got)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("verify scan: %v", err)
+	}
+}
+
 // TestIntegration_Aggregation_EmptyInput tests aggregation over an
 // empty result set: COUNT→0, SUM→0, MIN/MAX→nil.
 func TestIntegration_Aggregation_EmptyInput(t *testing.T) {

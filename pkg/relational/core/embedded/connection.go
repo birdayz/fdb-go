@@ -313,7 +313,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 		return nil, err
 	}
 
-	gen := newCascadesGeneratorForExec(c)
+	gen := newCascadesGenerator(c)
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
 		return nil, translateFDBError(err)
@@ -356,8 +356,15 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	if _, isMulti := plan.(*query.MultiPlan); isMulti {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "multi-statement queries are not supported")
 	}
+	// QueryContext returns rows; a DML (update) plan returns an affected-row
+	// count, so it belongs on Exec, not Query. This is statement-layer
+	// method routing (the analog of JDBC executeQuery rejecting an update
+	// plan), not a Cascades limitation — DML plans plan and execute fine via
+	// ExecContext. We reject before executing (no surprise mutation), a
+	// deliberate divergence from Java's execute-then-throw (see DIVERGENCES).
 	if plan.IsUpdate() {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW and SELECT statements are supported")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"INSERT/UPDATE/DELETE return a row count, not rows — use Exec, not Query")
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
@@ -529,18 +536,9 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		}
 		return n, err
 	}
-	if dml := stmt.DmlStatement(); dml != nil {
-		if ins := dml.InsertStatement(); ins != nil {
-			return c.execInsert(ctx, ins)
-		}
-		if del := dml.DeleteStatement(); del != nil {
-			return c.execDelete(ctx, del)
-		}
-		if upd := dml.UpdateStatement(); upd != nil {
-			return c.execUpdate(ctx, upd)
-		}
-		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
-	}
+	// DML (INSERT/UPDATE/DELETE) no longer routes here — it executes through
+	// the Cascades path (planDML). execStatement now handles only DDL and
+	// transaction statements.
 	if txn := stmt.TransactionStatement(); txn != nil {
 		return c.execTransactionStatement(txn)
 	}
@@ -632,6 +630,25 @@ func translateFDBError(err error) error {
 	var existsErr *recordlayer.RecordAlreadyExistsError
 	if errors.As(err, &existsErr) {
 		return api.WrapError(api.ErrCodeUniqueConstraintViolation, existsErr.Error(), err)
+	}
+	// Secondary UNIQUE index violation (distinct from a duplicate primary
+	// key) must also surface SQLSTATE 23505 — the deleted naive path mapped
+	// this; the Cascades executor returns the raw record-layer error.
+	var uniqErr *recordlayer.RecordIndexUniquenessViolationError
+	if errors.As(err, &uniqErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
+	}
+	// Execution-time "no record at this key" — most commonly UPDATE of a PK
+	// column, whose save targets the new (nonexistent) key. This is Java's
+	// exact path and code: Java has no plan-time PK guard; the in-place save
+	// throws RecordDoesNotExistException, which ExceptionUtil does NOT map,
+	// so it surfaces as ErrorCode.UNKNOWN. (The deleted Go naive path's
+	// plan-time ErrCodeUnsupportedOperation reject was a Go-only divergence —
+	// do not reintroduce it.)
+	var notExistErr *recordlayer.RecordDoesNotExistError
+	if errors.As(err, &notExistErr) {
+		return api.WrapError(api.ErrCodeUnknown, "record does not exist", err)
 	}
 	var deserErr *recordlayer.RecordDeserializationError
 	if errors.As(err, &deserErr) {
