@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -97,12 +98,14 @@ func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpr
 	if !ok {
 		return false
 	}
-	_ = aliases
 	if len(e.projectedValues) != len(o.projectedValues) {
 		return false
 	}
+	// Alias-aware projected-Value equality (RFC-040 040.2). Inert under the
+	// memo's empty-alias path until PR-A.
+	vm := aliases.ToValuesAliasMap()
 	for i := range e.projectedValues {
-		if values.ExplainValue(e.projectedValues[i]) != values.ExplainValue(o.projectedValues[i]) {
+		if !values.SemanticEqualsUnderAliasMap(e.projectedValues[i], o.projectedValues[i], vm) {
 			return false
 		}
 	}
@@ -112,8 +115,10 @@ func (e *LogicalProjectionExpression) EqualsWithoutChildren(other RelationalExpr
 // HashCodeWithoutChildren hashes the projection list via Explain text.
 func (e *LogicalProjectionExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
+	var buf [8]byte
 	for _, v := range e.projectedValues {
-		h.Write([]byte(values.ExplainValue(v)))
+		binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(v))
+		h.Write(buf[:])
 		h.Write([]byte{0})
 	}
 	return h.Sum64()
