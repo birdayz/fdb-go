@@ -1,6 +1,6 @@
 # RFC-037: Full Graefe Memo — Cross-Reference Equivalence-Class Merging
 
-**Status:** Draft
+**Status:** Draft (v2 — addresses Graefe + Torvalds NAK on v1)
 **Item:** TODO "Beyond Java (Go-only improvements) → Full Graefe Memo with cross-group merging" (the `B3` follow-on).
 
 ## Problem
@@ -49,8 +49,9 @@ This is the difference between a *tree of References that happen to share leaves
   `correlatedToCache`. No identity/ID field. No forwarding.
 * **Child references are held by pointer** in `Quantifier.rangesOver`
   (`expressions/quantifier.go:54`), read **only** through `GetRangesOver()`
-  (`quantifier.go:164`). Grep confirms: **472** call sites use `GetRangesOver()`; the raw
-  field is touched in exactly **one** place (the accessor). This is the key lever — see Fix.
+  (`quantifier.go:164`). Grep confirms: **444** call sites use `GetRangesOver()`; the raw
+  field is touched in exactly **one** place (the accessor). A key lever — but, as v1 of this
+  RFC learned the hard way, not the *only* identity-bearing path (see Fix §2).
 * **`Memo`** (`memo.go`): `refs` set, `childToParents` reverse index (parent edges per child
   Reference, the Go analog of Java's `Traversal`), `leafRefs` slice (deterministic order).
   `MemoizeExpression` does topological find-or-create; `sameChildRefs`/`sameChildReferences`
@@ -79,79 +80,114 @@ coverage is therefore the bar (per the "query reach may exceed Java" rule).
 
 ## Fix
 
-Implement union-find group merging with resolution at a single chokepoint.
+Implement union-find group merging. The v1 of this RFC was NAK'd by both reviewers: its
+premise — "reads resolve only at `GetRangesOver()`, leave everything else alone" — was
+false. Grep shows the planner keys on raw `*Reference` identity far beyond `GetRangesOver()`:
+in-flight tasks hold `t.Ref` raw and gate on `ContainsExactly` (pointer); long-lived maps
+`planner.exploreCount` and `Memo.{refs,childToParents,leafRefs}` are pointer-keyed;
+`expression_rule_call.go:115` does `ref == c.Reference`. v2 addresses every flagged hole.
 
-### 1. Reference identity + forwarding (union-find with path compression)
+### 0. Scope: merge during the REWRITING phase only
 
-Add to `Reference`:
+The merge fires only while References are at `StageInitial`/`StageCanonical` (REWRITING).
+Rationale, not punt:
+
+* The redundant-subexpression / shared-sub-product / multi-way-join-order value the item
+  names is produced by **logical** rules (join reorder, filter/projection pushdown) — all
+  REWRITING. PLANNING is logical→physical implementation selection; it creates no new
+  *logical* equivalences to merge.
+* `partialMatchMap` and `winners` are **PLANNING-phase artifacts** (verified: index match
+  candidates / requested-ordering winners; both empty during REWRITING). Confining merges to
+  REWRITING means the merge never has to canonicalize a `PartialMatch` (which holds raw
+  `queryRef`/`candidateRef` fields) or a `winners` key — **dissolving Graefe's "pattern
+  memory merge is the hard part" concern**: in REWRITING the only per-group bookkeeping is
+  exploration state, which the merge folds explicitly.
+* A debug assertion guards it: merging a Reference that already has partial matches or
+  winners panics — a tripwire that forces a deliberate scope extension rather than a silent
+  bug. PLANNING-phase merging is Future Work.
+
+### 1. Reference identity + forwarding (union-find, path-compressed)
+
+Add to `Reference`: `id uint64` (monotonic, assigned by `InitialOf` from a **per-Memo**
+counter — not a global, which would break test isolation/determinism) and
+`forwardedTo *Reference` (nil ⇒ canonical). Add `Canonical()` (follows the chain, compresses
+the path), `ID()`, `IsForwarded()`.
+
+### 2. The loser is a transparent forwarder, NOT an emptied husk
+
+This is the core correction over v1. After `merge`, the loser is **not** cleared. Instead
+**every state-bearing `Reference` method resolves `self` to `Canonical()` at entry**:
 
 ```go
-id          uint64     // monotonic creation order; stable, deterministic
-forwardedTo *Reference // nil ⇒ canonical; else this group was merged away
+func (r *Reference) Members() []RelationalExpression { r = r.Canonical(); return r.members }
+func (r *Reference) ContainsExactly(e RelationalExpression) bool { r = r.Canonical(); ... }
+// …Insert, InsertFinal, FinalMembers, AllMembers, NeedsExploration, StartExploration,
+//   GetCorrelatedTo, Winner/SetWinner, partialMatch accessors, Stage, etc.
 ```
 
-`InitialOf` assigns `id` from a package-level monotonic counter seeded **per Memo**
-(not a global — global counters break test isolation/determinism). Add:
+`Canonical()` itself, `ID()`, and the merge primitive do **not** recurse. Consequence:
+in-flight `TransformExprTask`/`TransformImplTask` holding `t.Ref = loser` keep working —
+`loser.ContainsExactly(expr)` and `loser.Members()` transparently operate on the survivor's
+state, so **no exploration work is stranded** (Torvalds #1). Expression *pointers* are moved,
+not copied, so `isFinalMember`/`isAlreadyExploratoryMember`'s pointer scan still finds them.
 
-```go
-// Canonical follows the forwarding chain to the surviving Reference,
-// compressing the path so subsequent lookups are O(1).
-func (r *Reference) Canonical() *Reference { ... }
-```
+`GetRangesOver()` also resolves (`q.rangesOver.Canonical()`), so the 444 consumers,
+`sameChildRefs`/`sameChildReferences`, and `collectReferences` (walks via `GetRangesOver`)
+all see the survivor. `expression_rule_call.go`'s `ref == c.Reference` becomes
+`ref.Canonical() == c.Reference.Canonical()`. `planner.exploreCount` is canonicalized at its
+two sites (`planner.go:528,637`: `p.exploreCount[t.Ref.Canonical()]`).
 
-### 2. Resolve at the chokepoint
+### 3. The merge operation (`Memo.merge`)
 
-```go
-func (q Quantifier) GetRangesOver() *Reference { return q.rangesOver.Canonical() }
-```
+Deterministic winner = **lower `id`** (older group; independent of map order). Steps:
 
-All 472 consumers (correlation walks, exploration scheduling, executor extraction, dedup
-comparisons) now see the canonical Reference automatically. **No in-flight expression or
-task is rewritten** — the stored pointer is left intact (Quantifier is an immutable value),
-only *reads* resolve. This sidesteps the "redirect every pointer / fix in-flight tasks"
-problem the naive approach has. `sameChildRefs`/`sameChildReferences` compare
-`GetRangesOver()` results, so they too become merge-aware for free.
+1. **Guard:** panic if either ref has partial matches or winners (scope tripwire, §0).
+2. Fold loser→winner via an `expressions`-package primitive (`winner.absorb(loser)`, touches
+   private fields): `Insert` loser's exploratory members, `InsertFinal` its finals (dedup
+   handles overlap); fold exploration state so the survivor re-explores genuinely-new members
+   (`explState=explorationNever` iff members grew), bounded by the existing `maxRoundsPerRef`.
+3. `loser.forwardedTo = winner` (loser now forwards; its fields are inert but readable).
+4. **Memo index repoint (eager, Torvalds #3):** rewrite `childToParents` edges naming `loser`
+   to `winner` (dedup); delete `loser` from `refs`, `leafRefs`/`leafRefsSet`; if
+   `loser == m.root`, `m.root = winner`.
+5. **Cache invalidation across the DAG (Torvalds #2):** equivalent groups have equal
+   correlated-to sets, so the survivor's set is unchanged *in value* — but defensively walk
+   **up** `childToParents` from the survivor invalidating each ancestor's `correlatedToCache`
+   (exported `InvalidateCorrelatedToCache()`), plus the survivor's. Bounded; uses the
+   existing reverse index. A test asserts merged-group `GetCorrelatedTo()` == survivor's
+   pre-merge value (pins the "equivalence ⇒ equal correlation" invariant).
 
-### 3. The merge operation (`Memo.merge(winner, loser)`)
+### 4. Merge trigger + recursive upward re-merge (§2, Graefe #1)
 
-Deterministic winner = **lower `id`** (older group wins; stable regardless of map order).
-The paper's "pattern memory merge" (§3.5) = fold the loser's state into the winner:
+At memo integration during REWRITING (where rule output enters the memo —
+`MemoizeExpression` / the yield path), when placing an expression into Reference `G`, the
+existing topological lookup (`childToParents` ∩ + hash + `EqualsWithoutChildren` + canonical
+child match) already finds a structurally-equal member. If that member lives in a **different**
+Reference `H`, `merge(min_id(G,H), max_id(G,H))` instead of inserting a duplicate.
 
-1. `Reference.Insert` each of loser's exploratory `members` and `InsertFinal` each
-   `finalMembers` into winner (dedup handles overlap).
-2. Merge `partialMatchMap` (candidate → matches) and `winners` (per-properties best);
-   on key collision keep winner's (it is the canonical group). Clear `correlatedToCache`.
-3. Re-seed exploration state so winner re-explores any genuinely-new members
-   (`explState = explorationNever` if new members were added) — bounded by the existing
-   `maxRoundsPerRef = 10` backstop.
-4. Set `loser.forwardedTo = winner`; clear loser's members so a stale direct pointer can
-   never re-introduce the loser as live work (all legitimate reads go through `Canonical()`).
-5. Update `Memo` indices: re-point `childToParents` edges that named `loser` to `winner`;
-   move `loser` out of `refs`/`leafRefs`; if `loser == m.root`, advance `m.root` to winner.
+The paper's integration is **recursively bottom-up**: discovering `G≡H` can make their
+parents duplicates. So `merge` feeds the survivor onto a **worklist**; after each merge we
+re-run duplicate detection on the parents of the merged group (via `childToParents`),
+cascading merges upward until the worklist drains. Termination: each merge strictly reduces
+the live-Reference count, which is finite.
 
-### 4. Merge trigger — bottom-up duplicate detection at memo integration (§2)
+Reduction-rule-triggered merges (§3.6, bare-leaf substitutes) reuse this same `merge`
+primitive and are deferred to Future Work — they are a *trigger*, not a new mechanism.
 
-The paper integrates each substitute "with search for and detection of duplicates (a
-recursive bottom-up process using hash tables)." Today that search returns a Reference but
-never merges. Change the integration point so that when an expression is being placed into
-Reference `G`, we look up (via the existing `childToParents` topological index + hash +
-`EqualsWithoutChildren` + canonical child match) whether a **structurally-equal** member
-already lives in a **different** Reference `H`. If so, `Memo.merge(min(G,H), max(G,H))`
-instead of inserting a duplicate. This is wired where rule output enters the memo
-(`TransformExprTask.yieldFn` / the `MemoizeExpression` path), so it fires for
-rule-derived equivalences, not just initial construction.
+### Ordering invariant (Graefe #3)
 
-Reduction-rule-driven merges (§3.6 — substitute is a bare group reference) are the natural
-follow-on and are noted in Future Work; the bottom-up trigger above is the general case that
-delivers redundant-subexpression elimination and is what the e2e test pins.
+Merges are applied synchronously at the integration call, never mid-binding-iteration of a
+rule. The transparent-forwarder design (§2) makes this safe even for bindings extracted
+*before* a merge: such a binding holds a `loser` pointer, and every subsequent read through
+that pointer resolves to the one survivor — there is no window in which the same group is
+observed in two states.
 
 ### Determinism (the #1 risk per the query-engine skill)
 
-Every merge decision and every iteration that could affect plan choice is keyed on the
-monotonic `id`, never on map iteration order: winner = lower id; candidate scan uses the
-existing insertion-ordered `childToParents` edges and `leafRefs` slice; `Canonical()` is a
-pure function of the forwarding chain. The merge is therefore a deterministic function of
-the (deterministic) task schedule. Pinned by a 10×-repeat determinism test on the e2e query.
+Every merge decision keys on the monotonic per-Memo `id` (winner = lower id), never on map
+iteration order; the candidate scan uses insertion-ordered `childToParents` edges and the
+`leafRefs` slice; `Canonical()` is a pure function of the chain. Merge is a deterministic
+function of the (deterministic) task schedule. Pinned by a 10×-repeat plan-hash test.
 
 ## Performance
 
@@ -166,22 +202,32 @@ the (deterministic) task schedule. Pinned by a 10×-repeat determinism test on t
 
 ## Test plan
 
-1. **Unit (`memo_merge_test.go`):** `Canonical()` chain + path compression; `merge` folds
-   members/finals/partialMatch/winners; root re-pointing; idempotent re-merge; winner = lower id.
-2. **Merge fires e2e (the optimization proof, not just correct rows):** a query whose plan
-   construction yields the *same* scan+filter subexpression in two independently-derived
-   References (self-join / shared sub-product). Assert via a `Memo` stats hook
-   (`MergeCount() > 0` and post-plan `len(refs)` strictly less than the no-merge baseline)
-   **and** correct rows. A BAD test would only check rows (could pass via the un-merged path).
-3. **Determinism:** the e2e query planned 10× with `--nocache_test_results`, identical plan
+1. **Unit (`memo_merge_test.go`):** `Canonical()` chain + path compression + acyclicity;
+   `absorb` folds exploratory+final members (pointer-preserving) and exploration state; winner
+   = lower id; idempotent re-merge; root re-pointing; `childToParents`/`leafRefs`/`refs`
+   repointed and loser removed.
+2. **In-flight task not stranded (Torvalds #1 regression):** construct loser + winner, queue a
+   transform task on the loser, merge, then run the task — assert it operates on the survivor
+   (its `ContainsExactly`/`Members` see merged state; the rule still fires). Guards the exact
+   bug v1 would have shipped.
+3. **Recursive upward re-merge (Graefe #1 regression):** build G≡H whose parents P(G), P(H)
+   become equal once G,H merge; assert the parents also merge (worklist cascades up).
+4. **correlatedToCache (Torvalds #2):** merged-group `GetCorrelatedTo()` == survivor's
+   pre-merge value; an ancestor's cache is invalidated (recomputes, not stale).
+5. **Scope tripwire (§0):** merging a Reference carrying a partial match / winner panics.
+6. **Merge fires e2e (optimization proof, not just rows):** a query whose REWRITING yields the
+   *same* scan+filter subexpression in two independently-derived References (self-join / shared
+   sub-product). Assert a `Memo` stats hook (`MergeCount() > 0`, post-plan live-`refs` strictly
+   below the no-merge baseline) **and** correct rows. A BAD test checks rows only (passes via
+   the un-merged path).
+7. **Determinism:** the e2e query planned 10× with `--nocache_test_results`, identical plan
    hash each run (per skill: non-deterministic plan = bug).
-4. **Multi-way join (5 tables):** assert group count is bounded (shared sub-products merged)
-   and the plan is correct; this is the headline capability the item names.
-5. **No-regression:** existing 46 targets green; 1M stress baseline within thresholds
-   (no merges on simple queries ⇒ no perf delta).
-6. **Fuzz:** extend `FuzzSemanticEquals_Properties`-style coverage with a merge invariant:
-   after any sequence of merges, `Canonical()` is acyclic and `GetCorrelatedTo()` of a
-   merged group equals that of the survivor.
+8. **Multi-way join (5 tables):** assert live-group count is bounded (shared sub-products
+   merged) and the plan is correct — the headline capability the item names.
+9. **No-regression:** existing 46 targets green; 1M stress baseline within thresholds (no
+   merges on simple/single-table queries ⇒ no perf delta; `Canonical()` is one nil-check).
+10. **Fuzz:** merge invariant — after any sequence of merges, `Canonical()` is acyclic, no live
+    Reference forwards, and `GetCorrelatedTo()` of a merged group equals the survivor's.
 
 ## Out of scope (Future Work, tracked in TODO.md)
 
