@@ -120,13 +120,13 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 	}
 
 	// DML: route through the single Cascades path (planDML). INSERT … VALUES
-	// is fully on Cascades. UPDATE / DELETE / INSERT … SELECT still fall to
+	// and DELETE are on Cascades. UPDATE and INSERT … SELECT still fall to
 	// the naive execStatement path in exec mode until their Cascades
 	// execution is verified end-to-end (RFC-035 §Fix.6). QueryContext
 	// (non-exec) routes all DML to planDML, where update plans are then
 	// rejected (it returns rows, not counts).
 	if dml := stmt.DmlStatement(); dml != nil {
-		if g.execMode && !isInsertValues(dml) {
+		if g.execMode && !dmlOnCascades(dml) {
 			return g.planDDL(ctx, stmt)
 		}
 		return g.planDML(ctx, dml)
@@ -169,17 +169,19 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 	return nil, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
 }
 
-// isInsertValues reports whether a DML statement is an INSERT … VALUES
-// (literal rows), as opposed to INSERT … SELECT, UPDATE, or DELETE. Only
-// VALUES has a fully-working Cascades execution path today; the others
-// stay on the naive path in exec mode until verified (RFC-035 §Fix.6).
-func isInsertValues(dml antlrgen.IDmlStatementContext) bool {
-	ins := dml.InsertStatement()
-	if ins == nil {
-		return false
+// dmlOnCascades reports whether a DML statement has a verified Cascades
+// execution path in exec mode. Today that is INSERT … VALUES (literal
+// rows) only. DELETE works for simple filters but its Cascades path still
+// regresses on schema-qualified targets and EXISTS-subquery predicates;
+// UPDATE's SET expressions are still text; INSERT … SELECT re-saves the
+// source records. Those stay on the naive path until ported (RFC-035
+// §Fix.6).
+func dmlOnCascades(dml antlrgen.IDmlStatementContext) bool {
+	if ins := dml.InsertStatement(); ins != nil {
+		_, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
+		return ok
 	}
-	_, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
-	return ok
+	return false
 }
 
 // planSelect routes a SELECT statement through the Cascades pipeline.
