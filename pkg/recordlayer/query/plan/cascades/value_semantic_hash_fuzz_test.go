@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -64,6 +65,34 @@ func FuzzValueSemanticHashConsistency(f *testing.F) {
 		// (b) hash is alias-invariant: equal-under-equiv ⟹ equal hash.
 		if ValueSemanticHashCode(v) != ValueSemanticHashCode(rebased) {
 			t.Fatalf("HASH CONSISTENCY VIOLATED: semantically-equal values hash differently: %v", v)
+		}
+	})
+}
+
+// FuzzPredicateSemanticHashConsistency extends the linchpin gate to predicates:
+// a ComparisonPredicate over a generated Value, alias-swapped, must keep its
+// PredicateSemanticHashCode unchanged (alias-invariant), consistent with
+// alias-aware predicate equality.
+func FuzzPredicateSemanticHashConsistency(f *testing.F) {
+	f.Add([]byte{0, 1})
+	f.Add([]byte{1, 0, 0, 1})
+	f.Add([]byte{0, 1, 1, 0, 2, 5})
+	f.Add(make([]byte, 12))
+
+	swap := values.AliasMap{hashFuzzQ0: hashFuzzQ1, hashFuzzQ1: hashFuzzQ0}
+
+	mkCmp := func(operand values.Value) predicates.QueryPredicate {
+		return predicates.NewComparisonPredicate(
+			operand,
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(7)}},
+		)
+	}
+
+	f.Fuzz(func(t *testing.T, b []byte) {
+		v, _ := genHashFuzzValue(b, 0, 0)
+		rebased := values.RebaseValue(v, swap)
+		if PredicateSemanticHashCode(mkCmp(v)) != PredicateSemanticHashCode(mkCmp(rebased)) {
+			t.Fatalf("PREDICATE HASH CONSISTENCY VIOLATED: alias-renamed operand changed predicate hash: %v", v)
 		}
 	})
 }
