@@ -129,8 +129,13 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 
 // ToValuesAliasMap returns the forward bindings as a values.AliasMap (the
 // simple source→target map the values/predicates alias-aware equality helpers
-// consume). Read-only view; callers must not mutate the result.
+// consume). Read-only view; callers must not mutate the result. Nil-safe: a
+// nil receiver (some EqualsWithoutChildren callers pass a nil *AliasMap)
+// yields a nil values.AliasMap, which the helpers read as identity-alias.
 func (a *AliasMap) ToValuesAliasMap() values.AliasMap {
+	if a == nil {
+		return nil
+	}
 	return values.AliasMap(a.forward)
 }
 

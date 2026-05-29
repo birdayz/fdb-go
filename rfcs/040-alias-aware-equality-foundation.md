@@ -73,6 +73,13 @@ type silently breaks `hash==hash && Equals` dedup (green CI, no crash). Therefor
 * **Enumerate all impls** (grep at authoring time: ~54 `HashCodeWithoutChildren`, the matching
   `EqualsWithoutChildren` set across `expressions/`, `predicates/`, `values/`) and audit each:
   does its hash include an alias-bearing field its equality (now) ignores, or vice versa?
+* **MUST land before PR-A (Graefe check-in):** a **relational-expression** completeness test —
+  for every concrete `RelationalExpression`, two alias-variant instances must hash equal and
+  compare equal under the mapping. The current registry test covers `Value` types; the
+  relational level is required before PR-A flips the memo to pass real alias maps (until then
+  everything is inert, so it is not yet blocking). A literal "reflection over the type registry"
+  is infeasible without a maintained type registry (Go can't enumerate interface implementors at
+  runtime); the achievable guard is the maintained registry list + the consistency fuzz.
 * **Registry/reflection completeness test**: assert every concrete `RelationalExpression`,
   `Value`, and `QueryPredicate` type is present in the consistency-fuzz corpus — so the fuzz
   can't pass by simply never constructing the unaudited type.
