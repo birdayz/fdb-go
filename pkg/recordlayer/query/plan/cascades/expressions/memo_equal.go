@@ -27,10 +27,10 @@ func MemoEqual(a, b RelationalExpression) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return memoEqual(a, b, EmptyAliasMap(), map[[2]*Reference]bool{})
+	return memoEqual(a, b, EmptyAliasMap())
 }
 
-func memoEqual(member, expr RelationalExpression, equiv *AliasMap, seen map[[2]*Reference]bool) bool {
+func memoEqual(member, expr RelationalExpression, equiv *AliasMap) bool {
 	if member == expr {
 		return true
 	}
@@ -57,7 +57,7 @@ func memoEqual(member, expr RelationalExpression, equiv *AliasMap, seen map[[2]*
 	// is canonicalized identically on both sides.
 	equiv = combineIdentities(equiv, member)
 	// Match children, building the node's own quantifier-alias map.
-	built, ok := matchChildrenInMemo(member, expr, mq, eq, equiv, seen)
+	built, ok := matchChildrenInMemo(member, expr, mq, eq, equiv)
 	if !ok {
 		return false
 	}
@@ -69,7 +69,7 @@ func memoEqual(member, expr RelationalExpression, equiv *AliasMap, seen map[[2]*
 // children pair positionally; ChildrenAsSet nodes try permutations (capped at
 // MaxPermutationChildren). Each child pair is compared via DIRECTIONAL
 // childRefsMatchInMemo. Returns the built map.
-func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier, equiv *AliasMap, seen map[[2]*Reference]bool) (*AliasMap, bool) {
+func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier, equiv *AliasMap) (*AliasMap, bool) {
 	n := len(mq)
 	if n == 0 {
 		return equiv, true
@@ -83,7 +83,7 @@ func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier,
 		found := permute(indices, 0, func(perm []int) bool {
 			b := equiv
 			for i := 0; i < n; i++ {
-				if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[perm[i]].GetRangesOver(), b, seen) {
+				if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[perm[i]].GetRangesOver(), b) {
 					return false
 				}
 				nb, ok := b.With(mq[i].GetAlias(), eq[perm[i]].GetAlias())
@@ -102,7 +102,7 @@ func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier,
 	}
 	b := equiv
 	for i := 0; i < n; i++ {
-		if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[i].GetRangesOver(), b, seen) {
+		if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[i].GetRangesOver(), b) {
 			return nil, false
 		}
 		nb, ok := b.With(mq[i].GetAlias(), eq[i].GetAlias())
@@ -115,13 +115,22 @@ func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier,
 }
 
 // childRefsMatchInMemo is DIRECTIONAL containsAllInMemo (Java
-// Reference.containsAllInMemo): every member of `b` must be matched by SOME
-// member of `a` under equiv. Pointer-canonical equality is the fast path;
-// otherwise it recurses (the self-cycle guard yields fresh InitialOf children
-// for the PushFilterThroughDistinct family, so equal children can be distinct
-// pointers). `seen` is a recursion STACK guard (added on entry, removed on
-// exit) against cyclic DAGs — defensive; the live DAG is acyclic.
-func childRefsMatchInMemo(a, b *Reference, equiv *AliasMap, seen map[[2]*Reference]bool) bool {
+// Reference.containsAllInMemo, Reference.java:433-454): every member of `b`
+// must be matched by SOME member of `a` under equiv. Pointer-canonical equality
+// is the fast path (Java's `this == otherRef`); otherwise it recurses — rule
+// rewrites yield fresh InitialOf children (e.g. PushFilterThroughDistinct), so
+// equal children can be distinct pointers. No cycle guard: like Java, recursion
+// descends strictly through child References, which form an acyclic DAG (the
+// cross-group merge guard in memo_merge.go forbids creating a cycle), so it
+// terminates.
+//
+// Exploratory and final members match SEPARATELY (exploratory↦exploratory,
+// final↦final) — exactly Java's two-call structure (Reference.java:439-440),
+// never cross-matching a logical rewrite against a physical plan. During the
+// REWRITING-phase interning that drives the activation, finalMembers are empty
+// so the second check is a no-op; the explicit final↦final pass keeps the port
+// faithful for any future PLANNING-phase caller.
+func childRefsMatchInMemo(a, b *Reference, equiv *AliasMap) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
@@ -130,16 +139,18 @@ func childRefsMatchInMemo(a, b *Reference, equiv *AliasMap, seen map[[2]*Referen
 	if a == b {
 		return true
 	}
-	key := [2]*Reference{a, b}
-	if seen[key] {
-		return true
-	}
-	seen[key] = true
-	defer delete(seen, key)
-	for _, mb := range b.Members() {
+	return membersContainAllInMemo(a.Members(), b.Members(), equiv) &&
+		membersContainAllInMemo(a.FinalMembers(), b.FinalMembers(), equiv)
+}
+
+// membersContainAllInMemo reports whether every expression in want is matched
+// by SOME expression in have under equiv (Java Members.containsInMemo loop,
+// Reference.java:444-453 / 1013-1018). Directional, not bidirectional.
+func membersContainAllInMemo(have, want []RelationalExpression, equiv *AliasMap) bool {
+	for _, w := range want {
 		matched := false
-		for _, ma := range a.Members() {
-			if memoEqual(ma, mb, equiv, seen) {
+		for _, h := range have {
+			if memoEqual(h, w, equiv) {
 				matched = true
 				break
 			}
@@ -211,6 +222,13 @@ func expressionCorrelatedTo(e RelationalExpression) map[values.CorrelationIdenti
 		if child == nil {
 			continue
 		}
+		// Java filters own aliases from the children contribution only when
+		// canCorrelate() (RelationalExpression.computeCorrelatedTo, line 72:
+		// `!canCorrelate() || ...`). Subtracting unconditionally here is safe:
+		// a child Reference cannot correlate to the alias that names it, so the
+		// own-alias set never intersects the children's correlations — the
+		// guard is structurally unreachable, and dropping it can only ever
+		// remove an alias that wasn't present.
 		for k := range child.GetCorrelatedTo() {
 			if _, bound := own[k]; !bound {
 				result[k] = struct{}{}

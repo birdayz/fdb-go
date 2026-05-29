@@ -249,10 +249,10 @@ func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expres
 
 	// Check each candidate for alias-aware containment (RFC-039 PR-A
 	// activation): MemoEqual builds the node's own quantifier-alias map, so
-	// equivalent-up-to-alias members intern into the SAME Reference (replaces
-	// EqualsWithoutChildren(empty) + pointer-identical sameChildRefs). This is
-	// what makes children intern alias-aware bottom-up, so the topological
-	// candidate narrowing surfaces equivalent parents.
+	// members equivalent up to a consistent quantifier-alias renaming intern
+	// into the SAME Reference (the prior alias-sensitive interning gave them
+	// distinct References). Children intern alias-aware bottom-up, so the
+	// topological candidate narrowing surfaces equivalent parents.
 	h := expr.HashCodeWithoutChildren()
 	for _, ref := range candidates {
 		for _, member := range ref.Members() {

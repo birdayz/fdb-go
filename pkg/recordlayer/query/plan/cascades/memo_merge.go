@@ -159,9 +159,9 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 			if member.HashCodeWithoutChildren() != h {
 				continue
 			}
-			// Alias-aware merge-candidate match: equivalent-up-to-quantifier-
-			// alias members now merge (replaces EqualsWithoutChildren(empty)
-			// + pointer-identical sameChildRefs).
+			// Alias-aware merge-candidate match: members equivalent up to a
+			// consistent quantifier-alias renaming now merge (the prior
+			// alias-sensitive comparison kept them in distinct groups).
 			if expressions.MemoEqual(member, expr) {
 				return cand
 			}
