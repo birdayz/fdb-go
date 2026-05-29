@@ -2256,12 +2256,27 @@ func buildLogicalPlanForDeleteWithCatalog(
 	if w == nil || tableName == "" {
 		return op
 	}
-	pred, ok := buildWherePredicateForTable(md, tableName, "", w)
+	// A DML statement runs inside a single schema's store, so the record
+	// type is the bare name; strip any schema qualifier before resolving
+	// and aliasing the predicate, so refs bind to the resolved scan
+	// (which resolveQualifiedTableNames also reduces to the bare name).
+	bare := bareTableName(tableName)
+	pred, ok := buildWherePredicateForTable(md, bare, bare, w)
 	if !ok {
 		return op
 	}
 	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
 	return op
+}
+
+// bareTableName strips a leading schema qualifier ("s1.T" → "T"). Used so
+// DML predicate resolution and correlation aliases match the resolved
+// (bare) scan name.
+func bareTableName(name string) string {
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+		return name[dot+1:]
+	}
+	return name
 }
 
 // buildLogicalPlanForUpdateWithCatalog is the catalog-aware variant
@@ -2283,7 +2298,8 @@ func buildLogicalPlanForUpdateWithCatalog(
 	if w == nil || tableName == "" {
 		return op
 	}
-	pred, ok := buildWherePredicateForTable(md, tableName, "", w)
+	bare := bareTableName(tableName)
+	pred, ok := buildWherePredicateForTable(md, bare, bare, w)
 	if !ok {
 		return op
 	}
