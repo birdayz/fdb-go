@@ -127,3 +127,10 @@ func (c *PlanCache) Invalidate() {
 func (c *PlanCache) Stats() (hits, misses int64) {
 	return c.hits.Load(), c.misses.Load()
 }
+
+// Len returns the number of entries currently held by the cache. O(1).
+func (c *PlanCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ll.Len()
+}

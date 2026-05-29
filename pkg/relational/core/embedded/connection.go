@@ -117,6 +117,31 @@ type EmbeddedConnection struct {
 	// hash. Per-connection (and therefore per-schema), invalidated on
 	// DDL. Lazily initialized on first query.
 	planCache *PlanCache
+
+	// planLogger receives one PlanGenerationInfo per Plan() call for
+	// operational debuggability (RFC-034). nil = silent (the default).
+	// The Go analog of Java's RelationalLoggingUtil; sampling and
+	// log-level policy live in the handler, not the engine.
+	planLogger PlanGenerationLogger
+
+	// slowQueryThresholdMicros marks a planning call as slow when its
+	// duration exceeds this many microseconds. Defaults to the canonical
+	// api.OptLogSlowQueryThresholdMicros value (see New).
+	slowQueryThresholdMicros int64
+}
+
+// SetPlanLogger installs a planning-metrics logger (RFC-034). Passing nil
+// disables planning logging. Not safe to call concurrently with query
+// planning on the same connection (matches database/sql's per-Conn threading
+// contract).
+func (c *EmbeddedConnection) SetPlanLogger(l PlanGenerationLogger) {
+	c.planLogger = l
+}
+
+// SetSlowQueryThresholdMicros sets the slow-query threshold in microseconds.
+// A non-positive value disables the slow-query flag.
+func (c *EmbeddedConnection) SetSlowQueryThresholdMicros(micros int64) {
+	c.slowQueryThresholdMicros = micros
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
@@ -256,8 +281,20 @@ func New(
 	sess := session.New(fdbDB, cat, ks, factory)
 	sess.DBPath = dbPath
 	return &EmbeddedConnection{
-		sess: sess,
+		sess:                     sess,
+		slowQueryThresholdMicros: defaultSlowQueryThresholdMicros(),
 	}
+}
+
+// defaultSlowQueryThresholdMicros reads the canonical slow-query threshold
+// default from the options package so there is a single source of truth for
+// the value (api.OptLogSlowQueryThresholdMicros). Falls back to 0 (disabled)
+// if the option is absent or not an int64.
+func defaultSlowQueryThresholdMicros() int64 {
+	if v, ok := api.DefaultOptionValues()[api.OptLogSlowQueryThresholdMicros].(int64); ok {
+		return v
+	}
+	return 0
 }
 
 // ExecContext executes SQL (DDL/DML/transaction) and returns the row-

@@ -215,7 +215,7 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 			"no schema metadata available")
 	}
 
-	return g.planSelectCascades(ctx, q, md)
+	return g.planSelectCascades(ctx, q, md, true)
 }
 
 // planSelectExplainOnly produces a PlanFunc that renders a logical plan
@@ -248,10 +248,26 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 }
 
 // planSelectCascades runs the full Cascades pipeline for a query.
-func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (query.Plan, error) {
+// logMetrics gates the per-query planning-metrics hook (RFC-034). The real
+// query path passes true; the EXPLAIN re-entry from computeExplainText passes
+// false so EXPLAIN does not emit a phantom planning event (Java's getPlan
+// funnel does not fire for EXPLAIN-internal planning).
+func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool) (plan query.Plan, err error) {
 	sqlText := q.GetText()
+	var ls *planLogScope
+	if logMetrics {
+		// Log the original whitespace-preserved SQL (canonicalTextOf), not
+		// q.GetText() — the latter concatenates tokens without whitespace
+		// ("SELECTid=1FROMorders"), which is useless to an operator. The cache
+		// key still uses GetText() (RFC-029), a separate concern.
+		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
+	}
+	defer func() { ls.finish(err) }()
+
 	if g.cache != nil {
 		if cachedPlan, cachedSubs, ok := g.cache.Get(sqlText); ok {
+			ls.setPlan(cachedPlan)
+			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
 				conn:             g.c,
 				md:               md,
@@ -361,10 +377,15 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 
 	sqlLimit, sqlOffset := extractLimitOffset(logicalOp)
 
+	ls.setPlan(physPlan)
 	// Don't cache LIMIT/OFFSET queries — the limit is applied post-execution
 	// and is not stored in the cached plan.
 	if g.cache != nil && sqlLimit < 0 && sqlOffset == 0 {
+		ls.setCache(PlanCacheMiss)
 		g.cache.Put(sqlText, physPlan, scalarSubs)
+	} else {
+		// Planned but deliberately not cached (LIMIT/OFFSET) or no cache.
+		ls.setCache(PlanCacheSkip)
 	}
 	return &cascadesPlan{
 		conn:             g.c,
@@ -424,7 +445,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 		if c.sess != nil && c.sess.DB != nil && !referencesInformationSchema(q) {
 			if err := c.ensureMetaData(ctx); err == nil {
 				if freshMd := c.cachedMetaData(); freshMd != nil {
-					if plan, planErr := g.planSelectCascades(ctx, q, freshMd); planErr == nil {
+					if plan, planErr := g.planSelectCascades(ctx, q, freshMd, false); planErr == nil {
 						return plan.Explain()
 					}
 				}
@@ -539,13 +560,19 @@ func extractLimitOffset(op logical.LogicalOperator) (int64, int64) {
 	return -1, 0
 }
 
-func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (query.Plan, error) {
+func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
 	c := g.c
 
 	// Explain-only mode: no FDB available, produce logical plan text only.
+	// No planning happens here, so it is outside the metrics funnel.
 	if c.sess == nil || c.sess.DB == nil {
 		return g.planDMLExplainOnly(dml)
 	}
+
+	// DML is never cached; the cache event is always Skip on success.
+	// Log the original whitespace-preserved SQL (see planSelectCascades).
+	ls := g.beginPlanLog(ctx, canonicalTextOf(dml))
+	defer func() { ls.finish(err) }()
 
 	if err := c.ensureMetaData(ctx); err != nil {
 		return nil, err
@@ -609,6 +636,8 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML physical plan nil")
 	}
 
+	ls.setPlan(physPlan)
+	ls.setCache(PlanCacheSkip)
 	return &cascadesPlan{
 		conn:         g.c,
 		md:           md,
