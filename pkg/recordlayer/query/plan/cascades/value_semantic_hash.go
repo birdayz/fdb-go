@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"hash/fnv"
 	"io"
 	"strconv"
@@ -71,6 +72,24 @@ func writeValueSemanticHash(h io.Writer, v values.Value) {
 		// folded below via Children().
 		fv := v.(*values.FieldValue)
 		_, _ = io.WriteString(h, "field:"+fv.Field)
+	case *values.ConstantValue:
+		// Value-bearing leaf: the literal MUST be in the hash (its
+		// EqualsWithoutChildren distinguishes different constants), else
+		// distinct constants collide.
+		cv := v.(*values.ConstantValue)
+		_, _ = fmt.Fprintf(h, "const:%T=%v", cv.Value, cv.Value)
+	case *values.BooleanValue:
+		bv := v.(*values.BooleanValue)
+		if bv.Value == nil {
+			_, _ = io.WriteString(h, "bool:nil")
+		} else {
+			_, _ = fmt.Fprintf(h, "bool:%v", *bv.Value)
+		}
+	case *values.ParameterValue:
+		pv := v.(*values.ParameterValue)
+		_, _ = fmt.Fprintf(h, "param:%d:%s", pv.Ordinal, pv.ParamName)
+	case *values.NullValue:
+		_, _ = io.WriteString(h, "null")
 	default:
 		// Structural Values: a type tag (Name) keeps types apart; the
 		// concrete shape (operator, constant, etc.) is distinguished by
