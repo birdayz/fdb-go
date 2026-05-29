@@ -66,6 +66,7 @@ go_test(
         "permutation_test.go",
         "quantifier_test.go",
         "reference_dedup_test.go",
+        "reference_merge_test.go",
         "reference_test.go",
         "select_test.go",
         "table_function_fuzz_test.go",

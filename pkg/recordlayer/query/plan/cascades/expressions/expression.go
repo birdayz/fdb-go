@@ -179,13 +179,50 @@ func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 // a bottleneck in normal usage.
 const MaxPermutationChildren = 8
 
+// composeChildAliasPairs layers the (aAlias→bAlias) child bijection onto
+// `aliases`, returning ok=false if any binding conflicts (a source or
+// target is already bound to a different partner). A conflict means no
+// consistent alias correspondence aligns the two expressions under the
+// current context — i.e. they are NOT semantically equal — so callers
+// return false rather than panic.
+//
+// This non-panicking compose is the shared spine of both child-matching
+// paths and mirrors Java, whose `AliasMap.combineMaybe` returns
+// Optional.empty() on conflict (semanticEquals enumerates alias maps and
+// simply skips inconsistent ones — it never composes a conflicting map).
+// It replaces the bare AliasMap.Compose (the panicking `combine` variant)
+// and the recover-based guard matchChildrenPermuted previously used.
+// Conflicts arise legitimately once
+// References are shared (e.g. after RFC-037 cross-group merging, where two
+// child Quantifiers can resolve to the same canonical Reference): the
+// positional pairing then maps one alias to two partners, which is simply
+// "not equal", not a crash.
+func composeChildAliasPairs(aliases *AliasMap, aQs, bQs []Quantifier) (*AliasMap, bool) {
+	out := EmptyAliasMap()
+	for s, t := range aliases.forward {
+		out.forward[s] = t
+		out.reverse[t] = s
+	}
+	for i := range aQs {
+		s, t := aQs[i].GetAlias(), bQs[i].GetAlias()
+		if et, ok := out.forward[s]; ok && et != t {
+			return nil, false
+		}
+		if es, ok := out.reverse[t]; ok && es != s {
+			return nil, false
+		}
+		out.forward[s] = t
+		out.reverse[t] = s
+	}
+	return out, true
+}
+
 // matchChildrenPositional pairs children index-by-index and recurses.
 func matchChildrenPositional(aQs, bQs []Quantifier, aliases *AliasMap) bool {
-	pairs := make([]values.CorrelationIdentifier, 0, 2*len(aQs))
-	for i := range aQs {
-		pairs = append(pairs, aQs[i].GetAlias(), bQs[i].GetAlias())
+	composed, ok := composeChildAliasPairs(aliases, aQs, bQs)
+	if !ok {
+		return false
 	}
-	composed := aliases.Compose(AliasMapOf(pairs...))
 	for i := range aQs {
 		if !SemanticEquals(aQs[i].GetRangesOver().Get(), bQs[i].GetRangesOver().Get(), composed) {
 			return false
@@ -202,22 +239,17 @@ func matchChildrenPermuted(aQs, bQs []Quantifier, aliases *AliasMap) bool {
 	for i := range indices {
 		indices[i] = i
 	}
+	permutedB := make([]Quantifier, n)
 	return permute(indices, 0, func(perm []int) bool {
 		// Try this perm: aQs[i] pairs with bQs[perm[i]].
-		pairs := make([]values.CorrelationIdentifier, 0, 2*n)
 		for i := 0; i < n; i++ {
-			pairs = append(pairs, aQs[i].GetAlias(), bQs[perm[i]].GetAlias())
+			permutedB[i] = bQs[perm[i]]
 		}
-		// AliasMapOf panics on duplicate sources/targets. With a real
-		// permutation each alias appears exactly once on each side, so
-		// the bijection invariant holds — but defensively recover here
-		// to skip over any pathological self-permuting tree.
-		var composed *AliasMap
-		func() {
-			defer func() { _ = recover() }()
-			composed = aliases.Compose(AliasMapOf(pairs...))
-		}()
-		if composed == nil {
+		// A conflict (duplicate/inconsistent alias binding) means this
+		// permutation doesn't align the trees — skip it. composeChildAliasPairs
+		// returns ok=false instead of panicking.
+		composed, ok := composeChildAliasPairs(aliases, aQs, permutedB)
+		if !ok {
 			return false
 		}
 		for i := 0; i < n; i++ {
