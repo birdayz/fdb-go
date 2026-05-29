@@ -119,16 +119,10 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 		}
 	}
 
-	// DML: route through the single Cascades path (planDML). INSERT … VALUES
-	// and DELETE are on Cascades. UPDATE and INSERT … SELECT still fall to
-	// the naive execStatement path in exec mode until their Cascades
-	// execution is verified end-to-end (RFC-035 §Fix.6). QueryContext
-	// (non-exec) routes all DML to planDML, where update plans are then
-	// rejected (it returns rows, not counts).
+	// DML: INSERT/UPDATE/DELETE (VALUES and SELECT) all execute through the
+	// single Cascades path. ExecContext reads RowsAffected; QueryContext
+	// rejects update plans (it returns rows, not counts).
 	if dml := stmt.DmlStatement(); dml != nil {
-		if g.execMode && !dmlOnCascades(dml) {
-			return g.planDDL(ctx, stmt)
-		}
 		return g.planDML(ctx, dml)
 	}
 
@@ -167,18 +161,6 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 	}
 
 	return nil, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
-}
-
-// dmlOnCascades reports whether a DML statement has a verified Cascades
-// execution path in exec mode. INSERT (VALUES and SELECT), DELETE, and
-// UPDATE all execute through Cascades — including schema-qualified
-// targets, correlated and non-correlated EXISTS predicates, SET
-// expressions resolved to Values, and positional INSERT … SELECT column
-// mapping. All DML now routes to planDML.
-func dmlOnCascades(dml antlrgen.IDmlStatementContext) bool {
-	return dml.DeleteStatement() != nil ||
-		dml.UpdateStatement() != nil ||
-		dml.InsertStatement() != nil
 }
 
 // planSelect routes a SELECT statement through the Cascades pipeline.
@@ -706,28 +688,19 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}, nil
 }
 
-// planDMLExplainOnly produces a PlanFunc for DML (INSERT/UPDATE/DELETE).
-// ExecFn delegates to exec* methods (requires a live connection).
-// ExplainFn renders the logical plan without touching FDB. Used by
-// NewExplainOnlyGenerator / NewExplainOnlyGeneratorWithSchema where
-// only ExplainFn is called.
+// planDMLExplainOnly produces a PlanFunc for DML (INSERT/UPDATE/DELETE) in
+// explain-only mode (no live FDB): ExplainFn renders the logical plan
+// without touching FDB, used by NewExplainOnlyGenerator /
+// NewExplainOnlyGeneratorWithSchema where only ExplainFn is called.
+// ExecFn is unreachable in this mode — DML with a live connection goes
+// through planDML (the Cascades path) — so it returns an error rather
+// than touch FDB.
 func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext) (query.Plan, error) {
 	c := g.c
 	return &query.PlanFunc{
 		ExecFn: func(ctx context.Context) (query.Result, error) {
-			if ins := dml.InsertStatement(); ins != nil {
-				n, err := c.execInsert(ctx, ins)
-				return query.Result{RowsAffected: n}, err
-			}
-			if del := dml.DeleteStatement(); del != nil {
-				n, err := c.execDelete(ctx, del)
-				return query.Result{RowsAffected: n}, err
-			}
-			if upd := dml.UpdateStatement(); upd != nil {
-				n, err := c.execUpdate(ctx, upd)
-				return query.Result{RowsAffected: n}, err
-			}
-			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
+			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
+				"DML execution requires a live connection (explain-only generator)")
 		},
 		UpdateFn: func() bool { return true },
 		ExplainFn: func() string {

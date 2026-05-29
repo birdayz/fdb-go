@@ -24,10 +24,8 @@ import (
 //   4. (See pk_prefix_pushdown.go) Composite pure-prefix — equalities
 //      on a leading PK subset, no range / IN-list on any col.
 //
-// Shared dispatcher pkPushdownCursor is used by UPDATE / DELETE to
-// find the tightest narrowing regardless of shape; SELECT's
-// execSelectQueryFull does the same thing inline so it can record
-// naturalOrder for ORDER BY elimination.
+// SELECT's execSelectQueryFull picks the tightest narrowing inline so it
+// can record naturalOrder for ORDER BY elimination.
 //
 // File companion: see in_list_pushdown.go for the IN-list shapes,
 // like_prefix_pushdown.go for LIKE, covering_index.go for index-
@@ -138,65 +136,6 @@ func (c *EmbeddedConnection) tryPKEqualityFromWhere(
 		pkVals[i] = val
 	}
 	return pkVals, true
-}
-
-// pkPushdownCursor returns a cursor narrowed to the primary-key
-// range dictated by WHERE, or a full type scan when pushdown doesn't
-// apply. Shared by UPDATE / DELETE (SELECT uses the more-specific
-// gated variant tryPKEqualityPushdown that also filters on aggregates
-// / GROUP BY / HAVING / COUNT(*)).
-func pkPushdownCursor(
-	ctx context.Context,
-	c *EmbeddedConnection,
-	store *recordlayer.FDBRecordStore,
-	rt *recordlayer.RecordType,
-	md *recordlayer.RecordMetaData,
-	whereExpr antlrgen.IWhereExprContext,
-	tableName string,
-) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	if pkVals, ok := c.tryPKEqualityFromWhere(ctx, whereExpr, rt); ok {
-		return pkPushdownScanCursor(store, rt, pkVals, recordlayer.ForwardScan())
-	}
-	if pkVals, ok := c.tryPKInListFromWhere(ctx, whereExpr, rt); ok {
-		if len(pkVals) == 1 {
-			// Degenerate IN-list — `pk IN (v)` is a single-point lookup;
-			// drop the lazy-chain wrapper for UPDATE/DELETE same as the
-			// SELECT path at execSelectQueryFull's dispatcher.
-			return pkPushdownScanCursor(store, rt, pkVals, recordlayer.ForwardScan())
-		}
-		return pkPushdownInListScanCursor(store, rt, pkVals)
-	}
-	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
-		return pkPushdownRangeScanCursor(store, rt, bounds, recordlayer.ForwardScan())
-	}
-	if cil, ok := c.tryPKCompositeInListFromWhere(ctx, whereExpr, rt); ok {
-		return pkCompositeInListScanCursor(store, rt, cil)
-	}
-	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
-		return pkPushdownCompositeRangeScanCursor(store, rt, cr, recordlayer.ForwardScan())
-	}
-	if cp, ok := c.tryPKCompositePrefixFromWhere(ctx, whereExpr, rt); ok {
-		return pkPushdownScanCursor(store, rt, cp.prefixVals, recordlayer.ForwardScan())
-	}
-	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexPushdownCursor(store, idxName, idxVal, recordlayer.ForwardScan())
-	}
-	if sil, ok := c.trySecondaryIndexInListFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexInListScanCursor(store, sil, nil, nil)
-	}
-	if cil, ok := c.trySecondaryIndexCompositeInListFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
-	}
-	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds, recordlayer.ForwardScan())
-	}
-	if sicr, ok := c.trySecondaryIndexCompositeRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexCompositeRangeScanCursor(store, sicr, recordlayer.ForwardScan())
-	}
-	if sicp, ok := c.trySecondaryIndexCompositePrefixFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexCompositePrefixScanCursor(store, sicp, recordlayer.ForwardScan())
-	}
-	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
 
 // pkPushdownScanCursor builds a tuple-prefix range scan for a

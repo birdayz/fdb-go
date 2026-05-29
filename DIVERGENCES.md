@@ -256,3 +256,16 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | CountValue + NumericAggregationValue | `AggregateValue` | Aligned (no rule distinguishes them) |
 | VariadicFunctionValue | `ScalarFunctionValue` | Aligned (COALESCE folding matches Java) |
 | 12 Comparison subclasses | Single `Comparison` struct with optional fields | Aligned |
+
+## DML statement-layer routing (RFC-035)
+
+All DML (INSERT VALUES/SELECT, UPDATE, DELETE) plans and executes through the
+single Cascades path (planDML), matching Java's PlanGenerator.getPlan. One
+intentional divergence at the statement layer:
+
+| Aspect | Java | Go |
+|---|---|---|
+| DML via the rows-returning method (`executeQuery` / `Query`) | Executes the DML, counts rows, then throws "use executeUpdate" — the mutation still happens | Rejects **before** executing ("use Exec, not Query"); no mutation |
+
+Go rejects up front to avoid a surprise write on a misused method; the plan
+path is identical to Java, only the execute-then-throw side effect differs.

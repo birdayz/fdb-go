@@ -356,8 +356,15 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	if _, isMulti := plan.(*query.MultiPlan); isMulti {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "multi-statement queries are not supported")
 	}
+	// QueryContext returns rows; a DML (update) plan returns an affected-row
+	// count, so it belongs on Exec, not Query. This is statement-layer
+	// method routing (the analog of JDBC executeQuery rejecting an update
+	// plan), not a Cascades limitation — DML plans plan and execute fine via
+	// ExecContext. We reject before executing (no surprise mutation), a
+	// deliberate divergence from Java's execute-then-throw (see DIVERGENCES).
 	if plan.IsUpdate() {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW and SELECT statements are supported")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"INSERT/UPDATE/DELETE return a row count, not rows — use Exec, not Query")
 	}
 	result, err := plan.Execute(ctx)
 	if err != nil {
@@ -529,18 +536,9 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		}
 		return n, err
 	}
-	if dml := stmt.DmlStatement(); dml != nil {
-		if ins := dml.InsertStatement(); ins != nil {
-			return c.execInsert(ctx, ins)
-		}
-		if del := dml.DeleteStatement(); del != nil {
-			return c.execDelete(ctx, del)
-		}
-		if upd := dml.UpdateStatement(); upd != nil {
-			return c.execUpdate(ctx, upd)
-		}
-		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
-	}
+	// DML (INSERT/UPDATE/DELETE) no longer routes here — it executes through
+	// the Cascades path (planDML). execStatement now handles only DDL and
+	// transaction statements.
 	if txn := stmt.TransactionStatement(); txn != nil {
 		return c.execTransactionStatement(txn)
 	}

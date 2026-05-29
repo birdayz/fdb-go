@@ -57,14 +57,13 @@ func installLogger(t *testing.T, db *sql.DB, logger embedded.PlanGenerationLogge
 // TestFDB_PlanLogging_DML proves the planDML funnel emits a planning-metrics
 // event with Cache==Skip (DML is never cached) and a valid plan hash.
 //
-// Reachability note: planDML (the Cascades DML planning step) is only entered
-// via QueryContext (ExecContext sets execMode and routes DML through the
-// non-Cascades execStatement path). QueryContext plans the DELETE — which
-// fires the metrics hook — then rejects the resulting update plan with "only
-// SHOW and SELECT statements are supported" (connection.go:359), since
-// QueryContext returns rows, not row counts. The planning event is emitted
-// before that rejection, so the rejection is the expected outcome here and we
-// assert the captured event rather than a successful execution.
+// Reachability note: all DML now plans through planDML (the Cascades DML
+// step). Executed via QueryContext here, the DELETE plans — firing the
+// metrics hook — then the update plan is rejected because QueryContext
+// returns rows, not a row count (use Exec instead). The planning event is
+// emitted before that rejection, so we assert the captured event rather
+// than a successful execution. (Exec would execute it; this test only
+// needs the planning-metrics event.)
 func TestFDB_PlanLogging_DML(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
@@ -76,7 +75,7 @@ func TestFDB_PlanLogging_DML(t *testing.T) {
 	rows, err := conn.QueryContext(ctx, "DELETE FROM Item WHERE item_id = 2")
 	if err == nil {
 		rows.Close()
-	} else if !strings.Contains(err.Error(), "only SHOW and SELECT") {
+	} else if !strings.Contains(err.Error(), "use Exec, not Query") {
 		t.Fatalf("DELETE: unexpected error: %v", err)
 	}
 

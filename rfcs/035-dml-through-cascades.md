@@ -1,7 +1,7 @@
 # RFC-035: DML executes through Cascades (P0.4)
 
-**Status:** Mostly implemented — INSERT … VALUES, DELETE, UPDATE execute through
-Cascades; INSERT … SELECT and naive-path deletion remain.
+**Status:** Implemented — all DML (INSERT VALUES/SELECT, UPDATE, DELETE) executes
+through Cascades; the naive `execStatement` DML path is deleted.
 **Item:** P0.4 — DML must execute through Cascades (forbidden parallel pipeline)
 
 ## Implementation status
