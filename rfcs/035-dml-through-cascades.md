@@ -19,13 +19,15 @@ Landed (commits on `fix/p0.4-dml-through-cascades`), all 46 targets green:
 - `executeInsert` Datum→message bridge for computed-row inners.
 
 Remaining (each a separate, e2e-tested port; naive path stays live until done):
-1. **DELETE through Cascades.** Simple filters work. Two gaps: (a) schema-qualified
-   target — the WHERE predicate is built with the qualified name as its
-   correlation alias (`s1.T`), mismatching the resolved scan alias (`T`); fix:
-   build the predicate with the bare table name as alias. (b) EXISTS-subquery
-   predicates — the DML filter builder lacks subquery support the SELECT path has.
-   Proper fix: build the DML inner via the SELECT logical-plan machinery so
-   DELETE/UPDATE filters get identical treatment (qualification, EXISTS, joins).
+1. **DELETE through Cascades.** Simple filters, schema-qualified targets
+   (`bareTableName` fix), and **correlated EXISTS** (`upgradeDMLWhereWithCatalog`
+   installs the `existsSubqueryPlanner` on the DML resolver) all work — verified
+   via a temporary flip. One remaining bug blocks the flip: a **non-correlated
+   `NOT EXISTS` with an empty subquery deletes nothing** (the empty subquery
+   evaluates as if it exists → `NOT EXISTS` false). Likely an EXISTS-execution
+   issue (subquery WHERE dropped, or non-correlated quantifier mis-evaluated);
+   isolate whether the same shape misbehaves for SELECT before fixing. Then flip
+   DELETE.
 2. **UPDATE through Cascades.** `translateUpdate` stores SET expressions as raw
    text in a `ConstantValue`; the executor can't evaluate them. Port SET RHS to
    real expression Values (resolver-built, like projections), reusing the DELETE
