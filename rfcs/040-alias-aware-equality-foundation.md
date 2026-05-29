@@ -1,9 +1,9 @@
 # RFC-040: Alias-aware expression/predicate equality + alias-invariant hashing
 
-**Status:** Draft v2 — Graefe ACK; Torvalds NAK'd v1 (SemanticHashCode doesn't exist = hidden
+**Status:** Accepted v2 — Graefe ACK, Torvalds ACK. (Was: Draft v2 — Graefe ACK; Torvalds NAK'd v1 (SemanticHashCode doesn't exist = hidden
 sub-foundation; 54 hash impls unaudited; "one atomic PR" unreviewable — stage per-type behind
 the fuzz, exploiting that the memo gate passes EmptyAliasMap so it's inert until PR-A; add a
-registry/completeness test). v2 restructures accordingly.
+registry/completeness test). v2 restructures accordingly.)
 
 ## Staging (v2 — Torvalds) — inert until PR-A, so stage per-type behind the fuzz
 
