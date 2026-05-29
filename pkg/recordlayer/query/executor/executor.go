@@ -1553,6 +1553,15 @@ func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any
 		if fd == nil {
 			return nil, fmt.Errorf("executor: INSERT column %q not found in record type %q", name, desc.Name())
 		}
+		// INSERT … VALUES pre-converts each field to a protoreflect.Value
+		// at plan time (the relational ConvertToProtoValue handles enums
+		// and nested records that goToProtoValue cannot); set it verbatim.
+		// Computed-row inners (a projected SELECT) carry plain Go values,
+		// converted here via goToProtoValue.
+		if pv, ok := v.(protoreflect.Value); ok {
+			refl.Set(fd, pv)
+			continue
+		}
 		pv, err := goToProtoValue(fd, v)
 		if err != nil {
 			return nil, err

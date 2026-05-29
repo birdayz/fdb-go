@@ -95,19 +95,25 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
 					"NULL value in column %q violates NOT NULL constraint", col)
 			}
-			// Type-check against the target column at plan time — matching
-			// Java's visitor, where INSERT type mismatches surface as
-			// CANNOT_CONVERT_TYPE (22000) rather than an opaque executor
-			// error. ConvertToProtoValue is the authoritative validator;
-			// the executor re-converts the same value via goToProtoValue.
+			// Convert + type-check against the target column at plan time —
+			// matching Java's visitor, where INSERT type mismatches surface
+			// as CANNOT_CONVERT_TYPE (22000) rather than an opaque executor
+			// error. ConvertToProtoValue is the authoritative converter
+			// (enums by name, nested records, numeric width) that the
+			// executor's scalar-only goToProtoValue cannot match, so we
+			// carry the resulting protoreflect.Value through and the
+			// executor sets it verbatim (buildInsertRecord). NULL stays nil.
+			var fieldVal any
 			if val != nil {
-				if _, convErr := functions.ConvertToProtoValue(fd, val); convErr != nil {
+				pv, convErr := functions.ConvertToProtoValue(fd, val)
+				if convErr != nil {
 					return nil, convErr
 				}
+				fieldVal = pv
 			}
 			fields = append(fields, values.RecordConstructorField{
 				Name:  string(fd.Name()),
-				Value: &values.ConstantValue{Value: val, Typ: values.UnknownType},
+				Value: &values.ConstantValue{Value: fieldVal, Typ: values.UnknownType},
 			})
 		}
 
