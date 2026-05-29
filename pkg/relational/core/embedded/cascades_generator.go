@@ -177,6 +177,9 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 // source records. Those stay on the naive path until ported (RFC-035
 // §Fix.6).
 func dmlOnCascades(dml antlrgen.IDmlStatementContext) bool {
+	if dml.DeleteStatement() != nil {
+		return true
+	}
 	if ins := dml.InsertStatement(); ins != nil {
 		_, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
 		return ok
