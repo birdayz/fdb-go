@@ -233,6 +233,23 @@ the original three-point fix. Precise state:
    they all route through `compareJoinOrdering`. This is a multi-session planner-phase
    consolidation, not a localized fix.
 
+   **Root mechanism FULLY pinned (final instrumentation):** the Go planner has TWO
+   overlapping rule-driving task systems. (A) `ExploreReferenceTask` →
+   `TransformReferenceTask` (planner.go:541) fires `p.rules` (the main REWRITING set =
+   `DefaultExpressionRules`+`RewritingRules`) — this is the ONLY path that ever fires
+   `PartitionSelectRule` (confirmed: 22 fires here, **0** via system B). (B)
+   `ExploreGroupTask` → `ExploreExprTask` → `TransformExprTask` (unified_tasks.go) fires
+   `rulesForPhase(phase)` = `planningExpressionRules` in PLANNING — `PartitionSelectRule`
+   IS in that list (default_rules.go:139) yet `TransformExprTask` fires it **0 times** in
+   PLANNING. So PLANNING never re-enumerates join associativities: it only implements the
+   single REWRITING-promoted winner. This is why Graefe's phase-move (remove PartitionSelect
+   from `p.rules`/REWRITING, rely on `planningExpressionRules`) made it WORSE — it deleted
+   the only path that actually fires the rule. **The fix is to make system B's PLANNING
+   exploration actually fire `planningExpressionRules` on the promoted seed** (or unify the
+   two task systems). That is a planner-task-engine change requiring careful, fresh work —
+   it touches `ExploreGroupTask`/`ExploreExprTask` exploration scheduling and the
+   interaction with `advancePlannerStage`'s re-seed.
+
 Landed so far (committed): step 1 `BestMemberCostWith`. In flight (working tree,
 plandiff-clean, 25/25 non-FDB green, stress-1M CLEAN): scan-CPU + `compareJoinOrdering`
 + stats threading (ExpressionRuleCall.Stats, winner_lookup comparator param). These are
