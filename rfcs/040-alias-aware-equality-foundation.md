@@ -29,25 +29,36 @@ safe (and necessary) to stage:
   `predicates.SemanticEqualsUnderAliasMap` + `expressions.AliasMap.ToValuesAliasMap`. The
   constraint-carrying `ValueEquivalence` path stays in `cascades` for match-candidate use.
   Cycle broken; all green.
-* **040.2 — flip relational `EqualsWithoutChildren`/`HashCodeWithoutChildren` per type. STARTED:
-  `LogicalFilterExpression` wired** (was `_ = aliases` + `Explain()`-text hash) to
-  `predicates.SemanticEqualsUnderAliasMap` + `predicates.SemanticHashCode`. Inert under the
-  memo's empty-alias path. Gate: 46/46 targets green (incl. plandiff — no plan regression),
-  stress-1M pending. Remaining types roll out one-by-one, same gate. Wiring 040.2 means `expressions`-package
-  `EqualsWithoutChildren` (e.g. `LogicalFilterExpression`) must call the alias-aware predicate
-  equality — but `ValueEquivalence`, `ValueSemanticEquals`, `PredicateSemanticEquals`,
-  `ConstrainedBoolean` (and the `*QueryPlanConstraint` it carries, `match_info.go:14`) all live
-  in the **`cascades`** package, which **imports** `expressions`. `expressions → cascades` is a
-  cycle. So 040.2 is blocked until this machinery moves down to a package `expressions` can
-  import (the `values`/`predicates` layer), or `ConstrainedBoolean`/`QueryPlanConstraint` are
-  split so the equivalence interface lives below `expressions`. This is a non-trivial refactor
-  of the constraint subsystem and must precede any relational-`EqualsWithoutChildren` rewiring.
-  (Note: the 040.0/040.1 toolkit built so far lives in `cascades` and is correct there for the
-  memo's own use; only the *relational-expression* wiring needs the relocation.)
-* **040.2..N — flip types in dependency order.** Per type, change `EqualsWithoutChildren`
-  (thread the map) **and** `HashCodeWithoutChildren` (alias-invariant) **together** (per-type
-  atomicity), each landing with the consistency fuzz green. Leaves/scans first, then
-  predicate-bearing (`Filter`, `Select`), then the rest.
+* **040.2 — flip relational `EqualsWithoutChildren`/`HashCodeWithoutChildren` per type.**
+  Replace alias-sensitive `ExplainValue`/`PredicateEquals` equality + `Explain()`-text hashing
+  with `values.SemanticEqualsUnderAliasMap` / `predicates.SemanticEqualsUnderAliasMap` (threading
+  `aliases.ToValuesAliasMap()`) and `values.SemanticHashCode` / `predicates.SemanticHashCode`.
+  Per-type atomic: equality **and** hash change together for a type so the invariant never
+  diverges within a type. Inert under the memo's empty-alias path (no plan change) until PR-A.
+
+  **EXECUTION RULE — ONE TYPE AT A TIME (do NOT batch).** Wire a single type → run the full gate
+  (46/46 targets incl. plandiff + stress-1M within baseline) → commit → next. Batching means one
+  type's failure forces re-debugging all of them; serial isolates failures.
+
+  Per-type gate (each): 46/46 targets green (plandiff proves no plan regression) + stress-1M
+  within baseline. Plus extend the consistency fuzz to whole relational expressions and add the
+  registry/completeness test (below) once all alias-bearing types are flipped.
+
+  **Checklist (alias-bearing types needing the flip):**
+  - [x] `LogicalFilterExpression` — DONE (46/46 + stress-1M green).
+  - [x] `SelectExpression` — wired, 46/46 green, stress-1M running.
+  - [ ] `LogicalTypeFilterExpression` (record-type list only — no Values; trivial: just drop `_ = aliases`).
+  - [ ] `LogicalSortExpression` (sort-key Values).
+  - [ ] `GroupByExpression` (grouping keys + aggregate operands).
+  - [ ] `LogicalProjectionExpression` (projected Values).
+  - [ ] `LogicalValuesExpression` (column Values).
+  - [ ] `LogicalIntersectionExpression` (comparison-key Values).
+  - [ ] `UpdateExpression` (uses alias-sensitive equality).
+
+  **Structural types — NO CHANGE (no alias-bearing node info):** `FullUnorderedScan`,
+  `LogicalUnion`, `LogicalDistinct`, `LogicalUnique`, `LogicalLimit`, `Explode`,
+  `RecursiveUnion`, `Insert`, `Delete`, `TempTableScan`, `TempTableInsert`, `TableFunction`,
+  `MatchableSort`.
 
 Each sub-PR is independently reviewable + green; none changes plans (inert until PR-A).
 

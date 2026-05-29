@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -183,35 +184,40 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 	if !ok {
 		return false
 	}
-	_ = aliases
 	if e.joinType != o.joinType {
 		return false
 	}
-	if values.ExplainValue(e.resultValue) != values.ExplainValue(o.resultValue) {
+	// Alias-aware result-value + predicate equality (RFC-040 040.2). Under
+	// the memo's empty-alias path this reduces to identity-alias equality —
+	// inert until PR-A threads real alias maps.
+	vm := aliases.ToValuesAliasMap()
+	if !values.SemanticEqualsUnderAliasMap(e.resultValue, o.resultValue, vm) {
 		return false
 	}
 	if len(e.queryPredicates) != len(o.queryPredicates) {
 		return false
 	}
 	for i := range e.queryPredicates {
-		if !predicates.PredicateEquals(e.queryPredicates[i], o.queryPredicates[i]) {
+		if !predicates.SemanticEqualsUnderAliasMap(e.queryPredicates[i], o.queryPredicates[i], vm) {
 			return false
 		}
 	}
 	return true
 }
 
-// HashCodeWithoutChildren mixes a class-discriminating constant with
-// result-value text + predicate Explain texts.
+// HashCodeWithoutChildren mixes a class-discriminating constant + join type
+// with the ALIAS-INVARIANT semantic hashes of the result value and predicates
+// (RFC-040 040.2), consistent with the alias-aware EqualsWithoutChildren.
 func (e *SelectExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("select|"))
 	h.Write([]byte{byte(e.joinType)})
-	h.Write([]byte(values.ExplainValue(e.resultValue)))
-	h.Write([]byte{0})
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(e.resultValue))
+	h.Write(buf[:])
 	for _, p := range e.queryPredicates {
-		h.Write([]byte(p.Explain()))
-		h.Write([]byte{0})
+		binary.LittleEndian.PutUint64(buf[:], predicates.SemanticHashCode(p))
+		h.Write(buf[:])
 	}
 	return h.Sum64()
 }
