@@ -1,6 +1,7 @@
 # RFC-037: Full Graefe Memo — Cross-Reference Equivalence-Class Merging
 
-**Status:** Draft (v2 — addresses Graefe + Torvalds NAK on v1)
+**Status:** Accepted (v2). Graefe ACK, Torvalds ACK (conditions on `Get()` + `traversal.go`
+citation folded in).
 **Item:** TODO "Beyond Java (Go-only improvements) → Full Graefe Memo with cross-group merging" (the `B3` follow-on).
 
 ## Problem
@@ -121,9 +122,18 @@ This is the core correction over v1. After `merge`, the loser is **not** cleared
 ```go
 func (r *Reference) Members() []RelationalExpression { r = r.Canonical(); return r.members }
 func (r *Reference) ContainsExactly(e RelationalExpression) bool { r = r.Canonical(); ... }
-// …Insert, InsertFinal, FinalMembers, AllMembers, NeedsExploration, StartExploration,
-//   GetCorrelatedTo, Winner/SetWinner, partialMatch accessors, Stage, etc.
+// …Get, Insert, InsertFinal, FinalMembers, AllMembers, GetBest, NeedsExploration,
+//   StartExploration, CommitExploration, ExplRounds, ExplMemberCount, GetCorrelatedTo,
+//   Winner/SetWinner/HasWinner/GetWinners, partialMatch accessors, Stage/SetStage,
+//   AdvancePlannerStage, GetPlanProperties/SetPlanProperties — EVERY state-bearing method.
 ```
+
+The canonicalize-at-entry prologue must cover **every** state-bearing method, including
+`Get()` (used by `InitialOf` seeds and equivalence walks) — a single un-canonicalized
+state method is a latent two-state bug. `GetCorrelatedTo` recurses into
+`childRef.GetCorrelatedTo()`; that is safe (each child resolves once at its own entry, no
+method→`Canonical`→method cycle). Audit: the only allowed non-canonicalizing methods are
+`Canonical()`, `ID()`, `IsForwarded()`, and the `absorb` primitive.
 
 `Canonical()` itself, `ID()`, and the merge primitive do **not** recurse. Consequence:
 in-flight `TransformExprTask`/`TransformImplTask` holding `t.Ref = loser` keep working —
@@ -145,11 +155,22 @@ Deterministic winner = **lower `id`** (older group; independent of map order). S
 2. Fold loser→winner via an `expressions`-package primitive (`winner.absorb(loser)`, touches
    private fields): `Insert` loser's exploratory members, `InsertFinal` its finals (dedup
    handles overlap); fold exploration state so the survivor re-explores genuinely-new members
-   (`explState=explorationNever` iff members grew), bounded by the existing `maxRoundsPerRef`.
+   (`explState=explorationNever` iff members grew). This re-explore is bounded by the existing
+   `maxRoundsPerRef` backstop so a merge-induced re-explore cannot relitigate a rule cycle
+   indefinitely — test plan #1 asserts a merge that adds members bumps `explRounds` but stays
+   under the cap (Graefe watch-item).
 3. `loser.forwardedTo = winner` (loser now forwards; its fields are inert but readable).
 4. **Memo index repoint (eager, Torvalds #3):** rewrite `childToParents` edges naming `loser`
    to `winner` (dedup); delete `loser` from `refs`, `leafRefs`/`leafRefsSet`; if
-   `loser == m.root`, `m.root = winner`.
+   `loser == m.root`, `m.root = winner`. Other long-lived `*Reference`-keyed structures need
+   no repoint: `planner.exploreCount` is canonicalized at its two access sites
+   (`planner.go:528,637`); `Traversal` (`traversal.go` `refToExprs`/`childToParents`) is a
+   PLANNING-phase artifact rebuilt per match-candidate **after** REWRITING-only merges settle,
+   and `collectNetwork` descends via `GetRangesOver()`, so it never indexes a forwarded
+   Reference; the per-call `visited` maps in `fixpoint`/`cost`/`extract`/`planning_cost_model`/
+   `rule_adjust_match` likewise walk via `GetRangesOver()`. The load-bearing invariant: the raw
+   `rangesOver` field is read **only** by the `GetRangesOver()` accessor (grep-verified), which
+   canonicalizes — so resolution at that one point covers all 444 sites plus those traversals.
 5. **Cache invalidation across the DAG (Torvalds #2):** equivalent groups have equal
    correlated-to sets, so the survivor's set is unchanged *in value* — but defensively walk
    **up** `childToParents` from the survivor invalidating each ancestor's `correlatedToCache`
