@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -83,42 +84,41 @@ func (e *LogicalFilterExpression) GetCorrelatedToWithoutChildren() map[values.Co
 }
 
 // EqualsWithoutChildren compares two LogicalFilterExpressions by
-// predicate-list equality, treating CorrelationIdentifiers as equal
-// under `aliases`. Children are not consulted — that's the caller's
-// job (typically via SemanticEquals).
-//
-// The aliases parameter is currently unused: the seed's PredicateEquals
-// is positional and structural, with no CorrelationIdentifier-aware
-// matcher yet. As predicates gain alias-aware semantic equality
-// (B2 follow-on), thread `aliases` through.
+// alias-aware predicate-list equality, treating CorrelationIdentifiers as
+// equal under `aliases` (RFC-040). Children are not consulted — that's the
+// caller's job (typically via SemanticEquals).
 func (e *LogicalFilterExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*LogicalFilterExpression)
 	if !ok {
 		return false
 	}
-	_ = aliases // see doc comment
 	if len(e.queryPredicates) != len(o.queryPredicates) {
 		return false
 	}
+	// Alias-aware predicate equality (RFC-040 040.2): predicates referencing
+	// quantifier aliases compare equal when those aliases correspond under
+	// `aliases`. Under the empty map (the memo's Insert path today) this
+	// reduces to identity-alias equality — same observable behaviour as the
+	// old alias-blind PredicateEquals — so it is inert until PR-A threads
+	// real alias maps through the memo.
+	vm := aliases.ToValuesAliasMap()
 	for i := range e.queryPredicates {
-		if !predicates.PredicateEquals(e.queryPredicates[i], o.queryPredicates[i]) {
+		if !predicates.SemanticEqualsUnderAliasMap(e.queryPredicates[i], o.queryPredicates[i], vm) {
 			return false
 		}
 	}
 	return true
 }
 
-// HashCodeWithoutChildren hashes the predicate list. Two
-// LogicalFilters that agree on EqualsWithoutChildren under the empty
-// alias map MUST agree here — we use the predicate count + a recursive
-// fold over predicate text via Explain() (PredicateEquals'
-// reference-comparable companion). When QueryPredicate gains a real
-// hash method, switch to that.
+// HashCodeWithoutChildren hashes the predicate list via the ALIAS-INVARIANT
+// predicates.SemanticHashCode, consistent with the alias-aware
+// EqualsWithoutChildren above (equal-up-to-alias ⟹ equal hash). RFC-040 040.2.
 func (e *LogicalFilterExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
+	var buf [8]byte
 	for _, p := range e.queryPredicates {
-		h.Write([]byte(p.Explain()))
-		h.Write([]byte{0})
+		binary.LittleEndian.PutUint64(buf[:], predicates.SemanticHashCode(p))
+		_, _ = h.Write(buf[:])
 	}
 	return h.Sum64()
 }

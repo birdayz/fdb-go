@@ -22,7 +22,18 @@ safe (and necessary) to stage:
 * **040.1 — `PredicateSemanticEquals` (alias-aware).** Fix 1. **DONE** (in `cascades`).
 
 * **040.1b — Relocate the equivalence machinery below `expressions` (import-cycle
-  prerequisite, discovered during 040.0).** Wiring 040.2 means `expressions`-package
+  prerequisite, discovered during 040.0). DONE.** The alias-aware toolkit was built in
+  `cascades` (wrong layer — `cascades` imports `expressions`, so `expressions` can't call it).
+  Relocated the *bool* primitives to `values`/`predicates` (which `expressions` imports):
+  `values.SemanticHashCode`, `predicates.SemanticHashCode`, `values.SemanticEqualsUnderAliasMap`,
+  `predicates.SemanticEqualsUnderAliasMap` + `expressions.AliasMap.ToValuesAliasMap`. The
+  constraint-carrying `ValueEquivalence` path stays in `cascades` for match-candidate use.
+  Cycle broken; all green.
+* **040.2 — flip relational `EqualsWithoutChildren`/`HashCodeWithoutChildren` per type. STARTED:
+  `LogicalFilterExpression` wired** (was `_ = aliases` + `Explain()`-text hash) to
+  `predicates.SemanticEqualsUnderAliasMap` + `predicates.SemanticHashCode`. Inert under the
+  memo's empty-alias path. Gate: 46/46 targets green (incl. plandiff — no plan regression),
+  stress-1M pending. Remaining types roll out one-by-one, same gate. Wiring 040.2 means `expressions`-package
   `EqualsWithoutChildren` (e.g. `LogicalFilterExpression`) must call the alias-aware predicate
   equality — but `ValueEquivalence`, `ValueSemanticEquals`, `PredicateSemanticEquals`,
   `ConstrainedBoolean` (and the `*QueryPlanConstraint` it carries, `match_info.go:14`) all live

@@ -127,6 +127,13 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 	return out
 }
 
+// ToValuesAliasMap returns the forward bindings as a values.AliasMap (the
+// simple source→target map the values/predicates alias-aware equality helpers
+// consume). Read-only view; callers must not mutate the result.
+func (a *AliasMap) ToValuesAliasMap() values.AliasMap {
+	return values.AliasMap(a.forward)
+}
+
 // Equals reports whether two AliasMaps have identical bindings.
 func (a *AliasMap) Equals(other *AliasMap) bool {
 	if a.Size() != other.Size() {
