@@ -177,7 +177,7 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 // source records. Those stay on the naive path until ported (RFC-035
 // §Fix.6).
 func dmlOnCascades(dml antlrgen.IDmlStatementContext) bool {
-	if dml.DeleteStatement() != nil {
+	if dml.DeleteStatement() != nil || dml.UpdateStatement() != nil {
 		return true
 	}
 	if ins := dml.InsertStatement(); ins != nil {
@@ -635,6 +635,26 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			return nil, vErr
 		}
 		insOp.ValuesArray = arr
+	}
+
+	// UPDATE: reject unsupported functions in SET RHS (parse-tree scan, the
+	// same mechanism the SELECT projection path uses — catches functions
+	// the resolver can't build a Value for, e.g. UPPER), and SET col = NULL
+	// on a NOT NULL column. Both at plan time, matching the naive path.
+	if updOp, ok := logicalOp.(*logical.LogicalUpdate); ok {
+		if upd := dml.UpdateStatement(); upd != nil {
+			for _, el := range upd.AllUpdatedElement() {
+				if el == nil || el.Expression() == nil {
+					continue
+				}
+				if fn := findUnsupportedFunctionInParseTree(el.Expression()); fn != "" {
+					return nil, api.NewError(api.ErrCodeUndefinedFunction, "Unsupported operator "+fn)
+				}
+			}
+		}
+		if err := validateUpdateAssignments(updOp, md); err != nil {
+			return nil, err
+		}
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {

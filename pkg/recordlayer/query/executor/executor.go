@@ -1623,6 +1623,9 @@ func executeUpdate(
 		for _, t := range transforms {
 			fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(t.FieldPath)))
 			if fd == nil {
+				fd = fieldByNameFold(desc.Fields(), t.FieldPath)
+			}
+			if fd == nil {
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}
 			var rowCtx any = qr.Datum

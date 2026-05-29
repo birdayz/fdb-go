@@ -4,10 +4,12 @@ import (
 	"context"
 	"strings"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -141,4 +143,49 @@ func colsContainFold(cols []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// validateUpdateAssignments enforces NOT NULL on UPDATE SET at plan time
+// (matching Java's visitor and the naive execUpdate): assigning a
+// statically-NULL value to a NOT NULL column is a NOT_NULL_VIOLATION.
+// Runtime NULLs (from a nullable-column RHS) are caught by the record
+// store's Required-field marshal at save time.
+func validateUpdateAssignments(upd *logical.LogicalUpdate, md *recordlayer.RecordMetaData) error {
+	rt := md.GetRecordType(upd.Target)
+	if rt == nil {
+		return nil
+	}
+	fields := rt.Descriptor.Fields()
+	for _, a := range upd.Sets {
+		fd := fields.ByName(protoreflect.Name(a.Column))
+		if fd == nil {
+			for i := 0; i < fields.Len(); i++ {
+				if strings.EqualFold(string(fields.Get(i).Name()), a.Column) {
+					fd = fields.Get(i)
+					break
+				}
+			}
+		}
+		if fd == nil {
+			continue
+		}
+		if fd.Cardinality() == protoreflect.Required && isStaticNull(a.Value) {
+			return api.NewErrorf(api.ErrCodeNotNullViolation,
+				"NULL value in column %q violates NOT NULL constraint", a.Column)
+		}
+	}
+	return nil
+}
+
+// isStaticNull reports whether a SET RHS Value is a plan-time-known NULL
+// (the NULL literal or a constant that folded to nil).
+func isStaticNull(v values.Value) bool {
+	switch t := v.(type) {
+	case *values.NullValue:
+		return true
+	case *values.ConstantValue:
+		return t.Value == nil
+	default:
+		return false
+	}
 }

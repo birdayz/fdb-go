@@ -2338,20 +2338,47 @@ func buildLogicalPlanForUpdateWithCatalog(
 	if op == nil || md == nil || upd == nil {
 		return op
 	}
+	updOp, ok := op.(*logical.LogicalUpdate)
+	if !ok {
+		return op
+	}
 	tableName := ""
 	if tn := upd.TableName(); tn != nil && tn.FullId() != nil {
 		tableName = functions.FullIdToName(tn.FullId())
 	}
-	w := upd.WhereExpr()
-	if w == nil || tableName == "" {
+	if tableName == "" {
 		return op
 	}
 	bare := bareTableName(tableName)
-	pred, ok := buildWherePredicateForTable(md, bare, bare, w)
-	if !ok {
-		return op
+
+	// Resolve each SET RHS expression to a real Value against the target
+	// table (e.g. `price / 2` → Divide(FieldValue(PRICE), 2)) so the
+	// executor evaluates it per row instead of choking on raw text. The
+	// iteration mirrors buildLogicalPlanForUpdate's append order/skip.
+	if resolver := buildSelectScope(&selectQuery{tableName: bare, tableAlias: bare, limit: -1}, md, nil); resolver != nil {
+		idx := 0
+		for _, el := range upd.AllUpdatedElement() {
+			if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
+				continue
+			}
+			if idx < len(updOp.Sets) {
+				if v, err := resolver.WalkExpression(el.Expression()); err == nil && v != nil {
+					updOp.Sets[idx].Value = v
+				}
+			}
+			idx++
+		}
 	}
-	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
+
+	// Upgrade the WHERE filter with EXISTS/scalar subquery support; fall
+	// back to the plain predicate builder. No WHERE → UPDATE all rows.
+	if w := upd.WhereExpr(); w != nil {
+		if !upgradeDMLWhereWithCatalog(op, md, bare, w) {
+			if pred, ok := buildWherePredicateForTable(md, bare, bare, w); ok {
+				_ = upgradeFirstFilter(op, pred)
+			}
+		}
+	}
 	return op
 }
 

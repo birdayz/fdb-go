@@ -172,6 +172,65 @@ func TestFDB_DMLCascades_ExplicitTxRollback(t *testing.T) {
 	}
 }
 
+// TestFDB_DMLCascades_Update pins UPDATE through Cascades: arithmetic SET
+// (RHS resolved to a Value, not text), WHERE-scoped vs all-rows, correct
+// RowsAffected, SET to NULL on a nullable column clears it, and the two
+// plan-time rejections (NOT NULL violation, unsupported function in SET).
+func TestFDB_DMLCascades_Update(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := dmlCascadesDB(t, "upd")
+	seedItems(t, db, ctx, 4) // prices 10,20,30,40
+
+	// Arithmetic SET, WHERE-scoped: halve prices > 20 (rows 3,4).
+	res, err := db.ExecContext(ctx, "UPDATE Item SET price = price / 2 WHERE price > 20")
+	if err != nil {
+		t.Fatalf("UPDATE arithmetic: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 2 {
+		t.Fatalf("UPDATE RowsAffected = %d, want 2", n)
+	}
+	prices := map[int64]int64{}
+	rows, err := db.QueryContext(ctx, "SELECT id, price FROM Item ORDER BY id")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	for rows.Next() {
+		var id, p int64
+		if err := rows.Scan(&id, &p); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		prices[id] = p
+	}
+	rows.Close()
+	// 1→10, 2→20 unchanged; 3: 30/2=15, 4: 40/2=20.
+	if prices[1] != 10 || prices[2] != 20 || prices[3] != 15 || prices[4] != 20 {
+		t.Fatalf("after UPDATE prices = %v, want {1:10,2:20,3:15,4:20}", prices)
+	}
+
+	// SET to NULL on a nullable column clears it (price is nullable).
+	if _, err := db.ExecContext(ctx, "UPDATE Item SET price = NULL WHERE id = 1"); err != nil {
+		t.Fatalf("UPDATE SET NULL nullable: %v", err)
+	}
+	var price sql.NullInt64
+	if err := db.QueryRowContext(ctx, "SELECT price FROM Item WHERE id = 1").Scan(&price); err != nil {
+		t.Fatalf("read null price: %v", err)
+	}
+	if price.Valid {
+		t.Fatalf("price after SET NULL = %v, want NULL", price)
+	}
+
+	// SET NULL on a NOT NULL column (id) → NOT NULL violation at plan time.
+	if _, err := db.ExecContext(ctx, "UPDATE Item SET id = NULL WHERE id = 2"); err == nil {
+		t.Fatal("UPDATE SET id=NULL on NOT NULL column did not error")
+	}
+
+	// Unsupported function in SET → rejected.
+	if _, err := db.ExecContext(ctx, "UPDATE Item SET name = UPPER(name) WHERE id = 2"); err == nil {
+		t.Fatal("UPDATE SET name=UPPER(name) was not rejected")
+	}
+}
+
 // TestFDB_DMLCascades_ExplainPlanShapes pins that DELETE and INSERT VALUES
 // plan through Cascades with the expected physical plan shapes (Delete over
 // a scan/filter; Insert over Explode), proving the Cascades path fired

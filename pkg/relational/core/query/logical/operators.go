@@ -418,10 +418,15 @@ type LogicalUpdate struct {
 	Input  LogicalOperator // the scan + filter producing target rows
 }
 
-// Assignment is one SET clause entry.
+// Assignment is one SET clause entry. Expr is the canonical text (used
+// for explain and as a fallback); Value is the resolved RHS expression
+// Value (populated by the catalog-aware builder) that the executor
+// evaluates against each target row. A nil Value means the text builder
+// ran without catalog resolution.
 type Assignment struct {
 	Column string
 	Expr   string // canonical text
+	Value  values.Value
 }
 
 func NewUpdate(target string, sets []Assignment, input LogicalOperator) *LogicalUpdate {
