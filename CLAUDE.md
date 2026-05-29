@@ -10,6 +10,12 @@
 
 **100% Java alignment or it's a bug.** Every component must match Java's behavior exactly. Go-only extensions are fine, but they need DEEP test coverage. If Java has it and Go doesn't, that's not "low priority" — it's missing functionality. Port it.
 
+**Wire compat is the hard line; query reach is not.** Two distinct axes, don't conflate them:
+1. **Anything touching the wire** — key encoding, record/index/version format, continuations, what gets written to FDB — MUST match Java exactly. Divergence there is a bug, full stop. This is the whole point: Go and Java apps share a cluster and read/write each other's records.
+2. **The read-side query surface MAY go beyond Java.** Net-new query capabilities Java lacks *entirely* (new join flavours, operators, syntax) are welcome — provided (a) wire compat is never sacrificed (Java still reads/writes the exact same records; the extension only lets Go *express* more), and (b) the extension has deep test coverage. "Doing better than Java" on the read path is encouraged, not suspect.
+
+Before treating a TODO "vs Java gap" as parity work, **verify Java actually supports it.** A TODO line can be stale (the feature may already work — e.g. via a normalization the item's author missed) or mis-framed (Java may not support it *at all*, in which case you're adding an allowed extension, not closing a divergence — and the conformance principle below does not forbid it).
+
 ## DFS, NOT BFS — GO ALL IN ON EVERY PROBLEM
 
 **When you discover a problem, go ALL IN.** Dig into the rabbit hole. Fix it completely. No matter how long it takes, no matter how deep it goes. Don't "skip this and look for quick wins" — that's BFS thinking and it produces shallow, fragile work. DFS: pick the problem, understand it fully by reading Java first, then fix it properly in Go. One problem at a time, fixed to completion.
@@ -179,6 +185,8 @@ Java source at `fdb-record-layer/` (gitignored, tag **4.11.1.0**, matches MODULE
 ## Cross-engine SQL conformance
 
 Conformance principle: **doesn't work in Java → doesn't work in Go**, in the same architectural way (visitor-doesn't-implement → fall-through-to-default), with identical error wording where the message can be cleanly shared.
+
+This governs the **shared** query surface — inputs Java also attempts. It is NOT a ban on capabilities Java lacks entirely: net-new read-side query extensions are allowed when wire compat holds (see "Wire compat is the hard line; query reach is not" near the top). The rule means *don't silently diverge from Java where both engines run the same query*, not *never exceed Java*.
 
 Don't enumerate Java's quirks in this file — find them via the cross-engine harness, document each at the relevant code site, capture open ones in TODO.md.
 

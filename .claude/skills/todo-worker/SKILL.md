@@ -35,6 +35,9 @@ This loads the Graefe/Torvalds reviewer protocols, key file map, and lessons lea
 1. Read the current Go code involved (find files, read them).
 2. Read the corresponding **Java source** (`fdb-record-layer/`) to understand how Java handles the same thing.
 3. Spawn an `Explore` agent if the search space is broad.
+4. **Verify the item is real and correctly framed before designing.** TODO lines rot. Two failure modes to rule out first:
+   - *Already done:* part or all of it may already work (e.g. via a normalization or shared path the item's author missed). Grep for the feature + check existing tests before building it again.
+   - *Mis-framed as "Java parity":* confirm Java actually supports the feature. If Java doesn't support it **at all** (e.g. its visitor is a no-op with zero tests), you're adding a **Go-only read-side extension** (allowed if wire compat holds + deep tests — see CLAUDE.md "Wire compat is the hard line"), not closing a divergence. That changes the design bar and the reviewer framing — say so explicitly in the RFC.
 
 ## Step 3: Branch
 
