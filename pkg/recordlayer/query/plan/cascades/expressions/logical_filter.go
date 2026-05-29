@@ -99,8 +99,8 @@ func (e *LogicalFilterExpression) EqualsWithoutChildren(other RelationalExpressi
 	// quantifier aliases compare equal when those aliases correspond under
 	// `aliases`. Under the empty map (the memo's Insert path today) this
 	// reduces to identity-alias equality — same observable behaviour as the
-	// old alias-blind PredicateEquals — so it is inert until PR-A threads
-	// real alias maps through the memo.
+	// old alias-blind predicate comparison — so it is inert until PR-A
+	// threads real alias maps through the memo.
 	vm := aliases.ToValuesAliasMap()
 	for i := range e.queryPredicates {
 		if !predicates.SemanticEqualsUnderAliasMap(e.queryPredicates[i], o.queryPredicates[i], vm) {

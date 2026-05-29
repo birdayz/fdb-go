@@ -49,12 +49,12 @@ safe (and necessary) to stage:
   - [x] `SelectExpression` — wired, 46/46 green, stress-1M running.
   - [x] `LogicalTypeFilterExpression` — NO CHANGE NEEDED: equality/hash are over record-type
         STRINGS only (no Values/aliases), already alias-invariant. Reclassified as structural.
-  - [ ] `LogicalSortExpression` (sort-key Values).
-  - [ ] `GroupByExpression` (grouping keys + aggregate operands).
-  - [ ] `LogicalProjectionExpression` (projected Values).
-  - [ ] `LogicalValuesExpression` (column Values).
-  - [ ] `LogicalIntersectionExpression` (comparison-key Values).
-  - [ ] `UpdateExpression` (uses alias-sensitive equality).
+  - [x] `LogicalSortExpression` (sort-key Values).
+  - [x] `GroupByExpression` (grouping keys + aggregate operands).
+  - [x] `LogicalProjectionExpression` (projected Values).
+  - [x] `LogicalValuesExpression` (column Values).
+  - [x] `LogicalIntersectionExpression` (comparison-key Values).
+  - [x] `UpdateExpression` (uses alias-sensitive equality).
 
   **Structural types — NO CHANGE (no alias-bearing node info):** `FullUnorderedScan`,
   `LogicalUnion`, `LogicalDistinct`, `LogicalUnique`, `LogicalLimit`, `Explode`,

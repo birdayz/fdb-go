@@ -80,12 +80,14 @@ func (e *LogicalTypeFilterExpression) GetCorrelatedToWithoutChildren() map[value
 
 // EqualsWithoutChildren compares two type-filters by their canonical
 // record-type-name slice.
-func (e *LogicalTypeFilterExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
+// The alias map is genuinely unused: a type filter's node-info is a list of
+// record-type STRINGS with no quantifier-alias references, so its equality is
+// already alias-invariant (RFC-040 — reclassified as structural, no wiring).
+func (e *LogicalTypeFilterExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*LogicalTypeFilterExpression)
 	if !ok {
 		return false
 	}
-	_ = aliases
 	if len(e.recordTypes) != len(o.recordTypes) {
 		return false
 	}
