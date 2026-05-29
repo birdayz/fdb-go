@@ -20,6 +20,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -1471,6 +1472,9 @@ func executeInsert(
 		return nil, err
 	}
 
+	// Resolved lazily on the first computed-row datum (see below).
+	var targetDesc protoreflect.MessageDescriptor
+
 	var results []QueryResult
 	for {
 		if err := ctx.Err(); err != nil {
@@ -1484,16 +1488,91 @@ func executeInsert(
 			break
 		}
 		qr := result.GetValue()
-		if qr.Record == nil || qr.Record.Record == nil {
+
+		// Two row shapes feed INSERT:
+		//   (a) a stored record (Record set) — INSERT … SELECT off a scan,
+		//       where the row already is a proto message of the right type;
+		//   (b) a computed row (Datum, no Record) — INSERT … VALUES (the
+		//       Explode of literal RecordConstructors) and projected
+		//       INSERT … SELECT. Materialize the target message from the
+		//       datum map, mirroring Java's InsertExpression computation
+		//       value coercing the inner result to the target type.
+		var msg proto.Message
+		switch {
+		case qr.Record != nil && qr.Record.Record != nil:
+			msg = qr.Record.Record
+		case qr.Datum != nil:
+			datum, ok := qr.Datum.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("executor: INSERT inner produced %T, expected record datum", qr.Datum)
+			}
+			if targetDesc == nil {
+				rt := store.GetMetaData().GetRecordType(p.GetTargetRecordType())
+				if rt == nil {
+					return nil, fmt.Errorf("executor: INSERT target record type %q not found", p.GetTargetRecordType())
+				}
+				targetDesc = rt.Descriptor
+			}
+			msg, err = buildInsertRecord(targetDesc, datum)
+			if err != nil {
+				return nil, err
+			}
+		default:
 			continue
 		}
-		stored, err := store.SaveRecordWithOptions(qr.Record.Record, recordlayer.RecordExistenceCheckErrorIfExists)
+
+		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
 		if err != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", err)
 		}
 		results = append(results, FromStoredRecord(stored))
 	}
 	return recordlayer.FromList(results), nil
+}
+
+// buildInsertRecord materializes a proto message of the target record
+// type from a computed row datum (column name → value, matched
+// case-insensitively). Used when the INSERT inner produces computed
+// rows (the literal-VALUES Explode, or a projected SELECT) rather than
+// stored records. Type coercion happens here via goToProtoValue, the
+// same conversion UPDATE uses for SET expressions. Arity, NOT NULL, and
+// "expected Record but got Primitive" are enforced earlier at plan time
+// (matching Java's visitor), so this only converts and sets fields.
+func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any) (proto.Message, error) {
+	msg := dynamicpb.NewMessage(desc)
+	refl := msg.ProtoReflect()
+	fields := desc.Fields()
+	for name, v := range datum {
+		if v == nil {
+			continue // NULL → leave field absent (proto presence = SQL NULL)
+		}
+		fd := fields.ByName(protoreflect.Name(name))
+		if fd == nil {
+			fd = fieldByNameFold(fields, name)
+		}
+		if fd == nil {
+			return nil, fmt.Errorf("executor: INSERT column %q not found in record type %q", name, desc.Name())
+		}
+		pv, err := goToProtoValue(fd, v)
+		if err != nil {
+			return nil, err
+		}
+		refl.Set(fd, pv)
+	}
+	return msg, nil
+}
+
+// fieldByNameFold resolves a proto field by name, case-insensitively.
+// Computed-row datums key columns by the SQL identifier casing, which
+// need not match the proto descriptor's field-name casing.
+func fieldByNameFold(fields protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		if strings.EqualFold(string(fd.Name()), name) {
+			return fd
+		}
+	}
+	return nil
 }
 
 func executeUpdate(
