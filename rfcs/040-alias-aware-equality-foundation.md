@@ -1,6 +1,49 @@
 # RFC-040: Alias-aware expression/predicate equality + alias-invariant hashing
 
-**Status:** Draft
+**Status:** Draft v2 — Graefe ACK; Torvalds NAK'd v1 (SemanticHashCode doesn't exist = hidden
+sub-foundation; 54 hash impls unaudited; "one atomic PR" unreviewable — stage per-type behind
+the fuzz, exploiting that the memo gate passes EmptyAliasMap so it's inert until PR-A; add a
+registry/completeness test). v2 restructures accordingly.
+
+## Staging (v2 — Torvalds) — inert until PR-A, so stage per-type behind the fuzz
+
+Key safety property: the memo dedup gate (`memo.go` `Insert`/`refContains`/`memoizeNonLeaf`)
+calls `EqualsWithoutChildren` with **`EmptyAliasMap()`** and hash-gates on it. Under the empty
+map, alias-aware equality reduces to today's behavior, and alias-invariant hashing only *widens*
+which expressions share a hash bucket (still consistent). So this foundation lands **behaviorally
+inert** — no plan changes — until **PR-A** flips the memo to pass real alias maps. That makes it
+safe (and necessary) to stage:
+
+* **040.0 — `SemanticHashCode` hierarchy (NEW; Torvalds #2).** It does **not** exist today
+  (grep: zero `Hash`/`SemanticHashCode` on `Value`/`QueryPredicate`). Build alias-invariant
+  `SemanticHashCode()` across the `Value` hierarchy (`QuantifiedObjectValue`→type-only,
+  `FieldValue`→field-path + child semantic hash, arithmetic/record/literal values) and
+  `QueryPredicate`. Own consistency fuzz. **Prerequisite for Fix 3.**
+* **040.1 — `PredicateSemanticEquals` (alias-aware).** Fix 1.
+* **040.2..N — flip types in dependency order.** Per type, change `EqualsWithoutChildren`
+  (thread the map) **and** `HashCodeWithoutChildren` (alias-invariant) **together** (per-type
+  atomicity), each landing with the consistency fuzz green. Leaves/scans first, then
+  predicate-bearing (`Filter`, `Select`), then the rest.
+
+Each sub-PR is independently reviewable + green; none changes plans (inert until PR-A).
+
+## Completeness audit (Torvalds #1, #4) — no silent dedup break
+
+The interface contract (`expression.go:104`) currently says hash is consistent with
+`EqualsWithoutChildren` under the **empty** alias map. This RFC changes it to **alias-invariant**
+(consistent under ANY map). That contract change MUST reach **every** implementer or a missed
+type silently breaks `hash==hash && Equals` dedup (green CI, no crash). Therefore:
+
+* **Enumerate all impls** (grep at authoring time: ~54 `HashCodeWithoutChildren`, the matching
+  `EqualsWithoutChildren` set across `expressions/`, `predicates/`, `values/`) and audit each:
+  does its hash include an alias-bearing field its equality (now) ignores, or vice versa?
+* **Registry/reflection completeness test**: assert every concrete `RelationalExpression`,
+  `Value`, and `QueryPredicate` type is present in the consistency-fuzz corpus — so the fuzz
+  can't pass by simply never constructing the unaudited type.
+* Update the `expression.go` interface doc comment to state the new alias-invariant contract.
+
+**Status:** Draft (superseded fields below describe the v1 single-PR plan; read with the staging
+above).
 **Epic:** RFC-038 — the **foundation** PR. Empirically-confirmed prerequisite for PR-A
 (RFC-039 `memoEqual`) and thus the whole multi-way-join-ordering goal.
 **Framing:** closes a **Java divergence**. Java threads an `AliasMap` (via `ValueEquivalence`)
@@ -99,7 +142,10 @@ hash`, now across non-trivial alias maps. This is the primary correctness gate.
    canonicalizing alias/group ids (more interning renumbers ids; real plan-shape changes fail).
 6. **interning-improves probe**: two independently-built `Filter(QOV=1, scan)` with different
    quantifier aliases now `MemoizeExpression` to the **same** Reference (was two).
-7. full conformance (46 targets), Graefe + Torvalds + @claude.
+7. **Registry/completeness test** (Torvalds #4): assert every concrete `RelationalExpression`,
+   `Value`, and `QueryPredicate` type appears in the consistency-fuzz corpus — so the fuzz can't
+   pass green by never constructing an unaudited type whose hash/equality diverge.
+8. full conformance (46 targets), Graefe + Torvalds + @claude.
 
 ## Risks / mitigations
 
@@ -108,9 +154,13 @@ hash`, now across non-trivial alias maps. This is the primary correctness gate.
   semantics (alias correspondence must be in the map; non-`QuantifiedValue`s compare by
   structure) + the non-join EXPLAIN-stability corpus + conformance.
 * **Hash collisions / inconsistency.** The fuzz target is the gate; a single violation blocks.
-* **Blast radius.** Every predicate-bearing expression + predicate + QOV/FieldValue hashing.
-  Landed as ONE PR (the contract must change atomically — equality and hashing can't diverge),
-  but implemented type-by-type with tests, full gate before merge.
+* **Blast radius.** ~54 `HashCodeWithoutChildren` + matching `EqualsWithoutChildren` impls + a
+  new `SemanticHashCode` hierarchy. Per the Staging section, landed as a series of sub-PRs
+  (040.0 SemanticHashCode → 040.1 PredicateSemanticEquals → 040.2..N flip types), **per-type
+  atomic** (equality+hashing change together for a type so the invariant never diverges within a
+  type), each green under the consistency fuzz. Safe to stage because the memo gate passes
+  `EmptyAliasMap()` → inert until PR-A. The completeness audit + registry test guard against a
+  missed type silently breaking dedup.
 * **Determinism.** Hashing stays a pure structural function (now alias-invariant); no map order.
 
 ## Out of scope
