@@ -139,8 +139,10 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 				continue
 			}
 			for _, member := range ref.Members() {
-				if member.HashCodeWithoutChildren() == h &&
-					member.EqualsWithoutChildren(expr, expressions.EmptyAliasMap()) {
+				// Alias-aware (RFC-039 PR-A activation). Leaves have no
+				// quantifiers, so MemoEqual reduces to node-info equality;
+				// hash gate (alias-invariant) first.
+				if member.HashCodeWithoutChildren() == h && expressions.MemoEqual(member, expr) {
 					return ref
 				}
 			}
@@ -157,10 +159,10 @@ func (m *Memo) findEquivalentRef(expr expressions.RelationalExpression, exclude 
 			if member.HashCodeWithoutChildren() != h {
 				continue
 			}
-			if !member.EqualsWithoutChildren(expr, expressions.EmptyAliasMap()) {
-				continue
-			}
-			if sameChildRefs(member, expr) {
+			// Alias-aware merge-candidate match: equivalent-up-to-quantifier-
+			// alias members now merge (replaces EqualsWithoutChildren(empty)
+			// + pointer-identical sameChildRefs).
+			if expressions.MemoEqual(member, expr) {
 				return cand
 			}
 		}
