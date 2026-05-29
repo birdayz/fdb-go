@@ -259,12 +259,12 @@ func (m *Memo) repointIndices(loser, winner *expressions.Reference) {
 			m.childToParents[child] = dedupEdges(edges)
 		}
 	}
-	// 3. ref/leaf sets and root.
+	// 3. ref/leaf sets and root. winner is canonical here (merge
+	// canonicalizes both sides before calling repointIndices), so no
+	// guard is needed before re-checking its leaf status.
 	delete(m.refs, loser)
 	m.removeLeafRef(loser)
-	if winner.Canonical() == winner {
-		m.addLeafRefIfLeaf(winner)
-	}
+	m.addLeafRefIfLeaf(winner)
 	if m.root == loser {
 		m.root = winner
 	}

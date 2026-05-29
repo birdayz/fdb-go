@@ -238,6 +238,34 @@ func TestMemoMerge_FiresThroughRealPlanner(t *testing.T) {
 	}
 }
 
+// TestMemoMerge_MemoizeExpressionCanonicalAfterMerge pins the canonical
+// compare in ExpressionRuleCall.MemoizeExpression (expression_rule_call.go):
+// after a merge, the rule-call's Reference may be a forwarded loser while
+// MemoizeExpression resolves an equal expr to the winner. The self-reference
+// guard must compare CANONICAL identities, so it still fires (returns a fresh
+// InitialOf) rather than handing back the winner and creating a cycle.
+func TestMemoMerge_MemoizeExpressionCanonicalAfterMerge(t *testing.T) {
+	t.Parallel()
+	winner := expressions.InitialOf(fixtureScan("T"))
+	loser := expressions.InitialOf(fixtureScan("T")) // structurally equal
+	m := NewMemo(nil)
+	m.RegisterReference(winner)
+	winner.Absorb(loser) // loser now forwards to winner
+
+	// Rule call firing "into" the (now forwarded) loser.
+	c := &ExpressionRuleCall{Reference: loser, memo: m}
+	// MemoizeExpression(equal scan) resolves to winner (leaf interning);
+	// canonical(winner) == canonical(loser) == winner, so the guard fires.
+	got := c.MemoizeExpression(fixtureScan("T"))
+
+	if got == winner {
+		t.Fatal("self-reference guard failed: returned the winner the rule is yielding into (would cycle)")
+	}
+	if got.Canonical() == loser.Canonical() {
+		t.Fatal("returned a Reference canonical-equal to the rule-call's own group")
+	}
+}
+
 // TestMemoMerge_CorrelatedToInvariant pins the Torvalds-#2 invariant:
 // equivalent groups have equal correlation sets, so the survivor's
 // GetCorrelatedTo is unchanged by the merge (the cache is invalidated and

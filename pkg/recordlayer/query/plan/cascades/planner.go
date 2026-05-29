@@ -617,7 +617,15 @@ func (t *SaturationCheckTask) Run(p *Planner) {
 	afterCount := len(t.Ref.Members())
 	grew := afterCount - t.BeforeCount
 
-	// Update Memo index for newly-added members.
+	// Update Memo index for newly-added members. After a cross-group
+	// merge (RFC-037) t.Ref may have forwarded and BeforeCount was the
+	// loser's pre-merge count, so members[BeforeCount:] is only an
+	// approximation of "genuinely new" members. That is harmless:
+	// AddExpression routes through addParentEdge which dedups, so
+	// re-indexing an already-indexed member is a no-op, and any member
+	// it skips was already indexed by an earlier AddExpression or by the
+	// merge's repointIndices. The slice access is safe — it is guarded by
+	// grew > 0, i.e. afterCount > BeforeCount.
 	if grew > 0 && p.memo != nil {
 		members := t.Ref.Members()
 		for _, m := range members[t.BeforeCount:] {
