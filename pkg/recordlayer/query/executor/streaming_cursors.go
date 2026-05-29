@@ -762,6 +762,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						if c.matchedInner[i] {
 							continue
 						}
+						// qualifyOuterRow is repurposed here for an INNER
+						// row: it qualifies the inner row's columns under
+						// innerAlias and leaves the outer columns absent, so
+						// downstream qualified refs to the outer side resolve
+						// to NULL.
 						return recordlayer.NewResultWithValue(
 							qualifyOuterRow(c.innerRows[i], c.innerAlias),
 							nonEndContinuation,

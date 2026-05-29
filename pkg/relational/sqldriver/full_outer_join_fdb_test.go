@@ -228,6 +228,112 @@ func TestFDB_FullOuterJoin_LargeInner(t *testing.T) {
 	g.Expect(len(got)).To(gomega.Equal(151))
 }
 
+// TestFDB_FullOuterJoin_EmptyOuter exercises the drain path in isolation:
+// the outer (Customer) is empty, so every inner (Ord) row drains with a
+// NULL left side.
+func TestFDB_FullOuterJoin_EmptyOuter(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	db := setupFullOuterDB(t, g, "empty_outer")
+
+	// No customers; two orders → both right-only (NULL name).
+	_, err := db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (1, 7, 100), (2, 8, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT Customer.name, Ord.amount
+		FROM Customer FULL OUTER JOIN Ord ON Customer.id = Ord.customer_id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	got := scanNameAmount(t, g, rows)
+
+	ptrI := func(i int64) *int64 { return &i }
+	g.Expect(got).To(gomega.ConsistOf(
+		nameAmount{nil, ptrI(100)},
+		nameAmount{nil, ptrI(200)},
+	))
+}
+
+// TestFDB_FullOuterJoin_EmptyInner exercises the drain no-op: the inner
+// (Ord) is empty, so the matchedInner slice is empty and the drain loop
+// does nothing; every outer (Customer) row emits with a NULL right side.
+func TestFDB_FullOuterJoin_EmptyInner(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	db := setupFullOuterDB(t, g, "empty_inner")
+
+	// Two customers; no orders → both left-only (NULL amount).
+	_, err := db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice'), (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT Customer.name, Ord.amount
+		FROM Customer FULL OUTER JOIN Ord ON Customer.id = Ord.customer_id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	got := scanNameAmount(t, g, rows)
+
+	ptrStr := func(s string) *string { return &s }
+	g.Expect(got).To(gomega.ConsistOf(
+		nameAmount{ptrStr("Alice"), nil},
+		nameAmount{ptrStr("Bob"), nil},
+	))
+}
+
+// TestFDB_FullOuterJoin_OrderBy verifies a sort operator fires ABOVE the
+// FULL join (the NLJ advertises no ordering — the drain appends
+// unmatched-inner rows after the outer stream). All four row classes are
+// present; ORDER BY Ord.amount must produce a globally sorted result with
+// NULL amounts ordered consistently.
+func TestFDB_FullOuterJoin_OrderBy(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+	db := setupFullOuterDB(t, g, "order_by")
+
+	_, err := db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Ord (id, customer_id, amount) VALUES (10, 1, 300), (11, 2, 100), (12, 99, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// FULL OUTER rows: (Alice,300),(Bob,100),(Carol,NULL),(NULL,200).
+	// ORDER BY Ord.amount ASC. NULLs sort first (FDB/Java NULLS FIRST for ASC).
+	rows, err := db.QueryContext(ctx, `SELECT Customer.name, Ord.amount
+		FROM Customer FULL OUTER JOIN Ord ON Customer.id = Ord.customer_id
+		ORDER BY Ord.amount`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	got := scanNameAmount(t, g, rows)
+
+	g.Expect(len(got)).To(gomega.Equal(4))
+	// Non-NULL amounts must be in ascending order; verify the ordering is
+	// monotonic among the rows that have a non-NULL amount.
+	var lastAmt *int64
+	for _, r := range got {
+		if r.amount == nil {
+			continue
+		}
+		if lastAmt != nil {
+			g.Expect(*r.amount >= *lastAmt).To(gomega.BeTrue(),
+				"amounts must be ascending: %d after %d", *r.amount, *lastAmt)
+		}
+		lastAmt = r.amount
+	}
+	// All four rows present (one NULL-amount left-only row, one NULL-name
+	// right-only row, two matched).
+	var nullAmt, nullName int
+	for _, r := range got {
+		if r.amount == nil {
+			nullAmt++
+		}
+		if r.name == nil {
+			nullName++
+		}
+	}
+	g.Expect(nullAmt).To(gomega.Equal(1), "Carol has no order")
+	g.Expect(nullName).To(gomega.Equal(1), "order 12 has no customer")
+}
+
 // TestFDB_FullOuterJoin_WhereFilter proves the WHERE clause is applied
 // ABOVE the join (it stays a filter, never merged into the ON), so it can
 // correctly drop NULL-padded rows.

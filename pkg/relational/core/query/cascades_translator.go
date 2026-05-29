@@ -670,6 +670,15 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,
 ) expressions.RelationalExpression {
+	// FULL OUTER cannot be expressed through the join+EXISTS flatten shape
+	// (the semi-join cannot carry the FULL drain). The production path
+	// rejects this earlier with a clear error (findFullOuterWithExists),
+	// but harness callers (plan_harness) invoke the translator directly and
+	// bypass that guard — refuse here too so FULL+EXISTS is never silently
+	// mistranslated to INNER (the kind switch below defaults to JoinInner).
+	if j.Kind == logical.JoinFull {
+		return nil
+	}
 	left := j.Left
 	right := j.Right
 	kind := j.Kind

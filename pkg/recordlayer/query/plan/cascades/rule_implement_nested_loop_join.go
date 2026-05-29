@@ -378,6 +378,15 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	sel *expressions.SelectExpression,
 	quants []expressions.Quantifier,
 ) {
+	// FULL OUTER cannot be implemented through the join+EXISTS semi-join
+	// shape (it cannot carry the FULL drain). FULL+EXISTS is rejected
+	// upstream with a clear error, but guard here too so this rule never
+	// silently yields an INNER plan (the join-type switch below defaults
+	// JoinFullOuter → JoinInner).
+	if sel.GetJoinType() == expressions.JoinFullOuter {
+		return
+	}
+
 	leftRef := quants[0].GetRangesOver()
 	rightRef := quants[1].GetRangesOver()
 	existRef := quants[2].GetRangesOver()

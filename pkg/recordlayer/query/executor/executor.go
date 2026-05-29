@@ -1173,6 +1173,13 @@ func executeNestedLoopJoin(
 		// returning silently-wrong rows — the same limitation class as the
 		// materialized inner side above. INNER/LEFT/RIGHT are unaffected:
 		// they carry no cross-outer state and resume correctly per outer row.
+		//
+		// Consequence: with limits cleared the outer always runs to
+		// SourceExhausted in one transaction and never emits a partial
+		// continuation, so a fresh FULL query passes continuation=nil here
+		// and the driver can never hand a FULL OUTER continuation back. The
+		// `continuation` arg below is thus effectively always nil for FULL;
+		// it is passed through unconditionally only for code uniformity.
 		outerProps = outerProps.ClearRowAndTimeLimits()
 	}
 	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, outerProps)
