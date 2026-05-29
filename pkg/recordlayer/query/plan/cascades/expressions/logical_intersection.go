@@ -74,7 +74,7 @@ func (e *LogicalIntersectionExpression) GetCorrelatedToWithoutChildren() map[val
 // EqualsWithoutChildren compares classes AND comparison-key lists.
 // Two intersections with different comparison keys are not equal even
 // over the same children.
-func (e *LogicalIntersectionExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+func (e *LogicalIntersectionExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*LogicalIntersectionExpression)
 	if !ok {
 		return false
@@ -82,8 +82,11 @@ func (e *LogicalIntersectionExpression) EqualsWithoutChildren(other RelationalEx
 	if len(e.comparisonKeyValues) != len(o.comparisonKeyValues) {
 		return false
 	}
+	// Alias-aware comparison-key equality (RFC-040 040.2). Inert under the
+	// memo's empty-alias path until PR-A.
+	vm := aliases.ToValuesAliasMap()
 	for i := range e.comparisonKeyValues {
-		if values.ExplainValue(e.comparisonKeyValues[i]) != values.ExplainValue(o.comparisonKeyValues[i]) {
+		if !values.SemanticEqualsUnderAliasMap(e.comparisonKeyValues[i], o.comparisonKeyValues[i], vm) {
 			return false
 		}
 	}
@@ -96,10 +99,9 @@ func (e *LogicalIntersectionExpression) HashCodeWithoutChildren() uint64 {
 	const seed uint64 = 41
 	h := seed
 	for _, v := range e.comparisonKeyValues {
-		s := values.ExplainValue(v)
-		for i := 0; i < len(s); i++ {
-			h = h*31 + uint64(s[i])
-		}
+		// Alias-invariant (RFC-040 040.2), consistent with the alias-aware
+		// EqualsWithoutChildren above.
+		h = h*31 + values.SemanticHashCode(v)
 		h = h*31 + 0xff
 	}
 	return h
