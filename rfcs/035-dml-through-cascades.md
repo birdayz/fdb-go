@@ -1,7 +1,7 @@
 # RFC-035: DML executes through Cascades (P0.4)
 
-**Status:** Partially implemented (INSERT … VALUES landed; UPDATE / DELETE /
-INSERT … SELECT in progress)
+**Status:** Mostly implemented — INSERT … VALUES, DELETE, UPDATE execute through
+Cascades; INSERT … SELECT and naive-path deletion remain.
 **Item:** P0.4 — DML must execute through Cascades (forbidden parallel pipeline)
 
 ## Implementation status
@@ -18,27 +18,33 @@ Landed (commits on `fix/p0.4-dml-through-cascades`), all 46 targets green:
   so DML joins an open explicit transaction (Gap B).
 - `executeInsert` Datum→message bridge for computed-row inners.
 
-Remaining (each a separate, e2e-tested port; naive path stays live until done):
-1. **DELETE through Cascades.** Simple filters, schema-qualified targets
-   (`bareTableName` fix), and **correlated EXISTS** (`upgradeDMLWhereWithCatalog`
-   installs the `existsSubqueryPlanner` on the DML resolver) all work — verified
-   via a temporary flip. One remaining bug blocks the flip: a **non-correlated
-   `NOT EXISTS` with an empty subquery deletes nothing** (the empty subquery
-   evaluates as if it exists → `NOT EXISTS` false). Likely an EXISTS-execution
-   issue (subquery WHERE dropped, or non-correlated quantifier mis-evaluated);
-   isolate whether the same shape misbehaves for SELECT before fixing. Then flip
-   DELETE.
-2. **UPDATE through Cascades.** `translateUpdate` stores SET expressions as raw
-   text in a `ConstantValue`; the executor can't evaluate them. Port SET RHS to
-   real expression Values (resolver-built, like projections), reusing the DELETE
-   inner-filter fix.
-3. **INSERT … SELECT through Cascades.** `executeInsert` prefers the source
+Done since: **DELETE** and **UPDATE** also execute through Cascades.
+- DELETE: simple/schema-qualified/correlated + non-correlated EXISTS. Fixing the
+  non-correlated semi-join (FirstOrDefault defeated the presence check) also fixed
+  a latent SELECT bug.
+- UPDATE: SET RHS resolved to Values (was raw text); WHERE via
+  `upgradeDMLWhereWithCatalog`; plan-time NOT-NULL + unsupported-function
+  rejection. Corner-case tests in `dml_cascades_fdb_test.go`.
+
+Remaining:
+1. **INSERT … SELECT through Cascades.** `executeInsert` prefers the source
    `qr.Record` over the projected `qr.Datum`, re-saving source rows (PK collision,
-   23505). Fix: use the projected row for INSERT … SELECT.
-4. **Delete naive `execInsert`/`execUpdate`/`execDelete`/`execInsertSelect`** and
+   23505). Fix: map the projected row to the target columns (positionally, like
+   Java), then flip INSERT … SELECT.
+2. **Delete naive `execInsert`/`execUpdate`/`execDelete`/`execInsertSelect`** and
    the `execStatement` DML dispatch; repoint `planDMLExplainOnly.ExecFn`; reword
    QueryContext DML rejection; record the QueryContext-rejection divergence in
    `DIVERGENCES.md`.
+
+Reviewer follow-ups (direction check-in, both ACK):
+- Graefe: push the target `Type.Record` down into the INSERT/UPDATE Value tree
+  and land `PromoteValue` at plan time (instead of `ConstantValue{UnknownType}` +
+  executor coercion) so the plan is fully typed; fold `LogicalInsert.ValuesArray`
+  and `Source` into a single inner-producing child so `translateInsert` stops
+  branching.
+- Torvalds: delete each naive `exec*` in the same commit its shape flips (don't
+  leave a resting dual-state); `upgradeDMLWhereWithCatalog` duplicates the SELECT
+  exists-wiring — factor to avoid drift (e.g. `correlatedScalarSubqueries`).
 
 ---
 

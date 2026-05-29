@@ -170,12 +170,12 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 }
 
 // dmlOnCascades reports whether a DML statement has a verified Cascades
-// execution path in exec mode. Today that is INSERT … VALUES (literal
-// rows) only. DELETE works for simple filters but its Cascades path still
-// regresses on schema-qualified targets and EXISTS-subquery predicates;
-// UPDATE's SET expressions are still text; INSERT … SELECT re-saves the
-// source records. Those stay on the naive path until ported (RFC-035
-// §Fix.6).
+// execution path in exec mode. INSERT … VALUES, DELETE, and UPDATE are
+// fully ported (incl. schema-qualified targets, correlated and
+// non-correlated EXISTS predicates, and SET expressions resolved to
+// Values). INSERT … SELECT still routes to the naive path — its Cascades
+// inner re-saves the source records instead of mapping the projected
+// columns to the target (RFC-035 §Fix.6).
 func dmlOnCascades(dml antlrgen.IDmlStatementContext) bool {
 	if dml.DeleteStatement() != nil || dml.UpdateStatement() != nil {
 		return true
