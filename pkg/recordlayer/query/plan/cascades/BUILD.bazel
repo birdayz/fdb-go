@@ -386,6 +386,7 @@ go_test(
         "traversal_test.go",
         "value_equivalence_test.go",
         "value_semantic_equals_test.go",
+        "value_semantic_hash_registry_test.go",
         "value_semantic_hash_test.go",
         "winner_lookup_test.go",
         "wrap_physical_plan_test.go",
