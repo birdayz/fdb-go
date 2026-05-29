@@ -127,11 +127,6 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 	return out
 }
 
-// ToValuesAliasMap returns the forward bindings as a values.AliasMap (the
-// simple source→target map the values/predicates alias-aware equality helpers
-// consume). Read-only view; callers must not mutate the result. Nil-safe: a
-// nil receiver (some EqualsWithoutChildren callers pass a nil *AliasMap)
-// yields a nil values.AliasMap, which the helpers read as identity-alias.
 // With returns a copy of the map with the (source, target) binding added,
 // ok=true. An already-present binding is idempotent (ok=true); a source or
 // target already bound to a DIFFERENT partner returns the receiver unchanged,
@@ -181,6 +176,11 @@ func (a *AliasMap) GetTargetOrDefault(source, def values.CorrelationIdentifier) 
 	return def
 }
 
+// ToValuesAliasMap returns the forward bindings as a values.AliasMap (the
+// simple source→target map the values/predicates alias-aware equality helpers
+// consume). Read-only view; callers must not mutate the result. Nil-safe: a
+// nil receiver (some EqualsWithoutChildren callers pass a nil *AliasMap)
+// yields a nil values.AliasMap, which the helpers read as identity-alias.
 func (a *AliasMap) ToValuesAliasMap() values.AliasMap {
 	if a == nil {
 		return nil

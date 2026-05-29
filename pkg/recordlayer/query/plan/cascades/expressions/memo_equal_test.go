@@ -78,3 +78,34 @@ func TestMemoEqual_DistinctOuterCorrelationsDoNotIntern(t *testing.T) {
 		t.Fatal("filters correlated to the SAME outer alias must be MemoEqual")
 	}
 }
+
+// TestMemoEqual_ChildrenAsSet_PermutationBranch exercises the ChildrenAsSet
+// permutation path of matchChildrenInMemo — load-bearing for join-order
+// enumeration (PR-C) and otherwise unexercised (LogicalFilter et al. report
+// ChildrenAsSet=false → positional path only). LogicalUnion is ChildrenAsSet
+// (UNION is commutative), so two unions over the same child SET in swapped
+// order must be MemoEqual via the permutation match. Distinct scans (T, U)
+// make the positional permutation [0,1] FAIL — only [1,0] matches — so the
+// test genuinely drives the permute fallback, not just the first attempt.
+func TestMemoEqual_ChildrenAsSet_PermutationBranch(t *testing.T) {
+	t.Parallel()
+	scanT := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanU := InitialOf(NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType))
+	union := func(refs ...*Reference) RelationalExpression {
+		qs := make([]Quantifier, len(refs))
+		for i, r := range refs {
+			qs[i] = ForEachQuantifier(r)
+		}
+		return NewLogicalUnionExpression(qs)
+	}
+	a := union(scanT, scanU)
+	b := union(scanU, scanT) // swapped child order ⇒ only the permutation branch can match
+
+	if !MemoEqual(a, b) {
+		t.Fatal("ChildrenAsSet union with swapped child order must be MemoEqual (permutation branch)")
+	}
+	// Negative: a different child SET (two T's, no U) ⇒ no permutation matches.
+	if MemoEqual(union(scanT, scanT), a) {
+		t.Fatal("union over a different child set must NOT be MemoEqual")
+	}
+}
