@@ -85,8 +85,6 @@ type silently breaks `hash==hash && Equals` dedup (green CI, no crash). Therefor
   can't pass by simply never constructing the unaudited type.
 * Update the `expression.go` interface doc comment to state the new alias-invariant contract.
 
-**Status:** Draft (superseded fields below describe the v1 single-PR plan; read with the staging
-above).
 **Epic:** RFC-038 — the **foundation** PR. Empirically-confirmed prerequisite for PR-A
 (RFC-039 `memoEqual`) and thus the whole multi-way-join-ordering goal.
 **Framing:** closes a **Java divergence**. Java threads an `AliasMap` (via `ValueEquivalence`)
