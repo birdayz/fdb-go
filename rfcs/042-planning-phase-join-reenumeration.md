@@ -1,138 +1,157 @@
-# RFC-042: PLANNING-phase join re-enumeration (the task-engine half of multi-way join ordering)
+# RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** Draft v2 — direction ACK'd by Graefe + Torvalds; root-cause corrected per
-Torvalds NAK (v1 misattributed the firing path). Re-confirming v2 before implementing.
+**Status:** v4 — root cause re-established from real instrumentation. The v1–v3
+"task-engine ordering" framing was **wrong** (see Correction). The acceptance
+probe `TestFDB_MultiwayJoinOrder_Probe` is RED; this RFC documents the actual,
+multi-layer gap, lands the one layer that is a clean Java-divergence bug, and
+scopes the remaining layers.
 
-## Correction (v2) — what v1 got wrong
+## What "done" means
 
-v1 claimed `PartitionSelectRule` fires via "System A" (`ExploreReferenceTask` →
-`TransformReferenceTask`) in production. **False, confirmed by grep + both reviewers:**
-`ExploreReferenceTask` is pushed only by `Explore()` (planner.go:364) and System A's own
-`SaturationCheckTask` loop (:566, :641) — **never by `Plan()`**, which pushes
-`InitiatePlannerPhaseTask` (System B). Every production caller uses `Plan()`
-(cascades_generator.go:316, plan_harness.go:84). So **System A is test-only/vestigial dead
-code**, and in production `PartitionSelectRule` fires via **System B in the REWRITING phase**
-(`p.rules` = `DefaultExpressionRules`, which lists it at default_rules.go:120; REWRITING's
-`rulesForPhase` returns `p.rules`). Also: Go has **no** `Verify(finalMembers.size()==1)`
-invariant — `AdvancePlannerStage` (reference.go) promotes ALL finalMembers; that check is
-Java-only. The corrected root cause and fix (below) are mechanism **(c)**: the promoted
-PLANNING seed is a partitioned binary tree, not a flat select, so PLANNING's already-wired
-`PartitionSelectRule` has no ≥3-quantifier select to re-partition.
+`SELECT t1.id FROM <t1,t2,t3 in any order> WHERE t3.t2_id=t2.id AND t2.t1_id=t1.id`
+must produce the **same** cost-optimal physical plan regardless of FROM-clause
+order (chain: t1=1 row ← t2=20 ← t3=200; optimal drives from t1). Two opposite
+FROM-orders ⇒ byte-identical EXPLAIN, driving from the 1-row table.
 
-**Epic:** RFC-038 PR-C/PR-D, continuing RFC-041. RFC-041 fixed the cost *model* (it now
-ranks join orders correctly by recursive, stats-aware total cost). This RFC fixes the
-planner *task engine* so the optimal join order is actually a candidate the cost model
-gets to choose — the last blocker for "multi-way join ordering proven".
+## Correction — what v1–v3 got wrong
 
-## Problem (precisely instrumented in RFC-041 §Implementation findings)
+v1–v3 claimed the blocker was a Cascades **task-engine ordering** bug (a
+re-enumerated join associativity dropping because its sub-product reference
+wasn't optimized before the parent's `ImplementNestedLoopJoinRule` ran, so
+`findBestPhysicalExpr` returned nil). **Instrumentation disproved this:** there
+are **zero** nil-child NLJ bails. Both associativities are built as physical
+members. The earlier "step 1 made the probe pass" was an artifact — the probe
+file was not yet registered in BUILD.bazel, so `--test.run` reported "no tests
+to run" (a false green). Once gazelle registered it, the probe is RED.
 
-The acceptance probe (`TestFDB_MultiwayJoinOrder_Probe`, 3-table chain t1=1/t2=20/t3=200)
-plans the SAME join under two FROM-orders and they do NOT converge — big-first gets the
-costlier `T1⋈(T2⋈T3)` (1077), small-first the optimal `(T1⋈T2)⋈T3` (769). The cost model
-*would* pick 769, but for big-first that associativity is never offered as a candidate.
+## Actual root cause — three layers
 
-Root cause (corrected v2): join-order enumeration runs **only in REWRITING**, and the
-PLANNING seed is already partitioned, so PLANNING cannot re-associate.
+Instrumented on the 3-table chain under both FROM-orders:
 
-* In REWRITING (System B, `p.rules` = `DefaultExpressionRules` incl. `PartitionSelectRule`),
-  `PartitionSelectRule` enumerates all bipartitions as *exploratory* members of the join
-  Reference.
-* `AdvancePlannerStage` (reference.go) promotes the Reference's `finalMembers` to PLANNING
-  and drops the exploratory alternatives. The promoted seed is an **already-partitioned
-  nested-binary select** (2-quantifier levels), not the flat N-quantifier select.
-* In PLANNING, `PlanningExplorationRules` (default_rules.go:139, wired via
-  `WithPlanningExpressionRules`, planner.go:254) DOES list `PartitionSelectRule`, but it
-  fires **0 times** — because there is no flat ≥3-quantifier select among the PLANNING
-  members to bind; only `PartitionBinarySelectRule` fires per 2-quantifier level, swapping
-  operands *within* a level but never **re-associating** the tree. The FROM-order-chosen
-  associativity is locked at the phase boundary.
+### Layer 1 (root-caused; fix is NOT a clean removal) — REWRITING did not produce a FROM-order-independent flat seed
 
-This also explains why RFC-041's tried-and-reverted phase-move (remove `PartitionSelectRule`
-from REWRITING) made things *worse*: it deleted the REWRITING firing site, and PLANNING
-still couldn't fire it (no flat seed) — so enumeration stopped entirely.
+The SQL→cascades translator builds a multi-table inner-join FROM as a **nested
+binary** tree of 2-quantifier `SelectExpression`s (`Select(Select(a,b),c)`).
+`SelectMergeRule` flattens this to the canonical flat 3-quantifier select — the
+seed `PartitionSelectRule` needs to re-enumerate associativities from.
 
-**Vestigial System A (cleanup, not the bug):** `ExploreReferenceTask` →
-`TransformReferenceTask` (planner.go:511-595) is a second, non-phase-keyed rule driver
-reachable only via `Explore()` (test-only). It is dead in production (`Plan()` never pushes
-it). Both reviewers flagged it as a code smell to delete; doing so removes the "two systems"
-confusion but is orthogonal to the join-ordering fix.
+But Go carried a **Go-only** rule, `PushProjectionBelowJoinRule` (no Java
+equivalent — Java's `PlanningRuleSet` has only `RemoveProjectionRule` +
+`MergeProjectionAndFetchRule`, and prunes columns during PLANNING via
+requested-value push-down). It matched a `LogicalProjectionExpression` over a
+2-quantifier inner join and classified the projected columns **by string alias
+prefix** (`strings.ToUpper(aliases[0])`). It fired **only when a projected
+column mapped to a top-level join quantifier**:
 
-## Java reference
+* big-first (`SELECT t1.id FROM t3,t2,t1`): `t1` is a direct top-level quantifier
+  of the outer join → rule fires → wraps the join's children in
+  `LogicalProjectionExpression`s → those intervening projections **block
+  `SelectMergeRule`** → no flat seed → PLANNING cannot re-enumerate → plan locked
+  to the FROM-order shape `T1⋈(T2⋈T3)`.
+* small-first (`SELECT t1.id FROM t1,t2,t3`): `t1` is buried in the sub-join;
+  its alias matches neither top-level side → rule **bails** (the `default: return`
+  arm) → flat seed survives → re-enumeration runs → optimal `(T1⋈T2)⋈T3`.
 
-Graefe (RFC-041 consult #2) established: Java has join enumeration **only** in
-`PlanningRuleSet` (never `RewritingRuleSet`, which is pure normalization), it fires during
-PLANNING on the promoted canonical seed, all associativities become competing members of
-one Reference, and `PlanningCostModel` picks the cheapest at `OptimizeGroup`. Java's
-single-winner promotion is real (`Verify(finalMembers.size()==1)`), but the promoted seed
-is the **normalized flat select**, and PLANNING re-enumerates from it. The Go divergence is
-that System B's PLANNING exploration does not effectively re-enumerate from the seed.
+**Attempted fix — removal regresses recursive CTE.** The obvious fix (drop the
+Go-only `PushProjectionBelowJoinRule` from `DefaultExpressionRules`) makes
+big-first's PLANNING seed flat (verified) and `cascades_test` + all non-FDB
+plan-harness/core-query targets green — **but the full `just test` gate fails**:
+`TestFDB_RecursiveCTECrossJoin` returns 4 rows instead of 5 (wrong results),
+plus `TestFDB_RecursiveCTERename` and `TestFDB_CascadesRecursiveCTE`. So this
+Go-only rule is **load-bearing for recursive-CTE cross-join correctness** — it
+papers over a real gap in the recursive-CTE / cross-join column handling that
+Java handles without such a rule. Removing it outright is a correctness
+regression and was reverted.
 
-## Direction (mechanism c — reviewer-confirmed)
+The clean fix must therefore be one of (Java-faithful, in order of preference):
+1. **Fix the underlying recursive-CTE/cross-join column gap** so the rule is no
+   longer needed, then remove it (Java has no such rule, so the gap is the real
+   divergence). Largest, but eliminates the Go-only rule entirely.
+2. **Let the flat seed form despite the pushed projections** — teach
+   `SelectMergeRule` (or a projection pull-up in REWRITING) to flatten
+   `Select → LogicalProjection → Select` so PartitionSelect gets a flat seed even
+   when the rule fired. Preserves the recursive-CTE benefit.
+3. **Narrow the rule** so it does not fire on the join shapes whose flattening
+   PLANNING depends on — fragile; rejected unless 1/2 prove intractable.
 
-Make PLANNING re-enumerate join associativities from a **canonical flat seed**,
-Cascades-faithful (Java: `RewritingRuleSet` = normalization only; `PlanningRuleSet` holds
-`PartitionSelectRule`; enumeration fires in PLANNING on the promoted seed, all
-associativities become competing members of one Reference, `OptimizeGroup` costs them —
-Graefe '95 §2.3 memoized AND/OR-graph search).
+Rule count stays 46 until one of these lands. This layer is root-caused but
+**not yet fixed**.
 
-1. **REWRITING normalizes to flat selects; it must produce NO partitioned associativity.**
-   The guarantee is NOT "a cost-cull deterministically promotes the flat merge" — Graefe
-   corrected this: `AdvancePlannerStage` (reference.go:363) does `members = finalMembers`,
-   a **set-copy of ALL finalMembers** (no single-winner cull in Go; `FinalizeExpressionsRule`
-   yields every member). The actual, sufficient guarantee is: **with `PartitionSelectRule`/
-   `PartitionBinarySelectRule` removed from the REWRITING set (`DefaultExpressionRules`
-   120-121), REWRITING cannot generate any partitioned member** — every relational
-   alternative it produces for the join is flat (post-`SelectMergeRule`). So whatever set is
-   promoted is entirely flat. Multiple flat members (e.g. predicate-normalized variants) are
-   fine and expected. **Guard (Graefe):** assert the promoted PLANNING member set contains
-   **no** `SelectExpression` with ≤2 quantifiers standing in for the 3-way join (i.e. no
-   partitioned member) — NOT "exactly one member, count==3".
-2. **PLANNING re-enumerates from the flat seed.** `PlanningExplorationRules` already lists
-   `PartitionSelectRule` and is already wired (planner.go:254) — once the seed is flat, it
-   fires (instrumented "0 fires in PLANNING" must become ">0 on the 3-quantifier seed") and
-   every associativity becomes a competing member. (No task-engine change needed — this is
-   why both reviewers landed on (c) over the (a) "unify" rewrite: System B is already wired
-   correctly; only the seed shape is wrong.)
-3. **Cost picks the cheapest.** RFC-041's stats-aware `compareJoinOrdering` + recursive
-   best-member cost selects the optimal order at `OptimizeGroup`. (Already done.) **Also
-   confirm** the final extraction (`extractBestPlanFromSelectorVisited`) routes join-order
-   selection through the stats-aware comparator, not the first-member `CostLessWith` — if it
-   doesn't, fix that too (this is a concrete verification step, not assumed-done).
-4. **Cleanup (separable):** delete the vestigial test-only System A (`Explore()` +
-   `ExploreReferenceTask`/`TransformReferenceTask`/`SaturationCheckTask`) or move it into
-   test helpers, removing the "two rule drivers" smell. Land as its own commit so the
-   join-ordering fix's diff stays focused.
+### Layer 2 (OPEN) — re-enumerated associativities carry a residual-predicate penalty
 
-**Mechanism decision:** (c), surgical. Graefe ACK'd (a)-"unify" as ideal-but-larger; Torvalds
-showed System A is already dead so "unify" reduces to the (4) cleanup, leaving (c) as the
-actual fix. Both converge on (c) + cleanup.
+With the flat seed, the top join reference now holds every associativity as a
+physical member. But the cost model does not pick the cheapest. `PlanningCostModel`
+(Java and Go identical) ranks by, in order: (#2) max data-access cardinality,
+(#3) **normalized residual-predicate count**, … and only much later (#14) the
+recursive join-order cost (RFC-041's `compareJoinOrdering`/`BestMemberCostWith`).
 
-## Risk / blast radius
+For the chain, the **FROM-order-native** associativity embeds *both* join
+predicates as NLJ join conditions (resid=0), because the native sub-join exposes
+the intermediate join column directly. The **re-enumerated** associativity is
+built by `PartitionSelectRule`'s Case-3 path (lower select flows a
+`RecordConstructorValue`; the upper predicate is translated to
+`FieldValue(QOV(lowerQ), "_i")`). `ImplementNestedLoopJoinRule` does not
+recognize that constructor-field correlation as an embeddable equi-join
+condition, so it renders it as a **correlated `PredicatesFilter` on the inner**
+(resid=2). Criterion #3 therefore prefers the resid=0 FROM-order-native shape
+**before** join-order cost is ever consulted — so the planner always picks the
+FROM-order associativity. (small-first looks correct only because its native
+shape happens to be the optimal one.)
 
-This touches the task engine that drives **every** query, so the gate is mandatory and
-heavy: 46/46 targets incl. plandiff conformance (no plan-shape regressions on non-join
-queries), stress-1M before/after, determinism 10×, and the new probe green. Note Go has no
-`Verify(finalMembers.size()==1)` invariant (Java-only; `AdvancePlannerStage` promotes all
-finalMembers) — so the fix must instead ensure REWRITING deterministically leaves the
-canonical flat select as the promoted seed (the load-bearing assumption in §Direction-1),
-pinned by the seed-quantifier-count assertion test.
+This is **not obviously a Java divergence**: Java's `PlanningCostModel`
+(criterion #3, `NormalizedResidualPredicateProperty`) and `PartitionSelectRule`
+(identical Case-3 `RecordConstructorValue` + `TranslationMap`) match Go.
+Determining whether Java embeds the re-enumerated predicate cleanly (e.g. via
+extra value-simplification of `FieldValue`-over-`RecordConstructor` that Go is
+missing, collapsing the constructor reference back to the bare column so the
+predicate stays embeddable) requires checking Java's value-simplification /
+`RemoveProjectionRule` interaction on this shape.
 
-## Test plan (the proof)
+### Layer 3 (OPEN) — no index-nested-loop join (SARGed join probe)
 
-`TestFDB_MultiwayJoinOrder_Probe` green: (a) order-invariance — same join under multiple
-FROM-orders → byte-identical EXPLAIN; (b) cost-optimal — drives from the smallest table,
-EXPLAIN-pinned, differing from FROM-order; (c) cost-monotonicity — perturb a table's count,
-the chosen order flips; (d) determinism 10×; (e) shared sub-products merged (PR-A). Plus
-the full no-regression gate above.
+Even with secondary indexes on the join columns (`t2(t1_id)`, `t3(t2_id)`), the
+planner produces full `Scan(T2)`/`Scan(T3)` NLJs, **not** correlated index
+probes (`IndexScan(t3_by_t2, [=t2.id])`). With an index SARG the join predicate
+would be consumed by the inner's index access (resid=0), tying the residual
+criterion across associativities and letting join-order cost decide — the
+realistic way this Cascades architecture does cost-based join ordering. Go's
+data-access matching does produce single-table index scans
+(`TestPlanHarness_Index*`), but no existing test pins a join whose inner is an
+**index probe of a correlated join predicate**; `TestPlanHarness_JoinOnIndex`
+only asserts `FlatMap`, never an inner index scan. Whether Go's
+`abstract_data_access_rule`/match-candidate machinery matches a correlated
+comparison predicate against an index candidate to yield a correlated index scan
+is the open question for this layer.
 
-**Mechanism assertions (Graefe — survive canonicalization):** a bare "PartitionSelectRule
-fires >0 in PLANNING" is necessary but insufficient (a memoized graph can fire once then
-dedup). Pin instead, via a planner-level (non-FDB) test: (i) the promoted PLANNING seed set
-for the 3-way join contains no partitioned (≤2-quantifier) member; (ii) at `OptimizeGroup`
-the join Reference ends with **≥2 distinct associativity members** competing; (iii) the
-winner is the one `compareJoinOrdering`/best-member-cost selects — explicitly NOT member-0
-(guards against an extraction path silently using first-member `CostLessWith`).
+## Direction
+
+* **Layer 1: root-caused, NOT landed** — naive removal of the Go-only
+  `PushProjectionBelowJoinRule` regresses recursive-CTE correctness. Pursue
+  fix-option 1 (close the recursive-CTE/cross-join gap, then remove) or 2
+  (flatten through the pushed projection). Java-parity: Java has no such rule, so
+  the recursive-CTE path is a genuine Go gap to close.
+* **Layers 2 & 3: open, and require Java-parity verification first** (CLAUDE.md:
+  "verify Java actually supports it before treating a TODO as parity work").
+  Both must be checked against Java's real behavior on this exact shape:
+  - L2: does Java's value simplification keep the re-enumerated join predicate
+    embeddable (resid=0)? If yes → port the missing simplification. If Java also
+    renders a residual filter, the byte-identical assertion exceeds Java parity.
+  - L3: does Java's data-access matching SARG a correlated join predicate against
+    a secondary index (index-nested-loop join)? If yes → the gap is in Go's
+    match-candidate machinery for correlated predicates. If no → the indexed
+    probe path is a Go extension, allowed only with deep tests.
+
+## Test plan
+
+`TestFDB_MultiwayJoinOrder_Probe` (indexed join columns): (a) order-invariance —
+both FROM-orders byte-identical EXPLAIN; (b) cost-optimal — drives from the 1-row
+table, T3 reached last via its index, never full-scanned. Currently RED on L2/L3.
+Plus the no-regression gate (46→45 rule count; plandiff conformance; stress-1M;
+determinism 10×).
 
 ## Status progression
 
-Draft → (reviewer ACK on direction) → Implemented when the probe is green and the gate passes.
+Draft v1–v3 (wrong root cause, retracted) → v4 (correct multi-layer root cause,
+all three layers root-caused; none landed — L1 removal regresses recursive CTE)
+→ Implemented when L1/L2/L3 are resolved (Java parity verified first) and the
+probe is green under the full gate.
