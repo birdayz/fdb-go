@@ -48,8 +48,8 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 	// canonical EqualsWithoutChildren compares OrdinalPath and IGNORES the
 	// alias, so it falls through to the structural path below (OrdinalPath
 	// compare, no children) — consistent with its alias-excluded + OrdinalPath
-	// SemanticHashCode. Intercepting it to compare only the alias dropped
-	// OrdinalPath and violated equal⟹same-hash (@claude review of PR #214).
+	// SemanticHashCode. An alias-only intercept would drop OrdinalPath and
+	// violate the equal⟹same-hash invariant.
 	case *JoinMergeResultValue:
 		bv, ok := b.(*JoinMergeResultValue)
 		return ok &&
