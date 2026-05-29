@@ -209,14 +209,15 @@ func (m *Memo) AddExpression(ref *expressions.Reference, expr expressions.Relati
 		if child == nil {
 			continue
 		}
-		m.childToParents[child] = append(m.childToParents[child], parentEdge{
-			parent: ref,
-			expr:   expr,
-		})
 		// Ensure child is indexed.
 		if _, known := m.refs[child]; !known {
 			m.indexReference(child)
 		}
+		// Dedup edges (via addParentEdge) so repeated indexing of the
+		// same (parent, expr) — e.g. SaturationCheckTask after a yield
+		// already integrated by RFC-037's Integrate hook — does not grow
+		// duplicate parent edges.
+		m.addParentEdge(child, ref, expr)
 	}
 	if len(expr.GetQuantifiers()) == 0 {
 		m.addLeafRef(ref)
