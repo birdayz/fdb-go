@@ -12,13 +12,16 @@ var (
 	hashFuzzQ1 = values.NamedCorrelationIdentifier("q1")
 )
 
-// genHashFuzzValue builds a small Value tree (QOV over {q0,q1} / FieldValue /
-// ConstantValue) driven by fuzz bytes.
+// genHashFuzzValue builds a small Value tree over {q0,q1} driven by fuzz bytes.
+// Covers correlation-bearing leaves (QOV) AND compound/discriminator-bearing
+// structural types (FieldValue, RecordConstructor) so the consistency fuzz
+// exercises the hash beyond the simplest leaves (RFC-040 review — broaden the
+// completeness guard).
 func genHashFuzzValue(b []byte, i, depth int) (values.Value, int) {
 	if depth >= 4 || i >= len(b) {
 		return &values.ConstantValue{Value: int64(0), Typ: values.NullableLong}, i
 	}
-	op := b[i] % 3
+	op := b[i] % 4
 	i++
 	switch op {
 	case 0:
@@ -31,6 +34,11 @@ func genHashFuzzValue(b []byte, i, depth int) (values.Value, int) {
 	case 1:
 		child, ni := genHashFuzzValue(b, i, depth+1)
 		return &values.FieldValue{Field: "f", Typ: values.UnknownType, Child: child}, ni
+	case 2:
+		// RecordConstructor over a (possibly alias-bearing) child — compound
+		// type with a folded discriminator (field name) + recursion.
+		child, ni := genHashFuzzValue(b, i, depth+1)
+		return values.NewRecordConstructorValue(values.RecordConstructorField{Name: "c", Value: child}), ni
 	default:
 		return &values.ConstantValue{Value: int64(b[i-1]), Typ: values.NullableLong}, i
 	}

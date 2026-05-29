@@ -51,9 +51,35 @@ func writeSemanticHash(h io.Writer, v Value) {
 	case *UnmatchedAggregateValue:
 		_, _ = io.WriteString(h, "unmatchedagg")
 	case *IndexEntryObjectValue:
-		_, _ = io.WriteString(h, "indexentryobj")
+		// alias excluded; OrdinalPath IS a discriminator (equality compares it).
+		_, _ = fmt.Fprintf(h, "indexentryobj:%v", t.OrdinalPath)
 	case *JoinMergeResultValue:
 		_, _ = io.WriteString(h, "joinmerge")
+	// Structural types whose EqualsWithoutChildren compares a non-alias
+	// discriminator (op / target type / name) the bare Name() default would
+	// drop — fold it so the hash matches equality's resolution (RFC-040
+	// hash-quality, Torvalds review). All alias-free.
+	case *ArithmeticValue:
+		_, _ = fmt.Fprintf(h, "arith:%v", t.Op)
+	case *AggregateValue:
+		_, _ = fmt.Fprintf(h, "agg:%v", t.Op)
+	case *AndOrValue:
+		_, _ = fmt.Fprintf(h, "andor:%v", t.Op)
+	case *IndexOnlyAggregateValue:
+		_, _ = fmt.Fprintf(h, "idxagg:%v", t.Op)
+	case *ScalarFunctionValue:
+		_, _ = io.WriteString(h, "scalarfn:"+t.FuncName)
+	case *CastValue:
+		_, _ = fmt.Fprintf(h, "cast:%v", t.Target)
+	case *PromoteValue:
+		_, _ = fmt.Fprintf(h, "promote:%v", t.Target)
+	case *ThrowsValue:
+		_, _ = fmt.Fprintf(h, "throws:%v", t.ResultType)
+	case *RecordConstructorValue:
+		_, _ = io.WriteString(h, "record:")
+		for _, f := range t.Fields {
+			_, _ = io.WriteString(h, f.Name+",")
+		}
 	case *FieldValue:
 		_, _ = io.WriteString(h, "field:"+t.Field)
 	// Value-bearing leaves: the literal MUST be in the hash (their
