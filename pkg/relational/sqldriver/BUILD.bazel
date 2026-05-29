@@ -27,6 +27,7 @@ go_test(
         "cascades_fdb_test.go",
         "correlated_exists_crossjoin_test.go",
         "dml_cascades_fdb_test.go",
+        "dml_probe_test.go",
         "driver_test.go",
         "embedded_fdb_errors_test.go",
         "embedded_fdb_test.go",

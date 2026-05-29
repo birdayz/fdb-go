@@ -639,6 +639,14 @@ func translateFDBError(err error) error {
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
 			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
 	}
+	// UPDATE that relocates a row to a key with no existing record — most
+	// commonly UPDATE of a PK column (Java rejects with "record does not
+	// exist"). Also the deleted naive path's mapping; the Cascades executor
+	// returns the raw record-layer error otherwise.
+	var notExistErr *recordlayer.RecordDoesNotExistError
+	if errors.As(err, &notExistErr) {
+		return api.WrapError(api.ErrCodeUnknown, "record does not exist", err)
+	}
 	var deserErr *recordlayer.RecordDeserializationError
 	if errors.As(err, &deserErr) {
 		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)
