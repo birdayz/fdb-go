@@ -631,6 +631,14 @@ func translateFDBError(err error) error {
 	if errors.As(err, &existsErr) {
 		return api.WrapError(api.ErrCodeUniqueConstraintViolation, existsErr.Error(), err)
 	}
+	// Secondary UNIQUE index violation (distinct from a duplicate primary
+	// key) must also surface SQLSTATE 23505 — the deleted naive path mapped
+	// this; the Cascades executor returns the raw record-layer error.
+	var uniqErr *recordlayer.RecordIndexUniquenessViolationError
+	if errors.As(err, &uniqErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
+	}
 	var deserErr *recordlayer.RecordDeserializationError
 	if errors.As(err, &deserErr) {
 		return api.WrapError(api.ErrCodeDeserializationFailure, deserErr.Error(), err)

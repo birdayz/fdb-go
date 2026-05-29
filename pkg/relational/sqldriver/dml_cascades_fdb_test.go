@@ -3,9 +3,11 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
 )
 
@@ -315,6 +317,50 @@ func TestFDB_DMLCascades_InsertSelect(t *testing.T) {
 	}
 	if cnt != 5 {
 		t.Fatalf("src count after same-table insert = %d, want 5", cnt)
+	}
+}
+
+// TestFDB_DMLCascades_UniqueIndexViolation pins that a secondary UNIQUE
+// index violation (distinct from a duplicate primary key) surfaces
+// SQLSTATE 23505 through the Cascades INSERT path — translateFDBError must
+// map RecordIndexUniquenessViolationError, which the deleted naive path
+// did via wrapSaveRecordError.
+func TestFDB_DMLCascades_UniqueIndexViolation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := "/dmlc_uniq"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE dmlc_uniq_tmpl"+
+		" CREATE TABLE Emp (id BIGINT, email STRING, PRIMARY KEY (id))"+
+		" CREATE UNIQUE INDEX by_email ON Emp (email)"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE dmlc_uniq_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Emp VALUES (1, 'a@x.com')"); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	// Different PK, same unique email → secondary UNIQUE index violation.
+	_, err = db.ExecContext(ctx, "INSERT INTO Emp VALUES (2, 'a@x.com')")
+	if err == nil {
+		t.Fatal("duplicate unique-index value did not error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error is not *api.Error: %T %v", err, err)
+	}
+	if apiErr.Code != api.ErrCodeUniqueConstraintViolation {
+		t.Fatalf("error code = %s, want %s (23505)", apiErr.Code, api.ErrCodeUniqueConstraintViolation)
 	}
 }
 
