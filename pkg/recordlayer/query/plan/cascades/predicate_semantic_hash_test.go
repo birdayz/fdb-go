@@ -20,23 +20,23 @@ func TestPredicateSemanticHashCode_AliasInvariant(t *testing.T) {
 	}
 	a := mkCmp(values.NamedCorrelationIdentifier("q_a"), 1)
 	b := mkCmp(values.NamedCorrelationIdentifier("q_b"), 1)
-	if PredicateSemanticHashCode(a) != PredicateSemanticHashCode(b) {
+	if predicates.SemanticHashCode(a) != predicates.SemanticHashCode(b) {
 		t.Fatal("comparison predicates differing only by quantifier alias must hash equal")
 	}
 	// Different constant ⇒ different hash.
-	if PredicateSemanticHashCode(a) == PredicateSemanticHashCode(mkCmp(values.NamedCorrelationIdentifier("q_a"), 2)) {
+	if predicates.SemanticHashCode(a) == predicates.SemanticHashCode(mkCmp(values.NamedCorrelationIdentifier("q_a"), 2)) {
 		t.Fatal("different RHS constant must hash differently")
 	}
 	// ExistsPredicate: alias excluded.
 	ea := predicates.NewExistsPredicate(values.NamedCorrelationIdentifier("e_a"))
 	eb := predicates.NewExistsPredicate(values.NamedCorrelationIdentifier("e_b"))
-	if PredicateSemanticHashCode(ea) != PredicateSemanticHashCode(eb) {
+	if predicates.SemanticHashCode(ea) != predicates.SemanticHashCode(eb) {
 		t.Fatal("ExistsPredicate must hash alias-invariantly")
 	}
 	// And of two alias-variant comparisons hashes equal.
 	andA := predicates.NewAnd(mkCmp(values.NamedCorrelationIdentifier("q_a"), 1), ea)
 	andB := predicates.NewAnd(mkCmp(values.NamedCorrelationIdentifier("q_b"), 1), eb)
-	if PredicateSemanticHashCode(andA) != PredicateSemanticHashCode(andB) {
+	if predicates.SemanticHashCode(andA) != predicates.SemanticHashCode(andB) {
 		t.Fatal("And of alias-variant predicates must hash equal")
 	}
 }

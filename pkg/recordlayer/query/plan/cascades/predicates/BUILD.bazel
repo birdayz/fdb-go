@@ -15,6 +15,7 @@ go_library(
         "predicates.go",
         "range_constraints.go",
         "rebase.go",
+        "semantic_hash.go",
         "simplifier_predicate_values.go",
         "structural_equal.go",
     ],

@@ -35,7 +35,7 @@ func TestPredicateSemanticEquals_AliasAware(t *testing.T) {
 		t.Fatal("must NOT be equal under empty veq (aliases differ, no mapping)")
 	}
 	// Consistency with the alias-invariant hash.
-	if PredicateSemanticHashCode(a) != PredicateSemanticHashCode(b) {
+	if predicates.SemanticHashCode(a) != predicates.SemanticHashCode(b) {
 		t.Fatal("equal-under-veq predicates must have equal PredicateSemanticHashCode")
 	}
 	// Negative: different op ⇒ not equal even under veq.

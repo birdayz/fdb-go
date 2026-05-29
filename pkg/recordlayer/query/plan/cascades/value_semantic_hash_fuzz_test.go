@@ -63,7 +63,7 @@ func FuzzValueSemanticHashConsistency(f *testing.F) {
 			t.Fatalf("alias-renamed value not semantically equal under swap map: %v vs %v", v, rebased)
 		}
 		// (b) hash is alias-invariant: equal-under-equiv ⟹ equal hash.
-		if ValueSemanticHashCode(v) != ValueSemanticHashCode(rebased) {
+		if values.SemanticHashCode(v) != values.SemanticHashCode(rebased) {
 			t.Fatalf("HASH CONSISTENCY VIOLATED: semantically-equal values hash differently: %v", v)
 		}
 	})
@@ -91,7 +91,7 @@ func FuzzPredicateSemanticHashConsistency(f *testing.F) {
 	f.Fuzz(func(t *testing.T, b []byte) {
 		v, _ := genHashFuzzValue(b, 0, 0)
 		rebased := values.RebaseValue(v, swap)
-		if PredicateSemanticHashCode(mkCmp(v)) != PredicateSemanticHashCode(mkCmp(rebased)) {
+		if predicates.SemanticHashCode(mkCmp(v)) != predicates.SemanticHashCode(mkCmp(rebased)) {
 			t.Fatalf("PREDICATE HASH CONSISTENCY VIOLATED: alias-renamed operand changed predicate hash: %v", v)
 		}
 	})

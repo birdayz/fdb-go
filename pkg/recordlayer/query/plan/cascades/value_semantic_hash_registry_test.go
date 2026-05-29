@@ -46,7 +46,7 @@ func TestValueSemanticHashCode_AllCorrelationBearingTypesAreAliasInvariant(t *te
 			t.Parallel()
 			va := tc.mk(a)
 			vb := tc.mk(b)
-			if ValueSemanticHashCode(va) != ValueSemanticHashCode(vb) {
+			if values.SemanticHashCode(va) != values.SemanticHashCode(vb) {
 				t.Fatalf("%s: hash depends on the alias — must be alias-invariant (missing ValueSemanticHashCode case → falls to default)", tc.name)
 			}
 		})

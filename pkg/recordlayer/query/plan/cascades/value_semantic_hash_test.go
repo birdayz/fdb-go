@@ -15,7 +15,7 @@ func TestValueSemanticHashCode_AliasInvariant(t *testing.T) {
 	t.Parallel()
 	qa := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q_a"))
 	qb := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q_b"))
-	if ValueSemanticHashCode(qa) != ValueSemanticHashCode(qb) {
+	if values.SemanticHashCode(qa) != values.SemanticHashCode(qb) {
 		t.Fatal("QOVs with different aliases must hash equal (alias-invariant)")
 	}
 	// And they ARE semantically equal under an alias map binding q_a↦q_b —
@@ -29,13 +29,13 @@ func TestValueSemanticHashCode_AliasInvariant(t *testing.T) {
 	// FieldValue over QOV: field path same, alias-bearing child excluded.
 	fa := &values.FieldValue{Field: "x", Typ: values.UnknownType, Child: qa}
 	fb := &values.FieldValue{Field: "x", Typ: values.UnknownType, Child: qb}
-	if ValueSemanticHashCode(fa) != ValueSemanticHashCode(fb) {
+	if values.SemanticHashCode(fa) != values.SemanticHashCode(fb) {
 		t.Fatal("FieldValue over alias-variant QOV must hash equal")
 	}
 
 	// Negative: different field path ⇒ different hash.
 	fc := &values.FieldValue{Field: "y", Typ: values.UnknownType, Child: qa}
-	if ValueSemanticHashCode(fa) == ValueSemanticHashCode(fc) {
+	if values.SemanticHashCode(fa) == values.SemanticHashCode(fc) {
 		t.Fatal("different field paths must hash differently")
 	}
 }
