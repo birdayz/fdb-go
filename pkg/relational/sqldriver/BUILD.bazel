@@ -32,6 +32,7 @@ go_test(
         "group_by_derived_probe_test.go",
         "having_probe_test.go",
         "plan_cache_bench_test.go",
+        "plan_logging_fdb_test.go",
         "plan_shape_conformance_test.go",
         "quality_probes_test.go",
         "rcte_crossjoin_probe_test.go",

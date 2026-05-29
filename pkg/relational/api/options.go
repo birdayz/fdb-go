@@ -52,22 +52,30 @@ const (
 	OptIndexFetchMethod                   OptionName = "INDEX_FETCH_METHOD"
 	OptDisabledPlannerRules               OptionName = "DISABLED_PLANNER_RULES"
 	OptDisablePlannerRewriting            OptionName = "DISABLE_PLANNER_REWRITING"
-	OptLogQuery                           OptionName = "LOG_QUERY"
-	OptLogSlowQueryThresholdMicros        OptionName = "LOG_SLOW_QUERY_THRESHOLD_MICROS"
-	OptExecutionTimeLimit                 OptionName = "EXECUTION_TIME_LIMIT"
-	OptExecutionScannedBytesLimit         OptionName = "EXECUTION_SCANNED_BYTES_LIMIT"
-	OptExecutionScannedRowsLimit          OptionName = "EXECUTION_SCANNED_ROWS_LIMIT"
-	OptDryRun                             OptionName = "DRY_RUN"
-	OptCaseSensitiveIdentifiers           OptionName = "CASE_SENSITIVE_IDENTIFIERS"
-	OptCurrentPlanHashMode                OptionName = "CURRENT_PLAN_HASH_MODE"
-	OptValidPlanHashModes                 OptionName = "VALID_PLAN_HASH_MODES"
-	OptAsyncOperationsTimeoutMillis       OptionName = "ASYNC_OPERATIONS_TIMEOUT_MILLIS"
-	OptEncryptWhenSerializing             OptionName = "ENCRYPT_WHEN_SERIALIZING"
-	OptEncryptionKeyStore                 OptionName = "ENCRYPTION_KEY_STORE"
-	OptEncryptionKeyEntry                 OptionName = "ENCRYPTION_KEY_ENTRY"
-	OptEncryptionKeyEntryList             OptionName = "ENCRYPTION_KEY_ENTRY_LIST"
-	OptEncryptionKeyPassword              OptionName = "ENCRYPTION_KEY_PASSWORD"
-	OptCompressWhenSerializing            OptionName = "COMPRESS_WHEN_SERIALIZING"
+	// OptLogQuery gates the SLF4J log level in Java. Go has no ambient
+	// log-level concept: the planning-metrics hook (RFC-034) always emits a
+	// record and the handler owns level + sampling, so this option is
+	// intentionally not consumed by the embedded engine pending the
+	// options-plumbing work for the gRPC/REPL frontends.
+	OptLogQuery OptionName = "LOG_QUERY"
+	// OptLogSlowQueryThresholdMicros is the canonical default source for the
+	// connection's slow-query threshold (RFC-034); see
+	// embedded.defaultSlowQueryThresholdMicros.
+	OptLogSlowQueryThresholdMicros  OptionName = "LOG_SLOW_QUERY_THRESHOLD_MICROS"
+	OptExecutionTimeLimit           OptionName = "EXECUTION_TIME_LIMIT"
+	OptExecutionScannedBytesLimit   OptionName = "EXECUTION_SCANNED_BYTES_LIMIT"
+	OptExecutionScannedRowsLimit    OptionName = "EXECUTION_SCANNED_ROWS_LIMIT"
+	OptDryRun                       OptionName = "DRY_RUN"
+	OptCaseSensitiveIdentifiers     OptionName = "CASE_SENSITIVE_IDENTIFIERS"
+	OptCurrentPlanHashMode          OptionName = "CURRENT_PLAN_HASH_MODE"
+	OptValidPlanHashModes           OptionName = "VALID_PLAN_HASH_MODES"
+	OptAsyncOperationsTimeoutMillis OptionName = "ASYNC_OPERATIONS_TIMEOUT_MILLIS"
+	OptEncryptWhenSerializing       OptionName = "ENCRYPT_WHEN_SERIALIZING"
+	OptEncryptionKeyStore           OptionName = "ENCRYPTION_KEY_STORE"
+	OptEncryptionKeyEntry           OptionName = "ENCRYPTION_KEY_ENTRY"
+	OptEncryptionKeyEntryList       OptionName = "ENCRYPTION_KEY_ENTRY_LIST"
+	OptEncryptionKeyPassword        OptionName = "ENCRYPTION_KEY_PASSWORD"
+	OptCompressWhenSerializing      OptionName = "COMPRESS_WHEN_SERIALIZING"
 )
 
 // IndexFetchMethod mirrors Java's Options.IndexFetchMethod enum.
