@@ -107,8 +107,11 @@ actual fix. Both converge on (c) + cleanup.
 
 This touches the task engine that drives **every** query, so the gate is mandatory and
 heavy: 46/46 targets incl. plandiff conformance (no plan-shape regressions on non-join
-queries), stress-1M before/after, determinism 10×, and the new probe green. Any approach
-must preserve the `Verify(finalMembers.size()==1)` promotion invariant.
+queries), stress-1M before/after, determinism 10×, and the new probe green. Note Go has no
+`Verify(finalMembers.size()==1)` invariant (Java-only; `AdvancePlannerStage` promotes all
+finalMembers) — so the fix must instead ensure REWRITING deterministically leaves the
+canonical flat select as the promoted seed (the load-bearing assumption in §Direction-1),
+pinned by the seed-quantifier-count assertion test.
 
 ## Test plan (the proof)
 
