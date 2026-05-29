@@ -354,18 +354,20 @@ func BenchmarkPlanCache_Hit(b *testing.B) {
 	}
 }
 
-// BenchmarkPlanCache_HitLargeCache measures a hit against a key sitting in the
-// middle of a large (1024-entry) LRU order. The old slice-based promote()
-// linear-scanned to find the key, so its cost scaled with the key's position;
-// the container/list version is O(1) regardless of position.
+// BenchmarkPlanCache_HitLargeCache measures repeated hits against a single key
+// in a large (1024-entry) cache. The map lookup + MoveToBack is O(1) regardless
+// of cache size, so this should match BenchmarkPlanCache_Hit (256 entries, one
+// key). The old slice-based promote() linear-scanned to find the key, so its
+// per-hit cost scaled with the number of entries — this benchmark would have
+// been markedly slower under it. (Note: after the first iteration the key is
+// MRU, so this measures the steady-state hot-key path, not a per-iteration
+// worst-case scan position.)
 func BenchmarkPlanCache_HitLargeCache(b *testing.B) {
 	const size = 1024
 	c := NewPlanCache(size)
 	for i := 0; i < size; i++ {
 		c.Put("SELECT * FROM t WHERE id = "+strconv.Itoa(i), &stubPlan{label: "p"}, nil)
 	}
-	// A key in the middle of the LRU order: worst case for the old linear
-	// scan, O(1) for the doubly-linked list regardless of position.
 	sql := "SELECT * FROM t WHERE id = " + strconv.Itoa(size/2)
 
 	b.ResetTimer()
