@@ -242,6 +242,26 @@ func executeUnorderedUnion(
 	return applySkipLimit(newConcatCursor[QueryResult](cursors), props.Skip, props.ReturnedRowLimit), nil
 }
 
+// producesMergedRows reports whether a plan emits merged join rows
+// (multiple quantifiers' columns under qualified "ALIAS.COL" keys) rather
+// than single-table rows. A filter over such a plan resolves QOV
+// predicates through the qualified-key path, not an alias binding.
+//
+// This list must stay in sync with the code that WRITES qualified
+// "ALIAS.COL" keys: mergeRows (executor.go) for the NLJ cursor, and
+// qualifyOuterRow (used by the FlatMap cursor in flat_map_cursor.go).
+// Those are the only two sites that emit merged rows today. A future
+// merged-row operator (e.g. a hash/merge join) MUST be added here, or a
+// filter over it would bind the merged row under one alias and bare-
+// resolve qov(b).col to the wrong quantifier (see DIVERGENCES.md).
+func producesMergedRows(p plans.RecordQueryPlan) bool {
+	switch p.(type) {
+	case *plans.RecordQueryNestedLoopJoinPlan, *plans.RecordQueryFlatMapPlan:
+		return true
+	}
+	return false
+}
+
 func executePredicatesFilter(
 	ctx context.Context,
 	p *plans.RecordQueryPredicatesFilterPlan,
@@ -256,8 +276,20 @@ func executePredicatesFilter(
 	}
 	preds := p.GetPredicates()
 	innerAlias := p.GetInnerAlias()
-	hasInnerAlias := innerAlias.Name() != ""
-	needsRowCtx := evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0)
+	// Bind the current row under innerAlias only when the inner plan
+	// produces single-table rows (bare-keyed scans/index scans). For such
+	// rows a QOV predicate qov(alias).col must resolve via the binding
+	// (bare lookup), since the row carries no "ALIAS.COL" qualified key.
+	//
+	// When the inner plan produces MERGED rows (NLJ / FlatMap join output),
+	// the row already carries qualified "ALIAS.COL" keys, so the predicate
+	// resolves through the RowEvalContext.Datum qualified path. We must NOT
+	// bind the merged row under a single alias: a qov(b).col lookup would
+	// then bare-resolve to whichever quantifier last wrote the bare key —
+	// e.g. on a null-filled LEFT JOIN row (b absent), qov(b).id would wrongly
+	// pick up the outer row's bare ID instead of NULL.
+	bindAlias := innerAlias.Name() != "" && !producesMergedRows(p.GetInner())
+	needsRowCtx := bindAlias || (evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0))
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (keep bool) {
@@ -274,7 +306,10 @@ func executePredicatesFilter(
 			if needsRowCtx {
 				if m, ok := qr.Datum.(map[string]any); ok {
 					ec := evalCtx
-					if hasInnerAlias {
+					if ec == nil {
+						ec = EmptyEvaluationContext()
+					}
+					if bindAlias {
 						ec = ec.WithBinding(innerAlias, m)
 					}
 					rowCtx = ec.RowContext(m)

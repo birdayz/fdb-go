@@ -54,6 +54,19 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// Only fire on inner joins. Java's Cascades SelectExpression models
+	// inner-join semantics — outer joins are a Go extension carried on the
+	// joinType field. Partitioning a LEFT/RIGHT OUTER join into correlated
+	// sub-Selects pushes WHERE/ON predicates below the join, which is wrong:
+	// a predicate on the nullable side (e.g. p.id IS NULL) must run AFTER
+	// the null-fill, not as a pre-join filter. Keep all predicates at the
+	// join level so ImplementNestedLoopJoinRule plans a non-correlated NLJ
+	// with post-join predicate evaluation. Mirrors PushFilterBelowJoinRule,
+	// which also guards on JoinInner.
+	if sel.GetJoinType() != expressions.JoinInner {
+		return
+	}
+
 	// Only partition binary joins (both ForEach). Existential quantifiers
 	// (EXISTS subqueries) have special alias semantics that break when
 	// wrapped in sub-SelectExpressions — the ExistsPredicate references
