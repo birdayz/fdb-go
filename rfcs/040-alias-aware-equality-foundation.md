@@ -47,7 +47,8 @@ safe (and necessary) to stage:
   **Checklist (alias-bearing types needing the flip):**
   - [x] `LogicalFilterExpression` — DONE (46/46 + stress-1M green).
   - [x] `SelectExpression` — wired, 46/46 green, stress-1M running.
-  - [ ] `LogicalTypeFilterExpression` (record-type list only — no Values; trivial: just drop `_ = aliases`).
+  - [x] `LogicalTypeFilterExpression` — NO CHANGE NEEDED: equality/hash are over record-type
+        STRINGS only (no Values/aliases), already alias-invariant. Reclassified as structural.
   - [ ] `LogicalSortExpression` (sort-key Values).
   - [ ] `GroupByExpression` (grouping keys + aggregate operands).
   - [ ] `LogicalProjectionExpression` (projected Values).

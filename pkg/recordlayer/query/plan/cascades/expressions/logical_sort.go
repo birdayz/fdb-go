@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -97,15 +98,17 @@ func (e *LogicalSortExpression) EqualsWithoutChildren(other RelationalExpression
 	if !ok {
 		return false
 	}
-	_ = aliases
 	if len(e.sortKeys) != len(o.sortKeys) {
 		return false
 	}
+	// Alias-aware sort-key Value equality (RFC-040 040.2). Inert under the
+	// memo's empty-alias path until PR-A threads real alias maps.
+	vm := aliases.ToValuesAliasMap()
 	for i := range e.sortKeys {
 		if e.sortKeys[i].Reverse != o.sortKeys[i].Reverse {
 			return false
 		}
-		if values.ExplainValue(e.sortKeys[i].Value) != values.ExplainValue(o.sortKeys[i].Value) {
+		if !values.SemanticEqualsUnderAliasMap(e.sortKeys[i].Value, o.sortKeys[i].Value, vm) {
 			return false
 		}
 	}
@@ -115,8 +118,10 @@ func (e *LogicalSortExpression) EqualsWithoutChildren(other RelationalExpression
 // HashCodeWithoutChildren hashes the sort key list.
 func (e *LogicalSortExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
+	var buf [8]byte
 	for _, k := range e.sortKeys {
-		h.Write([]byte(values.ExplainValue(k.Value)))
+		binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(k.Value))
+		h.Write(buf[:])
 		if k.Reverse {
 			h.Write([]byte{1})
 		} else {
