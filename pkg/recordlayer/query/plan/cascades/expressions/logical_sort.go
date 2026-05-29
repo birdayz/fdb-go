@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -97,31 +98,61 @@ func (e *LogicalSortExpression) EqualsWithoutChildren(other RelationalExpression
 	if !ok {
 		return false
 	}
-	_ = aliases
 	if len(e.sortKeys) != len(o.sortKeys) {
 		return false
 	}
+	// Alias-aware sort-key Value equality (RFC-040 040.2). Inert under the
+	// memo's empty-alias path until PR-A threads real alias maps.
+	vm := aliases.ToValuesAliasMap()
 	for i := range e.sortKeys {
 		if e.sortKeys[i].Reverse != o.sortKeys[i].Reverse {
 			return false
 		}
-		if values.ExplainValue(e.sortKeys[i].Value) != values.ExplainValue(o.sortKeys[i].Value) {
+		// NullsFirst is part of the ordering identity (was previously
+		// ignored — pinned here, RFC-040 review).
+		if !nullsFirstEqual(e.sortKeys[i].NullsFirst, o.sortKeys[i].NullsFirst) {
+			return false
+		}
+		if !values.SemanticEqualsUnderAliasMap(e.sortKeys[i].Value, o.sortKeys[i].Value, vm) {
 			return false
 		}
 	}
 	return true
 }
 
+// nullsFirstEqual compares two optional NullsFirst flags (nil = default).
+func nullsFirstEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// nullsFirstTag returns a stable byte for the optional NullsFirst flag.
+func nullsFirstTag(p *bool) byte {
+	switch {
+	case p == nil:
+		return 0
+	case *p:
+		return 2
+	default:
+		return 1
+	}
+}
+
 // HashCodeWithoutChildren hashes the sort key list.
 func (e *LogicalSortExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
+	var buf [8]byte
 	for _, k := range e.sortKeys {
-		h.Write([]byte(values.ExplainValue(k.Value)))
+		binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(k.Value))
+		h.Write(buf[:])
 		if k.Reverse {
 			h.Write([]byte{1})
 		} else {
 			h.Write([]byte{0})
 		}
+		h.Write([]byte{nullsFirstTag(k.NullsFirst)})
 		h.Write([]byte{0xff})
 	}
 	return h.Sum64()

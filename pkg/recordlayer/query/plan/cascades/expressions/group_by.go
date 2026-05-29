@@ -84,7 +84,7 @@ func (e *GroupByExpression) GetCorrelatedToWithoutChildren() map[values.Correlat
 	return map[values.CorrelationIdentifier]struct{}{}
 }
 
-func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*GroupByExpression)
 	if !ok {
 		return false
@@ -95,8 +95,12 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 	if len(e.aggregates) != len(o.aggregates) {
 		return false
 	}
+	// Alias-aware grouping-key + aggregate-operand equality (RFC-040 040.2).
+	// OperandName (alias-bearing canonical text) is intentionally not compared
+	// — equality already ignored it, and it must stay out for alias-invariance.
+	vm := aliases.ToValuesAliasMap()
 	for i, k := range e.groupingKeys {
-		if values.ExplainValue(k) != values.ExplainValue(o.groupingKeys[i]) {
+		if !values.SemanticEqualsUnderAliasMap(k, o.groupingKeys[i], vm) {
 			return false
 		}
 	}
@@ -104,7 +108,7 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 		if a.Function != o.aggregates[i].Function {
 			return false
 		}
-		if values.ExplainValue(a.Operand) != values.ExplainValue(o.aggregates[i].Operand) {
+		if !values.SemanticEqualsUnderAliasMap(a.Operand, o.aggregates[i].Operand, vm) {
 			return false
 		}
 	}
@@ -114,15 +118,17 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("grpby|"))
+	var b [8]byte
 	for _, k := range e.groupingKeys {
-		h.Write([]byte(values.ExplainValue(k)))
+		binary.LittleEndian.PutUint64(b[:], values.SemanticHashCode(k))
+		h.Write(b[:])
 		h.Write([]byte("|"))
 	}
 	for _, a := range e.aggregates {
-		var b [8]byte
-		binary.BigEndian.PutUint64(b[:], uint64(a.Function))
+		binary.LittleEndian.PutUint64(b[:], uint64(a.Function))
 		h.Write(b[:])
-		h.Write([]byte(values.ExplainValue(a.Operand)))
+		binary.LittleEndian.PutUint64(b[:], values.SemanticHashCode(a.Operand))
+		h.Write(b[:])
 		h.Write([]byte("|"))
 	}
 	return h.Sum64()

@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"encoding/binary"
 	"hash/fnv"
 	"sort"
 
@@ -91,7 +92,7 @@ func (e *UpdateExpression) GetCorrelatedToWithoutChildren() map[values.Correlati
 // EqualsWithoutChildren compares targetRecordType + canonical
 // transform list (FieldPath equality + replacement Value Explain
 // equality).
-func (e *UpdateExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
+func (e *UpdateExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
 	o, ok := other.(*UpdateExpression)
 	if !ok {
 		return false
@@ -102,11 +103,14 @@ func (e *UpdateExpression) EqualsWithoutChildren(other RelationalExpression, _ *
 	if len(e.transforms) != len(o.transforms) {
 		return false
 	}
+	// Alias-aware SET-value equality (RFC-040 040.2). FieldPath is a string
+	// path (alias-free). Inert under the memo's empty-alias path until PR-A.
+	vm := aliases.ToValuesAliasMap()
 	for i := range e.transforms {
 		if e.transforms[i].FieldPath != o.transforms[i].FieldPath {
 			return false
 		}
-		if values.ExplainValue(e.transforms[i].NewValue) != values.ExplainValue(o.transforms[i].NewValue) {
+		if !values.SemanticEqualsUnderAliasMap(e.transforms[i].NewValue, o.transforms[i].NewValue, vm) {
 			return false
 		}
 	}
@@ -120,10 +124,12 @@ func (e *UpdateExpression) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte("update|"))
 	h.Write([]byte(e.targetRecordType))
 	h.Write([]byte{0})
+	var buf [8]byte
 	for _, tx := range e.transforms {
 		h.Write([]byte(tx.FieldPath))
 		h.Write([]byte{0x1})
-		h.Write([]byte(values.ExplainValue(tx.NewValue)))
+		binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(tx.NewValue))
+		h.Write(buf[:])
 		h.Write([]byte{0x2})
 	}
 	return h.Sum64()
