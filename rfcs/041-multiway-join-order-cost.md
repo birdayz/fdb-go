@@ -209,11 +209,29 @@ the original three-point fix. Precise state:
    necessary-but-insufficient — PLANNING-phase enumeration either isn't re-firing on the
    promoted seed or its alternative associativities don't survive PLANNING's own winner
    selection as competing members. Reverted the move pending deeper investigation (don't
-   ship an architectural change that doesn't achieve its goal). **Next:** instrument the
-   PLANNING phase — confirm whether `PartitionSelectRule` fires there on the 3-way select
-   and whether both associativities reach the top Reference as competing members; fix the
-   PLANNING re-enumeration/retention (`advancePlannerStage` re-seed + OptimizeGroup
-   exploratory-alternative retention).
+   ship an architectural change that doesn't achieve its goal).
+
+   **Mechanism pinned (instrumented this shift):** `PartitionSelectRule.OnMatch` fires
+   (22×, nq=3) — but ONLY via the REWRITING driver (`TransformReferenceTask` →
+   `FireExpressionRuleWithMemo`). Instrumenting the PLANNING driver (`TransformExprTask`,
+   unified_tasks.go:164) showed **PartitionSelectRule fires ZERO times in PLANNING** on a
+   3-quantifier select, even though `PlanningExplorationRules` lists it. Inference: the
+   REWRITING winner promoted to PLANNING is an **already-partitioned (nested binary)**
+   select, not the flat 3-quantifier one — so PLANNING has no ≥3-quantifier select to
+   re-partition; only `PartitionBinarySelectRule` fires per 2-quantifier level, which
+   swaps operands *within* a level but cannot **re-associate** the tree. The
+   FROM-order-chosen associativity is thus locked at the REWRITING boundary. Two further
+   path divergences found while tracing: (i) expression rules fire through TWO drivers —
+   `TransformExprTask` (Stats-aware) and `TransformReferenceTask`/`FireExpressionRuleWithMemo`
+   (NO Stats); (ii) final extraction (`extractBestPlanFromSelectorVisited`) uses
+   `GetBest(CostLessWith)` = `EstimateCostWith` first-member, a different comparator than
+   the planner's stats-aware `PlanningCostModelLess`+`compareJoinOrdering`. **Next (fresh
+   context):** make PLANNING re-enumerate join associativities — ensure the flat
+   N-quantifier select is the PLANNING seed (or re-flatten in PLANNING) so
+   `PartitionSelectRule` re-fires there and all associativities become competing members
+   the stats-aware cost picks among; and consolidate the parallel cost/extraction paths so
+   they all route through `compareJoinOrdering`. This is a multi-session planner-phase
+   consolidation, not a localized fix.
 
 Landed so far (committed): step 1 `BestMemberCostWith`. In flight (working tree,
 plandiff-clean, 25/25 non-FDB green, stress-1M CLEAN): scan-CPU + `compareJoinOrdering`
