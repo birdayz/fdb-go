@@ -507,7 +507,7 @@ joinPart
         | USING '(' uidList ')'
       )?                                                            #innerJoin
     | STRAIGHT_JOIN tableSourceItem (ON expression)?                #straightJoin
-    | (LEFT | RIGHT) OUTER? JOIN tableSourceItem
+    | (LEFT | RIGHT | FULL) OUTER? JOIN tableSourceItem
         (
           ON expression
           | USING '(' uidList ')'

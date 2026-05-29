@@ -1160,7 +1160,29 @@ func executeNestedLoopJoin(
 	}
 
 	// Stream the outer side one row at a time via nljCursor.
-	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	outerProps := props.ClearSkipAndLimit()
+	if p.GetJoinType() == plans.JoinFullOuter {
+		// FULL OUTER accumulates cross-outer match state (the matchedInner
+		// bitmap) that drives the post-outer drain phase, and that state is
+		// NOT serialized into the continuation. The driver rebuilds the
+		// cursor from scratch on each transaction page, which would reset
+		// the bitmap mid-scan and produce wrong drain results. Clear the
+		// outer's time/row limits so the whole FULL join completes within a
+		// single transaction (one cursor, one bitmap). Very large FULL joins
+		// then fail loudly at FDB's 5s transaction limit rather than
+		// returning silently-wrong rows — the same limitation class as the
+		// materialized inner side above. INNER/LEFT/RIGHT are unaffected:
+		// they carry no cross-outer state and resume correctly per outer row.
+		//
+		// Consequence: with limits cleared the outer always runs to
+		// SourceExhausted in one transaction and never emits a partial
+		// continuation, so a fresh FULL query passes continuation=nil here
+		// and the driver can never hand a FULL OUTER continuation back. The
+		// `continuation` arg below is thus effectively always nil for FULL;
+		// it is passed through unconditionally only for code uniformity.
+		outerProps = outerProps.ClearRowAndTimeLimits()
+	}
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, outerProps)
 	if err != nil {
 		return nil, err
 	}

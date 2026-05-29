@@ -77,14 +77,15 @@ type selectQuery struct {
 	projConstFolded []projectionFold
 }
 
-// joinType enumerates the three join flavours; used to dispatch
-// LEFT/RIGHT null-padding in execSelectJoin.
+// joinType enumerates the join flavours; used to dispatch
+// LEFT/RIGHT/FULL null-padding in execSelectJoin.
 type joinType int
 
 const (
 	joinTypeInner joinType = iota
 	joinTypeLeft
 	joinTypeRight
+	joinTypeFull // FULL OUTER JOIN (Go-only extension)
 )
 
 // joinClause describes a single JOIN part in a SELECT query.
@@ -1686,7 +1687,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 }
 
 // extractJoinClause parses a single JOIN part (INNER JOIN, LEFT JOIN, etc.) from
-// the grammar. Only INNER JOIN and LEFT OUTER JOIN are implemented.
+// the grammar. INNER, LEFT/RIGHT/FULL OUTER joins are supported (ON only).
 func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 	switch j := jp.(type) {
 	case *antlrgen.InnerJoinContext:
@@ -1749,6 +1750,8 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		jt := joinTypeLeft
 		if j.RIGHT() != nil {
 			jt = joinTypeRight
+		} else if j.FULL() != nil {
+			jt = joinTypeFull
 		}
 		var onExpr antlrgen.IExpressionContext
 		if j.Expression() != nil {
@@ -1758,7 +1761,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 
 	default:
 		return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported JOIN type %T; only INNER JOIN and LEFT/RIGHT OUTER JOIN are supported", jp)
+			"unsupported JOIN type %T; only INNER JOIN and LEFT/RIGHT/FULL OUTER JOIN are supported", jp)
 	}
 }
 

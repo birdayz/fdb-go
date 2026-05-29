@@ -293,6 +293,10 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
 	}
 
+	if msg := findFullOuterWithExists(logicalOp); msg != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
+	}
+
 	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
@@ -1964,6 +1968,29 @@ func findDistinctAggregate(op logical.LogicalOperator) string {
 	}
 	for _, ch := range op.Children() {
 		if msg := findDistinctAggregate(ch); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
+// findFullOuterWithExists rejects FULL OUTER JOIN combined with an
+// EXISTS / NOT EXISTS subquery in the same WHERE. The join+EXISTS
+// flatten path (translateJoinWithExists) builds a semi-join shape that
+// cannot carry the FULL-outer drain, so such a query would otherwise be
+// silently mistranslated to an inner join. FULL OUTER is a Go-only query
+// extension; Java's SQL layer has no outer joins at all.
+func findFullOuterWithExists(op logical.LogicalOperator) string {
+	if op == nil {
+		return ""
+	}
+	if f, ok := op.(*logical.LogicalFilter); ok && len(f.ExistsSubqueries) > 0 {
+		if j, ok := f.Input.(*logical.LogicalJoin); ok && j.Kind == logical.JoinFull {
+			return "FULL OUTER JOIN combined with an EXISTS subquery is not supported"
+		}
+	}
+	for _, ch := range op.Children() {
+		if msg := findFullOuterWithExists(ch); msg != "" {
 			return msg
 		}
 	}

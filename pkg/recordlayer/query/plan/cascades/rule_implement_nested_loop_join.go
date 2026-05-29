@@ -103,8 +103,42 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		joinType = plans.JoinLeftOuter
 	case expressions.JoinCross:
 		joinType = plans.JoinCross
+	case expressions.JoinFullOuter:
+		joinType = plans.JoinFullOuter
 	default:
 		joinType = plans.JoinInner
+	}
+
+	// FULL OUTER JOIN is implemented exclusively by the materialized
+	// nested-loop cursor, which tracks global inner-match state to drive
+	// the drain phase (emit inner rows that matched no outer row). The
+	// correlated FlatMap path re-scans the inner per outer row and
+	// structurally cannot observe which inner rows matched nothing, so it
+	// is not a valid FULL implementation — yielding it would be silently
+	// wrong, not merely suboptimal. A single explicit guard here is
+	// cleaner than threading `joinType != JoinFullOuter` through
+	// tryFlatMapPlan and both correlated-FlatMap branches below (and
+	// makes the `canSwap` swap-logic unreachable for FULL — FULL is
+	// symmetric but we keep the original left/right column layout).
+	if joinType == plans.JoinFullOuter {
+		// Correlated FULL OUTER (inner ranges over the outer's alias) is
+		// not standard SQL and cannot be materialized independently of the
+		// outer; produce no plan rather than a wrong one.
+		if referenceIsCorrelatedTo(leftRef, quants[1].GetAlias()) ||
+			referenceIsCorrelatedTo(rightRef, quants[0].GetAlias()) {
+			return
+		}
+		joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
+			leftPlan, rightPlan,
+			sel.GetPredicates(),
+			joinType,
+			leftAlias, rightAlias,
+			sel.GetResultValue(),
+		)
+		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
+		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, leftQ, rightQ))
+		return
 	}
 
 	// Correlated scan FlatMap: O(N×logM) via correlated PK/index probes.
@@ -344,6 +378,15 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	sel *expressions.SelectExpression,
 	quants []expressions.Quantifier,
 ) {
+	// FULL OUTER cannot be implemented through the join+EXISTS semi-join
+	// shape (it cannot carry the FULL drain). FULL+EXISTS is rejected
+	// upstream with a clear error, but guard here too so this rule never
+	// silently yields an INNER plan (the join-type switch below defaults
+	// JoinFullOuter → JoinInner).
+	if sel.GetJoinType() == expressions.JoinFullOuter {
+		return
+	}
+
 	leftRef := quants[0].GetRangesOver()
 	rightRef := quants[1].GetRangesOver()
 	existRef := quants[2].GetRangesOver()

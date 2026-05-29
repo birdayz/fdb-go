@@ -162,7 +162,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// must stay as a filter ABOVE the join — merging would turn WHERE
 	// conditions into ON conditions, preventing NULL-padded rows from
 	// being properly filtered.
-	if join, ok := f.Input.(*logical.LogicalJoin); ok && f.Predicate != nil && len(f.ExistsSubqueries) == 0 && join.Kind != logical.JoinLeft && join.Kind != logical.JoinRight {
+	if join, ok := f.Input.(*logical.LogicalJoin); ok && f.Predicate != nil && len(f.ExistsSubqueries) == 0 && join.Kind != logical.JoinLeft && join.Kind != logical.JoinRight && join.Kind != logical.JoinFull {
 		joinExpr := t.translateJoin(join)
 		if joinExpr == nil {
 			return nil
@@ -637,6 +637,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	switch kind {
 	case logical.JoinLeft:
 		joinType = expressions.JoinLeftOuter
+	case logical.JoinFull:
+		// FULL OUTER is symmetric — no operand swap (the JoinRight swap
+		// above does not fire for JoinFull). The materialized NLJ keeps
+		// the original left/right column layout.
+		joinType = expressions.JoinFullOuter
 	default:
 		joinType = expressions.JoinInner
 	}
@@ -665,6 +670,15 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,
 ) expressions.RelationalExpression {
+	// FULL OUTER cannot be expressed through the join+EXISTS flatten shape
+	// (the semi-join cannot carry the FULL drain). The production path
+	// rejects this earlier with a clear error (findFullOuterWithExists),
+	// but harness callers (plan_harness) invoke the translator directly and
+	// bypass that guard — refuse here too so FULL+EXISTS is never silently
+	// mistranslated to INNER (the kind switch below defaults to JoinInner).
+	if j.Kind == logical.JoinFull {
+		return nil
+	}
 	left := j.Left
 	right := j.Right
 	kind := j.Kind

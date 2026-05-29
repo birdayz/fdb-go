@@ -839,6 +839,8 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 			kind = logical.JoinLeft
 		case joinTypeRight:
 			kind = logical.JoinRight
+		case joinTypeFull:
+			kind = logical.JoinFull
 		default:
 			kind = logical.JoinInner
 		}
