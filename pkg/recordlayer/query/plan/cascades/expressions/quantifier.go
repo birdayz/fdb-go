@@ -161,7 +161,13 @@ func (q Quantifier) Kind() QuantifierKind { return q.kind }
 func (q Quantifier) GetAlias() values.CorrelationIdentifier { return q.alias }
 
 // GetRangesOver returns the Reference holding the inner expression.
-func (q Quantifier) GetRangesOver() *Reference { return q.rangesOver }
+//
+// Resolves through Canonical() so that if the child Reference has been
+// merged away (RFC-037 cross-group merging), every consumer transparently
+// sees the surviving Reference. This single accessor is the only reader of
+// the raw rangesOver field, so resolving here covers all consumers without
+// rewriting in-flight expressions.
+func (q Quantifier) GetRangesOver() *Reference { return q.rangesOver.Canonical() }
 
 // IsNullOnEmpty returns true for ForEach quantifiers that should
 // produce a NULL row when the inner is empty (LEFT JOIN semantics).

@@ -1,7 +1,9 @@
 # RFC-037: Full Graefe Memo — Cross-Reference Equivalence-Class Merging
 
-**Status:** Accepted (v2). Graefe ACK, Torvalds ACK (conditions on `Get()` + `traversal.go`
-citation folded in).
+**Status:** Implemented (v2). Graefe ACK, Torvalds ACK (conditions on `Get()` + `traversal.go`
+citation folded in). Shipped in `memo_merge.go` + `reference.go` union-find + `Integrate`
+hook on the REWRITING yield path; merge fires through the real planner
+(`TestMemoMerge_FiresThroughRealPlanner`).
 **Item:** TODO "Beyond Java (Go-only improvements) → Full Graefe Memo with cross-group merging" (the `B3` follow-on).
 
 ## Problem

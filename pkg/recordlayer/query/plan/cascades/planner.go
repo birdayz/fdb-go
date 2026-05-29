@@ -525,7 +525,7 @@ func (t *ExploreReferenceTask) Run(p *Planner) {
 
 	// Early saturation check: if the count hasn't moved since the
 	// last fully-saturated pass, skip the whole round.
-	if last, seen := p.exploreCount[t.Ref]; seen && last == beforeCount {
+	if last, seen := p.exploreCount[t.Ref.Canonical()]; seen && last == beforeCount {
 		if p.events != nil {
 			p.events.OnApplyRules(t.Ref, 0)
 		}
@@ -634,7 +634,7 @@ func (t *SaturationCheckTask) Run(p *Planner) {
 		return
 	}
 	// No growth — Reference is saturated under the current rule set.
-	p.exploreCount[t.Ref] = afterCount
+	p.exploreCount[t.Ref.Canonical()] = afterCount
 	p.push(&OptimizeReferenceTask{Ref: t.Ref})
 }
 

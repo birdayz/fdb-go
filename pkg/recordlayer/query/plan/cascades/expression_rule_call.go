@@ -88,6 +88,13 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 	}
 	inserted := c.Reference.Insert(expr)
 	c.yieldedExps = append(c.yieldedExps, expr)
+	// REWRITING-phase integration (RFC-037): record the yielded
+	// expression in the Memo topology index and, if a structurally-
+	// equivalent member already lives in a different Reference, merge the
+	// two groups. nil Memo ⇒ standalone rule test, no merging.
+	if c.memo != nil {
+		c.memo.Integrate(c.Reference, expr)
+	}
 	return inserted
 }
 
@@ -108,7 +115,10 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	if c.memo != nil {
 		ref := c.memo.MemoizeExpression(expr)
-		if ref == c.Reference {
+		// Compare canonical identities: after a cross-group merge (RFC-037)
+		// the memoized Reference and c.Reference may be the same group
+		// reached via different pointers.
+		if ref.Canonical() == c.Reference.Canonical() {
 			return expressions.InitialOf(expr)
 		}
 		return ref

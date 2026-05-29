@@ -44,6 +44,22 @@ type Memo struct {
 
 	// leafRefsSet mirrors leafRefs for O(1) containment checks.
 	leafRefsSet map[*expressions.Reference]struct{}
+
+	// nextID hands out monotonic identities to References on first
+	// registration. Merge picks the lower id as the survivor, making
+	// the winner a deterministic function of registration order (which
+	// follows the deterministic task schedule) rather than map order.
+	// Starts at 1 so an unregistered Reference (id 0) is distinguishable.
+	nextID uint64
+
+	// mergeCount counts cross-group merges performed (RFC-037). Exposed
+	// via MergeCount for tests that assert the optimization fires.
+	mergeCount int
+
+	// pendingReintegrate is the worklist for the paper's recursive
+	// bottom-up merge: after merging two groups, their parents may have
+	// become duplicates. Drained at the top of Integrate.
+	pendingReintegrate []*expressions.Reference
 }
 
 // parentEdge records that `parent` has a member `expr` with a
@@ -62,12 +78,27 @@ func NewMemo(root *expressions.Reference) *Memo {
 		refs:           make(map[*expressions.Reference]struct{}),
 		childToParents: make(map[*expressions.Reference][]parentEdge),
 		leafRefsSet:    make(map[*expressions.Reference]struct{}),
+		nextID:         1,
 	}
 	if root != nil {
 		m.indexReference(root)
 	}
 	return m
 }
+
+// track registers ref in the Memo's ref set and assigns it a monotonic
+// id on first registration (idempotent).
+func (m *Memo) track(ref *expressions.Reference) {
+	m.refs[ref] = struct{}{}
+	if ref.ID() == 0 {
+		ref.AssignMemoID(m.nextID)
+		m.nextID++
+	}
+}
+
+// MergeCount returns the number of cross-group merges performed so far
+// (RFC-037). Used by tests to assert the merge optimization fires.
+func (m *Memo) MergeCount() int { return m.mergeCount }
 
 // Root returns the root Reference of the Memo.
 func (m *Memo) Root() *expressions.Reference {
@@ -205,7 +236,7 @@ func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.R
 	}
 	// Not found — create fresh.
 	ref := expressions.InitialOf(expr)
-	m.refs[ref] = struct{}{}
+	m.track(ref)
 	m.addLeafRef(ref)
 	return ref
 }
@@ -234,7 +265,7 @@ func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expres
 
 	// Not found — create fresh and index it.
 	ref := expressions.InitialOf(expr)
-	m.refs[ref] = struct{}{}
+	m.track(ref)
 	for _, q := range qs {
 		child := q.GetRangesOver()
 		if child == nil {
@@ -365,7 +396,7 @@ func (m *Memo) indexReference(ref *expressions.Reference) {
 	if _, known := m.refs[ref]; known {
 		return
 	}
-	m.refs[ref] = struct{}{}
+	m.track(ref)
 
 	members := ref.Members()
 	isLeaf := true
