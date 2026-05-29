@@ -170,21 +170,15 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 }
 
 // dmlOnCascades reports whether a DML statement has a verified Cascades
-// execution path in exec mode. INSERT … VALUES, DELETE, and UPDATE are
-// fully ported (incl. schema-qualified targets, correlated and
-// non-correlated EXISTS predicates, and SET expressions resolved to
-// Values). INSERT … SELECT still routes to the naive path — its Cascades
-// inner re-saves the source records instead of mapping the projected
-// columns to the target (RFC-035 §Fix.6).
+// execution path in exec mode. INSERT (VALUES and SELECT), DELETE, and
+// UPDATE all execute through Cascades — including schema-qualified
+// targets, correlated and non-correlated EXISTS predicates, SET
+// expressions resolved to Values, and positional INSERT … SELECT column
+// mapping. All DML now routes to planDML.
 func dmlOnCascades(dml antlrgen.IDmlStatementContext) bool {
-	if dml.DeleteStatement() != nil || dml.UpdateStatement() != nil {
-		return true
-	}
-	if ins := dml.InsertStatement(); ins != nil {
-		_, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
-		return ok
-	}
-	return false
+	return dml.DeleteStatement() != nil ||
+		dml.UpdateStatement() != nil ||
+		dml.InsertStatement() != nil
 }
 
 // planSelect routes a SELECT statement through the Cascades pipeline.
@@ -620,6 +614,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	if err := resolveQualifiedTableNames(logicalOp, g.c.sess.Schema); err != nil {
 		return nil, err
+	}
+
+	// INSERT … SELECT with an explicit column list is rejected (Java:
+	// "setting column ordering for insert with select is not supported").
+	if insOp, ok := logicalOp.(*logical.LogicalInsert); ok && insOp.Source != nil && len(insOp.Columns) > 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"setting column ordering for insert with select is not supported")
 	}
 
 	// INSERT … VALUES: build the literal rows into a Cascades array Value

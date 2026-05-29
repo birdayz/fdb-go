@@ -2438,7 +2438,39 @@ func buildLogicalPlanForInsertWithCatalog(
 	if upgraded, err := buildLogicalPlanForSelectWithCatalog(sq, md); err == nil && upgraded != nil {
 		insertOp.Source = upgraded
 	}
+	alignInsertSelectColumns(insertOp, md)
 	return insertOp
+}
+
+// alignInsertSelectColumns sets the SELECT projection's output aliases to
+// the INSERT target columns positionally. INSERT … SELECT is positional —
+// the SELECT's i-th output feeds the target's i-th column regardless of
+// the SELECT output's own name (e.g. `INSERT INTO t(id,total) SELECT id,
+// price*qty`) — so the projected row datum ends up keyed by the target
+// column names and executeInsert can build the target record by name.
+func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.RecordMetaData) {
+	proj := findProjection(insertOp.Source)
+	if proj == nil || len(proj.Projections) == 0 {
+		return
+	}
+	targetCols := insertOp.Columns
+	if len(targetCols) == 0 {
+		rt := md.GetRecordType(bareTableName(insertOp.Table))
+		if rt == nil {
+			return
+		}
+		fields := rt.Descriptor.Fields()
+		targetCols = make([]string, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			targetCols[i] = string(fields.Get(i).Name())
+		}
+	}
+	if proj.Aliases == nil {
+		proj.Aliases = make([]string, len(proj.Projections))
+	}
+	for i := 0; i < len(proj.Projections) && i < len(targetCols); i++ {
+		proj.Aliases[i] = targetCols[i]
+	}
 }
 
 // buildLogicalPlanForQueryWithCTECatalog is like

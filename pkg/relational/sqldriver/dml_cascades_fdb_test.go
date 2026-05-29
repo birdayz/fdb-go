@@ -231,6 +231,93 @@ func TestFDB_DMLCascades_Update(t *testing.T) {
 	}
 }
 
+// TestFDB_DMLCascades_InsertSelect pins INSERT … SELECT through Cascades:
+// positional column mapping (the SELECT's i-th output feeds the target's
+// i-th column regardless of name), computed expressions, and a WHERE
+// filter — the row must be built from the projection, not the source record.
+func TestFDB_DMLCascades_InsertSelect(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := "/dmlc_inssel"
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	// src(id, price, qty); dst(id, total) — distinct shapes to exercise
+	// positional mapping (SELECT id, price*qty → dst.id, dst.total).
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE dmlc_inssel_tmpl"+
+		" CREATE TABLE src (id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY (id))"+
+		" CREATE TABLE dst (id BIGINT, total BIGINT, PRIMARY KEY (id))"); err != nil {
+		t.Fatalf("tmpl: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE dmlc_inssel_tmpl"); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+clusterFilePath+"&schema=main")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.ExecContext(ctx, "INSERT INTO src VALUES (1, 10, 5), (2, 20, 3), (3, 30, 7)"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Positional INSERT … SELECT: dst(id, total) ← (id, price*qty) for
+	// rows with price >= 20. The 2nd SELECT output (price*qty) maps to
+	// dst.total by position, not name.
+	res, err := db.ExecContext(ctx,
+		"INSERT INTO dst SELECT id, price * qty FROM src WHERE price >= 20")
+	if err != nil {
+		t.Fatalf("INSERT...SELECT: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 2 {
+		t.Fatalf("INSERT...SELECT RowsAffected = %d, want 2", n)
+	}
+
+	// Explicit column list with SELECT is rejected (Java parity).
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO dst (id, total) SELECT id, price FROM src WHERE id = 1"); err == nil {
+		t.Fatal("INSERT (cols) SELECT was not rejected")
+	}
+
+	// row 2: total=20*3=60; row 3: total=30*7=210.
+	got := map[int64]int64{}
+	rows, err := db.QueryContext(ctx, "SELECT id, total FROM dst ORDER BY id")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	for rows.Next() {
+		var id, total int64
+		if err := rows.Scan(&id, &total); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[id] = total
+	}
+	rows.Close()
+	if got[2] != 60 || got[3] != 210 {
+		t.Fatalf("INSERT...SELECT persisted = %v, want {2:60, 3:210}", got)
+	}
+
+	// Same-table INSERT … SELECT must not re-scan its own inserts
+	// (Halloween): src has 3 rows; insert id+1000 for price >= 20 → exactly
+	// 2 new rows, not a cascade.
+	res2, err := db.ExecContext(ctx,
+		"INSERT INTO src SELECT id + 1000, price, qty FROM src WHERE price >= 20")
+	if err != nil {
+		t.Fatalf("same-table INSERT...SELECT: %v", err)
+	}
+	if n, _ := res2.RowsAffected(); n != 2 {
+		t.Fatalf("same-table INSERT...SELECT RowsAffected = %d, want 2 (Halloween)", n)
+	}
+	var cnt int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM src").Scan(&cnt); err != nil {
+		t.Fatalf("count src: %v", err)
+	}
+	if cnt != 5 {
+		t.Fatalf("src count after same-table insert = %d, want 5", cnt)
+	}
+}
+
 // TestFDB_DMLCascades_ExplainPlanShapes pins that DELETE and INSERT VALUES
 // plan through Cascades with the expected physical plan shapes (Delete over
 // a scan/filter; Insert over Explode), proving the Cascades path fired
