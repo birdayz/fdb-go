@@ -132,6 +132,55 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 // consume). Read-only view; callers must not mutate the result. Nil-safe: a
 // nil receiver (some EqualsWithoutChildren callers pass a nil *AliasMap)
 // yields a nil values.AliasMap, which the helpers read as identity-alias.
+// With returns a copy of the map with the (source, target) binding added,
+// ok=true. An already-present binding is idempotent (ok=true); a source or
+// target already bound to a DIFFERENT partner returns the receiver unchanged,
+// ok=false (would break the bijection). Non-panicking copy-on-write analogue
+// of composing one pair; memoEqual builds a node's quantifier-alias map with it
+// and treats ok=false as "not equal".
+func (a *AliasMap) With(source, target values.CorrelationIdentifier) (*AliasMap, bool) {
+	if existingT, ok := a.forward[source]; ok {
+		if existingT != target {
+			return a, false
+		}
+		if existingS, ok2 := a.reverse[target]; ok2 && existingS != source {
+			return a, false
+		}
+		return a, true
+	}
+	if existingS, ok := a.reverse[target]; ok && existingS != source {
+		return a, false
+	}
+	out := EmptyAliasMap()
+	for s, t := range a.forward {
+		out.forward[s] = t
+		out.reverse[t] = s
+	}
+	out.forward[source] = target
+	out.reverse[target] = source
+	return out, true
+}
+
+// DefinesOnlyIdentities reports whether every binding maps a source to itself
+// (s↦s); an empty map qualifies. Mirrors Java AliasMap.definesOnlyIdentities —
+// the fast path in correlated-to matching where no alias translation is needed.
+func (a *AliasMap) DefinesOnlyIdentities() bool {
+	for s, t := range a.forward {
+		if s != t {
+			return false
+		}
+	}
+	return true
+}
+
+// GetTargetOrDefault returns the target bound to source, or def if unbound.
+func (a *AliasMap) GetTargetOrDefault(source, def values.CorrelationIdentifier) values.CorrelationIdentifier {
+	if t, ok := a.forward[source]; ok {
+		return t
+	}
+	return def
+}
+
 func (a *AliasMap) ToValuesAliasMap() values.AliasMap {
 	if a == nil {
 		return nil
