@@ -1,7 +1,46 @@
 # RFC-035: DML executes through Cascades (P0.4)
 
-**Status:** Draft
+**Status:** Partially implemented (INSERT … VALUES landed; UPDATE / DELETE /
+INSERT … SELECT in progress)
 **Item:** P0.4 — DML must execute through Cascades (forbidden parallel pipeline)
+
+## Implementation status
+
+Landed (commits on `fix/p0.4-dml-through-cascades`), all 46 targets green:
+- **INSERT … VALUES executes through Cascades end-to-end.** Reuses the Explode
+  operator (RecordConstructorValue → ArrayConstructorValue → ExplodeExpression →
+  InsertExpression inner); plan-time validation (arity 42601/22000, NOT NULL,
+  "expected Record but got Primitive", type mismatch 22000); enum/nested fidelity
+  via carried `protoreflect.Value`. `planOne` routes INSERT VALUES to `planDML`.
+- **`cascadesPlan.IsUpdate()` derived** from physical plan type + (implicit)
+  explain gate, matching `QueryPlan.isUpdatePlan()`.
+- **`RowsAffected` counting** (`countAll`, Java's `countUpdates`) and **`runInTx`**
+  so DML joins an open explicit transaction (Gap B).
+- `executeInsert` Datum→message bridge for computed-row inners.
+
+Remaining (each a separate, e2e-tested port; naive path stays live until done):
+1. **DELETE through Cascades.** Simple filters work. Two gaps: (a) schema-qualified
+   target — the WHERE predicate is built with the qualified name as its
+   correlation alias (`s1.T`), mismatching the resolved scan alias (`T`); fix:
+   build the predicate with the bare table name as alias. (b) EXISTS-subquery
+   predicates — the DML filter builder lacks subquery support the SELECT path has.
+   Proper fix: build the DML inner via the SELECT logical-plan machinery so
+   DELETE/UPDATE filters get identical treatment (qualification, EXISTS, joins).
+2. **UPDATE through Cascades.** `translateUpdate` stores SET expressions as raw
+   text in a `ConstantValue`; the executor can't evaluate them. Port SET RHS to
+   real expression Values (resolver-built, like projections), reusing the DELETE
+   inner-filter fix.
+3. **INSERT … SELECT through Cascades.** `executeInsert` prefers the source
+   `qr.Record` over the projected `qr.Datum`, re-saving source rows (PK collision,
+   23505). Fix: use the projected row for INSERT … SELECT.
+4. **Delete naive `execInsert`/`execUpdate`/`execDelete`/`execInsertSelect`** and
+   the `execStatement` DML dispatch; repoint `planDMLExplainOnly.ExecFn`; reword
+   QueryContext DML rejection; record the QueryContext-rejection divergence in
+   `DIVERGENCES.md`.
+
+---
+
+**Original design follows.**
 
 ## Problem
 
