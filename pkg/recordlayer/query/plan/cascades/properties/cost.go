@@ -264,6 +264,13 @@ func EstimateCost(e expressions.RelationalExpression) Cost {
 // per-record-type cardinality; all other operators use the default
 // per-operator constants.
 //
+// Sub-Reference recursion picks the FIRST member's cost (see package
+// doc). This is the cost used by GetBest / winner extraction / stage
+// advancement; keeping it first-member preserves the established
+// winner-selection behaviour. The cost-optimal multi-way join decision
+// uses the recursive best-member walk (BestMemberCostWith) instead —
+// see RFC-041.
+//
 // Pass nil to use DefaultStatistics.
 func EstimateCostWith(e expressions.RelationalExpression, stats StatisticsProvider) Cost {
 	if stats == nil {
@@ -338,12 +345,12 @@ func BestRefCost(ref *expressions.Reference) Cost {
 }
 
 // BestRefCostWith returns the cheapest member's cost in `ref` under
-// the given StatisticsProvider. Used by Reference.GetBest extraction.
+// the given StatisticsProvider. The TOP Reference's members are ranked
+// by best; their children recurse via first-member (see EstimateCostWith).
+// Used by Reference.GetBest extraction.
 //
 // Memoisation: builds a per-call `map[*Reference]Cost` so child
 // References shared across multiple members are walked only once.
-// For a Reference with N members each over a shared K-deep tree,
-// memoised cost is O(N+K) vs the un-memoised O(N*K).
 //
 // Pass nil for stats to use DefaultStatistics.
 func BestRefCostWith(ref *expressions.Reference, stats StatisticsProvider) Cost {
@@ -365,6 +372,93 @@ func BestRefCostWith(ref *expressions.Reference, stats StatisticsProvider) Cost 
 			best = c
 		}
 	}
+	return best
+}
+
+// BestMemberCostWith costs expression e with FULLY RECURSIVE best-member
+// sub-products: every child Reference (transitively) is costed at its
+// cheapest member, not its first. This is Cascades' "combined cost with
+// inputs" (§3.1) — a join's cost reflects each sub-product's WINNER, the
+// proper-memoisation replacement the package doc flagged for B6. Used
+// only by the multi-way join-order decision (RFC-041), kept separate
+// from EstimateCostWith so winner extraction / stage advancement retain
+// their established first-member behaviour.
+//
+// Per-call memoisation keeps a shared (e.g. union-find-merged)
+// sub-product to one walk: O(N+K) not O(N*K). The visited recursion-
+// stack guard is defensive — the child-Reference DAG is acyclic
+// (memo_merge.go reachable/mergeable forbids cycle-creating merges).
+//
+// Pass nil to use DefaultStatistics.
+func BestMemberCostWith(e expressions.RelationalExpression, stats StatisticsProvider) Cost {
+	return newCostWalk(stats).exprCost(e)
+}
+
+// costWalk carries the per-call memo + recursion-stack guard for the
+// best-member cost walk. The memo is per-call (never persisted), so it
+// cannot outlive a union-find merge that mutates a survivor's member
+// set — there is no cross-call staleness to invalidate.
+type costWalk struct {
+	memo    map[*expressions.Reference]Cost
+	visited map[*expressions.Reference]bool
+	stats   StatisticsProvider
+}
+
+func newCostWalk(stats StatisticsProvider) *costWalk {
+	if stats == nil {
+		stats = DefaultStatistics{}
+	}
+	return &costWalk{
+		memo:    make(map[*expressions.Reference]Cost),
+		visited: make(map[*expressions.Reference]bool),
+		stats:   stats,
+	}
+}
+
+// exprCost costs a specific expression, recursing into each child
+// Reference at its best member (refCost). A shared sub-product reached
+// through multiple parents within one walk is costed once (memo hit on
+// refCost), so the walk is O(N+K), not O(N*K).
+func (w *costWalk) exprCost(e expressions.RelationalExpression) Cost {
+	if e == nil {
+		return Cost{}
+	}
+	qs := e.GetQuantifiers()
+	childCosts := make([]Cost, len(qs))
+	for i, q := range qs {
+		childCosts[i] = w.refCost(q.GetRangesOver())
+	}
+	return localCost(e, childCosts, w.stats)
+}
+
+// refCost returns the cost of ref's BEST member, memoised. Defensive
+// cycle break returns the "unknown sub-tree" cost without memoising
+// (a partial result must not be cached as final).
+func (w *costWalk) refCost(ref *expressions.Reference) Cost {
+	if ref == nil {
+		return Cost{Cardinality: LeafScanCardinality}
+	}
+	if c, ok := w.memo[ref]; ok {
+		return c
+	}
+	if w.visited[ref] {
+		return Cost{Cardinality: LeafScanCardinality}
+	}
+	members := ref.Members()
+	if len(members) == 0 {
+		c := Cost{Cardinality: LeafScanCardinality}
+		w.memo[ref] = c
+		return c
+	}
+	w.visited[ref] = true
+	best := w.exprCost(members[0])
+	for _, m := range members[1:] {
+		if c := w.exprCost(m); c.Less(best) {
+			best = c
+		}
+	}
+	delete(w.visited, ref)
+	w.memo[ref] = best
 	return best
 }
 

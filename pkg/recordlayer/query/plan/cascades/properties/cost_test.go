@@ -602,3 +602,44 @@ func BenchmarkBestRefCost_WideRef(b *testing.B) {
 		_ = BestRefCost(r)
 	}
 }
+
+// TestBestMemberCostWith_RecursesBestMember pins RFC-041 step 1: the
+// best-member cost walk costs a sub-Reference at its CHEAPEST member,
+// recursively — unlike EstimateCostWith, which uses the first member.
+func TestBestMemberCostWith_RecursesBestMember(t *testing.T) {
+	t.Parallel()
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1000, "SMALL": 1}}
+	// child Reference: first member scans BIG (1000), second scans SMALL (1).
+	child := scan("BIG")
+	child.Insert(expressions.NewFullUnorderedScanExpression([]string{"SMALL"}, nil))
+	parent := expressions.NewLogicalFilterExpression(nil, expressions.ForEachQuantifier(child))
+
+	first := EstimateCostWith(parent, stats)  // first member → BIG
+	best := BestMemberCostWith(parent, stats) // best member → SMALL
+	if !(best.Cardinality < first.Cardinality) {
+		t.Fatalf("best-member cost cardinality (%v) must be < first-member (%v)", best.Cardinality, first.Cardinality)
+	}
+}
+
+// TestBestMemberCostWith_MemberOrderStable pins the member-order-stability
+// invariant (Torvalds): PR-A's union-find merge changes member slice order,
+// so the best-member result must not depend on it.
+func TestBestMemberCostWith_MemberOrderStable(t *testing.T) {
+	t.Parallel()
+	stats := MapStatistics{PerType: map[string]float64{"BIG": 1000, "SMALL": 1}}
+
+	// childA: BIG first, SMALL second. childB: SMALL first, BIG second.
+	childA := scan("BIG")
+	childA.Insert(expressions.NewFullUnorderedScanExpression([]string{"SMALL"}, nil))
+	childB := scan("SMALL")
+	childB.Insert(expressions.NewFullUnorderedScanExpression([]string{"BIG"}, nil))
+
+	pA := expressions.NewLogicalFilterExpression(nil, expressions.ForEachQuantifier(childA))
+	pB := expressions.NewLogicalFilterExpression(nil, expressions.ForEachQuantifier(childB))
+
+	cA := BestMemberCostWith(pA, stats)
+	cB := BestMemberCostWith(pB, stats)
+	if cA.Cardinality != cB.Cardinality || cA.CPU != cB.CPU {
+		t.Fatalf("best-member cost must be invariant to member order: A=%v B=%v", cA, cB)
+	}
+}
