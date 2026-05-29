@@ -597,9 +597,12 @@ type nljCursor struct {
 	// after the outer side is exhausted, the drain phase emits every
 	// unmatched inner row NULL-padded on the left (symmetric to the
 	// LEFT-OUTER unmatched-outer emission). Allocated only for
-	// JoinFullOuter — other join types pay nothing.
+	// JoinFullOuter — other join types pay nothing. This state lives only
+	// in memory and is NOT serialized into the continuation, so the
+	// FULL-outer NLJ must complete within a single transaction;
+	// executeNestedLoopJoin clears the outer's time/row limits for FULL to
+	// guarantee that (see the comment there).
 	matchedInner []bool
-	draining     bool
 	drainIdx     int
 }
 

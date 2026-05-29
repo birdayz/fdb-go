@@ -151,6 +151,20 @@ by a mandatory NULL-key test.
 - No stress-baseline regression expected (no change to existing plan shapes). Will spot-check
   the join stress subtests.
 
+## Limitation: single-transaction execution
+
+The `matchedInner` bitmap is cross-outer-row state that is **not** serialized into the
+continuation. The driver rebuilds the cursor from scratch on every transaction page
+(`txPageTimeLimit = 4s`), which would reset the bitmap mid-scan and produce wrong drain
+results. So `executeNestedLoopJoin` clears the FULL-outer's time/row limits, forcing the whole
+join to complete within a single transaction (one cursor, one bitmap). Very large FULL OUTER
+joins therefore fail *loudly* at FDB's 5s hard transaction limit rather than returning
+silently-wrong rows — the same limitation class as the already-materialized inner side, and as
+the legacy `execSelectJoin` path which materializes everything. INNER/LEFT/RIGHT are unaffected
+(no cross-outer state; they resume correctly per outer row). Serializing the bitmap into the
+continuation (like aggregation/sort accumulators) is a future enhancement if unbounded FULL
+joins are needed.
+
 ## Test plan
 
 E2E is the bar (NO-FAKE-CHECKBOXES). FDB integration tests (`TestFDB_FullOuterJoin*`) on real
