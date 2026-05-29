@@ -67,6 +67,7 @@ go_test(
         "quantifier_test.go",
         "reference_dedup_test.go",
         "reference_test.go",
+        "relational_alias_completeness_test.go",
         "select_test.go",
         "table_function_fuzz_test.go",
         "table_function_test.go",
