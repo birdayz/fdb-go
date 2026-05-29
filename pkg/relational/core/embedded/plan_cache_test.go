@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 
@@ -305,11 +306,67 @@ func TestPlanCache_NoHashCollision(t *testing.T) {
 	}
 }
 
+// TestPlanCache_InterleavedEvictionOrder exercises promote-on-update
+// interacting with eviction. With capacity 3, an update to an existing key
+// must promote it (not evict, since size is unchanged), so a subsequent
+// insert evicts the genuine LRU victim rather than the just-updated key.
+func TestPlanCache_InterleavedEvictionOrder(t *testing.T) {
+	t.Parallel()
+	c := NewPlanCache(3)
+
+	c.Put("a", &stubPlan{label: "a"}, nil) // order: a
+	c.Put("b", &stubPlan{label: "b"}, nil) // order: a, b
+	c.Put("c", &stubPlan{label: "c"}, nil) // order: a, b, c
+
+	// Update "a" — promotes it to MRU. Size stays 3, nothing evicted.
+	c.Put("a", &stubPlan{label: "a2"}, nil) // order: b, c, a
+
+	// Now "b" is the LRU. Inserting "d" must evict "b".
+	c.Put("d", &stubPlan{label: "d"}, nil) // order: c, a, d
+
+	if _, _, ok := c.Get("b"); ok {
+		t.Fatal("expected 'b' (LRU) to be evicted")
+	}
+	got, _, ok := c.Get("a")
+	if !ok {
+		t.Fatal("expected updated 'a' to still be cached")
+	}
+	if got.(*stubPlan).label != "a2" {
+		t.Fatalf("expected promoted+updated plan 'a2', got %q", got.(*stubPlan).label)
+	}
+	if _, _, ok := c.Get("c"); !ok {
+		t.Fatal("expected 'c' to still be cached")
+	}
+	if _, _, ok := c.Get("d"); !ok {
+		t.Fatal("expected 'd' to still be cached")
+	}
+}
+
 func BenchmarkPlanCache_Hit(b *testing.B) {
 	c := NewPlanCache(256)
 	plan := &stubPlan{label: "select-all"}
 	sql := "SELECT * FROM Item WHERE item_id = 42"
 	c.Put(sql, plan, nil)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.Get(sql)
+	}
+}
+
+// BenchmarkPlanCache_HitLargeCache measures a hit against a key sitting in the
+// middle of a large (1024-entry) LRU order. The old slice-based promote()
+// linear-scanned to find the key, so its cost scaled with the key's position;
+// the container/list version is O(1) regardless of position.
+func BenchmarkPlanCache_HitLargeCache(b *testing.B) {
+	const size = 1024
+	c := NewPlanCache(size)
+	for i := 0; i < size; i++ {
+		c.Put("SELECT * FROM t WHERE id = "+strconv.Itoa(i), &stubPlan{label: "p"}, nil)
+	}
+	// A key in the middle of the LRU order: worst case for the old linear
+	// scan, O(1) for the doubly-linked list regardless of position.
+	sql := "SELECT * FROM t WHERE id = " + strconv.Itoa(size/2)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -41,8 +41,7 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 
 ### P2 — fix before scaling operations
 
-- [ ] **P2.1 Plan cache LRU is O(n) per hit.** `PlanCache.promote()` linear-scans the LRU order slice under a write lock on every cache hit. Fine at 256 entries; `PLAN_CACHE_PRIMARY_MAX_ENTRIES=1024` makes it a concurrency contention point.
-  - **Fix (20 min):** `container/list` doubly-linked list for O(1) promote.
+- [x] **P2.1 Plan cache LRU is O(n) per hit.** Fixed in RFC-033 — replaced the slice-based LRU order tracking (linear scan + slice splice in `promote()` on every hit, under the lock) with a `container/list` doubly-linked list + `map[string]*list.Element`. Promote-on-hit/update and eviction are now O(1), matching Java's Caffeine-backed cache. `RWMutex` downgraded to `Mutex` (the read path always mutated the list, so the read lock was a lie). `BenchmarkPlanCache_HitLargeCache` confirms position-independent O(1) hits at maxSize=1024; all existing LRU-semantics tests pass unchanged + new interleaved-eviction test.
 - [ ] **P2.2 Operational debuggability.** No query logging, no slow-query log, no plan-in-error-message, no planning history. `PlannerEventHandler` exists but nil by default. First production question ("what plan did it pick?") requires re-running with EXPLAIN under the same data/params.
   - **Fix:** optional planning-metrics hook (nil = silent) logging SQL (truncated), plan hash, planning duration, cache hit/miss, estimated cost. Sample ~1% in production to structured output.
 
