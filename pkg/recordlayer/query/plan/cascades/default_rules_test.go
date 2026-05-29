@@ -22,7 +22,10 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 // keep this test in sync with both.
 func TestDefaultRules_ExpectedCount(t *testing.T) {
 	t.Parallel()
-	const expected = 48
+	// 46: PartitionSelectRule + PartitionBinarySelectRule moved to
+	// PLANNING-only (PlanningExplorationRules) per RFC-042 — join-order
+	// enumeration belongs in PLANNING, matching Java's PlanningRuleSet.
+	const expected = 46
 	if got := len(DefaultExpressionRules()); got != expected {
 		t.Fatalf("DefaultExpressionRules count = %d, want %d (update CLAUDE.md / TODO.md if intentional)", got, expected)
 	}

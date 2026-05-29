@@ -117,8 +117,15 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSplitSelectExtractIndependentQuantifiersRule(),
 		NewNormalizePredicatesRule(),
 		NewPredicateToLogicalUnionRule(),
-		NewPartitionSelectRule(),
-		NewPartitionBinarySelectRule(),
+		// Join-order enumeration (PartitionSelectRule / PartitionBinarySelectRule)
+		// is PLANNING-only — see PlanningExplorationRules, matching Java's
+		// PlanningRuleSet (the RewritingRuleSet is normalization only). REWRITING
+		// normalizes to the canonical flat N-quantifier SelectExpression
+		// (SelectMergeRule); since no partitioning runs here, every member promoted
+		// to PLANNING is flat, so PartitionSelectRule re-enumerates all join
+		// associativities in PLANNING where the stats-aware PlanningCostModel
+		// (RFC-041) picks the cheapest order. Firing them in REWRITING locked the
+		// FROM-order associativity at the phase boundary (RFC-042).
 		NewDecorrelateValuesRule(),
 		NewPullUpNullOnEmptyRule(),
 		NewMatchLeafRule(),
