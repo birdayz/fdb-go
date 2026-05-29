@@ -115,6 +115,7 @@ func (e *LogicalFilterExpression) EqualsWithoutChildren(other RelationalExpressi
 // EqualsWithoutChildren above (equal-up-to-alias ⟹ equal hash). RFC-040 040.2.
 func (e *LogicalFilterExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
+	h.Write([]byte("filter|")) // type prefix so a zero-predicate filter doesn't collide cross-type
 	var buf [8]byte
 	for _, p := range e.queryPredicates {
 		binary.LittleEndian.PutUint64(buf[:], predicates.SemanticHashCode(p))

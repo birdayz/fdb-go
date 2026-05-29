@@ -33,7 +33,8 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 	case *ValuePredicate:
 		_, _ = io.WriteString(h, "vp:"+strconv.FormatUint(values.SemanticHashCode(t.Value), 16))
 	case *ComparisonPredicate:
-		_, _ = io.WriteString(h, "cp:"+strconv.Itoa(int(t.Comparison.Type))+":"+t.Comparison.ParameterName+":")
+		// Escape IS a discriminator (equality compares it, e.g. LIKE … ESCAPE).
+		_, _ = io.WriteString(h, "cp:"+strconv.Itoa(int(t.Comparison.Type))+":"+t.Comparison.ParameterName+":"+string(t.Comparison.Escape)+":")
 		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Operand), 16))
 		_, _ = io.WriteString(h, "/")
 		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Comparison.Operand), 16))

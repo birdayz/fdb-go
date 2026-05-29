@@ -125,7 +125,7 @@ func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte("|"))
 	}
 	for _, a := range e.aggregates {
-		binary.BigEndian.PutUint64(b[:], uint64(a.Function))
+		binary.LittleEndian.PutUint64(b[:], uint64(a.Function))
 		h.Write(b[:])
 		binary.LittleEndian.PutUint64(b[:], values.SemanticHashCode(a.Operand))
 		h.Write(b[:])

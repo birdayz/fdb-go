@@ -80,6 +80,7 @@ go_test(
         "equals_without_children_test.go",
         "folder_test.go",
         "functional_dependency_test.go",
+        "index_entry_semantic_test.go",
         "integration_test.go",
         "like_match_test.go",
         "pullup_test.go",

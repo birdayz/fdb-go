@@ -44,9 +44,12 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 	case *UnmatchedAggregateValue:
 		bv, ok := b.(*UnmatchedAggregateValue)
 		return ok && mapAlias(aliases, av.UnmatchedID) == bv.UnmatchedID
-	case *IndexEntryObjectValue:
-		bv, ok := b.(*IndexEntryObjectValue)
-		return ok && mapAlias(aliases, av.IndexEntryAlias) == bv.IndexEntryAlias
+	// NOTE: IndexEntryObjectValue is deliberately NOT intercepted here. Its
+	// canonical EqualsWithoutChildren compares OrdinalPath and IGNORES the
+	// alias, so it falls through to the structural path below (OrdinalPath
+	// compare, no children) — consistent with its alias-excluded + OrdinalPath
+	// SemanticHashCode. Intercepting it to compare only the alias dropped
+	// OrdinalPath and violated equal⟹same-hash (@claude review of PR #214).
 	case *JoinMergeResultValue:
 		bv, ok := b.(*JoinMergeResultValue)
 		return ok &&

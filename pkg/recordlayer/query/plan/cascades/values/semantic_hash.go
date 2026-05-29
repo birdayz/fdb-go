@@ -43,7 +43,8 @@ func writeSemanticHash(h io.Writer, v Value) {
 	case *ObjectValue:
 		_, _ = io.WriteString(h, "obj")
 	case *ConstantObjectValue:
-		_, _ = io.WriteString(h, "cov")
+		// alias excluded; ConstantID IS a discriminator (equality compares it).
+		_, _ = io.WriteString(h, "cov:"+t.ConstantID)
 	case *ExistsValue:
 		_, _ = io.WriteString(h, "exists")
 	case *ScalarSubqueryValue:
