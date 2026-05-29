@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -79,8 +80,21 @@ CREATE TABLE CUSTOMERS (
 		})
 
 		b.Run(sc.name+"/plan_cached", func(b *testing.B) {
-			cache := NewPlanCache(256)
+			// Fill the cache to capacity so the map lookup runs against a
+			// realistically sized map (not a single entry). The hot key is
+			// inserted last so it is resident and never evicted; each Get
+			// re-promotes it, so this measures the steady-state hot-key hit
+			// (normalizeSQL + map lookup + MoveToBack) against a full cache.
+			const capacity = 256
+			cache := NewPlanCache(capacity)
+			for i := 0; i < capacity-1; i++ {
+				cache.Put("filler query number "+strconv.Itoa(i), warm, nil)
+			}
 			cache.Put(sc.sql, warm, nil)
+			if _, _, ok := cache.Get(sc.sql); !ok {
+				b.Fatal("hot key evicted during fill")
+			}
+			// b.Loop() excludes the fill above from timing.
 			for b.Loop() {
 				if _, _, ok := cache.Get(sc.sql); !ok {
 					b.Fatal("expected cache hit")
