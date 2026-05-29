@@ -255,6 +255,24 @@ function of the (deterministic) task schedule. Pinned by a 10×-repeat plan-hash
 10. **Fuzz:** merge invariant — after any sequence of merges, `Canonical()` is acyclic, no live
     Reference forwards, and `GetCorrelatedTo()` of a merged group equals the survivor's.
 
+## Post-approval fix: multi-way join SemanticEquals crash (dimensional gap)
+
+After @claude's approval, probing multi-way joins surfaced a **latent crash this PR
+introduced** that the original 46/46 suite missed (no multi-way-join-with-mergeable-inputs
+test existed — a dimensional gap, not a volumetric one). On a 3-input join where two inputs
+rewrite to the same sub-product, cross-group merging makes two child Quantifiers resolve to the
+**same canonical Reference**; `SemanticEquals`'s positional child-matching
+(`matchChildrenPositional`) then built an alias bijection that conflicted, and
+`AliasMap.Compose` **panicked** (`expression.go`). Master never merges, so it never crashed —
+this is merge-induced, *not* pre-existing.
+
+Fix: a Compose conflict means "no consistent alias correspondence aligns the two trees ⇒ not
+equal", so both child-matching paths now go through one non-panicking helper
+(`composeChildAliasPairs`) returning `ok=false` instead of panicking. This also removes the
+`recover`-based guard `matchChildrenPermuted` previously used (the positional path had no such
+guard — that asymmetry was the bug). Pinned by `TestMemoMerge_MultiWayJoinNoPanic`. All 46
+targets + determinism 8× green. (This absorbs the epic's planned "PR-B" into this PR.)
+
 ## Reach (measured, honest)
 
 This PR lands a **correct and sound** merge mechanism that fires through the real planner, but
