@@ -19,7 +19,20 @@ safe (and necessary) to stage:
   `SemanticHashCode()` across the `Value` hierarchy (`QuantifiedObjectValue`→type-only,
   `FieldValue`→field-path + child semantic hash, arithmetic/record/literal values) and
   `QueryPredicate`. Own consistency fuzz. **Prerequisite for Fix 3.**
-* **040.1 — `PredicateSemanticEquals` (alias-aware).** Fix 1.
+* **040.1 — `PredicateSemanticEquals` (alias-aware).** Fix 1. **DONE** (in `cascades`).
+
+* **040.1b — Relocate the equivalence machinery below `expressions` (import-cycle
+  prerequisite, discovered during 040.0).** Wiring 040.2 means `expressions`-package
+  `EqualsWithoutChildren` (e.g. `LogicalFilterExpression`) must call the alias-aware predicate
+  equality — but `ValueEquivalence`, `ValueSemanticEquals`, `PredicateSemanticEquals`,
+  `ConstrainedBoolean` (and the `*QueryPlanConstraint` it carries, `match_info.go:14`) all live
+  in the **`cascades`** package, which **imports** `expressions`. `expressions → cascades` is a
+  cycle. So 040.2 is blocked until this machinery moves down to a package `expressions` can
+  import (the `values`/`predicates` layer), or `ConstrainedBoolean`/`QueryPlanConstraint` are
+  split so the equivalence interface lives below `expressions`. This is a non-trivial refactor
+  of the constraint subsystem and must precede any relational-`EqualsWithoutChildren` rewiring.
+  (Note: the 040.0/040.1 toolkit built so far lives in `cascades` and is correct there for the
+  memo's own use; only the *relational-expression* wiring needs the relocation.)
 * **040.2..N — flip types in dependency order.** Per type, change `EqualsWithoutChildren`
   (thread the map) **and** `HashCodeWithoutChildren` (alias-invariant) **together** (per-type
   atomicity), each landing with the consistency fuzz green. Leaves/scans first, then
