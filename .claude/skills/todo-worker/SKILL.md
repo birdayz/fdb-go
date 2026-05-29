@@ -131,23 +131,46 @@ Post a comment tagging @claude with context:
 gh pr comment <PR#> --body "@claude Please review this PR. <1-2 sentence summary of what changed and why>. See RFC-NNN for the full analysis."
 ```
 
+### Monitoring — how to wait for @claude's approval
+
+@claude does not post a fresh final comment; it posts ONE comment and **edits
+it in place** through three states:
+1. a `Claude Code is working…` stub (appears within seconds),
+2. a `### Tasks` checklist whose boxes flip from `- [ ]` to `- [x]`,
+3. the final review, which **opens with a `**Claude finished … in Xm Ys**` banner** and ends with a verdict (`Approved` / findings / changes requested).
+
+**Detect completion by the `Claude finished` banner (a positive signal), or by the linked GitHub Actions run reaching `completed`.** Never gate on:
+- *comment count or body length* — the stub is long; length plateaus mid-review;
+- *unchecked `- [ ]` boxes* — the FINISHED review body legitimately contains checkboxes (test plans, nit lists), so a checkbox scan false-positives as "in progress" and the poll spins until timeout (this exact bug burned ~15 min on a review that finished in 75s);
+- *the word "working"/"in progress"* — those words appear in normal review prose.
+
+Poll on a 15–20s cadence (a review takes ~1–5 min). Strongest signal — the Actions run:
+```bash
+runid=$(printf '%s' "$body" | grep -oE 'runs/[0-9]+' | head -1 | cut -d/ -f2)
+[ -n "$runid" ] && [ "$(gh run view "$runid" --json status --jq .status)" = "completed" ] && break
+```
+
 Then wait for @claude's review to **complete**:
 
 ```bash
-# @claude posts ONE comment and edits it in place through several states:
-#   "Claude Code is working…" stub → a "### Tasks" checklist with unchecked
-#   "- [ ]" boxes → the final review. Length heuristics are unreliable.
-# Done = the latest claude[bot] comment has NO unchecked "- [ ]" boxes and
-# no working/in-progress marker.
+# @claude posts ONE comment and edits it in place: a "Claude Code is
+# working…" stub → a "### Tasks" checklist → the final review, which opens
+# with a "**Claude finished … in Xm Ys**" banner.
+#
+# Detect completion by that POSITIVE banner — NOT by length, comment count,
+# or "unchecked - [ ] boxes". The finished review body legitimately contains
+# "- [ ]" (test plans, nit lists), so a checkbox scan false-positives as
+# "in progress" and the poll spins until timeout. The banner is reliable;
+# the GitHub Actions run linked in the comment ("[View job](…/runs/<id>)")
+# is an even stronger signal — `gh run view <id> --json status` is
+# "completed" when done.
 base=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
 while :; do
   sleep 20
   cnt=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|length')
   body=$(gh api repos/birdayz/fdb-record-layer-go/issues/<PR#>/comments --jq '[.[]|select(.user.login=="claude[bot]")]|last|.body')
   [ "$cnt" -gt "$base" ] || continue                                   # new comment appeared?
-  printf '%s' "$body" | grep -qF -- "- [ ]" && continue                # tasks still pending
-  printf '%s' "$body" | grep -qiE "working|in progress|get back to you" && continue
-  break                                                                # review complete
+  printf '%s' "$body" | grep -qiE "Claude finished|finished @" && break # review complete
 done
 ```
 
