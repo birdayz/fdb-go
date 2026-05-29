@@ -16,6 +16,7 @@ go_library(
         "eval_proto.go",
         "in_list_pushdown.go",
         "insert.go",
+        "insert_cascades.go",
         "join.go",
         "like_prefix_pushdown.go",
         "logical_builder.go",

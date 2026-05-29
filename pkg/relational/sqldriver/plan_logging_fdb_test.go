@@ -102,6 +102,70 @@ func TestFDB_PlanLogging_DML(t *testing.T) {
 	}
 }
 
+// TestFDB_InsertValues_ThroughCascades proves INSERT … VALUES executes
+// through the Cascades path (RFC-035): Exec routes to planDML, the literal
+// rows become an array exploded into a RecordQueryInsertPlan, the affected
+// rows are counted into RowsAffected, and the rows persist. The captured
+// physical plan (Insert over Explode) proves the values-explode path fired
+// rather than the naive execInsert fallback.
+func TestFDB_InsertValues_ThroughCascades(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	logger := &syncCaptureLogger{}
+	conn := installLogger(t, cascadesDB, logger)
+
+	res, err := conn.ExecContext(ctx,
+		"INSERT INTO Item VALUES (101, 'Sprocket', 11), (102, 'Cog', 22)")
+	if err != nil {
+		t.Fatalf("INSERT VALUES: %v", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("RowsAffected = %d, want 2", n)
+	}
+
+	// The DML plan went through planDML (one planning event, cache Skip),
+	// and the physical plan is Insert over Explode — the values path.
+	events := logger.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("want 1 planning event, got %d", len(events))
+	}
+	if events[0].Cache != embedded.PlanCacheSkip {
+		t.Errorf("DML cache = %v, want skip", events[0].Cache)
+	}
+	ex := events[0].PlanExplain
+	if !strings.Contains(ex, "Insert(") || !strings.Contains(strings.ToLower(ex), "explode") {
+		t.Fatalf("plan explain %q does not show Insert over Explode (values path)", ex)
+	}
+
+	// Rows persisted with correct values.
+	got := map[int64]string{}
+	rows, err := conn.QueryContext(ctx, "SELECT item_id, name FROM Item WHERE item_id >= 101")
+	if err != nil {
+		t.Fatalf("SELECT back: %v", err)
+	}
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	rows.Close()
+	if got[101] != "Sprocket" || got[102] != "Cog" {
+		t.Fatalf("persisted rows = %v, want {101:Sprocket, 102:Cog}", got)
+	}
+}
+
 // TestFDB_PlanLogging_SelectMissThenHit proves the planSelectCascades funnel
 // emits miss-then-hit across two identical SELECTs on the same connection.
 func TestFDB_PlanLogging_SelectMissThenHit(t *testing.T) {

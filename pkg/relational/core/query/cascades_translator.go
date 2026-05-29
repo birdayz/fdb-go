@@ -1117,11 +1117,18 @@ func logicalOpReferencesCTE(op logical.LogicalOperator, cteName string) bool {
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {
 	var innerRef *expressions.Reference
-	if ins.Source != nil {
+	switch {
+	case ins.Source != nil:
+		// INSERT … SELECT: the source plan produces the rows.
 		innerRef = t.translateRef(ins.Source)
 		if innerRef == nil {
 			return nil
 		}
+	case ins.ValuesArray != nil:
+		// INSERT … VALUES: explode the literal array of records into a
+		// stream, matching Java (ExplodeExpression over the array Value).
+		explode := expressions.NewExplodeExpression(ins.ValuesArray)
+		innerRef = expressions.InitialOf(explode)
 	}
 	var q expressions.Quantifier
 	if innerRef != nil {

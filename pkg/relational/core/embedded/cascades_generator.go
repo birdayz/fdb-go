@@ -119,10 +119,14 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 		}
 	}
 
-	// DML: route INSERT/UPDATE/DELETE through Cascades (QueryContext)
-	// or through execStatement (ExecContext).
+	// DML: route through the single Cascades path (planDML). INSERT … VALUES
+	// is fully on Cascades. UPDATE / DELETE / INSERT … SELECT still fall to
+	// the naive execStatement path in exec mode until their Cascades
+	// execution is verified end-to-end (RFC-035 §Fix.6). QueryContext
+	// (non-exec) routes all DML to planDML, where update plans are then
+	// rejected (it returns rows, not counts).
 	if dml := stmt.DmlStatement(); dml != nil {
-		if g.execMode {
+		if g.execMode && !isInsertValues(dml) {
 			return g.planDDL(ctx, stmt)
 		}
 		return g.planDML(ctx, dml)
@@ -163,6 +167,19 @@ func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatemen
 	}
 
 	return nil, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
+}
+
+// isInsertValues reports whether a DML statement is an INSERT … VALUES
+// (literal rows), as opposed to INSERT … SELECT, UPDATE, or DELETE. Only
+// VALUES has a fully-working Cascades execution path today; the others
+// stay on the naive path in exec mode until verified (RFC-035 §Fix.6).
+func isInsertValues(dml antlrgen.IDmlStatementContext) bool {
+	ins := dml.InsertStatement()
+	if ins == nil {
+		return false
+	}
+	_, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
+	return ok
 }
 
 // planSelect routes a SELECT statement through the Cascades pipeline.
@@ -583,11 +600,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	var logicalOp logical.LogicalOperator
+	var insStmt antlrgen.IInsertStatementContext
 	if del := dml.DeleteStatement(); del != nil {
 		logicalOp = buildLogicalPlanForDeleteWithCatalog(del, md)
 	} else if upd := dml.UpdateStatement(); upd != nil {
 		logicalOp = buildLogicalPlanForUpdateWithCatalog(upd, md)
 	} else if ins := dml.InsertStatement(); ins != nil {
+		insStmt = ins
 		logicalOp = buildLogicalPlanForInsertWithCatalog(ins, md)
 	}
 	if logicalOp == nil {
@@ -596,6 +615,21 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	if err := resolveQualifiedTableNames(logicalOp, g.c.sess.Schema); err != nil {
 		return nil, err
+	}
+
+	// INSERT … VALUES: build the literal rows into a Cascades array Value
+	// (resolved table name is now available). translateInsert explodes it
+	// as the InsertExpression inner, so VALUES rides the Cascades path.
+	if insOp, ok := logicalOp.(*logical.LogicalInsert); ok && insOp.Source == nil && insOp.ValuesArray == nil && insStmt != nil {
+		rt := md.GetRecordType(insOp.Table)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(insOp.Table))
+		}
+		arr, vErr := c.buildInsertValuesArray(ctx, insStmt, rt.Descriptor, insOp.Table)
+		if vErr != nil {
+			return nil, vErr
+		}
+		insOp.ValuesArray = arr
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
@@ -643,7 +677,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		md:           md,
 		physicalPlan: physPlan,
 		explain:      logicalOp.Explain(""),
-		isUpdate:     true,
 	}, nil
 }
 
@@ -724,13 +757,25 @@ type cascadesPlan struct {
 	md               *recordlayer.RecordMetaData
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
-	isUpdate         bool
 	scalarSubqueries []scalarSubqueryBinding
 	sqlLimit         int64 // Go extension: <0 means no limit
 	sqlOffset        int64
 }
 
-func (p *cascadesPlan) IsUpdate() bool { return p.isUpdate }
+// IsUpdate reports whether this is a DML plan (INSERT/UPDATE/DELETE),
+// derived from the physical plan type rather than a stored flag —
+// matching Java's QueryPlan.isUpdatePlan() (an instanceof check), so
+// update-ness can never drift from the plan shape (DIVERGENCES Principle
+// 10). cascadesPlan is only built for real execution (planDMLExplainOnly
+// handles EXPLAIN separately), so there is no explain-mode case here.
+func (p *cascadesPlan) IsUpdate() bool {
+	switch p.physicalPlan.(type) {
+	case *plans.RecordQueryInsertPlan, *plans.RecordQueryUpdatePlan, *plans.RecordQueryDeletePlan:
+		return true
+	default:
+		return false
+	}
+}
 
 func (p *cascadesPlan) Explain() string {
 	if p.physicalPlan != nil {
@@ -769,6 +814,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		sqlLimit:         p.sqlLimit,
 		sqlOffset:        p.sqlOffset,
 		cols:             cols,
+		respectActiveTx:  p.IsUpdate(),
 	}
 
 	// Eagerly fetch the first page so execution errors (type mismatches,
@@ -777,7 +823,39 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return query.Result{}, err
 	}
 
+	// DML (INSERT/UPDATE/DELETE) plans emit one row per affected record;
+	// the affected-row count is the JDBC update count, not a result set.
+	// Drain and count, matching Java's AbstractEmbeddedStatement.countUpdates.
+	// The mutations have already run inside fetchPage's transaction(s).
+	if p.IsUpdate() {
+		n, err := pr.countAll()
+		pr.Close()
+		if err != nil {
+			return query.Result{}, err
+		}
+		return query.Result{RowsAffected: n}, nil
+	}
+
 	return query.Result{Rows: pr}, nil
+}
+
+// countAll drains every remaining row, returning the total count. Used
+// for DML where the plan emits one row per affected record and the
+// caller wants the count rather than the rows. nextRow drives
+// cross-page fetching; LIMIT/OFFSET never apply to DML so counting the
+// raw row stream is correct.
+func (r *paginatingRows) countAll() (int64, error) {
+	var n int64
+	for {
+		_, err := r.nextRow()
+		if err == io.EOF {
+			return n, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		n++
+	}
 }
 
 // paginatingRows implements driver.Rows with cross-transaction pagination.
@@ -806,6 +884,13 @@ type paginatingRows struct {
 	exhausted    bool
 	closed       bool
 	fetchErr     error
+
+	// respectActiveTx routes page execution through the connection's
+	// open explicit transaction (runInTx) instead of a fresh auto-commit
+	// transaction (DB.Run). Set for DML so INSERT/UPDATE/DELETE inside a
+	// BeginTx block join that transaction and commit only on COMMIT —
+	// matching the naive path. SELECT keeps the auto-commit snapshot.
+	respectActiveTx bool
 }
 
 func (r *paginatingRows) Columns() []string {
@@ -957,7 +1042,16 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
-	_, txErr := c.sess.DB.Run(r.ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// DML joins an open explicit transaction (runInTx); SELECT runs in a
+	// fresh auto-commit transaction (DB.Run). runInTx falls back to DB.Run
+	// when no explicit transaction is active, so auto-commit DML behaves
+	// identically to before.
+	runTx := c.sess.DB.Run
+	if r.respectActiveTx {
+		runTx = c.runInTx
+	}
+
+	_, txErr := runTx(r.ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		r.buf = r.buf[:0]
 		r.bufPos = 0
 
