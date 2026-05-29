@@ -142,6 +142,85 @@ of stable ids + cardinalities — no map iteration in the comparison.
 * **No regression:** 46/46 targets incl. plandiff conformance; stress-1M before/after;
   determinism 10×; non-join plan stability (single-table/aggregate EXPLAIN unchanged).
 
+## Implementation findings (probe-driven, this shift)
+
+The FDB probe (3-table chain, two FROM-orders) drove the diagnosis deeper than
+the original three-point fix. Precise state:
+
+1. **Order-symmetric cost — FIXED.** `FullUnorderedScan` reported `CPU=0`, so the
+   NLJ cost `outerCard·innerCard·FilterCPU` was commutative — `cost(A⋈B)==cost(B⋈A)`
+   exactly. Graefe: "scans are free" is the bug, not the NLJ operator (pushing a
+   correction into NLJ breaks compositionality when a third join sits on top).
+   Fix: scan `CPU = card·ScanCPU` (the dead `ScanCPU` constant, dropped 0.1→0.05,
+   kept < FilterCPU). plandiff conformance green (blast radius contained).
+2. **First-member cost recursion — FIXED.** `BestMemberCostWith` (step 1) +
+   `compareJoinOrdering` (replaces the shallow `compareFlatMapJoinOrdering`,
+   generalised to FlatMap **and** NestedLoopJoin pairs) now rank join orders by
+   recursive best-member total cost. Verified firing and discriminating: e.g.
+   costA.Total=1077 vs costB.Total=769 under real stats.
+3. **Enumeration is NOT the gap.** Instrumentation confirmed `PartitionSelectRule`
+   fires (3 quantifiers, all bipartitions) — the flat select forms and orders are
+   enumerated into the memo. Graefe's Q4 holds.
+4. **Stats flow to rule-internal cost comparisons — FIXED.** The NLJ rule and the
+   pervasive `getWinnerForOrdering`/`findBestValidPhysicalExpr` (winner_lookup.go,
+   used by ~15 implementation rules) selected children via the **nil-stats**
+   `PlanningCostModelLess` — every table costing `LeafScanCardinality=1e6`, so child
+   selection tied and committed to FROM-order. Fix: added `Stats` +
+   `CostModel()` to `ExpressionRuleCall` (populated from `p.stats` at the real
+   planner construction site, unified_tasks.go:186); threaded a comparator param
+   through `getWinnerForOrdering`/`findBestValidPhysicalExpr`/`getWinnerPlan`; every
+   rule caller passes `call.CostModel()`. **Verified:** after this, ALL top-level
+   join comparisons use real stats (instrumented: costs 769/909/1077/1083, the
+   huge ~1e17 nil-stats regime gone) and `compareJoinOrdering` correctly picks the
+   cheaper (769 over 1077). The probe's INNER joins now drive from the smaller side
+   (`NLJ(T2,T3)` not `NLJ(T3,T2)`). The cost model is now complete and correct.
+
+5. **REMAINING (architectural, NOT a cost bug) — associativity alternatives are
+   pruned at the REWRITING→PLANNING boundary.** With the cost model fixed, the probe
+   STILL doesn't fully converge: big-first picks `T1⋈(T2⋈T3)` (cost 1077, big
+   intermediate), small-first picks the optimal `(T1⋈T2)⋈T3` (cost 769). The cost
+   model *would* pick 769 — but for the big-first FROM-order the cheaper associativity
+   **is never offered as a top-level candidate**. `compareJoinOrdering` is only ever
+   asked to compare the alternatives that reach the top Reference, and for big-first
+   the `(T1⋈T2)⋈T3` shape isn't among them. Root cause: the query-engine lesson
+   "AdvancePlannerStage promotes exactly ONE REWRITING winner as the PLANNING seed" —
+   the associativity is fixed during REWRITING by `RewritingCostModelLess` (structural:
+   #selects/#predicates/hash-tiebreak, **not** cardinality), so the FROM-order-biased
+   associativity survives and the alternative is gone before the stats-aware PLANNING
+   cost model can choose. This **contradicts RFC-041's premise** ("enumeration is
+   sufficient; only the cost was blind"): enumeration *fires* (PartitionSelectRule, all
+   bipartitions) but its alternatives don't *survive* the phase boundary. **Fix
+   options (need Graefe):** (a) preserve multiple join-order associativities into
+   PLANNING rather than promoting one REWRITING winner; (b) make join enumeration a
+   PLANNING-phase activity so the stats-aware cost drives it; (c) cost-aware REWRITING
+   winner selection for join shapes. This is a phase-architecture change, materially
+   larger than the cost-model fix, and is the true last blocker for "proven".
+
+   **Graefe consult #2 + first attempt (this shift):** Graefe confirmed Java has the
+   SAME two-phase REWRITING→PLANNING split with single-winner promotion (Java asserts
+   `Verify(finalMembers.size()==1)` in `Reference.advancePlannerStage`), so the split is
+   NOT a Go invention to remove. His diagnosis: join enumeration is registered in Go's
+   REWRITING set (`DefaultExpressionRules`, default_rules.go:120-121) whereas Java has it
+   ONLY in `PlanningRuleSet` — firing in REWRITING lets the structural
+   `RewritingCostModelLess` prune associativities before the stats-aware PLANNING cost.
+   **Tried option (b):** removed the two rules from `DefaultExpressionRules` (they already
+   live in `PlanningExplorationRules`). Result: the probe did **NOT** converge (plans
+   byte-identical), breaking only `TestDefaultRules_ExpectedCount`. So the registration is
+   necessary-but-insufficient — PLANNING-phase enumeration either isn't re-firing on the
+   promoted seed or its alternative associativities don't survive PLANNING's own winner
+   selection as competing members. Reverted the move pending deeper investigation (don't
+   ship an architectural change that doesn't achieve its goal). **Next:** instrument the
+   PLANNING phase — confirm whether `PartitionSelectRule` fires there on the 3-way select
+   and whether both associativities reach the top Reference as competing members; fix the
+   PLANNING re-enumeration/retention (`advancePlannerStage` re-seed + OptimizeGroup
+   exploratory-alternative retention).
+
+Landed so far (committed): step 1 `BestMemberCostWith`. In flight (working tree,
+plandiff-clean, 25/25 non-FDB green, stress-1M CLEAN): scan-CPU + `compareJoinOrdering`
++ stats threading (ExpressionRuleCall.Stats, winner_lookup comparator param). These are
+correct, necessary prerequisites — they make the cost model able to pick the optimal
+order — but the proof stays red until blocker #5 (associativity retention) is resolved.
+
 ## Status progression
 
 Draft → Implemented when the proof is green and the no-regression gate passes.

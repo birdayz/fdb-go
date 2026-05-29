@@ -59,8 +59,11 @@ func TestEstimateCost_FullScanIsLeafCardinality(t *testing.T) {
 	if c.Cardinality != LeafScanCardinality {
 		t.Fatalf("scan cardinality=%v, want %v", c.Cardinality, LeafScanCardinality)
 	}
-	if c.CPU != 0 {
-		t.Fatalf("scan CPU=%v, want 0", c.CPU)
+	// A scan's CPU is card·ScanCPU (reading N rows costs ~N) — NOT zero
+	// (RFC-041): a free scan made the nested-loop join cost order-symmetric,
+	// so the planner could not pick the drive-from-smaller join order.
+	if want := LeafScanCardinality * ScanCPU; c.CPU != want {
+		t.Fatalf("scan CPU=%v, want %v (card·ScanCPU)", c.CPU, want)
 	}
 }
 

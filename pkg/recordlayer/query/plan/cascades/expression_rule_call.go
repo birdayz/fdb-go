@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // ExpressionRuleCall is the rule-invocation context used by
@@ -39,9 +40,28 @@ type ExpressionRuleCall struct {
 	Reference   *expressions.Reference
 	Context     PlanContext
 	Constraints *ConstraintMap
+	// Stats is the planner's table-cardinality provider, threaded so a
+	// rule's internal cost comparisons (e.g. selecting the best physical
+	// join child) use REAL cardinalities rather than the default
+	// LeafScanCardinality. Nil on test/utility firing paths — CostModel()
+	// falls back to the default-stats comparator. Without this, the NLJ
+	// rule's findBestPhysicalExpr ranks join children with every table at
+	// LeafScanCardinality, so child selection ties and commits to the
+	// FROM-clause order instead of the cost-optimal one (RFC-041).
+	Stats       properties.StatisticsProvider
 	memo        *Memo
 	yieldedExps []expressions.RelationalExpression
 	yieldFn     func(expressions.RelationalExpression) bool
+}
+
+// CostModel returns the comparator a rule should use for internal best-plan
+// selection: stats-aware when the planner threaded statistics, else the
+// default-stats comparator.
+func (c *ExpressionRuleCall) CostModel() func(a, b expressions.RelationalExpression) bool {
+	if c.Stats != nil {
+		return NewPlanningCostModelLess(c.Stats)
+	}
+	return PlanningCostModelLess
 }
 
 // NewExpressionRuleCall builds a rule-call against a Reference + an

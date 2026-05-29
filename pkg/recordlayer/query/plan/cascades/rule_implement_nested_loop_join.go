@@ -73,8 +73,12 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	leftExpr := findBestPhysicalExpr(leftRef, PlanningCostModelLess)
-	rightExpr := findBestPhysicalExpr(rightRef, PlanningCostModelLess)
+	// Stats-aware child selection: with real cardinalities the cheaper join
+	// order (drive from the smaller side) wins; under default stats every
+	// table is LeafScanCardinality and selection ties to FROM-order (RFC-041).
+	costModel := call.CostModel()
+	leftExpr := findBestPhysicalExpr(leftRef, costModel)
+	rightExpr := findBestPhysicalExpr(rightRef, costModel)
 	if leftExpr == nil || rightExpr == nil {
 		return
 	}
@@ -248,7 +252,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		return
 	}
 
-	outerExpr := getWinnerForOrdering(outerRef, PreserveOrdering())
+	outerExpr := getWinnerForOrdering(outerRef, PreserveOrdering(), call.CostModel())
 	if outerExpr == nil {
 		return
 	}
@@ -258,7 +262,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 	outerPlan := outerPh.GetRecordQueryPlan()
 
-	innerExpr := getWinnerForOrdering(innerRef, PreserveOrdering())
+	innerExpr := getWinnerForOrdering(innerRef, PreserveOrdering(), call.CostModel())
 	if innerExpr == nil {
 		return
 	}
@@ -394,9 +398,9 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		return
 	}
 
-	leftExpr := getWinnerForOrdering(leftRef, PreserveOrdering())
-	rightExpr := getWinnerForOrdering(rightRef, PreserveOrdering())
-	existExpr := getWinnerForOrdering(existRef, PreserveOrdering())
+	leftExpr := getWinnerForOrdering(leftRef, PreserveOrdering(), call.CostModel())
+	rightExpr := getWinnerForOrdering(rightRef, PreserveOrdering(), call.CostModel())
+	existExpr := getWinnerForOrdering(existRef, PreserveOrdering(), call.CostModel())
 	if leftExpr == nil || rightExpr == nil || existExpr == nil {
 		return
 	}

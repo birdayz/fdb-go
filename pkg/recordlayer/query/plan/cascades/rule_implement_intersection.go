@@ -54,7 +54,7 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 		if innerRef == nil {
 			return
 		}
-		winner := getWinnerForOrdering(innerRef, PreserveOrdering())
+		winner := getWinnerForOrdering(innerRef, PreserveOrdering(), call.CostModel())
 		if winner == nil {
 			return // any child not physical → skip the whole rule fire
 		}

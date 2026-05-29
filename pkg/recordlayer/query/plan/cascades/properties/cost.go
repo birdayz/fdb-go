@@ -86,9 +86,9 @@ const (
 	IntersectionCPU = 1.0
 	SelectCPU       = 0.5
 	WriteCPU        = 1.0
-	FetchCPU        = 1.5 // per-row base-record fetch via PK lookup (random I/O)
-	StreamingAggCPU = 1.2 // cheaper than DistinctCPU (no hash table, pre-sorted input)
-	ScanCPU         = 0.1 // per-row sequential I/O cost for full table/index scans
+	FetchCPU        = 1.5  // per-row base-record fetch via PK lookup (random I/O)
+	StreamingAggCPU = 1.2  // cheaper than DistinctCPU (no hash table, pre-sorted input)
+	ScanCPU         = 0.05 // per-row sequential I/O cost for full table/index scans (kept < FilterCPU so a bare scan is never costed as a filtered scan)
 )
 
 // IndexColumnSelectivity returns the selectivity for a single index
@@ -485,15 +485,22 @@ func localCost(e expressions.RelationalExpression, child []Cost, stats Statistic
 	case *expressions.FullUnorderedScanExpression:
 		// A scan over multiple record types emits the SUM of their
 		// per-type cardinalities. Empty list → LeafScanCardinality.
+		// CPU = card·ScanCPU: reading N rows costs ~N (sequential I/O).
+		// This is load-bearing for join ordering (RFC-041): a scan that
+		// reported CPU=0 made the nested-loop join cost order-symmetric
+		// (cost(A⋈B)==cost(B⋈A)), so the cost model could not pick the
+		// drive-from-smaller order. With a per-row scan cost, NLJ's
+		// "read outer once" term (outerCard·ScanCPU rolled up via the
+		// outer child's CPU) makes driving from the smaller side cheaper.
 		types := ex.GetRecordTypes()
 		if len(types) == 0 {
-			return Cost{Cardinality: LeafScanCardinality, CPU: 0}
+			return Cost{Cardinality: LeafScanCardinality, CPU: LeafScanCardinality * ScanCPU}
 		}
 		total := 0.0
 		for _, name := range types {
 			total += stats.RecordTypeCardinality(name)
 		}
-		return Cost{Cardinality: total, CPU: 0}
+		return Cost{Cardinality: total, CPU: total * ScanCPU}
 
 	case *expressions.LogicalFilterExpression:
 		if len(child) == 0 {

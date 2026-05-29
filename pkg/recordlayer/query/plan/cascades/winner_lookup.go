@@ -13,16 +13,22 @@ import (
 //
 // For PRESERVE / nil ordering, returns the globally cheapest physical
 // plan (NoProperties winner or findBestPhysicalExpr fallback).
-func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrdering) expressions.RelationalExpression {
+// less is the cost comparator used for the un-stamped fallback scans; pass a
+// stats-aware comparator (call.CostModel()) so join sub-product winners are
+// chosen by real cardinality rather than the default-stats tie (RFC-041).
+func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
 	if ref == nil {
 		return nil
+	}
+	if less == nil {
+		less = PlanningCostModelLess
 	}
 
 	if ordering == nil || ordering.IsPreserve() {
 		if w := ref.Winner(expressions.NoProperties); w != nil {
 			return w
 		}
-		return findBestValidPhysicalExpr(ref)
+		return findBestValidPhysicalExpr(ref, less)
 	}
 
 	required := requestedOrderingToProps(ordering)
@@ -53,7 +59,7 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrderin
 			continue
 		}
 		if memberSatisfiesOrdering(m, required) {
-			if bestOrdered == nil || PlanningCostModelLess(m, bestOrdered) {
+			if bestOrdered == nil || less(m, bestOrdered) {
 				bestOrdered = m
 			}
 		}
@@ -66,12 +72,15 @@ func getWinnerForOrdering(ref *expressions.Reference, ordering *RequestedOrderin
 	if w := ref.Winner(expressions.NoProperties); w != nil {
 		return w
 	}
-	return findBestValidPhysicalExpr(ref)
+	return findBestValidPhysicalExpr(ref, less)
 }
 
 // findBestValidPhysicalExpr returns the cheapest physical member of ref
-// under PlanningCostModelLess, excluding nil-inner Fetch shells.
-func findBestValidPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
+// under `less`, excluding nil-inner Fetch shells.
+func findBestValidPhysicalExpr(ref *expressions.Reference, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+	if less == nil {
+		less = PlanningCostModelLess
+	}
 	var best expressions.RelationalExpression
 	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); !ok {
@@ -80,7 +89,7 @@ func findBestValidPhysicalExpr(ref *expressions.Reference) expressions.Relationa
 		if isNilInnerFetch(m) {
 			continue
 		}
-		if best == nil || PlanningCostModelLess(m, best) {
+		if best == nil || less(m, best) {
 			best = m
 		}
 	}
@@ -89,8 +98,8 @@ func findBestValidPhysicalExpr(ref *expressions.Reference) expressions.Relationa
 
 // getWinnerPlan returns the RecordQueryPlan from the winner for the
 // given ordering, or nil if no physical plan exists.
-func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering) plans.RecordQueryPlan {
-	winner := getWinnerForOrdering(ref, ordering)
+func getWinnerPlan(ref *expressions.Reference, ordering *RequestedOrdering, less func(a, b expressions.RelationalExpression) bool) plans.RecordQueryPlan {
+	winner := getWinnerForOrdering(ref, ordering, less)
 	if winner == nil {
 		return nil
 	}

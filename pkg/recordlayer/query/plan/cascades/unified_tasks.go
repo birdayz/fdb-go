@@ -188,6 +188,7 @@ func (t *TransformExprTask) Run(p *Planner) {
 				Reference:   t.Ref,
 				Context:     p.ctx,
 				Constraints: p.constraintMap,
+				Stats:       p.stats,
 				memo:        p.memo,
 				yieldFn:     yieldFn,
 			}
