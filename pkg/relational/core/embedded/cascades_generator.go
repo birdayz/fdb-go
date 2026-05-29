@@ -37,18 +37,13 @@ import (
 )
 
 // cascadesGenerator is the single query generator for all SQL
-// statements. SELECT and DML (INSERT/UPDATE/DELETE) route through
-// the Cascades planner. EXPLAIN, SHOW, DDL, and transaction
-// statements are handled directly via PlanFunc wrappers around
-// the connection's exec* methods.
-//
-// When execMode is true (set by ExecContext), DML is routed through
-// execStatement rather than the Cascades pipeline, matching the
-// pre-existing ExecContext behavior.
+// statements. SELECT and DML (INSERT/UPDATE/DELETE, VALUES and SELECT)
+// route through the Cascades planner. EXPLAIN, SHOW, DDL, and
+// transaction statements are handled directly via PlanFunc wrappers
+// around the connection's exec* methods.
 type cascadesGenerator struct {
-	c        *EmbeddedConnection
-	cache    *PlanCache
-	execMode bool // true when called from ExecContext
+	c     *EmbeddedConnection
+	cache *PlanCache
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -59,12 +54,6 @@ func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
 		c:     c,
 		cache: c.planCache,
 	}
-}
-
-func newCascadesGeneratorForExec(c *EmbeddedConnection) *cascadesGenerator {
-	g := newCascadesGenerator(c)
-	g.execMode = true
-	return g
 }
 
 func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, error) {

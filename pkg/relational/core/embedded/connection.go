@@ -313,7 +313,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 		return nil, err
 	}
 
-	gen := newCascadesGeneratorForExec(c)
+	gen := newCascadesGenerator(c)
 	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
 		return nil, translateFDBError(err)

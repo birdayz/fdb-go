@@ -58,6 +58,18 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 		}
 	}
 
+	// A NOT NULL column absent from the (explicit) column list gets no value
+	// in any row — reject once up front (constant across rows), matching
+	// naive execInsert.
+	fds := desc.Fields()
+	for i := 0; i < fds.Len(); i++ {
+		fd := fds.Get(i)
+		if fd.Cardinality() == protoreflect.Required && !colsContainFold(cols, string(fd.Name())) {
+			return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+				"column %q has NOT NULL constraint but no value was provided", fd.Name())
+		}
+	}
+
 	var rows []values.Value
 	for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
 		exprs := rowCtx.AllExpressionWithOptionalName()
@@ -117,17 +129,6 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 				Name:  string(fd.Name()),
 				Value: &values.ConstantValue{Value: fieldVal, Typ: values.UnknownType},
 			})
-		}
-
-		// A NOT NULL column absent from the explicit column list gets no
-		// value at all — reject, matching naive execInsert.
-		fds := desc.Fields()
-		for i := 0; i < fds.Len(); i++ {
-			fd := fds.Get(i)
-			if fd.Cardinality() == protoreflect.Required && !colsContainFold(cols, string(fd.Name())) {
-				return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
-					"column %q has NOT NULL constraint but no value was provided", fd.Name())
-			}
 		}
 
 		rows = append(rows, values.NewRecordConstructorValue(fields...))

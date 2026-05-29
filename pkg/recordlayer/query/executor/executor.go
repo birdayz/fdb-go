@@ -1535,9 +1535,15 @@ func executeInsert(
 // (case-insensitively), ignoring datum keys that don't name a target
 // column. This matters for INSERT … SELECT: the projection is aliased to
 // the target columns, but the datum also carries the projection's own
-// output names — those extra keys must be ignored, not error. Arity /
-// NOT NULL / "expected Record but got Primitive" are enforced at plan
-// time, so this only converts and sets.
+// output names — those extra keys must be ignored, not error.
+//
+// For INSERT … VALUES, arity / NOT NULL / "expected Record but got
+// Primitive" are enforced at plan time (buildInsertValuesArray). For
+// INSERT … SELECT, a NULL projected into a NOT NULL column is NOT caught
+// here — it falls through to the record store's Required-field marshal at
+// save time (a less precise error than the plan-time NOT_NULL_VIOLATION).
+// This matches Java, where proto enforcement is the backstop for dynamic
+// sources; it's intentional, not an oversight.
 func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any) (proto.Message, error) {
 	msg := dynamicpb.NewMessage(desc)
 	refl := msg.ProtoReflect()
