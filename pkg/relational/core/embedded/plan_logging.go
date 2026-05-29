@@ -48,7 +48,8 @@ const MaxLoggedSQLLength = 1024
 // scalar "estimated cost": the Cascades cost model is a comparator, not a
 // number — plan identity is PlanHash + PlanExplain, matching Java.
 type PlanGenerationInfo struct {
-	// SQL is the query text, truncated to MaxLoggedSQLLength.
+	// SQL is the original whitespace-preserved query text (from the parse
+	// tree's token interval, not GetText()), truncated to MaxLoggedSQLLength.
 	SQL string
 	// PlanHash is the deterministic hash of the chosen physical plan tree,
 	// or 0 when no physical plan was produced (e.g. planning error).

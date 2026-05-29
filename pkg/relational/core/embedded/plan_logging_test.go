@@ -94,11 +94,19 @@ func TestPlanLogging_MissThenHit(t *testing.T) {
 	if first.PlanningDuration <= 0 {
 		t.Errorf("planning duration should be positive, got %v", first.PlanningDuration)
 	}
+	if first.CacheNumEntries != 1 {
+		t.Errorf("miss event cache num entries = %d, want 1 (after Put)", first.CacheNumEntries)
+	}
 	if second.CacheNumEntries != 1 {
-		t.Errorf("cache num entries = %d, want 1", second.CacheNumEntries)
+		t.Errorf("hit event cache num entries = %d, want 1", second.CacheNumEntries)
 	}
 	if first.Err != nil || second.Err != nil {
 		t.Errorf("unexpected errors: %v / %v", first.Err, second.Err)
+	}
+	// Logged SQL must preserve whitespace (canonicalTextOf), not be the
+	// token-concatenated GetText() garbage ("FROMorders").
+	if !strings.Contains(first.SQL, "FROM orders") {
+		t.Errorf("logged SQL not whitespace-preserved: %q", first.SQL)
 	}
 }
 

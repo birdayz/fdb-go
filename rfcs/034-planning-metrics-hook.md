@@ -1,6 +1,6 @@
 # RFC-034: Planning-metrics hook for operational debuggability (P2.2)
 
-Status: Draft
+Status: Implemented
 
 ## Problem
 

@@ -256,7 +256,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	sqlText := q.GetText()
 	var ls *planLogScope
 	if logMetrics {
-		ls = g.beginPlanLog(ctx, sqlText)
+		// Log the original whitespace-preserved SQL (canonicalTextOf), not
+		// q.GetText() — the latter concatenates tokens without whitespace
+		// ("SELECTid=1FROMorders"), which is useless to an operator. The cache
+		// key still uses GetText() (RFC-029), a separate concern.
+		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
 	}
 	defer func() { ls.finish(err) }()
 
@@ -566,7 +570,8 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	// DML is never cached; the cache event is always Skip on success.
-	ls := g.beginPlanLog(ctx, dml.GetText())
+	// Log the original whitespace-preserved SQL (see planSelectCascades).
+	ls := g.beginPlanLog(ctx, canonicalTextOf(dml))
 	defer func() { ls.finish(err) }()
 
 	if err := c.ensureMetaData(ctx); err != nil {
