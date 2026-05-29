@@ -13,6 +13,7 @@ go_library(
         "pullup.go",
         "rebase.go",
         "replace.go",
+        "semantic_equals.go",
         "semantic_hash.go",
         "simplifier_value.go",
         "type.go",
