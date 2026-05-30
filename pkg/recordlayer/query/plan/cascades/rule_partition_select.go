@@ -337,6 +337,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 					merged = append(merged, a)
 				}
 			}
+			// Canonical order: JoinMergeAllValue equality compares the alias slice
+			// positionally, so two bipartitions producing the same upper merge with
+			// different alias orders must intern. allAliases iterates in quantifier
+			// order, not sorted. (RFC-043; @claude review.)
+			sort.Slice(merged, func(i, j int) bool { return merged[i].Name() < merged[j].Name() })
 			return values.NewJoinMergeAllValue(merged...)
 		}
 
@@ -661,11 +666,20 @@ func aliasesIntersect(
 // "$m_" prefix cannot collide with a table/quantifier alias (no SQL identifier
 // starts with "$m_"). (RFC-043.)
 func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.CorrelationIdentifier {
+	// Sort internally so the alias is stable regardless of the caller's order —
+	// the "$m_..." identity is a function of the live SET, not its iteration
+	// order. (Callers happen to pass a sorted slice today, but the stability
+	// must not depend on that invisible invariant. @claude review.)
+	names := make([]string, len(live))
+	for i, a := range live {
+		names[i] = a.Name()
+	}
+	sort.Strings(names)
 	var b strings.Builder
 	b.WriteString("$m")
-	for _, a := range live {
+	for _, n := range names {
 		b.WriteByte('_')
-		b.WriteString(a.Name())
+		b.WriteString(n)
 	}
 	return values.NamedCorrelationIdentifier(b.String())
 }
