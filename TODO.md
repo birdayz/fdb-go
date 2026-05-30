@@ -167,3 +167,18 @@ For correlated scalar subqueries (Go-only extension, Java rejects at grammar lev
 4. NLJ rule: detect NullOnEmpty → wrap inner with FirstOrDefault + FlatMap
 
 NLJ wrapper correlation propagation (walks predicates) is already correct and active.
+
+### 7.5 Structural interning key for re-enumerated join sub-products (RFC-043 follow-up)
+
+`PartitionSelectRule.mergeQuantifierAlias` (RFC-043) synthesizes a **string** quantifier
+alias (`$m_<len>:<name>...`, netstring-injective) so that identical merged join
+sub-products reached from different bipartitions wrap under the same alias and intern to
+one memo Reference. This string-alias-as-interning-key is a workaround for the absence of
+true structural/alias-aware memo equality on the re-enumeration path — and it has already
+produced two bugs (order-dependence, then non-injectivity on `_`-containing names; both
+fixed + pinned). Graefe + Torvalds both flagged it as a non-blocking smell: the right key
+is the memo's structural/hash equality over the live-alias SET (RFC-039/040 `MemoEqual` /
+alias-invariant `HashCodeWithoutChildren`), not a hand-rolled serialization. Replace the
+synthesized stable alias with structural interning when the ≥5-way enumeration-efficiency
+work lands (it ties into RFC-039 broad memo merging). Until then: do NOT expand the string
+scheme further. Scoped to the deferred ≥5-way path; 4-way is unaffected.

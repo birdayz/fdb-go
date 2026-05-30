@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -660,16 +661,13 @@ func aliasesIntersect(
 }
 
 // mergeQuantifierAlias returns a STABLE, collision-free quantifier alias for the
-// merged lower over the given live aliases. Deterministic in the live set (which
-// the caller has sorted), so identical merged sub-joins reached from different
-// bipartitions wrap under the same alias and intern to one memo Reference. The
-// "$m_" prefix cannot collide with a table/quantifier alias (no SQL identifier
-// starts with "$m_"). (RFC-043.)
+// merged lower over the given live aliases. Deterministic in the live SET, so
+// identical merged sub-joins reached from different bipartitions wrap under the
+// same alias and intern to one memo Reference. The "$m" prefix cannot collide
+// with a table/quantifier alias (no SQL identifier starts with "$"). (RFC-043.)
 func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.CorrelationIdentifier {
 	// Sort internally so the alias is stable regardless of the caller's order —
-	// the "$m_..." identity is a function of the live SET, not its iteration
-	// order. (Callers happen to pass a sorted slice today, but the stability
-	// must not depend on that invisible invariant. @claude review.)
+	// the identity is a function of the live SET, not its iteration order.
 	names := make([]string, len(live))
 	for i, a := range live {
 		names[i] = a.Name()
@@ -678,7 +676,16 @@ func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.Correlatio
 	var b strings.Builder
 	b.WriteString("$m")
 	for _, n := range names {
+		// LENGTH-PREFIX each name (`_<len>:<name>`) so the encoding is INJECTIVE
+		// even when a name itself contains the '_' separator: {A, B_C} and
+		// {A_B, C} must NOT collapse to the same alias (Codex review). A plain
+		// '_'-join is ambiguous; with the length prefix, distinct live sets map to
+		// distinct aliases, preserving the "this alias identifies this live set"
+		// invariant that nested re-enumeration relies on (a collision could build a
+		// SelectExpression with duplicate quantifier aliases and merge distinct rows).
 		b.WriteByte('_')
+		b.WriteString(strconv.Itoa(len(n)))
+		b.WriteByte(':')
 		b.WriteString(n)
 	}
 	return values.NamedCorrelationIdentifier(b.String())
