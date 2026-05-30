@@ -194,7 +194,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		var upperPredicates []predicates.QueryPredicate
 		var deeplyCorrelatedPredicates []predicates.QueryPredicate
 
-		for _, pred := range sel.GetPredicates() {
+		for _, pred := range flattenConjuncts(sel.GetPredicates()) {
 			correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
 			correlatedToLower := intersectAliases(lowerAliases, correlatedTo)
 			correlatedToUpper := intersectAliases(upperAliases, correlatedTo)
