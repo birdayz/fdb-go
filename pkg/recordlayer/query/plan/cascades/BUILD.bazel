@@ -245,6 +245,7 @@ go_test(
         "matched_ordering_part_test.go",
         "max_match_map_fuzz_test.go",
         "max_match_map_test.go",
+        "memo_activation_test.go",
         "memo_fuzz_test.go",
         "memo_merge_multiway_test.go",
         "memo_merge_test.go",

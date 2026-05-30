@@ -247,18 +247,19 @@ func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.R
 func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expressions.Quantifier) *expressions.Reference {
 	candidates := m.findCandidateParents(qs)
 
-	// Check each candidate for structural containment.
+	// Check each candidate for alias-aware containment (RFC-039 PR-A
+	// activation): MemoEqual builds the node's own quantifier-alias map, so
+	// members equivalent up to a consistent quantifier-alias renaming intern
+	// into the SAME Reference (the prior alias-sensitive interning gave them
+	// distinct References). Children intern alias-aware bottom-up, so the
+	// topological candidate narrowing surfaces equivalent parents.
 	h := expr.HashCodeWithoutChildren()
 	for _, ref := range candidates {
 		for _, member := range ref.Members() {
 			if member.HashCodeWithoutChildren() != h {
 				continue
 			}
-			if !member.EqualsWithoutChildren(expr, expressions.EmptyAliasMap()) {
-				continue
-			}
-			// Node-info matches. Check child References match by pointer.
-			if sameChildRefs(member, expr) {
+			if expressions.MemoEqual(member, expr) {
 				return ref
 			}
 		}
@@ -362,30 +363,12 @@ func (m *Memo) refContains(ref *expressions.Reference, expr expressions.Relation
 		if member.HashCodeWithoutChildren() != h {
 			continue
 		}
-		if !member.EqualsWithoutChildren(expr, expressions.EmptyAliasMap()) {
-			continue
-		}
-		if sameChildRefs(member, expr) {
+		// Alias-aware (RFC-039 PR-A activation).
+		if expressions.MemoEqual(member, expr) {
 			return true
 		}
 	}
 	return false
-}
-
-// sameChildRefs returns true if a and b have the same Quantifier count
-// and every Quantifier's Reference is the same pointer.
-func sameChildRefs(a, b expressions.RelationalExpression) bool {
-	aQs := a.GetQuantifiers()
-	bQs := b.GetQuantifiers()
-	if len(aQs) != len(bQs) {
-		return false
-	}
-	for i := range aQs {
-		if aQs[i].GetRangesOver() != bQs[i].GetRangesOver() {
-			return false
-		}
-	}
-	return true
 }
 
 // indexReference recursively indexes ref and all References reachable
