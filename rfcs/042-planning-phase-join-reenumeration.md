@@ -1,6 +1,6 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v9 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
+**Status:** v10 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
 gap closed at translation time) and a **correctness** bug in re-enumerated
 multi-way joins fixed (degenerate partitions returned wrong/NULL rows, not merely
 suboptimal plans). The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
@@ -350,12 +350,32 @@ and the prime suspect (L3.1 "flat result value") mis-roots the bug. v5's L3.1 is
 
   Remaining for the probe: the classification change itself (route spanning to
   upper) — with the `fieldName` fix in place it yields byte-identical correct
-  rows for the t1/t2/t3 chain, but applied unconditionally it regresses other
-  3-way shapes (the A→B→C chain `TestFDB_CascadesThreeWayJoin` and the
-  Customer/Region/Sales star `TestFDB_ThreeTableFrom` → 0 rows). It needs
-  surgical scoping so it generates the re-enumerated index-probe associativity
-  WITHOUT changing predicate placement for the partitions those other shapes
-  rely on. That scoping is the last step (L3.1b).
+  rows for the **indexed** t1/t2/t3 chain (the index-probe associativity wins on
+  cost), but applied unconditionally it regresses **non-indexed** 3-way shapes
+  (the A→B→C chain `TestFDB_CascadesThreeWayJoin`, the Customer/Region/Sales star
+  `TestFDB_ThreeTableFrom` → 0 rows). Instrumented why: the change makes
+  PartitionSelect also generate the **cross-product** partition (e.g. `{A,C}|{B}`
+  for the chain, A and C unrelated). With both spanning predicates folded, that
+  lower is a Case-3 `RecordConstructorValue{_0:A, _1:C}`, and the upper predicates
+  are translated to `FieldValue(QOV(lowerQ), _i).col`. At execution the top NLJ's
+  `mergeRows` flattens the `{A,C}` sub-product row under the lower quantifier
+  alias, producing over-qualified keys (`A.B_REF`, `q$N.A_ID`, …) but **not** the
+  nested `q$N._0.A_ID` the translated predicate looks for → the predicate
+  evaluates to `<nil>` → 0 rows. For the indexed chain this broken cross-product
+  plan loses on cost to the index-probe, so it never surfaces; without an index
+  it wins and the 0 rows show.
+
+  **So byte-identical N≥3 ordering needs THREE executor/planner fixes, NOT TODO
+  7.1:** (1) the `fieldName` hash-join qualification — **DONE** (`d420567b`);
+  (2) the spanning-predicate classification change (generates the re-enumerated
+  associativities); (3) **Case-3 `RecordConstructorValue` predicate resolution** —
+  the executor must resolve a translated `FieldValue(QOV(lowerQ), _i).col` against
+  the merged row (navigate the `_i` constructor field), and/or `mergeRows` must
+  expose the sub-product columns under the names the translated predicate uses.
+  (2)+(3) are coupled — (2) is safe only once (3) makes the Case-3 plans it
+  generates execute correctly. (3) is the genuine remaining executor work; it is
+  Java's `RecordConstructorValue`+`TranslationMap` contract (Graefe: preserve it),
+  so the fix is in the executor's nested-reference resolution, not the plan shape.
 * **L3.3 (STOP signal, not a step) — winner-selection ties.** If, after L3.2, the
   index-probe plan only wins via a tie-break, that means it is **not strictly
   cheaper** → L3.2 is incomplete; STOP and re-measure, do not paper over with an
