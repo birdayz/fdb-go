@@ -201,15 +201,21 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 			if len(correlatedToUpper) > 0 {
 				if len(correlatedToLower) > 0 {
-					if intersectAliases(correlatedToUpper, uppersDependingOnLowers) == nil || len(intersectAliases(correlatedToUpper, uppersDependingOnLowers)) == 0 {
-						// Can do in lower.
-						lowerPredicates = append(lowerPredicates, pred)
-					} else {
-						// Must do in upper.
-						upperPredicates = append(upperPredicates, pred)
-						for a := range correlatedToLower {
-							lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
-						}
+					// Spanning predicate — references BOTH partition halves. It
+					// cannot be evaluated in the lower (its upper aliases are not
+					// bound there), so it goes to the upper, which correlates to
+					// the lower's flowed columns. Fold the lower aliases it touches
+					// into lowersCorrelatedToByUppers so the lower flows exactly
+					// those columns (Case 2/3 — Java's RecordConstructorValue +
+					// TranslationMap contract), making this a valid correlated
+					// join, not a degenerate lower cross-product. (Go's flat-seed
+					// quantifiers carry no quantifier-level correlations, so Java's
+					// uppersDependingOnLowers is empty and its "can do in lower"
+					// branch would push a predicate referencing an absent upper
+					// alias into the lower. RFC-042 L3.)
+					upperPredicates = append(upperPredicates, pred)
+					for a := range correlatedToLower {
+						lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
 					}
 				} else {
 					upperPredicates = append(upperPredicates, pred)
@@ -223,30 +229,19 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 
-		// Reject degenerate partitions: a predicate routed to the lower that
-		// references an UPPER alias cannot be evaluated there (the upper
-		// quantifiers are not bound inside the lower sub-Select). Java's
-		// classification permits this — it relies on the lower becoming
-		// correlated to the upper alias via the QUANTIFIER correlation order,
-		// which then makes the upper the outer and the lower a correlated
-		// inner. Go's flat-seed join quantifiers are independent scans with no
-		// such quantifier-level correlations, so the lower instead becomes a
-		// Case-1 cross-product whose result is a {_0} literal placeholder
-		// (discarding the real columns) and whose pushed-down filter evaluates
-		// against unbound upper aliases — producing wrong rows (0 rows / NULL
-		// columns) that depend on the FROM-order-driven tie-break. Skipping
-		// this partition leaves the valid associativities (where the spanning
-		// predicate stays at the join level) to win, identically for every
-		// FROM-order. (RFC-042 — re-enumerated indexed multi-way join
-		// correctness + order-invariance.)
-		degenerate := false
-		for _, lp := range lowerPredicates {
-			if len(intersectAliases(upperAliases, predicates.GetCorrelatedToOfPredicate(lp))) > 0 {
-				degenerate = true
-				break
-			}
-		}
-		if degenerate {
+		// Skip degenerate cross-product partitions: a lower with >=2 quantifiers
+		// that no lower predicate connects (e.g. {A,C} for the chain A-B-C, since
+		// the only A/C predicates span to B in the upper). Such a lower is a pure
+		// cross product whose result must be a multi-alias RecordConstructorValue
+		// {_0,_1}; the upper predicates translated onto its constructor fields do
+		// not resolve against the flattened merged row at execution (-> 0 rows).
+		// The CONNECTED associativities ({A,B}|{C}, {B,C}|{A}) cover the same join
+		// orders with a single-alias Case-2 lower that resolves correctly, so
+		// skipping the disconnected lower loses no valid plan — it removes a broken
+		// one. (Java defers cross products via shouldDeferCrossProducts; for a
+		// single connected component that path does not fire, so Go needs this
+		// explicit guard. RFC-042 L3.)
+		if len(lowerAliases) >= 2 && !lowerAliasesConnected(lowerAliases, lowerPredicates) {
 			continue
 		}
 
@@ -632,3 +627,59 @@ func aliasesIntersect(
 }
 
 var _ ExpressionRule = (*PartitionSelectRule)(nil)
+
+// lowerAliasesConnected reports whether the lowerAliases form a single
+// connected component under the lowerPredicates' correlations. A predicate
+// connects the lower aliases it references. Used to skip degenerate
+// cross-product partitions (a lower whose quantifiers no predicate links),
+// whose multi-alias RecordConstructorValue result the executor cannot resolve
+// translated upper predicates against (RFC-042 L3).
+func lowerAliasesConnected(
+	lowerAliases map[values.CorrelationIdentifier]struct{},
+	lowerPredicates []predicates.QueryPredicate,
+) bool {
+	if len(lowerAliases) <= 1 {
+		return true
+	}
+	// Union-find over the lower aliases.
+	parent := make(map[values.CorrelationIdentifier]values.CorrelationIdentifier, len(lowerAliases))
+	for a := range lowerAliases {
+		parent[a] = a
+	}
+	var find func(values.CorrelationIdentifier) values.CorrelationIdentifier
+	find = func(a values.CorrelationIdentifier) values.CorrelationIdentifier {
+		for parent[a] != a {
+			parent[a] = parent[parent[a]]
+			a = parent[a]
+		}
+		return a
+	}
+	union := func(a, b values.CorrelationIdentifier) {
+		parent[find(a)] = find(b)
+	}
+	for _, p := range lowerPredicates {
+		var prev values.CorrelationIdentifier
+		have := false
+		for a := range intersectAliases(lowerAliases, predicates.GetCorrelatedToOfPredicate(p)) {
+			if have {
+				union(prev, a)
+			}
+			prev = a
+			have = true
+		}
+	}
+	// All in one component?
+	var root values.CorrelationIdentifier
+	first := true
+	for a := range lowerAliases {
+		if first {
+			root = find(a)
+			first = false
+			continue
+		}
+		if find(a) != root {
+			return false
+		}
+	}
+	return true
+}
