@@ -1,6 +1,6 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v7 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
+**Status:** v8 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
 gap closed at translation time) and a **correctness** bug in re-enumerated
 multi-way joins fixed (degenerate partitions returned wrong/NULL rows, not merely
 suboptimal plans). The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
@@ -390,6 +390,7 @@ stress-1M before/after; determinism 10×) and the recursive-CTE row gate.
 ## Status progression
 
 Draft v1–v3 (wrong root cause, retracted) → v4 (correct multi-layer root cause,
-none landed) → **v5 (L1 removed + L2 correctness fixed, both landed and
-reviewer-ACK'd; L3 cost-optimal byte-invariance scoped with a concrete 4-step
+none landed) → v5/v6/v7 → **v8 (L3.0 PROVED generation-not-cost; L3.1(a) attempted —
+byte-identical index-probe achieved for both orders but 0 rows; blocker isolated
+to TODO 7.1 alias-namespace unification; reviewer-ACK'd L3 plan; the 4-step
 plan)** → Implemented when the probe is green under the full gate.
