@@ -136,8 +136,13 @@ func DefaultExpressionRules() []ExpressionRule {
 		// FROM-order associativity at the phase boundary (RFC-042).
 		NewDecorrelateValuesRule(),
 		NewPullUpNullOnEmptyRule(),
-		NewMatchLeafRule(),
-		NewMatchIntermediateRule(),
+		// Index-candidate matching (MatchLeafRule / MatchIntermediateRule) is
+		// PLANNING-only — see PlanningExplorationRules, matching Java's
+		// PlanningRuleSet (match-then-implement happens in PLANNING). Running it
+		// in REWRITING too double-matched references whose absorbed-inner
+		// Selects are created in PLANNING, producing duplicate index-scan
+		// members (e.g. Intersection of an index scan with itself). REWRITING is
+		// normalization only.
 	}
 }
 
@@ -158,6 +163,17 @@ func PlanningExplorationRules() []ExpressionRule {
 		// PartitionSelectRule to re-enumerate (RFC-042). The recursive-CTE body
 		// relies on this push-down for temp-table column alignment.
 		NewPushProjectionBelowJoinRule(),
+		// Match candidates (index selection) in PLANNING as well as REWRITING.
+		// PartitionBinarySelectRule absorbs a join predicate into a correlated
+		// inner Select([join pred], Scan) *during PLANNING*; that inner must be
+		// matched against index candidates here (REWRITING never saw it) so its
+		// correlated equi-predicate SARGs the index, yielding an index-probe
+		// inner — the inner of an index-nested-loop join (RFC-042 L3). Java
+		// runs match-then-implement in its PlanningRuleSet; the Go port had
+		// matching only in REWRITING, so join inners (PLANNING artifacts) never
+		// index-matched and every join full-scanned its inner.
+		NewMatchLeafRule(),
+		NewMatchIntermediateRule(),
 	}
 }
 
