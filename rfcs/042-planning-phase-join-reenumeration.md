@@ -1,13 +1,31 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v10 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
-gap closed at translation time) and a **correctness** bug in re-enumerated
-multi-way joins fixed (degenerate partitions returned wrong/NULL rows, not merely
-suboptimal plans). The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
-(byte-identical N≥3 plans) is still RED on **cost-optimality** (L2/L3); both
-FROM-orders are now *correct* but not *identical*. This version records what
-landed, why the v4 "Layer 2 = residual-penalty" framing under-described the bug
-(it was wrong rows, not just cost), and the concrete L2/L3 implementation plan.
+**Status:** v11 — **IMPLEMENTED. The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
+is GREEN.** A 3-way chain join planned under two opposite FROM-orders yields
+BYTE-IDENTICAL, cost-optimal physical plans that drive from the 1-row t1 and
+index-probe the 200-row t3 via `t3_by_t2`, returning the correct 200 rows for
+both orders. Full repo (30 targets / 46 bazel test targets) green; deterministic
+8×. It took FOUR landed fixes, none of which is the broad TODO 7.1:
+
+1. **L1 — removed the Go-only `PushProjectionBelowJoinRule`** (recursive-CTE gap
+   closed at translation time). Unblocks the flat seed. (`1059aed8`)
+2. **NLJ hash-join qualification (`d420567b`)** — `fieldName` now qualifies a
+   QOV-child `FieldValue` so the ≥100-row hash-join path extracts outer/inner
+   columns correctly (was backwards → 0 rows at scale). Pinned by
+   `equijoin_columns_test.go`.
+3. **Spanning-predicate classification (`bc0cb131`)** — route a join predicate
+   that references both partition halves to the UPPER (correlating), so
+   PartitionSelect generates the re-enumerated index-probing `(t1⋈t2)⋈t3`
+   associativity for EVERY FROM-order (the L3.0 cost-vector proof showed it was
+   generated 0× for big-first before this).
+4. **Disconnected cross-product skip (`bc0cb131`)** — skip a partition whose
+   lower has ≥2 quantifiers no lower predicate connects (its multi-alias
+   `RecordConstructorValue` result doesn't resolve at execution); the connected
+   associativities cover the same join orders correctly.
+
+The history below records the multi-version root-causing (v4–v10), including the
+disproven theories (task-engine ordering; cost mis-accounting; TODO 7.1
+alias-namespace), since each was instrumented, not guessed.
 
 ### v5 changelog (this session)
 - **L1 — DONE (superseding v4's "PLANNING-only, not landed").** `PushProjectionBelowJoinRule`
