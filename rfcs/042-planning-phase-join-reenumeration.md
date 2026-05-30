@@ -71,7 +71,38 @@ conformance + cascades + embedded + core-query all green, and big-first's seed
 re-enumerates (the probe now fails only on L2/L3, no longer FROM-order-locked by
 a missing seed). Rule count `DefaultExpressionRules` 46→45.
 
-### Layers 2 & 3 collapse into ONE capability: index-nested-loop join
+### Index-nested-loop join — LANDED for 2-table joins (RFC-042 L3, committed)
+
+Implemented and committed: a join's inner now uses a secondary index. Two fixes:
+- `MatchIntermediateRule` generalized `matchFilterAgainstSelect` →
+  `matchSingleSourceAgainstSelect` and wired a pass-through single-source
+  `SelectExpression` (the absorbed inner of a join) to it, so the correlated
+  join predicate SARGs the index (porting the missing slice of Java's
+  `SelectExpression.subsumedBy`).
+- Moved index-candidate matching (`MatchLeafRule`/`MatchIntermediateRule`) to
+  PLANNING-only (`PlanningExplorationRules`), matching Java's PlanningRuleSet —
+  the absorbed inner is a PLANNING artifact, so REWRITING-only matching never
+  saw it; this also fixed a duplicate index-scan-in-Intersection artifact.
+
+Verified: a 2-table join on an indexed column plans
+`FlatMap(outer=Scan(outer), inner=Intersection(Fetch(IndexScan(idx,[=])), …))`.
+Single-table index selection unchanged; full `just test` green.
+
+**Remaining: 3-way re-enumerated joins.** The inner T3 select index-matches
+(verified: 3× against `T3_BY_T2`), but the top join reference has NO index-probe
+member — every `(T1⋈T2)⋈T3` associativity uses a full `Scan(T3)`. The index-probe
+form needs the `(T1⋈T2)` outer to flow `t2` so the correlated T3 inner can probe
+`t3.t2_id = t2.id` via the index. PartitionSelect's Case-3 flows the sub-join
+result as a `RecordConstructorValue{_0: t1, _1: t2}` (it must carry both the
+projected `t1.id` and the join key `t2.id`), and the absorbed-T3-FlatMap
+associativity over that constructor is not generated/selected as a top member.
+Next: ensure the re-enumerated `(lower)⋈T3` builds the absorbed-inner FlatMap
+whose inner SARGs `T3_BY_T2` via the constructor's `_1` (t2) field — i.e. the
+index matcher must accept a `FieldValue(RecordConstructor-QOV, _1)` correlated
+probe value, and PartitionBinarySelect must absorb the top join's T3 predicate
+even when its correlated alias is deep inside the outer sub-join.
+
+### (historical) Layers 2 & 3 collapse into ONE capability: index-nested-loop join
 
 Instrumentation (post-L1) shows L2 and L3 are the same gap viewed two ways. The
 absorbed correlated-inner form that L2 flagged as "residual-penalized" is exactly
