@@ -47,8 +47,9 @@ and verified; this RFC only lets Go *express* the queries Java can express.
 | Chaos verify | `pkg/recordlayer/chaos/verify_vector.go` | |
 | Integration tests | `vector_index_test.go`, `rabitq_test.go`, `hnsw_stats_test.go`, `bench/sift_benchmark_test.go` | Prove the core works against real FDB |
 | Cascades values (seeds) | `value_row_number.go`, `value_*_distance_row_number.go`, `value_row_number_high_order.go` | Skeletons; `transformComparisonMaybe` is a comment only |
-| Match candidate | `vector_index_match_candidate.go` (232 LOC) | `NewVectorIndexScanMatchCandidate` exists |
-| `DistanceRank` comparison | `predicates/comparisons.go` | stub present |
+| Match candidate | `vector_index_match_candidate.go` (232 LOC) | `NewVectorIndexScanMatchCandidate` exists, but `ToScanPlan` (:200) emits a **generic** `NewRecordQueryIndexPlan` — see Missing #4/#6 |
+| `DistanceRank` comparison | `predicates/comparisons.go:87-89` | `ComparisonDistanceRank{Equals,LessThan,LessThanOrEq}` enums present |
+| Executor BY_DISTANCE scan | `index_scan.go:46,338-345`, `vector_index_maintainer.go` | `IndexScanByDistance` → `ScanByDistance`/`ScanVectorIndex`; reachable only via `ScanIndexByType`, **not** from a plan |
 | SQL grammar | `RelationalParser.g4` | `vectorIndexDefinition`, `qualifyClause`, `overClause`, `windowSpec`, `nonAggregateWindowedFunction(ROW_NUMBER …)` all present |
 
 ### Missing (the "relational bits")
@@ -72,19 +73,34 @@ and verified; this RFC only lets Go *express* the queries Java can express.
    (`plan_context_builder.go:46` and the metadata-driven builder in the embedded layer) has no
    vector branch, so the planner can never pick a vector scan.
 5. **No e2e.** No yamsql / sqldriver test issues `CREATE VECTOR INDEX` or `QUALIFY ROW_NUMBER()`.
+6. **No vector *physical plan* — the candidate is reachable-but-inert (Torvalds catch).**
+   Even once 9.3 wires the candidate, `VectorIndexScanMatchCandidate.ToScanPlan`
+   (`vector_index_match_candidate.go:200-219`) dumps every `ComparisonRange` into a plain
+   `NewRecordQueryIndexPlan` — no partition/distance-rank split, no `efSearch`/`isReturningVectors`
+   threading. That plan executes a default `BY_VALUE` scan, which **errors** for a vector index
+   (`index_scan.go:269`: "must be scanned with BY_DISTANCE"). The executor *has* the BY_DISTANCE
+   path (`IndexScanByDistance` → `ScanByDistance`, `index_scan.go:338-345`), but **no physical
+   plan type drives it** (`grep VectorIndexPlan pkg/.../plans` → 0). So the split logic and a
+   vector-aware scan plan must be **built**, not "branched in."
 
 ## Fix
 
 Four staged commits (each green + committed independently; one logical change per commit),
 matching the TODO 9.1–9.4 breakdown. Java is the reference at every step.
 
-**9.1 — DDL.** Port `DdlVisitor.visitVectorIndexDefinition`: parse
-`USING HNSW`, the indexed vector column, `PARTITION BY (...)` prefix, optional covering
-`includeClause`, and `OPTIONS(metric=…, ef_search=…, m=…, …)` → a metadata `Index{Type:
-"vector"}` with the `KeyWithValueExpression` root and the HNSW option keys already defined in
-`metadata_evolution_validator.go`. Reuse the existing `newVectorIndex` constructor
-(`index.go:336`). Validate structure exactly as Java's `VectorIndexValidator` (non-unique,
-no grouping, ≥1 col after split, first post-split col = vector).
+**9.1 — DDL.** Port `DdlVisitor.visitVectorIndexDefinition` (Java :262) + `parseVectorOptions`
+(:328). Java's algorithm: the single `indexColumnList` column is the *value* column (resolve
+its type → must be `VECTOR`, derive dimensions → `HNSW_NUM_DIMENSIONS`); `PARTITION BY (...)`
+columns become the *key* prefix; `INCLUDE` is rejected; build a `KeyWithValueExpression`
+(empty-key form) with key=partition cols, value=[vector col]; map options
+`CONNECTIVITY→HNSW_M`, `EF_CONSTRUCTION`, `M_MAX`, `METRIC∈{euclidean,euclidean_square,cosine,
+dot_product}`, `USE_RABITQ`, `RABITQ_NUM_EX_BITS`, stats knobs; set type `vector`.
+**Symbol correction (Torvalds):** the Go constructor is the exported `NewVectorIndex` at
+`index.go:333`, signature `(name string, rootExpression KeyExpression, numDimensions int)` — it
+sets only `HNSW_NUM_DIMENSIONS`. So the DDL handler must itself build the
+`KeyWithValueExpression` root and merge the remaining HNSW options into `idx.Options` after
+construction; it is *not* a one-call reuse. Validate structure as Java's `VectorIndexValidator`
+(non-unique, no grouping, ≥1 col after split, first post-split col = vector).
 
 **9.2 — Query front-end + transform.** Add the `OVER`/`windowSpec`/`partitionClause`/
 `windowOptionsClause` visitor and `QUALIFY` handling to the SQL→Value path, mirroring Java
@@ -96,13 +112,31 @@ seed classes. Port `transformComparisonMaybe` so the `QUALIFY … <= K` (and `< 
 lowers to a single `DistanceRankValueComparison`. Enforce Java's guards: window functions in
 `WHERE` error (`42F21`); only ascending ORDER BY; `ROW_NUMBER` is index-only.
 
-**9.3 — Candidate wiring.** Add a vector branch to the candidate enumeration so a
-`vector`-type metadata index yields a `NewVectorIndexScanMatchCandidate` (Go analog of
-`VectorIndexMaintainerFactory.createMatchCandidates`). The candidate's
-`toVectorIndexScanComparisons` splits partition-equality predicates from the one
-`DistanceRankValueComparison` → `VectorIndexScanComparisons` → the existing maintainer scan
-(`ScanByDistance` / `SearchKNN`). Mirror the constraints: index must be partitioned, query
-must bind partition keys, exactly one distance rank, SQL metric must equal index metric.
+**9.3 — Candidate wiring + the missing vector physical plan (expanded per Torvalds).** Three
+sub-pieces, not one branch:
+
+- *(9.3a) Enumeration.* Add a vector branch to the candidate enumeration so a `vector`-type
+  metadata index yields a `NewVectorIndexScanMatchCandidate` (Go analog of
+  `VectorIndexMaintainerFactory.createMatchCandidates` → `VectorIndexExpansionVisitor`).
+- *(9.3b) Scan-comparison split.* Rework `VectorIndexScanMatchCandidate.ToScanPlan`
+  (`vector_index_match_candidate.go:200`, today a generic `NewRecordQueryIndexPlan`) to port
+  Java's `toVectorIndexScanComparisons` (`VectorIndexScanMatchCandidate.java:408`): separate the
+  partition-equality `ComparisonRange`s (the prefix) from the single distance-rank comparison.
+  **Graefe watch-item (a):** the distance rank rides as an *equality-shaped* `ComparisonRange`
+  inside the equality bucket (Java keys on `equalityComparison instanceof
+  DistanceRankValueComparison`) — replicate that, do **not** invent a parallel "distance slot."
+- *(9.3c) Vector physical plan + dispatch.* Introduce a vector-aware physical plan (a
+  `RecordQueryVectorIndexPlan`, or a scan-bounds-carrying variant) that threads the query
+  vector, `k`, `efSearch`, `isReturningVectors` + partition prefix and, at execution, builds
+  `VectorDistanceScanRange(queryVector, k, efSearch)` and dispatches **BY_DISTANCE** via
+  `ScanIndexByType`/`ScanVectorIndex` → `ScanByDistance` (`index_scan.go:338-345`). Without this
+  the candidate plans a `BY_VALUE` scan that errors at `index_scan.go:269`. The plan must carry
+  proper `GetCorrelatedToWithoutChildren()` (the query-vector comparand may be a parameter).
+
+Mirror the constraints at the planner: index must be partitioned, query must bind partition
+keys, exactly one distance rank, SQL metric must equal index metric, and ORDER BY ascending —
+**Graefe watch-item (b):** put the ASC-only guard at the same site Java does (the OVER-clause
+visitor, `UNSUPPORTED_SORT`), not a new bolted-on check.
 
 **9.4 — E2E proof.** Port Java's `window-function-documentation-queries.yamsql` (KNN top-K,
 `ef_search`, `<`/`<=`, OR-of-two-KNN, the `WHERE`-clause error case) as a Go yamsql scenario,
@@ -129,8 +163,10 @@ run before/after as a regression guard regardless.
 - **9.2:** unit tests for `transformComparisonMaybe` (each distance metric → correct
   specialized value + `DistanceRankValueComparison`); `WHERE`-clause window fn → `42F21`;
   descending ORDER BY → unsupported-sort error.
-- **9.3:** planner test asserting a `vector`-index metadata yields a vector candidate and the
-  planned shape is a vector index scan (EXPLAIN).
+- **9.3:** planner test asserting a `vector`-index metadata yields a vector candidate; a unit
+  test that `ToScanPlan` produces the vector physical plan (not `RecordQueryIndexPlan`) with the
+  partition prefix and distance-rank correctly split; an execution test that the plan dispatches
+  **BY_DISTANCE** (reaches `ScanByDistance`, not the `index_scan.go:269` BY_VALUE error).
 - **9.4:** the ported yamsql + an FDB integration test (real testcontainers FDB): insert
   vectors, run the documentation KNN queries, assert rows + distances and the EXPLAIN plan
   shape; determinism 10×.

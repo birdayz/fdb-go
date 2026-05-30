@@ -225,12 +225,17 @@ and a `DistanceRank` comparison stub all exist. The SQL **grammar** is complete:
   `RowNumberValue` (Euclidean / Cosine / Dot-product / EuclideanSquare) from the parse tree, fleshing
   out the seed value classes; port `RowNumberValue.transformComparisonMaybe` so `ROW_NUMBER() <= K`
   rewrites into a `DistanceRankValueComparison(queryVector, k, efSearch, isReturningVectors)`.
-- [ ] **9.3 Cascades wiring: make `NewVectorIndexScanMatchCandidate` reachable.** It is currently
-  constructed *nowhere* (only its own definition). Add a vector branch to the match-candidate
-  enumeration (next to `NewValueIndexScanMatchCandidate` at `plan_context_builder.go:46` and the
-  metadata-driven candidate builder in the embedded layer) so a `vector`-type index yields a vector
-  candidate; the candidate splits partition-equality predicates from the single `DistanceRankValueComparison`
-  → `VectorIndexScanComparisons` → existing maintainer scan.
+- [ ] **9.3 Cascades wiring + vector physical plan.** Three pieces (Torvalds catch — not a single
+  branch): **(9.3a)** add a vector branch to the match-candidate enumeration (next to
+  `NewValueIndexScanMatchCandidate` at `plan_context_builder.go:46` + the metadata-driven builder in
+  the embedded layer) so a `vector`-type index yields the candidate; **(9.3b)** rework
+  `VectorIndexScanMatchCandidate.ToScanPlan` (`vector_index_match_candidate.go:200`, today a generic
+  `NewRecordQueryIndexPlan`) to split partition-equality `ComparisonRange`s from the single
+  distance-rank comparison (which rides as an *equality-shaped* range, à la Java
+  `toVectorIndexScanComparisons`); **(9.3c)** introduce a vector-aware physical plan that threads
+  query-vector/k/`ef_search`/`isReturningVectors` and at execution dispatches **BY_DISTANCE** via
+  `ScanIndexByType`/`ScanVectorIndex` → `ScanByDistance` (`index_scan.go:338-345`) — without it the
+  plan does a BY_VALUE scan that errors at `index_scan.go:269`.
 - [ ] **9.4 E2E proof.** Port Java's `window-function-documentation-queries.yamsql` (KNN top-K via
   `QUALIFY`, `ef_search` option, `<`/`<=`, OR-of-two-KNN) as the Go conformance/yamsql scenario, plus an
   FDB integration test that `EXPLAIN`-pins the vector index scan (not a full-scan fallback) and asserts
