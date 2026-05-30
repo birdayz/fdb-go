@@ -1,10 +1,28 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v4 — root cause re-established from real instrumentation. The v1–v3
-"task-engine ordering" framing was **wrong** (see Correction). The acceptance
-probe `TestFDB_MultiwayJoinOrder_Probe` is RED; this RFC documents the actual,
-multi-layer gap, lands the one layer that is a clean Java-divergence bug, and
-scopes the remaining layers.
+**Status:** v5 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
+gap closed at translation time) and a **correctness** bug in re-enumerated
+multi-way joins fixed (degenerate partitions returned wrong/NULL rows, not merely
+suboptimal plans). The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
+(byte-identical N≥3 plans) is still RED on **cost-optimality** (L2/L3); both
+FROM-orders are now *correct* but not *identical*. This version records what
+landed, why the v4 "Layer 2 = residual-penalty" framing under-described the bug
+(it was wrong rows, not just cost), and the concrete L2/L3 implementation plan.
+
+### v5 changelog (this session)
+- **L1 — DONE (superseding v4's "PLANNING-only, not landed").** `PushProjectionBelowJoinRule`
+  is **deleted** (not just moved to PLANNING). Its only load-bearing use —
+  recursive-CTE temp-table column alignment — is now handled at translation time.
+  Graefe+Torvalds ACK. (commit `1059aed8`)
+- **Correctness fix — `PartitionSelectRule` rejects the degenerate partition.**
+  Re-enumerated indexed 3-way joins returned FROM-order-dependent **wrong rows**
+  (one order 200 rows all-NULL, the other 0 rows; correct is 200 rows). Root: a
+  spanning join predicate routed into the lower partition where its upper alias is
+  unbound → degenerate Case-1 `{_0}` cross-product. Now rejected. Graefe+Torvalds
+  ACK. (commit `f99af166`)
+- **Fake-green killed.** `multiway_join_index_probe_test.go` asserted plan shape
+  only and never executed the query — it stayed green while returning wrong rows.
+  Retrofitted with row-correctness assertions for both FROM-orders.
 
 ## What "done" means
 
@@ -52,24 +70,28 @@ column mapped to a top-level join quantifier**:
   its alias matches neither top-level side → rule **bails** (the `default: return`
   arm) → flat seed survives → re-enumeration runs → optimal `(T1⋈T2)⋈T3`.
 
-**A naive removal regresses recursive CTE.** Dropping the rule from
-`DefaultExpressionRules` flattens the seed but fails the full gate:
-`TestFDB_RecursiveCTECrossJoin` returns 4 rows instead of 5 — the Cascades
-recursive-CTE plan (`RecursiveLevelUnion`) relies on this projection push-down
-for temp-table column alignment in the recursive body.
+**Why a naive removal regressed recursive CTE — and how it's now closed.**
+Dropping the rule flattens the seed but `TestFDB_RecursiveCTECrossJoin` returned
+4 rows instead of 5 (missing the deepest descendant 250). Instrumenting the
+temp-table inserts showed why: the recursive body
+`SELECT b.id, b.parent FROM descendants a, t b WHERE b.parent = a.id` is a join
+whose output is the **merged** `JoinMergeResultValue` row carrying QUALIFIED keys
+(`B.ID`, `B.PARENT`, `A.ID`). Inserted verbatim, the stale `B.ID` collides with
+the **next** recursion level's own `b` join side, clobbering the live row and
+stalling the recursion one level early. The push-down was a workaround: it
+narrowed the join's children so the merged row only had the schema columns.
 
-**Fix (landed):** make `PushProjectionBelowJoinRule` **PLANNING-only** — move it
-from `DefaultExpressionRules` to `PlanningExplorationRules`, exactly as
-PartitionSelectRule was moved (RFC-041/042). REWRITING no longer inserts the
-projections, so `SelectMergeRule` flattens the nested binary join to the
-canonical flat N-quantifier seed, and PartitionSelectRule re-enumerates all
-associativities in PLANNING. The push-down still fires in PLANNING, so the
-recursive-CTE body still gets its temp-table column alignment. Verified: all
-three recursive-CTE tests (`TestFDB_RecursiveCTECrossJoin`,
-`TestFDB_CascadesRecursiveCTE`, `TestFDB_RecursiveCTERename`) pass, plandiff
-conformance + cascades + embedded + core-query all green, and big-first's seed
-re-enumerates (the probe now fails only on L2/L3, no longer FROM-order-locked by
-a missing seed). Rule count `DefaultExpressionRules` 46→45.
+**Fix (landed, commit `1059aed8`):** delete the rule and close the gap at
+translation time. The recursive leg's normalization projection (already built in
+`cascades_translator.go` to map the body's output names to the seed schema) now
+reads each column via `FieldValue{Field: <bare col>, Child: QOV(<qualifier>)}`:
+`evaluateCorrelated` reads the qualified datum key (`B.ID`) while
+`projectionColumnName` returns the **bare** field — so the temp-table row carries
+only the clean seed-schema columns and the qualified key that caused the
+collision is never emitted. Recursion now reaches 250: `[10 40 50 70 250]`;
+UNION-DISTINCT cycle detection passes. Verified: 46 test targets green,
+recursive-CTE deterministic 5×, `−404` net lines (rule + its unit test deleted).
+This is the genuine L1 closure (v4 left the rule alive in PLANNING).
 
 ### Index-nested-loop join — LANDED for 2-table joins (RFC-042 L3, committed)
 
@@ -144,6 +166,34 @@ This is a real feature (index-nested-loop join), absent in the Go port, spanning
 predicate push-down + match infrastructure + data-access generation. It is the
 realistic way this Cascades architecture does cost-based multi-way join ordering.
 
+### Layer 2 (CORRECTNESS — FIXED) — degenerate partition returned wrong rows
+
+The v4 framing below ("residual-predicate penalty") under-described the bug: the
+Case-3 path did not merely produce a *costlier* plan, it produced a **wrong**
+one. Pointer-level instrumentation (`computeResult` / `JoinMergeResultValue.Evaluate`):
+for the chain, `PartitionSelectRule` routes the **spanning** join predicate
+(e.g. `t2.t1_id = t1.id`, one alias in each partition half) into the **lower**
+partition. Java keys this on `uppersDependingOnLowersAliases` (from the
+**quantifier** correlation order); Go's flat-seed join quantifiers are
+independent scans with no quantifier-level correlations, so that set is always
+empty and the spanning predicate always falls to the "can do in lower" branch.
+The lower then can't evaluate the predicate (its upper alias is unbound) and
+becomes a degenerate **Case-1 cross-product** whose result is a `{_0}` literal
+placeholder — discarding the real columns — and whose pushed-down filter
+evaluates against unbound aliases. Result: `SELECT t1.id` returned 200 rows all
+NULL under one FROM-order and 0 rows under the other (correct is 200 rows, all
+`t1.id=1`). 2-table and non-indexed *star* 3-way joins were always correct;
+only the indexed-chain re-enumeration was broken.
+
+**Fix (landed, commit `f99af166`):** `PartitionSelectRule` rejects the degenerate
+partition — after predicate classification, if any predicate routed to the lower
+references an upper alias, `continue` (skip this bipartition). The valid
+associativities (where the spanning predicate stays at the join level) then win
+**identically for every FROM-order**. Graefe: "prunes only invalid plans — no
+valid join order lost, full powerset still enumerated." Both FROM-orders now
+return correct rows; the probe's remaining redness is purely cost-optimality
+(L3), not correctness.
+
 ### Layer 2 (historical framing) — re-enumerated associativities carry a residual-predicate penalty
 
 With the flat seed, the top join reference now holds every associativity as a
@@ -192,33 +242,88 @@ is the open question for this layer.
 
 ## Direction
 
-* **Layer 1: root-caused, NOT landed** — naive removal of the Go-only
-  `PushProjectionBelowJoinRule` regresses recursive-CTE correctness. Pursue
-  fix-option 1 (close the recursive-CTE/cross-join gap, then remove) or 2
-  (flatten through the pushed projection). Java-parity: Java has no such rule, so
-  the recursive-CTE path is a genuine Go gap to close.
-* **Layers 2 & 3: open, and require Java-parity verification first** (CLAUDE.md:
-  "verify Java actually supports it before treating a TODO as parity work").
-  Both must be checked against Java's real behavior on this exact shape:
-  - L2: does Java's value simplification keep the re-enumerated join predicate
-    embeddable (resid=0)? If yes → port the missing simplification. If Java also
-    renders a residual filter, the byte-identical assertion exceeds Java parity.
-  - L3: does Java's data-access matching SARG a correlated join predicate against
-    a secondary index (index-nested-loop join)? If yes → the gap is in Go's
-    match-candidate machinery for correlated predicates. If no → the indexed
-    probe path is a Go extension, allowed only with deep tests.
+* **L1 (flat seed): DONE** — Go-only rule removed, recursive-CTE gap closed.
+* **L2 (correctness of re-enumeration): DONE** — degenerate partition rejected.
+* **L3 (cost-optimal byte-invariance): the remaining work** — see plan below.
+
+### Current observed gap (both FROM-orders correct, not identical)
+
+```
+t1,t2,t3 → Project(T1.ID, PredicatesFilter(FlatMap(NLJ(Scan T1, Scan T2),
+                                                   inner=IndexScan(T3_BY_T2,[=])), [p2]))   # index-probes T3 ✓
+t3,t2,t1 → Project(T1.ID, NLJ([p2], Scan T1, NLJ(Scan T2, Scan T3)))                        # full-scans T3 ✗
+```
+
+Both return 200 correct rows. small-first reaches the optimal left-deep
+`(T1⋈T2)⋈T3` shape (T3 index-probed); big-first wins a right-deep
+`T1⋈(T2⋈T3)` whose inner `(T2⋈T3)` is a cross-product NLJ that full-scans the
+200-row T3.
+
+### L3 implementation plan (this is what v5 commits to)
+
+Instrumentation this session established three facts that scope the work:
+1. The index-probe for T3 **is generated** (the secondary-index path in
+   `ImplementNestedLoopJoinRule` is reached with `innerTable=T3, npreds=1`).
+2. The cost-visible inner of the index-probe FlatMap already ranges over the
+   index-scan wrapper (criterion #2 `maxDataAccessCardinality` reflects the
+   probe) — so #2 *should* favor the index-probe (max card 20 vs 200).
+3. Yet big-first's winner is the cross-product associativity — so either the
+   left-deep index-probe associativity is not winning under big-first's
+   quantifier order, or the `(T2⋈T3)` index-probe sub-product can't flow the
+   columns the parent predicate needs (a reroute experiment made it return 0
+   rows), so it's never a *valid* cheaper member.
+
+Steps, in order, each gated by the full suite + the row-correctness probe:
+
+* **L3.1 — flat sub-product result value.** Make a re-enumerated join
+  sub-product flow a flat `JoinMergeResultValue` (qualified columns of both
+  sides) instead of the Case-2 `QOV(lowerAlias)` / Case-3 `{_0}` constructor that
+  drops the columns the *enclosing* join predicate needs. This is the root of
+  fact (3): the `(T2⋈T3)` index-probe must still expose `t2.t1_id` for the
+  parent `p2`. With a flat result, the index-probe sub-product is both correct
+  *and* a valid cheaper member the cost model can pick. (Touches
+  `PartitionSelectRule` Case-2/3 result-value construction + the physical
+  FlatMap/`tryFlatMapPlan` result value. Highest regression risk — the 2-table,
+  star-join, and EXISTS/correlated paths rely on the present result-value flow,
+  so validate against the full suite and revert on any regression.)
+* **L3.2 — verify cost ranking across associativities.** With L3.1, confirm the
+  left-deep index-probe plan is generated as a root member for *both* FROM-orders
+  and that `PlanningCostModel` ranks it below the cross-product NLJ associativity.
+  If a criterion before #2 (or the recursive join-order cost #14) mis-ranks the
+  cross-product NLJ (whose true cardinality is the product 20×200, not
+  max=200), fix the cardinality/cost accounting for the cross-product NLJ.
+* **L3.3 — FROM-order-deterministic winner selection.** Once both orders generate
+  the same optimal member, ensure tie-breaks in winner selection are independent
+  of quantifier insertion order (quantifier aliases `q$N` are minted in
+  FROM-order). Without this, two equal-cost members can be selected differently
+  per order, breaking byte-identity even when the optimal plan exists for both.
+* **L3.4 — restore the probe + cross-group reach (original `/goal`).** Re-add
+  `TestFDB_MultiwayJoinOrder_Probe` (byte-identical + drives-from-t1 +
+  index-probes-T3, **and a row-correctness assertion**). If L3.1–L3.3 leave the
+  `(T1⋈T2)` sub-products in disjoint References (pointer-level proven earlier),
+  finish the RFC-037 cross-group merge reach (PR-C/PR-D, tasks #10/#11) so shared
+  sub-products intern into one Reference for full N-way optimality.
+
+**Java-parity stance (CLAUDE.md):** byte-identical-across-FROM-order for N≥3 is
+the stated `/goal`; it is the natural consequence of complete, FROM-order-blind
+cost-based enumeration (which Java's Cascades does). Where a step would *exceed*
+Java (e.g. an index-NLJ shape Java's planner doesn't emit on this exact query),
+it is an allowed read-side extension provided wire compat holds and it carries
+deep tests — flagged at the step. No step changes anything on the wire.
 
 ## Test plan
 
 `TestFDB_MultiwayJoinOrder_Probe` (indexed join columns): (a) order-invariance —
 both FROM-orders byte-identical EXPLAIN; (b) cost-optimal — drives from the 1-row
-table, T3 reached last via its index, never full-scanned. Currently RED on L2/L3.
-Plus the no-regression gate (46→45 rule count; plandiff conformance; stress-1M;
-determinism 10×).
+table, T3 reached last via its index, never full-scanned; (c) **row-correctness**
+— both orders return the right 200 rows (the dimension that the prior fake-green
+test missed). Currently RED on (a)/(b) (L3), GREEN on (c) after the Layer-2 fix.
+Plus the no-regression gate (43 REWRITING-rule count; plandiff conformance;
+stress-1M before/after; determinism 10×) and the recursive-CTE row gate.
 
 ## Status progression
 
 Draft v1–v3 (wrong root cause, retracted) → v4 (correct multi-layer root cause,
-all three layers root-caused; none landed — L1 removal regresses recursive CTE)
-→ Implemented when L1/L2/L3 are resolved (Java parity verified first) and the
-probe is green under the full gate.
+none landed) → **v5 (L1 removed + L2 correctness fixed, both landed and
+reviewer-ACK'd; L3 cost-optimal byte-invariance scoped with a concrete 4-step
+plan)** → Implemented when the probe is green under the full gate.
