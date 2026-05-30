@@ -48,22 +48,27 @@ func mwjoExplainer(t *testing.T, db *sql.DB, ctx context.Context) func(string) s
 	}
 }
 
-// TestFDB_MultiwayJoinIndexProbe pins that a 3-way chain join on indexed FK
-// columns plans an index-nested-loop probe of the inner tables — the inner of a
-// re-enumerated multi-way join uses the secondary index instead of a full scan.
-// This exercises the full RFC-042 L3 stack: REWRITING flattens to a flat seed
-// (L1); PartitionSelectRule re-enumerates associativities; the join predicates
-// canonicalize to bare columns (composeFieldOverJoinMerge, so the correlated
-// equi-predicate SARGs the index); the inner Select matches the index candidate
-// in PLANNING (matchSingleSourceAgainstSelect); and the index-prefix FlatMap
-// builds the correlated IndexScan whose reduced cardinality wins the cost model
-// (the FlatMap inner is the index scan, so maxDataAccessCardinality reflects the
-// probe). Both FROM-orders must index-probe T3 via t3_by_t2 — i.e. neither
-// full-scans the 200-row table.
+// TestFDB_MultiwayJoinIndexProbe pins a 3-way chain join on indexed FK columns.
+// It asserts TWO things, in order of importance:
 //
-// (Full FROM-order byte-invariance is a stronger, separate property — tracked
-// in RFC-042; this test pins the index-nested-loop capability that the prior Go
-// port lacked entirely.)
+//	(1) CORRECTNESS — both FROM-orders must return the right rows. Every t3
+//	    (200) joins to its single t2 and that t2 to t1=1, so the chain yields
+//	    200 rows all with t1.id = 1. This is the load-bearing assertion: a
+//	    prior version of this test checked plan SHAPE only and never executed
+//	    the query, so it stayed green while the re-enumerated big-first order
+//	    silently returned 0 rows / NULL columns — a degenerate cross-product
+//	    partition (PartitionSelectRule routed a spanning predicate into the
+//	    lower half where its upper alias is unbound, yielding a {_0} placeholder
+//	    result). PartitionSelectRule now rejects that degenerate partition (see
+//	    its "Reject degenerate partitions" guard), so both orders are correct.
+//
+//	(2) CAPABILITY — the index-nested-loop probe fires: the small→big FROM-order
+//	    plans an IndexScan(t3_by_t2) of the 200-row T3 rather than a full Scan(T3).
+//
+// Cost-optimal index-probing under the OPPOSITE (big→small) FROM-order — and
+// full byte-identical FROM-order invariance — is a stronger, separate property
+// (the re-enumerated (t2⋈t3) sub-product still prefers a cross-product NLJ over
+// the index probe on cost); tracked in RFC-042. Correctness holds for both.
 func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -99,17 +104,46 @@ func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 
 	planExplain := mwjoExplainer(t, db, ctx)
 
+	// (1) CORRECTNESS — both FROM-orders must return 200 rows, all t1.id = 1.
 	for _, q := range []string{
 		"SELECT t1.id FROM t3, t2, t1 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id",
 		"SELECT t1.id FROM t1, t2, t3 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id",
 	} {
-		plan := planExplain(q)
-		up := strings.ToUpper(plan)
-		if !strings.Contains(up, "INDEXSCAN(T3_BY_T2") {
-			t.Errorf("plan does not index-probe T3 via t3_by_t2:\n  %s\n  %s", q, plan)
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
 		}
-		if strings.Contains(up, "SCAN(T3)") {
-			t.Errorf("plan full-scans the 200-row T3 instead of index-probing:\n  %s\n  %s", q, plan)
+		var n, bad int
+		for rows.Next() {
+			var id sql.NullInt64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan %q: %v", q, err)
+			}
+			n++
+			if !id.Valid || id.Int64 != 1 {
+				bad++
+			}
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err %q: %v", q, err)
+		}
+		rows.Close()
+		if n != 200 {
+			t.Errorf("CORRECTNESS: query %q returned %d rows, want 200:\n  %s", q, n, planExplain(q))
+		}
+		if bad != 0 {
+			t.Errorf("CORRECTNESS: query %q returned %d rows with t1.id != 1 (NULL/wrong), want 0:\n  %s", q, bad, planExplain(q))
+		}
+	}
+
+	// (2) CAPABILITY — the small→big FROM-order index-probes the 200-row T3 via
+	// t3_by_t2 rather than full-scanning it.
+	plan := planExplain("SELECT t1.id FROM t1, t2, t3 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id")
+	up := strings.ToUpper(plan)
+	if !strings.Contains(up, "INDEXSCAN(T3_BY_T2") {
+		t.Errorf("plan does not index-probe T3 via t3_by_t2:\n  %s", plan)
+	}
+	if strings.Contains(up, "SCAN(T3)") {
+		t.Errorf("plan full-scans the 200-row T3 instead of index-probing:\n  %s", plan)
 	}
 }

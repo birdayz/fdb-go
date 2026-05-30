@@ -223,6 +223,33 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 
+		// Reject degenerate partitions: a predicate routed to the lower that
+		// references an UPPER alias cannot be evaluated there (the upper
+		// quantifiers are not bound inside the lower sub-Select). Java's
+		// classification permits this — it relies on the lower becoming
+		// correlated to the upper alias via the QUANTIFIER correlation order,
+		// which then makes the upper the outer and the lower a correlated
+		// inner. Go's flat-seed join quantifiers are independent scans with no
+		// such quantifier-level correlations, so the lower instead becomes a
+		// Case-1 cross-product whose result is a {_0} literal placeholder
+		// (discarding the real columns) and whose pushed-down filter evaluates
+		// against unbound upper aliases — producing wrong rows (0 rows / NULL
+		// columns) that depend on the FROM-order-driven tie-break. Skipping
+		// this partition leaves the valid associativities (where the spanning
+		// predicate stays at the join level) to win, identically for every
+		// FROM-order. (RFC-042 — re-enumerated indexed multi-way join
+		// correctness + order-invariance.)
+		degenerate := false
+		for _, lp := range lowerPredicates {
+			if len(intersectAliases(upperAliases, predicates.GetCorrelatedToOfPredicate(lp))) > 0 {
+				degenerate = true
+				break
+			}
+		}
+		if degenerate {
+			continue
+		}
+
 		// Validate upper-quantifier dependency constraints.
 		if len(lowersCorrelatedToByUpperAliases) > 0 {
 			if len(lowersCorrelatedToByUppers) > 1 {

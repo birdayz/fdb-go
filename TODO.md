@@ -8,57 +8,48 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ## Known gaps
 
-### 🚩 CORRECTNESS BUG — re-enumerated indexed multi-way joins return NULL columns
+### [x] CORRECTNESS FIXED — re-enumerated indexed multi-way joins (was: NULL / 0 rows)
 
-**Symptom.** A 3-way *indexed chain* join planned through the RFC-042 L3 index-NLJ
-re-enumeration path returns the **correct row cardinality but every projected
-column is NULL**. Reproduce (1-row t1 ← 20-row t2 ← 200-row t3, FK columns indexed):
+**Symptom (fixed).** A 3-way *indexed chain* join planned through the RFC-042 L3
+index-NLJ re-enumeration path returned wrong results that depended on the
+FROM-order: one order returned 200 rows all-NULL, the opposite order returned 0
+rows (correct is 200 rows, all `t1.id = 1`). 2-way joins and non-indexed *star*
+3-way joins (`TestFDB_ThreeTableFrom`) were always correct.
 
-```sql
-SELECT t1.id FROM t3, t2, t1 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id  -- 200 rows, all t1.id NULL (want 1)
-SELECT COUNT(*) FROM <same>                                               -- 200 (correct — no column resolution)
-```
-
-2-way joins are correct; non-indexed *star* 3-way joins are correct
-(`TestFDB_ThreeTableFrom`). Only the indexed-chain re-enumeration is broken.
-
-**Root cause (pointer-level instrumented).** `PartitionSelectRule` misroutes the
+**Root cause (pointer-level instrumented).** `PartitionSelectRule` misrouted the
 *spanning* join predicate (e.g. `t3.t2_id = t2.id`, one alias in each partition
 half) into the **lower** partition. Java's classification keys on
 `uppersDependingOnLowersAliases`, computed from `getCorrelationOrder()` —
 **quantifier** correlations. Go's flat-seed join quantifiers are independent
 scans with **no quantifier-level correlations** (the joins are plain predicates),
 so `uppersDependingOnLowers` is *always empty* and the spanning predicate always
-falls to the "can do in lower" branch (`rule_partition_select.go:202-207`). That
-yields a degenerate **Case-1 cross-product** partition whose lower result is a
-literal/`RecordConstructorValue{_0}` (`:268`, `:323-331`) — discarding the real
-columns. At execution the physical FlatMap merges via `JoinMergeResultValue`
-(`values/value_join_merge.go`), which cannot resolve columns nested under `_0`
-→ every projected field evaluates to NULL. (Instrumented:
-`rv=JoinMergeResultValue outerAlias=T1 innerAlias=q$… outerKeys=[ID]
-innerKeys=[_0] computedKeys=[]`.)
+fell to the "can do in lower" branch. That yields a degenerate **Case-1
+cross-product** partition whose lower result is a `{_0}` literal placeholder
+(discarding the real columns) and whose pushed-down filter evaluates against
+unbound upper aliases → wrong rows. The physical FlatMap then merges via
+`JoinMergeResultValue`, which cannot resolve columns nested under `_0` → NULL.
 
-**Why it shipped green.** `multiway_join_index_probe_test.go` (commit 4a26db66)
-and the 2-table invariance test assert **plan shape only**
-(`strings.Contains`-style), never execute the query / check rows — a fake
-checkbox. The dimensional gap (rows, not shape) let a wrong-results plan read as
-"covered".
+**Fix (shipped).** `PartitionSelectRule` now rejects the degenerate partition: a
+predicate routed to the lower that references an UPPER alias cannot be evaluated
+there, so the whole partition is skipped (`rule_partition_select.go`, "Reject
+degenerate partitions" guard). The valid associativities — where the spanning
+predicate stays at the join level — then win identically for every FROM-order.
+Both orders now return 200 correct rows; deterministic; full suite green.
+`multiway_join_index_probe_test.go` was a plan-shape-only fake checkbox (never
+executed the query) — now retrofitted with **row-correctness** assertions for
+both FROM-orders, which is the load-bearing check.
 
-**Fix direction (multi-shift — touches the most sensitive rule + executor).**
-Make re-enumerated join sub-products flow a **resolvable, flat** result so
-qualified columns survive nesting. Either (a) augment the partition's correlation
-model with *predicate-induced* dependencies so spanning predicates route to the
-UPPER (Case 2, `QOV` flat result, correlating the upper to the lower — the valid
-index-NLJ), or (b) make the physical join FlatMap always emit `JoinMergeResultValue`
-(flat qualified columns) and reference sub-products by qualified name rather than
-Java's ordinal `_0` + `TranslationMap`. Both must be validated against the FULL
-suite (the 2-table, star-join, and EXISTS/correlated paths currently rely on the
-present behaviour) and pinned with a **row-correctness** regression test (not
-plan-shape). This blocks the RFC-042 byte-identical multi-way-join-order goal: the
-plans can be made byte-identical (a pass-through-sub-Select-inner unwrap in
-`ImplementNestedLoopJoinRule` achieves it — Graefe-ACK'd, see git reflog for the
-reverted spike), but they don't execute correctly until this is fixed. Also
-retrofit row assertions onto `multiway_join_index_probe_test.go`.
+**Remaining (cost-optimality, NOT correctness) — RFC-042.** Under the big→small
+FROM-order the re-enumerated `(t2⋈t3)` sub-product still prefers a cross-product
+NLJ over the index probe (the index-probe alternative either loses on cost or
+flows a sub-product result the parent predicate can't SARG), so that order
+full-scans the 200-row T3 instead of index-probing it. Correct, just slower. Full
+byte-identical FROM-order invariance for N≥3 (the `TestFDB_MultiwayJoinOrder_Probe`
+goal) depends on closing this cost gap + FROM-order-deterministic winner selection.
+Likely levers: the index-probe cardinality cost (criterion #2 — make the FlatMap
+inner range over the index-scan wrapper so `maxDataAccessCardinality` reflects the
+probe), and making re-enumerated sub-products flow a flat `JoinMergeResultValue`
+so the index-probe variant is both cheaper AND resolvable.
 
 ### vs Java (correctness/feature parity)
 
