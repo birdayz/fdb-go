@@ -109,3 +109,55 @@ func TestMemoEqual_ChildrenAsSet_PermutationBranch(t *testing.T) {
 		t.Fatal("union over a different child set must NOT be MemoEqual")
 	}
 }
+
+// TestMemoEqual_OuterJoinNotChildrenAsSet pins REVIEW.md #215: SelectExpression's
+// ChildrenAsSet marker must reflect actual commutability, not be true for every
+// join. A LEFT/FULL OUTER join is NOT invariant under quantifier permutation
+// (NULL-extension is directional: `A LEFT JOIN B` != `B LEFT JOIN A`), so swapped
+// outer joins must NOT be MemoEqual — otherwise matchChildrenInMemo permutes them
+// and memoizeNonLeaf interns the two directions into one Reference. INNER/CROSS
+// stay commutative. Distinct scans (T1, T2) make the positional permutation [0,1]
+// fail, so MemoEqual can only succeed via the ChildrenAsSet permutation branch —
+// the exact branch the fix gates on join type.
+func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
+	t.Parallel()
+	scanT1 := InitialOf(NewFullUnorderedScanExpression([]string{"T1"}, values.UnknownType))
+	scanT2 := InitialOf(NewFullUnorderedScanExpression([]string{"T2"}, values.UnknownType))
+	mkJoin := func(jt JoinType) *SelectExpression {
+		q1 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T1"), scanT1)
+		q2 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T2"), scanT2)
+		rv := values.NewJoinMergeResultValue(q1.GetAlias(), q2.GetAlias())
+		return NewSelectExpressionWithJoinType(rv, []Quantifier{q1, q2}, nil, []string{"T1", "T2"}, jt)
+	}
+
+	// INNER is commutative: swapped order interns (drives the permutation branch,
+	// since distinct scans make positional [0,1] fail). This is the positive
+	// control — it proves the permutation machinery works and that the negatives
+	// below fail because of the join-type narrowing, not an incidental mismatch.
+	innerAB := mkJoin(JoinInner)
+	innerBA := innerAB.WithSwappedQuantifiers()
+	if !MemoEqual(innerAB, innerBA) {
+		t.Fatal("INNER join with swapped quantifiers must be MemoEqual (commutative, permutation branch)")
+	}
+
+	// LEFT OUTER is directional: swapped order must NOT intern.
+	leftAB := mkJoin(JoinLeftOuter)
+	leftBA := leftAB.WithSwappedQuantifiers()
+	// Precondition: node-info hash is equal (joinType/resultValue/predicates match),
+	// so MemoEqual is actually reached and returns false on the child/permutation
+	// path — not short-circuited by the hash gate. Test is vacuous otherwise.
+	if leftAB.HashCodeWithoutChildren() != leftBA.HashCodeWithoutChildren() {
+		t.Fatal("precondition: swapped LEFT OUTER joins must share node-info hash — test vacuous otherwise")
+	}
+	if MemoEqual(leftAB, leftBA) {
+		t.Fatal("swapped LEFT OUTER joins must NOT be MemoEqual (directional — ChildrenAsSet must be false)")
+	}
+
+	// FULL OUTER keeps the original left/right column layout (translator: no swap),
+	// so it is likewise not permutation-invariant.
+	fullAB := mkJoin(JoinFullOuter)
+	fullBA := fullAB.WithSwappedQuantifiers()
+	if MemoEqual(fullAB, fullBA) {
+		t.Fatal("swapped FULL OUTER joins must NOT be MemoEqual (ChildrenAsSet must be false)")
+	}
+}

@@ -182,3 +182,18 @@ alias-invariant `HashCodeWithoutChildren`), not a hand-rolled serialization. Rep
 synthesized stable alias with structural interning when the ≥5-way enumeration-efficiency
 work lands (it ties into RFC-039 broad memo merging). Until then: do NOT expand the string
 scheme further. Scoped to the deferred ≥5-way path; 4-way is unaffected.
+
+### 7.6 Source-anchored field pull-up — retire `composeFieldOverJoinMerge` (RFC-044 follow-up)
+
+Multi-source pull-up (pullup.go:71-78) produces **bare** `FieldValue`s with no source
+anchoring, where Java produces `FieldAccessValue(QuantifiedObjectValue(alias), field)` to
+disambiguate the owning quantifier. The Go-only `JoinMergeResultValue` +
+`composeFieldOverJoinMerge` band-aid re-derives the anchoring after the fact and, absent
+the side info, hard-codes the inner side. RFC-044 made that sound-by-invariant (the merge
+is re-flowed under the inner alias, so only inner-side bare fields reach the rule) + added
+a qualified-field fail-safe + an E2E sentinel (`TestFDB_JoinMerge_OuterColumn_NotDropped`),
+so there is **no live bug**. The Java-aligned root fix is to anchor fields to their source
+during pull-up so the opaque-merge ambiguity never exists, retiring the rule and the
+bare/qualified distinction entirely. Graefe-endorsed; not urgent. Do this with (or before)
+the typed join-result migration that replaces `JoinMergeResultValue` with a schema-bearing
+record constructor à la Java.

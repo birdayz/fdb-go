@@ -545,3 +545,44 @@ func TestSimplifyValue_FieldOverJoinMerge(t *testing.T) {
 		t.Errorf("resolved to %v, want inner %v", qov.Correlation, inner)
 	}
 }
+
+// TestSimplifyValue_FieldOverJoinMerge_QualifiedOuterPreserved is the REVIEW.md
+// #216 regression. composeFieldOverJoinMerge used to rewrite EVERY field over a
+// join_merge to the inner quantifier — unsound for a field that lives on the
+// OUTER side, which the inner QOV resolves to nil. The fix only rewrites BARE
+// fields (which the SelectMergeRule re-flow invariant guarantees are inner-side)
+// and refuses QUALIFIED fields (not provably inner). This pins, via Evaluate,
+// that a qualified outer-only reference survives simplification with its value
+// intact — and demonstrates the nil the old blind rewrite would have produced.
+func TestSimplifyValue_FieldOverJoinMerge_QualifiedOuterPreserved(t *testing.T) {
+	t.Parallel()
+	outer := NamedCorrelationIdentifier("T1")
+	inner := NamedCorrelationIdentifier("T2")
+	jm := NewJoinMergeResultValue(outer, inner)
+
+	binder := fakeCorrBinder{rows: map[CorrelationIdentifier]any{
+		outer: map[string]any{"OUTER_ONLY": int64(42)}, // column present ONLY on the outer side
+		inner: map[string]any{"BID": int64(7)},
+	}}
+
+	qualified := NewFieldValue(jm, "T1.OUTER_ONLY", TypeUnknown)
+	// Precondition: before simplification the merge resolves the qualified key.
+	if got := qualified.Evaluate(binder); got != int64(42) {
+		t.Fatalf("precondition: field(join_merge,\"T1.OUTER_ONLY\") = %v, want 42", got)
+	}
+	// The guard must NOT rewrite a qualified field — value must be preserved.
+	simplified := SimplifyValue(qualified)
+	if got := simplified.Evaluate(binder); got != int64(42) {
+		t.Fatalf("after simplify = %v, want 42 (guard must preserve outer-only resolution)", got)
+	}
+	if _, stillMerge := simplified.(*FieldValue).Child.(*JoinMergeResultValue); !stillMerge {
+		t.Fatalf("qualified outer field must be left over the merge, got child %T", simplified.(*FieldValue).Child)
+	}
+
+	// The landmine the guard defuses: the OLD blind rewrite to inner resolves the
+	// outer column to nil. This is what every field-over-merge used to become.
+	blindInner := NewFieldValue(NewQuantifiedObjectValue(inner), "T1.OUTER_ONLY", TypeUnknown)
+	if got := blindInner.Evaluate(binder); got != nil {
+		t.Fatalf("sanity: blind inner rewrite should resolve the outer column to nil, got %v", got)
+	}
+}
