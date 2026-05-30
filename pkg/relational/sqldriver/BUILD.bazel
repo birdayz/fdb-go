@@ -34,6 +34,7 @@ go_test(
         "full_outer_join_fdb_test.go",
         "group_by_derived_probe_test.go",
         "having_probe_test.go",
+        "join_merge_outer_column_test.go",
         "multiway_join_index_probe_test.go",
         "multiway_join_order_nway_test.go",
         "multiway_join_order_probe_test.go",

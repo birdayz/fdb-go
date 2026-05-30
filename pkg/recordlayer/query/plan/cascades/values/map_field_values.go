@@ -322,7 +322,10 @@ func EqualsWithoutChildren(a, b Value) bool {
 		return ok && av.Op == bv.Op
 	case *IndexEntryObjectValue:
 		bv, ok := b.(*IndexEntryObjectValue)
-		if !ok || len(av.OrdinalPath) != len(bv.OrdinalPath) {
+		// Source (KEY vs VALUE) is a semantic discriminator: Evaluate reads
+		// PrimaryKey() for KEY and IndexValues() for VALUE, so KEY[p] and
+		// VALUE[p] address different tuples and must NOT compare equal.
+		if !ok || av.Source != bv.Source || len(av.OrdinalPath) != len(bv.OrdinalPath) {
 			return false
 		}
 		for i := range av.OrdinalPath {

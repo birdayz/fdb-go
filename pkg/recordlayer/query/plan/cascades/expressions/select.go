@@ -155,11 +155,24 @@ func (e *SelectExpression) GetQuantifiers() []Quantifier { return e.quantifiers 
 // must respect that when deciding whether to swap or split children.
 func (e *SelectExpression) CanCorrelate() bool { return true }
 
-// ChildrenAsSet is true — Java marks SelectExpression's
-// quantifier list as ChildrenAsSet (the FROM-list is order-
-// independent under SQL semantics, modulo correlation order which
-// the planner enforces separately).
-func (e *SelectExpression) ChildrenAsSet() bool { return true }
+// ChildrenAsSet reports whether the quantifier list is an unordered set
+// for memo equality — i.e. the operator is invariant under quantifier
+// permutation. matchChildrenInMemo permutes children only when this is
+// true. Java marks SelectExpression unconditionally because Java's
+// SelectExpression only ever models commutative (INNER/CROSS) joins. Go's
+// read-side extension overloads SelectExpression with outer join types
+// whose NULL-extension is DIRECTIONAL — `A LEFT JOIN B` != `B LEFT JOIN A`
+// — so the set marker must narrow to the commutative join types. Were it
+// left unconditionally true, matchChildrenInMemo would permute a left
+// join's quantifiers and intern swapped left joins into one Reference
+// (REVIEW.md #215). The swap-EXPLORATION guards (expression_matcher,
+// implementation_rule, unified_tasks) are a separate concern — they
+// suppress GENERATING an invalid commuted alternative; this controls memo
+// dedup, and findCandidateParents is order-insensitive, so the property
+// itself must be honest.
+func (e *SelectExpression) ChildrenAsSet() bool {
+	return e.joinType == JoinInner || e.joinType == JoinCross
+}
 
 // GetCorrelatedToWithoutChildren returns the union of correlation
 // sets across predicates + the resultValue. Java's behaviour matches.

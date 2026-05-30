@@ -1,5 +1,7 @@
 package values
 
+import "strings"
+
 // SimplifyValue is the standalone-Value counterpart to Simplify.
 // Folds constant sub-trees in a Value (e.g. SELECT-list expressions
 // or projection arguments that never reach a comparison and so never
@@ -193,25 +195,36 @@ func simplifyChildren(v Value) Value {
 	return v
 }
 
-// composeFieldOverJoinMerge canonicalizes a FieldValue over the Go-only
+// composeFieldOverJoinMerge canonicalizes a BARE FieldValue over the Go-only
 // JoinMergeResultValue into a FieldValue over the merge's INNER quantifier,
-// i.e. field(join_merge{outer,inner}, "f") → field(QOV(inner), "f").
+// i.e. field(join_merge{outer,inner}, "f") → field(QOV(inner), "f"). This lets
+// downstream reasoning (PartitionSelect predicate classification,
+// ImplementNestedLoopJoinRule predicate embedding, index-candidate SARG
+// matching) see a normal correlated FieldValue over a single quantifier instead
+// of an opaque merge it cannot reason about (RFC-042).
 //
-// JoinMergeResultValue is an opaque join-result value (not a source-tagged
-// RecordConstructor like Java's). Its Evaluate merges both sides' maps with
-// the inner side overwriting the outer for bare (unqualified) keys — so a bare
-// field reference resolves to the inner side when the field exists there. This
-// rewrite reproduces that resolution structurally so downstream reasoning
-// (PartitionSelect predicate classification, ImplementNestedLoopJoinRule
-// predicate embedding, index-candidate SARG matching) sees a normal correlated
-// FieldValue over a single quantifier instead of an opaque merge it cannot
-// reason about — the canonicalization gap that blocked re-enumerated multi-way
-// joins from embedding their predicates / index-probing (RFC-042).
+// Soundness rests on a STRUCTURAL INVARIANT, not on the test suite: a bare
+// FieldValue acquires a JoinMergeResultValue child ONLY via SelectMergeRule
+// (rule_select_merge.go), which substitutes the captured merge for a
+// QOV(parentAlias) whose alias is the merge's INNER quantifier — the merge is
+// re-flowed under the inner side's own alias. So the only fields ever composed
+// onto the merge are inner-side references; outer- and third-table columns
+// resolve through their own QOV and reach the merge only as already-qualified
+// `ALIAS.COL` keys (value_join_merge.go), never as a bare FieldValue over it.
+// Hence the bare field is unambiguously the inner side and the rewrite is sound.
 //
-// Soundness: identical to Evaluate for fields present on the inner side (the
-// common join-predicate case — join keys and inner columns). A reference to an
-// outer-only field would differ; the cross-engine + FDB conformance suite is
-// the oracle that this does not arise for predicates the planner partitions.
+// A QUALIFIED field (one carrying a "." prefix) is therefore a shape the
+// invariant says never reaches here. Rather than blindly assume inner — which
+// would mis-resolve an outer/foreign column to nil (REVIEW.md #216) — refuse the
+// rewrite and let JoinMergeResultValue.Evaluate resolve the qualified key. This
+// is a fail-safe: it costs no real canonicalization (qualified fields never hit
+// this path) while removing the silent-mis-resolution landmine if the merge's
+// alias convention ever changes. TestFDB_JoinMerge_OuterColumn_* pins, E2E, that
+// no outer-only column is ever dropped by this rule across multi-way joins.
+//
+// The deeper Java-aligned fix is to anchor fields to their source during pull-up
+// (FieldAccessValue over QOV(alias)) so the opaque-merge ambiguity never exists,
+// retiring this rule — tracked as a follow-up (RFC-044).
 func composeFieldOverJoinMerge(v Value) Value {
 	fv, ok := v.(*FieldValue)
 	if !ok || fv.Child == nil {
@@ -219,6 +232,11 @@ func composeFieldOverJoinMerge(v Value) Value {
 	}
 	jm, ok := fv.Child.(*JoinMergeResultValue)
 	if !ok {
+		return nil
+	}
+	// Qualified reference: not provably inner-side — leave the merge intact
+	// (Evaluate resolves the qualified key correctly).
+	if strings.Contains(fv.Field, ".") {
 		return nil
 	}
 	return NewFieldValue(NewQuantifiedObjectValue(jm.InnerAlias), fv.Field, fv.Typ)

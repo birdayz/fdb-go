@@ -52,8 +52,12 @@ func writeSemanticHash(h io.Writer, v Value) {
 	case *UnmatchedAggregateValue:
 		_, _ = io.WriteString(h, "unmatchedagg")
 	case *IndexEntryObjectValue:
-		// alias excluded; OrdinalPath IS a discriminator (equality compares it).
-		_, _ = fmt.Fprintf(h, "indexentryobj:%v", t.OrdinalPath)
+		// alias excluded; Source (KEY/VALUE/OTHER) AND OrdinalPath are both
+		// discriminators (equality compares both). Source must be folded so
+		// KEY[p] and VALUE[p] — which Evaluate resolves against different
+		// tuples — do not collide in the memo, matching Java's planHash which
+		// folds (ordinalPath, source).
+		_, _ = fmt.Fprintf(h, "indexentryobj:%d:%v", t.Source, t.OrdinalPath)
 	case *JoinMergeResultValue:
 		_, _ = io.WriteString(h, "joinmerge")
 	case *JoinMergeAllValue:
