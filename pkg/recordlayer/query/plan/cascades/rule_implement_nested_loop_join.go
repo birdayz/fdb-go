@@ -767,7 +767,21 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 				flatMapPlan.SetLeftOuter(true)
 			}
 			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+			// The FlatMap's inner quantifier must range over the correlated
+			// INDEX scan (what the plan actually executes), not the original
+			// full scan (rightExpr). findExpressionsByType walks the wrapper's
+			// quantifiers to compute maxDataAccessCardinality (PlanningCostModel
+			// criterion #2); ranging over the full scan would report the whole
+			// table's cardinality and tie the equality index probe with a full
+			// scan — so the index-nested-loop plan could never win on cost. The
+			// plan (flatMapPlan.inner = correlatedIndexScan) is unchanged; only
+			// the cost-visible inner expression is corrected. (RFC-042 L3.)
+			idxInnerExpr := &physicalIndexScanWrapper{
+				plan:        correlatedIndexScan,
+				columnNames: candCols,
+				unique:      cand.IsUnique(),
+			}
+			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxInnerExpr))
 			if len(otherResiduals) > 0 {
 				flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
 				flatMapRef := call.MemoizeExpression(flatMapWrapper)
@@ -1012,6 +1026,23 @@ func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 		if lhsCol == pkCol {
 			return rhsFV, lhsCol
 		}
+	}
+
+	// Deep-flowed outer value: in a re-enumerated multi-way join the join key's
+	// outer side may reference a table nested INSIDE the outer sub-join rather
+	// than the outer quantifier itself (a 3-way chain's top join (T1⋈T2)⋈T3 has
+	// predicate T3.t2_id = T2.id, where T2 is inside the (T1⋈T2) outer). The
+	// outer's merged row exposes that column under its bare name
+	// (JoinMergeResultValue: inner side wins the bare key), and the caller
+	// rebuilds the probe value as QOV(outerAlias).<bareCol> — which resolves
+	// correctly per outer row. Accept when the INNER side is the index column
+	// and the other side is any aliased (non-inner) field. This is what turns a
+	// nested chain into a chain of index probes (RFC-042 L3).
+	if lhsAlias == innerAlias && lhsCol == pkCol && rhsAlias != "" && rhsAlias != innerAlias {
+		return rhsFV, lhsCol
+	}
+	if rhsAlias == innerAlias && rhsCol == pkCol && lhsAlias != "" && lhsAlias != innerAlias {
+		return lhsFV, rhsCol
 	}
 
 	return nil, ""

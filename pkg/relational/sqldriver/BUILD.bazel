@@ -34,6 +34,7 @@ go_test(
         "full_outer_join_fdb_test.go",
         "group_by_derived_probe_test.go",
         "having_probe_test.go",
+        "multiway_join_index_probe_test.go",
         "noncorrelated_exists_fdb_test.go",
         "plan_cache_bench_test.go",
         "plan_logging_fdb_test.go",
