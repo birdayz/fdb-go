@@ -991,34 +991,62 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	seedCols := extractOuterProjectionColumns(seedBranches[0])
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(seedCols) > 0 && len(recCols) > 0 && len(seedCols) == len(recCols) {
-		needsRemap := false
-		for i := range seedCols {
-			if !strings.EqualFold(seedCols[i], recCols[i]) {
-				needsRemap = true
-				break
-			}
-		}
-		if needsRemap {
-			// Wrap the recursive expression with a projection that reads
-			// from the recursive column names and stores under the seed
-			// column names.
-			remapVals := make([]values.Value, len(recCols))
-			for i, rc := range recCols {
-				remapVals[i] = &values.FieldValue{
-					Field: strings.ToUpper(rc),
+		// ALWAYS wrap the recursive leg in a normalization projection that
+		// reads the body's output columns and stores them under the seed's
+		// column names. This is not only a name remap — it is what makes the
+		// temp-table rows CLEAN. When the recursive body is a join, its output
+		// is the merged JoinMergeResultValue row carrying stale qualified keys
+		// (e.g. B.ID, B.PARENT, A.ID from the join's outer/inner sides). If
+		// those rows are inserted verbatim, the next recursion level scans them
+		// as the temp-table alias and its join predicate (`b.parent = a.id`)
+		// resolves a.id against keys that don't match the schema — the recursion
+		// stalls one level early (missing the deepest descendants). The flat
+		// FieldValue reads each seed-schema column by its bare name (the bare
+		// key in a JoinMergeResultValue is the inner/new row's value), producing
+		// a clean {id, parent} row. Doing this unconditionally removes the
+		// dependency on the Go-only PushProjectionBelowJoinRule, which was the
+		// only other mechanism that narrowed the body's columns (RFC-042 L1).
+		remapVals := make([]values.Value, len(recCols))
+		for i, rc := range recCols {
+			// Read the body's output for this column and emit it under the
+			// seed's UNQUALIFIED column name so the temp-table row is CLEAN.
+			// A qualified recursive projection (SELECT b.id) emits its value
+			// under the qualified key "B.ID". If we copied that key verbatim
+			// into the temp table, the NEXT recursion level — which joins the
+			// temp-table scan (aliased) against a fresh quantifier — would have
+			// the stale "B.ID" collide with the new join side's own "B.ID",
+			// clobbering the live row and stalling the recursion one level
+			// early. Build FieldValue{Field: <bare col>, Child: QOV(<qualifier>)}:
+			// evaluateCorrelated reads the qualified datum key ("B.ID"), while
+			// projectionColumnName returns just the bare field — so the emitted
+			// row has ONLY the clean schema column, no qualified leak. This is
+			// what lets the Go-only PushProjectionBelowJoinRule be removed: it
+			// was the only other mechanism narrowing the body's columns
+			// (RFC-042 L1).
+			ru := strings.ToUpper(rc)
+			var rv values.Value
+			if dot := strings.IndexByte(ru, '.'); dot >= 0 {
+				qualifier := ru[:dot]
+				col := ru[dot+1:]
+				rv = &values.FieldValue{
+					Field: col,
 					Typ:   values.UnknownType,
+					Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qualifier)),
 				}
+			} else {
+				rv = &values.FieldValue{Field: ru, Typ: values.UnknownType}
 			}
-			remapAliases := make([]string, len(seedCols))
-			for i, sc := range seedCols {
-				remapAliases[i] = strings.ToUpper(sc)
-			}
-			recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
-				remapVals,
-				remapAliases,
-				expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
-			)
+			remapVals[i] = rv
 		}
+		remapAliases := make([]string, len(seedCols))
+		for i, sc := range seedCols {
+			remapAliases[i] = strings.ToUpper(sc)
+		}
+		recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
+			remapVals,
+			remapAliases,
+			expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
+		)
 	}
 
 	// Wrap recursive leg in TempTableInsert.
