@@ -45,6 +45,7 @@ go_test(
         "scalar_subquery_cte_test.go",
         "sql_integration_test.go",
         "statistics_fdb_test.go",
+        "twotable_order_invariant_test.go",
     ],
     embed = [":sqldriver"],
     deps = [
