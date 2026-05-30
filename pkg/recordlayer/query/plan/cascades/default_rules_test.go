@@ -22,7 +22,14 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 // keep this test in sync with both.
 func TestDefaultRules_ExpectedCount(t *testing.T) {
 	t.Parallel()
-	const expected = 48
+	// 43: PartitionSelectRule + PartitionBinarySelectRule and
+	// MatchLeafRule + MatchIntermediateRule are PLANNING-only
+	// (PlanningExplorationRules) per RFC-042 — join-order enumeration and
+	// index-candidate matching belong in PLANNING (match-then-implement,
+	// matching Java's PlanningRuleSet) so REWRITING stays normalization-only.
+	// (PushProjectionBelowJoinRule was a Go-only rule, now removed entirely —
+	// RFC-042 L1; it never counted here since it was PLANNING-only.)
+	const expected = 43
 	if got := len(DefaultExpressionRules()); got != expected {
 		t.Fatalf("DefaultExpressionRules count = %d, want %d (update CLAUDE.md / TODO.md if intentional)", got, expected)
 	}

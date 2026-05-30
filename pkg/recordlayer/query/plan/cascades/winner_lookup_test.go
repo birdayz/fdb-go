@@ -26,7 +26,7 @@ func TestGetWinnerForOrdering_PreserveReturnsNoPropsWinner(t *testing.T) {
 	ref.SetWinner(expressions.NoProperties, physExpr)
 
 	// getWinnerForOrdering(PRESERVE) should return the stamped winner
-	winner := getWinnerForOrdering(ref, PreserveOrdering())
+	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil")
 	}
@@ -45,7 +45,7 @@ func TestGetWinnerForOrdering_FallbackToFindBestWhenNoWinner(t *testing.T) {
 	FireExpressionRule(scanRule, ref)
 
 	// No winner stamped — getWinnerForOrdering should fall back to findBestPhysicalExpr
-	winner := getWinnerForOrdering(ref, PreserveOrdering())
+	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil (fallback should work)")
 	}
@@ -78,7 +78,7 @@ func TestGetWinnerForOrdering_OrderingLookup(t *testing.T) {
 	}
 	reqOrd := NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
 
-	winner := getWinnerForOrdering(ref, reqOrd)
+	winner := getWinnerForOrdering(ref, reqOrd, nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering returned nil for matching ordering")
 	}
@@ -124,7 +124,7 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 	t.Logf("findBestPhysicalExpr returned: %v (type %T)", best, best)
 
 	// Test getWinnerForOrdering with no winner stamped
-	winner := getWinnerForOrdering(ref, PreserveOrdering())
+	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering returned nil")
 	}
@@ -197,13 +197,13 @@ func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 	}
 
 	// Verify getWinnerForOrdering(PRESERVE) finds something (no winners stamped)
-	winner := getWinnerForOrdering(ref, PreserveOrdering())
+	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil — this is the bug")
 	}
 
 	// Also verify with nil ordering
-	winner2 := getWinnerForOrdering(ref, nil)
+	winner2 := getWinnerForOrdering(ref, nil, nil)
 	if winner2 == nil {
 		t.Fatal("getWinnerForOrdering(nil) returned nil")
 	}

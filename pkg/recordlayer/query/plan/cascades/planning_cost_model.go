@@ -279,7 +279,7 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return intCompare(mapFilterA, mapFilterB)
 	}
 
-	if cmp := compareFlatMapJoinOrdering(a, b, stats); cmp != 0 {
+	if cmp := compareJoinOrdering(a, b, stats); cmp != 0 {
 		return cmp
 	}
 
@@ -734,36 +734,46 @@ func intCompare(a, b int) int {
 // compareFlatMapJoinOrdering implements Java's FlatMapJoinOrderingProperty
 // criterion: when both plans are FlatMap, prefer the one with smaller outer
 // cardinality (fewer inner loop executions).
-func compareFlatMapJoinOrdering(a, b expressions.RelationalExpression, stats properties.StatisticsProvider) int {
-	fmA, okA := a.(*physicalFlatMapWrapper)
-	fmB, okB := b.(*physicalFlatMapWrapper)
-	if !okA || !okB {
+// compareJoinOrdering ranks two join plans (FlatMap or NestedLoopJoin)
+// by their RECURSIVE best-member TOTAL cost — Cascades' "combined cost with
+// inputs" (§3.1): the whole join subtree, each sub-product costed at its WINNER
+// (BestMemberCostWith). This replaces the prior top-outer-cardinality-only
+// heuristic, which judged a multi-way plan by its top driver alone and let a
+// plan with a great top driver but a pessimal inner join win — so the chosen
+// order tracked FROM-clause position, not cost (RFC-041).
+//
+// Confined to join-rooted pairs (FlatMap/NLJ both model the join with an
+// outer×inner cardinality term in HintCost): a join's total cost is the
+// principled thing to compare here, and restricting to join roots keeps
+// non-join winner selection on EstimateCostWith's established first-member
+// behaviour (changing the global recursion flips unrelated cost ties — e.g. it
+// made the unordered-union plan vanish in stage advancement). The best-member
+// walk is memoised per call, so PR-A-merged shared sub-products are costed once.
+func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties.StatisticsProvider) int {
+	if !isJoinWrapper(a) || !isJoinWrapper(b) {
 		return 0
 	}
-	outerCardA := outerCardinality(fmA, stats)
-	outerCardB := outerCardinality(fmB, stats)
-	if outerCardA < outerCardB {
+	costA := properties.BestMemberCostWith(a, stats)
+	costB := properties.BestMemberCostWith(b, stats)
+	if costA.Less(costB) {
 		return -1
 	}
-	if outerCardA > outerCardB {
+	if costB.Less(costA) {
 		return 1
 	}
 	return 0
 }
 
-func outerCardinality(fm *physicalFlatMapWrapper, stats properties.StatisticsProvider) float64 {
-	ref := fm.outerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.LeafScanCardinality
+// isJoinWrapper reports whether e is a physical join operator whose cost
+// reflects an outer×inner cardinality flow (the operators whose ORDER the
+// cost model must choose among).
+func isJoinWrapper(e expressions.RelationalExpression) bool {
+	switch e.(type) {
+	case *physicalFlatMapWrapper, *physicalNestedLoopJoinWrapper:
+		return true
+	default:
+		return false
 	}
-	best := ref.GetBest(properties.CostLessWith(stats))
-	if best == nil {
-		best = firstPhysicalChild(ref)
-	}
-	if best == nil {
-		return properties.LeafScanCardinality
-	}
-	return properties.EstimateCostWith(best, stats).Cardinality
 }
 
 func firstPhysicalChild(ref *expressions.Reference) expressions.RelationalExpression {

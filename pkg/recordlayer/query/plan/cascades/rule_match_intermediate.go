@@ -200,9 +200,23 @@ func matchIntermediateWithCandidate(
 	// Select(Filter(scan)) into flat Select(scan, preds) during
 	// EXPLORE, but this inline path remains for LogicalFilter nodes
 	// that aren't nested under a SelectExpression.
-	if qf, ok := queryExpr.(*expressions.LogicalFilterExpression); ok {
-		if cs, ok := candidateExpr.(*expressions.SelectExpression); ok {
-			matchFilterAgainstSelect(call, qf, cs, candidate, candidateRef)
+	cs, candidateIsSelect := candidateExpr.(*expressions.SelectExpression)
+	if !candidateIsSelect {
+		return
+	}
+	switch qe := queryExpr.(type) {
+	case *expressions.LogicalFilterExpression:
+		matchSingleSourceAgainstSelect(call, qe, flattenConjuncts(qe.GetPredicates()), cs, candidate, candidateRef)
+	case *expressions.SelectExpression:
+		// A pass-through single-source SelectExpression (the absorbed inner
+		// of a join, PartitionBinarySelectRule output) matches an index
+		// candidate exactly like a LogicalFilter — its correlated join
+		// predicate SARGs the index, producing a correlated index-scan probe
+		// (the inner of an index-nested-loop join). Java handles this via the
+		// general SelectExpression.subsumedBy; the Go port previously only
+		// matched LogicalFilter queries, so a join inner never index-matched.
+		if isPassThroughSingleSourceSelect(qe) {
+			matchSingleSourceAgainstSelect(call, qe, flattenConjuncts(qe.GetPredicates()), cs, candidate, candidateRef)
 		}
 	}
 }
@@ -316,15 +330,16 @@ func matchIntermediateStructural(
 // Mirrors the predicate-mapping logic inside Java's
 // SelectExpression.subsumedBy, narrowed to the Filter-vs-Select
 // case that Go encounters alongside SelectMergeRule normalisation.
-func matchFilterAgainstSelect(
+func matchSingleSourceAgainstSelect(
 	call *ExpressionRuleCall,
-	queryFilter *expressions.LogicalFilterExpression,
+	queryExpr expressions.RelationalExpression,
+	queryPreds []predicates.QueryPredicate,
 	candidateSelect *expressions.SelectExpression,
 	candidate MatchCandidate,
 	candidateRef *expressions.Reference,
 ) {
 	// Step 1: Match quantifiers. Both sides must have exactly one.
-	queryQs := queryFilter.GetQuantifiers()
+	queryQs := queryExpr.GetQuantifiers()
 	candidateQs := candidateSelect.GetQuantifiers()
 	if len(queryQs) != 1 || len(candidateQs) != 1 {
 		return
@@ -351,7 +366,6 @@ func matchFilterAgainstSelect(
 	// Step 2: Match predicates. Try to bind each candidate
 	// Placeholder with a query ComparisonPredicate.
 	candidatePreds := candidateSelect.GetPredicates()
-	queryPreds := flattenConjuncts(queryFilter.GetPredicates())
 
 	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
 	predicateMapBuilder := NewPredicateMapBuilder()
@@ -440,11 +454,33 @@ func matchFilterAgainstSelect(
 		boundAliasMap,
 		candidate,
 		call.Reference,
-		queryFilter,
+		queryExpr,
 		candidateRef,
 		mi,
 	)
 	AddPartialMatchForCandidate(call.Reference, candidate, pm)
+}
+
+// isPassThroughSingleSourceSelect reports whether sel is a single-ForEach-
+// quantifier SelectExpression whose result value flows the quantifier's row
+// unchanged (a QuantifiedObjectValue over the quantifier). Such a Select is
+// the absorbed-predicate inner of a join (PartitionBinarySelectRule output:
+// Select([join pred], Scan) with result = quantifier's flowed object) and is
+// structurally equivalent to a LogicalFilter for index-candidate matching —
+// the predicate can SARG an index without any result-value compensation. A
+// Select with a projecting/computing result value is NOT pass-through and
+// must not take this path (the index scan returns full rows, not the
+// projection), so it is rejected here.
+func isPassThroughSingleSourceSelect(sel *expressions.SelectExpression) bool {
+	qs := sel.GetQuantifiers()
+	if len(qs) != 1 || qs[0].Kind() != expressions.QuantifierForEach {
+		return false
+	}
+	if len(sel.GetPredicates()) == 0 {
+		return false
+	}
+	qov, ok := sel.GetResultValue().(*values.QuantifiedObjectValue)
+	return ok && qov.Correlation == qs[0].GetAlias()
 }
 
 // valuesMatchColumn checks if two values reference the same column.

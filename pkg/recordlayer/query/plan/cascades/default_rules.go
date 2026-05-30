@@ -68,7 +68,15 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewNoOpFilterRule(),
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
-		NewPushProjectionBelowJoinRule(),
+		// PushProjectionBelowJoinRule REMOVED (Go-only, no Java equivalent).
+		// It wrapped a join's children in LogicalProjectionExpressions, which
+		// blocked SelectMergeRule from flattening the nested binary join into
+		// the canonical flat N-quantifier SelectExpression — so PartitionSelectRule
+		// had no flat seed to re-enumerate join associativities from, locking the
+		// plan to FROM-clause order (RFC-042 L1). Its only load-bearing use was
+		// temp-table column alignment in a recursive-CTE body, now handled at
+		// translation time (the recursive leg's normalization projection emits
+		// clean seed-schema rows — cascades_translator.go), so the rule is gone.
 		// PullFilterAboveSortRule REMOVED: Go-only rule not in Java.
 		// Pulling Filter above Sort changes the correlation structure and
 		// caused InJoin to wrap Sort inside it, then InJoin.HintOrdering
@@ -117,12 +125,24 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSplitSelectExtractIndependentQuantifiersRule(),
 		NewNormalizePredicatesRule(),
 		NewPredicateToLogicalUnionRule(),
-		NewPartitionSelectRule(),
-		NewPartitionBinarySelectRule(),
+		// Join-order enumeration (PartitionSelectRule / PartitionBinarySelectRule)
+		// is PLANNING-only — see PlanningExplorationRules, matching Java's
+		// PlanningRuleSet (the RewritingRuleSet is normalization only). REWRITING
+		// normalizes to the canonical flat N-quantifier SelectExpression
+		// (SelectMergeRule); since no partitioning runs here, every member promoted
+		// to PLANNING is flat, so PartitionSelectRule re-enumerates all join
+		// associativities in PLANNING where the stats-aware PlanningCostModel
+		// (RFC-041) picks the cheapest order. Firing them in REWRITING locked the
+		// FROM-order associativity at the phase boundary (RFC-042).
 		NewDecorrelateValuesRule(),
 		NewPullUpNullOnEmptyRule(),
-		NewMatchLeafRule(),
-		NewMatchIntermediateRule(),
+		// Index-candidate matching (MatchLeafRule / MatchIntermediateRule) is
+		// PLANNING-only — see PlanningExplorationRules, matching Java's
+		// PlanningRuleSet (match-then-implement happens in PLANNING). Running it
+		// in REWRITING too double-matched references whose absorbed-inner
+		// Selects are created in PLANNING, producing duplicate index-scan
+		// members (e.g. Intersection of an index scan with itself). REWRITING is
+		// normalization only.
 	}
 }
 
@@ -138,6 +158,17 @@ func PlanningExplorationRules() []ExpressionRule {
 		NewPullUpNullOnEmptyRule(),
 		NewPartitionSelectRule(),
 		NewPartitionBinarySelectRule(),
+		// Match candidates (index selection) in PLANNING as well as REWRITING.
+		// PartitionBinarySelectRule absorbs a join predicate into a correlated
+		// inner Select([join pred], Scan) *during PLANNING*; that inner must be
+		// matched against index candidates here (REWRITING never saw it) so its
+		// correlated equi-predicate SARGs the index, yielding an index-probe
+		// inner — the inner of an index-nested-loop join (RFC-042 L3). Java
+		// runs match-then-implement in its PlanningRuleSet; the Go port had
+		// matching only in REWRITING, so join inners (PLANNING artifacts) never
+		// index-matched and every join full-scanned its inner.
+		NewMatchLeafRule(),
+		NewMatchIntermediateRule(),
 	}
 }
 

@@ -36,6 +36,9 @@ func SimplifyValue(v Value) Value {
 	if s := composeFieldOverConstructor(rebuilt); s != nil {
 		return SimplifyValue(s)
 	}
+	if s := composeFieldOverJoinMerge(rebuilt); s != nil {
+		return SimplifyValue(s)
+	}
 	if s := composeFieldOverField(rebuilt); s != nil {
 		return SimplifyValue(s)
 	}
@@ -188,6 +191,37 @@ func simplifyChildren(v Value) Value {
 		return NewPickValue(newSel, newAlts, x.Typ)
 	}
 	return v
+}
+
+// composeFieldOverJoinMerge canonicalizes a FieldValue over the Go-only
+// JoinMergeResultValue into a FieldValue over the merge's INNER quantifier,
+// i.e. field(join_merge{outer,inner}, "f") → field(QOV(inner), "f").
+//
+// JoinMergeResultValue is an opaque join-result value (not a source-tagged
+// RecordConstructor like Java's). Its Evaluate merges both sides' maps with
+// the inner side overwriting the outer for bare (unqualified) keys — so a bare
+// field reference resolves to the inner side when the field exists there. This
+// rewrite reproduces that resolution structurally so downstream reasoning
+// (PartitionSelect predicate classification, ImplementNestedLoopJoinRule
+// predicate embedding, index-candidate SARG matching) sees a normal correlated
+// FieldValue over a single quantifier instead of an opaque merge it cannot
+// reason about — the canonicalization gap that blocked re-enumerated multi-way
+// joins from embedding their predicates / index-probing (RFC-042).
+//
+// Soundness: identical to Evaluate for fields present on the inner side (the
+// common join-predicate case — join keys and inner columns). A reference to an
+// outer-only field would differ; the cross-engine + FDB conformance suite is
+// the oracle that this does not arise for predicates the planner partitions.
+func composeFieldOverJoinMerge(v Value) Value {
+	fv, ok := v.(*FieldValue)
+	if !ok || fv.Child == nil {
+		return nil
+	}
+	jm, ok := fv.Child.(*JoinMergeResultValue)
+	if !ok {
+		return nil
+	}
+	return NewFieldValue(NewQuantifiedObjectValue(jm.InnerAlias), fv.Field, fv.Typ)
 }
 
 // composeFieldOverConstructor implements Java's ComposeFieldValueOverRecordConstructorRule:

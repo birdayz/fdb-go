@@ -8,6 +8,49 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ## Known gaps
 
+### [x] CORRECTNESS FIXED — re-enumerated indexed multi-way joins (was: NULL / 0 rows)
+
+**Symptom (fixed).** A 3-way *indexed chain* join planned through the RFC-042 L3
+index-NLJ re-enumeration path returned wrong results that depended on the
+FROM-order: one order returned 200 rows all-NULL, the opposite order returned 0
+rows (correct is 200 rows, all `t1.id = 1`). 2-way joins and non-indexed *star*
+3-way joins (`TestFDB_ThreeTableFrom`) were always correct.
+
+**Root cause (pointer-level instrumented).** `PartitionSelectRule` misrouted the
+*spanning* join predicate (e.g. `t3.t2_id = t2.id`, one alias in each partition
+half) into the **lower** partition. Java's classification keys on
+`uppersDependingOnLowersAliases`, computed from `getCorrelationOrder()` —
+**quantifier** correlations. Go's flat-seed join quantifiers are independent
+scans with **no quantifier-level correlations** (the joins are plain predicates),
+so `uppersDependingOnLowers` is *always empty* and the spanning predicate always
+fell to the "can do in lower" branch. That yields a degenerate **Case-1
+cross-product** partition whose lower result is a `{_0}` literal placeholder
+(discarding the real columns) and whose pushed-down filter evaluates against
+unbound upper aliases → wrong rows. The physical FlatMap then merges via
+`JoinMergeResultValue`, which cannot resolve columns nested under `_0` → NULL.
+
+**Fix (shipped).** `PartitionSelectRule` now rejects the degenerate partition: a
+predicate routed to the lower that references an UPPER alias cannot be evaluated
+there, so the whole partition is skipped (`rule_partition_select.go`, "Reject
+degenerate partitions" guard). The valid associativities — where the spanning
+predicate stays at the join level — then win identically for every FROM-order.
+Both orders now return 200 correct rows; deterministic; full suite green.
+`multiway_join_index_probe_test.go` was a plan-shape-only fake checkbox (never
+executed the query) — now retrofitted with **row-correctness** assertions for
+both FROM-orders, which is the load-bearing check.
+
+**Remaining (cost-optimality, NOT correctness) — RFC-042.** Under the big→small
+FROM-order the re-enumerated `(t2⋈t3)` sub-product still prefers a cross-product
+NLJ over the index probe (the index-probe alternative either loses on cost or
+flows a sub-product result the parent predicate can't SARG), so that order
+full-scans the 200-row T3 instead of index-probing it. Correct, just slower. Full
+byte-identical FROM-order invariance for N≥3 (the `TestFDB_MultiwayJoinOrder_Probe`
+goal) depends on closing this cost gap + FROM-order-deterministic winner selection.
+Likely levers: the index-probe cardinality cost (criterion #2 — make the FlatMap
+inner range over the index-scan wrapper so `maxDataAccessCardinality` reflects the
+probe), and making re-enumerated sub-products flow a flat `JoinMergeResultValue`
+so the index-probe variant is both cheaper AND resolvable.
+
 ### vs Java (correctness/feature parity)
 
 - [x] **Correlated filter without index.** Fixed in 56874f23 — ImplementFilterRule sets innerAlias on RecordQueryPredicatesFilterPlan. All correlated paths (scalar subquery, EXISTS, JOIN) work without indexes. 14+ integration tests verify.

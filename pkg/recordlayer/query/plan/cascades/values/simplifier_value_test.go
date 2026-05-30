@@ -513,3 +513,35 @@ func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 		t.Fatalf("field('z') on RC without 'z' should remain FieldValue, got %T", got)
 	}
 }
+
+// TestSimplifyValue_FieldOverJoinMerge pins composeFieldOverJoinMerge: a
+// FieldValue over the Go-only opaque JoinMergeResultValue canonicalizes to a
+// FieldValue over the merge's INNER quantifier (matching JoinMergeResultValue's
+// Evaluate, where the inner side overwrites the outer for bare keys). Without
+// this, predicates that reference a join's result (e.g. after SelectMergeRule
+// flattens a nested binary join) keep referencing an opaque merge the planner
+// cannot reason about — blocking re-enumerated multi-way joins from embedding
+// their predicates and index-probing (RFC-042).
+func TestSimplifyValue_FieldOverJoinMerge(t *testing.T) {
+	t.Parallel()
+	outer := NamedCorrelationIdentifier("T1")
+	inner := NamedCorrelationIdentifier("T2")
+	jm := NewJoinMergeResultValue(outer, inner)
+
+	got := SimplifyValue(NewFieldValue(jm, "ID", TypeUnknown))
+
+	fv, ok := got.(*FieldValue)
+	if !ok {
+		t.Fatalf("expected *FieldValue, got %T", got)
+	}
+	if fv.Field != "ID" {
+		t.Errorf("field = %q, want %q", fv.Field, "ID")
+	}
+	qov, ok := fv.Child.(*QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("expected child *QuantifiedObjectValue (inner), got %T", fv.Child)
+	}
+	if qov.Correlation != inner {
+		t.Errorf("resolved to %v, want inner %v", qov.Correlation, inner)
+	}
+}

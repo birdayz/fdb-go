@@ -991,34 +991,61 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	seedCols := extractOuterProjectionColumns(seedBranches[0])
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(seedCols) > 0 && len(recCols) > 0 && len(seedCols) == len(recCols) {
-		needsRemap := false
-		for i := range seedCols {
-			if !strings.EqualFold(seedCols[i], recCols[i]) {
-				needsRemap = true
-				break
-			}
-		}
-		if needsRemap {
-			// Wrap the recursive expression with a projection that reads
-			// from the recursive column names and stores under the seed
-			// column names.
-			remapVals := make([]values.Value, len(recCols))
-			for i, rc := range recCols {
-				remapVals[i] = &values.FieldValue{
-					Field: strings.ToUpper(rc),
+		// ALWAYS wrap the recursive leg in a normalization projection that reads
+		// the body's output columns and re-emits them under the seed's schema
+		// column names (the projection's aliases). This is what lets the Go-only
+		// PushProjectionBelowJoinRule be removed — it was the only other
+		// mechanism that narrowed the recursive body's columns (RFC-042 L1).
+		//
+		// When the recursive body is a join, its output is the merged
+		// JoinMergeResultValue row carrying QUALIFIED keys (B.ID, A.ID, ...). The
+		// load-bearing fix is that we never copy a qualified key into the temp
+		// table: each remap value is FieldValue{Field: <bare col>, Child:
+		// QOV(<qualifier>)} — evaluateCorrelated reads the qualified datum key
+		// ("B.ID") while projectionColumnName returns the BARE field. So the
+		// qualified key (which would collide with the NEXT recursion level's
+		// same-qualified join side and clobber the live row, stalling the
+		// recursion one level early — the exact bug that produced missing
+		// deepest descendants) is gone.
+		//
+		// Emit-key precision: executeProjection stores the value under BOTH the
+		// projectionColumnName (the bare body column) AND the alias (the seed
+		// name). When the recursive branch projects the same column names as the
+		// seed (the common case, e.g. seed `id`, body `b.id` → both "ID"), those
+		// coincide and the row has exactly the clean schema column. When they
+		// differ (a column rename across the recursive boundary, e.g. seed `n`,
+		// body `e.dst`), the bare body name ("DST") is also emitted as an extra
+		// key — but it is INERT: it is unqualified, so the next level's temp
+		// scan re-qualifies it under the scan alias and the live join side wins
+		// the bare key; it cannot clobber the recursion the way a qualified
+		// collision did. (A future cleanup could drop the extra key by teaching
+		// executeProjection to emit alias-only for an aliased correlated field.)
+		remapVals := make([]values.Value, len(recCols))
+		for i, rc := range recCols {
+			ru := strings.ToUpper(rc)
+			var rv values.Value
+			if dot := strings.IndexByte(ru, '.'); dot >= 0 {
+				qualifier := ru[:dot]
+				col := ru[dot+1:]
+				rv = &values.FieldValue{
+					Field: col,
 					Typ:   values.UnknownType,
+					Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qualifier)),
 				}
+			} else {
+				rv = &values.FieldValue{Field: ru, Typ: values.UnknownType}
 			}
-			remapAliases := make([]string, len(seedCols))
-			for i, sc := range seedCols {
-				remapAliases[i] = strings.ToUpper(sc)
-			}
-			recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
-				remapVals,
-				remapAliases,
-				expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
-			)
+			remapVals[i] = rv
 		}
+		remapAliases := make([]string, len(seedCols))
+		for i, sc := range seedCols {
+			remapAliases[i] = strings.ToUpper(sc)
+		}
+		recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
+			remapVals,
+			remapAliases,
+			expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
+		)
 	}
 
 	// Wrap recursive leg in TempTableInsert.

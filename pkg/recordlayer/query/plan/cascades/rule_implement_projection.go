@@ -86,7 +86,7 @@ func (r *ImplementProjectionRule) OnMatch(call *ExpressionRuleCall) {
 
 	seen := make(map[expressions.RelationalExpression]bool)
 	for _, ordering := range orderings {
-		winner := getWinnerForOrdering(innerRef, ordering)
+		winner := getWinnerForOrdering(innerRef, ordering, call.CostModel())
 		if winner == nil {
 			continue
 		}

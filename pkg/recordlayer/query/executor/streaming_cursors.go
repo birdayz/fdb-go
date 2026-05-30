@@ -698,6 +698,23 @@ func fieldName(v values.Value) string {
 		return ""
 	}
 	if fv, ok := v.(*values.FieldValue); ok {
+		// A FieldValue qualified via a QuantifiedObjectValue child
+		// (QOV(alias).col — the form re-enumerated join predicates use)
+		// carries its table alias in the child's correlation, not in the
+		// bare Field. Return the qualified "ALIAS.COL" so extractEquijoinColumns
+		// can tell the outer side from the inner side. Without this, the bare
+		// field has an empty qualifier, matchesAlias("",x) is always true, and
+		// the equijoin column extraction picks outer/inner backwards — the hash
+		// index is then keyed on the wrong column and the join returns 0 rows
+		// (only on the ≥100-row hash-join path, so the bug is data-dependent).
+		// The legacy flat form (Field already "ALIAS.COL", no child) is
+		// returned unchanged.
+		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+			alias := qov.Correlation.Name()
+			if alias != "" {
+				return alias + "." + fv.Field
+			}
+		}
 		return fv.Field
 	}
 	return ""
@@ -712,6 +729,13 @@ func splitQualified(name string) (table, col string) {
 	return "", name
 }
 
+// matchesAlias reports whether a field's table qualifier `table` refers to
+// quantifier `alias`. An empty `table` (an unqualified field, e.g. the legacy
+// flat "COL" form with no dot) matches ANY alias — the permissive fallback for
+// fields that carry no qualifier. Callers that must distinguish sides (e.g.
+// extractEquijoinColumns) therefore depend on fieldName() returning a QUALIFIED
+// name for QOV-child FieldValues; otherwise both sides match the first branch
+// and outer/inner are picked backwards (see equijoin_columns_test.go).
 func matchesAlias(table, alias string) bool {
 	if table == "" {
 		return true
