@@ -71,7 +71,49 @@ conformance + cascades + embedded + core-query all green, and big-first's seed
 re-enumerates (the probe now fails only on L2/L3, no longer FROM-order-locked by
 a missing seed). Rule count `DefaultExpressionRules` 46→45.
 
-### Layer 2 (OPEN) — re-enumerated associativities carry a residual-predicate penalty
+### Layers 2 & 3 collapse into ONE capability: index-nested-loop join
+
+Instrumentation (post-L1) shows L2 and L3 are the same gap viewed two ways. The
+absorbed correlated-inner form that L2 flagged as "residual-penalized" is exactly
+the form an **index probe** consumes — `PartitionBinarySelectRule` deliberately
+pushes the join predicate into a correlated inner sub-Select precisely so the
+inner can be index-SARGed. So the real fix is to make that correlated inner an
+**index probe** (then the SARGed predicate is not a residual, the cost ties
+collapse to join-order cost, and the optimal drive-from-smallest order wins for
+both FROM-orders). Three concrete missing pieces, all in the match layer:
+
+1. **The correlated join predicate is not pushed into the inner *reference*.**
+   `ImplementNestedLoopJoinRule.yieldGeneralFlatMap` applies the predicate as a
+   post-scan `PredicatesFilter` in the FlatMap wrapper, leaving the inner
+   reference a bare `Scan(T3)` — so there is no correlated `Select([t3.t2_id =
+   t2.id], Scan(T3))` reference for the index matcher to bind. Verified: even
+   `TestPlanHarness_JoinOnIndex` plans `FlatMap(outer=Scan(CUSTOMERS),
+   inner=PredicatesFilter(Scan(ORDERS),[1 preds]))` — never an index probe.
+2. **No Select-vs-Select match path.** `MatchIntermediateRule` only matches a
+   query `LogicalFilterExpression` against a candidate `SelectExpression`
+   (`matchFilterAgainstSelect`, rule_match_intermediate.go:205). The Go port
+   narrowed Java's general `SelectExpression.subsumedBy` to the Filter-vs-Select
+   case (single-table `WHERE` stays a LogicalFilter, so it matches; a join inner
+   is a `SelectExpression`, so it never matches). Instrumentation confirmed: for
+   the indexed join only `queryExpr=SelectExpression(nq=2)` (the join select)
+   reaches the matcher — the inner nq=1 Select is never attempted against the
+   index candidate. **Port the Select-vs-Select subsumption path** (analogous to
+   matchFilterAgainstSelect, for a 1-quantifier query SelectExpression).
+3. **Correlated index-scan generation + cost.** The matched correlated comparison
+   (value = a `QuantifiedObjectValue` from the outer) must produce a correlated
+   `IndexScan(idx, [=outer.col])` data-access member (the per-outer-row probe),
+   and the cost model must let it win over the full-scan FlatMap.
+
+The placeholder-binding machinery itself (`matchFilterAgainstSelect` →
+`SetSargable`, rule_match_intermediate.go:385-398) already binds a comparison
+into a `ComparisonRange` structurally and does NOT reject correlated comparison
+values — so piece 3's matching half is largely present once pieces 1+2 feed it.
+
+This is a real feature (index-nested-loop join), absent in the Go port, spanning
+predicate push-down + match infrastructure + data-access generation. It is the
+realistic way this Cascades architecture does cost-based multi-way join ordering.
+
+### Layer 2 (historical framing) — re-enumerated associativities carry a residual-predicate penalty
 
 With the flat seed, the top join reference now holds every associativity as a
 physical member. But the cost model does not pick the cheapest. `PlanningCostModel`
