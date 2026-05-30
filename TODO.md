@@ -56,7 +56,7 @@ so the index-probe variant is both cheaper AND resolvable.
 - [x] **Correlated filter without index.** Fixed in 56874f23 — ImplementFilterRule sets innerAlias on RecordQueryPredicatesFilterPlan. All correlated paths (scalar subquery, EXISTS, JOIN) work without indexes. 14+ integration tests verify.
 - [x] **RIGHT/FULL OUTER JOIN.** Done in RFC-036. (The old "only LEFT OUTER" note was stale — RIGHT already worked via operand-swap normalization in `cascades_translator.go`, pinned by `TestFDB_RightJoin`.) FULL OUTER added as a Go-only query extension: Java's SQL layer has **no** outer joins at all (`visitOuterJoin` is a no-op, zero tests), so LEFT/RIGHT/FULL are all read-path-only extensions with **zero wire-format impact** — Java apps still read/write the same records. FULL OUTER is implemented exclusively by the materialized NLJ cursor (`streaming_cursors.go`): LEFT-OUTER outer loop + a `matchedInner` bitmap + a drain phase emitting unmatched inner rows NULL-padded on the left. Routed away from the correlated FlatMap path (cannot observe global inner-match state); FULL+EXISTS rejected with a clear error. 9 FDB integration tests (all four row classes, NULL-key 3VL, many-to-many, large-inner hash+drain, WHERE-above-join, determinism, RIGHT NULL-key regression). Graefe+Torvalds ACK.
 - [x] **Correlated scalar subquery shapes widened.** Non-aggregate (ORDER BY + LIMIT), multi-table inner FROM (JOINs), multi-column validation, deep-walk replaceScalarSubqueryRef. GROUP BY/HAVING rejected with clear errors (PredicatePushDownRule AliasMap conflict). CorrelatedExistsError propagation fixed.
-- [ ] **No window functions.** No `ROW_NUMBER()`, `RANK()`, `LAG/LEAD`.
+- [ ] **No *general-purpose* window functions — and Java has none either.** Investigation (RFC-045): Java's relational layer has **no** general streaming window operator. The general `windowClause` is commented out in Java's grammar ("don't want to deal with them now"); `LAG`/`LEAD` are grammar tokens with **no** value class; `RankValue implements Value.IndexOnlyValue` (computable only from a rank/leaderboard index, never over a result set). The **only** working window function in Java is `ROW_NUMBER() OVER (... ORDER BY <distance>) <= K` via `QUALIFY`, used exclusively for **vector/HNSW K-NN search**. So "match Java's window functions" ≡ "finish the vector/HNSW relational parity" — tracked as **Phase 9** below. General windowing over plain tables would be a *Go-only extension Java lacks entirely* (allowed if wire-compat holds + deep tests), not parity — deferred, not in Phase 9.
 - [ ] **GROUP BY/HAVING in correlated scalar subqueries.** Requires PredicatePushDownRule to treat GroupByExpression as a barrier (AliasMap.Compose conflict on correlation alias). Per Graefe: runtime cardinality assertions incompatible with continuation-based pagination — use Java's FirstOrDefault pattern.
 - [ ] **PlanVisitor resolver lacks SubqueryPlanner.** Scalar subquery error messages don't propagate through step (2) projection resolution because the resolver has no SubqueryPlanner. workaround: errors propagate through upgradeProjectionValues (step 12) instead.
 - [x] **DML does not execute through Cascades (parallel pipeline).** Fixed as **P0.4** — all DML now executes through Cascades (`planDML`); the naive `execStatement` DML path is deleted. See P0.4.
@@ -197,3 +197,46 @@ during pull-up so the opaque-merge ambiguity never exists, retiring the rule and
 bare/qualified distinction entirely. Graefe-endorsed; not urgent. Do this with (or before)
 the typed join-result migration that replaces `JoinMergeResultValue` with a schema-bearing
 record constructor à la Java.
+
+---
+
+## Phase 9: Vector / HNSW relational SQL parity (RFC-045)
+
+**Context.** The record-layer / Cascades core of vector search is already ported and FDB-tested:
+the HNSW graph (`hnsw.go`), the index maintainer (`vector_index_maintainer.go`), RaBitQ
+quantization (`pkg/rabitq`), HNSW stats (`hnsw_stats.go`), `vec_math.go` / `fht_kac_rotator.go`,
+chaos verification (`chaos/verify_vector.go`), and integration tests
+(`vector_index_test.go`, `rabitq_test.go`, `hnsw_stats_test.go`, `bench/sift_benchmark_test.go`).
+The Cascades *values* (`value_row_number.go` + `value_*_distance_row_number.go` seeds,
+`value_row_number_high_order.go`), the match candidate (`vector_index_match_candidate.go`, 232 LOC),
+and a `DistanceRank` comparison stub all exist. The SQL **grammar** is complete:
+`vectorIndexDefinition` (`CREATE VECTOR INDEX … USING HNSW … PARTITION BY … OPTIONS(…)`),
+`qualifyClause`, `overClause`, `windowSpec`, `nonAggregateWindowedFunction(ROW_NUMBER …)`.
+
+**The gap = the relational front-end + Cascades wiring** (the "just not relational bits"):
+
+- [ ] **9.1 DDL: `CREATE VECTOR INDEX … USING HNSW … PARTITION BY … OPTIONS(…)`** → metadata vector
+  `Index` (type `vector`, HNSW options). No `vectorIndexDefinition` handler exists in `pkg/relational`
+  today. Wire-compat: the index metadata + on-disk HNSW format must match Java byte-for-byte (core
+  already does; DDL must produce the same `Index` proto + options).
+- [ ] **9.2 Query front-end: `QUALIFY ROW_NUMBER() OVER (PARTITION BY … ORDER BY <distance>(vec, q)) <= K`.**
+  No `qualifyClause` handling and no window-function→Value visitor exist (`grep QualifyClause` → 0 hits;
+  `extractFunctionNameFromCall` only returns the *name* string). Build the distance-specialized
+  `RowNumberValue` (Euclidean / Cosine / Dot-product / EuclideanSquare) from the parse tree, fleshing
+  out the seed value classes; port `RowNumberValue.transformComparisonMaybe` so `ROW_NUMBER() <= K`
+  rewrites into a `DistanceRankValueComparison(queryVector, k, efSearch, isReturningVectors)`.
+- [ ] **9.3 Cascades wiring: make `NewVectorIndexScanMatchCandidate` reachable.** It is currently
+  constructed *nowhere* (only its own definition). Add a vector branch to the match-candidate
+  enumeration (next to `NewValueIndexScanMatchCandidate` at `plan_context_builder.go:46` and the
+  metadata-driven candidate builder in the embedded layer) so a `vector`-type index yields a vector
+  candidate; the candidate splits partition-equality predicates from the single `DistanceRankValueComparison`
+  → `VectorIndexScanComparisons` → existing maintainer scan.
+- [ ] **9.4 E2E proof.** Port Java's `window-function-documentation-queries.yamsql` (KNN top-K via
+  `QUALIFY`, `ef_search` option, `<`/`<=`, OR-of-two-KNN) as the Go conformance/yamsql scenario, plus an
+  FDB integration test that `EXPLAIN`-pins the vector index scan (not a full-scan fallback) and asserts
+  row + distance correctness. Window-functions-in-`WHERE` must error (Java: `42F21`).
+
+Constraints to mirror from Java's `VectorIndexScanMatchCandidate`: exactly one distance-rank per query;
+the index MUST be partitioned and the query MUST supply partition keys; the SQL distance fn MUST match the
+index `metric`; ORDER BY must be ascending; `ROW_NUMBER()` is INDEX-ONLY (refuse without a matching index).
+`@API(EXPERIMENTAL)` in Java — landed Jan–Mar 2026, just before the 4.11.1.0 tag.
