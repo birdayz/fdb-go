@@ -1,6 +1,6 @@
 # RFC-043: Generic N-way join execution (lift the 3-way scope limit)
 
-**Status:** Draft
+**Status:** Draft v2 (Graefe + Torvalds NAK addressed — see Status progression)
 
 **Epic:** RFC-038 (multi-way join ordering). This is **PR-D** — it removes the
 `isThreeWay` gate RFC-042 installed and makes re-enumerated joins of *any* arity
@@ -72,70 +72,97 @@ cross product) and is correctly skipped. Every valid decomposition therefore
 buries `b` inside a join, so its columns **must** be flowed up through that join.
 Multi-column intermediate flow is mandatory, not avoidable.
 
-### What already exists (the scaffold)
+### What exists, and what is genuinely missing
 
-`rule_partition_select.go` already contains **Case 3** (lines ~382–441): when the
-upper correlates to ≥2 distinct lower aliases it builds a
-`RecordConstructorValue{_0: QOV(la0), _1: QOV(la1), …}` as the lower's result and
-a `TranslationMap` rewriting upper predicates/result to
-`FieldValue(QOV(lowerQ), _i).col`. This is the Java-faithful generation. It is
-currently **dead-coded** for the active scope by the `multiAliasCase3` skip + the
-`isThreeWay` gate. So the *generation* side is ~80% written; the gap is that the
-**executor cannot resolve the multi-column flow** these constructors produce.
+`rule_partition_select.go` contains a dead-coded **Case 3** (lines ~382–447):
+when the upper correlates to ≥2 distinct lower aliases it builds a
+`RecordConstructorValue{_0: QOV(la0), _1: QOV(la1), …}` + a `TranslationMap`
+rewriting upper refs to `FieldValue(QOV(lowerQ), _i).col`. It is the Java-faithful
+*generation*, gated off by the `multiAliasCase3` skip + `isThreeWay`.
+
+But the generation existing is **not** the bulk of the work, and this RFC does
+**not** reuse Case 3 — see Fix below, it is rejected. The genuine gap is on the
+**result-value / execution** side: today's Case-2 lower flows a single
+`QuantifiedObjectValue` (`GetFlowedObjectValue()`), i.e. one table's row. There is
+**no** mechanism that makes an intermediate join flow *more than one* table's
+columns, and Case 3's `RecordConstructorValue` ordinal flow is **0%** resolvable
+by the executor (its own comment says "UNREACHABLE for n == 3"). That missing
+multi-table flow — not the generation — is what this RFC builds.
 
 ## Fix
 
-Make an intermediate join flow **all live columns** of its lower — every column
-any ancestor (upper join predicate or final projection) references — and make the
-parent resolve them. Two implementation routes; this RFC commits to **(b)**.
+Make every re-enumerated intermediate join flow a **merged row** (qualified
+`ALIAS.COL` keys for all live tables) instead of a single `QOV`, so the live
+columns of every buried table accumulate up the join spine and the final
+`Project` reads any table's column from the top merged row.
 
-### Route (b) — merged-qualified-key flow *(recommended)*
+### Why a *binary* merge value suffices (the key correctness argument)
 
-Instead of flowing a single `QOV` (Case-2) or a `RecordConstructorValue` whose
-ordinals the executor can't resolve (Case-3), flow a **`JoinMergeResultValue`**
-(the merged-row value introduced in RFC-042, commit `8cdd6d9f`) that produces a
-row with **qualified `ALIAS.COL` keys for every live lower table**. The upper
-levels then reference `A.COL` / `B.COL` directly and resolve through the
-**existing** merged-key path (`fieldName` → `splitQualified` → `matchesAlias` →
-`lookupJoinKey` in `streaming_cursors.go`). **No `TranslationMap`, no ordinal
-field access, no new value-evaluation code** — this is precisely *why* `b/c/d`
-already resolve today; it extends the same mechanism to the consumed-then-dropped
-table.
+`JoinMergeResultValue` (`values/value_join_merge.go`) is **binary** —
+`{OuterAlias, InnerAlias}`, `Evaluate` merges exactly two bindings. A single one
+cannot carry ≥2 buried tables. **But it does not have to**, because its `Evaluate`
+**preserves already-qualified keys** (`merged[k]=val` for any key containing `.`)
+and qualifies only bare keys. So when its *outer* is itself a merged row carrying
+`A.*, B.*`, those pass through untouched and only the inner table is freshly
+qualified. A **chain** of binary merges therefore accumulates the full set
+`A.*, B.*, C.*, …` up a left-deep spine. The merge is realized **per binary join
+level** — never as one wide N-ary value — so **no new value type is needed**, and
+this is exactly the `mergeRows` qualified-key propagation that already carries
+`b/c/d` to the top today.
 
-Required pieces:
-1. **Column-liveness pass** (Cascades rule): for each partition, compute the set
-   of lower columns referenced by (i) upper predicates and (ii) the result value,
-   transitively through the upper's own re-partitions. The lower must flow a
-   merged value projecting exactly those `(alias, col)` pairs — not just the
-   single correlated alias.
-2. **Lower result = merged value over the live set** instead of `QOV(lowerAlias)`
-   (Case-2) / ordinal `RecordConstructorValue` (Case-3). When the live set is a
-   single full table, this degenerates to today's Case-2 (no behavior change for
-   3-way).
-3. **Drop the `isThreeWay` gate and the `multiAliasCase3` skip**, keeping only the
-   `disconnectedLower` skip (cross products remain genuinely degenerate at any
-   arity).
+The whole bug is that the re-enumerated lower flows `GetFlowedObjectValue()` (a
+single `QOV`, `quantifier.go`), which is *not* a merged row — so the chain breaks
+at the bottom and the consumed inner table is dropped. The fix makes the
+≥2-live-table lower flow `JoinMergeResultValue(outer, inner)` instead.
 
-### Route (a) — nested `RecordConstructorValue` *(fallback if (b) can't express a shape)*
+### Concrete changes
 
-Keep Case-3's constructor flow and teach the executor to resolve
-`FieldValue(QOV(lowerQ), _i).col` through the nested `FlatMap`/NLJ merge — i.e.
-evaluate a field access into a `RecordConstructorValue` an intermediate join
-flowed. More faithful to Java but touches the value-evaluation + merge core
-(`flat_map_cursor.go::computeResult`, `streaming_cursors.go` merge). Held in
-reserve; only needed if a bushy shape exists that route (b)'s flat qualified-key
-merge cannot represent.
+1. **Column-liveness set** (in `rule_partition_select.go`, per partition). Define
+   `live(lower) = correlationClosure(upperPredicates ∪ resultValue) ∩ lowerAliases`
+   — the lower aliases referenced by an upper join predicate **or** the result
+   value, taken through the correlation order (`GetCorrelatedToOfValue` /
+   `GetCorrelatedToOfPredicate` already give the per-node sets;
+   `fullCorrelationOrder` already gives the transitive closure). This is Graefe's
+   formulation: the output schema a group must flow is its consumers'
+   reference set restricted to it. **Crucially it includes join keys upper levels
+   need, not only the final projection** — a deep key live solely for an ancestor
+   predicate must survive.
+2. **Flow rule** keyed on `|live(lower)|`:
+   - `|live| ≤ 1` → today's single-`QOV` Case-2, **unchanged** (the 3-way path is
+     this degenerate case — no behavior change, pinned by an EXPLAIN-identity +
+     determinism test).
+   - `|live| ≥ 2` → the lower flows a merged row. Realized by
+     `ImplementNestedLoopJoinRule` synthesizing `JoinMergeResultValue(outerAlias,
+     innerAlias)` when it implements a re-enumerated join sub-select (binary, at
+     the point outer/inner are known); the per-level chaining above carries all
+     live columns. This is a **result-value change in the implement rule** — *not*
+     "no value-eval changes"; it is small and reuses the existing binary value,
+     but it is real and must be tested as such.
+3. **Drop** `isThreeWay` and the `multiAliasCase3` skip; **keep** `disconnectedLower`
+   (a cross-product lower is genuinely degenerate at any arity).
 
-### Alias-namespace risk (TODO 7.1)
+### Rejected: route (a) — nested `RecordConstructorValue` + `TranslationMap`
 
-Each re-enumeration level mints fresh quantifier aliases (`q$N`). The #1
-silent-bug source in this engine is `q$N` vs table-alias mismatch
-(query-engine skill; TODO 7.1). Route (b) mitigates by keying the merged row on
-**table-qualified** names end-to-end (the same `ALIAS.COL` convention that works
-for `b/c/d` today), so projections resolve by table alias regardless of the
-intermediate `q$N`. If a shape is found where table-qualified keys are
-insufficient, that shape forces TODO 7.1 (alias unification) to land first — this
-is the principal scoping risk and is called out as a gate, not assumed away.
+The dead-coded Case-3 path (ordinal `RecordConstructorValue` flowed up, upper refs
+translated to `FieldValue(QOV(lowerQ), _i).col`) is **rejected, not held in
+reserve.** It is Java's representation, but in Go it would require new
+value-evaluation code to resolve ordinal field access into a constructor through
+the nested merge — strictly more work than the qualified-merged-key flow above,
+which already exists and chains. With aliases unified (below), the qualified-key
+representation is semantically equivalent to Java's ordinal tuple, so there is no
+reason to build the harder one. The dead Case-3 code is **deleted** as part of
+this PR.
+
+### Alias namespaces — a satisfied precondition (TODO 7.1, already DONE)
+
+This flow is correct **because** quantifier aliases already equal table aliases:
+TODO 7.1 ("Unify alias namespaces", TODO.md §7.1) is **merged** — its root-cause
+fix in `mergeRows` (bare inner keys no longer overwrite qualified keys from nested
+joins; the `!exists` guard) is *precisely* the qualified-key preservation this
+RFC's chaining depends on. So 7.1 is a **precondition that holds**, not a future
+gate or an escalation trigger: re-enumerated `q$N` quantifiers resolve their
+columns under the unified table-qualified names, end to end. (Earlier drafts
+framed 7.1 as a risk held in reserve — that was stale; it is done.)
 
 ## Performance
 
@@ -147,9 +174,15 @@ is the principal scoping risk and is called out as a gate, not assumed away.
 - **No extra columns on the wire.** This is read-path execution only — the merged
   intermediate value lives in-cursor; nothing about record/index/continuation
   encoding changes. Wire compat is untouched.
-- **Stress-1M before/after** must stay within thresholds (the flow change can only
-  add already-needed columns to an in-memory merged row; it does not change the
-  chosen plan for 2/3-way, which dominate the corpus). Recorded in TODO.md.
+- **Merged rows are not wider than the original plan.** The non-re-enumerated plan
+  already flows a `JoinMergeResultValue` per join (built by the translator,
+  `cascades_translator.go`); this change makes the *re-enumerated* sub-joins flow
+  the same. The live-set restriction means an intermediate row carries only the
+  columns some ancestor needs — never more than the full merge the original plan
+  flowed.
+- **Stress-1M before/after** must stay within thresholds (the flow change adds only
+  already-needed columns to an in-memory merged row; it does not change the chosen
+  plan for 2/3-way, which dominate the corpus). Recorded in TODO.md.
 
 ## Test plan
 
@@ -171,12 +204,19 @@ New `TestFDB_NwayJoinOrder` matrix — the dimensions that were unprobed and let
   the largest last, never full-scan an indexed FK.
 - Determinism 10× on each planner assertion (alias non-determinism is always a
   bug here).
-- Unit test for the column-liveness pass (analogous to `TestLowerAliasesConnected`
-  for the connectivity check).
+- Unit test for the column-liveness set (analogous to `TestLowerAliasesConnected`).
+  **Must include the case Graefe flagged:** a deep table whose column is live
+  *only* for an ancestor join predicate (not the final projection) — e.g. a chain
+  where an intermediate key would be dropped if liveness only tracked the
+  projection. That column must be in `live(lower)`.
 
 ## Status progression
 
-Draft → reviewed (Graefe + Torvalds ACK) → implemented (route (b); `isThreeWay`
-gate removed; `TestFDB_NwayJoinOrder` green; `Limit` test flipped to positive) →
-PR + @claude LGTM. If route (b) hits an inexpressible shape, escalate to route
-(a) and/or gate on TODO 7.1, documented here.
+Draft (v1) → **v2 (addressed Graefe + Torvalds NAK: 7.1 reframed as a satisfied
+precondition not a future gate; route (a) `RecordConstructorValue` rejected, not
+held in reserve; committed to binary-`JoinMergeResultValue`-chained flow with the
+explicit "why binary suffices" argument; specified the `live(lower)` set; dropped
+the "~80% written" claim)** → reviewed (Graefe + Torvalds ACK) → implemented
+(`isThreeWay` gate + `multiAliasCase3` skip + dead Case-3 removed;
+`TestFDB_NwayJoinOrder` green; `_Limit` test flips to positive) → PR + @claude
+LGTM.
