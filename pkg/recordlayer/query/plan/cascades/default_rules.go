@@ -68,7 +68,15 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewNoOpFilterRule(),
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
-		NewPushProjectionBelowJoinRule(),
+		// PushProjectionBelowJoinRule is PLANNING-only (PlanningExplorationRules).
+		// Firing it in REWRITING wrapped a join's children in
+		// LogicalProjectionExpressions, which blocked SelectMergeRule from
+		// flattening the nested binary join into the canonical flat
+		// N-quantifier SelectExpression — so PLANNING's PartitionSelectRule had
+		// no flat seed to re-enumerate join associativities from, locking the
+		// plan to FROM-clause order (RFC-042). REWRITING now normalizes to the
+		// flat join seed; the projection push-down still runs in PLANNING (where
+		// the recursive-CTE body relies on it for temp-table column alignment).
 		// PullFilterAboveSortRule REMOVED: Go-only rule not in Java.
 		// Pulling Filter above Sort changes the correlation structure and
 		// caused InJoin to wrap Sort inside it, then InJoin.HintOrdering
@@ -145,6 +153,11 @@ func PlanningExplorationRules() []ExpressionRule {
 		NewPullUpNullOnEmptyRule(),
 		NewPartitionSelectRule(),
 		NewPartitionBinarySelectRule(),
+		// Column-pruning projection push-down runs in PLANNING (not REWRITING),
+		// so REWRITING leaves the canonical flat join seed intact for
+		// PartitionSelectRule to re-enumerate (RFC-042). The recursive-CTE body
+		// relies on this push-down for temp-table column alignment.
+		NewPushProjectionBelowJoinRule(),
 	}
 }
 

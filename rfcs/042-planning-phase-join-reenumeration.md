@@ -28,7 +28,7 @@ to run" (a false green). Once gazelle registered it, the probe is RED.
 
 Instrumented on the 3-table chain under both FROM-orders:
 
-### Layer 1 (root-caused; fix is NOT a clean removal) — REWRITING did not produce a FROM-order-independent flat seed
+### Layer 1 (FIXED) — REWRITING did not produce a FROM-order-independent flat seed
 
 The SQL→cascades translator builds a multi-table inner-join FROM as a **nested
 binary** tree of 2-quantifier `SelectExpression`s (`Select(Select(a,b),c)`).
@@ -52,30 +52,24 @@ column mapped to a top-level join quantifier**:
   its alias matches neither top-level side → rule **bails** (the `default: return`
   arm) → flat seed survives → re-enumeration runs → optimal `(T1⋈T2)⋈T3`.
 
-**Attempted fix — removal regresses recursive CTE.** The obvious fix (drop the
-Go-only `PushProjectionBelowJoinRule` from `DefaultExpressionRules`) makes
-big-first's PLANNING seed flat (verified) and `cascades_test` + all non-FDB
-plan-harness/core-query targets green — **but the full `just test` gate fails**:
-`TestFDB_RecursiveCTECrossJoin` returns 4 rows instead of 5 (wrong results),
-plus `TestFDB_RecursiveCTERename` and `TestFDB_CascadesRecursiveCTE`. So this
-Go-only rule is **load-bearing for recursive-CTE cross-join correctness** — it
-papers over a real gap in the recursive-CTE / cross-join column handling that
-Java handles without such a rule. Removing it outright is a correctness
-regression and was reverted.
+**A naive removal regresses recursive CTE.** Dropping the rule from
+`DefaultExpressionRules` flattens the seed but fails the full gate:
+`TestFDB_RecursiveCTECrossJoin` returns 4 rows instead of 5 — the Cascades
+recursive-CTE plan (`RecursiveLevelUnion`) relies on this projection push-down
+for temp-table column alignment in the recursive body.
 
-The clean fix must therefore be one of (Java-faithful, in order of preference):
-1. **Fix the underlying recursive-CTE/cross-join column gap** so the rule is no
-   longer needed, then remove it (Java has no such rule, so the gap is the real
-   divergence). Largest, but eliminates the Go-only rule entirely.
-2. **Let the flat seed form despite the pushed projections** — teach
-   `SelectMergeRule` (or a projection pull-up in REWRITING) to flatten
-   `Select → LogicalProjection → Select` so PartitionSelect gets a flat seed even
-   when the rule fired. Preserves the recursive-CTE benefit.
-3. **Narrow the rule** so it does not fire on the join shapes whose flattening
-   PLANNING depends on — fragile; rejected unless 1/2 prove intractable.
-
-Rule count stays 46 until one of these lands. This layer is root-caused but
-**not yet fixed**.
+**Fix (landed):** make `PushProjectionBelowJoinRule` **PLANNING-only** — move it
+from `DefaultExpressionRules` to `PlanningExplorationRules`, exactly as
+PartitionSelectRule was moved (RFC-041/042). REWRITING no longer inserts the
+projections, so `SelectMergeRule` flattens the nested binary join to the
+canonical flat N-quantifier seed, and PartitionSelectRule re-enumerates all
+associativities in PLANNING. The push-down still fires in PLANNING, so the
+recursive-CTE body still gets its temp-table column alignment. Verified: all
+three recursive-CTE tests (`TestFDB_RecursiveCTECrossJoin`,
+`TestFDB_CascadesRecursiveCTE`, `TestFDB_RecursiveCTERename`) pass, plandiff
+conformance + cascades + embedded + core-query all green, and big-first's seed
+re-enumerates (the probe now fails only on L2/L3, no longer FROM-order-locked by
+a missing seed). Rule count `DefaultExpressionRules` 46→45.
 
 ### Layer 2 (OPEN) — re-enumerated associativities carry a residual-predicate penalty
 

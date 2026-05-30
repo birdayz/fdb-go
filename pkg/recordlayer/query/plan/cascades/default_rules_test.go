@@ -22,10 +22,11 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 // keep this test in sync with both.
 func TestDefaultRules_ExpectedCount(t *testing.T) {
 	t.Parallel()
-	// 46: PartitionSelectRule + PartitionBinarySelectRule moved to
-	// PLANNING-only (PlanningExplorationRules) per RFC-042 — join-order
-	// enumeration belongs in PLANNING, matching Java's PlanningRuleSet.
-	const expected = 46
+	// 45: PartitionSelectRule + PartitionBinarySelectRule and
+	// PushProjectionBelowJoinRule are PLANNING-only (PlanningExplorationRules)
+	// per RFC-042 — join-order enumeration and projection push-down belong in
+	// PLANNING so REWRITING leaves the canonical flat join seed intact.
+	const expected = 45
 	if got := len(DefaultExpressionRules()); got != expected {
 		t.Fatalf("DefaultExpressionRules count = %d, want %d (update CLAUDE.md / TODO.md if intentional)", got, expected)
 	}
