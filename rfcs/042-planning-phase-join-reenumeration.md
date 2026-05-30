@@ -1,6 +1,6 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v6 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
+**Status:** v7 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
 gap closed at translation time) and a **correctness** bug in re-enumerated
 multi-way joins fixed (degenerate partitions returned wrong/NULL rows, not merely
 suboptimal plans). The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
@@ -278,31 +278,54 @@ and the prime suspect (L3.1 "flat result value") mis-roots the bug. v5's L3.1 is
 
 **Revised steps, strictly ordered:**
 
-* **L3.0 (PROOF, no code change) — dump the per-criterion cost vector.** For
-  big-first, dump `PlanningCostModel`'s full criterion-by-criterion comparison
-  between the two competing root members: the left-deep index-probe
-  `FlatMap(NLJ(T1,T2), IndexScan(T3_BY_T2))` vs the right-deep cross-product
-  `NLJ(T1, NLJ(Scan T2, Scan T3))`. Output must show **which criterion index
-  (#2 max-cardinality? #3 residual? #14 join-order?) decides** and in whose
-  favour. Also confirm the left-deep index-probe plan is even **generated as a
-  root member** under big-first. This step GATES everything below — no cost-model
-  edit is permitted without this vector (Torvalds hard rule).
-* **L3.2 (likely root) — fix cross-product NLJ cardinality accounting.** Both
-  reviewers' prime suspect: a cross-product/non-equi NLJ's data-access
-  cardinality is the **product** of its inputs (20×200=4000), but criterion #2
-  may be crediting it `max(20,200)=200`, tying/beating the index-probe (max card
-  20). If L3.0 confirms #2 (or #14) is the deciding criterion and mis-costs the
-  cross-product, fix the accounting so the product is reflected. The index-probe
-  plan must then win **STRICTLY**, not by a hair. Gate: full suite + every
-  existing join **row-correctness** assertion unchanged.
-* **L3.1 (only if L3.0 shows the index-probe plan is NOT generated) —
-  predicate-classification fix, NOT result-value.** If big-first never generates
-  the left-deep index-probe member, the cause is `lowersCorrelatedToByUppers`
-  missing the parent predicate's lower-alias dependency (per Graefe). Fold the
-  spanning predicate's `correlatedToLowerAliases` into the set as Java does —
-  preserving the `RecordConstructorValue`+`TranslationMap` contract. Gate: a unit
-  test asserting the sub-product's result schema exposes `t2.t1_id`, plus all
-  existing join row assertions unchanged. **Do not touch result-value shape.**
+* **L3.0 (PROOF, no code change) — DONE. Result: GENERATION, not cost.**
+  Instrumented `planningCostModelCompareWith` to count, per FROM-order, how many
+  times a 3-way top plan that index-probes T3 is costed against an alternative:
+  ```
+  FROM t1,t2,t3 : T3-index-probe costed 111×  (and #2 maxCard 90 < 180 → it WINS)
+  FROM t3,t2,t1 : T3-index-probe costed   0×  (never generated, never costed)
+  ```
+  The cost model is **correct** — when both plans exist (small-first) criterion
+  #2 (max data-access cardinality, 90 vs 180) strictly prefers the index-probe.
+  Big-first **never generates** the index-probe associativity, so there is
+  nothing to cost. **L3.2 (cost accounting) is therefore NOT the bug and is
+  dropped** — no cost-model edit (Torvalds hard rule satisfied: the deciding
+  factor was proven before any change, and it is "plan absent", not "plan
+  mis-costed"). The L3.0 run also surfaced that the **L2 degenerate-partition
+  rejection rejects *every* chain bipartition**, so PartitionSelect emits no
+  re-enumerated associativity and each FROM-order falls back to its native
+  nested FROM shape (small-first's native `(t1⋈t2)⋈t3` happens to index-probe T3;
+  big-first's native `(t3⋈t2)⋈t1` does not). Re-enumeration is effectively off
+  for chains — the proper fix supersedes the rejection (see L3.1).
+* **L3.2 (cross-product NLJ cardinality) — DROPPED.** L3.0 proved the cost model
+  is not the bug (the index-probe isn't generated, not mis-costed). No cost-model
+  edit. Kept here only to record that the v5 prime suspect was disproven by L3.0.
+* **L3.1 (THE fix, per L3.0) — make re-enumeration generate the index-probe
+  associativity for every FROM-order, NOT result-value shape.** Two parts:
+  - **(a) Classification + supersede the L2 rejection.** A spanning join predicate
+    (references both partition halves) must route to the **upper** (folding its
+    `correlatedToLowerAliases` into `lowersCorrelatedToByUppers`, as Java's
+    "must do in upper" branch does), making the partition a **valid correlated
+    join** instead of the degenerate lower-cross-product the L2 guard rejects.
+    With spanning predicates routed up, the L2 `degenerate` rejection no longer
+    triggers and is removed (it was a correctness band-aid that disabled
+    re-enumeration). The `{T1,T2}|{T3}` partition is then generated for both
+    orders: lower flows the columns the upper needs via Case-2/3
+    (`RecordConstructorValue`+`TranslationMap`, Java contract preserved), upper
+    holds `t3.t2_id = lowerQ._i.id` correlating T3 to the lower's t2.
+  - **(b) Index match for the constructor-field correlated probe.** The
+    re-enumerated upper's join predicate is `t3.t2_id = FieldValue(QOV(lowerQ), _i).id`
+    (the lower flows a `RecordConstructorValue`). The index matcher currently
+    SARGs `t3.t2_id = T2.id` (a plain qualified field — small-first's native
+    JoinMerge shape) but not the constructor-field form, so the re-enumerated
+    associativity full-scans T3. Teach the correlated-probe matcher to accept the
+    constructor-field correlation so the re-enumerated `(T1⋈T2)⋈T3` index-probes
+    T3 — then it is generated, costed, and (per L3.0) strictly wins #2 for both
+    orders.
+  - **Gates (Torvalds):** every existing join **row-correctness** assertion
+    unchanged after (a); a unit test that the re-enumerated `(T1⋈T2)⋈T3` member
+    is generated with an `IndexScan(T3_BY_T2)` inner after (b); both FROM-orders
+    return the right 200 rows throughout. Any NULL/0-row regression → revert.
 * **L3.3 (STOP signal, not a step) — winner-selection ties.** If, after L3.2, the
   index-probe plan only wins via a tie-break, that means it is **not strictly
   cheaper** → L3.2 is incomplete; STOP and re-measure, do not paper over with an
