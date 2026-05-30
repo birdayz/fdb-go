@@ -1,6 +1,6 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v8 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
+**Status:** v9 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
 gap closed at translation time) and a **correctness** bug in re-enumerated
 multi-way joins fixed (degenerate partitions returned wrong/NULL rows, not merely
 suboptimal plans). The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
@@ -327,30 +327,35 @@ and the prime suspect (L3.1 "flat result value") mis-roots the bug. v5's L3.1 is
     is generated with an `IndexScan(T3_BY_T2)` inner after (b); both FROM-orders
     return the right 200 rows throughout. Any NULL/0-row regression → revert.
 
-* **L3.1(a) ATTEMPTED — hit the hard-STOP wall; reverted. Blocker identified:
-  alias-namespace resolution (TODO 7.1).** Implementing the classification change
-  (route spanning predicates to the upper + fold the lower alias) produced the
-  desired *structure* immediately and for **both** FROM-orders:
-  ```
-  BOTH orders → Project(T1.ID, NLJ([p2], Scan(T1), FlatMap(Scan(T2), IndexScan(T3_BY_T2,[=]))))
-  ```
-  — **byte-identical AND index-probes T3** (the re-enumeration now fires for
-  big-first). But it returned **0 rows** for both orders, tripping Torvalds'
-  hard-STOP rule #1, so it was reverted. Root of the 0 rows: the re-enumerated
-  `(T2⋈T3)` sub-product is bound under a fresh **quantifier alias** (`q$N`), but
-  the parent join predicate `p2` (`t2.t1_id = t1.id`) references the **table
-  alias** `T2`. When `p2` is evaluated at the top NLJ against the sub-product's
-  flowed row, `t2.t1_id` resolves against an unbound `T2` → null → the join
-  matches nothing. This is the **two-alias-namespace** problem (quantifier alias
-  `q$N` vs table alias `T2`) — exactly TODO 7.1 ("Unify alias namespaces
-  (quantifier = table)", HIGH), which the query-engine skill flags as "the #1
-  source of silent predicate misclassification." **Conclusion: byte-identical,
-  cost-optimal N≥3 join ordering is one classification branch away at the plan
-  level, but is GATED on TODO 7.1 alias-namespace unification.** Re-enumeration
-  produces the right plan shape; the predicate just can't resolve across the
-  re-enumeration's alias boundary until the namespaces are unified. Pursuing L3.1
-  further without 7.1 means hand-threading alias maps at every re-enumeration
-  site (the `rightAliasSet` band-aid class) — the structural fix is 7.1.
+* **L3.1(a) — the 0-rows root cause was NOT TODO 7.1; it was a specific NLJ
+  hash-join bug, now FIXED.** The classification change (route spanning
+  predicates to the upper + fold the lower alias) produces, for **both**
+  FROM-orders, the byte-identical index-probing plan
+  `Project(T1.ID, NLJ([p2], Scan(T1), FlatMap(Scan(T2), IndexScan(T3_BY_T2,[=]))))`.
+  It returned 0 rows **only at large cardinality** (≥100 inner rows) and the
+  correct rows at small cardinality — a data-dependence that disproved the
+  "alias resolution always fails" (TODO 7.1) theory. Instrumentation traced it
+  precisely: the re-enumerated predicate `p2` is `FieldValue{Field:"T1_ID",
+  Child: QOV("T2")} = FieldValue{Field:"ID", Child: QOV("T1")}`; the NLJ's
+  hash-join column extractor (`extractEquijoinColumns`/`fieldName`) returned only
+  the **bare** Field for a QOV-child FieldValue, so `splitQualified` saw an empty
+  qualifier, `matchesAlias("", x)` was always true, and it picked outer/inner
+  **backwards** — keying the hash index on the wrong column → 0 rows. (The hash
+  path only activates at ≥100 rows, hence the data-dependence; small data used
+  the linear path and matched correctly.) **Fixed (commit `d420567b`):**
+  `fieldName` now returns the qualified `ALIAS.COL` from the QOV child's
+  correlation. Pinned by `equijoin_columns_test.go` (fails without the fix:
+  `outerCol="T1_ID"` backwards). Full suite green. **This is the real executor
+  blocker — TODO 7.1 is NOT required for byte-invariance.**
+
+  Remaining for the probe: the classification change itself (route spanning to
+  upper) — with the `fieldName` fix in place it yields byte-identical correct
+  rows for the t1/t2/t3 chain, but applied unconditionally it regresses other
+  3-way shapes (the A→B→C chain `TestFDB_CascadesThreeWayJoin` and the
+  Customer/Region/Sales star `TestFDB_ThreeTableFrom` → 0 rows). It needs
+  surgical scoping so it generates the re-enumerated index-probe associativity
+  WITHOUT changing predicate placement for the partitions those other shapes
+  rely on. That scoping is the last step (L3.1b).
 * **L3.3 (STOP signal, not a step) — winner-selection ties.** If, after L3.2, the
   index-probe plan only wins via a tie-break, that means it is **not strictly
   cheaper** → L3.2 is incomplete; STOP and re-measure, do not paper over with an
