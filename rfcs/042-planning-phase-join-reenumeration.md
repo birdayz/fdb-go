@@ -326,6 +326,31 @@ and the prime suspect (L3.1 "flat result value") mis-roots the bug. v5's L3.1 is
     unchanged after (a); a unit test that the re-enumerated `(T1⋈T2)⋈T3` member
     is generated with an `IndexScan(T3_BY_T2)` inner after (b); both FROM-orders
     return the right 200 rows throughout. Any NULL/0-row regression → revert.
+
+* **L3.1(a) ATTEMPTED — hit the hard-STOP wall; reverted. Blocker identified:
+  alias-namespace resolution (TODO 7.1).** Implementing the classification change
+  (route spanning predicates to the upper + fold the lower alias) produced the
+  desired *structure* immediately and for **both** FROM-orders:
+  ```
+  BOTH orders → Project(T1.ID, NLJ([p2], Scan(T1), FlatMap(Scan(T2), IndexScan(T3_BY_T2,[=]))))
+  ```
+  — **byte-identical AND index-probes T3** (the re-enumeration now fires for
+  big-first). But it returned **0 rows** for both orders, tripping Torvalds'
+  hard-STOP rule #1, so it was reverted. Root of the 0 rows: the re-enumerated
+  `(T2⋈T3)` sub-product is bound under a fresh **quantifier alias** (`q$N`), but
+  the parent join predicate `p2` (`t2.t1_id = t1.id`) references the **table
+  alias** `T2`. When `p2` is evaluated at the top NLJ against the sub-product's
+  flowed row, `t2.t1_id` resolves against an unbound `T2` → null → the join
+  matches nothing. This is the **two-alias-namespace** problem (quantifier alias
+  `q$N` vs table alias `T2`) — exactly TODO 7.1 ("Unify alias namespaces
+  (quantifier = table)", HIGH), which the query-engine skill flags as "the #1
+  source of silent predicate misclassification." **Conclusion: byte-identical,
+  cost-optimal N≥3 join ordering is one classification branch away at the plan
+  level, but is GATED on TODO 7.1 alias-namespace unification.** Re-enumeration
+  produces the right plan shape; the predicate just can't resolve across the
+  re-enumeration's alias boundary until the namespaces are unified. Pursuing L3.1
+  further without 7.1 means hand-threading alias maps at every re-enumeration
+  site (the `rightAliasSet` band-aid class) — the structural fix is 7.1.
 * **L3.3 (STOP signal, not a step) — winner-selection ties.** If, after L3.2, the
   index-probe plan only wins via a tie-break, that means it is **not strictly
   cheaper** → L3.2 is incomplete; STOP and re-measure, do not paper over with an
