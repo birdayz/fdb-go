@@ -1,6 +1,6 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v5 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
+**Status:** v6 — L1 fully landed (Go-only rule removed entirely, recursive-CTE
 gap closed at translation time) and a **correctness** bug in re-enumerated
 multi-way joins fixed (degenerate partitions returned wrong/NULL rows, not merely
 suboptimal plans). The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
@@ -259,57 +259,75 @@ Both return 200 correct rows. small-first reaches the optimal left-deep
 `T1⋈(T2⋈T3)` whose inner `(T2⋈T3)` is a cross-product NLJ that full-scans the
 200-row T3.
 
-### L3 implementation plan (this is what v5 commits to)
+### L3 implementation plan (v6 — revised per Graefe + Torvalds NAK of v5)
 
-Instrumentation this session established three facts that scope the work:
-1. The index-probe for T3 **is generated** (the secondary-index path in
-   `ImplementNestedLoopJoinRule` is reached with `innerTable=T3, npreds=1`).
-2. The cost-visible inner of the index-probe FlatMap already ranges over the
-   index-scan wrapper (criterion #2 `maxDataAccessCardinality` reflects the
-   probe) — so #2 *should* favor the index-probe (max card 20 vs 200).
-3. Yet big-first's winner is the cross-product associativity — so either the
-   left-deep index-probe associativity is not winning under big-first's
-   quantifier order, or the `(T2⋈T3)` index-probe sub-product can't flow the
-   columns the parent predicate needs (a reroute experiment made it return 0
-   rows), so it's never a *valid* cheaper member.
+Both reviewers NAK'd the v5 plan and **converged**: the attack order was inverted
+and the prime suspect (L3.1 "flat result value") mis-roots the bug. v5's L3.1 is
+**dropped** as the lead step:
+- Graefe: the 0-row reroute did **not** prove the sub-product result is too
+  narrow. Java's `PartitionSelectRule` seeds `lowersCorrelatedToByUppers` from
+  `resultCorrelatedToLowers` **and every upper-predicate's `correlatedToLowerAliases`**.
+  If `t2.t1_id` isn't exposed, the spanning predicate simply isn't in
+  `upperPredicates`, so its `t2` correlation never enters the set — that's a
+  **predicate-classification** issue, not a result-value-shape defect. Forking the
+  sub-product to a flat `JoinMergeResultValue` would desync Java's
+  `RecordConstructorValue`+`TranslationMap` contract and re-introduce the exact
+  qualified-key collision class L1's recursive-CTE fix just escaped. **Don't.**
+- Torvalds: "fix the cost model if it's mis-ranked" is unfalsifiable until proven;
+  changing the cost model on a hypothesis is a multi-hour rabbit hole.
 
-Steps, in order, each gated by the full suite + the row-correctness probe:
+**Revised steps, strictly ordered:**
 
-* **L3.1 — flat sub-product result value.** Make a re-enumerated join
-  sub-product flow a flat `JoinMergeResultValue` (qualified columns of both
-  sides) instead of the Case-2 `QOV(lowerAlias)` / Case-3 `{_0}` constructor that
-  drops the columns the *enclosing* join predicate needs. This is the root of
-  fact (3): the `(T2⋈T3)` index-probe must still expose `t2.t1_id` for the
-  parent `p2`. With a flat result, the index-probe sub-product is both correct
-  *and* a valid cheaper member the cost model can pick. (Touches
-  `PartitionSelectRule` Case-2/3 result-value construction + the physical
-  FlatMap/`tryFlatMapPlan` result value. Highest regression risk — the 2-table,
-  star-join, and EXISTS/correlated paths rely on the present result-value flow,
-  so validate against the full suite and revert on any regression.)
-* **L3.2 — verify cost ranking across associativities.** With L3.1, confirm the
-  left-deep index-probe plan is generated as a root member for *both* FROM-orders
-  and that `PlanningCostModel` ranks it below the cross-product NLJ associativity.
-  If a criterion before #2 (or the recursive join-order cost #14) mis-ranks the
-  cross-product NLJ (whose true cardinality is the product 20×200, not
-  max=200), fix the cardinality/cost accounting for the cross-product NLJ.
-* **L3.3 — FROM-order-deterministic winner selection.** Once both orders generate
-  the same optimal member, ensure tie-breaks in winner selection are independent
-  of quantifier insertion order (quantifier aliases `q$N` are minted in
-  FROM-order). Without this, two equal-cost members can be selected differently
-  per order, breaking byte-identity even when the optimal plan exists for both.
-* **L3.4 — restore the probe + cross-group reach (original `/goal`).** Re-add
+* **L3.0 (PROOF, no code change) — dump the per-criterion cost vector.** For
+  big-first, dump `PlanningCostModel`'s full criterion-by-criterion comparison
+  between the two competing root members: the left-deep index-probe
+  `FlatMap(NLJ(T1,T2), IndexScan(T3_BY_T2))` vs the right-deep cross-product
+  `NLJ(T1, NLJ(Scan T2, Scan T3))`. Output must show **which criterion index
+  (#2 max-cardinality? #3 residual? #14 join-order?) decides** and in whose
+  favour. Also confirm the left-deep index-probe plan is even **generated as a
+  root member** under big-first. This step GATES everything below — no cost-model
+  edit is permitted without this vector (Torvalds hard rule).
+* **L3.2 (likely root) — fix cross-product NLJ cardinality accounting.** Both
+  reviewers' prime suspect: a cross-product/non-equi NLJ's data-access
+  cardinality is the **product** of its inputs (20×200=4000), but criterion #2
+  may be crediting it `max(20,200)=200`, tying/beating the index-probe (max card
+  20). If L3.0 confirms #2 (or #14) is the deciding criterion and mis-costs the
+  cross-product, fix the accounting so the product is reflected. The index-probe
+  plan must then win **STRICTLY**, not by a hair. Gate: full suite + every
+  existing join **row-correctness** assertion unchanged.
+* **L3.1 (only if L3.0 shows the index-probe plan is NOT generated) —
+  predicate-classification fix, NOT result-value.** If big-first never generates
+  the left-deep index-probe member, the cause is `lowersCorrelatedToByUppers`
+  missing the parent predicate's lower-alias dependency (per Graefe). Fold the
+  spanning predicate's `correlatedToLowerAliases` into the set as Java does —
+  preserving the `RecordConstructorValue`+`TranslationMap` contract. Gate: a unit
+  test asserting the sub-product's result schema exposes `t2.t1_id`, plus all
+  existing join row assertions unchanged. **Do not touch result-value shape.**
+* **L3.3 (STOP signal, not a step) — winner-selection ties.** If, after L3.2, the
+  index-probe plan only wins via a tie-break, that means it is **not strictly
+  cheaper** → L3.2 is incomplete; STOP and re-measure, do not paper over with an
+  alias-order-independent tie-break. Byte-identity must emerge from FROM-order-blind
+  enumeration + a total, alias-independent cost order. If a genuine structural tie
+  remains, break it on **plan structure**, never quantifier-insertion (`q$N`) order.
+* **L3.4 — restore the probe + cross-group reach.** Re-add
   `TestFDB_MultiwayJoinOrder_Probe` (byte-identical + drives-from-t1 +
-  index-probes-T3, **and a row-correctness assertion**). If L3.1–L3.3 leave the
-  `(T1⋈T2)` sub-products in disjoint References (pointer-level proven earlier),
-  finish the RFC-037 cross-group merge reach (PR-C/PR-D, tasks #10/#11) so shared
-  sub-products intern into one Reference for full N-way optimality.
+  index-probes-T3 + **row-correctness** for both orders). If sub-products remain
+  in disjoint References, finish the RFC-037 cross-group merge reach (PR-C/PR-D,
+  tasks #10/#11). Correctly last.
+
+**Hard STOP / revert criteria (Torvalds):**
+1. Any test that returned data now returns NULL/0 rows → **revert immediately**,
+   do not debug forward.
+2. Reaching for a tie-break to achieve byte-identity → L3.2 isn't done; STOP.
+3. Any cost-model edit without the L3.0 per-criterion vector proving the deciding
+   criterion → not allowed.
 
 **Java-parity stance (CLAUDE.md):** byte-identical-across-FROM-order for N≥3 is
-the stated `/goal`; it is the natural consequence of complete, FROM-order-blind
-cost-based enumeration (which Java's Cascades does). Where a step would *exceed*
-Java (e.g. an index-NLJ shape Java's planner doesn't emit on this exact query),
-it is an allowed read-side extension provided wire compat holds and it carries
-deep tests — flagged at the step. No step changes anything on the wire.
+the stated `/goal` and the natural consequence of complete, FROM-order-blind
+cost-based enumeration (which Java's Cascades does). The cost-accounting fix
+(L3.2) is pure parity (Java costs a cross product as the product). Where a step
+would *exceed* Java it is flagged as a read-side extension (deep tests, wire
+compat holds). No step changes anything on the wire.
 
 ## Test plan
 
