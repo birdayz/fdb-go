@@ -729,6 +729,13 @@ func splitQualified(name string) (table, col string) {
 	return "", name
 }
 
+// matchesAlias reports whether a field's table qualifier `table` refers to
+// quantifier `alias`. An empty `table` (an unqualified field, e.g. the legacy
+// flat "COL" form with no dot) matches ANY alias — the permissive fallback for
+// fields that carry no qualifier. Callers that must distinguish sides (e.g.
+// extractEquijoinColumns) therefore depend on fieldName() returning a QUALIFIED
+// name for QOV-child FieldValues; otherwise both sides match the first branch
+// and outer/inner are picked backwards (see equijoin_columns_test.go).
 func matchesAlias(table, alias string) bool {
 	if table == "" {
 		return true

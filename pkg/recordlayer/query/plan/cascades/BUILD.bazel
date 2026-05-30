@@ -330,6 +330,7 @@ go_test(
         "rule_normalize_predicates_test.go",
         "rule_ordered_index_scan_test.go",
         "rule_partition_binary_select_test.go",
+        "rule_partition_select_test.go",
         "rule_predicate_push_down_test.go",
         "rule_predicate_to_logical_union_test.go",
         "rule_primary_scan_test.go",

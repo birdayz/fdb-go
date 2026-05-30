@@ -386,6 +386,13 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// ordinal-based field access through a TranslationMap.
 			//
 			// lowersCorrelatedToByUppers has size >= 2 here.
+			//
+			// UNREACHABLE for n == 3: the multiAliasCase3 guard above
+			// (len(lowersCorrelatedToByUppers) > 1) skips every partition that
+			// would reach here while isThreeWay. This path is the N-way
+			// follow-up — its nested RecordConstructorValue + TranslationMap
+			// resolution at execution is what lifts the rule past 3-way (see
+			// RFC-042 L3). It is kept (not deleted) as the scaffold for that work.
 			lowerResultFields := make([]values.RecordConstructorField, len(lowersCorrelatedToByUppers))
 			for i, la := range lowersCorrelatedToByUppers {
 				lowerResultFields[i] = values.RecordConstructorField{
@@ -609,8 +616,12 @@ func computeIndependentQuantifiersPartitioning(
 		}
 
 		// Merge all partitions that intersect with connectedAliases.
+		// Use a fresh slice rather than partitions[:0]: the range below reads
+		// `partitions` while we build `remaining`, and aliasing the backing
+		// array is subtle to reason about. N is tiny (one entry per quantifier),
+		// so a fresh allocation costs nothing and is unambiguously correct.
 		newPartition := make(partition)
-		remaining := partitions[:0]
+		var remaining []partition
 		for _, p := range partitions {
 			if aliasesIntersect(connectedAliases, p) {
 				for a := range p {
