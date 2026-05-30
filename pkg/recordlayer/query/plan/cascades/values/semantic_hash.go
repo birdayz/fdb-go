@@ -56,6 +56,11 @@ func writeSemanticHash(h io.Writer, v Value) {
 		_, _ = fmt.Fprintf(h, "indexentryobj:%v", t.OrdinalPath)
 	case *JoinMergeResultValue:
 		_, _ = io.WriteString(h, "joinmerge")
+	case *JoinMergeAllValue:
+		// Alias-free, arity-discriminated (equality compares the alias slice
+		// positionally + alias-aware; the hash folds only the count, mirroring
+		// JoinMergeResultValue excluding its aliases).
+		_, _ = fmt.Fprintf(h, "joinmergeall:%d", len(t.Aliases))
 	// Structural types whose EqualsWithoutChildren compares a non-alias
 	// discriminator (op / target type / name) the bare Name() default would
 	// drop — fold it so the hash matches equality's resolution (RFC-040

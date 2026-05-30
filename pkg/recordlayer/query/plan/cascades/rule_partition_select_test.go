@@ -124,3 +124,37 @@ func TestLowerAliasesConnected(t *testing.T) {
 		})
 	}
 }
+
+// TestMergeQuantifierAlias_Injective pins the Codex finding: the merge alias
+// encoding must be injective even when alias names contain the '_' separator.
+// {A, B_C} and {A_B, C} are DISTINCT live sets and must NOT collapse to the same
+// "$m" alias — a collision would let nested re-enumeration build a
+// SelectExpression with duplicate quantifier aliases and merge distinct rows.
+func TestMergeQuantifierAlias_Injective(t *testing.T) {
+	t.Parallel()
+	mk := func(names ...string) values.CorrelationIdentifier {
+		live := make([]values.CorrelationIdentifier, len(names))
+		for i, n := range names {
+			live[i] = values.NamedCorrelationIdentifier(n)
+		}
+		return mergeQuantifierAlias(live)
+	}
+
+	// The collision Codex flagged: underscore-containing names.
+	if a, b := mk("A", "B_C"), mk("A_B", "C"); a == b {
+		t.Errorf("{A,B_C} and {A_B,C} collided to the same alias %q (not injective)", a.Name())
+	}
+
+	// Stable regardless of input order (the set, not the order, is the identity).
+	if a, b := mk("A", "B_C"), mk("B_C", "A"); a != b {
+		t.Errorf("order-dependence: {A,B_C}=%q vs {B_C,A}=%q", a.Name(), b.Name())
+	}
+
+	// Distinct simple sets stay distinct; identical sets stay identical.
+	if a, b := mk("A", "B"), mk("A", "C"); a == b {
+		t.Errorf("{A,B} and {A,C} collided: %q", a.Name())
+	}
+	if a, b := mk("T1", "T2"), mk("T2", "T1"); a != b {
+		t.Errorf("{T1,T2} not stable across order: %q vs %q", a.Name(), b.Name())
+	}
+}

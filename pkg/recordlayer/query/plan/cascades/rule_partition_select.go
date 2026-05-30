@@ -1,7 +1,9 @@
 package cascades
 
 import (
-	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
@@ -84,22 +86,6 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 	// We iterate over all 2^N - 2 non-trivial subsets via bitmask.
 	n := len(allAliases)
-
-	// The FROM-order-independent re-enumeration (routing spanning predicates to
-	// the upper, flowing the correlated lower columns) is correct end-to-end only
-	// for a 3-way join: the single correlated lower quantifier threads through
-	// exactly ONE level of upper re-partitioning, which the executor's NLJ/FlatMap
-	// path resolves. For N > 3 the correlation must survive TWO+ nested
-	// re-partitions and the flattened merge loses the lower alias → wrong rows.
-	// Until the nested RecordConstructorValue + TranslationMap resolution lands at
-	// execution (the N-way follow-up), restrict the new behavior to 3-way and fall
-	// back to Java's original classification for N > 3 — which leaves the same
-	// FROM-orders unplannable (loud `could not plan query`) as before this RFC,
-	// rather than returning silent wrong rows. (RFC-042 L3; scoped to 3-way per
-	// Torvalds review — a loud plan-failure is acceptable, silent wrong rows are
-	// not.)
-	isThreeWay := n == 3
-
 	total := 1 << n
 	for mask := 1; mask < total-1; mask++ {
 		lowerAliases := make(map[values.CorrelationIdentifier]struct{})
@@ -196,13 +182,35 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		// Track which lower aliases are referenced by upper predicates
-		// or the result value.
+		// or the result value (the "live" set this lower must flow up).
 		lowersCorrelatedToByUppers := make([]values.CorrelationIdentifier, 0)
 
 		resultValue := sel.GetResultValue()
-		resultCorrelatedToLowers := intersectAliases(lowerAliases, values.GetCorrelatedToOfValue(resultValue))
-		for a := range resultCorrelatedToLowers {
-			lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
+
+		// Determine which lower aliases the result value needs ("live" via the
+		// result). Three cases:
+		//   - The flat seed's translator-built JoinMergeResultValue names only two
+		//     arbitrary aliases and hides the real projection (it lives in the
+		//     Project above). The rule cannot see which columns are needed, so it
+		//     conservatively keeps ALL lower aliases live. This applies only at the
+		//     top of the re-enumeration.
+		//   - A re-enumerated JoinMergeAllValue lists EXACTLY the aliases its parent
+		//     needs (GetCorrelatedToOfValue returns them). Keep only those — flowing
+		//     all would generate far more distinct merge sub-products than needed,
+		//     blowing up the search space.
+		//   - Any other result value (a bare projection) marks live only the lowers
+		//     it actually references.
+		// (RFC-043.)
+		_, resultIsSeedMerge := resultValue.(*values.JoinMergeResultValue)
+		if resultIsSeedMerge {
+			for a := range lowerAliases {
+				lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
+			}
+		} else {
+			resultCorrelatedToLowers := intersectAliases(lowerAliases, values.GetCorrelatedToOfValue(resultValue))
+			for a := range resultCorrelatedToLowers {
+				lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
+			}
 		}
 
 		// Classify predicates.
@@ -217,42 +225,22 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 			if len(correlatedToUpper) > 0 {
 				if len(correlatedToLower) > 0 {
-					if isThreeWay {
-						// Spanning predicate (3-way only) — references BOTH
-						// partition halves. It cannot be evaluated in the lower
-						// (its upper aliases are not bound there), so it goes to
-						// the upper, which correlates to the lower's flowed
-						// columns. Fold the lower aliases it touches into
-						// lowersCorrelatedToByUppers so the lower flows exactly
-						// those columns (Case 2/3 — Java's RecordConstructorValue +
-						// TranslationMap contract), making this a valid correlated
-						// join, not a degenerate lower cross-product. (Go's
-						// flat-seed quantifiers carry no quantifier-level
-						// correlations, so Java's uppersDependingOnLowers is empty
-						// and its "can do in lower" branch would push a predicate
-						// referencing an absent upper alias into the lower. The
-						// single correlated lower threads through one level of
-						// upper re-partitioning, which the executor resolves.
-						// RFC-042 L3.)
-						upperPredicates = append(upperPredicates, pred)
-						for a := range correlatedToLower {
-							lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
-						}
-					} else if intersectAliases(correlatedToUpper, uppersDependingOnLowers) == nil {
-						// N > 3: original Java classification (matches master). The
-						// re-enumerated correlation cannot thread through TWO+
-						// nested upper re-partitions at execution yet, so keep
-						// Java's "can do in lower" split. The flat seed has empty
-						// uppersDependingOnLowers, so this branch always fires and
-						// some FROM-orders fail to plan LOUDLY — exactly master's
-						// pre-RFC behavior — instead of returning silent wrong
-						// rows. (RFC-042 L3; honestly scoped to 3-way.)
-						lowerPredicates = append(lowerPredicates, pred)
-					} else {
-						upperPredicates = append(upperPredicates, pred)
-						for a := range correlatedToLower {
-							lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
-						}
+					// Spanning predicate — references BOTH partition halves. It
+					// cannot be evaluated in the lower (its upper aliases are not
+					// bound there), so it goes to the upper, which correlates to
+					// the lower's flowed columns. Fold the lower aliases it touches
+					// into lowersCorrelatedToByUppers (the live set) so the lower
+					// flows exactly those columns. With ≥2 live lower aliases the
+					// lower flows a JoinMergeAllValue (qualified ALIAS.COL keys for
+					// every live table); the upper predicate then resolves the
+					// lower's column through the merged row by table-qualified name,
+					// no translation needed. (Go's flat-seed quantifiers carry no
+					// quantifier-level correlations, so Java's uppersDependingOnLowers
+					// is empty and its "can do in lower" branch would push a predicate
+					// referencing an absent upper alias into the lower. RFC-043.)
+					upperPredicates = append(upperPredicates, pred)
+					for a := range correlatedToLower {
+						lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
 					}
 				} else {
 					upperPredicates = append(upperPredicates, pred)
@@ -266,26 +254,21 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 
-		// Dedup the lower aliases the upper correlates to (the same alias can be
-		// added by both the result value and a spanning predicate). Without this
-		// the Case-3 RecordConstructorValue below would emit duplicate `_i`
-		// fields.
+		// Dedup the lower aliases the upper correlates to (the live set — the same
+		// alias can be added by both the result value and a spanning predicate).
+		// Without this a lower flowing a JoinMergeAllValue would list duplicate
+		// aliases.
 		lowersCorrelatedToByUppers = dedupAliases(lowersCorrelatedToByUppers)
 
-		// 3-way only: skip the two partition shapes whose lower must flow a
-		// multi-alias RecordConstructorValue the executor cannot resolve against:
-		//   (i)  a disconnected lower (≥2 quantifiers no lower predicate links —
-		//        a pure cross product, e.g. {A,C} for chain A—B—C or {xx,yy} for a
-		//        star), and
-		//   (ii) a multi-alias Case-3 (upper correlates to ≥2 distinct lowers).
-		// Skipping these leaves the connected single-alias Case-2 associativities,
-		// which cover every join order with a lower that flows exactly one QOV the
-		// executor resolves. For N > 3 these guards do not apply — the N>3
-		// classification above already keeps Java's split, so such partitions fail
-		// to plan loudly as on master. (RFC-042 L3.)
+		// Skip a disconnected lower: ≥2 quantifiers that no lower predicate links
+		// (a pure cross product, e.g. {A,C} for chain A—B—C or {xx,yy} for a star).
+		// Its tables share no join, so the partition is a genuine cartesian product
+		// — never the cost-optimal shape, and the connected associativities cover
+		// the same join orders. This holds at any arity. (Java defers cross products
+		// via shouldDeferCrossProducts; for a single connected component that path
+		// does not fire, so Go needs this explicit guard.)
 		disconnectedLower := len(lowerAliases) >= 2 && !lowerAliasesConnected(lowerAliases, lowerPredicates)
-		multiAliasCase3 := len(lowersCorrelatedToByUppers) > 1
-		if isThreeWay && (disconnectedLower || multiAliasCase3) {
+		if disconnectedLower {
 			continue
 		}
 
@@ -328,17 +311,45 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		noLowersCorrelatedToByUpperAliases := len(lowersCorrelatedToByUpperAliases) == 0
 		noLowersCorrelatedToByUppers := len(lowersCorrelatedToByUppers) == 0
 
-		if noLowersCorrelatedToByUpperAliases && noLowersCorrelatedToByUppers {
-			// Case 1: No upper-to-lower correlation. Lower result is a
-			// literal scalar 1 (cross-product style).
-			lowerBuilder.AddColumn("", values.LiteralValue(int64(1)))
-			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelect()
+		// If THIS select is itself an intermediate join that must flow a merged
+		// row (its own result value is a JoinMergeAllValue), the upper must
+		// re-stamp the merge over its OWN immediate quantifiers (the new lower
+		// quantifier + the upper tables) — the original deep aliases are collapsed
+		// into the lower's merged map and are no longer directly bound here. At the
+		// top level the result value is the user projection and flows unchanged;
+		// each table's column resolves from the final merged row by qualified name.
+		// (RFC-043.)
+		// Re-stamp the upper's result only when this select is an INTERMEDIATE
+		// re-enumerated merge (its result is a JoinMergeAllValue). The flat seed's
+		// translator-built JoinMergeResultValue is the TOP output consumed by the
+		// Project above; it must flow unchanged so the Project's column derivation
+		// resolves. Intermediate merges re-stamp over their immediate quantifiers
+		// because the original deep aliases are collapsed into the lower's merged
+		// map. (RFC-043.)
+		_, parentIsMerge := resultValue.(*values.JoinMergeAllValue)
+		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier) values.Value {
+			if !parentIsMerge {
+				return resultValue
+			}
+			merged := make([]values.CorrelationIdentifier, 0, len(upperAliases)+1)
+			merged = append(merged, newLowerAlias)
+			for _, a := range allAliases {
+				if _, inUpper := upperAliases[a]; inUpper {
+					merged = append(merged, a)
+				}
+			}
+			// Canonical order: JoinMergeAllValue equality compares the alias slice
+			// positionally, so two bipartitions producing the same upper merge with
+			// different alias orders must intern. allAliases iterates in quantifier
+			// order, not sorted. (RFC-043; @claude review.)
+			sort.Slice(merged, func(i, j int) bool { return merged[i].Name() < merged[j].Name() })
+			return values.NewJoinMergeAllValue(merged...)
+		}
 
+		// addUpper appends the new lower quantifier, the upper tables, and the
+		// (untranslated) upper predicates to a fresh upper builder.
+		addUpper := func(newLowerQ expressions.Quantifier) *GraphExpansionBuilder {
 			upperBuilder := NewGraphExpansionBuilder()
-			newLowerQ := expressions.NamedForEachQuantifier(
-				lowerAliasCorrelatedToByUpperAliases,
-				call.MemoizeExpression(lowerSelectExpr),
-			)
 			upperBuilder.AddQuantifier(newLowerQ)
 			for _, a := range allAliases {
 				if _, inUpper := upperAliases[a]; inUpper {
@@ -348,11 +359,55 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			for _, p := range upperPredicates {
 				upperBuilder.AddPredicate(p)
 			}
-			upperSelectExpression = upperBuilder.Build().Seal().BuildSelectWithResultValue(resultValue)
+			return upperBuilder
+		}
 
-		} else if len(lowersCorrelatedToByUpperAliases) > 0 || len(lowersCorrelatedToByUppers) == 1 {
-			// Case 2: Exactly one lower alias is correlated to by upper.
-			// Lower's result value is that alias's flowed object value.
+		if noLowersCorrelatedToByUpperAliases && noLowersCorrelatedToByUppers {
+			// Case 1: No upper-to-lower correlation. Lower result is a
+			// literal scalar 1 (cross-product style).
+			lowerBuilder.AddColumn("", values.LiteralValue(int64(1)))
+			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelect()
+
+			newLowerQ := expressions.NamedForEachQuantifier(
+				lowerAliasCorrelatedToByUpperAliases,
+				call.MemoizeExpression(lowerSelectExpr),
+			)
+			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases))
+
+		} else if len(lowersCorrelatedToByUppers) >= 2 {
+			// Merge case: ≥2 live lower tables (referenced by an upper predicate or
+			// the result value). The lower flows a JoinMergeAllValue carrying
+			// qualified ALIAS.COL keys for every live table; the upper predicates
+			// and result value resolve those columns through the merged row by
+			// table-qualified name — no translation. A chain of such merges
+			// accumulates all live columns up the join spine (each merge preserves
+			// already-qualified keys). Reaching here implies
+			// lowersCorrelatedToByUpperAliases == 0 (the validation above skips a
+			// quantifier-level upper-dep with >1 live lower). (RFC-043.)
+			lowerResult := values.NewJoinMergeAllValue(lowersCorrelatedToByUppers...)
+			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerResult)
+
+			// Use a STABLE alias derived from the (sorted) live set rather than a
+			// fresh UniqueCorrelationIdentifier. Two partitions that produce the
+			// same merged sub-join must wrap it under the same quantifier alias so
+			// the upper SelectExpressions intern to the SAME memo Reference —
+			// otherwise the re-enumeration's shared sub-products (e.g. the (A⋈B)
+			// merge reached from many bipartitions) are re-explored per path and
+			// the task count explodes super-linearly with arity. The alias is also
+			// carried into buildUpperResult's JoinMergeAllValue, so a per-yield
+			// unique alias there would equally defeat interning. (RFC-043.)
+			mergeAlias := mergeQuantifierAlias(lowersCorrelatedToByUppers)
+			newLowerQ := expressions.NamedForEachQuantifier(
+				mergeAlias,
+				call.MemoizeExpression(lowerSelectExpr),
+			)
+			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+				BuildSelectWithResultValue(buildUpperResult(mergeAlias))
+
+		} else {
+			// Case 2: Exactly one live lower alias. Lower's result value is that
+			// alias's flowed object value (a single table's row).
 			var lowerAlias values.CorrelationIdentifier
 			if len(lowersCorrelatedToByUpperAliases) == 0 {
 				lowerAlias = lowersCorrelatedToByUppers[0]
@@ -363,88 +418,12 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			flowedValue := aliasToQ[lowerAlias].GetFlowedObjectValue()
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(flowedValue)
 
-			upperBuilder := NewGraphExpansionBuilder()
 			newLowerQ := expressions.NamedForEachQuantifier(
 				lowerAlias,
 				call.MemoizeExpression(lowerSelectExpr),
 			)
-			upperBuilder.AddQuantifier(newLowerQ)
-			for _, a := range allAliases {
-				if _, inUpper := upperAliases[a]; inUpper {
-					upperBuilder.AddQuantifier(aliasToQ[a])
-				}
-			}
-			for _, p := range upperPredicates {
-				upperBuilder.AddPredicate(p)
-			}
-			upperSelectExpression = upperBuilder.Build().Seal().BuildSelectWithResultValue(resultValue)
-
-		} else {
-			// Case 3: Multiple lower aliases correlated to by uppers.
-			// Build a RecordConstructorValue as the lower's result,
-			// then translate upper predicates and result value via
-			// ordinal-based field access through a TranslationMap.
-			//
-			// lowersCorrelatedToByUppers has size >= 2 here.
-			//
-			// UNREACHABLE for n == 3: the multiAliasCase3 guard above
-			// (len(lowersCorrelatedToByUppers) > 1) skips every partition that
-			// would reach here while isThreeWay. This path is the N-way
-			// follow-up — its nested RecordConstructorValue + TranslationMap
-			// resolution at execution is what lifts the rule past 3-way (see
-			// RFC-042 L3). It is kept (not deleted) as the scaffold for that work.
-			lowerResultFields := make([]values.RecordConstructorField, len(lowersCorrelatedToByUppers))
-			for i, la := range lowersCorrelatedToByUppers {
-				lowerResultFields[i] = values.RecordConstructorField{
-					Name:  fmt.Sprintf("_%d", i),
-					Value: values.NewQuantifiedObjectValue(aliasToQ[la].GetAlias()),
-				}
-			}
-			joinedResultValue := values.NewRecordConstructorValue(lowerResultFields...)
-			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(joinedResultValue)
-
-			newUpperQ := expressions.NamedForEachQuantifier(
-				lowerAliasCorrelatedToByUpperAliases,
-				call.MemoizeExpression(lowerSelectExpr),
-			)
-
-			// Build TranslationMap: each lower alias → FieldValue access
-			// on the new upper quantifier's flowed object.
-			tmBuilder := NewTranslationMapBuilder()
-			for i, la := range lowersCorrelatedToByUppers {
-				fieldName := fmt.Sprintf("_%d", i)
-				capturedFieldName := fieldName
-				capturedNewUpperQ := newUpperQ
-				tmBuilder.When(la).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
-					return values.NewFieldValue(
-						values.NewQuantifiedObjectValue(capturedNewUpperQ.GetAlias()),
-						capturedFieldName,
-						nil, // type inferred at eval time
-					)
-				})
-			}
-			tm := tmBuilder.Build()
-
-			// Translate upper predicates.
-			newUpperPredicates := make([]predicates.QueryPredicate, len(upperPredicates))
-			for i, up := range upperPredicates {
-				newUpperPredicates[i] = translatePredicateCorrelations(up, tm)
-			}
-
-			// Translate result value.
-			newResultValue := translateValueCorrelations(resultValue, tm)
-
-			upperBuilder := NewGraphExpansionBuilder()
-			upperBuilder.AddQuantifier(newUpperQ)
-			for _, a := range allAliases {
-				if _, inUpper := upperAliases[a]; inUpper {
-					upperBuilder.AddQuantifier(aliasToQ[a])
-				}
-			}
-			for _, p := range newUpperPredicates {
-				upperBuilder.AddPredicate(p)
-			}
-			upperSelectExpression = upperBuilder.Build().Seal().BuildSelectWithResultValue(newResultValue)
+			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+				BuildSelectWithResultValue(buildUpperResult(lowerAlias))
 		}
 
 		call.Yield(upperSelectExpression)
@@ -681,12 +660,47 @@ func aliasesIntersect(
 	return false
 }
 
+// mergeQuantifierAlias returns a STABLE, collision-free quantifier alias for the
+// merged lower over the given live aliases. Deterministic in the live SET, so
+// identical merged sub-joins reached from different bipartitions wrap under the
+// same alias and intern to one memo Reference. The "$m" prefix cannot collide
+// with a table/quantifier alias (no SQL identifier starts with "$"). (RFC-043.)
+func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.CorrelationIdentifier {
+	// Sort internally so the alias is stable regardless of the caller's order —
+	// the identity is a function of the live SET, not its iteration order.
+	names := make([]string, len(live))
+	for i, a := range live {
+		names[i] = a.Name()
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("$m")
+	for _, n := range names {
+		// LENGTH-PREFIX each name (`_<len>:<name>`) so the encoding is INJECTIVE
+		// even when a name itself contains the '_' separator: {A, B_C} and
+		// {A_B, C} must NOT collapse to the same alias (Codex review). A plain
+		// '_'-join is ambiguous; with the length prefix, distinct live sets map to
+		// distinct aliases, preserving the "this alias identifies this live set"
+		// invariant that nested re-enumeration relies on (a collision could build a
+		// SelectExpression with duplicate quantifier aliases and merge distinct rows).
+		b.WriteByte('_')
+		b.WriteString(strconv.Itoa(len(n)))
+		b.WriteByte(':')
+		b.WriteString(n)
+	}
+	return values.NamedCorrelationIdentifier(b.String())
+}
+
 var _ ExpressionRule = (*PartitionSelectRule)(nil)
 
-// dedupAliases returns aliases with duplicates removed, preserving first-seen
-// order (deterministic). Used to dedup lowersCorrelatedToByUppers so a lower
-// alias referenced by both the result value and a spanning predicate is folded
-// once (avoids duplicate RecordConstructorValue ordinal fields).
+// dedupAliases returns aliases with duplicates removed, sorted by name into a
+// CANONICAL order. The live set (lowersCorrelatedToByUppers) is collected from
+// map iteration (non-deterministic order), so it must be canonicalized for two
+// reasons: (1) determinism — the JoinMergeAllValue built from it would otherwise
+// vary across runs, producing non-deterministic plans; (2) memoization — two
+// partitions yielding the same live set must intern to the SAME JoinMergeAllValue
+// (hence the same Reference, RFC-039), or the re-enumeration's search space
+// explodes with alias-permuted duplicates of identical sub-joins. (RFC-043.)
 func dedupAliases(aliases []values.CorrelationIdentifier) []values.CorrelationIdentifier {
 	seen := make(map[values.CorrelationIdentifier]struct{}, len(aliases))
 	out := aliases[:0:0]
@@ -697,6 +711,7 @@ func dedupAliases(aliases []values.CorrelationIdentifier) []values.CorrelationId
 		seen[a] = struct{}{}
 		out = append(out, a)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out
 }
 
