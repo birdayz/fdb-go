@@ -19,10 +19,11 @@ import "strings"
 // carry the "flow all my live columns merged" intent across re-partition
 // firings without inventing per-level structure up front.
 //
-// Like JoinMergeResultValue it preserves already-qualified keys (so nested
-// merges accumulate) and qualifies bare keys under their alias. Later aliases do
-// not overwrite earlier qualified keys (the !exists guard mirrors mergeRows,
-// TODO 7.1).
+// Like JoinMergeResultValue it qualifies bare keys under their alias and writes
+// already-qualified keys (ALIAS.COL, from a nested merge) verbatim; distinct
+// table prefixes mean qualified keys never collide across aliases, so they
+// accumulate up the whole merge chain. Bare-key precedence matches the binary
+// merge exactly (last-table-wins) — consumers resolve by qualified name.
 type JoinMergeAllValue struct {
 	Aliases []CorrelationIdentifier
 }
@@ -52,22 +53,18 @@ func (v *JoinMergeAllValue) Evaluate(evalCtx any) any {
 		found = true
 		qual := strings.ToUpper(alias.Name())
 		for k, val := range m {
-			// Already-qualified keys (from a nested merge) pass through verbatim
-			// and are never overwritten by a later alias's bare key.
-			if strings.Contains(k, ".") {
-				if _, exists := merged[k]; !exists {
-					merged[k] = val
-				}
-				continue
-			}
-			if _, exists := merged[k]; !exists {
-				merged[k] = val
-			}
-			if qual != "" {
-				qk := qual + "." + strings.ToUpper(k)
-				if _, exists := merged[qk]; !exists {
-					merged[qk] = val
-				}
+			// Mirror the binary JoinMergeResultValue precedence EXACTLY so the two
+			// merge values agree (Torvalds review): write the key verbatim, and
+			// additionally write the table-qualified ALIAS.COL form for bare keys.
+			// Already-qualified keys (ALIAS.COL, from a nested merge) carry a "."
+			// and are not re-qualified; because each table contributes a DISTINCT
+			// prefix, qualified keys never collide across aliases and survive the
+			// whole chain. A bare key shared by two live tables (ambiguous, and
+			// rejected at SQL resolution) resolves last-table-wins — consumers read
+			// the qualified form, so this is well-defined, not a wrong row.
+			merged[k] = val
+			if qual != "" && !strings.Contains(k, ".") {
+				merged[qual+"."+strings.ToUpper(k)] = val
 			}
 		}
 	}

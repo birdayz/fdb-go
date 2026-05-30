@@ -67,6 +67,31 @@ func TestJoinMergeAllValue_ChainsQualifiedKeys(t *testing.T) {
 	}
 }
 
+// TestJoinMergeAllValue_ColumnNameCollision pins the dimension Torvalds flagged:
+// two live tables that share a non-PK column name. The QUALIFIED keys (A.NAME,
+// B.NAME) must each carry their own table's value — that is how consumers resolve
+// a buried column, and it must never return the wrong table's value. The bare key
+// is ambiguous (rejected at SQL resolution) and is defined as last-table-wins,
+// matching the binary JoinMergeResultValue.
+func TestJoinMergeAllValue_ColumnNameCollision(t *testing.T) {
+	t.Parallel()
+	aQ, bQ := NamedCorrelationIdentifier("A"), NamedCorrelationIdentifier("B")
+	out := NewJoinMergeAllValue(aQ, bQ).Evaluate(fakeCorrBinder{rows: map[CorrelationIdentifier]any{
+		aQ: map[string]any{"ID": int64(1), "NAME": "from_a"},
+		bQ: map[string]any{"ID": int64(2), "NAME": "from_b"},
+	}})
+	row := out.(map[string]any)
+	if row["A.NAME"] != "from_a" {
+		t.Errorf("A.NAME = %v, want from_a (wrong table's value)", row["A.NAME"])
+	}
+	if row["B.NAME"] != "from_b" {
+		t.Errorf("B.NAME = %v, want from_b (wrong table's value)", row["B.NAME"])
+	}
+	if row["A.ID"] != int64(1) || row["B.ID"] != int64(2) {
+		t.Errorf("qualified IDs wrong: A.ID=%v B.ID=%v", row["A.ID"], row["B.ID"])
+	}
+}
+
 // TestJoinMergeAllValue_NilWhenUnbound returns nil when no alias is bound (the
 // row simply does not exist), distinct from an empty-but-present row.
 func TestJoinMergeAllValue_NilWhenUnbound(t *testing.T) {
