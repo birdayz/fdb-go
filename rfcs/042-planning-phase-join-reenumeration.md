@@ -1,11 +1,28 @@
 # RFC-042: FROM-order-independent multi-way join ordering
 
-**Status:** v11 — **IMPLEMENTED. The acceptance probe `TestFDB_MultiwayJoinOrder_Probe`
-is GREEN.** A 3-way chain join planned under two opposite FROM-orders yields
-BYTE-IDENTICAL, cost-optimal physical plans that drive from the 1-row t1 and
-index-probe the 200-row t3 via `t3_by_t2`, returning the correct 200 rows for
-both orders. Full repo (30 targets / 46 bazel test targets) green; deterministic
-8×. It took FOUR landed fixes, none of which is the broad TODO 7.1:
+**Status:** v12 — **IMPLEMENTED for 3-way joins. The acceptance probe
+`TestFDB_MultiwayJoinOrder_Probe` is GREEN.** A 3-way chain join planned under
+two opposite FROM-orders yields BYTE-IDENTICAL, cost-optimal physical plans that
+drive from the 1-row t1 and index-probe the 200-row t3 via `t3_by_t2`, returning
+the correct 200 rows for both orders. Full repo green; deterministic 8×.
+
+**Scope: 3-way only. ≥4-way joins are explicitly NOT supported** and fail to plan
+LOUDLY (`could not plan query`) — exactly as on master (4-way has never planned
+in this port). The re-enumeration routes a spanning join predicate to the upper
+and flows the correlated lower quantifier up as a single QOV; that correlation
+threads cleanly through exactly ONE level of upper re-partitioning (3-way), but
+for ≥4-way it must survive TWO+ nested re-partitions and the executor's flattened
+NLJ/FlatMap merge loses the lower alias → the projection resolves to NULL.
+`PartitionSelectRule` therefore gates the new classification on `n == 3` and
+keeps Java's original split for `n > 3`. A loud plan-failure is acceptable; a
+silent wrong row is not. Completing the executor's **nested
+`RecordConstructorValue` + `TranslationMap` resolution** is the N-way follow-up
+(Graefe-endorsed contract). The boundary is pinned by
+`TestFDB_MultiwayJoinOrder_Limit`, which asserts the 3-way star is correct AND
+the 4-way either returns the correct `alpha` row or fails loudly — never a silent
+NULL row.
+
+It took FIVE landed fixes, none of which is the broad TODO 7.1:
 
 1. **L1 — removed the Go-only `PushProjectionBelowJoinRule`** (recursive-CTE gap
    closed at translation time). Unblocks the flat seed. (`1059aed8`)
@@ -13,15 +30,20 @@ both orders. Full repo (30 targets / 46 bazel test targets) green; deterministic
    QOV-child `FieldValue` so the ≥100-row hash-join path extracts outer/inner
    columns correctly (was backwards → 0 rows at scale). Pinned by
    `equijoin_columns_test.go`.
-3. **Spanning-predicate classification (`bc0cb131`)** — route a join predicate
-   that references both partition halves to the UPPER (correlating), so
-   PartitionSelect generates the re-enumerated index-probing `(t1⋈t2)⋈t3`
-   associativity for EVERY FROM-order (the L3.0 cost-vector proof showed it was
-   generated 0× for big-first before this).
+3. **Spanning-predicate classification (`bc0cb131`)** — for a 3-way join, route a
+   join predicate that references both partition halves to the UPPER
+   (correlating), so PartitionSelect generates the re-enumerated index-probing
+   `(t1⋈t2)⋈t3` associativity for EVERY FROM-order (the L3.0 cost-vector proof
+   showed it was generated 0× for big-first before this).
 4. **Disconnected cross-product skip (`bc0cb131`)** — skip a partition whose
    lower has ≥2 quantifiers no lower predicate connects (its multi-alias
    `RecordConstructorValue` result doesn't resolve at execution); the connected
    associativities cover the same join orders correctly.
+5. **3-way scope gate (this commit)** — gate the new classification + skips on
+   `n == 3`; keep Java's original split for `n > 3` so ≥4-way joins fail to plan
+   loudly (as on master) rather than returning silent NULL rows. Pinned by
+   `TestFDB_MultiwayJoinOrder_Limit`. (Addresses Torvalds' v11 NAK: the prior
+   `multiAliasCase3` skip left a 4-way Case-2 hole that returned a `[""]` row.)
 
 The history below records the multi-version root-causing (v4–v10), including the
 disproven theories (task-engine ordering; cost mis-accounting; TODO 7.1
@@ -426,14 +448,25 @@ compat holds). No step changes anything on the wire.
 both FROM-orders byte-identical EXPLAIN; (b) cost-optimal — drives from the 1-row
 table, T3 reached last via its index, never full-scanned; (c) **row-correctness**
 — both orders return the right 200 rows (the dimension that the prior fake-green
-test missed). Currently RED on (a)/(b) (L3), GREEN on (c) after the Layer-2 fix.
-Plus the no-regression gate (43 REWRITING-rule count; plandiff conformance;
-stress-1M before/after; determinism 10×) and the recursive-CTE row gate.
+test missed). All three GREEN.
+
+`TestFDB_MultiwayJoinOrder_Limit` pins the 3-way/4-way boundary honestly: the
+3-way star join returns the correct projected value, and the 4-way chain (both
+FROM-orders) either returns the correct `alpha` row OR fails to plan loudly —
+never a silent NULL row. This is the regression sentinel against the v11 hole
+(4-way planned but `a.val` resolved to a `[""]` NULL row). If a future change
+makes 4-way plan, this test forces it to also return correct rows.
+
+Plus the no-regression gate (REWRITING-rule count; plandiff conformance;
+determinism 8×) and the recursive-CTE row gate.
 
 ## Status progression
 
 Draft v1–v3 (wrong root cause, retracted) → v4 (correct multi-layer root cause,
-none landed) → v5/v6/v7 → **v8 (L3.0 PROVED generation-not-cost; L3.1(a) attempted —
+none landed) → v5/v6/v7 → v8 (L3.0 PROVED generation-not-cost; L3.1(a) attempted —
 byte-identical index-probe achieved for both orders but 0 rows; blocker isolated
-to TODO 7.1 alias-namespace unification; reviewer-ACK'd L3 plan; the 4-step
-plan)** → Implemented when the probe is green under the full gate.
+to TODO 7.1 alias-namespace unification; reviewer-ACK'd L3 plan) → v11 (probe
+GREEN; four landed fixes) → **v12 (Torvalds NAK addressed — 3-way scope gate;
+4-way fails loudly as on master, not silent NULL rows; pinned by
+`TestFDB_MultiwayJoinOrder_Limit`). IMPLEMENTED for 3-way; N-way executor
+resolution is the documented follow-up.**
