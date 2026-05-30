@@ -1,6 +1,6 @@
 # RFC-045: Vector / HNSW relational SQL parity
 
-**Status:** Draft
+**Status:** Accepted (Graefe ACK, Torvalds ACK) — implementation in progress
 **Phase:** 9 (TODO.md)
 **Scope:** read-side query surface + DDL; **zero new wire format** (the on-disk HNSW
 format already matches Java and is unchanged by this RFC).
@@ -60,7 +60,7 @@ and verified; this RFC only lets Go *express* the queries Java can express.
    vector column), be non-unique, no grouping, no version columns
    (`VectorIndexMaintainerFactory.VectorIndexValidator`).
 2. **Query front-end.** `grep QualifyClause` → 0 hits. `extractFunctionNameFromCall`
-   (`cascades_generator.go:2237`) only returns the function *name* string. Nothing builds a
+   (`cascades_generator.go:2226`) only returns the function *name* string. Nothing builds a
    `RowNumberValue` from the parse tree, no `OVER`/`windowSpec` visitor, no `QUALIFY` →
    predicate lowering.
 3. **`transformComparisonMaybe`.** Java's `RowNumberValue.transformComparisonMaybe` rewrites
@@ -78,7 +78,7 @@ and verified; this RFC only lets Go *express* the queries Java can express.
    (`vector_index_match_candidate.go:200-219`) dumps every `ComparisonRange` into a plain
    `NewRecordQueryIndexPlan` — no partition/distance-rank split, no `efSearch`/`isReturningVectors`
    threading. That plan executes a default `BY_VALUE` scan, which **errors** for a vector index
-   (`index_scan.go:269`: "must be scanned with BY_DISTANCE"). The executor *has* the BY_DISTANCE
+   (`index_scan.go:271`, guard at :269: "must be scanned with BY_DISTANCE"). The executor *has* the BY_DISTANCE
    path (`IndexScanByDistance` → `ScanByDistance`, `index_scan.go:338-345`), but **no physical
    plan type drives it** (`grep VectorIndexPlan pkg/.../plans` → 0). So the split logic and a
    vector-aware scan plan must be **built**, not "branched in."
@@ -130,7 +130,7 @@ sub-pieces, not one branch:
   vector, `k`, `efSearch`, `isReturningVectors` + partition prefix and, at execution, builds
   `VectorDistanceScanRange(queryVector, k, efSearch)` and dispatches **BY_DISTANCE** via
   `ScanIndexByType`/`ScanVectorIndex` → `ScanByDistance` (`index_scan.go:338-345`). Without this
-  the candidate plans a `BY_VALUE` scan that errors at `index_scan.go:269`. The plan must carry
+  the candidate plans a `BY_VALUE` scan that errors at `index_scan.go:271`. The plan must carry
   proper `GetCorrelatedToWithoutChildren()` (the query-vector comparand may be a parameter).
 
 Mirror the constraints at the planner: index must be partitioned, query must bind partition
@@ -166,7 +166,7 @@ run before/after as a regression guard regardless.
 - **9.3:** planner test asserting a `vector`-index metadata yields a vector candidate; a unit
   test that `ToScanPlan` produces the vector physical plan (not `RecordQueryIndexPlan`) with the
   partition prefix and distance-rank correctly split; an execution test that the plan dispatches
-  **BY_DISTANCE** (reaches `ScanByDistance`, not the `index_scan.go:269` BY_VALUE error).
+  **BY_DISTANCE** (reaches `ScanByDistance`, not the `index_scan.go:271` BY_VALUE error).
 - **9.4:** the ported yamsql + an FDB integration test (real testcontainers FDB): insert
   vectors, run the documentation KNN queries, assert rows + distances and the EXPLAIN plan
   shape; determinism 10×.
