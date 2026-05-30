@@ -8,6 +8,58 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ## Known gaps
 
+### 🚩 CORRECTNESS BUG — re-enumerated indexed multi-way joins return NULL columns
+
+**Symptom.** A 3-way *indexed chain* join planned through the RFC-042 L3 index-NLJ
+re-enumeration path returns the **correct row cardinality but every projected
+column is NULL**. Reproduce (1-row t1 ← 20-row t2 ← 200-row t3, FK columns indexed):
+
+```sql
+SELECT t1.id FROM t3, t2, t1 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id  -- 200 rows, all t1.id NULL (want 1)
+SELECT COUNT(*) FROM <same>                                               -- 200 (correct — no column resolution)
+```
+
+2-way joins are correct; non-indexed *star* 3-way joins are correct
+(`TestFDB_ThreeTableFrom`). Only the indexed-chain re-enumeration is broken.
+
+**Root cause (pointer-level instrumented).** `PartitionSelectRule` misroutes the
+*spanning* join predicate (e.g. `t3.t2_id = t2.id`, one alias in each partition
+half) into the **lower** partition. Java's classification keys on
+`uppersDependingOnLowersAliases`, computed from `getCorrelationOrder()` —
+**quantifier** correlations. Go's flat-seed join quantifiers are independent
+scans with **no quantifier-level correlations** (the joins are plain predicates),
+so `uppersDependingOnLowers` is *always empty* and the spanning predicate always
+falls to the "can do in lower" branch (`rule_partition_select.go:202-207`). That
+yields a degenerate **Case-1 cross-product** partition whose lower result is a
+literal/`RecordConstructorValue{_0}` (`:268`, `:323-331`) — discarding the real
+columns. At execution the physical FlatMap merges via `JoinMergeResultValue`
+(`values/value_join_merge.go`), which cannot resolve columns nested under `_0`
+→ every projected field evaluates to NULL. (Instrumented:
+`rv=JoinMergeResultValue outerAlias=T1 innerAlias=q$… outerKeys=[ID]
+innerKeys=[_0] computedKeys=[]`.)
+
+**Why it shipped green.** `multiway_join_index_probe_test.go` (commit 4a26db66)
+and the 2-table invariance test assert **plan shape only**
+(`strings.Contains`-style), never execute the query / check rows — a fake
+checkbox. The dimensional gap (rows, not shape) let a wrong-results plan read as
+"covered".
+
+**Fix direction (multi-shift — touches the most sensitive rule + executor).**
+Make re-enumerated join sub-products flow a **resolvable, flat** result so
+qualified columns survive nesting. Either (a) augment the partition's correlation
+model with *predicate-induced* dependencies so spanning predicates route to the
+UPPER (Case 2, `QOV` flat result, correlating the upper to the lower — the valid
+index-NLJ), or (b) make the physical join FlatMap always emit `JoinMergeResultValue`
+(flat qualified columns) and reference sub-products by qualified name rather than
+Java's ordinal `_0` + `TranslationMap`. Both must be validated against the FULL
+suite (the 2-table, star-join, and EXISTS/correlated paths currently rely on the
+present behaviour) and pinned with a **row-correctness** regression test (not
+plan-shape). This blocks the RFC-042 byte-identical multi-way-join-order goal: the
+plans can be made byte-identical (a pass-through-sub-Select-inner unwrap in
+`ImplementNestedLoopJoinRule` achieves it — Graefe-ACK'd, see git reflog for the
+reverted spike), but they don't execute correctly until this is fixed. Also
+retrofit row assertions onto `multiway_join_index_probe_test.go`.
+
 ### vs Java (correctness/feature parity)
 
 - [x] **Correlated filter without index.** Fixed in 56874f23 — ImplementFilterRule sets innerAlias on RecordQueryPredicatesFilterPlan. All correlated paths (scalar subquery, EXISTS, JOIN) work without indexes. 14+ integration tests verify.
