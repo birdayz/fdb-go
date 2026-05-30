@@ -55,6 +55,17 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 		return ok &&
 			mapAlias(aliases, av.OuterAlias) == bv.OuterAlias &&
 			mapAlias(aliases, av.InnerAlias) == bv.InnerAlias
+	case *JoinMergeAllValue:
+		bv, ok := b.(*JoinMergeAllValue)
+		if !ok || len(av.Aliases) != len(bv.Aliases) {
+			return false
+		}
+		for i := range av.Aliases {
+			if mapAlias(aliases, av.Aliases[i]) != bv.Aliases[i] {
+				return false
+			}
+		}
+		return true
 	}
 	// Structural: node-info equality + alias-aware recursion into children.
 	if !EqualsWithoutChildren(a, b) {

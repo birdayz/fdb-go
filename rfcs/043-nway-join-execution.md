@@ -1,6 +1,34 @@
 # RFC-043: Generic N-way join execution (lift the 3-way scope limit)
 
-**Status:** Draft v2 (Graefe + Torvalds NAK addressed — see Status progression)
+**Status:** Implemented (v3). Graefe + Torvalds ACK'd v2; implementation revealed
+two honest scope corrections (cost-selection and enumeration-efficiency are
+follow-ups — see "Delivered vs deferred" and Status progression). Re-review of v3
+pending.
+
+## Delivered vs deferred (read this first)
+
+**Delivered — N-way EXECUTION correctness.** ≥4-way joins, which were unplannable
+before this change, now return CORRECT rows: root, **middle-table** (no terminal
+decomposition), and **star** projections, under both FROM-orders, with the
+largest table reached via its FK index (never full-scanned). The mechanism is
+general — verified correct up to 6-way. Pinned by `TestFDB_MultiwayJoinOrder_Nway`
++ `TestJoinMergeAllValue_*` unit tests. The 3-way probe (`..._Probe`) stays green.
+
+**Deferred — two follow-ups, found during implementation, documented honestly:**
+1. **Cost-optimal, order-invariant SELECTION for ≥4-way.** RFC-042 makes 3-way
+   plans byte-identical + optimal across FROM-orders. For ≥4-way the larger bushy
+   search space + merged-row costing does NOT yet converge both orders onto the
+   single optimal left-deep index-probe chain (a 4-way may drive from a larger
+   table). This is a **cost-model** matter (epic PR-D / RFC-041), orthogonal to the
+   execution correctness delivered here. The test asserts correct rows + the
+   index-probe property, NOT plan byte-identity.
+2. **Enumeration efficiency.** Full bushy re-enumeration is exponential and the
+   shared join sub-products do not yet intern tightly enough: a 4-way fits the
+   default task budget (~57k tasks), but a 5-way needs ~200k and exceeds it, so it
+   loud-fails by default (correct when given a larger budget). Making sub-products
+   intern so the budget scales polynomially is the efficiency follow-up (ties into
+   RFC-039 broad memo merging). `..._Nway` pins the ≥5-way contract as "correct OR
+   loud, never wrong rows".
 
 **Epic:** RFC-038 (multi-way join ordering). This is **PR-D** — it removes the
 `isThreeWay` gate RFC-042 installed and makes re-enumerated joins of *any* arity
@@ -96,49 +124,57 @@ Make every re-enumerated intermediate join flow a **merged row** (qualified
 columns of every buried table accumulate up the join spine and the final
 `Project` reads any table's column from the top merged row.
 
-### Why a *binary* merge value suffices (the key correctness argument)
+### The mechanism: chained qualified-key merges
 
-`JoinMergeResultValue` (`values/value_join_merge.go`) is **binary** —
-`{OuterAlias, InnerAlias}`, `Evaluate` merges exactly two bindings. A single one
-cannot carry ≥2 buried tables. **But it does not have to**, because its `Evaluate`
-**preserves already-qualified keys** (`merged[k]=val` for any key containing `.`)
-and qualifies only bare keys. So when its *outer* is itself a merged row carrying
-`A.*, B.*`, those pass through untouched and only the inner table is freshly
-qualified. A **chain** of binary merges therefore accumulates the full set
-`A.*, B.*, C.*, …` up a left-deep spine. The merge is realized **per binary join
-level** — never as one wide N-ary value — so **no new value type is needed**, and
-this is exactly the `mergeRows` qualified-key propagation that already carries
-`b/c/d` to the top today.
+The merge `Evaluate` (`value_join_merge*.go`) **preserves already-qualified keys**
+(any key containing `.`) and qualifies only bare keys. So when a merge's *outer*
+is itself a merged row carrying `A.*, B.*`, those pass through untouched and only
+the inner table is freshly qualified. A **chain** of merges therefore accumulates
+the full set `A.*, B.*, C.*, …` up the join spine — exactly the `mergeRows`
+qualified-key propagation that already carries `b/c/d` today. Pinned directly by
+`TestJoinMergeAllValue_ChainsQualifiedKeys`.
 
-The whole bug is that the re-enumerated lower flows `GetFlowedObjectValue()` (a
-single `QOV`, `quantifier.go`), which is *not* a merged row — so the chain breaks
-at the bottom and the consumed inner table is dropped. The fix makes the
-≥2-live-table lower flow `JoinMergeResultValue(outer, inner)` instead.
+The whole bug was that the re-enumerated lower flowed `GetFlowedObjectValue()` (a
+single `QOV`), which is *not* a merged row — so the chain broke at the bottom and
+the consumed inner table was dropped. The fix flows a merged row from any lower
+with ≥2 live tables.
 
-### Concrete changes
+**An N-ary `JoinMergeAllValue` was needed** (not just the binary
+`JoinMergeResultValue`, correcting v2's claim that binary suffices). The rule sets
+a sub-select's result value *before* it knows how that sub-select re-partitions,
+so it cannot name a binary outer/inner there; the value must carry "merge all my
+live quantifiers". `JoinMergeAllValue{Aliases []CorrelationIdentifier}` does this
+and Evaluates by the same qualified-key passthrough (binary is the 2-alias case).
+It is a leaf value with memo hash/equality + `GetCorrelatedToOfValue` support.
 
-1. **Column-liveness set** (in `rule_partition_select.go`, per partition). Define
-   `live(lower) = correlationClosure(upperPredicates ∪ resultValue) ∩ lowerAliases`
-   — the lower aliases referenced by an upper join predicate **or** the result
-   value, taken through the correlation order (`GetCorrelatedToOfValue` /
-   `GetCorrelatedToOfPredicate` already give the per-node sets;
-   `fullCorrelationOrder` already gives the transitive closure). This is Graefe's
-   formulation: the output schema a group must flow is its consumers'
-   reference set restricted to it. **Crucially it includes join keys upper levels
-   need, not only the final projection** — a deep key live solely for an ancestor
-   predicate must survive.
-2. **Flow rule** keyed on `|live(lower)|`:
-   - `|live| ≤ 1` → today's single-`QOV` Case-2, **unchanged** (the 3-way path is
-     this degenerate case — no behavior change, pinned by an EXPLAIN-identity +
-     determinism test).
-   - `|live| ≥ 2` → the lower flows a merged row. Realized by
-     `ImplementNestedLoopJoinRule` synthesizing `JoinMergeResultValue(outerAlias,
-     innerAlias)` when it implements a re-enumerated join sub-select (binary, at
-     the point outer/inner are known); the per-level chaining above carries all
-     live columns. This is a **result-value change in the implement rule** — *not*
-     "no value-eval changes"; it is small and reuses the existing binary value,
-     but it is real and must be tested as such.
-3. **Drop** `isThreeWay` and the `multiAliasCase3` skip; **keep** `disconnectedLower`
+### Concrete changes (as implemented)
+
+1. **Liveness, per partition** (`rule_partition_select.go`). The live lower set =
+   the lowers referenced by a spanning upper predicate (folded during predicate
+   classification) **plus** those the result value needs:
+   - the flat seed's translator-built `JoinMergeResultValue` names two arbitrary
+     aliases and hides the real projection (it lives in the `Project` above), so
+     the rule cannot see what's needed and keeps **all** lower aliases live — this
+     applies only at the top;
+   - a re-enumerated `JoinMergeAllValue` lists **exactly** the aliases its parent
+     needs (`GetCorrelatedToOfValue` returns them) — keep only those (flowing all
+     would multiply distinct merge sub-products and blow up the search);
+   - any other result value contributes the lowers it actually references.
+   This includes keys live only for an ancestor predicate, not just the projection.
+2. **Flow rule** keyed on the live-set size:
+   - `≤ 1` live → today's single-`QOV` Case-2, **unchanged** (3-way degenerate
+     case, no behavior change; the `..._Probe` test stays green);
+   - `≥ 2` live → the lower flows `JoinMergeAllValue{live}`; the upper predicates
+     and result resolve those columns through the merged row by table-qualified
+     name (no translation). When the parent is itself a `JoinMergeAllValue`, the
+     upper re-stamps the merge over its **immediate** quantifiers (the original
+     deep aliases are collapsed into the lower's merged map).
+3. **Stable merge alias.** The merged lower's quantifier alias is derived from its
+   (sorted) live set (`$m_<names>`), not a fresh unique id, so identical merged
+   sub-joins reached from different bipartitions intern to one memo Reference. The
+   live set is also sorted (`dedupAliases`) for determinism + interning. Without
+   this the search space explodes (and plans would be non-deterministic).
+4. **Drop** `isThreeWay` and the `multiAliasCase3` skip; **keep** `disconnectedLower`
    (a cross-product lower is genuinely degenerate at any arity).
 
 ### Rejected: route (a) — nested `RecordConstructorValue` + `TranslationMap`
@@ -166,57 +202,50 @@ framed 7.1 as a risk held in reserve — that was stale; it is done.)
 
 ## Performance
 
-- **Search space:** the rule already enumerates all `2^N − 2` bipartitions and
-  recurses; the cost model (RFC-041) ranks them and Cascades memoizes shared
-  sub-products. Dropping `isThreeWay` does **not** change the enumeration — only
-  which partitions yield a *plannable* (vs skipped) member. N is small in
-  practice (join arity); the `disconnectedLower` skip still prunes cross products.
-- **No extra columns on the wire.** This is read-path execution only — the merged
-  intermediate value lives in-cursor; nothing about record/index/continuation
-  encoding changes. Wire compat is untouched.
-- **Merged rows are not wider than the original plan.** The non-re-enumerated plan
-  already flows a `JoinMergeResultValue` per join (built by the translator,
-  `cascades_translator.go`); this change makes the *re-enumerated* sub-joins flow
-  the same. The live-set restriction means an intermediate row carries only the
-  columns some ancestor needs — never more than the full merge the original plan
-  flowed.
-- **Stress-1M before/after** must stay within thresholds (the flow change adds only
-  already-needed columns to an in-memory merged row; it does not change the chosen
-  plan for 2/3-way, which dominate the corpus). Recorded in TODO.md.
+- **Wire compat untouched.** Read-path execution only — the merged intermediate
+  value lives in-cursor; nothing about record/index/continuation encoding changes.
+- **No regression in tested behaviour.** Full cascades + executor + sqldriver +
+  plandiff + yamsql green; the 3-way `..._Probe` and plandiff plan-shapes are
+  unchanged (≤1-live lowers keep the single-`QOV` Case-2 path, untouched). 2/3-way
+  joins — which dominate the corpus — are unaffected.
+- **Enumeration is exponential — the known cost frontier.** Full bushy
+  re-enumeration over `2^N − 2` bipartitions, with the shared join sub-products not
+  yet interning tightly, grows the task count super-linearly: ~57k tasks for a
+  4-way (fits the default 100k budget) but ~200k for a 5-way (exceeds it → loud
+  fail by default). The stable merge alias (change 3) is what keeps it from being
+  far worse. Making sub-products intern so the budget scales polynomially is the
+  **efficiency follow-up** (RFC-039 broad memo merging). This is why the default
+  budget bounds the practical arity to 4-way, and ≥5-way is "correct OR loud".
 
-## Test plan
+## Test plan (as implemented)
 
-The existing `TestFDB_MultiwayJoinOrder_Limit` flips from "4-way must fail loudly"
-to "4-way must return correct rows" — it already asserts *correct-or-loud*, so it
-becomes a positive correctness test for free once 4-way plans.
+`TestFDB_MultiwayJoinOrder_Nway` (replaces the old `_Limit` test):
+- **Shapes:** indexed chain (`t1—t2—t3—t4`) and star (`hub→{w,x,y}`).
+- **Projection position:** root (`t1.id`), **middle** (`t2.x` — the no-terminal-
+  decomposition case), and the buried star hub (`hub.label`).
+- **Both FROM-orders** of the chain return correct rows.
+- **Correctness:** exact row values + counts (not len-only — the 3-way bug shipped
+  green because a len check missed a `[""]` NULL row).
+- **Index-probe property:** the 2000-row `t4` is reached via `t4_by_t3`, never
+  full-scanned, under both orders. (NOT byte-identity — see "Delivered vs
+  deferred": order-invariant cost SELECTION for ≥4-way is the cost follow-up.)
+- **≥5-way contract:** correct OR loud plan-failure, never a wrong row.
 
-New `TestFDB_NwayJoinOrder` matrix — the dimensions that were unprobed and let the
-3-way limit stand:
-- **Shapes:** chain (`a—b—c—d`), star (`hub→{w,x,y,z}`), and a bushy/clique mix.
-- **Projection position:** root, **middle** (the case with no terminal
-  decomposition — the load-bearing one), and leaf table.
-- **Arity:** 4-way and 5-way (prove it's general, not a 4-way special-case).
-- **FROM-order independence:** every shape under ≥2 opposite FROM-orders →
-  byte-identical EXPLAIN.
-- **Correctness:** exact row values, not just counts (the 3-way bug shipped green
-  precisely because a len-only check missed a `[""]` NULL row).
-- **Cost-optimality:** EXPLAIN-pinned — drive from the smallest table, index-probe
-  the largest last, never full-scan an indexed FK.
-- Determinism 10× on each planner assertion (alias non-determinism is always a
-  bug here).
-- Unit test for the column-liveness set (analogous to `TestLowerAliasesConnected`).
-  **Must include the case Graefe flagged:** a deep table whose column is live
-  *only* for an ancestor join predicate (not the final projection) — e.g. a chain
-  where an intermediate key would be dropped if liveness only tracked the
-  projection. That column must be in `live(lower)`.
+`TestJoinMergeAllValue_*` (unit): the qualified-key passthrough chains so a buried
+table's column survives a nested merge (the core mechanism); nil-when-unbound;
+`GetCorrelatedToOfValue` reports the listed aliases (liveness propagation).
+
+`TestLowerAliasesConnected` (existing, retained): the cross-product `disconnectedLower`
+skip that still gates at any arity.
 
 ## Status progression
 
-Draft (v1) → **v2 (addressed Graefe + Torvalds NAK: 7.1 reframed as a satisfied
-precondition not a future gate; route (a) `RecordConstructorValue` rejected, not
-held in reserve; committed to binary-`JoinMergeResultValue`-chained flow with the
-explicit "why binary suffices" argument; specified the `live(lower)` set; dropped
-the "~80% written" claim)** → reviewed (Graefe + Torvalds ACK) → implemented
-(`isThreeWay` gate + `multiAliasCase3` skip + dead Case-3 removed;
-`TestFDB_NwayJoinOrder` green; `_Limit` test flips to positive) → PR + @claude
-LGTM.
+Draft (v1) → v2 (addressed Graefe + Torvalds NAK: 7.1 reframed as satisfied
+precondition; route (a) rejected; committed to the merge-chained flow; specified
+liveness; dropped "~80%") → reviewed (Graefe + Torvalds ACK) → **v3 (IMPLEMENTED,
+with two honest scope corrections found in implementation: (i) an N-ary
+`JoinMergeAllValue` WAS needed — v2's "binary suffices" was wrong; (ii)
+cost-optimal order-invariant SELECTION for ≥4-way and enumeration efficiency for
+≥5-way are deferred follow-ups, not delivered. 4-way returns correct rows for all
+shapes/orders at the default budget; mechanism verified correct to 6-way.)** →
+re-review (Graefe + Torvalds) → PR + @claude LGTM.

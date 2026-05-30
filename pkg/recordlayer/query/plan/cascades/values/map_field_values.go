@@ -452,6 +452,17 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *JoinMergeResultValue:
 		bv, ok := b.(*JoinMergeResultValue)
 		return ok && av.OuterAlias == bv.OuterAlias && av.InnerAlias == bv.InnerAlias
+	case *JoinMergeAllValue:
+		bv, ok := b.(*JoinMergeAllValue)
+		if !ok || len(av.Aliases) != len(bv.Aliases) {
+			return false
+		}
+		for i := range av.Aliases {
+			if av.Aliases[i] != bv.Aliases[i] {
+				return false
+			}
+		}
+		return true
 	default:
 		panic(fmt.Sprintf("EqualsWithoutChildren: unhandled Value type %T", a))
 	}

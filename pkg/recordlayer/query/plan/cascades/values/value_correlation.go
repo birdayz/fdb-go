@@ -31,6 +31,10 @@ func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 			out[q.UnmatchedID] = struct{}{}
 		case *ConstantObjectValue:
 			out[q.Alias] = struct{}{}
+		case *JoinMergeAllValue:
+			for _, a := range q.Aliases {
+				out[a] = struct{}{}
+			}
 		}
 		return true
 	})
