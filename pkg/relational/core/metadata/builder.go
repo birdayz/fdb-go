@@ -44,6 +44,13 @@ type indexSpec struct {
 	unique    bool
 	aggType   string // "SUM", "COUNT", etc. — empty for VALUE indexes
 	aggColumn string // aggregated column (for SUM/MIN/MAX)
+
+	// VECTOR (HNSW) index fields — set only when vector is true.
+	vector           bool
+	vectorColumn     string            // the indexed vector field
+	partitionColumns []string          // HNSW partition prefix (independent graph per partition)
+	numDimensions    int               // derived from the column's VECTOR type
+	options          map[string]string // HNSW tuning options (metric, ef_construction, m, ...)
 }
 
 // ColumnSpec describes a single column within a table.
@@ -175,6 +182,62 @@ func (b *Builder) AddAggregateIndex(tableName, indexName string, groupColumns []
 	return b
 }
 
+// AddVectorIndex registers a VECTOR (HNSW) index on the named table.
+// vectorColumn is the single indexed vector field; partitionColumns form
+// the HNSW partition prefix (each distinct partition value gets its own
+// independent graph). options carries the HNSW tuning keys (metric,
+// ef_construction, m, ...). The vector column must be declared with a
+// VECTOR(dims, ...) type; the dimension count is derived from it.
+//
+// Mirrors Java's DdlVisitor.visitVectorIndexDefinition, which requires
+// exactly one indexed column of VECTOR type and derives
+// HNSW_NUM_DIMENSIONS from the column's VectorType.
+func (b *Builder) AddVectorIndex(tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string) *Builder {
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		colByName := make(map[string]ColumnSpec, len(b.tables[i].columns))
+		for _, c := range b.tables[i].columns {
+			colByName[c.name] = c
+		}
+		vc, ok := colByName[vectorColumn]
+		if !ok {
+			b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"vector index %q on table %q: column %q not defined in table",
+				indexName, tableName, vectorColumn))
+			return b
+		}
+		vt, ok := vc.dt.(*api.VectorType)
+		if !ok {
+			b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"vector index %q: indexed column %q must be of vector type",
+				indexName, vectorColumn))
+			return b
+		}
+		for _, pc := range partitionColumns {
+			if _, ok := colByName[pc]; !ok {
+				b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+					"vector index %q on table %q: partition column %q not defined",
+					indexName, tableName, pc))
+				return b
+			}
+		}
+		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
+			name:             indexName,
+			vector:           true,
+			vectorColumn:     vectorColumn,
+			partitionColumns: partitionColumns,
+			numDimensions:    vt.Dimensions(),
+			options:          options,
+		})
+		return b
+	}
+	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+		"vector index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
 // Build materialises the schema template. Returns an error when no
 // tables are registered or types cannot be mapped to proto field types.
 func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
@@ -217,6 +280,15 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 		rt.SetPrimaryKey(pkExpr)
 
 		for _, idx := range tbl.indexes {
+			if idx.vector {
+				rl, idxErr := buildVectorIndex(idx)
+				if idxErr != nil {
+					return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
+						"table %q vector index %q", tbl.name, idx.name)
+				}
+				mdBuilder.AddIndex(tbl.name, rl)
+				continue
+			}
 			if idx.aggType != "" {
 				rl, idxErr := buildAggregateIndex(idx)
 				if idxErr != nil {
@@ -349,6 +421,10 @@ func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProt
 		return descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil
 	case api.CodeBytes:
 		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, "", nil
+	case api.CodeVector:
+		// A vector column is stored as serialized bytes (RealVector.toBytes).
+		// Matches Java's Type.TypeCode.VECTOR → FieldDescriptorProto.Type.TYPE_BYTES.
+		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, "", nil
 	case api.CodeUUID:
 		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, uuidProtoTypeName, nil
 	case api.CodeDate, api.CodeTimestamp:
@@ -392,6 +468,36 @@ func buildIndexKeyExpression(columns []string) (recordlayer.KeyExpression, error
 		exprs[i] = recordlayer.Field(col)
 	}
 	return recordlayer.Concat(exprs...), nil
+}
+
+// buildVectorIndex materialises a VECTOR (HNSW) index from its spec.
+// The root is a KeyWithValueExpression whose key part is the partition
+// prefix and whose value part is the single vector column — identical to
+// Java's vector index layout (cols before the split point = partition
+// prefix, first col after = the indexed vector). The split point is the
+// number of partition columns (0 for an unpartitioned index).
+func buildVectorIndex(idx indexSpec) (*recordlayer.Index, error) {
+	cols := make([]string, 0, len(idx.partitionColumns)+1)
+	cols = append(cols, idx.partitionColumns...)
+	cols = append(cols, idx.vectorColumn)
+
+	var inner recordlayer.KeyExpression
+	if len(cols) == 1 {
+		inner = recordlayer.Field(cols[0])
+	} else {
+		exprs := make([]recordlayer.KeyExpression, len(cols))
+		for i, col := range cols {
+			exprs[i] = recordlayer.Field(col)
+		}
+		inner = recordlayer.Concat(exprs...)
+	}
+	root := recordlayer.KeyWithValue(inner, len(idx.partitionColumns))
+
+	rl := recordlayer.NewVectorIndex(idx.name, root, idx.numDimensions)
+	for k, v := range idx.options {
+		rl.Options[k] = v
+	}
+	return rl, nil
 }
 
 func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {

@@ -107,6 +107,7 @@ go_test(
         "tri_bool_test.go",
         "utilities_test.go",
         "value_compare_test.go",
+        "vector_ddl_test.go",
         "where_extractors_test.go",
     ],
     embed = [":embedded"],

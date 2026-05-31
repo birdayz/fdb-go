@@ -2398,7 +2398,10 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 		if td == nil {
 			continue
 		}
-		tableName := td.Uid().GetText()
+		// Normalize the table name the same way execCreateSchemaTemplate and
+		// the column/index parsers do (StripIdentifierQuotes upper-cases
+		// unquoted identifiers), so index lookups by table name match.
+		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
 		cols, pkCols, tdErr := parseTableDefinition(td)
 		if tdErr != nil {
 			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)

@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"strconv"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -171,9 +172,128 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		return nil
 	case *antlrgen.IndexAsSelectDefinitionContext:
 		return parseAggregateIndexDefinition(def, b)
+	case *antlrgen.VectorIndexDefinitionContext:
+		return parseVectorIndexDefinition(def, b)
 	default:
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported index definition type %T", idxDef)
+	}
+}
+
+// parseVectorIndexDefinition handles
+// CREATE VECTOR INDEX name USING HNSW ON table(vectorCol) PARTITION BY (cols) OPTIONS(...).
+// Mirrors Java's DdlVisitor.visitVectorIndexDefinition: exactly one indexed
+// (vector) column, the PARTITION BY columns form the HNSW partition prefix,
+// INCLUDE is unsupported, and the dimension count is derived from the
+// indexed column's VECTOR type (in metadata.Builder.AddVectorIndex).
+func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *metadata.Builder) error {
+	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	// Match the sibling IndexOnSourceDefinition path, which registers and
+	// looks up the table by the raw (unnormalized) source text.
+	tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
+
+	if def.IncludeClause() != nil {
+		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"vector index %q: INCLUDE clause is not supported", indexName)
+	}
+
+	// Exactly one indexed (vector) column.
+	var vecCols []string
+	if cl := def.IndexColumnList(); cl != nil {
+		for _, spec := range cl.AllIndexColumnSpec() {
+			vecCols = append(vecCols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
+		}
+	}
+	if len(vecCols) != 1 {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"vector index %q: exactly one indexed column is supported, found %d",
+			indexName, len(vecCols))
+	}
+
+	// PARTITION BY prefix columns (optional).
+	var partitionCols []string
+	if pc := def.IndexPartitionClause(); pc != nil {
+		for _, spec := range pc.AllIndexColumnSpec() {
+			partitionCols = append(partitionCols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
+		}
+	}
+
+	options, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName)
+	if err != nil {
+		return err
+	}
+
+	b.AddVectorIndex(tableName, indexName, vecCols[0], partitionCols, options)
+	return nil
+}
+
+// parseVectorIndexOptions parses the OPTIONS(...) clause of a vector index
+// into recordlayer HNSW option keys. Mirrors Java's
+// DdlVisitor.parseVectorOptions (CONNECTIVITY→HNSW_M, METRIC→enum name, ...).
+func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName string) (map[string]string, error) {
+	opts := map[string]string{}
+	if ctx == nil {
+		return opts, nil
+	}
+	octx, ok := ctx.(*antlrgen.VectorIndexOptionsContext)
+	if !ok {
+		return opts, nil
+	}
+	for _, o := range octx.AllVectorIndexOption() {
+		oc, ok := o.(*antlrgen.VectorIndexOptionContext)
+		if !ok {
+			continue
+		}
+		switch {
+		case oc.EF_CONSTRUCTION() != nil:
+			opts[recordlayer.IndexOptionHNSWEfConstruction] = oc.GetEfConstruction().GetText()
+		case oc.CONNECTIVITY() != nil:
+			opts[recordlayer.IndexOptionHNSWM] = oc.GetConnectivity().GetText()
+		case oc.M_MAX() != nil:
+			opts[recordlayer.IndexOptionHNSWMMax] = oc.GetMMax().GetText()
+		case oc.M_MAX_0() != nil:
+			opts[recordlayer.IndexOptionHNSWMMax0] = oc.GetMMaxZero().GetText()
+		case oc.MAINTAIN_STATS_PROBABILITY() != nil:
+			opts[recordlayer.IndexOptionHNSWMaintainStatsProbability] = oc.GetMaintainStatsProbability().GetText()
+		case oc.METRIC() != nil:
+			metric, err := vectorMetricName(oc.GetMetric())
+			if err != nil {
+				return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+					"vector index %q", indexName)
+			}
+			opts[recordlayer.IndexOptionVectorMetric] = metric
+		case oc.RABITQ_NUM_EX_BITS() != nil:
+			opts[recordlayer.IndexOptionHNSWRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
+		case oc.SAMPLE_VECTOR_STATS_PROBABILITY() != nil:
+			opts[recordlayer.IndexOptionHNSWSampleVectorStatsProbability] = oc.GetStatsProbability().GetText()
+		case oc.STATS_THRESHOLD() != nil:
+			opts[recordlayer.IndexOptionHNSWStatsThreshold] = oc.GetStatsThreshold().GetText()
+		case oc.USE_RABITQ() != nil:
+			opts[recordlayer.IndexOptionHNSWUseRaBitQ] = oc.GetUseRabitQ().GetText()
+		}
+	}
+	return opts, nil
+}
+
+// vectorMetricName maps an hnswMetric parse node to the Java metric enum
+// name the maintainer's config reader expects (e.g. "EUCLIDEAN_METRIC").
+func vectorMetricName(m antlrgen.IHnswMetricContext) (string, error) {
+	mc, ok := m.(*antlrgen.HnswMetricContext)
+	if !ok || m == nil {
+		return "", api.NewError(api.ErrCodeInvalidSchemaTemplate, "missing metric")
+	}
+	switch {
+	case mc.EUCLIDEAN_METRIC() != nil:
+		return "EUCLIDEAN_METRIC", nil
+	case mc.EUCLIDEAN_SQUARE_METRIC() != nil:
+		return "EUCLIDEAN_SQUARE_METRIC", nil
+	case mc.COSINE_METRIC() != nil:
+		return "COSINE_METRIC", nil
+	case mc.DOT_PRODUCT_METRIC() != nil:
+		return "DOT_PRODUCT_METRIC", nil
+	default:
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported vector metric %q", m.GetText())
 	}
 }
 
@@ -444,9 +564,57 @@ func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataTyp
 		return api.NewDateType(nullable), nil
 	case pt.TIMESTAMP() != nil:
 		return api.NewTimestampType(nullable), nil
+	case pt.VectorType() != nil:
+		return parseVectorColumnType(pt.VectorType(), nullable)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported column type: %s", ct.GetText())
+	}
+}
+
+// parseVectorColumnType parses a VECTOR(dimensions, elementType) column
+// type into an api.VectorType. Element-type precision: HALF=16, FLOAT=32,
+// DOUBLE=64 bits per element. Mirrors Java's DataType.VectorType.
+func parseVectorColumnType(vt antlrgen.IVectorTypeContext, nullable bool) (api.DataType, error) {
+	vtc, ok := vt.(*antlrgen.VectorTypeContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported vector type context %T", vt)
+	}
+	dimsTok := vtc.GetDimensions()
+	if dimsTok == nil {
+		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"vector type requires a dimension count")
+	}
+	dims, err := strconv.Atoi(dimsTok.GetText())
+	if err != nil || dims <= 0 {
+		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"invalid vector dimension count %q", dimsTok.GetText())
+	}
+	precision, err := vectorPrecisionBits(vtc.VectorElementType())
+	if err != nil {
+		return nil, err
+	}
+	return api.NewVectorType(precision, dims, nullable), nil
+}
+
+// vectorPrecisionBits maps a vectorElementType to its bit precision.
+func vectorPrecisionBits(et antlrgen.IVectorElementTypeContext) (int, error) {
+	etc, ok := et.(*antlrgen.VectorElementTypeContext)
+	if !ok || et == nil {
+		return 0, api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"vector type requires an element type")
+	}
+	switch {
+	case etc.HALF() != nil:
+		return 16, nil
+	case etc.FLOAT() != nil:
+		return 32, nil
+	case etc.DOUBLE() != nil:
+		return 64, nil
+	default:
+		return 0, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported vector element type %q", et.GetText())
 	}
 }
 
