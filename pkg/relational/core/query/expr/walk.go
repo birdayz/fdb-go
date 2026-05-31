@@ -216,6 +216,9 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 	if scalar, ok := fc.(*antlrgen.ScalarFunctionCallContext); ok {
 		return r.walkScalarFunction(scalar)
 	}
+	if nonAgg, ok := fc.(*antlrgen.NonAggregateFunctionCallContext); ok {
+		return r.walkNonAggregateWindowedFunction(nonAgg)
+	}
 	agg, ok := fc.(*antlrgen.AggregateFunctionCallContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("non-aggregate function call %T", fc)}
@@ -549,10 +552,6 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 		return nil, &UnsupportedExpressionShapeError{Shape: "ScalarFunctionCall without ScalarFunctionName"}
 	}
 	name := strings.ToUpper(s.ScalarFunctionName().GetText())
-	typ, ok := scalarFunctionResultType(name)
-	if !ok {
-		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
-	}
 	args := []values.Value{}
 	if fa := s.FunctionArgs(); fa != nil {
 		fac, ok := fa.(*antlrgen.FunctionArgsContext)
@@ -574,7 +573,130 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 			args = append(args, v)
 		}
 	}
+	// Vector distance functions (euclidean_distance, cosine_distance, ...)
+	// build a DistanceValue — the K-NN ORDER BY operand inside an OVER clause.
+	// Java models these as DistanceValue (an ArithmeticValue subclass).
+	if op, isDistance := distanceOperatorForFunc(name); isDistance {
+		if len(args) != 2 {
+			return nil, &UnsupportedExpressionShapeError{
+				Shape: fmt.Sprintf("%s requires exactly 2 arguments, got %d", name, len(args)),
+			}
+		}
+		return values.NewDistanceValue(op, args[0], args[1]), nil
+	}
+	typ, ok := scalarFunctionResultType(name)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
+	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
+}
+
+// distanceOperatorForFunc maps a SQL distance-function name to its
+// DistanceOperator. Returns (_, false) for non-distance functions.
+func distanceOperatorForFunc(name string) (values.DistanceOperator, bool) {
+	switch name {
+	case "EUCLIDEAN_DISTANCE":
+		return values.DistanceEuclidean, true
+	case "EUCLIDEAN_SQUARE_DISTANCE":
+		return values.DistanceEuclideanSquare, true
+	case "COSINE_DISTANCE":
+		return values.DistanceCosine, true
+	case "DOT_PRODUCT_DISTANCE":
+		return values.DistanceDotProduct, true
+	default:
+		return 0, false
+	}
+}
+
+// walkNonAggregateWindowedFunction builds a RowNumberValue from
+//
+//	ROW_NUMBER() OVER (PARTITION BY ... ORDER BY <distance>(field, q) [OPTIONS ef_search = N])
+//
+// Mirrors Java's ExpressionVisitor.visitNonAggregateWindowedFunction /
+// visitOverClause. Only ROW_NUMBER is wired: Java implements the vector
+// K-NN window function exclusively via ROW_NUMBER (RANK is index-only via a
+// rank index; LAG/LEAD have no value class). The ORDER BY expression becomes
+// the row-number argument (the distance value); PARTITION BY columns become
+// the partitioning values; OPTIONS ef_search threads the HNSW search knob.
+func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFunctionCallContext) (values.Value, error) {
+	wfc, ok := fc.NonAggregateWindowedFunction().(*antlrgen.NonAggregateWindowedFunctionContext)
+	if !ok || wfc == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "malformed non-aggregate windowed function"}
+	}
+	if wfc.ROW_NUMBER() == nil {
+		fn := ""
+		if wfc.GetFunctionName() != nil {
+			fn = wfc.GetFunctionName().GetText()
+		}
+		return nil, &UnsupportedExpressionShapeError{
+			Shape: fmt.Sprintf("window function %q (only ROW_NUMBER is supported)", fn),
+		}
+	}
+	overc, ok := wfc.OverClause().(*antlrgen.OverClauseContext)
+	if !ok || overc == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "ROW_NUMBER requires an OVER clause"}
+	}
+	if overc.WindowName() != nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "named window functions not supported"}
+	}
+	specc, ok := overc.WindowSpec().(*antlrgen.WindowSpecContext)
+	if !ok || specc == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "malformed window specification"}
+	}
+
+	// PARTITION BY columns → partitioning values.
+	var partitions []values.Value
+	if pc, ok := specc.PartitionClause().(*antlrgen.PartitionClauseContext); ok && pc != nil {
+		for _, fid := range pc.AllFullId() {
+			pv, err := r.walkColumnRef(fid)
+			if err != nil {
+				return nil, err
+			}
+			partitions = append(partitions, pv)
+		}
+	}
+
+	// ORDER BY expressions → the row-number argument values (the distance
+	// expression for K-NN). Java requires ascending (or unspecified) sort.
+	var args []values.Value
+	if obc, ok := specc.OrderByClause().(*antlrgen.OrderByClauseContext); ok && obc != nil {
+		for _, obe := range obc.AllOrderByExpression() {
+			obec, ok := obe.(*antlrgen.OrderByExpressionContext)
+			if !ok {
+				return nil, &UnsupportedExpressionShapeError{Shape: "malformed ORDER BY expression in OVER clause"}
+			}
+			if occ, ok := obec.OrderClause().(*antlrgen.OrderClauseContext); ok && occ != nil && occ.DESC() != nil {
+				return nil, &UnsupportedExpressionShapeError{
+					Shape: "window function ORDER BY must be ascending (DESC not supported)",
+				}
+			}
+			av, err := r.WalkExpression(obec.Expression())
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, av)
+		}
+	}
+
+	// OPTIONS ef_search = N (HNSW search-quality knob).
+	var efSearch *int
+	if woc, ok := specc.WindowOptionsClause().(*antlrgen.WindowOptionsClauseContext); ok && woc != nil {
+		for _, opt := range woc.AllWindowOption() {
+			optc, ok := opt.(*antlrgen.WindowOptionContext)
+			if !ok || optc.EF_SEARCH() == nil || optc.GetEfSearch() == nil {
+				continue
+			}
+			n, err := strconv.Atoi(optc.GetEfSearch().GetText())
+			if err != nil {
+				return nil, &UnsupportedExpressionShapeError{
+					Shape: fmt.Sprintf("invalid ef_search value %q", optc.GetEfSearch().GetText()),
+				}
+			}
+			efSearch = &n
+		}
+	}
+
+	return values.NewRowNumberValue(partitions, args, efSearch, nil), nil
 }
 
 // scalarFunctionResultType returns the result type of a seed scalar
