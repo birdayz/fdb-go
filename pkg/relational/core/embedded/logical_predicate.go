@@ -3847,22 +3847,28 @@ func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins 
 // scalar subquery's inner aggregate to Value trees. The builder stores group
 // keys as raw (often qualified) column-name strings with no expression context
 // (groupByExprs nil), so resolve each name through the semantic scope rather
-// than walking a parse node.
-func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver, hasJoins bool) {
+// than walking a parse node. An expression key (e.g. GROUP BY o.a + o.b) that
+// fails to resolve is returned as an error — matching the top-level path
+// (upgradeAggregate) — rather than silently falling back to an unresolvable
+// raw FieldValue that would group every row under a null key.
+func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver, hasJoins bool) error {
 	if agg == nil || len(agg.GroupKeys) == 0 {
-		return
+		return nil
 	}
 	keyValues := make([]values.Value, len(agg.GroupKeys))
 	for i, key := range agg.GroupKeys {
 		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
-			if v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i]); err == nil {
-				keyValues[i] = v
-				continue
+			v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i])
+			if err != nil {
+				return err
 			}
+			keyValues[i] = v
+			continue
 		}
 		keyValues[i] = resolveCorrelatedColumnValue(resolver, key, hasJoins)
 	}
 	agg.GroupKeyValues = keyValues
+	return nil
 }
 
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
@@ -3989,6 +3995,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				Message: fmt.Sprintf("correlated scalar subquery: %v", vErr), Cause: vErr,
 			}
 		}
+		// ORDER BY over grouped output (ordering the groups themselves) is not
+		// supported here: the sort would have to resolve its keys against the
+		// post-aggregation row, which this builder does not wire. Reject rather
+		// than silently drop the ORDER BY (which would leave the FirstOrDefault
+		// group choice nondeterministic with no signal). ORDER BY without
+		// GROUP BY (ordering rows before the LIMIT 1) is still supported.
+		if len(sq.orderBy) > 0 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: ORDER BY combined with GROUP BY is not supported",
+			}
+		}
 	}
 
 	// A real aggregate function (COUNT/SUM/MIN/MAX/AVG) is present iff
@@ -4088,7 +4105,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				aggOp.AggregateOperands = []values.Value{resolveCorrelatedColumnValue(resolver, agg.aggArg, len(sq.joins) > 0)}
 			}
 		}
-		resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0)
+		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
+			}
+		}
 		if sq.havingExpr != nil {
 			havingPred, hErr := resolver.WalkPredicate(sq.havingExpr)
 			if hErr != nil {
@@ -4138,7 +4159,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// ORDER BY so the sort runs over the grouped output.
 		if len(sq.groupBy) > 0 {
 			aggOp := logical.NewAggregate(innerOp, sq.groupBy, nil, nil, "")
-			resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0)
+			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
+				}
+			}
 			innerOp = aggOp
 		}
 

@@ -805,6 +805,84 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("expression_group_key", func(t *testing.T) {
+		// An expression GROUP BY key (groupByExprs non-nil) resolves via
+		// WalkExpressionForProjection. Charlie has one order so the single
+		// group is deterministic.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.amount + 1)
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 || rows[0][1] != int64(1) {
+			t.Fatalf("Charlie: want COUNT 1, got %v", rows)
+		}
+	})
+
+	t.Run("expression_group_key_unresolvable_rejected", func(t *testing.T) {
+		// Regression for the silently-swallowed group-key walk error: an
+		// expression GROUP BY key that fails to resolve must error, not fall
+		// back to an unresolvable raw FieldValue that groups every row under a
+		// null key.
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.nosuchcol + 1)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for unresolvable expression GROUP BY key")
+		}
+		if !strings.Contains(err.Error(), "GROUP BY key") && !strings.Contains(err.Error(), "NOSUCHCOL") {
+			t.Errorf("error should reference the failed GROUP BY key, got: %v", err)
+		}
+	})
+
+	t.Run("order_by_with_group_by_rejected", func(t *testing.T) {
+		// ORDER BY combined with GROUP BY (ordering the groups) is rejected
+		// rather than silently dropped — the FirstOrDefault group choice would
+		// otherwise be nondeterministic with no signal.
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for ORDER BY combined with GROUP BY")
+		}
+		if !strings.Contains(err.Error(), "ORDER BY") {
+			t.Errorf("error should mention ORDER BY, got: %v", err)
+		}
+	})
+
+	t.Run("group_by_unqualified_key_in_join", func(t *testing.T) {
+		// Same as group_by_with_join_sum but the GROUP BY key is UNqualified
+		// (`GROUP BY customer_id`, only in orders) under a join. The merged
+		// join rows expose both bare and alias-qualified keys, so the bare
+		// FieldValue resolves — pins that the hasJoins resolution is correct
+		// for unqualified keys too (the case Finding 2 asked to confirm).
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(i.price) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY customer_id)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 100.50},
+			{"Bob", 50.25},
+			{"Charlie", 30.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL, got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
 	t.Run("group_by_with_join_sum", func(t *testing.T) {
 		// GROUP BY + aggregate over a JOINed inner: exercises the join branch
 		// of group-key AND operand resolution (merged rows carry qualified

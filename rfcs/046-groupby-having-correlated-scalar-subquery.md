@@ -161,4 +161,18 @@ three `*_rejected` probes into correctness probes and adding new ones:
 * **Multi-column still rejected**; **EXISTS-inside-HAVING still rejected** (regression pins).
 * **42803** for a non-aggregate non-key projection (`SELECT amount … GROUP BY status`).
 * Determinism: 10× on the single-group cases (must be stable).
+* Expression GROUP BY key resolves (`GROUP BY o.amount + 1`); an unresolvable
+  one (`GROUP BY o.nosuchcol + 1`) **errors** rather than silently grouping
+  under a null key.
 ```
+
+## Known limitations
+
+* **`ORDER BY` combined with `GROUP BY`** in a correlated scalar subquery is
+  **rejected** with a clear error, not silently dropped. Ordering the *groups*
+  (to make the multi-group FirstOrDefault choice deterministic) would require
+  resolving the sort keys against post-aggregation output, which this builder
+  does not wire — out of scope here. `ORDER BY` *without* `GROUP BY` (ordering
+  rows before the `LIMIT 1`) is fully supported. Follow-up if needed.
+* Expression aggregate/group-key arguments that fail to resolve **error**
+  (no silent degradation to `SUM(*)` / null-key grouping).
