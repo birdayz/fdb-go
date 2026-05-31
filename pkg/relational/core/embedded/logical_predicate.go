@@ -4109,28 +4109,30 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				opVal = v
 			}
-			// An expression argument is opaque: it has no bare column name, so
-			// it collapses to FN(*). The HAVING rewrite (rewriteAggregateValue)
-			// instead names an aggregate by the operand's *explain* — COUNT(1),
-			// SUM(A+B), etc. — which our FN(*) alias does not match. Reusing the
-			// FN(*) slot for a differently-named HAVING aggregate therefore
-			// silently mis-routes (the HAVING reads a slot exposed under another
-			// name, or none, yielding NULL and dropping valid groups). Until the
-			// synthesized aggregate names are aligned with the HAVING rewrite
-			// (tracked follow-up), reject any collision involving an
-			// expression-argument aggregate rather than return wrong rows.
-			// COUNT(1)≡COUNT(*) is correct SQL but indistinguishable here, so it
-			// is conservatively rejected too. Bare-column / star aggregates
-			// (COUNT(*), SUM(amount)) name identically in both schemes and are
-			// unaffected: COUNT(*) in both SELECT and HAVING still reuses safely.
+			// An expression/constant argument has no bare column name, so it
+			// collapses to FN(*) here — but the HAVING rewrite
+			// (rewriteAggregateValue) names an aggregate by the operand's
+			// *explain* (COUNT(1), SUM(A+B)), which FN(*) does not match. A
+			// *non-visible* (HAVING-only) such aggregate is therefore
+			// unresolvable and is rejected in the caller loop. The remaining
+			// opaque case here is a VISIBLE expression aggregate (its scalarCol
+			// uses this same FN(*) name, so it resolves). COUNT(<non-null
+			// constant>) is exactly COUNT(*) (counts every row) and shares the
+			// COUNT(*) slot safely, so it is NOT opaque.
 			opaqueExpr := e != nil
+			if opaqueExpr && strings.EqualFold(fn, "COUNT") {
+				if cv, ok := opVal.(*values.ConstantValue); ok && cv.Value != nil {
+					opaqueExpr = false
+				}
+			}
 			if _, dup := aggSeen[name]; dup {
 				_, priorExpr := exprAggNames[name]
 				if opaqueExpr || priorExpr {
-					return "", fmt.Errorf("an expression-argument aggregate (e.g. COUNT(1), SUM(<expr>)) collides with another aggregate named %q; not supported in a correlated scalar subquery", name)
+					return "", fmt.Errorf("an expression-argument aggregate (e.g. SUM(<expr>)) collides with another aggregate named %q; not supported in a correlated scalar subquery", name)
 				}
-				// Identical bare-column / star aggregate referenced twice (e.g.
-				// COUNT(*) in both SELECT and HAVING) — safe to reuse the slot.
+				// Identical bare-column / star aggregate, or COUNT(const)≡COUNT(*),
+				// referenced twice (e.g. COUNT(*) in both SELECT and HAVING) —
+				// safe to reuse the slot.
 				return name, nil
 			}
 			aggSeen[name] = struct{}{}
@@ -4146,6 +4148,20 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			ac := &sq.aggCols[i]
 			if ac.aggFunc == "" {
 				continue // bare group-key projection — handled as scalarCol below
+			}
+			// A HAVING-only (non-visible) aggregate over an expression/constant
+			// argument cannot be resolved: addAgg materialises it under the bare
+			// FN(*) name, but the HAVING-predicate rewrite looks it up by operand
+			// explain (e.g. COUNT(1), SUM(A*3)) -- a name never exposed, so the
+			// predicate reads NULL and silently drops valid groups. Reject it. A
+			// visible expression aggregate is fine (its scalarCol uses the same
+			// FN(*) name); a HAVING COUNT(*)/bare-column aggregate names
+			// identically in both schemes, so COUNT(1) projected + HAVING COUNT(*)
+			// still works.
+			if !ac.visible && ac.aggExpr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: "correlated scalar subquery: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
+				}
 			}
 			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggExpr)
 			if err != nil {

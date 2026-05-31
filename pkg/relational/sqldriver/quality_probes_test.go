@@ -1002,43 +1002,49 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("count_constant_aggregate_collision_rejected", func(t *testing.T) {
-		// An expression/constant-argument aggregate (COUNT(1)) collides on the
-		// synthesized name "COUNT(*)" with a different-form aggregate in the
-		// other clause. COUNT(1) ≡ COUNT(*) in SQL, but the HAVING rewrite names
-		// aggregates by operand explain ("COUNT(1)" vs "COUNT(*)"), so reusing
-		// one slot silently mis-routes (proven: the reverse direction dropped a
-		// valid group to NULL). Until aggregate naming is aligned with the
-		// HAVING rewrite (tracked follow-up), BOTH directions are rejected
-		// fail-safe rather than risk wrong rows.
-		fwd := expectError(t, db, `SELECT name,
+	t.Run("count_constant_projected_having_countstar", func(t *testing.T) {
+		// FORWARD (safe): COUNT(1) projected materialises under the "COUNT(*)"
+		// slot, and HAVING COUNT(*) rewrites to that same "COUNT(*)" name, so it
+		// resolves. COUNT(1) ≡ COUNT(*) (counts every row). Charlie (1 order)
+		// => COUNT=1 > 0 => kept.
+		rows := collectRows(t, db, `SELECT name,
 			(SELECT COUNT(1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
-			FROM customers c`)
-		if fwd == nil {
-			t.Fatal("expected error for COUNT(1) projected + HAVING COUNT(*)")
-		}
-		rev := expectError(t, db, `SELECT name,
-			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(1) > 0)
-			FROM customers c`)
-		if rev == nil {
-			t.Fatal("expected error for COUNT(*) projected + HAVING COUNT(1) (the silent-wrong direction)")
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 || rows[0][1] != int64(1) {
+			t.Fatalf("Charlie: want COUNT 1, got %v", rows)
 		}
 	})
 
-	t.Run("colliding_expression_aggregates_rejected", func(t *testing.T) {
-		// Two DISTINCT expression-argument aggregates (projected SUM(amount*2)
-		// + HAVING SUM(amount*3)) both synthesize the name "SUM(*)". Without a
-		// way to disambiguate them the HAVING would silently read the projected
-		// aggregate and return wrong rows (Alice's SUM(amount*3)=901.5>700 was
-		// dropped to NULL). Reject cleanly instead.
+	t.Run("count_constant_in_having_rejected", func(t *testing.T) {
+		// REVERSE (unsafe): COUNT(*) projected materialises "COUNT(*)", but
+		// HAVING COUNT(1) rewrites to the name "COUNT(1)" (operand explain),
+		// which is never exposed → it would read NULL and drop valid groups.
+		// Reject fail-safe. (This was a silent-wrong before — Charlie, COUNT=1>0,
+		// came back NULL.) Full support needs aggregate naming aligned with the
+		// HAVING rewrite — tracked follow-up.
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(1) > 0)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for COUNT(*) projected + HAVING COUNT(1)")
+		}
+	})
+
+	t.Run("expression_aggregate_in_having_rejected", func(t *testing.T) {
+		// HAVING references a DISTINCT expression-argument aggregate
+		// (projected SUM(amount*2) + HAVING SUM(amount*3)). The HAVING rewrite
+		// names it by operand explain ("SUM(AMOUNT*3)") but the builder
+		// materialises aggregates under the bare FN(*) name, so HAVING's
+		// reference can't resolve — it would silently read the projected
+		// aggregate / NULL (Alice's SUM(amount*3)=901.5>700 was dropped). Reject.
 		err := expectError(t, db, `SELECT name,
 			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 3) > 700)
 			FROM customers c`)
 		if err == nil {
-			t.Fatal("expected error for two distinct expression-argument aggregates colliding on SUM(*)")
+			t.Fatal("expected error for an expression-argument aggregate in HAVING")
 		}
-		if !strings.Contains(err.Error(), "SUM(*)") {
-			t.Errorf("error should name the colliding aggregate, got: %v", err)
+		if !strings.Contains(err.Error(), "expression") {
+			t.Errorf("error should explain the expression-aggregate limitation, got: %v", err)
 		}
 	})
 
