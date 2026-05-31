@@ -190,3 +190,100 @@ three `*_rejected` probes into correctness probes and adding new ones:
   HAVING reference (`SELECT SUM(amount*2) … GROUP BY …`). Closing it = materialise
   names from `rewriteAggregateValue`, keeping a dot-free alias for the single
   visible scalar output. Tracked in TODO.md under item 60.
+
+---
+
+## Addendum: full support for expression/constant-argument aggregates in HAVING (naming alignment)
+
+**Status:** Draft → Implemented (this addendum)
+
+### Problem
+
+The base RFC **rejects** an expression/constant-argument aggregate (`COUNT(1)`,
+`SUM(a*2)`) that meets a *differing* aggregate via `HAVING` — fail-safe, never
+wrong rows, but it refuses valid SQL. The root cause is a naming mismatch:
+
+* `addAgg` materialises each aggregate's result-map slot under the **bare** name
+  `FN(bareArg)` — `COUNT(*)` for a star/constant/expression arg, `SUM(AMOUNT)`
+  for a bare column.
+* The HAVING-predicate rewrite (`rewriteAggregateValue`) instead references an
+  aggregate by `FN(<operand-explain>)` — `COUNT(1)`, `SUM(AMOUNT*3)`.
+
+They coincide for `COUNT(*)` and bare-column aggregates, diverge for
+expression/constant args. So a HAVING reference to a divergent aggregate reads a
+slot that was never materialised → NULL → drops valid groups. The base RFC
+rejects these rather than risk that silent-wrong.
+
+### Scope — single-source inner only; joins keep the base RFC's fail-safe
+
+Torvalds' review surfaced a real hole in a "name everything canonically" approach:
+the canonical name (`SUM(AMOUNT*3)`) carries an operator, so if it is used as the
+`aggText`, `parseAggregateText` builds an **arithmetic** operand and
+`translateAggregate` (`cascades_translator.go:481`) then **refuses to apply** the
+resolver-bound `AggregateOperands` (the `!isArith` guard) — the executor evaluates
+the *parser's* operand instead. For a **single-source** inner that is harmless
+(the parser's bare `FieldValue{AMOUNT}` resolves correctly), but for a **join** the
+parser's bare-column atom does not bind to the right quantifier → wrong value / NULL.
+Fixing that cleanly means touching shared aggregate-translation code (the `!isArith`
+guard) with full top-level-GROUP BY regression coverage — out of scope here.
+
+So this addendum scopes the full support to **single-source** correlated scalar
+subqueries (`len(sq.joins) == 0`), which is where expression/constant aggregates in
+a `HAVING` realistically occur. A correlated scalar subquery whose inner has a
+**join** keeps the base RFC's behaviour unchanged (bare `FN(*)` names; an
+expression/constant aggregate meeting a differing `HAVING` aggregate stays rejected
+fail-safe). That residual is tracked as a further follow-up.
+
+### Fix (single-source) — materialise under the canonical (HAVING-rewrite) name
+
+For a single-source inner, materialise every aggregate under the **same canonical
+name the HAVING rewrite uses**, so a HAVING reference always resolves and distinct
+expressions get distinct slots:
+
+1. `canonicalAggName(fn, opVal)` — the **one** shared canonicaliser, extracted from
+   `rewriteAggregateValue` and called by both, so they cannot drift:
+   `FN(<uppercased ExplainValue(opVal), spaces stripped, one outer-paren pair
+   stripped>)`, with `opVal == nil ⇒ "FN(*)"`. Single-source ⇒ `ExplainValue` is
+   dot-free, so the canonical name is a safe `scalarCol`.
+2. Use it as the aggregate's `aggText` **and** `Alias` (single-source ⇒ dot-free ⇒
+   no `replaceScalarSubqueryRef` mis-parse). `finalizeGroup` keys the result map by
+   both `aggResultName(spec)` and `spec.Alias` (verified), so the HAVING rewrite
+   resolves via the canonical key either direction. `scalarCol` = the visible
+   aggregate's canonical name (unique, dot-free).
+3. **Dedup by canonical name** (identical func+operand ⇒ one slot; distinct
+   expressions ⇒ distinct slots, both materialised).
+4. **Drop the fail-safe rejections for the single-source path** (the
+   `opaqueExpr`/`exprAggNames` collision guard and the non-visible-expression loop
+   guard) — every aggregate now materialises under a HAVING-resolvable name. The
+   guards remain on the **join** path.
+
+`COUNT(DISTINCT 1)` stays rejected on both paths (DISTINCT aggregates are
+unsupported here and `aggDistinct` is not threaded into the slot). Verify the
+canonical aggText still carries `DISTINCT` so `parseAggregateText`'s existing
+DISTINCT rejection fires.
+
+### What this turns from "rejected" into "works" (single-source)
+
+`SELECT COUNT(1) … HAVING COUNT(*)` (both directions), `SELECT SUM(a*2) …
+HAVING SUM(a*3)`, and a HAVING repeating a visible constant aggregate. The
+cases that already worked (bare-column / `COUNT(*)` HAVING, single projected
+expression aggregate, `COUNT(*)` reuse) are unchanged — their canonical name
+equals their bare name, so the materialised slot and scalarCol are identical to
+today. **Join** inners are unchanged from the base RFC (still fail-safe).
+
+### Performance
+
+No new operators, no cost-model change. Same number of aggregate slots (one per
+distinct aggregate the query references); naming is a build-time string change.
+
+### Test plan
+
+Flip the base RFC's single-source `*_rejected` probes to **correctness** probes
+(deterministic single-group customers): `COUNT(1)` + HAVING `COUNT(*)` both
+directions return the count; `SUM(amount*2)` + HAVING `SUM(amount*3)` returns the
+sum for groups whose `SUM(amount*3)` passes. **Keep** `COUNT(DISTINCT 1)` rejected,
+and add a **join** probe (`… orders o JOIN items i … HAVING SUM(i.price*2) …`) that
+asserts the join path *still rejects* fail-safe (the residual). Empirically probe
+each new direction against real FDB **before** asserting (this area produced
+silent-wrongs three times under Codex), and re-run the full shape suite + `just
+test`.

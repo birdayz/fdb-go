@@ -1002,33 +1002,28 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("constant_argument_aggregate_with_having_rejected", func(t *testing.T) {
-		// An expression/constant-argument aggregate (COUNT(1)) materialises under
-		// the bare "COUNT(*)" name, but the HAVING rewrite names by operand
-		// explain ("COUNT(1)"). The two schemes diverge, and trying to share the
-		// COUNT(*) slot repeatedly opened silent-wrong corners (reverse
-		// direction, COUNT(DISTINCT 1), HAVING repeating the visible aggregate),
-		// so ANY COUNT(const)/expression aggregate that meets a differing
-		// aggregate via HAVING is rejected fail-safe. Both directions error.
-		// Full support is a tracked follow-up (align materialised names with the
-		// HAVING rewrite).
-		fwd := expectError(t, db, `SELECT name,
+	t.Run("count_constant_with_having_works", func(t *testing.T) {
+		// Single-source: aggregates now materialise under the canonical name the
+		// HAVING rewrite resolves by, so COUNT(1)≡COUNT(*) works in BOTH
+		// directions (the reverse was a prior silent-wrong). Charlie (1 order)
+		// => COUNT=1 > 0 => kept = 1.
+		fwd := collectRows(t, db, `SELECT name,
 			(SELECT COUNT(1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
-			FROM customers c`)
-		if fwd == nil {
-			t.Fatal("expected error for COUNT(1) projected + HAVING COUNT(*)")
+			FROM customers c WHERE c.id = 3`)
+		if len(fwd) != 1 || fwd[0][1] != int64(1) {
+			t.Fatalf("COUNT(1) + HAVING COUNT(*): want Charlie=1, got %v", fwd)
 		}
-		rev := expectError(t, db, `SELECT name,
+		rev := collectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(1) > 0)
-			FROM customers c`)
-		if rev == nil {
-			t.Fatal("expected error for COUNT(*) projected + HAVING COUNT(1) (was a silent-wrong)")
+			FROM customers c WHERE c.id = 3`)
+		if len(rev) != 1 || rev[0][1] != int64(1) {
+			t.Fatalf("COUNT(*) + HAVING COUNT(1): want Charlie=1, got %v", rev)
 		}
 	})
 
-	t.Run("count_distinct_constant_with_having_rejected", func(t *testing.T) {
+	t.Run("count_distinct_constant_rejected", func(t *testing.T) {
 		// COUNT(DISTINCT 1) is NOT COUNT(*) (it is 1), and DISTINCT aggregates
-		// are unsupported here — must not silently reuse the COUNT(*) slot.
+		// are unsupported here — rejected explicitly, never reused as COUNT(*).
 		err := expectError(t, db, `SELECT name,
 			(SELECT COUNT(DISTINCT 1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
 			FROM customers c`)
@@ -1037,21 +1032,55 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("expression_aggregate_in_having_rejected", func(t *testing.T) {
-		// HAVING references a DISTINCT expression-argument aggregate
-		// (projected SUM(amount*2) + HAVING SUM(amount*3)). The HAVING rewrite
-		// names it by operand explain ("SUM(AMOUNT*3)") but the builder
-		// materialises aggregates under the bare FN(*) name, so HAVING's
-		// reference can't resolve — it would silently read the projected
-		// aggregate / NULL (Alice's SUM(amount*3)=901.5>700 was dropped). Reject.
-		err := expectError(t, db, `SELECT name,
+	t.Run("expression_aggregate_in_having_works", func(t *testing.T) {
+		// Single-source: HAVING references a DIFFERENT expression aggregate than
+		// the projection (SUM(amount*2) projected + HAVING SUM(amount*3)). Both
+		// now materialise under their canonical names, so HAVING resolves the
+		// right slot. HAVING SUM(amount*3) > 700: Alice 901.5>700 keep => 601.00;
+		// Bob 375.75 drop; Charlie 900>700 keep => 600.00; Diana NULL.
+		rows := collectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 3) > 700)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", nil},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL (HAVING SUM(amount*3)>700 filtered), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("join_expression_aggregate_in_having_rejected", func(t *testing.T) {
+		// The deferred residual: over a JOIN, an expression-argument aggregate in
+		// HAVING still can't be resolved (the operand binds to the wrong
+		// quantifier through the parser round-trip), so the join path keeps the
+		// fail-safe rejection. Single-source is fully supported (above); joins are
+		// the tracked follow-up.
+		err := expectError(t, db, `SELECT name,
+			(SELECT SUM(i.price * 2) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(i.price * 3) > 0)
 			FROM customers c`)
 		if err == nil {
-			t.Fatal("expected error for an expression-argument aggregate in HAVING")
-		}
-		if !strings.Contains(err.Error(), "expression") {
-			t.Errorf("error should explain the expression-aggregate limitation, got: %v", err)
+			t.Fatal("expected error for an expression aggregate in HAVING over a join")
 		}
 	})
 

@@ -2058,6 +2058,31 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	return v
 }
 
+// canonicalAggName is the single canonicaliser for an aggregate's result-row
+// column name. Both the HAVING-predicate rewrite (rewriteAggregateValue) and the
+// correlated-scalar-subquery aggregate builder name aggregates through it, so a
+// HAVING reference always resolves against the materialised slot — they cannot
+// drift. funcSymbol is the aggregate function symbol (e.g. "SUM", "COUNT", or
+// the count-star op's "COUNT(*)"); operand is the (already-resolved) argument
+// Value, or nil for a no-operand aggregate. The form mirrors what the executor's
+// aggResultName produces: FN(<uppercased ExplainValue, spaces stripped, one
+// outer-paren pair stripped>), with COUNT(*)/no-operand => "FN(*)".
+func canonicalAggName(funcSymbol string, operand values.Value) string {
+	fn := strings.ToUpper(funcSymbol)
+	if fn == "COUNT(*)" {
+		return "COUNT(*)"
+	}
+	inner := "*"
+	if operand != nil {
+		inner = strings.ToUpper(values.ExplainValue(operand))
+		inner = strings.ReplaceAll(inner, " ", "")
+		if len(inner) > 2 && inner[0] == '(' && inner[len(inner)-1] == ')' {
+			inner = inner[1 : len(inner)-1]
+		}
+	}
+	return fn + "(" + inner + ")"
+}
+
 func rewriteAggregateValue(v values.Value) values.Value {
 	if v == nil {
 		return nil
@@ -2066,23 +2091,8 @@ func rewriteAggregateValue(v values.Value) values.Value {
 	if !ok {
 		return v
 	}
-	var innerText string
-	if av.Operand != nil {
-		innerText = strings.ToUpper(values.ExplainValue(av.Operand))
-		innerText = strings.ReplaceAll(innerText, " ", "")
-		if len(innerText) > 2 && innerText[0] == '(' && innerText[len(innerText)-1] == ')' {
-			innerText = innerText[1 : len(innerText)-1]
-		}
-	} else {
-		innerText = "*"
-	}
-	funcName := strings.ToUpper(av.Op.Symbol())
-	if funcName == "COUNT(*)" {
-		return &values.FieldValue{Field: "COUNT(*)", Typ: values.UnknownType}
-	}
-	name := funcName + "(" + innerText + ")"
 	return &values.FieldValue{
-		Field: name,
+		Field: canonicalAggName(av.Op.Symbol(), av.Operand),
 		Typ:   values.UnknownType,
 	}
 }
@@ -4075,11 +4085,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// arg (`o.amount`) would embed a '.' in "SUM(O.AMOUNT)" that the
 		// join-merge resolver mis-parses as a qualifier separator; the operand
 		// itself is resolved separately so the qualifier still binds.
+		singleSource := len(sq.joins) == 0
 		var aggTexts, aggAliases []string
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
-		exprAggNames := make(map[string]struct{})
-		addAgg := func(fn, arg string, e antlrgen.IExpressionContext) (string, error) {
+		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
+		addAgg := func(fn, arg string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
 			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
@@ -4109,7 +4120,30 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				opVal = v
 			}
-			// An expression/constant argument has no bare column name, so it
+			// DISTINCT aggregates are unsupported here (aggDistinct is not threaded
+			// into the materialised slot, and COUNT(DISTINCT 1) != COUNT(*)). Reject
+			// explicitly rather than rely on a name-prefix check.
+			if distinct {
+				return "", fmt.Errorf("DISTINCT aggregate not supported in a correlated scalar subquery")
+			}
+			if singleSource {
+				// Single-source inner: materialise under the canonical name the
+				// HAVING rewrite resolves by (canonicalAggName, shared with
+				// rewriteAggregateValue). The name is dot-free (safe scalarCol) and
+				// distinct expressions get distinct slots, so a HAVING referencing
+				// any aggregate resolves in either direction; identical func+operand
+				// reuses one slot.
+				cname := canonicalAggName(fn, opVal)
+				if _, dup := aggSeen[cname]; dup {
+					return cname, nil
+				}
+				aggSeen[cname] = struct{}{}
+				aggTexts = append(aggTexts, cname)
+				aggAliases = append(aggAliases, cname)
+				aggOperands = append(aggOperands, opVal)
+				return cname, nil
+			}
+			// Join path: an expression/constant argument has no bare column name, so it
 			// collapses to FN(*) here — but the HAVING rewrite
 			// (rewriteAggregateValue) names an aggregate by the operand's
 			// *explain* (COUNT(1), SUM(A+B)), which FN(*) does not match. Any
@@ -4157,12 +4191,12 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// FN(*) name); a HAVING COUNT(*)/bare-column aggregate names
 			// identically in both schemes, so COUNT(1) projected + HAVING COUNT(*)
 			// still works.
-			if !ac.visible && ac.aggExpr != nil {
+			if !singleSource && !ac.visible && ac.aggExpr != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-					Message: "correlated scalar subquery: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
+					Message: "correlated scalar subquery over a join: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
 				}
 			}
-			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggExpr)
+			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggExpr, ac.aggDistinct)
 			if err != nil {
 				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 					Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
@@ -4174,7 +4208,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
-			name, _ := addAgg("COUNT", "", nil) // -> COUNT(*)
+			name, _ := addAgg("COUNT", "", nil, false) // -> COUNT(*)
 			scalarCol = name
 		}
 		// If the single visible output is a bare group-key projection (e.g.
