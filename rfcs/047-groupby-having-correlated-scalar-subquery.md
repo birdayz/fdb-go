@@ -1,4 +1,4 @@
-# RFC-046: GROUP BY / HAVING in correlated scalar subqueries
+# RFC-047: GROUP BY / HAVING in correlated scalar subqueries
 
 **Status:** Implemented
 **Item:** TODO.md item 60 ("GROUP BY/HAVING in correlated scalar subqueries")
