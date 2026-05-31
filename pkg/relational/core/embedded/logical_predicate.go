@@ -4078,16 +4078,33 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		var aggTexts, aggAliases []string
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
+		exprAggNames := make(map[string]struct{})
 		addAgg := func(fn, arg string, e antlrgen.IExpressionContext) (string, error) {
+			// An expression argument has no bare column name, so it collapses to
+			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
+			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
+			// second would silently overwrite the first — so the HAVING would
+			// read the projected aggregate's value. We cannot disambiguate them
+			// by name, so reject rather than return wrong rows.
 			bareArg := parseColRef(arg).bare()
 			if bareArg == "" {
 				bareArg = "*"
 			}
 			name := strings.ToUpper(fn) + "(" + strings.ToUpper(bareArg) + ")"
-			if _, dup := aggSeen[name]; dup {
+			_, dup := aggSeen[name]
+			if dup {
+				_, priorExpr := exprAggNames[name]
+				if e != nil || priorExpr {
+					return "", fmt.Errorf("distinct expression-argument aggregates both reduce to %q; not supported in a correlated scalar subquery", name)
+				}
+				// Identical bare-column / star aggregate referenced twice (e.g.
+				// COUNT(*) in both SELECT and HAVING) — safe to reuse.
 				return name, nil
 			}
 			aggSeen[name] = struct{}{}
+			if e != nil {
+				exprAggNames[name] = struct{}{}
+			}
 			var opVal values.Value
 			if e != nil {
 				v, err := resolver.WalkExpression(e)

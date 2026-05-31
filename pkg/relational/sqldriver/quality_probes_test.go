@@ -1002,6 +1002,23 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("colliding_expression_aggregates_rejected", func(t *testing.T) {
+		// Two DISTINCT expression-argument aggregates (projected SUM(amount*2)
+		// + HAVING SUM(amount*3)) both synthesize the name "SUM(*)". Without a
+		// way to disambiguate them the HAVING would silently read the projected
+		// aggregate and return wrong rows (Alice's SUM(amount*3)=901.5>700 was
+		// dropped to NULL). Reject cleanly instead.
+		err := expectError(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 3) > 700)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for two distinct expression-argument aggregates colliding on SUM(*)")
+		}
+		if !strings.Contains(err.Error(), "SUM(*)") {
+			t.Errorf("error should name the colliding aggregate, got: %v", err)
+		}
+	})
+
 	t.Run("post_aggregate_expression_rejected", func(t *testing.T) {
 		// Codex delta P2: a post-aggregation expression output (`SUM(x) + 1`)
 		// is a visible aggCol with empty aggFunc + outExpr. It must NOT be
