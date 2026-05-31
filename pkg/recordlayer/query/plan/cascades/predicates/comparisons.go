@@ -238,16 +238,54 @@ type Comparison struct {
 	// TextStrictPrefix is set for TEXT_CONTAINS_ALL_PREFIXES comparisons
 	// (Java's TextContainsAllPrefixesComparison).
 	TextStrictPrefix bool
+
+	// --- DistanceRank fields (Java's DistanceRankValueComparison) ---
+	// Set only for ComparisonDistanceRank* types — the vector K-NN
+	// "top-K by distance" comparison produced from
+	// ROW_NUMBER() OVER (... ORDER BY <distance>(field, q)) {<,<=,=} K.
+	// Operand carries the K (top-K) comparand; QueryVector is the search
+	// vector; EfSearch / IsReturningVectors are the HNSW runtime knobs
+	// threaded from the ROW_NUMBER() OPTIONS clause (nil = index default).
+	QueryVector        values.Value
+	EfSearch           *int
+	IsReturningVectors *bool
+}
+
+// NewDistanceRankComparison builds the vector K-NN distance-rank
+// comparison (Java's Comparisons.DistanceRankValueComparison). typ must be
+// one of the ComparisonDistanceRank* types; comparand is the K (top-K)
+// value and queryVector is the search vector.
+func NewDistanceRankComparison(typ ComparisonType, queryVector, comparand values.Value, efSearch *int, isReturningVectors *bool) Comparison {
+	return Comparison{
+		Type:               typ,
+		Operand:            comparand,
+		QueryVector:        queryVector,
+		EfSearch:           efSearch,
+		IsReturningVectors: isReturningVectors,
+	}
 }
 
 // GetCorrelatedTo returns the set of correlation identifiers referenced
 // by this comparison's RHS operand. Used by ordering-aware rules to
 // match comparison bindings to explode aliases.
 func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	if c.Operand == nil {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	if c.Operand != nil {
+		for k := range values.GetCorrelatedToOfValue(c.Operand) {
+			out[k] = struct{}{}
+		}
+	}
+	// DistanceRank comparisons also carry a query-vector Value, which may
+	// reference a parameter/correlation.
+	if c.QueryVector != nil {
+		for k := range values.GetCorrelatedToOfValue(c.QueryVector) {
+			out[k] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	return values.GetCorrelatedToOfValue(c.Operand)
+	return out
 }
 
 // NewLiteralComparison is the common-case constructor for a binary
