@@ -132,17 +132,17 @@ func TestVectorPlan_UnsupportedQualifyErrors(t *testing.T) {
 	}
 }
 
-// TestVectorPlan_PartitionedRequiresFullPrefix pins codex Finding 1: a
-// partitioned vector index must not match unless the FULL partition equality
-// prefix is bound. The HNSW graph is per-partition, so a partial prefix can't
-// locate the graph. The dangerous case is a MULTI-COLUMN partition with only the
-// leading column bound: the DistanceRank is nominally consumed into the
-// (truncated) prefix, so it isn't left as a residual and escapes the index-only
-// residual guard — and before the fix the planner chose a vector scan with a nil
-// query vector (`prefix=[=, *], rank<=` with no K) that the executor later
-// rejects. With the fix the match is refused at the binding gate and the query
-// is cleanly unplannable. (The single-column / WHERE-less case was already caught
-// by the residual guard; this multi-column case is the one that slipped through.)
+// TestVectorPlan_PartitionedRequiresFullPrefix pins codex Finding 1 + a
+// documented Go divergence (see DIVERGENCES.md "single-partition vector scan").
+// Java ALLOWS a partial partition prefix — its VectorIndexMaintainer fans out
+// over the distinct partitions (skip-scan + flatMap). Go's executor is
+// single-partition, so until the multi-partition scan is ported (TODO 9.5) a
+// partial prefix can't be executed: the binding gate refuses it, and the query
+// is cleanly UNPLANNABLE rather than producing a nil-query-vector plan (the bug
+// codex found). The sentinel case is a MULTI-COLUMN partition with only the
+// leading column bound: the DistanceRank is consumed into the truncated prefix
+// so it escapes the index-only residual guard, and before the fix the planner
+// chose a vector scan with a nil query vector (`prefix=[=, *], rank<=`, no K).
 func TestVectorPlan_PartitionedRequiresFullPrefix(t *testing.T) {
 	t.Parallel()
 	schema := `CREATE TABLE docs (

@@ -205,6 +205,14 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | Value type proto serialization | Wire format | Value serialization infrastructure |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
 
+### Vector scan is single-partition (Java fans out over partitions) — TODO 9.5
+
+**Java:** `VectorIndexMaintainer.scan` (`indexes/VectorIndexMaintainer.java` ~134-150) handles a partition prefix of ANY length. When `prefixSize > 0` it does `flatMapPipelined(prefixSkipScan(prefixSize, range), (prefixTuple, …) -> scanSinglePartition(prefixTuple, …))` — a skip-scan that enumerates the *distinct full partition prefixes* within the bound (possibly partial) range, runs one HNSW search per partition, and merges top-K across them. So a `PARTITION BY (zone, region)` index queried with only `WHERE zone = 'z1'` does a multi-partition K-NN over all regions in `z1`. The planner reflects this: only the index-only distance placeholder is required for binding; partition placeholders are not (`VectorIndexExpansionVisitor`).
+
+**Go:** `scanByDistanceWithParams` (`vector_index_maintainer.go`) is single-partition — one `getStorageForPrefix(prefix)` → one HNSW graph → one `graph.Search`. No prefix skip-scan, no flatMap, no cross-partition top-K merge. A partial partition prefix would address a non-existent subspace (empty/wrong rows) and the positional `ComputeBoundParameterPrefixMap` truncates before the distance alias (nil query vector). Until the multi-partition scan is ported, `VectorIndexScanMatchCandidate` requires the FULL partition prefix for binding, so a partial-prefix vector query is cleanly **unplannable** rather than wrong. Pinned by `TestVectorPlan_PartitionedRequiresFullPrefix`.
+
+**To close (TODO 9.5):** port the prefix skip-scan + per-partition HNSW search + cross-partition top-K merge (the flatMap fan-out) into the Go maintainer, then drop the partition-aliases-required-for-binding guard so the planner admits a partial prefix as in Java.
+
 ### Covering Index Scan — RESOLVED via ImplementProjectionRule
 
 **Status:** Covering index works end-to-end for SQL via `ImplementProjectionRule` (EXPLORE phase). When all projected FieldValues can push through the Fetch's TranslateValueFunction, the Fetch is eliminated. PK columns + all index key columns are coverable. Verified with planner harness tests: `CoveringCompositeIndex`, `CoveringCompositeIndexPKAndIndexCols`, `NonCoveringNeedsExtraColumn`. The FDB stress test shows 63x speedup for PK-only projections over index scans.

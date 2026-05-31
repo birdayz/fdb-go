@@ -103,14 +103,19 @@ func NewVectorIndexScanMatchCandidate(
 	distanceAlias := values.UniqueCorrelationIdentifier()
 	params = append(params, distanceAlias)
 
-	// The distance alias AND every partition-key column must be bound before this
-	// match is admitted. The HNSW graph is per-partition, so a partitioned vector
-	// scan needs the FULL partition equality prefix. Requiring only the distance
-	// alias let a query that omits a partition column (a WHERE-less QUALIFY, or
-	// only the first of a multi-column partition) match anyway:
-	// ComputeBoundParameterPrefixMap then truncates at the first unbound partition
-	// param — before the distance alias — and ToScanPlan emits a
-	// RecordQueryVectorIndexPlan with a nil query vector that the executor rejects.
+	// DIVERGENCE FROM JAVA — a Go executor limitation, NOT Java semantics. Java
+	// does NOT require the partition columns for binding (only the index-only
+	// distance placeholder is required, per VectorIndexExpansionVisitor); a partial
+	// partition prefix is legal because Java's VectorIndexMaintainer.scan fans out
+	// — flatMapPipelined over a prefix skip-scan of the distinct full partition
+	// prefixes, one HNSW search per partition, top-K merged (VectorIndexMaintainer.java
+	// ~134-150). Go's executor is single-partition: scanByDistanceWithParams does one
+	// getStorageForPrefix → one graph → one Search, with no skip-scan/merge. So a
+	// partial prefix can't be executed; left unbound it would either truncate the
+	// positional prefix map before the distance alias (nil query vector) or scan a
+	// non-existent subspace (wrong/empty rows). Until the multi-partition scan is
+	// ported (TODO 9.5 / DIVERGENCES.md), require the full partition prefix so a
+	// partial-prefix vector query is cleanly UNPLANNABLE rather than wrong.
 	requiredForBinding := map[values.CorrelationIdentifier]struct{}{distanceAlias: {}}
 	for _, a := range ordering {
 		requiredForBinding[a] = struct{}{}
