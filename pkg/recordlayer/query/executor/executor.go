@@ -476,6 +476,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 	var lowItem, highItem any
 	hasLow := false
 	hasHigh := false
+	lowIsNullBoundary := false // low bound is the NULL exclusion (prefix + null, exclusive)
 
 	if len(prefix) == 0 {
 		lowEndpoint = recordlayer.EndpointTypeTreeStart
@@ -503,22 +504,48 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			highItem = comparand
 			highEndpoint = recordlayer.EndpointTypeRangeExclusive
 			hasHigh = true
+			// An upper-only range must EXCLUDE NULL index entries: NULL sorts
+			// first in the index, and `col < v` is UNKNOWN (not TRUE) on NULL,
+			// so those rows must not appear. Mirror Java
+			// ScanComparisons.InequalityRangeCombiner: when no low bound is set,
+			// pin the low to the NULL boundary (lowItem stays nil) RANGE_EXCLUSIVE,
+			// which strinc's past the null prefix and skips every null entry.
+			if !hasLow {
+				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				lowIsNullBoundary = true
+				hasLow = true
+			}
 		case predicates.ComparisonLessThanOrEq:
 			highItem = comparand
 			highEndpoint = recordlayer.EndpointTypeRangeInclusive
 			hasHigh = true
-		case predicates.ComparisonIsNotNull:
 			if !hasLow {
 				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				lowIsNullBoundary = true
+				hasLow = true
+			}
+		case predicates.ComparisonIsNotNull:
+			// IS NOT NULL is the pure NULL-boundary range: everything strictly
+			// after the null entries (Java: lowItem null, RANGE_EXCLUSIVE).
+			if !hasLow {
+				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				lowIsNullBoundary = true
 				hasLow = true
 			}
 		}
 	}
 
+	// Build the endpoint tuples, mirroring Java's buildEndpointTuple:
+	//   hasX  -> prefix + [item]; item==nil with a null boundary appends the
+	//            NULL element (a low of (…,null) RANGE_EXCLUSIVE skips nulls).
+	//   !hasX -> the prefix itself (if any), else unbounded (TREE_START/END).
 	var low, high tuple.Tuple
-	if hasLow && lowItem != nil {
+	switch {
+	case hasLow && lowItem != nil:
 		low = append(append(tuple.Tuple{}, prefix...), lowItem)
-	} else if len(prefix) > 0 {
+	case hasLow && lowIsNullBoundary:
+		low = append(append(tuple.Tuple{}, prefix...), nil)
+	case len(prefix) > 0:
 		low = prefix
 	}
 	if hasHigh && highItem != nil {
