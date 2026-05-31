@@ -1002,31 +1002,38 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("count_constant_projected_having_countstar", func(t *testing.T) {
-		// FORWARD (safe): COUNT(1) projected materialises under the "COUNT(*)"
-		// slot, and HAVING COUNT(*) rewrites to that same "COUNT(*)" name, so it
-		// resolves. COUNT(1) ≡ COUNT(*) (counts every row). Charlie (1 order)
-		// => COUNT=1 > 0 => kept.
-		rows := collectRows(t, db, `SELECT name,
+	t.Run("constant_argument_aggregate_with_having_rejected", func(t *testing.T) {
+		// An expression/constant-argument aggregate (COUNT(1)) materialises under
+		// the bare "COUNT(*)" name, but the HAVING rewrite names by operand
+		// explain ("COUNT(1)"). The two schemes diverge, and trying to share the
+		// COUNT(*) slot repeatedly opened silent-wrong corners (reverse
+		// direction, COUNT(DISTINCT 1), HAVING repeating the visible aggregate),
+		// so ANY COUNT(const)/expression aggregate that meets a differing
+		// aggregate via HAVING is rejected fail-safe. Both directions error.
+		// Full support is a tracked follow-up (align materialised names with the
+		// HAVING rewrite).
+		fwd := expectError(t, db, `SELECT name,
 			(SELECT COUNT(1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
-			FROM customers c WHERE c.id = 3`)
-		if len(rows) != 1 || rows[0][1] != int64(1) {
-			t.Fatalf("Charlie: want COUNT 1, got %v", rows)
+			FROM customers c`)
+		if fwd == nil {
+			t.Fatal("expected error for COUNT(1) projected + HAVING COUNT(*)")
+		}
+		rev := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(1) > 0)
+			FROM customers c`)
+		if rev == nil {
+			t.Fatal("expected error for COUNT(*) projected + HAVING COUNT(1) (was a silent-wrong)")
 		}
 	})
 
-	t.Run("count_constant_in_having_rejected", func(t *testing.T) {
-		// REVERSE (unsafe): COUNT(*) projected materialises "COUNT(*)", but
-		// HAVING COUNT(1) rewrites to the name "COUNT(1)" (operand explain),
-		// which is never exposed → it would read NULL and drop valid groups.
-		// Reject fail-safe. (This was a silent-wrong before — Charlie, COUNT=1>0,
-		// came back NULL.) Full support needs aggregate naming aligned with the
-		// HAVING rewrite — tracked follow-up.
+	t.Run("count_distinct_constant_with_having_rejected", func(t *testing.T) {
+		// COUNT(DISTINCT 1) is NOT COUNT(*) (it is 1), and DISTINCT aggregates
+		// are unsupported here — must not silently reuse the COUNT(*) slot.
 		err := expectError(t, db, `SELECT name,
-			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(1) > 0)
+			(SELECT COUNT(DISTINCT 1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
 			FROM customers c`)
 		if err == nil {
-			t.Fatal("expected error for COUNT(*) projected + HAVING COUNT(1)")
+			t.Fatal("expected error for COUNT(DISTINCT 1) + HAVING COUNT(*)")
 		}
 	})
 

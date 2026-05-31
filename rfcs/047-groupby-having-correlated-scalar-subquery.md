@@ -176,16 +176,17 @@ three `*_rejected` probes into correctness probes and adding new ones:
   rows before the `LIMIT 1`) is fully supported. Follow-up if needed.
 * Expression aggregate/group-key arguments that fail to resolve **error**
   (no silent degradation to `SUM(*)` / null-key grouping).
-* **HAVING that references an expression/constant-argument aggregate** is
-  **rejected** fail-safe (Codex catch). Aggregate slots are materialised under
-  the *bare* operand name (`FN(*)` for an expression/constant arg), but the
-  HAVING rewrite (`rewriteAggregateValue`) looks aggregates up by operand
-  *explain* (`COUNT(1)`, `SUM(A*3)`); where they diverge the HAVING reference
-  resolves to NULL and drops valid groups. So a HAVING *referencing* such an
-  aggregate is rejected: `SELECT COUNT(*) … HAVING COUNT(1)`, `SELECT SUM(a*2)
-  … HAVING SUM(a*3)`. What works: HAVING on `COUNT(*)`/bare-column aggregates
-  (`SELECT SUM(amount) … HAVING COUNT(*) > 1`), and a *projected*
-  expression/constant aggregate (`SELECT COUNT(1) … HAVING COUNT(*)` —
-  `COUNT(1)`≡`COUNT(*)`, same `FN(*)` slot). Closing it = align the
-  materialised names with `rewriteAggregateValue`, keeping a dot-free alias for
-  the single visible scalar output. Tracked in TODO.md under item 60.
+* **Expression/constant-argument aggregate meeting a *differing* aggregate via
+  HAVING** is **rejected** fail-safe (Codex catch). Aggregate slots are
+  materialised under the *bare* operand name (`FN(*)` for an expression/constant
+  arg), but the HAVING rewrite (`rewriteAggregateValue`) looks aggregates up by
+  operand *explain* (`COUNT(1)`, `SUM(A*3)`). Sharing a slot across the two
+  schemes repeatedly produced silent-wrong results (reverse `COUNT(*)`/`COUNT(1)`,
+  `COUNT(DISTINCT 1)`, a HAVING repeating the visible constant aggregate), so the
+  stable rule rejects: `SELECT COUNT(1) … HAVING COUNT(*)` (both directions),
+  `SELECT SUM(a*2) … HAVING SUM(a*3)`, `COUNT(DISTINCT 1)`. What works (no scheme
+  divergence): HAVING on `COUNT(*)`/bare-column aggregates (`SELECT SUM(amount) …
+  HAVING COUNT(*) > 1`) and a projected expression aggregate with no differing
+  HAVING reference (`SELECT SUM(amount*2) … GROUP BY …`). Closing it = materialise
+  names from `rewriteAggregateValue`, keeping a dot-free alias for the single
+  visible scalar output. Tracked in TODO.md under item 60.

@@ -4112,19 +4112,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// An expression/constant argument has no bare column name, so it
 			// collapses to FN(*) here — but the HAVING rewrite
 			// (rewriteAggregateValue) names an aggregate by the operand's
-			// *explain* (COUNT(1), SUM(A+B)), which FN(*) does not match. A
-			// *non-visible* (HAVING-only) such aggregate is therefore
-			// unresolvable and is rejected in the caller loop. The remaining
-			// opaque case here is a VISIBLE expression aggregate (its scalarCol
-			// uses this same FN(*) name, so it resolves). COUNT(<non-null
-			// constant>) is exactly COUNT(*) (counts every row) and shares the
-			// COUNT(*) slot safely, so it is NOT opaque.
+			// *explain* (COUNT(1), SUM(A+B)), which FN(*) does not match. Any
+			// such aggregate is therefore "opaque": it cannot be safely shared
+			// with, or referenced by, a differently-named aggregate. We do NOT
+			// special-case COUNT(<const>)≡COUNT(*): although equal in value, the
+			// reuse repeatedly opened silent-wrong corners (HAVING COUNT(*) vs a
+			// projected COUNT(1), COUNT(DISTINCT 1), a HAVING that repeats the
+			// visible constant aggregate) because the two name schemes still
+			// diverge. Treat every expression/constant arg as opaque and reject
+			// collisions fail-safe; full support needs the materialised names
+			// aligned with the HAVING rewrite (tracked follow-up).
 			opaqueExpr := e != nil
-			if opaqueExpr && strings.EqualFold(fn, "COUNT") {
-				if cv, ok := opVal.(*values.ConstantValue); ok && cv.Value != nil {
-					opaqueExpr = false
-				}
-			}
 			if _, dup := aggSeen[name]; dup {
 				_, priorExpr := exprAggNames[name]
 				if opaqueExpr || priorExpr {
