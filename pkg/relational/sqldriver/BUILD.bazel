@@ -51,6 +51,7 @@ go_test(
         "twotable_order_invariant_test.go",
         "vector_multipartition_e2e_fdb_test.go",
         "vector_search_e2e_fdb_test.go",
+        "w2_metamorphic_test.go",
     ],
     embed = [":sqldriver"],
     deps = [
