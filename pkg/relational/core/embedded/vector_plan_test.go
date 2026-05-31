@@ -78,24 +78,40 @@ func TestVectorPlan_UnsupportedQualifyErrors(t *testing.T) {
 	cases := []struct {
 		name string
 		sql  string
+		// wantMsg, when set, pins the specific error text. The "> K" and "= K"
+		// cases are the only ones uniquely caught by predicateHasUnloweredRowNumber
+		// (the transform leaves an un-lowered RowNumberValue): asserting the
+		// message makes that check a real sentinel — without it the query still
+		// errors, but with a different (UnplannableIndexOnlyResidual) message.
+		wantMsg string
 	}{
 		{
 			"DESC window order",
 			`SELECT doc_id FROM docs WHERE zone = 'z1'
 				QUALIFY ROW_NUMBER() OVER (PARTITION BY zone
 					ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0]) DESC) <= 3`,
+			"",
 		},
 		{
 			"RANK not supported",
 			`SELECT doc_id FROM docs WHERE zone = 'z1'
 				QUALIFY RANK() OVER (PARTITION BY zone
 					ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) <= 3`,
+			"",
 		},
 		{
 			"equals operator rejected",
 			`SELECT doc_id FROM docs WHERE zone = 'z1'
 				QUALIFY ROW_NUMBER() OVER (PARTITION BY zone
 					ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) = 3`,
+			"unsupported window function in QUALIFY",
+		},
+		{
+			"greater-than operator rejected",
+			`SELECT doc_id FROM docs WHERE zone = 'z1'
+				QUALIFY ROW_NUMBER() OVER (PARTITION BY zone
+					ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) > 3`,
+			"unsupported window function in QUALIFY",
 		},
 	}
 	for _, tc := range cases {
@@ -105,6 +121,9 @@ func TestVectorPlan_UnsupportedQualifyErrors(t *testing.T) {
 			explain, err := PlanQueryForTest(tc.sql, schema, nil)
 			if err == nil {
 				t.Fatalf("unsupported QUALIFY (%s) did not error; plan:\n%s", tc.name, explain)
+			}
+			if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("unsupported QUALIFY (%s) error = %q, want it to contain %q", tc.name, err, tc.wantMsg)
 			}
 			if strings.Contains(explain, "VectorIndexScan") {
 				t.Fatalf("unsupported QUALIFY (%s) produced a vector scan:\n%s", tc.name, explain)
