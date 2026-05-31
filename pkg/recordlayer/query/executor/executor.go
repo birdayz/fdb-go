@@ -486,6 +486,11 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		highEndpoint = recordlayer.EndpointTypeRangeInclusive
 	}
 
+	// Java's InequalityRangeCombiner keeps the *tightest* of multiple low (or
+	// high) comparisons via Comparisons.compare(); here a later >/>= simply
+	// wins last. That is harmless because upstream ComparisonRange merging has
+	// already combined comparisons on the same column into one tightest range
+	// before we get here, so this loop never sees two competing low bounds.
 	for _, ineq := range nextRange.GetInequalityComparisons() {
 		var comparand any
 		if ineq.Operand != nil {

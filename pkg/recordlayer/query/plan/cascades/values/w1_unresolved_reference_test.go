@@ -12,7 +12,12 @@ import (
 //
 // These tests pin the mechanism in isolation (FieldValue.Evaluate); the
 // end-to-end proof that no real query trips it lives in the sqldriver FDB
-// suite (TestFDB_W1_*).
+// suite (which arms the invariant binary-wide in TestMain).
+//
+// NOTE: these tests deliberately do NOT call t.Parallel() — each installs a
+// process-global ReportUnresolvedReference hook, so running them concurrently
+// would race on that global. They are fast, pure (no FDB), and serial by
+// design; do not "fix" them by adding t.Parallel().
 
 // withReportHook installs a recording ReportUnresolvedReference hook for the
 // duration of the test and returns the slice that captures missing names.
