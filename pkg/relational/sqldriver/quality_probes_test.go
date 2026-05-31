@@ -110,6 +110,47 @@ func collectRows(t *testing.T, db *sql.DB, query string) [][]any {
 	return result
 }
 
+// assertScalarAggRows checks a (name, scalar-aggregate-value) result set in
+// order. A want.val of nil asserts SQL NULL; a float64 asserts an exact
+// double; any other type is compared with reflect.DeepEqual. Used by the
+// correlated-scalar-subquery probes to keep the per-row plumbing out of the
+// test bodies.
+func assertScalarAggRows(t *testing.T, rows [][]any, want []struct {
+	name string
+	val  any
+},
+) {
+	t.Helper()
+	if len(rows) != len(want) {
+		t.Fatalf("row count: want %d, got %d (%v)", len(want), len(rows), rows)
+	}
+	for i, w := range want {
+		if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+			t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+		}
+		if w.val == nil {
+			if rows[i][1] != nil {
+				t.Errorf("%s: want NULL, got %v (%T)", w.name, rows[i][1], rows[i][1])
+			}
+			continue
+		}
+		switch want := w.val.(type) {
+		case float64:
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: value not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != want {
+				t.Errorf("%s: want %v, got %v", w.name, want, got)
+			}
+		default:
+			if !reflect.DeepEqual(rows[i][1], w.val) {
+				t.Errorf("%s: want %v (%T), got %v (%T)", w.name, w.val, w.val, rows[i][1], rows[i][1])
+			}
+		}
+	}
+}
+
 func expectError(t *testing.T, db *sql.DB, query string) error {
 	t.Helper()
 	ctx := context.Background()
@@ -1068,6 +1109,50 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
 			}
 		}
+	})
+
+	t.Run("decimal_literal_aggregate_arg_in_having", func(t *testing.T) {
+		// RFC-048 Exhibit-A (Codex): a decimal-literal factor (amount*1.5)
+		// canonicalises to "SUM(AMOUNT*1.5)" — a DOT in the materialised slot
+		// name. If the dot is mis-parsed as a qualifier separator anywhere on
+		// the producer/consumer path, the HAVING reference resolves to NULL and
+		// EVERY group is silently dropped. Correct: HAVING SUM(amount*1.5)>400
+		// keeps Alice (450.75) and Charlie (450.00); Bob (187.875) and Diana
+		// (NULL) drop. Projected SUM(amount*2): Alice 601.00, Charlie 600.00.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 1.5) > 400)
+			FROM customers c ORDER BY name`)
+		assertScalarAggRows(t, rows, []struct {
+			name string
+			val  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", nil},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		})
+	})
+
+	t.Run("nested_arithmetic_aggregate_arg_in_having", func(t *testing.T) {
+		// RFC-048 Exhibit-A (Codex): a nested-arithmetic argument
+		// SUM((amount+10)*2) round-trips through parse->explain. If the
+		// materialised slot name and the HAVING-rewrite name disagree (lossy
+		// reparse), the HAVING reads NULL and silently drops groups. Correct:
+		// HAVING SUM((amount+10)*2)>600 keeps Alice (641.00) and Charlie
+		// (620.00); Bob (290.50) and Diana (NULL) drop. Projected SUM(amount*2):
+		// Alice 601.00, Charlie 600.00.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM((o.amount + 10) * 2) > 600)
+			FROM customers c ORDER BY name`)
+		assertScalarAggRows(t, rows, []struct {
+			name string
+			val  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", nil},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		})
 	})
 
 	t.Run("join_expression_aggregate_in_having_rejected", func(t *testing.T) {
