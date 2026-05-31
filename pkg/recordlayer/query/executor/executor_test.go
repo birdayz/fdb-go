@@ -1920,6 +1920,36 @@ func TestScanComparisons_LessThanOrEqNoPrefix(t *testing.T) {
 	}
 }
 
+func TestScanComparisons_NullComparand_EmptyRange(t *testing.T) {
+	t.Parallel()
+	// `a < NULL` (and >, >=, <=) is UNKNOWN for every row (SQL 3VL) →
+	// unsatisfiable → empty result. Must be an empty range (begin == end),
+	// NOT the null-boundary low with an unbounded high (which would strinc to
+	// an inverted FDB range begin > end). Regression for the Codex P2 finding.
+	for _, typ := range []predicates.ComparisonType{
+		predicates.ComparisonLessThan,
+		predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan,
+		predicates.ComparisonGreaterThanEq,
+	} {
+		tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+			ineqRange(predicates.Comparison{Type: typ, Operand: &values.NullValue{}}),
+		}, nil)
+		if err != nil {
+			t.Fatalf("%v: unexpected error: %v", typ, err)
+		}
+		// Empty range: Low == High with inclusive/exclusive endpoints → begin == end.
+		if len(tr.Low) != len(tr.High) {
+			t.Fatalf("%v: expected empty range (Low==High), got Low=%v High=%v", typ, tr.Low, tr.High)
+		}
+		if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive ||
+			tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
+			t.Fatalf("%v: expected empty range endpoints (Inclusive/Exclusive on equal bounds), got low=%d high=%d",
+				typ, tr.LowEndpoint, tr.HighEndpoint)
+		}
+	}
+}
+
 func TestScanComparisons_BetweenGTAndLT(t *testing.T) {
 	t.Parallel()
 	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{

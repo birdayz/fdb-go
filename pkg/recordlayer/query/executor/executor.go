@@ -496,6 +496,25 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		if ineq.Operand != nil {
 			comparand = ineq.Operand.Evaluate(binder)
 		}
+		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
+		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
+		// fall through to the endpoint logic: a `< NULL` would otherwise install
+		// the NULL low boundary with a nil high, producing an inverted FDB range
+		// (begin strinc(prefix,NULL) > end prefix). Return an explicit empty
+		// range (begin == end). IS NOT NULL has no operand and is the legitimate
+		// null-boundary case, handled below.
+		switch ineq.Type {
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+			predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			if comparand == nil {
+				return recordlayer.TupleRange{
+					Low:          prefix,
+					High:         prefix,
+					LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+					HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
+				}, nil
+			}
+		}
 		switch ineq.Type {
 		case predicates.ComparisonGreaterThan:
 			lowItem = comparand

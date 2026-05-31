@@ -163,6 +163,42 @@ func TestFDB_W3_5_PlanDiversity_IndexedVsFullScan(t *testing.T) {
 	}
 }
 
+func TestFDB_W3_5_NullParamRangeIsEmpty(t *testing.T) {
+	t.Parallel()
+	const seed = 0xd1305
+	db := pdDB(t, true, seed) // indexed: `a < ?` plans to an index range scan
+	ctx := context.Background()
+
+	// An ordered inequality against a NULL parameter is UNKNOWN for every row
+	// (SQL 3VL) → empty result. The index range builder must produce an empty
+	// range, not the null-boundary low with an unbounded high (which strinc'd
+	// to an inverted FDB range begin > end). Regression for the Codex P2
+	// finding: pre-fix this errored or returned wrong rows on the indexed plan.
+	for _, q := range []string{
+		"SELECT id FROM t WHERE a < ?",
+		"SELECT id FROM t WHERE a <= ?",
+		"SELECT id FROM t WHERE a > ?",
+		"SELECT id FROM t WHERE a >= ?",
+	} {
+		rows, err := db.QueryContext(ctx, q, nil)
+		if err != nil {
+			t.Fatalf("%q with NULL param: %v (must be empty, not an inverted-range error)", q, err)
+		}
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		closeErr := rows.Err()
+		rows.Close()
+		if closeErr != nil {
+			t.Fatalf("%q with NULL param, rows.Err: %v", q, closeErr)
+		}
+		if n != 0 {
+			t.Errorf("%q with NULL param: want 0 rows (UNKNOWN for all), got %d", q, n)
+		}
+	}
+}
+
 func TestFDB_W3_5_PlanDiversity_PlansActuallyDiffer(t *testing.T) {
 	t.Parallel()
 	const seed = 0xd1304
