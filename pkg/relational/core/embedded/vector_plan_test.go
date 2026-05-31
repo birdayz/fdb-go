@@ -36,3 +36,25 @@ func TestVectorPlan_QualifyPlansToVectorScan(t *testing.T) {
 		t.Errorf("vector scan is not BY_DISTANCE:\n%s", explain)
 	}
 }
+
+// TestVectorPlan_PartitionOnlyDoesNotMatchVector covers the required-for-binding
+// gate (Graefe/Torvalds): a plain WHERE on the partition column WITHOUT a QUALIFY
+// distance-rank must NOT match the vector candidate (the index-only distance
+// alias is unbound), so it must plan to a non-vector scan — never a vector scan
+// with a nil query vector.
+func TestVectorPlan_PartitionOnlyDoesNotMatchVector(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			zone string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	explain, err := PlanQueryForTest("SELECT doc_id FROM docs WHERE zone = 'z1'", schema, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if strings.Contains(explain, "VectorIndexScan") {
+		t.Fatalf("plain WHERE matched the vector candidate (distance unbound):\n%s", explain)
+	}
+}

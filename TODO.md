@@ -215,28 +215,26 @@ and a `DistanceRank` comparison stub all exist. The SQL **grammar** is complete:
 
 **The gap = the relational front-end + Cascades wiring** (the "just not relational bits"):
 
-**Status (RFC-045 accepted, Graefe+Torvalds ACK on the foundation):** 9.1 + 9.2 + 9.3c
-landed, tested, green. The SQL front-end produces the correct DistanceRank predicate and
-a directly-constructed vector plan executes a correct BY_DISTANCE KNN scan against FDB
-(also fixed a latent PK-extraction bug). **Remaining = 9.3a/b match-wiring** (so the
-planner PICKS the vector scan) + **9.4 e2e**. Graefe-confirmed design: custom
-`ExpandVectorIndex` (partition FieldValue placeholders + one metric-specific
-`DistanceRowNumberValue` distance placeholder via `createDistanceValuePlaceholder`);
-extend `valuesMatchColumn` to alias-invariantly match the distance placeholder; treat
-`ComparisonDistanceRank*` as equality-shaped in `ComparisonRange.Merge`; `ToScanPlan`
-buckets the DistanceRank into the rank slot + partition equalities into the prefix.
+**Status: DONE (RFC-045, Graefe+Torvalds ACK).** 9.1–9.4 all landed, tested, green. The full
+SQL vector K-NN read path works end-to-end: a partitioned HNSW index +
+`SELECT … WHERE <partition> QUALIFY ROW_NUMBER() OVER (PARTITION BY … ORDER BY
+euclidean_distance(vec, q)) <= K` plans to a BY_DISTANCE vector index scan and executes
+against real FDB returning the k nearest records (`TestFDB_VectorSearch_QualifyE2E`). Also
+fixed a latent vector-scan PK-extraction bug. **Known follow-up:** an *unpartitioned* vector
+index + WHERE-less QUALIFY does not yet match the candidate (Java's vector search is always
+partitioned) — fails to plan rather than returning wrong results; revisit if needed.
 
 - [x] **9.1 DDL: `CREATE VECTOR INDEX … USING HNSW … PARTITION BY … OPTIONS(…)`** → metadata vector
   `Index` (type `vector`, HNSW options). No `vectorIndexDefinition` handler exists in `pkg/relational`
   today. Wire-compat: the index metadata + on-disk HNSW format must match Java byte-for-byte (core
   already does; DDL must produce the same `Index` proto + options).
-- [ ] **9.2 Query front-end: `QUALIFY ROW_NUMBER() OVER (PARTITION BY … ORDER BY <distance>(vec, q)) <= K`.**
+- [x] **9.2 Query front-end: `QUALIFY ROW_NUMBER() OVER (PARTITION BY … ORDER BY <distance>(vec, q)) <= K`.** Done — walk.go builds DistanceValue + RowNumberValue; predicates.TransformRowNumberDistanceRankMaybe ports transformComparisonMaybe; QUALIFY lowers to a DistanceRank ComparisonPredicate.
   No `qualifyClause` handling and no window-function→Value visitor exist (`grep QualifyClause` → 0 hits;
   `extractFunctionNameFromCall` only returns the *name* string). Build the distance-specialized
   `RowNumberValue` (Euclidean / Cosine / Dot-product / EuclideanSquare) from the parse tree, fleshing
   out the seed value classes; port `RowNumberValue.transformComparisonMaybe` so `ROW_NUMBER() <= K`
   rewrites into a `DistanceRankValueComparison(queryVector, k, efSearch, isReturningVectors)`.
-- [ ] **9.3 Cascades wiring + vector physical plan.** Three pieces (Torvalds catch — not a single
+- [x] **9.3 Cascades wiring + vector physical plan.** Done — (9.3a) tryVectorIndexCandidate enumerates the candidate + ExpandVectorIndex builds the distance placeholder + valuesMatchColumn matches it; (9.3b) ToScanPlan splits partition prefix from the DistanceRank binding; (9.3c) RecordQueryVectorIndexPlan + executeVectorIndexScan dispatch BY_DISTANCE; physicalVectorIndexScanWrapper + a cost criterion rejecting residual index-only DistanceRank make the vector scan win. Three pieces (Torvalds catch — not a single
   branch): **(9.3a)** add a vector branch to the match-candidate enumeration (next to
   `NewValueIndexScanMatchCandidate` at `plan_context_builder.go:46` + the metadata-driven builder in
   the embedded layer) so a `vector`-type index yields the candidate; **(9.3b)** rework
@@ -247,7 +245,7 @@ buckets the DistanceRank into the rank slot + partition equalities into the pref
   query-vector/k/`ef_search`/`isReturningVectors` and at execution dispatches **BY_DISTANCE** via
   `ScanIndexByType`/`ScanVectorIndex` → `ScanByDistance` (`index_scan.go:338-345`) — without it the
   plan does a BY_VALUE scan that errors at `index_scan.go:269`.
-- [ ] **9.4 E2E proof.** Port Java's `window-function-documentation-queries.yamsql` (KNN top-K via
+- [x] **9.4 E2E proof.** Done — `TestFDB_VectorSearch_QualifyE2E` (sqldriver, real FDB): builds a partitioned vector schema, inserts vectors, EXPLAIN-pins the BY_DISTANCE vector scan for the full QUALIFY SQL query, executes it, and asserts the top-2 nearest records. (yamsql port + `ef_search`/OR-of-two-KNN/`42F21`-in-WHERE coverage remain as nice-to-have follow-ups.) Original plan: Port Java's `window-function-documentation-queries.yamsql` (KNN top-K via
   `QUALIFY`, `ef_search` option, `<`/`<=`, OR-of-two-KNN) as the Go conformance/yamsql scenario, plus an
   FDB integration test that `EXPLAIN`-pins the vector index scan (not a full-scan fallback) and asserts
   row + distance correctness. Window-functions-in-`WHERE` must error (Java: `42F21`).

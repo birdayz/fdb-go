@@ -189,7 +189,10 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// index-only vector K-NN comparison can only be evaluated by a vector index
 	// scan (a residual filter over it panics — see Comparison.EvalAgainst). Such
 	// a plan must never beat one that consumed the DistanceRank via a vector
-	// scan. Mirrors Java, where the index-only predicate cannot be a residual.
+	// scan. The structurally-cleaner fix (refusing to emit the residual filter in
+	// rule_implement_index_scan) was tried and rejected: it removes the bad plan
+	// but also strands the vector plan's root projection (no physical winner at
+	// the filter Reference), so the comparator is the load-bearing chokepoint.
 	aBadRank := hasResidualDistanceRank(a)
 	bBadRank := hasResidualDistanceRank(b)
 	if aBadRank != bBadRank {
