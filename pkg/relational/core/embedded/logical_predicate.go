@@ -1223,6 +1223,16 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	if !ok {
 		pred, ok = buildWherePredicate(md, sq, sq.whereExpr)
 	}
+	// QUALIFY (vector K-NN ROW_NUMBER() filter) is AND-combined with the WHERE
+	// predicate onto the same LogicalFilter — upgradeFirstFilter replaces, so
+	// both must be attached together.
+	if qualPred, qualOk := buildQualifyPredicate(md, sq, cteScopes); qualOk {
+		if ok {
+			pred = predicates.NewAnd(pred, qualPred)
+		} else {
+			pred, ok = qualPred, true
+		}
+	}
 	if !ok {
 		return op, nil
 	}

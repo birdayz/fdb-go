@@ -1,0 +1,71 @@
+package embedded
+
+import (
+	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+)
+
+// TestQualify_BuildsDistanceRankPredicate drives the full SQL parse →
+// QUALIFY predicate path and verifies the vector K-NN ROW_NUMBER() OVER(...)
+// <= K filter lowers to a DistanceRank comparison over the distance-specialized
+// row-number value (Java's transformComparisonMaybe shape).
+func TestQualify_BuildsDistanceRankPredicate(t *testing.T) {
+	t.Parallel()
+	tmpl, err := buildSchemaTemplateFromDDL(`CREATE TABLE docs (
+			zone string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone) OPTIONS (METRIC = EUCLIDEAN_METRIC)`)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	md := tmpl.Underlying()
+
+	sql := `SELECT doc_id FROM docs WHERE zone = 'z1'
+		QUALIFY ROW_NUMBER() OVER (
+			PARTITION BY zone
+			ORDER BY euclidean_distance(embedding, embedding)
+			OPTIONS ef_search = 64
+		) <= 3`
+	root, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := root.Statements().AllStatement()[0].SelectStatement()
+	sq, err := extractSelectParts(sel)
+	if err != nil {
+		t.Fatalf("extractSelectParts: %v", err)
+	}
+	if sq.qualifyExpr == nil {
+		t.Fatal("qualifyExpr was not captured from the QUALIFY clause")
+	}
+
+	pred, ok := buildQualifyPredicate(md, sq, nil)
+	if !ok {
+		t.Fatal("buildQualifyPredicate returned ok=false")
+	}
+	cp, ok := pred.(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("qualify predicate is %T, want *ComparisonPredicate", pred)
+	}
+	if _, ok := cp.Operand.(*values.EuclideanDistanceRowNumberValue); !ok {
+		t.Errorf("LHS is %T, want *EuclideanDistanceRowNumberValue", cp.Operand)
+	}
+	if cp.Comparison.Type != predicates.ComparisonDistanceRankLessThanOrEq {
+		t.Errorf("comparison type = %v, want DistanceRankLessThanOrEq", cp.Comparison.Type)
+	}
+	if cp.Comparison.QueryVector == nil {
+		t.Error("DistanceRank comparison missing query vector")
+	}
+	if cp.Comparison.EfSearch == nil || *cp.Comparison.EfSearch != 64 {
+		t.Errorf("ef_search = %v, want 64", cp.Comparison.EfSearch)
+	}
+	// The k (top-K) comparand is carried on the DistanceRank comparison; its
+	// concrete scalar value is exercised end-to-end in the FDB test (9.4).
+	if cp.Comparison.Operand == nil {
+		t.Error("DistanceRank comparison missing k (top-K comparand)")
+	}
+}
