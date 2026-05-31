@@ -263,6 +263,7 @@ go_test(
         "plan_choice_test.go",
         "plan_context_builder_test.go",
         "plan_context_test.go",
+        "plan_executability_test.go",
         "plan_properties_order_test.go",
         "plan_properties_test.go",
         "planner_agg_fuzz_test.go",
