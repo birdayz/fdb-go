@@ -4091,20 +4091,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				bareArg = "*"
 			}
 			name := strings.ToUpper(fn) + "(" + strings.ToUpper(bareArg) + ")"
-			_, dup := aggSeen[name]
-			if dup {
-				_, priorExpr := exprAggNames[name]
-				if e != nil || priorExpr {
-					return "", fmt.Errorf("distinct expression-argument aggregates both reduce to %q; not supported in a correlated scalar subquery", name)
-				}
-				// Identical bare-column / star aggregate referenced twice (e.g.
-				// COUNT(*) in both SELECT and HAVING) — safe to reuse.
-				return name, nil
-			}
-			aggSeen[name] = struct{}{}
-			if e != nil {
-				exprAggNames[name] = struct{}{}
-			}
+			// Resolve the operand first so we can recognise COUNT(<non-null
+			// constant>) — e.g. COUNT(1) — which is exactly COUNT(*): it counts
+			// every row, so it can safely share the COUNT(*) slot rather than
+			// being treated as an opaque, collision-prone expression aggregate.
 			var opVal values.Value
 			if e != nil {
 				v, err := resolver.WalkExpression(e)
@@ -4118,6 +4108,27 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 					return "", err
 				}
 				opVal = v
+			}
+			// "Opaque" = an expression operand we cannot identify by name. A
+			// non-null constant under COUNT is NOT opaque (it is COUNT(*)).
+			opaqueExpr := e != nil
+			if opaqueExpr && strings.EqualFold(fn, "COUNT") {
+				if cv, ok := opVal.(*values.ConstantValue); ok && cv.Value != nil {
+					opaqueExpr = false
+				}
+			}
+			if _, dup := aggSeen[name]; dup {
+				_, priorExpr := exprAggNames[name]
+				if opaqueExpr || priorExpr {
+					return "", fmt.Errorf("distinct expression-argument aggregates both reduce to %q; not supported in a correlated scalar subquery", name)
+				}
+				// Identical bare-column / star aggregate (or COUNT(const) ≡
+				// COUNT(*)) referenced twice — safe to reuse the slot.
+				return name, nil
+			}
+			aggSeen[name] = struct{}{}
+			if opaqueExpr {
+				exprAggNames[name] = struct{}{}
 			}
 			aggTexts = append(aggTexts, fn+"("+bareArg+")")
 			aggAliases = append(aggAliases, name)

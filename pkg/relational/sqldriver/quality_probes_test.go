@@ -1002,6 +1002,19 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("count_constant_shares_countstar_slot", func(t *testing.T) {
+		// Codex: COUNT(1) collapses to the name "COUNT(*)" but is exactly
+		// COUNT(*) (counts every row), so it must safely share the slot with a
+		// HAVING COUNT(*) — NOT be rejected as an ambiguous expression-aggregate
+		// collision. Charlie (1 order) => COUNT=1 > 0 => kept.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 || rows[0][1] != int64(1) {
+			t.Fatalf("Charlie: want COUNT 1, got %v", rows)
+		}
+	})
+
 	t.Run("colliding_expression_aggregates_rejected", func(t *testing.T) {
 		// Two DISTINCT expression-argument aggregates (projected SUM(amount*2)
 		// + HAVING SUM(amount*3)) both synthesize the name "SUM(*)". Without a
