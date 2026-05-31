@@ -81,6 +81,34 @@ func PrepareMatchesAndCompensations(
 				continue
 			}
 		}
+
+		// Required-for-binding gate (Java AbstractDataAccessRule line 665):
+		// skip a match that did not bind every sargable alias the candidate
+		// requires — it can't produce a valid physical plan. For a vector
+		// candidate the index-only distance alias is required, so a
+		// partition-only match (no DistanceRank, e.g. a plain WHERE on the
+		// partition column) is discarded here instead of producing a
+		// nil-query-vector scan.
+		if reqCand, ok := pm.GetMatchCandidate().(interface {
+			GetSargableAliasesRequiredForBinding() []values.CorrelationIdentifier
+		}); ok {
+			if required := reqCand.GetSargableAliasesRequiredForBinding(); len(required) > 0 {
+				if pmi, ok := pm.(*PartialMatchImpl); ok {
+					bound := pmi.GetBoundSargableAliases()
+					allBound := true
+					for _, a := range required {
+						if _, ok := bound[a]; !ok {
+							allBound = false
+							break
+						}
+					}
+					if !allBound {
+						continue
+					}
+				}
+			}
+		}
+
 		reverseScan := scanDir != nil && *scanDir == ScanDirectionReverse
 
 		access := NewSingleMatchedAccess(
@@ -338,6 +366,9 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 			idxPlan = idxPlan.WithCovering(coveringColumns)
 		}
 		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering}
+	}
+	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
+		return &physicalVectorIndexScanWrapper{plan: vecPlan}
 	}
 	return &scanPlanExpression{plan: plan}
 }

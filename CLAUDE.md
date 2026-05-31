@@ -4,6 +4,10 @@
 
 **NEVER use t.Skip() to defer a failing test.** If a test fails, FIX IT. Immediately. No matter how long it takes, no matter how deep the rabbit hole goes. Skipping is forbidden. The only acceptable t.Skip is the runtime Docker check (`FDB not available (no Docker)`). Every other skip is a bug you're hiding. Hunt it down. Fix it. Principles first.
 
+## THERE ARE NO UNRELATED FLAKES — EVERY FLAKE GETS INVESTIGATED NOW
+
+**A flaky or intermittently-failing test is a REAL BUG, never noise to wave away.** "Unrelated flake," "just rerun CI," "not caused by my change," "known-flaky" are all FORBIDDEN rationalizations. A red CI is red — full stop. The moment any test fails or flakes (in CI, in `just test`, in a stress/fuzz run, anywhere), STOP and root-cause it immediately, even if it lives in a package your change never touched. Flakes are how real concurrency bugs, conflict-handling gaps, ordering assumptions, and resource leaks hide in plain sight — a transaction-conflict (`not_committed 1020`), a timeout, a watch that doesn't fire, a nondeterministic plan: each is a latent defect, not bad luck. Reproduce it (run it in a loop / under `--runs_per_test` / with `-race`), find the actual race or assumption, fix the code (or the test if the test's timing assumption is genuinely wrong — but prove that first), and pin it with a deterministic regression. Never merge or hand off with CI red or a flake outstanding. "It passed the second time" is not a fix; it's the bug still there.
+
 ## NO EXCUSES — DO THE WORK
 
 **Nothing is "gated," "blocked," or "multi-shift."** If a TODO exists, DO IT. Now. No matter how long it takes. Don't rationalize deferral with "needs Java conformance server," "blocked on upstream," or "multi-shift effort." Those are excuses. Read the Java source, understand the algorithm, port it, test it, ship it. If it takes 826 lines, write 826 lines. If it takes all night, work all night. The TODO list is a list of things TO DO, not a list of things to punt.

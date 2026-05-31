@@ -380,6 +380,12 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 		if card > counts.maxDataAccessCardinality {
 			counts.maxDataAccessCardinality = card
 		}
+	case *physicalVectorIndexScanWrapper:
+		counts.indexScanCount++
+		card := w.HintCost(nil, stats).Cardinality
+		if card > counts.maxDataAccessCardinality {
+			counts.maxDataAccessCardinality = card
+		}
 	case *physicalIndexScanWrapper:
 		if w.covering {
 			counts.coveringIndexCount++

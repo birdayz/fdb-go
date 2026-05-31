@@ -84,6 +84,8 @@ func ExecutePlan(
 		return executeScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIndexPlan:
 		return executeIndexScan(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryVectorIndexPlan:
+		return executeVectorIndexScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTypeFilterPlan:
 		return executeTypeFilter(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryFilterPlan:
@@ -298,6 +300,147 @@ func executeIndexScan(
 	}
 
 	return resultCursor, nil
+}
+
+// defaultVectorEfSearch is the HNSW search-quality knob used when the query
+// does not specify OPTIONS ef_search. ef_search must be >= k for a correct
+// top-K result; the executor raises it to k when the configured value is lower.
+const defaultVectorEfSearch = 200
+
+// executeVectorIndexScan runs a BY_DISTANCE K-NN scan over a VECTOR (HNSW)
+// index: the partition-equality prefix selects the independent HNSW graph and
+// the graph is traversed for the k nearest neighbors of the query vector.
+// Dispatches through ScanIndexByType(IndexScanByDistance), which the vector
+// index maintainer services via ScanByDistance.
+func executeVectorIndexScan(
+	_ context.Context,
+	p *plans.RecordQueryVectorIndexPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	idx := store.GetMetaData().GetIndex(p.GetIndexName())
+	if idx == nil {
+		return nil, fmt.Errorf("executor: vector index %q not found in metadata", p.GetIndexName())
+	}
+
+	// Partition prefix from the leading equality comparisons.
+	var prefix tuple.Tuple
+	for _, cr := range p.GetPrefixComparisons() {
+		if cr == nil || !cr.IsEquality() {
+			break
+		}
+		prefix = append(prefix, cr.GetEqualityComparison().Operand.Evaluate(evalCtx))
+	}
+
+	queryVec, err := evalFloat64Slice(p.GetQueryVector(), evalCtx)
+	if err != nil {
+		return nil, fmt.Errorf("executor: vector index %q query vector: %w", p.GetIndexName(), err)
+	}
+	k, err := evalPositiveInt(p.GetK(), evalCtx)
+	if err != nil {
+		return nil, fmt.Errorf("executor: vector index %q top-K: %w", p.GetIndexName(), err)
+	}
+
+	// Derive the scan limit from the rank operator, matching Java's
+	// VectorIndexScanBounds.getAdjustedLimit: ROW_NUMBER() < K returns the top
+	// K-1, ROW_NUMBER() <= K returns the top K. (= K is rejected upstream at the
+	// DistanceRank comparison, so only < / <= reach here.) k is already ≥ 1
+	// (evalPositiveInt), so limit ≥ 0; limit == 0 (ROW_NUMBER() < 1) selects no
+	// rows.
+	limit := k
+	if p.GetRankType() == predicates.ComparisonDistanceRankLessThan {
+		limit = k - 1
+	}
+	if limit <= 0 {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+
+	efSearch := defaultVectorEfSearch
+	if p.GetEfSearch() != nil {
+		efSearch = *p.GetEfSearch()
+	}
+	if efSearch < limit {
+		efSearch = limit
+	}
+
+	scanRange := recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
+	scanProps := recordlayer.ScanProperties{
+		ExecuteProperties:   props,
+		CursorStreamingMode: recordlayer.StreamingModeIterator,
+	}
+	indexCursor := store.ScanIndexByType(idx, recordlayer.IndexScanByDistance, scanRange, continuation, scanProps)
+	return &indexFetchCursor{inner: indexCursor, store: store}, nil
+}
+
+// evalFloat64Slice evaluates a Value to a vector ([]float64). Accepts the
+// runtime vector representations: []float64, []float32, and []any of numerics.
+func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64, error) {
+	if v == nil {
+		return nil, fmt.Errorf("nil query vector")
+	}
+	switch s := v.Evaluate(binder).(type) {
+	case []float64:
+		return s, nil
+	case []float32:
+		out := make([]float64, len(s))
+		for i, f := range s {
+			out[i] = float64(f)
+		}
+		return out, nil
+	case []any:
+		out := make([]float64, len(s))
+		for i, e := range s {
+			f, ok := toFloat64Scalar(e)
+			if !ok {
+				return nil, fmt.Errorf("query vector element %d is not numeric (%T)", i, e)
+			}
+			out[i] = f
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("query vector is not a numeric slice (%T)", v.Evaluate(binder))
+	}
+}
+
+// evalPositiveInt evaluates a Value to a positive int (the top-K comparand).
+func evalPositiveInt(v values.Value, binder values.ParameterBinder) (int, error) {
+	if v == nil {
+		return 0, fmt.Errorf("nil value")
+	}
+	var k int
+	switch n := v.Evaluate(binder).(type) {
+	case int:
+		k = n
+	case int32:
+		k = int(n)
+	case int64:
+		k = int(n)
+	default:
+		return 0, fmt.Errorf("not an integer (%T)", v.Evaluate(binder))
+	}
+	if k <= 0 {
+		return 0, fmt.Errorf("must be positive, got %d", k)
+	}
+	return k, nil
+}
+
+func toFloat64Scalar(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }
 
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {

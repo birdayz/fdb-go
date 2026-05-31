@@ -1116,6 +1116,17 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	upgradeSortKeyValues(op, sq, md, cteScopes)
 
 	if sq.whereExpr == nil {
+		// No WHERE, but a QUALIFY filter (the vector K-NN ROW_NUMBER() <= K
+		// predicate) must still be attached — synthesize a LogicalFilter above
+		// the scan rather than dropping it (an unpartitioned KNN query has no
+		// WHERE, so no filter was built upstream).
+		qualPred, qErr := buildQualifyPredicate(md, sq, cteScopes)
+		if qErr != nil {
+			return nil, qErr
+		}
+		if qualPred != nil {
+			op = attachOrSynthesizeFilter(op, qualPred)
+		}
 		return op, nil
 	}
 
@@ -1222,6 +1233,20 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	}
 	if !ok {
 		pred, ok = buildWherePredicate(md, sq, sq.whereExpr)
+	}
+	// QUALIFY (vector K-NN ROW_NUMBER() filter) is AND-combined with the WHERE
+	// predicate onto the same LogicalFilter — upgradeFirstFilter replaces, so
+	// both must be attached together.
+	qualPred, qErr := buildQualifyPredicate(md, sq, cteScopes)
+	if qErr != nil {
+		return nil, qErr
+	}
+	if qualPred != nil {
+		if ok {
+			pred = predicates.NewAnd(pred, qualPred)
+		} else {
+			pred, ok = qualPred, true
+		}
 	}
 	if !ok {
 		return op, nil

@@ -464,6 +464,11 @@ type selectClassification struct {
 	groupByAliases map[string]int
 	// havingExpr is the HAVING clause expression (nil = no HAVING).
 	havingExpr antlrgen.IExpressionContext
+	// qualifyExpr is the QUALIFY clause expression (nil = no QUALIFY).
+	// QUALIFY filters on window-function results — in this port it carries
+	// the vector K-NN ROW_NUMBER() OVER (... ORDER BY <distance>) <= K
+	// predicate, which lowers to a DistanceRank comparison.
+	qualifyExpr antlrgen.IExpressionContext
 	// postAggExprs is populated by the visitor's visitSelectGroupBy when
 	// post-aggregation computed projections are emitted.
 	postAggExprs []antlrgen.IExpressionContext
@@ -780,6 +785,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 		countStarAlias:     countStarAlias,
 		aggCols:            aggCols,
 		distinct:           simpleTable.DISTINCT() != nil,
+	}
+
+	// Parse QUALIFY clause (window-function filter; carries the vector
+	// K-NN ROW_NUMBER() OVER (...) <= K predicate).
+	if qc, ok := simpleTable.QualifyClause().(*antlrgen.QualifyClauseContext); ok && qc != nil {
+		cls.qualifyExpr = qc.Expression()
 	}
 
 	// Parse ORDER BY clause.

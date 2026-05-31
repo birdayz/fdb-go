@@ -1281,6 +1281,10 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 			candidates = append(candidates, aggCand)
 			continue
 		}
+		if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
+			candidates = append(candidates, vecCand)
+			continue
+		}
 		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
 	}
 	if len(defs) > 0 {
@@ -1386,6 +1390,78 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		aggFunc,
 		aggColumn,
 	)
+}
+
+// tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a VECTOR
+// (HNSW) index, or nil if the index is not a vector index. columnNames are all
+// index columns (partition prefix + the vector column); partitionCount is the
+// KeyWithValue split point; the metric comes from the HNSW options.
+func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaData) *cascades.VectorIndexScanMatchCandidate {
+	if idx.Type != recordlayer.IndexTypeVector || idx.RootExpression == nil {
+		return nil
+	}
+	cols := idx.RootExpression.FieldNames()
+	if len(cols) == 0 {
+		return nil
+	}
+	upperCols := make([]string, len(cols))
+	for i, col := range cols {
+		upperCols[i] = strings.ToUpper(col)
+	}
+	partitionCount := 0
+	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
+		partitionCount = kwv.SplitPoint()
+	}
+	metric, ok := vectorMetricOperator(idx.Options[recordlayer.IndexOptionVectorMetric])
+	if !ok {
+		// Unrecognized metric (corrupt or newer-version metadata). Don't build
+		// a candidate with a wrong default metric; without the candidate the
+		// QUALIFY distance predicate stays uncompensatable and the query fails
+		// to plan rather than returning wrong-metric results.
+		return nil
+	}
+
+	rts := md.RecordTypesForIndex(idx)
+	rtNames := make([]string, len(rts))
+	for i, rt := range rts {
+		rtNames[i] = rt.Name
+	}
+	var pkCols []string
+	if len(rts) > 0 && rts[0].PrimaryKey != nil {
+		pk := rts[0].PrimaryKey.FieldNames()
+		pkCols = make([]string, len(pk))
+		for i, col := range pk {
+			pkCols[i] = strings.ToUpper(col)
+		}
+	}
+
+	return cascades.NewVectorIndexScanMatchCandidate(
+		idx.Name, rtNames, upperCols, partitionCount, metric,
+		values.UnknownType, idx.IsUnique(), pkCols,
+	)
+}
+
+// vectorMetricOperator maps the stored HNSW metric option (Java Metric enum
+// name) to the cascades DistanceOperator used by the distance placeholder. An
+// absent option defaults to Euclidean, matching Java's
+// VectorIndexExpansionVisitor (`getOrDefault(HNSW_METRIC, Config.DEFAULT_METRIC)`
+// where DEFAULT_METRIC == EUCLIDEAN_METRIC). It returns ok=false for an
+// unrecognized non-empty metric: Java throws there; we instead skip the
+// candidate so a corrupt or newer-version metric never silently maps to
+// Euclidean and serves the wrong distance.
+func vectorMetricOperator(name string) (values.DistanceOperator, bool) {
+	switch name {
+	case "", "EUCLIDEAN_METRIC", "euclidean":
+		return values.DistanceEuclidean, true
+	case "EUCLIDEAN_SQUARE_METRIC":
+		return values.DistanceEuclideanSquare, true
+	case "COSINE_METRIC", "cosine":
+		return values.DistanceCosine, true
+	case "DOT_PRODUCT_METRIC", "inner_product":
+		return values.DistanceDotProduct, true
+	default:
+		return values.DistanceEuclidean, false
+	}
 }
 
 func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -2398,7 +2474,10 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 		if td == nil {
 			continue
 		}
-		tableName := td.Uid().GetText()
+		// Normalize the table name the same way execCreateSchemaTemplate and
+		// the column/index parsers do (StripIdentifierQuotes upper-cases
+		// unquoted identifiers), so index lookups by table name match.
+		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
 		cols, pkCols, tdErr := parseTableDefinition(td)
 		if tdErr != nil {
 			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)

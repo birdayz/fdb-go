@@ -27,6 +27,16 @@ Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional
 
 Same timing and inputs. Go creates physical plans directly (single intersection strategy); Java goes through `LogicalIntersectionExpression` → `ImplementIntersectionRule` (supports multiple strategies).
 
+### ImplementIndexScanRule is a Go-only second index-scan path (compensatability guarded at two layers)
+
+**Java:** One rule family — `AbstractDataAccessRule` — turns a `PartialMatch` into a scan/index-scan/fetch via `toEquivalentPlan`. The "index-only value can't be a residual" property is enforced ONCE: `PredicateMultiMap.ofPredicate` stamps `isImpossible = predicateContainsUncompensatableValues(predicate)` (true when a predicate operand `instanceof Value.IndexOnlyValue`), and `applyCompensationForSingleDataAccessMaybe` drops any match whose compensation `isImpossible()`. No separate "implement index scan" rule exists, so the property can't leak.
+
+**Go:** Two paths reach a physical index scan: (1) the data-access/compensation match path (`predicate_multi_map.go`), and (2) `ImplementIndexScanRule` — a Go-only fusion of Java's `ImplementPhysicalScanRule` + candidate matching that iterates `ComparisonPredicate`s directly and synthesizes residual filters itself, bypassing `Compensation`. So the index-only compensatability check is applied at BOTH layers: `valueContainsUncompensatable` via `values.IsIndexOnly` (match path) and the residual-skip loop in `ImplementIndexScanRule.OnMatch` (implement path). Both are load-bearing — removing either makes `TestVectorPlan_QualifyPlansToVectorScan` fail; the implement layer is pinned directly by `TestImplementIndexScanRule_SkipsIndexOnlyResidual`. This surfaced wiring up vector K-NN (RFC-045): the `DistanceRowNumberValue` operand is index-only, and a partition-only primary-scan candidate would otherwise leave the `DistanceRank` comparison as a residual filter (panics in `Comparison.EvalAgainst`).
+
+There is a THIRD Go-only filter producer: `ImplementFilterRule` synthesizes a `RecordQueryPredicatesFilterPlan` over the inner physical winner, again without routing through `Compensation`. When an index DOES serve the index-only predicate (the common path) a vector/aggregate scan wins and no residual survives. But when nothing can bind it — e.g. `QUALIFY ... ORDER BY cosine_distance(...)` against a EUCLIDEAN-metric index, or a distance query on a column with no vector index — `ImplementFilterRule` is the only producer and yields a filter with the index-only predicate as a residual (which would panic in `Comparison.EvalAgainst`). Guarding `ImplementFilterRule` directly is not viable: removing its member collapses the filter `Reference`'s member population and the data-access intersection is never built (an entangled memo dependency). So this leak is caught at the planner boundary by `validateNoIndexOnlyResidual` (`plan_executability.go`), which rejects a *final* plan carrying an index-only residual with `UnplannableIndexOnlyResidualError` — converting an execution-time panic into a clean planning error. Pinned by `TestVectorPlan_MetricMismatchDoesNotMatchVector`.
+
+**End-state:** retire `ImplementIndexScanRule` (and route `ImplementFilterRule`'s filter implementation) through a single data-access rule backed by `Compensation`, at which point both the implement-layer guard and the final-plan validation delete themselves and the property is enforced once (as in Java). Until then the layered guards + final validation are the correct defensive choice — the alternative is a latent panic. Tracked in TODO.md (Phase 7.7).
+
 ### Type mismatch detection: eval-time vs compile-time
 
 **Java:** `SemanticAnalyzer` catches type mismatches at query compilation (before execution).
@@ -194,6 +204,14 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | Plan proto serialization (Go plans not serialized to proto) | Wire format | Plan serialization infrastructure |
 | Value type proto serialization | Wire format | Value serialization infrastructure |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
+
+### Vector scan is single-partition (Java fans out over partitions) — TODO 9.5
+
+**Java:** `VectorIndexMaintainer.scan` (`indexes/VectorIndexMaintainer.java` ~134-150) handles a partition prefix of ANY length. When `prefixSize > 0` it does `flatMapPipelined(prefixSkipScan(prefixSize, range), (prefixTuple, …) -> scanSinglePartition(prefixTuple, …))` — a skip-scan that enumerates the *distinct full partition prefixes* within the bound (possibly partial) range, runs one HNSW search per partition, and merges top-K across them. So a `PARTITION BY (zone, region)` index queried with only `WHERE zone = 'z1'` does a multi-partition K-NN over all regions in `z1`. The planner reflects this: only the index-only distance placeholder is required for binding; partition placeholders are not (`VectorIndexExpansionVisitor`).
+
+**Go:** `scanByDistanceWithParams` (`vector_index_maintainer.go`) is single-partition — one `getStorageForPrefix(prefix)` → one HNSW graph → one `graph.Search`. No prefix skip-scan, no flatMap, no cross-partition top-K merge. A partial partition prefix would address a non-existent subspace (empty/wrong rows) and the positional `ComputeBoundParameterPrefixMap` truncates before the distance alias (nil query vector). Until the multi-partition scan is ported, `VectorIndexScanMatchCandidate` requires the FULL partition prefix for binding, so a partial-prefix vector query is cleanly **unplannable** rather than wrong. Pinned by `TestVectorPlan_PartitionedRequiresFullPrefix`.
+
+**To close (TODO 9.5):** port the prefix skip-scan + per-partition HNSW search + cross-partition top-K merge (the flatMap fan-out) into the Go maintainer, then drop the partition-aliases-required-for-binding guard so the planner admits a partial prefix as in Java.
 
 ### Covering Index Scan — RESOLVED via ImplementProjectionRule
 

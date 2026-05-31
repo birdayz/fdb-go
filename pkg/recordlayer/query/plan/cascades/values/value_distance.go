@@ -1,6 +1,10 @@
 package values
 
-import "math"
+import (
+	"math"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+)
 
 // DistanceOperator enumerates the vector-distance metrics SQL can
 // invoke as scalar functions over vector-typed columns. Mirrors
@@ -131,6 +135,19 @@ func asFloat64Slice(v any) []float64 {
 			out[i] = float64(f)
 		}
 		return out
+	case []byte:
+		// A stored VECTOR column reaches eval as its on-disk bytes (TYPE_BYTES).
+		// Decode it to float64 components so a row-by-row distance expression over
+		// a stored vector — e.g. SELECT euclidean_distance(embedding, [...]) —
+		// computes the real distance instead of silently returning UNKNOWN. The
+		// format is self-describing (precision in byte 0). RaBitQ-quantized columns
+		// can't be decoded here and yield nil (distance UNKNOWN), as they require
+		// the quantizer.
+		vec, err := vectorcodec.Deserialize(s)
+		if err != nil {
+			return nil
+		}
+		return vec
 	}
 	return nil
 }

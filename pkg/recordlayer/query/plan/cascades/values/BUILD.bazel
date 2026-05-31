@@ -71,6 +71,7 @@ go_library(
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values",
     visibility = ["//visibility:public"],
+    deps = ["//pkg/recordlayer/vectorcodec"],
 )
 
 go_test(
@@ -145,4 +146,5 @@ go_test(
         "values_test.go",
     ],
     embed = [":values"],
+    deps = ["//pkg/recordlayer/vectorcodec"],
 )

@@ -238,16 +238,66 @@ type Comparison struct {
 	// TextStrictPrefix is set for TEXT_CONTAINS_ALL_PREFIXES comparisons
 	// (Java's TextContainsAllPrefixesComparison).
 	TextStrictPrefix bool
+
+	// --- DistanceRank fields (Java's DistanceRankValueComparison) ---
+	// Set only for ComparisonDistanceRank* types — the vector K-NN
+	// "top-K by distance" comparison produced from
+	// ROW_NUMBER() OVER (... ORDER BY <distance>(field, q)) {<,<=,=} K.
+	// Operand carries the K (top-K) comparand; QueryVector is the search
+	// vector; EfSearch / IsReturningVectors are the HNSW runtime knobs
+	// threaded from the ROW_NUMBER() OPTIONS clause (nil = index default).
+	QueryVector        values.Value
+	EfSearch           *int
+	IsReturningVectors *bool
+}
+
+// NewDistanceRankComparison builds the vector K-NN distance-rank comparison
+// (Java's Comparisons.DistanceRankValueComparison). comparand is the K (top-K)
+// value and queryVector is the search vector.
+//
+// Returns ok=false when typ is not a *scannable* distance-rank type. Java's
+// DistanceRankValueComparison constructor asserts
+// `type == DISTANCE_RANK_LESS_THAN || type == DISTANCE_RANK_LESS_THAN_OR_EQUAL`
+// (Comparisons.java) — DISTANCE_RANK_EQUALS is mapped by
+// RowNumberValue.transformComparisonMaybe but then REJECTED at construction, so
+// `ROW_NUMBER() = K` is not expressible as a vector scan. We mirror that here
+// (no panic): the caller treats ok=false as "not lowerable", leaving the
+// row-number comparison unmatched so the query fails to plan, exactly as Java's
+// assertion failure aborts planning.
+func NewDistanceRankComparison(typ ComparisonType, queryVector, comparand values.Value, efSearch *int, isReturningVectors *bool) (Comparison, bool) {
+	if typ != ComparisonDistanceRankLessThan && typ != ComparisonDistanceRankLessThanOrEq {
+		return Comparison{}, false
+	}
+	return Comparison{
+		Type:               typ,
+		Operand:            comparand,
+		QueryVector:        queryVector,
+		EfSearch:           efSearch,
+		IsReturningVectors: isReturningVectors,
+	}, true
 }
 
 // GetCorrelatedTo returns the set of correlation identifiers referenced
 // by this comparison's RHS operand. Used by ordering-aware rules to
 // match comparison bindings to explode aliases.
 func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	if c.Operand == nil {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	if c.Operand != nil {
+		for k := range values.GetCorrelatedToOfValue(c.Operand) {
+			out[k] = struct{}{}
+		}
+	}
+	// DistanceRank comparisons also carry a query-vector Value, which may
+	// reference a parameter/correlation.
+	if c.QueryVector != nil {
+		for k := range values.GetCorrelatedToOfValue(c.QueryVector) {
+			out[k] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	return values.GetCorrelatedToOfValue(c.Operand)
+	return out
 }
 
 // NewLiteralComparison is the common-case constructor for a binary
@@ -363,6 +413,17 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 			return TriUnknown
 		}
 		return TriFalse
+	}
+	// DistanceRank comparisons are vector K-NN index predicates: they MUST be
+	// lowered to a vector index scan during planning (RowNumberValue
+	// transformComparisonMaybe → VectorIndexScanMatchCandidate), never
+	// evaluated row-by-row. Reaching here means the planner failed to match the
+	// vector index — fail loud rather than silently returning UNKNOWN (which
+	// would drop every row and make a broken K-NN query pass green).
+	switch c.Type {
+	case ComparisonDistanceRankEquals, ComparisonDistanceRankLessThan, ComparisonDistanceRankLessThanOrEq:
+		panic(fmt.Sprintf("DistanceRank comparison %v reached row evaluation: "+
+			"vector K-NN predicate was not lowered to a vector index scan during planning", c.Type))
 	}
 	if left == nil || right == nil {
 		return TriUnknown

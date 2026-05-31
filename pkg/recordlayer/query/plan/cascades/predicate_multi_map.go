@@ -918,19 +918,25 @@ func predicateContainsUncompensatableValues(p predicates.QueryPredicate) bool {
 	return found
 }
 
-// valueContainsUncompensatable reports whether a Value tree contains
-// UnmatchedAggregateValue or IndexOnlyAggregateValue markers.
+// valueContainsUncompensatable reports whether a Value tree contains an
+// index-only value (Java's Value.IndexOnlyValue marker) or an
+// UnmatchedAggregateValue — values that can only be produced by an index scan
+// and so cannot be evaluated as a residual filter on a base-record scan.
+// Mirrors Java's predicateContainsUncompensatableValues: any IsIndexOnly value
+// (IndexOnlyAggregateValue, RowNumberValue, the metric-specific
+// DistanceRowNumberValues) makes the predicate uncompensatable, so a candidate
+// that would leave it as a residual forms an impossible match and is discarded.
 func valueContainsUncompensatable(v values.Value) bool {
 	found := false
 	values.WalkValue(v, func(node values.Value) bool {
 		if found {
 			return false
 		}
-		switch node.(type) {
-		case *values.UnmatchedAggregateValue:
+		if values.IsIndexOnly(node) {
 			found = true
 			return false
-		case *values.IndexOnlyAggregateValue:
+		}
+		if _, ok := node.(*values.UnmatchedAggregateValue); ok {
 			found = true
 			return false
 		}

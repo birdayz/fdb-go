@@ -523,13 +523,34 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 		value := tuple.Tuple{nil}
 
 		entries[i] = &IndexEntry{
-			Index: m.index,
-			Key:   key,
-			Value: value,
+			Index:      m.index,
+			Key:        key,
+			Value:      value,
+			primaryKey: m.entryFullPK(key, prefix),
 		}
 	}
 
-	return newVectorSearchCursor(entries, continuation)
+	return m.newVectorSearchCursor(entries, continuation, prefix)
+}
+
+// entryFullPK reconstructs and pins the full primary key for a vector index
+// entry from its key alone. IndexEntry.PrimaryKey()'s default getEntryPrimaryKey
+// assumes the value-index key layout (indexValues[colSize] + pk) and mis-extracts
+// a vector entry's key (prefix + trimmedPK), so the PK must be set explicitly.
+//
+// Deriving from the key (not the HNSW search result) is what lets RESUMED entries
+// — reconstructed from a continuation with no record in hand — pin the same PK as
+// fresh entries (codex Finding 3). key == (prefix..., trimmedPK...), so the
+// non-component-positions PK is the key with the partition prefix stripped, which
+// equals the fresh path's hnswSearchResult.PrimaryKey.
+func (m *vectorIndexMaintainer) entryFullPK(key, prefix tuple.Tuple) tuple.Tuple {
+	if m.index.HasPrimaryKeyComponentPositions() {
+		return m.index.getEntryPrimaryKey(key)
+	}
+	if len(prefix) <= len(key) {
+		return key[len(prefix):]
+	}
+	return key
 }
 
 // vectorSearchCursor is a cursor over vector search results that supports
@@ -548,11 +569,12 @@ type vectorSearchCursor struct {
 // newVectorSearchCursor creates a vector search cursor from search results.
 // If continuation is non-nil, it is parsed as a VectorIndexScanContinuation
 // protobuf (Java format). On resume, results are replayed from the continuation
-// rather than re-searching.
-func newVectorSearchCursor(entries []*IndexEntry, continuation []byte) *vectorSearchCursor {
+// rather than re-searching. prefix is threaded through so resumed entries
+// reconstruct the same pinned primary key as fresh ones.
+func (m *vectorIndexMaintainer) newVectorSearchCursor(entries []*IndexEntry, continuation []byte, prefix tuple.Tuple) *vectorSearchCursor {
 	if len(continuation) > 0 {
 		// Resume from continuation: parse the proto and replay saved entries.
-		resumed, innerPos := parseVectorScanContinuation(continuation, entries)
+		resumed, innerPos := m.parseVectorScanContinuation(continuation, prefix)
 		if resumed != nil {
 			return &vectorSearchCursor{
 				entries:    resumed,
@@ -614,7 +636,13 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 // parseVectorScanContinuation parses a VectorIndexScanContinuation protobuf.
 // Returns the saved entries and the inner cursor position.
 // If parsing fails, returns nil (caller falls back to fresh search).
-func parseVectorScanContinuation(data []byte, _ []*IndexEntry) ([]*IndexEntry, int) {
+//
+// Resumed entries are reconstructed to be INDISTINGUISHABLE from fresh ones
+// (codex Finding 3): Index and the pinned full primary key are restored —
+// derived from the persisted key via entryFullPK — so IndexEntry.PrimaryKey()
+// returns the correct key on a resumed page instead of an empty tuple (which
+// would fetch the wrong record / skip the remaining nearest rows).
+func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*IndexEntry, int) {
 	var contProto gen.VectorIndexScanContinuation
 	if err := contProto.UnmarshalVT(data); err != nil {
 		return nil, 0
@@ -631,8 +659,10 @@ func parseVectorScanContinuation(data []byte, _ []*IndexEntry) ([]*IndexEntry, i
 			return nil, 0
 		}
 		entries = append(entries, &IndexEntry{
-			Key:   key,
-			Value: value,
+			Index:      m.index,
+			Key:        key,
+			Value:      value,
+			primaryKey: m.entryFullPK(key, prefix),
 		})
 	}
 

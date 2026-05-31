@@ -60,3 +60,4 @@ bench-results.txt
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 test-report.html
+REVIEW.md

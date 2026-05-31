@@ -73,6 +73,17 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		if _, isAgg := cand.(*AggregateIndexMatchCandidate); isAgg {
 			continue
 		}
+		// Vector candidates are handled exclusively via the data-access match
+		// path (PrepareMatchesAndCompensations → DataAccessForMatchPartition),
+		// which binds the index-only DistanceRank to the distance placeholder.
+		// This rule only binds FieldValue-keyed comparison predicates, so it
+		// can't bind the DistanceRank — ToScanPlan would emit a vector plan with
+		// a nil query vector. Skip explicitly (mirrors the aggregate skip above);
+		// the index-only residual guard below would also drop it, but the typed
+		// skip keeps the separation of concerns from depending on that.
+		if _, isVec := cand.(*VectorIndexScanMatchCandidate); isVec {
+			continue
+		}
 		if !recordTypesOverlap(scanTypes, cand.GetRecordTypes()) {
 			continue
 		}
@@ -147,6 +158,23 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		// Java's ImplementPhysicalScanRule covers both via the shared
 		// RecordQueryPlanWithComparisons interface.
 		residual := residualPredicates(preds, consumed, prefix, aliases, colToIdx)
+
+		// An index-only predicate (e.g. a vector K-NN DistanceRank over a
+		// DistanceRowNumberValue) cannot be evaluated as a residual filter — it
+		// can only be consumed by a data-access candidate that binds it. If one
+		// remains in the residual, this candidate (e.g. a primary scan that only
+		// matched the partition key) can't produce a valid plan; skip it. Mirrors
+		// the match-layer uncompensatable check (predicateContainsUncompensatableValues).
+		skipUncompensatable := false
+		for _, p := range residual {
+			if predicateContainsUncompensatableValues(p) {
+				skipUncompensatable = true
+				break
+			}
+		}
+		if skipUncompensatable {
+			continue
+		}
 
 		if fetchPlan, ok := idxPlan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 			// ToScanPlan for secondary indexes always returns

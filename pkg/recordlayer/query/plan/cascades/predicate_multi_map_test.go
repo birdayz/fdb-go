@@ -878,6 +878,28 @@ func TestValueContainsUncompensatable_Positive(t *testing.T) {
 	if !valueContainsUncompensatable(u) {
 		t.Fatal("UnmatchedAggregateValue should be uncompensatable")
 	}
+
+	// RowNumberValue and the metric-specific DistanceRowNumberValues are
+	// index-only (producible only by a BY_DISTANCE vector index scan) — the
+	// general values.IsIndexOnly marker must classify them uncompensatable so a
+	// candidate that would leave a vector K-NN DistanceRank predicate as a
+	// residual filter forms an impossible match. This is the property the
+	// implement-path guard (ImplementIndexScanRule) and the match-path
+	// compensation both rely on; both are pinned by TestVectorPlan_QualifyPlansToVectorScan,
+	// and removing either there fails that test (neither guard can drift silently).
+	rn := values.NewRowNumberValue(
+		[]values.Value{&values.FieldValue{Field: "zone"}},
+		[]values.Value{&values.FieldValue{Field: "embedding"}}, nil, nil)
+	if !valueContainsUncompensatable(rn) {
+		t.Fatal("RowNumberValue should be uncompensatable (index-only)")
+	}
+
+	drn := values.NewEuclideanDistanceRowNumberValue(
+		[]values.Value{&values.FieldValue{Field: "zone"}},
+		[]values.Value{&values.FieldValue{Field: "embedding"}})
+	if !valueContainsUncompensatable(drn) {
+		t.Fatal("EuclideanDistanceRowNumberValue should be uncompensatable (index-only)")
+	}
 }
 
 func TestValueContainsUncompensatable_Negative(t *testing.T) {
