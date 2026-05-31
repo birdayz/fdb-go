@@ -61,7 +61,15 @@ func TransformRowNumberDistanceRankMaybe(rn *values.RowNumberValue, cmpType Comp
 	if !isFieldValue(indexVector) && isFieldValue(queryVector) {
 		indexVector, queryVector = queryVector, indexVector
 	}
-	cmp := NewDistanceRankComparison(drType, queryVector, comparand, rn.EfSearch, rn.IsReturningVectors)
+	// Java maps EQUALS → DISTANCE_RANK_EQUALS above, then the
+	// DistanceRankValueComparison constructor rejects it; NewDistanceRankComparison
+	// mirrors that and returns ok=false. The row-number comparison is then left
+	// un-lowered (index-only), so `ROW_NUMBER() = K` fails to plan rather than
+	// silently degrading to a top-K scan.
+	cmp, ok := NewDistanceRankComparison(drType, queryVector, comparand, rn.EfSearch, rn.IsReturningVectors)
+	if !ok {
+		return nil, false
+	}
 
 	var lhs values.Value
 	switch dv.Operator {

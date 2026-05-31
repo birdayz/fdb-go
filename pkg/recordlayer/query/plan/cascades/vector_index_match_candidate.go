@@ -235,16 +235,18 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 	}
 
 	// Distance binding: extract the DistanceRank comparison (query vector + k +
-	// ef_search) bound to the distance alias.
+	// ef_search + the rank operator) bound to the distance alias.
 	var queryVector, k values.Value
 	var efSearch *int
 	var isReturningVectors *bool
+	rankType := predicates.ComparisonDistanceRankLessThanOrEq
 	if cr, ok := prefixMap[c.distanceAlias]; ok {
 		if drc := extractDistanceRankComparison(cr); drc != nil {
 			queryVector = drc.QueryVector
 			k = drc.Operand
 			efSearch = drc.EfSearch
 			isReturningVectors = drc.IsReturningVectors
+			rankType = drc.Type
 		}
 	}
 
@@ -253,6 +255,7 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 		prefixComps,
 		queryVector,
 		k,
+		rankType,
 		efSearch,
 		isReturningVectors,
 		c.recordTypes,

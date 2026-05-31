@@ -1120,7 +1120,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		// predicate) must still be attached — synthesize a LogicalFilter above
 		// the scan rather than dropping it (an unpartitioned KNN query has no
 		// WHERE, so no filter was built upstream).
-		if qualPred, ok := buildQualifyPredicate(md, sq, cteScopes); ok {
+		qualPred, qErr := buildQualifyPredicate(md, sq, cteScopes)
+		if qErr != nil {
+			return nil, qErr
+		}
+		if qualPred != nil {
 			op = attachOrSynthesizeFilter(op, qualPred)
 		}
 		return op, nil
@@ -1233,7 +1237,11 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	// QUALIFY (vector K-NN ROW_NUMBER() filter) is AND-combined with the WHERE
 	// predicate onto the same LogicalFilter — upgradeFirstFilter replaces, so
 	// both must be attached together.
-	if qualPred, qualOk := buildQualifyPredicate(md, sq, cteScopes); qualOk {
+	qualPred, qErr := buildQualifyPredicate(md, sq, cteScopes)
+	if qErr != nil {
+		return nil, qErr
+	}
+	if qualPred != nil {
 		if ok {
 			pred = predicates.NewAnd(pred, qualPred)
 		} else {

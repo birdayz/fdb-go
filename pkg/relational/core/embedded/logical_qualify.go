@@ -4,6 +4,7 @@ import (
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
@@ -15,47 +16,97 @@ import (
 // {<,<=,=} K`, which lowers to a DistanceRank comparison the vector index
 // match candidate can satisfy.
 //
-// Returns (nil, false) when there is no QUALIFY clause or the predicate can't
-// be built/resolved (caller leaves the plan unchanged).
+// Three states, so an unsupported QUALIFY is never silently dropped (codex
+// Finding 1):
+//   - (nil, nil)  — no QUALIFY clause; caller leaves the plan unchanged.
+//   - (nil, err)  — QUALIFY present but unbuildable: the window expression failed
+//     to resolve (e.g. DESC ordering / RANK(), rejected by the walker), OR a
+//     ROW_NUMBER() comparison survived the DistanceRank transform un-lowered
+//     (an unsupported window shape, e.g. `= K` or a non-distance ORDER BY).
+//     The query MUST fail rather than execute with the QUALIFY filter ignored.
+//   - (pred, nil) — the QUALIFY predicate (the vector K-NN DistanceRank).
 func buildQualifyPredicate(
 	md *recordlayer.RecordMetaData,
 	sq *selectQuery,
 	cteScopes map[string]semantic.ScopeSource,
-) (predicates.QueryPredicate, bool) {
+) (predicates.QueryPredicate, error) {
 	if sq == nil || sq.qualifyExpr == nil {
-		return nil, false
+		return nil, nil
 	}
 	resolver := buildSelectScope(sq, md, cteScopes)
 	if resolver == nil {
-		return nil, false
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"QUALIFY clause could not be resolved against the query scope")
 	}
 	pred, err := resolver.WalkPredicate(sq.qualifyExpr)
 	if err != nil {
-		return nil, false
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"unsupported QUALIFY clause: %v", err)
 	}
 	pred = applyDistanceRankTransform(pred)
 	pred = predicates.SimplifyPredicateValues(pred)
-	return pred, true
+	// A ROW_NUMBER() that survives the transform un-lowered is an unsupported
+	// window shape (only the vector K-NN ROW_NUMBER() {<,<=} K form lowers to a
+	// DistanceRank). Java has no other window-function surface — fail loud rather
+	// than attach a predicate that can't be evaluated and would drop every row.
+	if predicateHasUnloweredRowNumber(pred) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"unsupported window function in QUALIFY: only ROW_NUMBER() OVER "+
+				"(... ORDER BY <distance>(vec, q)) {<,<=} K is supported")
+	}
+	return pred, nil
 }
 
 // combineQualifyPred AND-combines the QUALIFY-clause predicate (the vector
 // K-NN ROW_NUMBER() <= K DistanceRank comparison) with the WHERE predicate so
 // both attach to the same LogicalFilter. Returns pred unchanged when there is
-// no QUALIFY clause.
+// no QUALIFY clause; propagates a build error for an unsupported QUALIFY.
 func combineQualifyPred(
 	md *recordlayer.RecordMetaData,
 	sq *selectQuery,
 	cteScopes map[string]semantic.ScopeSource,
 	pred predicates.QueryPredicate,
-) predicates.QueryPredicate {
-	qualPred, ok := buildQualifyPredicate(md, sq, cteScopes)
-	if !ok {
-		return pred
+) (predicates.QueryPredicate, error) {
+	qualPred, err := buildQualifyPredicate(md, sq, cteScopes)
+	if err != nil {
+		return nil, err
+	}
+	if qualPred == nil {
+		return pred, nil
 	}
 	if pred == nil {
-		return qualPred
+		return qualPred, nil
 	}
-	return predicates.NewAnd(pred, qualPred)
+	return predicates.NewAnd(pred, qualPred), nil
+}
+
+// predicateHasUnloweredRowNumber reports whether the predicate tree still
+// contains a raw RowNumberValue after the DistanceRank transform — i.e. an
+// unsupported window shape that did not lower to a vector scan.
+func predicateHasUnloweredRowNumber(p predicates.QueryPredicate) bool {
+	found := false
+	predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
+		if found {
+			return false
+		}
+		cp, ok := node.(*predicates.ComparisonPredicate)
+		if !ok {
+			return true
+		}
+		for _, v := range []values.Value{cp.Operand, cp.Comparison.Operand} {
+			if v == nil {
+				continue
+			}
+			values.WalkValue(v, func(n values.Value) bool {
+				if _, isRN := n.(*values.RowNumberValue); isRN {
+					found = true
+				}
+				return !found
+			})
+		}
+		return !found
+	})
+	return found
 }
 
 // attachOrSynthesizeFilter attaches pred to the first LogicalFilter on op's

@@ -32,8 +32,16 @@ type RecordQueryVectorIndexPlan struct {
 	prefixComparisons []*predicates.ComparisonRange
 	// queryVector evaluates to the search vector ([]float64 / []float32).
 	queryVector values.Value
-	// k evaluates to the number of nearest neighbors to return (top-K).
+	// k evaluates to the K in the QUALIFY rank predicate (ROW_NUMBER() <op> K).
+	// The number of rows scanned is derived from k AND rankType — see
+	// adjustedLimit / Java's VectorIndexScanBounds.getAdjustedLimit:
+	// LESS_THAN → k-1, LESS_THAN_OR_EQUAL → k.
 	k values.Value
+	// rankType is the distance-rank comparison operator
+	// (ComparisonDistanceRankLessThan or ...LessThanOrEq). It determines the
+	// scan limit relative to k; EQUALS is rejected upstream and never reaches
+	// here.
+	rankType predicates.ComparisonType
 	// efSearch is the HNSW search-quality knob (nil = index/engine default).
 	efSearch *int
 	// isReturningVectors requests the scan return vector payloads (nil = no).
@@ -48,6 +56,7 @@ func NewRecordQueryVectorIndexPlan(
 	prefixComparisons []*predicates.ComparisonRange,
 	queryVector values.Value,
 	k values.Value,
+	rankType predicates.ComparisonType,
 	efSearch *int,
 	isReturningVectors *bool,
 	recordTypes []string,
@@ -56,6 +65,11 @@ func NewRecordQueryVectorIndexPlan(
 	if flowedType == nil {
 		flowedType = values.UnknownType
 	}
+	// Default to <= (top-K) when unspecified — the common QUALIFY shape.
+	if rankType != predicates.ComparisonDistanceRankLessThan &&
+		rankType != predicates.ComparisonDistanceRankLessThanOrEq {
+		rankType = predicates.ComparisonDistanceRankLessThanOrEq
+	}
 	comps := make([]*predicates.ComparisonRange, len(prefixComparisons))
 	copy(comps, prefixComparisons)
 	return &RecordQueryVectorIndexPlan{
@@ -63,11 +77,18 @@ func NewRecordQueryVectorIndexPlan(
 		prefixComparisons:  comps,
 		queryVector:        queryVector,
 		k:                  k,
+		rankType:           rankType,
 		efSearch:           efSearch,
 		isReturningVectors: isReturningVectors,
 		recordTypes:        dedupSortedStrings(recordTypes),
 		flowedType:         flowedType,
 	}
+}
+
+// GetRankType returns the distance-rank comparison operator (LessThan or
+// LessThanOrEq). Used by the executor to derive the scan limit from k.
+func (p *RecordQueryVectorIndexPlan) GetRankType() predicates.ComparisonType {
+	return p.rankType
 }
 
 // GetIndexName returns the vector index name.
@@ -108,6 +129,9 @@ func (p *RecordQueryVectorIndexPlan) EqualsWithoutChildren(other RecordQueryPlan
 	if !ok || p.indexName != o.indexName {
 		return false
 	}
+	if p.rankType != o.rankType {
+		return false
+	}
 	if !typeEquals(p.flowedType, o.flowedType) {
 		return false
 	}
@@ -140,6 +164,7 @@ func (p *RecordQueryVectorIndexPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte("vectorindexplan|"))
 	h.Write([]byte(p.indexName))
 	h.Write([]byte{0})
+	h.Write([]byte{byte(p.rankType)})
 	for _, cr := range p.prefixComparisons {
 		h.Write([]byte{byte(cr.GetRangeType())})
 	}
@@ -164,7 +189,12 @@ func (p *RecordQueryVectorIndexPlan) Explain() string {
 			b.WriteString("*")
 		}
 	}
-	b.WriteString("], k=")
+	b.WriteString("], ")
+	if p.rankType == predicates.ComparisonDistanceRankLessThan {
+		b.WriteString("rank<")
+	} else {
+		b.WriteString("rank<=")
+	}
 	b.WriteString(values.ExplainValue(p.k))
 	if p.efSearch != nil {
 		b.WriteString(fmt.Sprintf(", ef_search=%d", *p.efSearch))

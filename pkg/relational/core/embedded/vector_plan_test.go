@@ -62,6 +62,57 @@ func TestVectorPlan_PartitionOnlyDoesNotMatchVector(t *testing.T) {
 	}
 }
 
+// TestVectorPlan_UnsupportedQualifyErrors pins codex Finding 1: an unsupported
+// QUALIFY window shape must FAIL the query, never be silently dropped (which
+// would return rows as if the QUALIFY were absent). Covers the window orderings
+// /functions Java rejects (DESC, RANK()) and the `= K` operator Java rejects at
+// the DistanceRank comparison.
+func TestVectorPlan_UnsupportedQualifyErrors(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			zone string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	cases := []struct {
+		name string
+		sql  string
+	}{
+		{
+			"DESC window order",
+			`SELECT doc_id FROM docs WHERE zone = 'z1'
+				QUALIFY ROW_NUMBER() OVER (PARTITION BY zone
+					ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0]) DESC) <= 3`,
+		},
+		{
+			"RANK not supported",
+			`SELECT doc_id FROM docs WHERE zone = 'z1'
+				QUALIFY RANK() OVER (PARTITION BY zone
+					ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) <= 3`,
+		},
+		{
+			"equals operator rejected",
+			`SELECT doc_id FROM docs WHERE zone = 'z1'
+				QUALIFY ROW_NUMBER() OVER (PARTITION BY zone
+					ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) = 3`,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			explain, err := PlanQueryForTest(tc.sql, schema, nil)
+			if err == nil {
+				t.Fatalf("unsupported QUALIFY (%s) did not error; plan:\n%s", tc.name, explain)
+			}
+			if strings.Contains(explain, "VectorIndexScan") {
+				t.Fatalf("unsupported QUALIFY (%s) produced a vector scan:\n%s", tc.name, explain)
+			}
+		})
+	}
+}
+
 // TestVectorPlan_MetricMismatchDoesNotMatchVector pins the metric-match
 // invariant (@claude review): a QUALIFY ORDER BY cosine_distance(...) over an
 // index declared EUCLIDEAN_METRIC must NOT plan to a vector scan. The query

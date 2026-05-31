@@ -3332,6 +3332,10 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 
 var _ = Describe("Vector Search Cursor Continuation", func() {
 	ctx := context.Background()
+	// Minimal maintainer for the cursor/continuation logic: entryFullPK only
+	// reads m.index (no component positions → PK = key with prefix stripped),
+	// so a bare &Index{} suffices for these synthetic-entry replay tests.
+	m := &vectorIndexMaintainer{standardIndexMaintainer: standardIndexMaintainer{index: &Index{}}}
 
 	It("returns all results without continuation", func() {
 		entries := []*IndexEntry{
@@ -3339,7 +3343,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
 			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{3.0}},
 		}
-		cursor := newVectorSearchCursor(entries, nil)
+		cursor := m.newVectorSearchCursor(entries, nil, nil)
 
 		var results []*IndexEntry
 		for {
@@ -3366,7 +3370,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		}
 
 		// Get first result and its continuation.
-		cursor := newVectorSearchCursor(entries, nil)
+		cursor := m.newVectorSearchCursor(entries, nil, nil)
 		r, err := cursor.OnNext(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(r.HasNext()).To(BeTrue())
@@ -3376,7 +3380,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Resume from continuation — should skip entry 1.
-		cursor2 := newVectorSearchCursor(entries, cont)
+		cursor2 := m.newVectorSearchCursor(entries, cont, nil)
 		var remaining []*IndexEntry
 		for {
 			r, err := cursor2.OnNext(ctx)
@@ -3401,7 +3405,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		}
 
 		// Read first entry, get continuation.
-		cursor := newVectorSearchCursor(entries, nil)
+		cursor := m.newVectorSearchCursor(entries, nil, nil)
 		r, err := cursor.OnNext(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		cont, err := r.GetContinuation().ToBytes()
@@ -3409,7 +3413,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 
 		// Resume — should skip entry with PK 1 (same dist, PK <= continuation PK).
 		// Entry with PK 2 at same distance should still be returned.
-		cursor2 := newVectorSearchCursor(entries, cont)
+		cursor2 := m.newVectorSearchCursor(entries, cont, nil)
 		var remaining []*IndexEntry
 		for {
 			r, err := cursor2.OnNext(ctx)
@@ -3430,14 +3434,14 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		}
 
 		// Read the only entry.
-		cursor := newVectorSearchCursor(entries, nil)
+		cursor := m.newVectorSearchCursor(entries, nil, nil)
 		r, err := cursor.OnNext(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		cont, err := r.GetContinuation().ToBytes()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Resume — should return empty.
-		cursor2 := newVectorSearchCursor(entries, cont)
+		cursor2 := m.newVectorSearchCursor(entries, cont, nil)
 		r, err = cursor2.OnNext(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(r.HasNext()).To(BeFalse())
@@ -3445,7 +3449,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 	})
 
 	It("empty entries returns exhausted", func() {
-		cursor := newVectorSearchCursor([]*IndexEntry{}, nil)
+		cursor := m.newVectorSearchCursor([]*IndexEntry{}, nil, nil)
 		r, err := cursor.OnNext(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(r.HasNext()).To(BeFalse())
@@ -3459,7 +3463,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		}
 
 		// Pass garbage continuation bytes — should start from beginning.
-		cursor := newVectorSearchCursor(entries, []byte{0xff, 0xfe})
+		cursor := m.newVectorSearchCursor(entries, []byte{0xff, 0xfe}, nil)
 		var results []*IndexEntry
 		for {
 			r, err := cursor.OnNext(ctx)
@@ -3486,7 +3490,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		var cont []byte
 
 		for {
-			cursor := newVectorSearchCursor(entries, cont)
+			cursor := m.newVectorSearchCursor(entries, cont, nil)
 			pageCount := 0
 			var lastCont RecordCursorContinuation
 			for pageCount < 2 {
@@ -3529,7 +3533,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		}
 
 		encoded := encodeVectorScanContinuation(entries, 1)
-		parsed, innerPos := parseVectorScanContinuation(encoded, nil)
+		parsed, innerPos := m.parseVectorScanContinuation(encoded, nil)
 		Expect(parsed).To(HaveLen(3))
 		Expect(innerPos).To(Equal(1))
 		Expect(parsed[0].Key[0].(int64)).To(Equal(int64(1)))
@@ -3542,7 +3546,7 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
 			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
 		}
-		cursor := newVectorSearchCursor(entries, nil)
+		cursor := m.newVectorSearchCursor(entries, nil, nil)
 
 		r, err := cursor.OnNext(ctx)
 		Expect(err).NotTo(HaveOccurred())

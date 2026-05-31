@@ -251,18 +251,30 @@ type Comparison struct {
 	IsReturningVectors *bool
 }
 
-// NewDistanceRankComparison builds the vector K-NN distance-rank
-// comparison (Java's Comparisons.DistanceRankValueComparison). typ must be
-// one of the ComparisonDistanceRank* types; comparand is the K (top-K)
+// NewDistanceRankComparison builds the vector K-NN distance-rank comparison
+// (Java's Comparisons.DistanceRankValueComparison). comparand is the K (top-K)
 // value and queryVector is the search vector.
-func NewDistanceRankComparison(typ ComparisonType, queryVector, comparand values.Value, efSearch *int, isReturningVectors *bool) Comparison {
+//
+// Returns ok=false when typ is not a *scannable* distance-rank type. Java's
+// DistanceRankValueComparison constructor asserts
+// `type == DISTANCE_RANK_LESS_THAN || type == DISTANCE_RANK_LESS_THAN_OR_EQUAL`
+// (Comparisons.java) — DISTANCE_RANK_EQUALS is mapped by
+// RowNumberValue.transformComparisonMaybe but then REJECTED at construction, so
+// `ROW_NUMBER() = K` is not expressible as a vector scan. We mirror that here
+// (no panic): the caller treats ok=false as "not lowerable", leaving the
+// row-number comparison unmatched so the query fails to plan, exactly as Java's
+// assertion failure aborts planning.
+func NewDistanceRankComparison(typ ComparisonType, queryVector, comparand values.Value, efSearch *int, isReturningVectors *bool) (Comparison, bool) {
+	if typ != ComparisonDistanceRankLessThan && typ != ComparisonDistanceRankLessThanOrEq {
+		return Comparison{}, false
+	}
 	return Comparison{
 		Type:               typ,
 		Operand:            comparand,
 		QueryVector:        queryVector,
 		EfSearch:           efSearch,
 		IsReturningVectors: isReturningVectors,
-	}
+	}, true
 }
 
 // GetCorrelatedTo returns the set of correlation identifiers referenced

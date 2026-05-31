@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -44,9 +45,9 @@ func TestQualify_BuildsDistanceRankPredicate(t *testing.T) {
 		t.Fatal("qualifyExpr was not captured from the QUALIFY clause")
 	}
 
-	pred, ok := buildQualifyPredicate(md, sq, nil)
-	if !ok {
-		t.Fatal("buildQualifyPredicate returned ok=false")
+	pred, err := buildQualifyPredicate(md, sq, nil)
+	if err != nil {
+		t.Fatalf("buildQualifyPredicate: %v", err)
 	}
 	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
@@ -97,9 +98,9 @@ func TestQualify_InvertedComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractSelectParts: %v", err)
 	}
-	pred, ok := buildQualifyPredicate(md, sq, nil)
-	if !ok {
-		t.Fatal("buildQualifyPredicate returned ok=false for inverted comparison")
+	pred, err := buildQualifyPredicate(md, sq, nil)
+	if err != nil {
+		t.Fatalf("buildQualifyPredicate (inverted comparison): %v", err)
 	}
 	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
@@ -110,6 +111,22 @@ func TestQualify_InvertedComparison(t *testing.T) {
 	}
 	if _, ok := cp.Operand.(*values.EuclideanDistanceRowNumberValue); !ok {
 		t.Errorf("LHS is %T, want *EuclideanDistanceRowNumberValue", cp.Operand)
+	}
+}
+
+// TestQualify_PlainPredicateNotRejected guards the codex Finding 1 error gate:
+// it must fire ONLY for unbuildable/unlowered window shapes, never for a plain
+// non-window QUALIFY predicate (which has no RowNumberValue and stays a normal
+// filter). Regression guard for the new predicateHasUnloweredRowNumber check.
+func TestQualify_PlainPredicateNotRejected(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (zone string, doc_id string, score bigint, PRIMARY KEY (zone, doc_id))`
+	explain, err := PlanQueryForTest("SELECT doc_id FROM docs WHERE zone='z1' QUALIFY score > 5", schema, nil)
+	if err != nil {
+		t.Fatalf("plain (non-window) QUALIFY was wrongly rejected: %v", err)
+	}
+	if !strings.Contains(explain, "Filter") {
+		t.Fatalf("plain QUALIFY predicate was dropped (no filter in plan):\n%s", explain)
 	}
 }
 

@@ -343,15 +343,29 @@ func executeVectorIndexScan(
 		return nil, fmt.Errorf("executor: vector index %q top-K: %w", p.GetIndexName(), err)
 	}
 
+	// Derive the scan limit from the rank operator, matching Java's
+	// VectorIndexScanBounds.getAdjustedLimit: ROW_NUMBER() < K returns the top
+	// K-1, ROW_NUMBER() <= K returns the top K. (= K is rejected upstream at the
+	// DistanceRank comparison, so only < / <= reach here.) k is already ≥ 1
+	// (evalPositiveInt), so limit ≥ 0; limit == 0 (ROW_NUMBER() < 1) selects no
+	// rows.
+	limit := k
+	if p.GetRankType() == predicates.ComparisonDistanceRankLessThan {
+		limit = k - 1
+	}
+	if limit <= 0 {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+
 	efSearch := defaultVectorEfSearch
 	if p.GetEfSearch() != nil {
 		efSearch = *p.GetEfSearch()
 	}
-	if efSearch < k {
-		efSearch = k
+	if efSearch < limit {
+		efSearch = limit
 	}
 
-	scanRange := recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, k, efSearch, prefix)
+	scanRange := recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
 	scanProps := recordlayer.ScanProperties{
 		ExecuteProperties:   props,
 		CursorStreamingMode: recordlayer.StreamingModeIterator,

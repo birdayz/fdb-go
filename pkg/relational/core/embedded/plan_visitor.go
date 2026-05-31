@@ -647,7 +647,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	if sq.whereExpr == nil {
 		// No WHERE, but a QUALIFY filter (vector K-NN ROW_NUMBER() <= K) must
 		// still be attached — synthesize a filter above the scan if none exists.
-		if qualPred, ok := buildQualifyPredicate(v.md, sq, v.cteScopes); ok {
+		qualPred, qErr := buildQualifyPredicate(v.md, sq, v.cteScopes)
+		if qErr != nil {
+			return nil, qErr
+		}
+		if qualPred != nil {
 			op = attachOrSynthesizeFilter(op, qualPred)
 		}
 		return op, nil
@@ -711,7 +715,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 			}
 		}
-		_ = upgradeFirstFilter(op, combineQualifyPred(v.md, sq, v.cteScopes, pred))
+		combined, qErr := combineQualifyPred(v.md, sq, v.cteScopes, pred)
+		if qErr != nil {
+			return nil, qErr
+		}
+		_ = upgradeFirstFilter(op, combined)
 		if len(existsPlanner.subqueries) > 0 {
 			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
 		}
@@ -723,7 +731,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	if preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
-		_ = upgradeFirstFilter(op, combineQualifyPred(v.md, sq, v.cteScopes, pred))
+		combined, qErr := combineQualifyPred(v.md, sq, v.cteScopes, pred)
+		if qErr != nil {
+			return nil, qErr
+		}
+		_ = upgradeFirstFilter(op, combined)
 		return op, nil
 	}
 

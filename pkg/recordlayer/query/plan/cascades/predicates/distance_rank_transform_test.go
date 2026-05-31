@@ -77,7 +77,7 @@ func TestTransformRowNumberDistanceRank_MetricAndOpMapping(t *testing.T) {
 			},
 		},
 		{
-			"dot product =", values.DistanceDotProduct, ComparisonEquals, ComparisonDistanceRankEquals,
+			"dot product <", values.DistanceDotProduct, ComparisonLessThan, ComparisonDistanceRankLessThan,
 			func(t *testing.T, lhs values.Value) {
 				if _, ok := lhs.(*values.DotProductDistanceRowNumberValue); !ok {
 					t.Errorf("LHS %T, want *DotProductDistanceRowNumberValue", lhs)
@@ -116,10 +116,13 @@ func TestTransformRowNumberDistanceRank_MetricAndOpMapping(t *testing.T) {
 // returning UNKNOWN (which would drop every row and pass green).
 func TestDistanceRankComparison_EvalPanics(t *testing.T) {
 	t.Parallel()
-	cmp := NewDistanceRankComparison(
+	cmp, ok := NewDistanceRankComparison(
 		ComparisonDistanceRankLessThanOrEq,
 		values.LiteralValue([]float64{1, 0, 0}),
 		values.LiteralValue(3), nil, nil)
+	if !ok {
+		t.Fatal("NewDistanceRankComparison rejected a valid LessThanOrEq type")
+	}
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -127,6 +130,27 @@ func TestDistanceRankComparison_EvalPanics(t *testing.T) {
 		}
 	}()
 	cmp.EvalAgainst(int64(1), int64(3))
+}
+
+// TestTransformRowNumberDistanceRank_EqualsRejected pins Java conformance
+// (codex Finding 2): `ROW_NUMBER() = K` maps to DISTANCE_RANK_EQUALS in the
+// switch but Java's DistanceRankValueComparison constructor rejects it
+// (Verify.verify allows only LESS_THAN / LESS_THAN_OR_EQUAL). So the transform
+// must NOT fire for `=`, leaving the row-number comparison un-lowered (which
+// then fails to plan) rather than silently degrading to a top-K scan.
+func TestTransformRowNumberDistanceRank_EqualsRejected(t *testing.T) {
+	t.Parallel()
+	field := values.LiteralValue("v")
+	q := values.LiteralValue([]float64{1})
+	rn := rowNumberOverDistance(values.DistanceEuclidean, nil, field, q, nil)
+	if _, ok := TransformRowNumberDistanceRankMaybe(rn, ComparisonEquals, values.LiteralValue(3)); ok {
+		t.Fatal("transform fired for `= K`; Java rejects DISTANCE_RANK_EQUALS at construction")
+	}
+	// And NewDistanceRankComparison itself rejects the EQUALS type (mirrors Verify).
+	if _, ok := NewDistanceRankComparison(ComparisonDistanceRankEquals,
+		q, values.LiteralValue(3), nil, nil); ok {
+		t.Fatal("NewDistanceRankComparison accepted DISTANCE_RANK_EQUALS")
+	}
 }
 
 func TestTransformRowNumberDistanceRank_NoMatch(t *testing.T) {
