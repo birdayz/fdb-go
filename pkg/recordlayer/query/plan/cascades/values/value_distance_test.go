@@ -3,7 +3,31 @@ package values
 import (
 	"math"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
+
+// TestDistanceValue_DecodesStoredVectorBytes pins codex Finding 2: a distance
+// expression over a STORED vector column reaches eval as its on-disk bytes
+// (vectorcodec format), not []float64, so the distance must DECODE them and
+// compute the real value instead of silently returning UNKNOWN. Before the fix
+// asFloat64Slice didn't handle []byte and the distance evaluated to nil.
+func TestDistanceValue_DecodesStoredVectorBytes(t *testing.T) {
+	t.Parallel()
+	// Stored vector (0,0,0) as on-disk bytes; query vector (3,4,0) as []float64.
+	stored := vectorcodec.Serialize([]float64{0, 0, 0})
+	dv := NewDistanceValue(DistanceEuclidean,
+		&ConstantValue{Value: stored},
+		LiteralValue([]float64{3, 4, 0}))
+	got := dv.Evaluate(nil)
+	d, ok := got.(float64)
+	if !ok {
+		t.Fatalf("distance over stored vector bytes = %#v (%T), want float64 — Finding 2 (silent UNKNOWN)", got, got)
+	}
+	if math.Abs(d-5.0) > 1e-9 {
+		t.Errorf("euclidean distance = %v, want 5.0", d)
+	}
+}
 
 func TestDistanceOperator_String(t *testing.T) {
 	t.Parallel()

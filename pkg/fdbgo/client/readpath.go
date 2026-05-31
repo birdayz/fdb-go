@@ -729,25 +729,48 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 // The watch is a long-poll: there is no short timeout. The context's deadline
 // (if any) controls the maximum wait time.
 func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
+	value, err := tx.WatchSetup(ctx, key)
+	if err != nil {
+		return err
+	}
+	return tx.WatchPoll(ctx, key, value)
+}
+
+// WatchSetup performs the SYNCHRONOUS part of a watch: pin the read version, add
+// the read conflict, and read the value to watch — all at the transaction's read
+// version. It returns the value bytes the watch is registered against.
+//
+// This MUST run within the watching transaction's active window (e.g. directly
+// from Transaction.Watch, not from a detached goroutine that races later
+// mutations). The watched value is captured here; if it were read late — after
+// some other transaction already changed the key — the storage server would be
+// told to watch the *new* value, see the current value already equals it, and
+// never fire the watch (a silent 10s-timeout flake). Reading it synchronously at
+// the read version pins it to a version before any subsequent change.
+func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, error) {
 	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
 	// Returns watches_disabled (1034) immediately.
 	if tx.rywDisabled {
-		return &wire.FDBError{Code: 1034} // watches_disabled
+		return nil, &wire.FDBError{Code: 1034} // watches_disabled
 	}
 
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
 	tx.AddReadConflictKey(key)
 
 	// Read current value so we can send it with the watch request.
 	// C++ getValueOrStandby in watchValue actor reads the value at the watch version.
-	val, err := tx.ryw.get(ctx, key, tx.getValue)
-	if err != nil {
-		return err
-	}
+	return tx.ryw.get(ctx, key, tx.getValue)
+}
 
+// WatchPoll performs the ASYNCHRONOUS long-poll part of a watch: locate the
+// storage server and wait for the WatchValueReply that fires when key's value
+// differs from `value` (the value captured by WatchSetup). Retries on
+// wrong_shard_server with cache invalidation. Intended to run in the watch
+// future's goroutine.
+func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte) error {
 	// Use the transaction's watch context so Reset()/Cancel() cancels in-flight watches.
 	// Matches C++ resetRyow() → resetPromise.sendError(transaction_cancelled).
 	watchCtx := tx.getWatchCtx(ctx)
@@ -761,7 +784,7 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 			return fmt.Errorf("no storage servers for key")
 		}
 
-		watchErr := tx.sendWatch(watchCtx, key, val, loc.Servers)
+		watchErr := tx.sendWatch(watchCtx, key, value, loc.Servers)
 		if watchErr == nil {
 			return nil
 		}

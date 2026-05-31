@@ -247,3 +247,67 @@ func TestGetValue_NonExistentKey(t *testing.T) {
 		}
 	}
 }
+
+// TestWatch_ValueCapturedSyncFiresAfterModify deterministically pins the watch
+// value-capture fix (the CI flake root cause). A watch fires when the storage
+// server sees a value different from the one it was registered against. The fix
+// splits Watch into a SYNCHRONOUS WatchSetup (pin the value at the read version)
+// and an async WatchPoll. This test exercises the split directly: capture the
+// value BEFORE the modify, then poll — the watch must fire. (Before the fix,
+// tr.Watch read the value in a detached goroutine that could run AFTER the
+// modify, capturing the already-current value so the watch never fired — a
+// silent 10s timeout. By controlling the order here, the proof is deterministic,
+// not race-dependent.)
+func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	key := []byte(t.Name() + "_key")
+
+	// Seed "initial".
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("initial"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Capture the watched value SYNCHRONOUSLY at the read version (what tr.Watch
+	// now does before returning the future) — captures "initial".
+	var captured []byte
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		v, err := tx.WatchSetup(ctx, key)
+		captured = v
+		return nil, err
+	}); err != nil {
+		t.Fatalf("WatchSetup: %v", err)
+	}
+
+	// Modify strictly AFTER the value was captured.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("changed"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("modify: %v", err)
+	}
+
+	// Poll: the current value ("changed") differs from the captured value
+	// ("initial"), so the watch must fire promptly.
+	done := make(chan error, 1)
+	go func() {
+		_, e := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return nil, tx.WatchPoll(ctx, key, captured)
+		})
+		done <- e
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("WatchPoll(stale captured value) returned %v, want it to fire", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("WatchPoll did not fire for a stale captured value within 10s — value-capture regression")
+	}
+}

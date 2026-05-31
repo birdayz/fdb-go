@@ -199,8 +199,24 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	}
 	val := binary.LittleEndian.Uint64(result.([]byte))
 	t.Logf("fault_counter = %d", val)
-	if val != 15 {
-		t.Errorf("expected 15 (ADD applied once), got %d", val)
+	// commit_unknown_result (1021) is, by the FDB contract, genuinely
+	// nondeterministic: when the connection dies during commit the transaction
+	// MAY or MAY NOT have been durably applied by the server. The fault here kills
+	// the reply (killReads) AFTER the commit request was written, so the server
+	// usually commits before the connection teardown (counter 15) — but
+	// occasionally the teardown aborts the in-flight commit first (counter 10).
+	// BOTH are correct outcomes. The invariant this test actually guards is
+	// no-DOUBLE-apply: the ADD must never be applied more than once (counter must
+	// never reach 20). Asserting an exact 15 was a false determinism assumption
+	// and made the test flaky.
+	switch val {
+	case 10:
+		t.Logf("commit_unknown_result: ADD was not applied (counter stayed 10) — valid outcome")
+	case 15:
+		t.Logf("commit_unknown_result: ADD applied exactly once (counter 15) — valid outcome")
+	default:
+		t.Errorf("counter = %d, want 10 (commit not applied) or 15 (applied once); "+
+			"anything >= 20 is a double-apply bug", val)
 	}
 }
 

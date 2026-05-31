@@ -1580,6 +1580,67 @@ func TestMultipleWatchesSameKey(t *testing.T) {
 	}
 }
 
+// TestManyWatchesSameKey_AllFire is a stronger regression for the watch
+// value-capture race that flaked TestMultipleWatchesSameKey in CI. With many
+// concurrent watches on one key, the pre-fix asynchronous value-read (done in
+// the watch future's goroutine) made it very likely that at least one watch read
+// the value AFTER the modify committed, registering against the already-current
+// value so it never fired (a silent 10s timeout). tr.Watch now captures the
+// watched value synchronously at call time, so ALL N watches must fire.
+func TestManyWatchesSameKey_AllFire(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	key := fdb.Key(t.Name() + "_key")
+
+	// Seed.
+	if _, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("initial"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Establish N watches on the same key, each from its own transaction.
+	const n = 16
+	watches := make([]fdb.FutureNil, n)
+	for i := 0; i < n; i++ {
+		i := i
+		if _, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			watches[i] = tr.Watch(key)
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("watch %d: %v", i, err)
+		}
+	}
+
+	// Single modify strictly after all watches are established.
+	if _, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("changed"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("modify: %v", err)
+	}
+
+	// Every watch must fire.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		w := watches[i]
+		go func() { errs <- w.Get() }()
+	}
+	for fired := 0; fired < n; fired++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Errorf("watch error: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("only %d/%d watches fired within 15s — watch value-capture race regression", fired, n)
+		}
+	}
+}
+
 // TestGetRangeEdgeCases tests boundary conditions for GetRange.
 func TestGetRangeEdgeCases(t *testing.T) {
 	t.Parallel()

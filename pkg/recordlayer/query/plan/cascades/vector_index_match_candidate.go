@@ -103,13 +103,26 @@ func NewVectorIndexScanMatchCandidate(
 	distanceAlias := values.UniqueCorrelationIdentifier()
 	params = append(params, distanceAlias)
 
+	// The distance alias AND every partition-key column must be bound before this
+	// match is admitted. The HNSW graph is per-partition, so a partitioned vector
+	// scan needs the FULL partition equality prefix. Requiring only the distance
+	// alias let a query that omits a partition column (a WHERE-less QUALIFY, or
+	// only the first of a multi-column partition) match anyway:
+	// ComputeBoundParameterPrefixMap then truncates at the first unbound partition
+	// param — before the distance alias — and ToScanPlan emits a
+	// RecordQueryVectorIndexPlan with a nil query vector that the executor rejects.
+	requiredForBinding := map[values.CorrelationIdentifier]struct{}{distanceAlias: {}}
+	for _, a := range ordering {
+		requiredForBinding[a] = struct{}{}
+	}
+
 	return &VectorIndexScanMatchCandidate{
 		indexName:                    indexName,
 		recordTypes:                  types,
 		columnNames:                  cols,
 		parameters:                   params,
 		orderingAliases:              ordering,
-		parametersRequiredForBinding: map[values.CorrelationIdentifier]struct{}{distanceAlias: {}},
+		parametersRequiredForBinding: requiredForBinding,
 		partitionCount:               partitionCount,
 		distanceAlias:                distanceAlias,
 		metric:                       metric,

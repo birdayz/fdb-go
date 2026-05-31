@@ -132,6 +132,40 @@ func TestVectorPlan_UnsupportedQualifyErrors(t *testing.T) {
 	}
 }
 
+// TestVectorPlan_PartitionedRequiresFullPrefix pins codex Finding 1: a
+// partitioned vector index must not match unless the FULL partition equality
+// prefix is bound. The HNSW graph is per-partition, so a partial prefix can't
+// locate the graph. The dangerous case is a MULTI-COLUMN partition with only the
+// leading column bound: the DistanceRank is nominally consumed into the
+// (truncated) prefix, so it isn't left as a residual and escapes the index-only
+// residual guard — and before the fix the planner chose a vector scan with a nil
+// query vector (`prefix=[=, *], rank<=` with no K) that the executor later
+// rejects. With the fix the match is refused at the binding gate and the query
+// is cleanly unplannable. (The single-column / WHERE-less case was already caught
+// by the residual guard; this multi-column case is the one that slipped through.)
+func TestVectorPlan_PartitionedRequiresFullPrefix(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			zone string, region string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, region, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone, region) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	// Two-column partition (zone, region) but only zone is bound — region unbound.
+	sql := `SELECT doc_id FROM docs WHERE zone = 'z1'
+		QUALIFY ROW_NUMBER() OVER (
+			PARTITION BY zone, region
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+
+	explain, err := PlanQueryForTest(sql, schema, nil)
+	// Must never produce a vector scan from a partial partition prefix (that plan
+	// would have a nil query vector). Correct outcome: unplannable.
+	if err == nil && strings.Contains(explain, "VectorIndexScan") {
+		t.Fatalf("partitioned vector index matched with a partial partition prefix (nil-query-vector plan):\n%s", explain)
+	}
+}
+
 // TestVectorPlan_MetricMismatchDoesNotMatchVector pins the metric-match
 // invariant (@claude review): a QUALIFY ORDER BY cosine_distance(...) over an
 // index declared EUCLIDEAN_METRIC must NOT plan to a vector scan. The query

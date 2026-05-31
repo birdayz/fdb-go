@@ -23,7 +23,6 @@ package recordlayer
 
 import (
 	"container/heap"
-	"encoding/binary"
 	"fmt"
 	"math"
 	"math/rand"
@@ -32,6 +31,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
 
 // VectorQuantizer is an optional quantization strategy for HNSW vector storage.
@@ -1858,15 +1858,11 @@ func (s *hnswStorage) findAnyNodeAtLayerDispatch(tx fdb.ReadTransaction, layer i
 // --- Vector serialization ---
 // Wire-compatible with Java's VectorType.DOUBLE.
 
-// serializeVector serializes a float64 vector to bytes.
-// Format: byte 0 = type ordinal (0 for DOUBLE), bytes 1+ = big-endian IEEE 754 float64 values.
+// serializeVector serializes a float64 vector to bytes (DOUBLE format). The
+// canonical codec lives in the leaf vectorcodec package so it can be shared with
+// the Cascades values layer (distance-over-stored-column) without an import cycle.
 func serializeVector(vec []float64) []byte {
-	buf := make([]byte, 1+8*len(vec))
-	buf[0] = 2 // DOUBLE type ordinal — Java VectorType.DOUBLE.ordinal() = 2
-	for i, v := range vec {
-		binary.BigEndian.PutUint64(buf[1+i*8:], math.Float64bits(v))
-	}
-	return buf
+	return vectorcodec.Serialize(vec)
 }
 
 // SerializeVector encodes a float64 vector into the on-disk byte format the
@@ -1880,69 +1876,7 @@ func SerializeVector(vec []float64) []byte { return serializeVector(vec) }
 //   - Type 1: SINGLE/FLOAT (32-bit IEEE 754, 4 bytes per component)
 //   - Type 2: DOUBLE (64-bit IEEE 754, 8 bytes per component)
 func deserializeVector(data []byte) ([]float64, error) {
-	if len(data) < 1 {
-		return nil, fmt.Errorf("hnsw: empty vector data")
-	}
-	typeOrdinal := data[0]
-	payload := data[1:]
-
-	switch typeOrdinal {
-	case 0: // HALF (float16) — Java VectorType.HALF.ordinal() = 0
-		numFloats := len(payload) / 2
-		vec := make([]float64, numFloats)
-		for i := 0; i < numFloats; i++ {
-			bits := binary.BigEndian.Uint16(payload[i*2:])
-			vec[i] = float64(halfToFloat32(bits))
-		}
-		return vec, nil
-	case 1: // SINGLE (float32) — Java VectorType.SINGLE.ordinal() = 1
-		numFloats := len(payload) / 4
-		vec := make([]float64, numFloats)
-		for i := 0; i < numFloats; i++ {
-			vec[i] = float64(math.Float32frombits(binary.BigEndian.Uint32(payload[i*4:])))
-		}
-		return vec, nil
-	case 2: // DOUBLE (float64) — Java VectorType.DOUBLE.ordinal() = 2
-		numFloats := len(payload) / 8
-		vec := make([]float64, numFloats)
-		for i := 0; i < numFloats; i++ {
-			vec[i] = math.Float64frombits(binary.BigEndian.Uint64(payload[i*8:]))
-		}
-		return vec, nil
-	case 3: // RABITQ
-		return nil, fmt.Errorf("hnsw: RaBitQ vectors must be decoded via the VectorQuantizer interface, not deserializeVector")
-	default:
-		return nil, fmt.Errorf("hnsw: unsupported vector type ordinal %d", typeOrdinal)
-	}
-}
-
-// halfToFloat32 converts an IEEE 754 half-precision (16-bit) float to float32.
-func halfToFloat32(h uint16) float32 {
-	sign := uint32(h>>15) << 31
-	exp := uint32(h>>10) & 0x1f
-	frac := uint32(h & 0x3ff)
-
-	switch {
-	case exp == 0: // subnormal or zero
-		if frac == 0 {
-			return math.Float32frombits(sign)
-		}
-		// Subnormal: normalize
-		for frac&0x400 == 0 {
-			frac <<= 1
-			exp--
-		}
-		exp++
-		frac &= 0x3ff
-		return math.Float32frombits(sign | ((exp + 112) << 23) | (frac << 13))
-	case exp == 0x1f: // Inf or NaN
-		if frac == 0 {
-			return math.Float32frombits(sign | 0x7f800000)
-		}
-		return math.Float32frombits(sign | 0x7f800000 | (frac << 13))
-	default: // normalized
-		return math.Float32frombits(sign | ((exp + 112) << 23) | (frac << 13))
-	}
+	return vectorcodec.Deserialize(data)
 }
 
 // --- Layer assignment ---
