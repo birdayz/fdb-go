@@ -3819,6 +3819,52 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	return alias, nil
 }
 
+// resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
+// name to a Value through the semantic scope — the same resolution the
+// correlated WHERE clause uses. With a single inner source the scope returns a
+// bare FieldValue (matching the bare keys a single scan flows); with joins the
+// merged rows carry alias-qualified keys, so use the qualified FieldValue, as
+// the top-level projection path does (logical_predicate.go ResolveIdentifier
+// branch). On resolution failure (validated earlier) fall back to the bare
+// name so we never emit an obviously-wrong qualified key.
+func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins bool) values.Value {
+	if hasJoins {
+		return &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+	}
+	ref := parseColRef(col)
+	var qualifier semantic.Identifier
+	id := semantic.NewUnquoted(ref.bare())
+	if ref.isQualified() {
+		qualifier = semantic.NewUnquoted(ref.table)
+	}
+	if v, err := resolver.ResolveIdentifier(qualifier, id); err == nil {
+		return v
+	}
+	return &values.FieldValue{Field: strings.ToUpper(ref.bare()), Typ: values.UnknownType}
+}
+
+// resolveCorrelatedGroupKeyValues resolves the GROUP BY keys of a correlated
+// scalar subquery's inner aggregate to Value trees. The builder stores group
+// keys as raw (often qualified) column-name strings with no expression context
+// (groupByExprs nil), so resolve each name through the semantic scope rather
+// than walking a parse node.
+func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver, hasJoins bool) {
+	if agg == nil || len(agg.GroupKeys) == 0 {
+		return
+	}
+	keyValues := make([]values.Value, len(agg.GroupKeys))
+	for i, key := range agg.GroupKeys {
+		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+			if v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i]); err == nil {
+				keyValues[i] = v
+				continue
+			}
+		}
+		keyValues[i] = resolveCorrelatedColumnValue(resolver, key, hasJoins)
+	}
+	agg.GroupKeyValues = keyValues
+}
+
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
@@ -3841,8 +3887,6 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			Message: "correlated scalar subquery: WHERE clause required for correlation",
 		}
 	}
-
-	isAggregate := sq.countStar || len(sq.aggCols) > 0
 
 	innerAlias := sq.tableAlias
 	if innerAlias == "" {
@@ -3935,53 +3979,159 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		innerOp = logical.NewFilterWithPredicate(op, pred, "")
 	}
 
-	var scalarCol string
-	if isAggregate {
-		if len(sq.groupBy) > 0 {
+	// Validate the grouped projection (42803 / undefined column) with the
+	// exact helper the top-level GROUP BY path runs — buildCorrelatedScalar
+	// holds p.md and sq in scope. Catches `SELECT amount ... GROUP BY status`
+	// (amount neither grouped nor aggregated).
+	if len(sq.groupBy) > 0 {
+		if vErr := validateGroupByProjection(sq, p.md); vErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: GROUP BY in inner query not yet supported",
+				Message: fmt.Sprintf("correlated scalar subquery: %v", vErr), Cause: vErr,
 			}
 		}
-		if sq.havingExpr != nil {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: HAVING in inner query not yet supported",
-			}
-		}
+	}
 
-		// Build aggregate on top of the correlated filter.
-		// No GROUP BY — the aggregate covers the entire filtered set
-		// and produces exactly 1 row (the scalar subquery contract).
+	// A real aggregate function (COUNT/SUM/MIN/MAX/AVG) is present iff
+	// countStar is set or some aggCol carries an aggFunc. Under a GROUP BY a
+	// bare group-key projection is ALSO stored as a (visible, empty-aggFunc)
+	// aggCol, so len(aggCols)>0 does not by itself mean "aggregate" — route on
+	// the presence of a real aggregate function.
+	hasRealAgg := sq.countStar
+	for i := range sq.aggCols {
+		if sq.aggCols[i].aggFunc != "" {
+			hasRealAgg = true
+			break
+		}
+	}
+
+	// A scalar subquery must produce exactly one output column. Dedup output
+	// names across projCols and visible aggCols: a bare COUNT(*) is recorded in
+	// BOTH (projCols holds the SELECT text, aggCols holds the aggregate), and a
+	// bare group-key projection is a visible aggCol. More than one distinct
+	// output name => multi-column.
+	outNames := make(map[string]struct{}, len(sq.aggCols)+len(sq.projCols))
+	for _, ac := range sq.aggCols {
+		if ac.visible {
+			outNames[strings.ToUpper(ac.outName)] = struct{}{}
+		}
+	}
+	for _, pc := range sq.projCols {
+		outNames[strings.ToUpper(pc)] = struct{}{}
+	}
+	if len(outNames) > 1 {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("scalar subquery must return exactly one column, got %d", len(outNames)),
+		}
+	}
+
+	var scalarCol string
+	if hasRealAgg {
+		// Build the aggregate over the correlated filter. With GROUP BY the
+		// aggregate may emit more than one group; the scalar contract is then
+		// enforced by FirstOrDefault — the LIMIT 1 below plus the LEFT-OUTER
+		// NULL-on-empty wrap in the translator — not a runtime cardinality
+		// assertion (which would need look-ahead and breaks continuation-based
+		// pagination). Empty input => zero groups => NULL falls out naturally,
+		// whereas the no-GROUP-BY scalar aggregate emits one row (e.g. COUNT=0).
+		var aggOp *logical.LogicalAggregate
 		if sq.countStar {
 			scalarCol = "COUNT(*)"
-			innerOp = logical.NewAggregate(innerOp, nil, []string{"COUNT(*)"}, []string{scalarCol}, "")
+			aggOp = logical.NewAggregate(innerOp, sq.groupBy, []string{"COUNT(*)"}, []string{scalarCol}, "")
 		} else {
-			agg := sq.aggCols[0]
-			if agg.aggArg != "" {
-				scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(agg.aggArg) + ")"
-			} else {
-				scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
+			// The single visible aggregate (the multi-column guard ensured one
+			// output column). Skip non-visible accumulators harvested from
+			// HAVING/ORDER BY and any bare group-key entries.
+			var agg *aggSelectCol
+			for i := range sq.aggCols {
+				if sq.aggCols[i].visible && sq.aggCols[i].aggFunc != "" {
+					agg = &sq.aggCols[i]
+					break
+				}
 			}
-			aggText := agg.aggFunc + "(" + agg.aggArg + ")"
-			innerOp = logical.NewAggregate(innerOp, nil, []string{aggText}, []string{scalarCol}, "")
+			if agg == nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: "correlated scalar subquery: expected an aggregate function",
+				}
+			}
+			// Name the synthetic scalar column with the BARE operand. A
+			// qualified arg (`o.amount`) would embed a '.' in the column name
+			// ("SUM(O.AMOUNT)") that the join-merge resolver mis-parses as a
+			// qualifier separator; the operand itself is resolved separately
+			// below so the qualifier still binds correctly. Empty arg => the
+			// "*" of COUNT(*) (under GROUP BY, COUNT(*) has empty aggArg).
+			aggArgText := parseColRef(agg.aggArg).bare()
+			if aggArgText == "" {
+				aggArgText = "*"
+			}
+			scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(aggArgText) + ")"
+			aggText := agg.aggFunc + "(" + aggArgText + ")"
+			aggOp = logical.NewAggregate(innerOp, sq.groupBy, []string{aggText}, []string{scalarCol}, "")
+			// Resolve the aggregate operand through the semantic scope (the
+			// same way the WHERE clause is resolved), so a qualified arg like
+			// `o.amount` reads the right field. The builder stores operands as
+			// raw qualified strings with no expression context, so resolve the
+			// name directly rather than walking a parse node.
+			if agg.aggExpr != nil {
+				if v, err := resolver.WalkExpression(agg.aggExpr); err == nil {
+					aggOp.AggregateOperands = []values.Value{v}
+				}
+			} else if agg.aggArg != "" {
+				aggOp.AggregateOperands = []values.Value{resolveCorrelatedColumnValue(resolver, agg.aggArg, len(sq.joins) > 0)}
+			}
+		}
+		resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0)
+		if sq.havingExpr != nil {
+			havingPred, hErr := resolver.WalkPredicate(sq.havingExpr)
+			if hErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: walk HAVING: %v", hErr), Cause: hErr,
+				}
+			}
+			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred)
+		}
+		innerOp = aggOp
+		// GROUP BY may yield many groups; HAVING may filter the single group
+		// to none. Cap at the first group (FirstOrDefault) for the scalar
+		// contract. The plain scalar aggregate (no GROUP BY, no HAVING) already
+		// emits exactly one row, so it is left uncapped.
+		if len(sq.groupBy) > 0 || sq.havingExpr != nil {
+			innerOp = logical.NewLimit(innerOp, 1, 0)
 		}
 	} else {
-		// Non-aggregate correlated scalar subquery.
-		if len(sq.groupBy) > 0 {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: GROUP BY without aggregate in inner query not supported",
+		// Non-aggregate correlated scalar subquery. The single output column is
+		// either a plain projected column or, under a GROUP BY, a bare
+		// group-key projection stored as a visible aggCol (DISTINCT-of-key).
+		switch {
+		case len(sq.projCols) == 1:
+			scalarCol = strings.ToUpper(sq.projCols[0])
+		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
+			for i := range sq.aggCols {
+				if sq.aggCols[i].visible {
+					scalarCol = strings.ToUpper(sq.aggCols[i].outName)
+					break
+				}
 			}
-		}
-		if len(sq.projCols) == 0 {
+			if scalarCol == "" {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
+				}
+			}
+		default:
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 				Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
 			}
 		}
-		if len(sq.projCols) > 1 {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: fmt.Sprintf("scalar subquery must return exactly one column, got %d", len(sq.projCols)),
-			}
+
+		// Non-aggregate GROUP BY (`SELECT status ... GROUP BY status`): zero
+		// aggregate functions, projecting a grouping key (DISTINCT-of-key).
+		// validateGroupByProjection above already confirmed the projected
+		// column is a grouping key. Build the GroupBy below the optional
+		// ORDER BY so the sort runs over the grouped output.
+		if len(sq.groupBy) > 0 {
+			aggOp := logical.NewAggregate(innerOp, sq.groupBy, nil, nil, "")
+			resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0)
+			innerOp = aggOp
 		}
-		scalarCol = strings.ToUpper(sq.projCols[0])
 
 		// Add ORDER BY if present.
 		if len(sq.orderBy) > 0 {
