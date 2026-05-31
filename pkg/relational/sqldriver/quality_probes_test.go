@@ -805,6 +805,89 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("group_by_with_join_sum", func(t *testing.T) {
+		// GROUP BY + aggregate over a JOINed inner: exercises the join branch
+		// of group-key AND operand resolution (merged rows carry qualified
+		// keys). SUM(i.price) per customer through orders->items, grouped by
+		// the correlation key.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(i.price) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY o.customer_id)
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// Alice: items 100(25.25)+101(50.00)+102(25.25)=100.50; Bob: 103(50.25);
+		// Charlie: 104(30.00)+105(null)=30.00; Diana: no items => no group => NULL.
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 100.50},
+			{"Bob", 50.25},
+			{"Charlie", 30.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL (no join rows => no group), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("group_by_expression_arg_aggregate", func(t *testing.T) {
+		// Aggregate over an EXPRESSION argument (not a bare column) + GROUP BY:
+		// exercises the aggExpr resolution path (resolver.WalkExpression). A
+		// resolution failure on this path must reject, not degrade to SUM(*).
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id)
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// Alice: 2*(100.50+200.00)=601.00; Bob: 2*(50.25+75.00)=250.50;
+		// Charlie: 2*300.00=600.00; Diana: amount NULL => SUM=NULL.
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", 250.50},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL, got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
 	t.Run("having_with_exists_rejected", func(t *testing.T) {
 		// EXISTS inside HAVING of a correlated scalar subquery mixes pre/post
 		// grouping scope and has no subquery planner on the HAVING resolver —

@@ -4005,10 +4005,11 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 	}
 
 	// A scalar subquery must produce exactly one output column. Dedup output
-	// names across projCols and visible aggCols: a bare COUNT(*) is recorded in
-	// BOTH (projCols holds the SELECT text, aggCols holds the aggregate), and a
-	// bare group-key projection is a visible aggCol. More than one distinct
-	// output name => multi-column.
+	// names across projCols and visible aggCols: under a GROUP BY a sole
+	// COUNT(*) is recorded in BOTH (projCols holds the SELECT text "COUNT(*)",
+	// aggCols holds the COUNT aggregate), and a bare group-key projection is a
+	// visible aggCol. (A no-GROUP-BY sole COUNT(*) is the countStar case —
+	// neither set populated.) More than one distinct output name => multi-column.
 	outNames := make(map[string]struct{}, len(sq.aggCols)+len(sq.projCols))
 	for _, ac := range sq.aggCols {
 		if ac.visible {
@@ -4072,9 +4073,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			// raw qualified strings with no expression context, so resolve the
 			// name directly rather than walking a parse node.
 			if agg.aggExpr != nil {
-				if v, err := resolver.WalkExpression(agg.aggExpr); err == nil {
-					aggOp.AggregateOperands = []values.Value{v}
+				v, err := resolver.WalkExpression(agg.aggExpr)
+				if err != nil {
+					// An expression argument (e.g. SUM(qty*price)) whose operand
+					// fails to resolve must reject — silently leaving the operand
+					// nil would degrade the aggregate to SUM(*) and return wrong
+					// rows.
+					return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+						Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
+					}
 				}
+				aggOp.AggregateOperands = []values.Value{v}
 			} else if agg.aggArg != "" {
 				aggOp.AggregateOperands = []values.Value{resolveCorrelatedColumnValue(resolver, agg.aggArg, len(sq.joins) > 0)}
 			}
