@@ -392,19 +392,22 @@ func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	inner, ctx := tr.t.inner, tr.t.ctx
 	k := key.FDBKey()
-	// Capture the watched value at the transaction's read version SYNCHRONOUSLY,
-	// before returning the future. The watch fires when the storage server sees a
-	// value different from this one, so it must be read at a version BEFORE any
-	// later transaction changes the key. Doing it in the future's goroutine (as
-	// before) races subsequent mutations: if the read lands after a modify, the
-	// watch is registered against the already-current value and never fires —
-	// a silent timeout flake. Only the long-poll stays asynchronous.
-	value, setupErr := inner.WatchSetup(ctx, k)
+	// Capture the watched value AND the read version at the transaction's read
+	// version SYNCHRONOUSLY, before returning the future. The watch fires when the
+	// storage server sees a value different from this one, so both must be pinned
+	// at a version BEFORE any later transaction changes the key. Doing it in the
+	// future's goroutine (as before) races subsequent mutations and the
+	// transaction's own postCommitReset: the value-read could land after a modify
+	// (watch registered against the already-current value, never fires), and the
+	// read version could be cleared to 0 by commit before the async poll sends the
+	// watch. Capturing both here and threading them through keeps only the
+	// long-poll asynchronous.
+	value, readVersion, setupErr := inner.WatchSetup(ctx, k)
 	return newFutureNil(func() error {
 		if setupErr != nil {
 			return convertError(setupErr)
 		}
-		return convertError(inner.WatchPoll(ctx, k, value))
+		return convertError(inner.WatchPoll(ctx, k, value, readVersion))
 	})
 }
 

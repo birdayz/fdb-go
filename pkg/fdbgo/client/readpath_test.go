@@ -274,12 +274,13 @@ func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Capture the watched value SYNCHRONOUSLY at the read version (what tr.Watch
-	// now does before returning the future) — captures "initial".
+	// Capture the watched value AND read version SYNCHRONOUSLY (what tr.Watch now
+	// does before returning the future) — captures "initial" at this version.
 	var captured []byte
+	var capturedRV int64
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		v, err := tx.WatchSetup(ctx, key)
-		captured = v
+		v, rv, err := tx.WatchSetup(ctx, key)
+		captured, capturedRV = v, rv
 		return nil, err
 	}); err != nil {
 		t.Fatalf("WatchSetup: %v", err)
@@ -298,7 +299,7 @@ func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, e := db.Transact(ctx, func(tx *Transaction) (any, error) {
-			return nil, tx.WatchPoll(ctx, key, captured)
+			return nil, tx.WatchPoll(ctx, key, captured, capturedRV)
 		})
 		done <- e
 	}()
@@ -309,5 +310,70 @@ func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("WatchPoll did not fire for a stale captured value within 10s — value-capture regression")
+	}
+}
+
+// TestWatch_ReadVersionSurvivesReset exercises the read-version half of the watch
+// fix (codex's P1): WatchPoll must register the watch at the read version captured
+// by WatchSetup, NOT re-read tx.readVersion at poll time — which the common
+// `w := tr.Watch(k)` inside Database.Transact pattern clears to 0 (postCommitReset)
+// before the async poll runs. This drives exactly that state (reset between setup
+// and poll) and asserts the watch still fires.
+//
+// NOTE — not a fail-without-fix sentinel: the storage server benignly tolerates a
+// stale (0) version for the value-diff fire in this scenario, so the watch fires
+// even with the old code. The test guards the reset-path (that WatchPoll works on
+// a post-commit-reset transaction); the fix's value is correctness — a detached
+// goroutine must not read mutable transaction state (readVersion) that commit may
+// have cleared — which is the same rationale as the synchronous value capture.
+func TestWatch_ReadVersionSurvivesReset(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	key := []byte(t.Name() + "_key")
+
+	// Seed "initial".
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("initial"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Watch setup on a manual transaction; capture value + read version.
+	tx := db.CreateTransaction()
+	value, rv, err := tx.WatchSetup(ctx, key)
+	if err != nil {
+		t.Fatalf("WatchSetup: %v", err)
+	}
+	if rv == 0 {
+		t.Fatal("WatchSetup returned read version 0")
+	}
+
+	// Force the post-commit state of the tr.Watch-in-Transact pattern: the tx is
+	// reset and tx.readVersion is cleared to 0. The fix must not depend on it.
+	tx.postCommitReset()
+
+	// Modify the key after setup.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("changed"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("modify: %v", err)
+	}
+
+	// Poll with the captured read version — must fire even though tx.readVersion
+	// is now 0 (reset). Before the fix, sendWatch read tx.readVersion = 0.
+	done := make(chan error, 1)
+	go func() { done <- tx.WatchPoll(ctx, key, value, rv) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("WatchPoll after reset returned %v, want it to fire (read version must be the captured one)", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("WatchPoll did not fire after reset — read version not preserved (codex P1 regression)")
 	}
 }

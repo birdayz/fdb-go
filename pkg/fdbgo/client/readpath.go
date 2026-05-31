@@ -729,48 +729,60 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 // The watch is a long-poll: there is no short timeout. The context's deadline
 // (if any) controls the maximum wait time.
 func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
-	value, err := tx.WatchSetup(ctx, key)
+	value, readVersion, err := tx.WatchSetup(ctx, key)
 	if err != nil {
 		return err
 	}
-	return tx.WatchPoll(ctx, key, value)
+	return tx.WatchPoll(ctx, key, value, readVersion)
 }
 
 // WatchSetup performs the SYNCHRONOUS part of a watch: pin the read version, add
 // the read conflict, and read the value to watch — all at the transaction's read
-// version. It returns the value bytes the watch is registered against.
+// version. It returns BOTH the value bytes and the read version the watch must be
+// registered against.
 //
 // This MUST run within the watching transaction's active window (e.g. directly
 // from Transaction.Watch, not from a detached goroutine that races later
-// mutations). The watched value is captured here; if it were read late — after
-// some other transaction already changed the key — the storage server would be
-// told to watch the *new* value, see the current value already equals it, and
-// never fire the watch (a silent 10s-timeout flake). Reading it synchronously at
-// the read version pins it to a version before any subsequent change.
-func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, error) {
+// mutations). Two things are captured here, both for the same reason:
+//   - the VALUE: if read late — after some other transaction already changed the
+//     key — the storage server would be told to watch the *new* value, see the
+//     current value already equals it, and never fire (a silent 10s-timeout flake);
+//   - the READ VERSION: the async WatchPoll's sendWatch must NOT read tx.readVersion
+//     later, because the common `w := tr.Watch(k)` inside Database.Transact pattern
+//     commits and postCommitReset()s the transaction (readVersion → 0) before the
+//     future goroutine runs — sending the watch at version 0, which can error or
+//     register incorrectly. So the read version is captured synchronously here and
+//     threaded through to sendWatch.
+func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, error) {
 	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
 	// Returns watches_disabled (1034) immediately.
 	if tx.rywDisabled {
-		return nil, &wire.FDBError{Code: 1034} // watches_disabled
+		return nil, 0, &wire.FDBError{Code: 1034} // watches_disabled
 	}
 
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	tx.readVersionMu.Lock()
+	readVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
+
 	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
 	tx.AddReadConflictKey(key)
 
 	// Read current value so we can send it with the watch request.
 	// C++ getValueOrStandby in watchValue actor reads the value at the watch version.
-	return tx.ryw.get(ctx, key, tx.getValue)
+	value, err := tx.ryw.get(ctx, key, tx.getValue)
+	return value, readVersion, err
 }
 
 // WatchPoll performs the ASYNCHRONOUS long-poll part of a watch: locate the
 // storage server and wait for the WatchValueReply that fires when key's value
-// differs from `value` (the value captured by WatchSetup). Retries on
-// wrong_shard_server with cache invalidation. Intended to run in the watch
-// future's goroutine.
-func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte) error {
+// differs from `value` (captured by WatchSetup), registered at `readVersion`
+// (also captured by WatchSetup — NOT re-read from the possibly-reset transaction).
+// Retries on wrong_shard_server with cache invalidation. Intended to run in the
+// watch future's goroutine.
+func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVersion int64) error {
 	// Use the transaction's watch context so Reset()/Cancel() cancels in-flight watches.
 	// Matches C++ resetRyow() → resetPromise.sendError(transaction_cancelled).
 	watchCtx := tx.getWatchCtx(ctx)
@@ -784,7 +796,7 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte) error {
 			return fmt.Errorf("no storage servers for key")
 		}
 
-		watchErr := tx.sendWatch(watchCtx, key, value, loc.Servers)
+		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, loc.Servers)
 		if watchErr == nil {
 			return nil
 		}
@@ -800,14 +812,13 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte) error {
 	return &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers []ServerInfo) error {
+func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, servers []ServerInfo) error {
 	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
 	order := loadBalanceOrder(servers, chosenIdx)
 
-	// Capture tx fields (see sendGetValue comment).
-	tx.readVersionMu.Lock()
-	readVersion := tx.readVersion
-	tx.readVersionMu.Unlock()
+	// readVersion is captured synchronously by WatchSetup and passed in — it must
+	// NOT be re-read from tx here, because the transaction may have been
+	// postCommitReset() (readVersion → 0) by the time this async poll runs.
 	tenantId := tx.tenantId
 
 	for _, server := range order {
