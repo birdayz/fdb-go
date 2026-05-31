@@ -176,3 +176,14 @@ three `*_rejected` probes into correctness probes and adding new ones:
   rows before the `LIMIT 1`) is fully supported. Follow-up if needed.
 * Expression aggregate/group-key arguments that fail to resolve **error**
   (no silent degradation to `SUM(*)` / null-key grouping).
+* **Expression/constant-argument aggregate referenced in a *differing* HAVING**
+  is **rejected** fail-safe (Codex catch). The synthesized aggregate name uses
+  the *bare* operand (`FN(*)` for an expression/constant arg), while the HAVING
+  rewrite (`rewriteAggregateValue`) names by operand *explain* (`COUNT(1)`,
+  `SUM(A+B)`); where they diverge, reusing a slot mis-routes (NULL / wrong rows).
+  So `COUNT(1)` + HAVING `COUNT(*)` (both directions — `COUNT(1)≡COUNT(*)` but
+  indistinguishable here) and `SUM(a*2)` + HAVING `SUM(a*3)` are rejected.
+  Bare-column / `COUNT(*)` aggregates name identically in both schemes and work
+  (incl. `SUM(amount)` + HAVING `COUNT(*)`). Closing it = align the synthesized
+  names with `rewriteAggregateValue` (operand-explain), keeping a dot-free alias
+  for the single visible scalar output. Tracked in TODO.md under item 60.

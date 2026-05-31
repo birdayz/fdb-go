@@ -4109,21 +4109,28 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				}
 				opVal = v
 			}
-			// "Opaque" = an expression operand we cannot identify by name. A
-			// non-null constant under COUNT is NOT opaque (it is COUNT(*)).
+			// An expression argument is opaque: it has no bare column name, so
+			// it collapses to FN(*). The HAVING rewrite (rewriteAggregateValue)
+			// instead names an aggregate by the operand's *explain* — COUNT(1),
+			// SUM(A+B), etc. — which our FN(*) alias does not match. Reusing the
+			// FN(*) slot for a differently-named HAVING aggregate therefore
+			// silently mis-routes (the HAVING reads a slot exposed under another
+			// name, or none, yielding NULL and dropping valid groups). Until the
+			// synthesized aggregate names are aligned with the HAVING rewrite
+			// (tracked follow-up), reject any collision involving an
+			// expression-argument aggregate rather than return wrong rows.
+			// COUNT(1)≡COUNT(*) is correct SQL but indistinguishable here, so it
+			// is conservatively rejected too. Bare-column / star aggregates
+			// (COUNT(*), SUM(amount)) name identically in both schemes and are
+			// unaffected: COUNT(*) in both SELECT and HAVING still reuses safely.
 			opaqueExpr := e != nil
-			if opaqueExpr && strings.EqualFold(fn, "COUNT") {
-				if cv, ok := opVal.(*values.ConstantValue); ok && cv.Value != nil {
-					opaqueExpr = false
-				}
-			}
 			if _, dup := aggSeen[name]; dup {
 				_, priorExpr := exprAggNames[name]
 				if opaqueExpr || priorExpr {
-					return "", fmt.Errorf("distinct expression-argument aggregates both reduce to %q; not supported in a correlated scalar subquery", name)
+					return "", fmt.Errorf("an expression-argument aggregate (e.g. COUNT(1), SUM(<expr>)) collides with another aggregate named %q; not supported in a correlated scalar subquery", name)
 				}
-				// Identical bare-column / star aggregate (or COUNT(const) ≡
-				// COUNT(*)) referenced twice — safe to reuse the slot.
+				// Identical bare-column / star aggregate referenced twice (e.g.
+				// COUNT(*) in both SELECT and HAVING) — safe to reuse the slot.
 				return name, nil
 			}
 			aggSeen[name] = struct{}{}
