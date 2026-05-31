@@ -477,7 +477,21 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 		efSearch = min(max(4*k, 64), max(k, 400))
 	}
 
+	// Multi-partition fan-out (partial prefix) is dispatched inside
+	// scanByDistanceWithParams — the shared chokepoint for both this entry point
+	// and ScanVectorIndexWithPrefix — so it is not branched here.
 	return m.scanByDistanceWithParams(prefix, queryVector, k, efSearch, continuation, scanProperties)
+}
+
+// partitionSize returns the number of leading partition (key) columns of the
+// vector index — the KeyWithValueExpression split point — or 0 if the index is
+// not a KeyWithValueExpression (unpartitioned). Mirrors Java's
+// prefixSize = getKeyWithValueExpression(rootExpression).getSplitPoint().
+func (m *vectorIndexMaintainer) partitionSize() int {
+	if kwv, ok := m.index.RootExpression.(*KeyWithValueExpression); ok {
+		return kwv.SplitPoint()
+	}
+	return 0
 }
 
 // scanByDistanceWithParams performs the actual kNN search and returns a cursor.
@@ -496,16 +510,42 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	// Multi-partition fan-out: when the index is partitioned (splitPoint > 0) but
+	// the bound prefix is shorter than the full partition prefix, scan every
+	// matching partition (prefix skip-scan + per-partition HNSW search), matching
+	// Java's VectorIndexMaintainer.scan flatMapPipelined(prefixSkipScan,
+	// scanSinglePartition) (RFC-046). Sited at this chokepoint so BOTH entry
+	// points — ScanByDistance (executor) and ScanVectorIndexWithPrefix (direct
+	// API) — fan out on a partial prefix instead of scanning one wrong subspace.
+	if pSize := m.partitionSize(); pSize > 0 && len(prefix) < pSize {
+		return m.newVectorMultiPartitionCursor(prefix, queryVector, k, efSearch, pSize, continuation, scanProperties)
+	}
+
+	entries, err := m.searchOnePartition(prefix, queryVector, k, efSearch)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	return m.newVectorSearchCursor(entries, continuation, prefix)
+}
+
+// searchOnePartition runs one HNSW kNN search for the single partition
+// identified by the FULL partition prefix (nil/empty for an unpartitioned
+// index) and returns the top-k entries in Java's toIndexEntry layout
+// (Key = prefix...+trimmedPK, Value = nil). It is both the body of the
+// single-partition scan and the per-partition inner of the multi-partition
+// fan-out (RFC-046). Mirrors Java's VectorIndexMaintainer.kNearestNeighborSearch
+// + toIndexEntry.
+func (m *vectorIndexMaintainer) searchOnePartition(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]*IndexEntry, error) {
 	if len(queryVector) != m.hnswConfig.NumDimensions {
-		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
-			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))}
+		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
+			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))
 	}
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
 	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, efSearch)
 	if err != nil {
-		return &errorCursor[*IndexEntry]{err: err}
+		return nil, err
 	}
 
 	// Convert to IndexEntry slice matching Java's toIndexEntry() format:
@@ -529,8 +569,7 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 			primaryKey: m.entryFullPK(key, prefix),
 		}
 	}
-
-	return m.newVectorSearchCursor(entries, continuation, prefix)
+	return entries, nil
 }
 
 // entryFullPK reconstructs and pins the full primary key for a vector index
@@ -679,6 +718,219 @@ func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix 
 
 	return entries, innerPos
 }
+
+// vectorMultiPartitionCursor fans a BY_DISTANCE scan out over all distinct
+// partitions whose full partition prefix begins with partialPrefix, running one
+// HNSW kNN search per partition and concatenating each partition's top-k. Ports
+// Java's VectorIndexMaintainer.scan flatMapPipelined(prefixSkipScan,
+// scanSinglePartition) for the partial-partition-prefix case (RFC-046).
+//
+// SQL semantics: ROW_NUMBER() OVER (PARTITION BY <keys> ...) <= k selects the
+// top-k PER partition, so the union across partitions is intentionally unbounded
+// — there is no global top-k re-merge. An outer SQL LIMIT, if present, rides in
+// scanProperties.ExecuteProperties.ReturnedRowLimit and caps the TOTAL rows
+// across partitions (Java's final skipThenLimit) — a quantity distinct from the
+// per-partition k.
+//
+// Continuation is full cross-partition (Java-aligned): each delivered row emits
+// FlatMapContinuation{OuterContinuation: pack(currentPrefix), InnerContinuation:
+// <per-partition VectorIndexScanContinuation>}. On resume the saved partition is
+// re-read first (its inner continuation replays the saved entries), then the
+// skip-scan advances to the next distinct partition.
+type vectorMultiPartitionCursor struct {
+	m             *vectorIndexMaintainer
+	queryVector   []float64
+	k             int
+	efSearch      int
+	partialPrefix tuple.Tuple // the bound equality prefix (may be empty)
+	partitionSize int
+
+	// nextPartitionStart is the FDB key at/after which to look for the next
+	// distinct partition prefix; rangeEnd bounds the skip-scan to partitions
+	// under partialPrefix.
+	nextPartitionStart fdb.Key
+	rangeEnd           fdb.Key
+
+	currentCursor *vectorSearchCursor
+	currentPrefix tuple.Tuple
+	// pendingInner seeds the first resumed partition's inner continuation.
+	pendingInner []byte
+
+	globalLimit      int
+	totalDelivered   int
+	lastContinuation []byte
+	exhausted        bool
+	closed           bool
+}
+
+// newVectorMultiPartitionCursor builds the fan-out cursor and, when resuming,
+// seeds the skip-scan to re-read the saved partition first.
+func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
+	partialPrefix tuple.Tuple,
+	queryVector []float64,
+	k, efSearch, partitionSize int,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	// Enumeration subspace: partitions under partialPrefix (whole index if empty).
+	base := m.getSubspaceForPrefix(partialPrefix)
+	end, err := fdb.Strinc(base.Bytes())
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q multi-partition scan: %w", m.index.Name, err)}
+	}
+
+	c := &vectorMultiPartitionCursor{
+		m:                  m,
+		queryVector:        queryVector,
+		k:                  k,
+		efSearch:           efSearch,
+		partialPrefix:      partialPrefix,
+		partitionSize:      partitionSize,
+		nextPartitionStart: fdb.Key(base.Bytes()),
+		rangeEnd:           fdb.Key(end),
+	}
+	if scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
+		c.globalLimit = scanProperties.ExecuteProperties.ReturnedRowLimit
+	}
+
+	// Resume: unpack the outer prefix and seed the skip-scan to re-read that
+	// partition first (inclusive start), replaying its inner continuation. The
+	// findNextPartition read then returns resumePrefix and advances past it, so
+	// the next partition follows once the resumed one drains.
+	if len(continuation) > 0 {
+		var fm gen.FlatMapContinuation
+		if uerr := fm.UnmarshalVT(continuation); uerr == nil && fm.OuterContinuation != nil {
+			if resumePrefix, perr := fastUnpack(fm.OuterContinuation); perr == nil {
+				c.nextPartitionStart = fdb.Key(m.getSubspaceForPrefix(resumePrefix).Bytes())
+				c.pendingInner = fm.InnerContinuation
+			}
+		}
+	}
+	return c
+}
+
+func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
+		// Global row limit (outer SQL LIMIT) across all partitions. Return the
+		// last emitted continuation (a valid mid-stream resume point), never an
+		// end continuation (ReturnLimitReached must not be end).
+		if c.globalLimit > 0 && c.totalDelivered >= c.globalLimit {
+			cont := c.lastContinuation
+			if len(cont) == 0 {
+				cont = []byte{}
+			}
+			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
+		}
+
+		// Drain the current partition's cursor.
+		if c.currentCursor != nil {
+			res, err := c.currentCursor.OnNext(ctx)
+			if err != nil {
+				return RecordCursorResult[*IndexEntry]{}, err
+			}
+			if res.HasNext() {
+				c.totalDelivered++
+				cont := c.wrapContinuation(res.GetContinuation())
+				c.lastContinuation = cont
+				return NewResultWithValue(res.GetValue(), &BytesContinuation{bytes: cont}), nil
+			}
+			_ = c.currentCursor.Close()
+			c.currentCursor = nil
+		}
+
+		if c.exhausted {
+			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
+		}
+
+		// Advance to the next distinct partition.
+		fullPrefix, found, err := c.findNextPartition()
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
+		if !found {
+			c.exhausted = true
+			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
+		}
+		c.currentPrefix = fullPrefix
+
+		var entries []*IndexEntry
+		var inner []byte
+		if c.pendingInner != nil {
+			// Resumed partition: replay from the saved inner continuation; no
+			// fresh HNSW search needed (matches Java's replay-from-continuation).
+			inner = c.pendingInner
+			c.pendingInner = nil
+		} else {
+			entries, err = c.m.searchOnePartition(fullPrefix, c.queryVector, c.k, c.efSearch)
+			if err != nil {
+				return RecordCursorResult[*IndexEntry]{}, err
+			}
+		}
+		c.currentCursor = c.m.newVectorSearchCursor(entries, inner, fullPrefix)
+	}
+}
+
+// wrapContinuation wraps a per-partition continuation in a FlatMapContinuation
+// carrying the current full partition prefix as the outer continuation.
+func (c *vectorMultiPartitionCursor) wrapContinuation(inner RecordCursorContinuation) []byte {
+	innerBytes, err := inner.ToBytes()
+	if err != nil {
+		return nil
+	}
+	fm := &gen.FlatMapContinuation{
+		OuterContinuation: c.currentPrefix.Pack(),
+		InnerContinuation: innerBytes,
+	}
+	data, err := fm.MarshalVT()
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// findNextPartition reads one key at/after nextPartitionStart within the
+// partialPrefix range, extracts the first partitionSize tuple elements as the
+// next distinct full partition prefix, and advances nextPartitionStart past that
+// partition's entire subspace. Mirrors Java's nextPrefixTuple / the multidim
+// prefixSkipScanCursor.findNextPrefix.
+func (c *vectorMultiPartitionCursor) findNextPartition() (tuple.Tuple, bool, error) {
+	rng := fdb.KeyRange{Begin: c.nextPartitionStart, End: c.rangeEnd}
+	kvs, err := c.m.tx.GetRange(rng, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+	if err != nil {
+		return nil, false, fmt.Errorf("VECTOR index %q multi-partition skip-scan: %w", c.m.index.Name, err)
+	}
+	if len(kvs) == 0 {
+		return nil, false, nil
+	}
+
+	t, err := fastSubspaceUnpack(kvs[0].Key, len(c.m.hnswSubspace.Bytes()))
+	if err != nil || len(t) < c.partitionSize {
+		return nil, false, nil
+	}
+	prefix := make(tuple.Tuple, c.partitionSize)
+	copy(prefix, t[:c.partitionSize])
+
+	// Advance nextPartitionStart past this partition's entire subspace.
+	prefixEnd, err := fdb.Strinc(c.m.getSubspaceForPrefix(prefix).Bytes())
+	if err != nil {
+		return nil, false, fmt.Errorf("VECTOR index %q multi-partition skip-scan: %w", c.m.index.Name, err)
+	}
+	c.nextPartitionStart = fdb.Key(prefixEnd)
+	return prefix, true, nil
+}
+
+func (c *vectorMultiPartitionCursor) Close() error {
+	c.closed = true
+	if c.currentCursor != nil {
+		return c.currentCursor.Close()
+	}
+	return nil
+}
+
+func (c *vectorMultiPartitionCursor) IsClosed() bool { return c.closed }
 
 // VectorDistanceScanRange creates a TupleRange encoding a BY_DISTANCE kNN query.
 // This is the Go equivalent of Java's VectorIndexScanBounds. The query vector,

@@ -103,23 +103,13 @@ func NewVectorIndexScanMatchCandidate(
 	distanceAlias := values.UniqueCorrelationIdentifier()
 	params = append(params, distanceAlias)
 
-	// DIVERGENCE FROM JAVA — a Go executor limitation, NOT Java semantics. Java
-	// does NOT require the partition columns for binding (only the index-only
-	// distance placeholder is required, per VectorIndexExpansionVisitor); a partial
-	// partition prefix is legal because Java's VectorIndexMaintainer.scan fans out
-	// — flatMapPipelined over a prefix skip-scan of the distinct full partition
-	// prefixes, one HNSW search per partition, top-K merged (VectorIndexMaintainer.java
-	// ~134-150). Go's executor is single-partition: scanByDistanceWithParams does one
-	// getStorageForPrefix → one graph → one Search, with no skip-scan/merge. So a
-	// partial prefix can't be executed; left unbound it would either truncate the
-	// positional prefix map before the distance alias (nil query vector) or scan a
-	// non-existent subspace (wrong/empty rows). Until the multi-partition scan is
-	// ported (TODO 9.5 / DIVERGENCES.md), require the full partition prefix so a
-	// partial-prefix vector query is cleanly UNPLANNABLE rather than wrong.
+	// Only the index-only distance placeholder is required for binding, matching
+	// Java's VectorIndexExpansionVisitor (parametersRequiredForBinding =
+	// placeholders where value.isIndexOnly() — the distance rank, never the
+	// partition columns). A partial partition prefix is legal: the maintainer
+	// fans out over the distinct partitions (prefix skip-scan + per-partition
+	// HNSW search), matching Java's VectorIndexMaintainer.scan (RFC-046).
 	requiredForBinding := map[values.CorrelationIdentifier]struct{}{distanceAlias: {}}
-	for _, a := range ordering {
-		requiredForBinding[a] = struct{}{}
-	}
 
 	return &VectorIndexScanMatchCandidate{
 		indexName:                    indexName,
@@ -209,26 +199,38 @@ func (c *VectorIndexScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	return c.primaryKeyValues
 }
 
-// ComputeBoundParameterPrefixMap walks the sargable aliases and
-// collects the longest prefix satisfying index scan discipline.
+// ComputeBoundParameterPrefixMap collects the bound partition-prefix equality
+// run plus the index-only DistanceRank binding. Unlike a value index, the two
+// are kept separate: Java's toVectorIndexScanComparisons separates the distance
+// rank by TYPE (instanceof DistanceRankValueComparison), never by prefix
+// position, so the distance binding must survive even on a PARTIAL partition
+// prefix (a multi-partition fan-out query). See RFC-046.
 func (c *VectorIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
 	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
-	for _, alias := range c.parameters {
+	// Consume the contiguous EQUALITY run of partition columns
+	// (parameters[0:partitionCount]). Stop at the first unbound OR non-equality
+	// column: a partition INEQUALITY must NOT enter the scan prefix — the
+	// executor encodes only an equality prefix tuple (VectorDistanceScanRange-
+	// WithPrefix) and would silently ignore an inequality. Leaving it unconsumed
+	// keeps it as a residual filter (the same mechanism as a filter on any
+	// non-indexed column), and the maintainer fans out over all partitions; an
+	// unbound trailing partition column is likewise fanned out (RFC-046).
+	for i := 0; i < c.partitionCount; i++ {
+		alias := c.parameters[i]
 		cr, ok := bindings[alias]
-		if !ok || cr == nil || cr.IsEmpty() {
-			return prefix
+		if !ok || cr == nil || cr.IsEmpty() || cr.GetRangeType() != predicates.ComparisonRangeEquality {
+			break
 		}
-		switch cr.GetRangeType() {
-		case predicates.ComparisonRangeEquality:
-			prefix[alias] = cr
-		case predicates.ComparisonRangeInequality:
-			prefix[alias] = cr
-			return prefix
-		default:
-			return prefix
-		}
+		prefix[alias] = cr
+	}
+	// ALWAYS retain the index-only DistanceRank binding, independent of the
+	// partition-prefix length. Without this, a partial prefix would drop the
+	// distance binding (it is last in c.parameters) and ToScanPlan would emit a
+	// nil-query-vector plan (RFC-046; the codex/Torvalds trap).
+	if cr, ok := bindings[c.distanceAlias]; ok && cr != nil && !cr.IsEmpty() {
+		prefix[c.distanceAlias] = cr
 	}
 	return prefix
 }
