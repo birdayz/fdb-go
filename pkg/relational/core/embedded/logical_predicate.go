@@ -4128,9 +4128,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				if opaqueExpr || priorExpr {
 					return "", fmt.Errorf("an expression-argument aggregate (e.g. SUM(<expr>)) collides with another aggregate named %q; not supported in a correlated scalar subquery", name)
 				}
-				// Identical bare-column / star aggregate, or COUNT(const)≡COUNT(*),
-				// referenced twice (e.g. COUNT(*) in both SELECT and HAVING) —
-				// safe to reuse the slot.
+				// Identical bare-column / star aggregate referenced twice (e.g.
+				// COUNT(*) in both SELECT and HAVING) — safe to reuse the slot.
+				// (Any expression/constant arg is opaque and exited above, so
+				// this dup is always a non-opaque, identically-named aggregate.)
 				return name, nil
 			}
 			aggSeen[name] = struct{}{}
