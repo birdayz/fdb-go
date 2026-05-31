@@ -61,3 +61,6 @@ bench-results.txt
 .claude/scheduled_tasks.lock
 test-report.html
 REVIEW.md
+
+# transient code-review scratch (codex / reviewer agents)
+.review_*.txt

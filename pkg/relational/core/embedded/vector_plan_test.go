@@ -132,18 +132,17 @@ func TestVectorPlan_UnsupportedQualifyErrors(t *testing.T) {
 	}
 }
 
-// TestVectorPlan_PartitionedRequiresFullPrefix pins codex Finding 1 + a
-// documented Go divergence (see DIVERGENCES.md "single-partition vector scan").
-// Java ALLOWS a partial partition prefix — its VectorIndexMaintainer fans out
-// over the distinct partitions (skip-scan + flatMap). Go's executor is
-// single-partition, so until the multi-partition scan is ported (TODO 9.5) a
-// partial prefix can't be executed: the binding gate refuses it, and the query
-// is cleanly UNPLANNABLE rather than producing a nil-query-vector plan (the bug
-// codex found). The sentinel case is a MULTI-COLUMN partition with only the
-// leading column bound: the DistanceRank is consumed into the truncated prefix
-// so it escapes the index-only residual guard, and before the fix the planner
-// chose a vector scan with a nil query vector (`prefix=[=, *], rank<=`, no K).
-func TestVectorPlan_PartitionedRequiresFullPrefix(t *testing.T) {
+// TestVectorPlan_PartialPrefixPlansMultiPartition pins RFC-046 (multi-partition
+// vector scan). A MULTI-COLUMN partition (zone, region) with only the leading
+// column bound is now planned to a vector scan that fans out over the unbound
+// partition column — matching Java, whose VectorIndexMaintainer.scan skip-scans
+// the distinct partitions. The load-bearing assertion is that the DistanceRank
+// binding SURVIVES the partial prefix: the explain shows `prefix=[=, *]` (region
+// fanned out) AND `rank<=3` (the K — and therefore the whole query-vector
+// binding — present). Before RFC-046 the partial prefix dropped the distance
+// binding entirely, yielding a nil-query-vector plan (`prefix=[=, *], rank<=`,
+// no K) — the exact codex/Torvalds regression this inverts.
+func TestVectorPlan_PartialPrefixPlansMultiPartition(t *testing.T) {
 	t.Parallel()
 	schema := `CREATE TABLE docs (
 			zone string, region string, doc_id string, embedding vector(3, half),
@@ -151,7 +150,7 @@ func TestVectorPlan_PartitionedRequiresFullPrefix(t *testing.T) {
 		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
 			PARTITION BY (zone, region) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
 
-	// Two-column partition (zone, region) but only zone is bound — region unbound.
+	// Two-column partition (zone, region) but only zone is bound — region fanned out.
 	sql := `SELECT doc_id FROM docs WHERE zone = 'z1'
 		QUALIFY ROW_NUMBER() OVER (
 			PARTITION BY zone, region
@@ -159,10 +158,58 @@ func TestVectorPlan_PartitionedRequiresFullPrefix(t *testing.T) {
 		) <= 3`
 
 	explain, err := PlanQueryForTest(sql, schema, nil)
-	// Must never produce a vector scan from a partial partition prefix (that plan
-	// would have a nil query vector). Correct outcome: unplannable.
-	if err == nil && strings.Contains(explain, "VectorIndexScan") {
-		t.Fatalf("partitioned vector index matched with a partial partition prefix (nil-query-vector plan):\n%s", explain)
+	if err != nil {
+		t.Fatalf("partial-prefix vector query should now plan (RFC-046): %v", err)
+	}
+	if !strings.Contains(explain, "VectorIndexScan") {
+		t.Fatalf("partial-prefix vector query did not plan to a vector scan:\n%s", explain)
+	}
+	// region unbound → fanned out: prefix shows a wildcard slot.
+	if !strings.Contains(explain, "prefix=[=, *]") {
+		t.Errorf("expected a partial prefix [=, *] (region fanned out), got:\n%s", explain)
+	}
+	// The DistanceRank binding survived: K (=3) is present, proving the query
+	// vector was NOT dropped (the pre-RFC-046 nil-query-vector regression).
+	if !strings.Contains(explain, "rank<=3") {
+		t.Fatalf("DistanceRank binding dropped on partial prefix (nil-query-vector regression):\n%s", explain)
+	}
+}
+
+// TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix pins the Graefe/
+// Torvalds RFC-046 condition: a partition-column INEQUALITY must NOT be consumed
+// into the scan prefix (the executor encodes only an equality prefix tuple and
+// would silently ignore an inequality → wrong rows). It must stay unconsumed —
+// the scan prefix shows a wildcard for that column (fanned out), and the
+// inequality is enforced elsewhere as a residual. Here a trailing-partition
+// inequality (region > 'm') leaves prefix=[=, *].
+func TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			zone string, region string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, region, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone, region) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	sql := `SELECT doc_id FROM docs WHERE zone = 'z1' AND region > 'm'
+		QUALIFY ROW_NUMBER() OVER (
+			PARTITION BY zone, region
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+
+	explain, err := PlanQueryForTest(sql, schema, nil)
+	if err != nil {
+		t.Fatalf("partition-inequality vector query should plan (RFC-046): %v", err)
+	}
+	if !strings.Contains(explain, "VectorIndexScan") {
+		t.Fatalf("partition-inequality vector query did not plan to a vector scan:\n%s", explain)
+	}
+	// region inequality must NOT be folded into the scan prefix as an equality:
+	// the second prefix slot stays a wildcard (fanned out + residual elsewhere).
+	if !strings.Contains(explain, "prefix=[=, *]") {
+		t.Errorf("partition inequality was consumed into the scan prefix (would be silently ignored at execution); explain:\n%s", explain)
+	}
+	if !strings.Contains(explain, "rank<=3") {
+		t.Fatalf("DistanceRank binding dropped on inequality prefix:\n%s", explain)
 	}
 }
 

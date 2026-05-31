@@ -49,6 +49,7 @@ go_test(
         "sql_integration_test.go",
         "statistics_fdb_test.go",
         "twotable_order_invariant_test.go",
+        "vector_multipartition_e2e_fdb_test.go",
         "vector_search_e2e_fdb_test.go",
     ],
     embed = [":sqldriver"],
