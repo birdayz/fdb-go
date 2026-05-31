@@ -303,15 +303,20 @@ func executePredicatesFilter(
 				}
 			}()
 			var rowCtx any = qr.Datum
-			if needsRowCtx {
-				if m, ok := qr.Datum.(map[string]any); ok {
-					ec := evalCtx
-					if ec == nil {
-						ec = EmptyEvaluationContext()
-					}
-					if bindAlias {
-						ec = ec.WithBinding(innerAlias, m)
-					}
+			// RFC-048 W1: a HAVING/filter reference to a name absent from a
+			// complete row (aggregate output) is a bug, not a NULL.
+			strict := StrictReferenceCheck && qr.Complete
+			if m, ok := qr.Datum.(map[string]any); ok && (strict || needsRowCtx) {
+				ec := evalCtx
+				if ec == nil {
+					ec = EmptyEvaluationContext()
+				}
+				if bindAlias {
+					ec = ec.WithBinding(innerAlias, m)
+				}
+				if strict {
+					rowCtx = ec.RowContextStrict(m)
+				} else {
 					rowCtx = ec.RowContext(m)
 				}
 			}
@@ -340,7 +345,19 @@ func executeMap(
 	}
 	resultValue := p.GetResultValue()
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
-		m := resultValue.Evaluate(qr.Datum)
+		var rowCtx any = qr.Datum
+		// RFC-048 W1: a projection reading a name absent from a complete row
+		// (aggregate output) is a bug, not a NULL.
+		if StrictReferenceCheck && qr.Complete {
+			if m, ok := qr.Datum.(map[string]any); ok {
+				ec := evalCtx
+				if ec == nil {
+					ec = EmptyEvaluationContext()
+				}
+				rowCtx = ec.RowContextStrict(m)
+			}
+		}
+		m := resultValue.Evaluate(rowCtx)
 		return QueryResult{Datum: m, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
 	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil

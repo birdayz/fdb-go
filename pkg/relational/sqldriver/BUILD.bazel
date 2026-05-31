@@ -59,6 +59,7 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",

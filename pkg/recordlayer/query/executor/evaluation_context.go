@@ -55,6 +55,25 @@ func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalCon
 	}
 }
 
+// RowContextStrict is RowContext with the RFC-048 W1 unresolved-reference
+// check armed. Use it only for rows whose key set is complete (QueryResult
+// .Complete) — see RowEvalContext.Strict. Callers gate on StrictReferenceCheck
+// so production keeps the cheaper bare-map fast path.
+func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowEvalContext {
+	rc := ec.RowContext(datum)
+	rc.Strict = true
+	return rc
+}
+
+// StrictReferenceCheck, when true, makes filter/projection cursors evaluate
+// QueryResult.Complete rows through a Strict RowEvalContext, so a reference to
+// a name absent from the (complete) row is reported via
+// values.ReportUnresolvedReference instead of silently yielding NULL. It is
+// the RFC-048 W1 invariant's master switch: default false (production is
+// untouched and pays nothing), turned on by tests to prove no code path emits
+// an unresolved reference. Set it once at test start, before any query runs.
+var StrictReferenceCheck bool
+
 // WithScalarSubqueries returns a copy with pre-evaluated scalar
 // subquery results bound by correlation alias.
 func (ec *EvaluationContext) WithScalarSubqueries(results map[values.CorrelationIdentifier]any) *EvaluationContext {

@@ -19,6 +19,15 @@ type QueryResult struct {
 	Datum      any
 	Record     *recordlayer.FDBStoredRecord[proto.Message]
 	PrimaryKey tuple.Tuple
+	// Complete marks a computed/synthetic row whose Datum key set is
+	// authoritative — every legal column is present (nil-valued for SQL NULL),
+	// with no proto-style optional-field omissions. Set by aggregate output
+	// (finalizeGroup/emptyScalarResult). Consumers use it to enable the RFC-048
+	// W1 strict unresolved-reference check: against such a row, a referenced
+	// name that is absent is a bug, not a NULL. Raw stored-record rows
+	// (FromStoredRecord) leave it false, because they legitimately omit unset
+	// optional fields.
+	Complete bool
 }
 
 // FromStoredRecord builds a QueryResult from a stored record. The

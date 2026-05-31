@@ -688,8 +688,13 @@ func executeFilter(
 				}
 			}()
 			var rowCtx any = qr.Datum
-			if needsRowCtx {
-				if m, ok := qr.Datum.(map[string]any); ok {
+			if m, ok := qr.Datum.(map[string]any); ok {
+				switch {
+				case StrictReferenceCheck && qr.Complete:
+					// RFC-048 W1: a HAVING/filter reference to a name absent from
+					// a complete row (aggregate output) is a bug, not a NULL.
+					rowCtx = evalCtx.RowContextStrict(m)
+				case needsRowCtx:
 					rowCtx = evalCtx.RowContext(m)
 				}
 			}
@@ -845,8 +850,13 @@ func executeProjection(
 		}
 		projected := make(map[string]any, len(projections))
 		var rowCtx any = qr.Datum
-		if needsRowCtx {
-			if m, ok := qr.Datum.(map[string]any); ok {
+		if m, ok := qr.Datum.(map[string]any); ok {
+			switch {
+			case StrictReferenceCheck && qr.Complete:
+				// RFC-048 W1: a projection reading a name absent from a complete
+				// row (aggregate output) is a bug, not a NULL.
+				rowCtx = evalCtx.RowContextStrict(m)
+			case needsRowCtx:
 				rowCtx = evalCtx.RowContext(m)
 			}
 		}
