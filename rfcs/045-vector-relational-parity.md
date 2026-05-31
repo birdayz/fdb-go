@@ -1,6 +1,6 @@
 # RFC-045: Vector / HNSW relational SQL parity
 
-**Status:** Accepted (Graefe ACK, Torvalds ACK) — implementation in progress
+**Status:** Implemented (Graefe ACK, Torvalds ACK) — full SQL vector K-NN read path lands; see Phase 9 in TODO.md
 **Phase:** 9 (TODO.md)
 **Scope:** read-side query surface + DDL; **zero new wire format** (the on-disk HNSW
 format already matches Java and is unchanged by this RFC).
