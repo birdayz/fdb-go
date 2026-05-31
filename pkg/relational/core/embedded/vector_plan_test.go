@@ -1,8 +1,11 @@
 package embedded
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 )
 
 // TestVectorPlan_QualifyPlansToVectorScan is the 9.3a/b proof: a full
@@ -56,5 +59,38 @@ func TestVectorPlan_PartitionOnlyDoesNotMatchVector(t *testing.T) {
 	}
 	if strings.Contains(explain, "VectorIndexScan") {
 		t.Fatalf("plain WHERE matched the vector candidate (distance unbound):\n%s", explain)
+	}
+}
+
+// TestVectorPlan_MetricMismatchDoesNotMatchVector pins the metric-match
+// invariant (@claude review): a QUALIFY ORDER BY cosine_distance(...) over an
+// index declared EUCLIDEAN_METRIC must NOT plan to a vector scan. The query
+// builds a CosineDistanceRowNumberValue, the candidate's placeholder is the
+// metric-specific EuclideanDistanceRowNumberValue, so they don't match — the
+// DistanceRank stays unmatched / uncompensatable and never lowers to a vector
+// scan. (A vector scan with the wrong metric would silently return wrong
+// neighbours, so this is a correctness guard, not just an optimization gap.)
+func TestVectorPlan_MetricMismatchDoesNotMatchVector(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			zone string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	sql := `SELECT doc_id FROM docs WHERE zone = 'z1'
+		QUALIFY ROW_NUMBER() OVER (
+			PARTITION BY zone
+			ORDER BY cosine_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+
+	explain, err := PlanQueryForTest(sql, schema, nil)
+	// The cosine DistanceRank can't be served by a euclidean index and can't be
+	// a residual filter (it's index-only), so the query is unplannable: the
+	// planner's final-plan guard rejects it with UnplannableIndexOnlyResidualError
+	// instead of building a plan that panics at execution.
+	var uerr *cascades.UnplannableIndexOnlyResidualError
+	if !errors.As(err, &uerr) {
+		t.Fatalf("expected UnplannableIndexOnlyResidualError for metric mismatch, got err=%v\nexplain=%s", err, explain)
 	}
 }

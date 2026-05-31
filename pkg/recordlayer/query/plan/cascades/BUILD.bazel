@@ -59,6 +59,7 @@ go_library(
         "physical_wrapper.go",
         "plan_context.go",
         "plan_context_builder.go",
+        "plan_executability.go",
         "plan_properties.go",
         "planner.go",
         "planner_constraint.go",

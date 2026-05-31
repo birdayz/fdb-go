@@ -1412,7 +1412,14 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		partitionCount = kwv.SplitPoint()
 	}
-	metric := vectorMetricOperator(idx.Options[recordlayer.IndexOptionVectorMetric])
+	metric, ok := vectorMetricOperator(idx.Options[recordlayer.IndexOptionVectorMetric])
+	if !ok {
+		// Unrecognized metric (corrupt or newer-version metadata). Don't build
+		// a candidate with a wrong default metric; without the candidate the
+		// QUALIFY distance predicate stays uncompensatable and the query fails
+		// to plan rather than returning wrong-metric results.
+		return nil
+	}
 
 	rts := md.RecordTypesForIndex(idx)
 	rtNames := make([]string, len(rts))
@@ -1434,18 +1441,26 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	)
 }
 
-// vectorMetricOperator maps the stored HNSW metric option (Java enum name) to
-// the cascades DistanceOperator used by the distance placeholder.
-func vectorMetricOperator(name string) values.DistanceOperator {
+// vectorMetricOperator maps the stored HNSW metric option (Java Metric enum
+// name) to the cascades DistanceOperator used by the distance placeholder. An
+// absent option defaults to Euclidean, matching Java's
+// VectorIndexExpansionVisitor (`getOrDefault(HNSW_METRIC, Config.DEFAULT_METRIC)`
+// where DEFAULT_METRIC == EUCLIDEAN_METRIC). It returns ok=false for an
+// unrecognized non-empty metric: Java throws there; we instead skip the
+// candidate so a corrupt or newer-version metric never silently maps to
+// Euclidean and serves the wrong distance.
+func vectorMetricOperator(name string) (values.DistanceOperator, bool) {
 	switch name {
-	case "COSINE_METRIC", "cosine":
-		return values.DistanceCosine
-	case "DOT_PRODUCT_METRIC", "inner_product":
-		return values.DistanceDotProduct
+	case "", "EUCLIDEAN_METRIC", "euclidean":
+		return values.DistanceEuclidean, true
 	case "EUCLIDEAN_SQUARE_METRIC":
-		return values.DistanceEuclideanSquare
+		return values.DistanceEuclideanSquare, true
+	case "COSINE_METRIC", "cosine":
+		return values.DistanceCosine, true
+	case "DOT_PRODUCT_METRIC", "inner_product":
+		return values.DistanceDotProduct, true
 	default:
-		return values.DistanceEuclidean
+		return values.DistanceEuclidean, false
 	}
 }
 

@@ -78,6 +78,51 @@ func TestWalk_RowNumberOverDistance(t *testing.T) {
 	}
 }
 
+// TestWalk_ArrayConstructorNumeric pins walkArrayConstructor's switch from
+// GetText()+ParseFloat to the resolver: negative literals (NegativeDecimalConstant)
+// and integer literals (promoted to float64) must both resolve to a
+// []float64 LiteralValue — the query-vector operand shape of a K-NN distance.
+func TestWalk_ArrayConstructorNumeric(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstSelectExpr(t, "SELECT [1.5, -2.5, 3, 0] FROM users")
+
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cv, ok := v.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("got %T, want *ConstantValue", v)
+	}
+	got, ok := cv.Value.([]float64)
+	if !ok {
+		t.Fatalf("constant value is %T, want []float64", cv.Value)
+	}
+	want := []float64{1.5, -2.5, 3, 0}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("elem[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestWalk_ArrayConstructorRejectsNonConstant pins that a non-constant array
+// element (a column reference) is rejected cleanly, not silently mis-parsed.
+func TestWalk_ArrayConstructorRejectsNonConstant(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstSelectExpr(t, "SELECT [1.0, id, 3.0] FROM users")
+	if _, err := r.WalkExpression(ctx); err == nil {
+		t.Fatal("expected error for non-constant array element, got nil")
+	}
+}
+
 func TestWalk_RowNumberRejects(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

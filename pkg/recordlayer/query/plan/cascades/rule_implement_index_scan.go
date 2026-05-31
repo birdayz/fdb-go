@@ -73,6 +73,17 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		if _, isAgg := cand.(*AggregateIndexMatchCandidate); isAgg {
 			continue
 		}
+		// Vector candidates are handled exclusively via the data-access match
+		// path (PrepareMatchesAndCompensations → DataAccessForMatchPartition),
+		// which binds the index-only DistanceRank to the distance placeholder.
+		// This rule only binds FieldValue-keyed comparison predicates, so it
+		// can't bind the DistanceRank — ToScanPlan would emit a vector plan with
+		// a nil query vector. Skip explicitly (mirrors the aggregate skip above);
+		// the index-only residual guard below would also drop it, but the typed
+		// skip keeps the separation of concerns from depending on that.
+		if _, isVec := cand.(*VectorIndexScanMatchCandidate); isVec {
+			continue
+		}
 		if !recordTypesOverlap(scanTypes, cand.GetRecordTypes()) {
 			continue
 		}

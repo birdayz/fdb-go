@@ -329,7 +329,17 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	// After the task-stack drains, each Reference's FinalMembers has
 	// been pruned to exactly one physical plan by OptimizeGroup.
 	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, p.stats)
-	return plan, p.tasksRun, err
+	if err != nil {
+		return plan, p.tasksRun, err
+	}
+	// Reject a final plan that would evaluate an index-only predicate (e.g. a
+	// vector K-NN DistanceRank) as a residual filter — not executable, see
+	// validateNoIndexOnlyResidual. Surfaces a clean planning error instead of an
+	// execution-time panic when no index serves the index-only predicate.
+	if err := validateNoIndexOnlyResidual(plan); err != nil {
+		return nil, p.tasksRun, err
+	}
+	return plan, p.tasksRun, nil
 }
 
 // ErrPlannerCapHit signals that Explore exited via the MaxTasks

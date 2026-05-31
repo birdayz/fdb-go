@@ -892,8 +892,17 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 	elems := ec.AllExpression()
 	vec := make([]float64, 0, len(elems))
 	for _, e := range elems {
-		f, err := strconv.ParseFloat(strings.TrimSpace(e.GetText()), 64)
+		// Walk each element through the resolver instead of string-parsing
+		// GetText(): this resolves negative literals (NegativeDecimalConstant)
+		// and integer literals (promoted to float64) via the typed parse tree,
+		// and rejects non-constant expressions cleanly. (GetText() is used only
+		// for the human-readable error message, never to read the value.)
+		v, err := r.WalkExpression(e)
 		if err != nil {
+			return nil, err
+		}
+		f, ok := numericConstantToFloat64(v)
+		if !ok {
 			return nil, &UnsupportedExpressionShapeError{
 				Shape: fmt.Sprintf("array literal element %q is not a numeric constant", e.GetText()),
 			}
@@ -901,6 +910,31 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 		vec = append(vec, f)
 	}
 	return values.LiteralValue(vec), nil
+}
+
+// numericConstantToFloat64 extracts a float64 from a resolved constant Value.
+// Returns ok=false for non-constant or non-numeric Values (a column reference,
+// a string literal, an arithmetic expression). int/float widths are promoted to
+// float64 so integer-literal vector elements (`[1, 0, 0]`) are accepted.
+func numericConstantToFloat64(v values.Value) (float64, bool) {
+	cv, ok := v.(*values.ConstantValue)
+	if !ok {
+		return 0, false
+	}
+	switch n := cv.Value.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }
 
 // walkRecordConstructor unwraps a single-element, unnamed-field,

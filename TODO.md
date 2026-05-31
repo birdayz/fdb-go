@@ -185,19 +185,26 @@ scheme further. Scoped to the deferred ≥5-way path; 4-way is unaffected.
 
 ### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
 
-Go reaches a physical index scan via two paths: the data-access/compensation match path
-(`predicate_multi_map.go`) and the Go-only `ImplementIndexScanRule` (a fusion of Java's
-`ImplementPhysicalScanRule` + candidate matching that iterates predicates directly, bypassing
-`Compensation`). Java has ONE path (`AbstractDataAccessRule` → `toEquivalentPlan`) and enforces
-"index-only value can't be a residual" ONCE via `Compensation.isImpossible()`. Because Go's
-implement rule doesn't route through `Compensation`, RFC-045 had to apply the index-only
-compensatability guard at BOTH layers (`valueContainsUncompensatable` + the residual-skip loop in
-`ImplementIndexScanRule.OnMatch`). Both are load-bearing and pinned (`TestVectorPlan_QualifyPlansToVectorScan`,
-`TestImplementIndexScanRule_SkipsIndexOnlyResidual`), so there is **no live bug** — but the
-duplication is a smell whose root is the duplicated path. Root fix (Graefe-endorsed): retire
-`ImplementIndexScanRule` so the single data-access rule routes through `Compensation`, at which
-point the implement-layer guard deletes itself and the property is enforced once, as in Java.
-See DIVERGENCES.md "ImplementIndexScanRule is a Go-only second index-scan path". Not urgent.
+Go reaches a physical index scan / filter via THREE producers that bypass `Compensation`: the
+data-access/compensation match path (`predicate_multi_map.go`), the Go-only `ImplementIndexScanRule`
+(a fusion of Java's `ImplementPhysicalScanRule` + candidate matching that iterates predicates
+directly), and `ImplementFilterRule` (synthesizes a `RecordQueryPredicatesFilterPlan` over the inner
+winner). Java has ONE path (`AbstractDataAccessRule` → `toEquivalentPlan`) and enforces "index-only
+value can't be a residual" ONCE via `Compensation.isImpossible()`. Because Go's extra rules don't
+route through `Compensation`, RFC-045 enforces the index-only compensatability guard at multiple
+layers: `valueContainsUncompensatable` (match path) + the residual-skip loop in
+`ImplementIndexScanRule.OnMatch` (implement-index path) + a final-plan validation
+`validateNoIndexOnlyResidual` in `Planner.Plan` (the `ImplementFilterRule` leak can't be guarded at
+the rule — removing its member collapses the filter Reference and breaks the data-access intersection
+memo, so the leaking *final* plan is rejected with `UnplannableIndexOnlyResidualError` instead).
+All are load-bearing and pinned (`TestVectorPlan_QualifyPlansToVectorScan`,
+`TestImplementIndexScanRule_SkipsIndexOnlyResidual`, `TestVectorPlan_MetricMismatchDoesNotMatchVector`),
+so there is **no live bug** — but the layering is a smell whose root is the duplicated paths. Root fix
+(Graefe-endorsed): retire `ImplementIndexScanRule` and route `ImplementFilterRule`'s filter
+implementation through a single data-access rule backed by `Compensation`, at which point the
+implement-layer guard AND the final-plan validation delete themselves and the property is enforced
+once, as in Java. See DIVERGENCES.md "ImplementIndexScanRule is a Go-only second index-scan path".
+Not urgent.
 
 ### 7.6 Source-anchored field pull-up — retire `composeFieldOverJoinMerge` (RFC-044 follow-up)
 
