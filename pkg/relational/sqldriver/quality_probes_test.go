@@ -1002,6 +1002,20 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("post_aggregate_expression_rejected", func(t *testing.T) {
+		// Codex delta P2: a post-aggregation expression output (`SUM(x) + 1`)
+		// is a visible aggCol with empty aggFunc + outExpr. It must NOT be
+		// misclassified as a group-key projection (which would read an
+		// unmaterialized column => NULL). Computing the expression over the
+		// aggregate row is out of scope, so reject cleanly.
+		err := expectError(t, db, `SELECT name,
+			(SELECT SUM(o.amount) + 1 FROM orders o WHERE o.customer_id = c.id)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for post-aggregation expression in correlated scalar subquery")
+		}
+	})
+
 	t.Run("undefined_group_key_rejected", func(t *testing.T) {
 		// Codex P2: a non-existent GROUP BY column (aggregate-only projection,
 		// so validateGroupByProjection does not catch it) must error, not

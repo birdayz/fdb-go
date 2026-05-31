@@ -4129,13 +4129,17 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		}
 		// If the single visible output is a bare group-key projection (e.g.
 		// `SELECT status ... GROUP BY status HAVING COUNT(*) > 1`), the scalar
-		// value is the group key, not an aggregate. Strip any qualifier so the
-		// name matches the grouped row key (and replaceScalarSubqueryRef does
-		// not double-prefix `O.O.STATUS`).
+		// value is the group key, not an aggregate. Match ONLY a real group-key
+		// entry (groupCol set) — NOT a post-aggregation expression such as
+		// `SUM(x) + 1` (visible aggCol with aggFunc=="" but outExpr!=nil), whose
+		// value the aggregate row never materializes; those fall through to the
+		// error below rather than silently resolving to NULL. Use the grouping
+		// column (qualifier stripped) so the name matches the grouped row key
+		// (and replaceScalarSubqueryRef does not double-prefix `O.O.STATUS`).
 		if scalarCol == "" {
 			for i := range sq.aggCols {
-				if sq.aggCols[i].visible && sq.aggCols[i].aggFunc == "" {
-					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].outName).bare())
+				if sq.aggCols[i].visible && sq.aggCols[i].aggFunc == "" && sq.aggCols[i].groupCol != "" {
+					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
 					break
 				}
 			}
@@ -4178,12 +4182,16 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			scalarCol = strings.ToUpper(sq.projCols[0])
 		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
 			// The output is the bare group-key projection (stored as a visible
-			// aggCol). Strip any qualifier so the name matches the grouped row
-			// key — otherwise replaceScalarSubqueryRef double-prefixes the inner
-			// alias (`O.O.STATUS`) and the scalar resolves to NULL.
+			// aggCol with groupCol set). Use the grouping column (qualifier
+			// stripped) so the name matches the grouped row key — otherwise
+			// replaceScalarSubqueryRef double-prefixes the inner alias
+			// (`O.O.STATUS`) and the scalar resolves to NULL. A visible
+			// expression-of-group-keys (outExpr, groupCol=="") is NOT a plain
+			// key — the aggregate row never materializes it — so it falls through
+			// to the error rather than silently resolving to NULL.
 			for i := range sq.aggCols {
-				if sq.aggCols[i].visible {
-					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].outName).bare())
+				if sq.aggCols[i].visible && sq.aggCols[i].groupCol != "" {
+					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
 					break
 				}
 			}
