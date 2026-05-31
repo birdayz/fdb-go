@@ -52,11 +52,15 @@ func TransformRowNumberDistanceRankMaybe(rn *values.RowNumberValue, cmpType Comp
 		return nil, false
 	}
 
-	// Distance(indexVector, queryVector): left child is the indexed vector
-	// field, right child is the query vector constant (Java reads
-	// getChildren().get(0)/get(1)).
+	// Distance(indexVector, queryVector): the indexed vector is a FieldValue
+	// (the column), the query vector is a constant. Java accepts either
+	// argument order (Distance(field, q) or Distance(q, field)); normalize so
+	// the FieldValue is the index vector.
 	indexVector := dv.LeftChild
 	queryVector := dv.RightChild
+	if !isFieldValue(indexVector) && isFieldValue(queryVector) {
+		indexVector, queryVector = queryVector, indexVector
+	}
 	cmp := NewDistanceRankComparison(drType, queryVector, comparand, rn.EfSearch, rn.IsReturningVectors)
 
 	var lhs values.Value
@@ -74,4 +78,11 @@ func TransformRowNumberDistanceRankMaybe(rn *values.RowNumberValue, cmpType Comp
 	}
 
 	return NewComparisonPredicate(lhs, cmp), true
+}
+
+// isFieldValue reports whether v is a column reference (the indexed vector
+// side of a distance function, as opposed to the constant query vector).
+func isFieldValue(v values.Value) bool {
+	_, ok := v.(*values.FieldValue)
+	return ok
 }

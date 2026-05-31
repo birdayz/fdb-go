@@ -4,6 +4,7 @@ import (
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
 
@@ -37,6 +38,72 @@ func buildQualifyPredicate(
 	return pred, true
 }
 
+// attachOrSynthesizeFilter attaches pred to the first LogicalFilter on op's
+// unary spine; if there is none (a query with QUALIFY but no WHERE builds no
+// filter), it synthesizes a LogicalFilter directly above the base LogicalScan
+// — the same position a WHERE filter occupies, so the predicate is not
+// silently dropped. Returns the (possibly new) plan root.
+func attachOrSynthesizeFilter(op logical.LogicalOperator, pred predicates.QueryPredicate) logical.LogicalOperator {
+	if upgradeFirstFilter(op, pred) {
+		return op
+	}
+	if _, isScan := op.(*logical.LogicalScan); isScan {
+		return logical.NewFilterWithPredicate(op, pred, "")
+	}
+	for cur := op; cur != nil; {
+		child, ok := unaryInput(cur)
+		if !ok {
+			// Not a unary spine to a scan — wrap the whole plan as a fallback
+			// so the predicate still filters (never dropped).
+			return logical.NewFilterWithPredicate(op, pred, "")
+		}
+		if _, isScan := child.(*logical.LogicalScan); isScan {
+			setUnaryInput(cur, logical.NewFilterWithPredicate(child, pred, ""))
+			return op
+		}
+		cur = child
+	}
+	return op
+}
+
+// unaryInput returns the single child of a unary logical operator.
+func unaryInput(op logical.LogicalOperator) (logical.LogicalOperator, bool) {
+	switch o := op.(type) {
+	case *logical.LogicalFilter:
+		return o.Input, true
+	case *logical.LogicalProject:
+		return o.Input, true
+	case *logical.LogicalSort:
+		return o.Input, true
+	case *logical.LogicalLimit:
+		return o.Input, true
+	case *logical.LogicalDistinct:
+		return o.Input, true
+	case *logical.LogicalAggregate:
+		return o.Input, true
+	default:
+		return nil, false
+	}
+}
+
+// setUnaryInput repoints the single child of a unary logical operator.
+func setUnaryInput(op, child logical.LogicalOperator) {
+	switch o := op.(type) {
+	case *logical.LogicalFilter:
+		o.Input = child
+	case *logical.LogicalProject:
+		o.Input = child
+	case *logical.LogicalSort:
+		o.Input = child
+	case *logical.LogicalLimit:
+		o.Input = child
+	case *logical.LogicalDistinct:
+		o.Input = child
+	case *logical.LogicalAggregate:
+		o.Input = child
+	}
+}
+
 // applyDistanceRankTransform walks a predicate tree and rewrites every
 // comparison whose LHS is a ROW_NUMBER() window value into a DistanceRank
 // comparison via predicates.TransformRowNumberDistanceRankMaybe. Non-matching
@@ -59,14 +126,42 @@ func applyDistanceRankTransform(p predicates.QueryPredicate) predicates.QueryPre
 	case *predicates.NotPredicate:
 		return predicates.NewNot(applyDistanceRankTransform(pred.Child))
 	case *predicates.ComparisonPredicate:
+		// ROW_NUMBER() <op> K — the row-number value is the LHS.
 		if rn, ok := pred.Operand.(*values.RowNumberValue); ok {
 			if transformed, ok := predicates.TransformRowNumberDistanceRankMaybe(
 				rn, pred.Comparison.Type, pred.Comparison.Operand); ok {
 				return transformed
 			}
 		}
+		// K <op> ROW_NUMBER() — the row-number value is the RHS; invert the
+		// comparison so it reads ROW_NUMBER() <op'> K (Java tries both
+		// orderings in transformComparisonMaybe).
+		if rn, ok := pred.Comparison.Operand.(*values.RowNumberValue); ok && pred.Operand != nil {
+			if inv, ok := invertRowNumberComparison(pred.Comparison.Type); ok {
+				if transformed, ok := predicates.TransformRowNumberDistanceRankMaybe(
+					rn, inv, pred.Operand); ok {
+					return transformed
+				}
+			}
+		}
 		return pred
 	default:
 		return p
+	}
+}
+
+// invertRowNumberComparison maps `K <op> ROW_NUMBER()` to the equivalent
+// `ROW_NUMBER() <op'> K` comparison type. Only =, <, <=, >, >= invert to a
+// supported DistanceRank form; others return false.
+func invertRowNumberComparison(t predicates.ComparisonType) (predicates.ComparisonType, bool) {
+	switch t {
+	case predicates.ComparisonEquals:
+		return predicates.ComparisonEquals, true
+	case predicates.ComparisonGreaterThanEq: // K >= RN  ≡  RN <= K
+		return predicates.ComparisonLessThanOrEq, true
+	case predicates.ComparisonGreaterThan: // K > RN  ≡  RN < K
+		return predicates.ComparisonLessThan, true
+	default:
+		return 0, false
 	}
 }

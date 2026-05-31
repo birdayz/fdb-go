@@ -1116,6 +1116,13 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	upgradeSortKeyValues(op, sq, md, cteScopes)
 
 	if sq.whereExpr == nil {
+		// No WHERE, but a QUALIFY filter (the vector K-NN ROW_NUMBER() <= K
+		// predicate) must still be attached — synthesize a LogicalFilter above
+		// the scan rather than dropping it (an unpartitioned KNN query has no
+		// WHERE, so no filter was built upstream).
+		if qualPred, ok := buildQualifyPredicate(md, sq, cteScopes); ok {
+			op = attachOrSynthesizeFilter(op, qualPred)
+		}
 		return op, nil
 	}
 

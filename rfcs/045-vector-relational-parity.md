@@ -172,6 +172,21 @@ run before/after as a regression guard regardless.
   shape; determinism 10×.
 - Fuzz the `transformComparisonMaybe` comparison-rewrite if it does any non-trivial parsing.
 
+## Divergence note: dedicated vector plan type (Graefe review)
+
+Java does not introduce a `RecordQueryVectorIndexPlan`; `toEquivalentPlan` emits
+a plain `RecordQueryIndexPlan` whose scan-bounds are a `VectorIndexScanComparisons`
+(the BY_DISTANCE-ness rides in the scan comparisons, not the plan class). Go uses
+a dedicated `RecordQueryVectorIndexPlan` instead: Go's `RecordQueryIndexPlan`
+carries a flat `[]*ComparisonRange` (no `IndexScanParameters`/`ScanComparisons`
+abstraction to host a vector-specific bounds subtype), and a BY_DISTANCE scan
+needs typed query-vector / k / ef_search fields the `ComparisonRange` list can't
+represent without a parallel encoding. A dedicated leaf plan is the cleaner Go
+expression and keeps the BY_DISTANCE dispatch explicit at the executor. This is a
+read-side-only extension — no wire-format impact (the on-disk HNSW format and the
+`VectorIndexScanContinuation` are unchanged) — and Java still reads/writes the
+exact same records. Endorsed as acceptable by Graefe.
+
 ## Non-goals
 
 - General-purpose window functions (`LAG`/`LEAD`/running aggregates over plain tables) — Java

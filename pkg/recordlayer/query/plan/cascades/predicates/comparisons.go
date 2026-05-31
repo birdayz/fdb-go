@@ -402,6 +402,17 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 		}
 		return TriFalse
 	}
+	// DistanceRank comparisons are vector K-NN index predicates: they MUST be
+	// lowered to a vector index scan during planning (RowNumberValue
+	// transformComparisonMaybe → VectorIndexScanMatchCandidate), never
+	// evaluated row-by-row. Reaching here means the planner failed to match the
+	// vector index — fail loud rather than silently returning UNKNOWN (which
+	// would drop every row and make a broken K-NN query pass green).
+	switch c.Type {
+	case ComparisonDistanceRankEquals, ComparisonDistanceRankLessThan, ComparisonDistanceRankLessThanOrEq:
+		panic(fmt.Sprintf("DistanceRank comparison %v reached row evaluation: "+
+			"vector K-NN predicate was not lowered to a vector index scan during planning", c.Type))
+	}
 	if left == nil || right == nil {
 		return TriUnknown
 	}
