@@ -645,6 +645,11 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (16) Upgrade WHERE predicate.
 	if sq.whereExpr == nil {
+		// No WHERE, but a QUALIFY filter (vector K-NN ROW_NUMBER() <= K) must
+		// still be attached — synthesize a filter above the scan if none exists.
+		if qualPred, ok := buildQualifyPredicate(v.md, sq, v.cteScopes); ok {
+			op = attachOrSynthesizeFilter(op, qualPred)
+		}
 		return op, nil
 	}
 
@@ -706,7 +711,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 			}
 		}
-		_ = upgradeFirstFilter(op, pred)
+		_ = upgradeFirstFilter(op, combineQualifyPred(v.md, sq, v.cteScopes, pred))
 		if len(existsPlanner.subqueries) > 0 {
 			upgradeFirstFilterExistsSubqueries(op, existsPlanner.subqueries)
 		}
@@ -718,7 +723,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	if preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
-		_ = upgradeFirstFilter(op, pred)
+		_ = upgradeFirstFilter(op, combineQualifyPred(v.md, sq, v.cteScopes, pred))
 		return op, nil
 	}
 

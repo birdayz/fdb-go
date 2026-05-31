@@ -110,6 +110,7 @@ go_test(
         "utilities_test.go",
         "value_compare_test.go",
         "vector_ddl_test.go",
+        "vector_plan_test.go",
         "where_extractors_test.go",
     ],
     embed = [":embedded"],

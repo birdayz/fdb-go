@@ -507,7 +507,58 @@ func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if qOk && pOk {
 		return strings.EqualFold(qFV.Field, pFV.Field)
 	}
-	return false
+	// Vector K-NN: the query's DistanceRank predicate LHS is a metric-specific
+	// DistanceRowNumberValue; the candidate's distance placeholder is the same
+	// value over the index columns. Match alias-invariantly by metric class +
+	// partition/argument field names (the alias map is built only after this
+	// binding step, so compare by name like the FieldValue case above).
+	return distanceRowNumberValuesMatch(queryValue, placeholderValue)
+}
+
+// distanceRowNumberValuesMatch reports whether a and b are the same
+// distance-row-number metric class with matching partition + argument field
+// names (ignoring QOV aliases).
+func distanceRowNumberValuesMatch(a, b values.Value) bool {
+	ma, wa, oka := distanceRowNumberWindowed(a)
+	mb, wb, okb := distanceRowNumberWindowed(b)
+	if !oka || !okb || ma != mb {
+		return false
+	}
+	return fieldNamesMatch(wa.PartitioningValues, wb.PartitioningValues) &&
+		fieldNamesMatch(wa.ArgumentValues, wb.ArgumentValues)
+}
+
+// distanceRowNumberWindowed returns a metric tag + the embedded WindowedValue
+// for the distance-row-number value variants, or ok=false otherwise.
+func distanceRowNumberWindowed(v values.Value) (string, *values.WindowedValue, bool) {
+	switch t := v.(type) {
+	case *values.EuclideanDistanceRowNumberValue:
+		return "euclidean", &t.WindowedValue, true
+	case *values.EuclideanSquareDistanceRowNumberValue:
+		return "euclidean_square", &t.WindowedValue, true
+	case *values.CosineDistanceRowNumberValue:
+		return "cosine", &t.WindowedValue, true
+	case *values.DotProductDistanceRowNumberValue:
+		return "dot_product", &t.WindowedValue, true
+	default:
+		return "", nil, false
+	}
+}
+
+// fieldNamesMatch reports whether two value lists are positionally equal as
+// FieldValues compared by (case-insensitive) field name, ignoring QOV aliases.
+func fieldNamesMatch(a, b []values.Value) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		fa, oka := a[i].(*values.FieldValue)
+		fb, okb := b[i].(*values.FieldValue)
+		if !oka || !okb || !strings.EqualFold(fa.Field, fb.Field) {
+			return false
+		}
+	}
+	return true
 }
 
 // flattenConjuncts recursively expands AndPredicates into their

@@ -125,6 +125,10 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value,
 		// integer div are not wired yet — values.ArithmeticOp
 		// doesn't expose them.
 		return r.walkMathExpression(a)
+	case *antlrgen.ArrayConstructorExpressionAtomContext:
+		// `[1.0, 0.0, 0.0]` — a numeric array / vector literal (the query
+		// vector for a K-NN distance function).
+		return r.walkArrayConstructor(a.ArrayConstructor())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		// Function call — aggregates (COUNT/SUM/MIN/MAX/AVG) +
 		// CAST/CONVERT (DataTypeFunctionCall) + the seed scalar set
@@ -867,6 +871,36 @@ func (r *Resolver) walkBitExpression(b *antlrgen.BitExpressionAtomContext) (valu
 		return nil, &UnsupportedExpressionShapeError{Shape: "BitOperator: " + opText}
 	}
 	return values.NewScalarFunctionValue(name, values.TypeInt, left, right), nil
+}
+
+// walkArrayConstructor builds a numeric array / vector literal `[a, b, c]`
+// into a []float64 LiteralValue — the query-vector operand of a K-NN distance
+// function. Elements must be numeric literals (the common vector-search shape).
+func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (values.Value, error) {
+	acc, ok := ac.(*antlrgen.ArrayConstructorContext)
+	if !ok || acc == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "malformed array constructor"}
+	}
+	exprsCtx := acc.Expressions()
+	if exprsCtx == nil {
+		return values.LiteralValue([]float64{}), nil
+	}
+	ec, ok := exprsCtx.(*antlrgen.ExpressionsContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: "malformed array elements"}
+	}
+	elems := ec.AllExpression()
+	vec := make([]float64, 0, len(elems))
+	for _, e := range elems {
+		f, err := strconv.ParseFloat(strings.TrimSpace(e.GetText()), 64)
+		if err != nil {
+			return nil, &UnsupportedExpressionShapeError{
+				Shape: fmt.Sprintf("array literal element %q is not a numeric constant", e.GetText()),
+			}
+		}
+		vec = append(vec, f)
+	}
+	return values.LiteralValue(vec), nil
 }
 
 // walkRecordConstructor unwraps a single-element, unnamed-field,

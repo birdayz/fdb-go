@@ -339,6 +339,9 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 		}
 		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering}
 	}
+	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
+		return &physicalVectorIndexScanWrapper{plan: vecPlan}
+	}
 	return &scanPlanExpression{plan: plan}
 }
 

@@ -150,6 +150,7 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
 	case *plans.RecordQueryScanPlan,
 		*plans.RecordQueryIndexPlan,
+		*plans.RecordQueryVectorIndexPlan,
 		*plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryInsertPlan,
 		*plans.RecordQueryDeletePlan,

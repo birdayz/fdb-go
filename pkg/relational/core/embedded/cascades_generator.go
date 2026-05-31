@@ -1281,6 +1281,10 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 			candidates = append(candidates, aggCand)
 			continue
 		}
+		if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
+			candidates = append(candidates, vecCand)
+			continue
+		}
 		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
 	}
 	if len(defs) > 0 {
@@ -1386,6 +1390,63 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		aggFunc,
 		aggColumn,
 	)
+}
+
+// tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a VECTOR
+// (HNSW) index, or nil if the index is not a vector index. columnNames are all
+// index columns (partition prefix + the vector column); partitionCount is the
+// KeyWithValue split point; the metric comes from the HNSW options.
+func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaData) *cascades.VectorIndexScanMatchCandidate {
+	if idx.Type != recordlayer.IndexTypeVector || idx.RootExpression == nil {
+		return nil
+	}
+	cols := idx.RootExpression.FieldNames()
+	if len(cols) == 0 {
+		return nil
+	}
+	upperCols := make([]string, len(cols))
+	for i, col := range cols {
+		upperCols[i] = strings.ToUpper(col)
+	}
+	partitionCount := 0
+	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
+		partitionCount = kwv.SplitPoint()
+	}
+	metric := vectorMetricOperator(idx.Options[recordlayer.IndexOptionVectorMetric])
+
+	rts := md.RecordTypesForIndex(idx)
+	rtNames := make([]string, len(rts))
+	for i, rt := range rts {
+		rtNames[i] = rt.Name
+	}
+	var pkCols []string
+	if len(rts) > 0 && rts[0].PrimaryKey != nil {
+		pk := rts[0].PrimaryKey.FieldNames()
+		pkCols = make([]string, len(pk))
+		for i, col := range pk {
+			pkCols[i] = strings.ToUpper(col)
+		}
+	}
+
+	return cascades.NewVectorIndexScanMatchCandidate(
+		idx.Name, rtNames, upperCols, partitionCount, metric,
+		values.UnknownType, idx.IsUnique(), pkCols,
+	)
+}
+
+// vectorMetricOperator maps the stored HNSW metric option (Java enum name) to
+// the cascades DistanceOperator used by the distance placeholder.
+func vectorMetricOperator(name string) values.DistanceOperator {
+	switch name {
+	case "COSINE_METRIC", "cosine":
+		return values.DistanceCosine
+	case "DOT_PRODUCT_METRIC", "inner_product":
+		return values.DistanceDotProduct
+	case "EUCLIDEAN_SQUARE_METRIC":
+		return values.DistanceEuclideanSquare
+	default:
+		return values.DistanceEuclidean
+	}
 }
 
 func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {

@@ -39,6 +39,16 @@ type VectorIndexScanMatchCandidate struct {
 	// `parametersRequiredForBinding`.
 	parametersRequiredForBinding map[values.CorrelationIdentifier]struct{}
 
+	// partitionCount is the number of leading (partition-prefix) columns —
+	// the KeyWithValue split point. columnNames[:partitionCount] are the
+	// partition columns; columnNames[partitionCount] is the vector column.
+	partitionCount int
+	// distanceAlias is the sargable alias of the distance placeholder (the
+	// slot the DistanceRank predicate binds to).
+	distanceAlias values.CorrelationIdentifier
+	// metric selects which DistanceRowNumberValue the distance placeholder uses.
+	metric values.DistanceOperator
+
 	flowedType values.Type
 	unique     bool
 
@@ -54,34 +64,44 @@ type VectorIndexScanMatchCandidate struct {
 	primaryKeyColumns    []string
 }
 
-// NewVectorIndexScanMatchCandidate constructs a match candidate for a
-// vector similarity search index.
+// NewVectorIndexScanMatchCandidate constructs a match candidate for a vector
+// similarity search index. columnNames are all index columns in key order
+// (partition columns followed by the single vector column); partitionCount is
+// the KeyWithValue split point; metric selects the distance function. The
+// sargable aliases (one per partition column + one distance alias) and the
+// required-for-binding set (the index-only distance alias) are minted here,
+// mirroring Java's VectorIndexExpansionVisitor.
 func NewVectorIndexScanMatchCandidate(
 	indexName string,
 	recordTypes []string,
 	columnNames []string,
-	parameters []values.CorrelationIdentifier,
-	orderingAliases []values.CorrelationIdentifier,
-	parametersRequiredForBinding []values.CorrelationIdentifier,
+	partitionCount int,
+	metric values.DistanceOperator,
 	flowedType values.Type,
 	unique bool,
 	primaryKeyColumns []string,
 ) *VectorIndexScanMatchCandidate {
-	params := make([]values.CorrelationIdentifier, len(parameters))
-	copy(params, parameters)
-	ordering := make([]values.CorrelationIdentifier, len(orderingAliases))
-	copy(ordering, orderingAliases)
 	types := make([]string, len(recordTypes))
 	copy(types, recordTypes)
 	cols := make([]string, len(columnNames))
 	copy(cols, columnNames)
 	pkCols := make([]string, len(primaryKeyColumns))
 	copy(pkCols, primaryKeyColumns)
-
-	reqSet := make(map[values.CorrelationIdentifier]struct{}, len(parametersRequiredForBinding))
-	for _, a := range parametersRequiredForBinding {
-		reqSet[a] = struct{}{}
+	if partitionCount < 0 || partitionCount > len(cols) {
+		partitionCount = 0
 	}
+
+	// One sargable alias per partition column; those are also the ordering
+	// aliases. Plus one distance alias (the DistanceRank slot).
+	ordering := make([]values.CorrelationIdentifier, partitionCount)
+	params := make([]values.CorrelationIdentifier, 0, partitionCount+1)
+	for i := 0; i < partitionCount; i++ {
+		a := values.UniqueCorrelationIdentifier()
+		ordering[i] = a
+		params = append(params, a)
+	}
+	distanceAlias := values.UniqueCorrelationIdentifier()
+	params = append(params, distanceAlias)
 
 	return &VectorIndexScanMatchCandidate{
 		indexName:                    indexName,
@@ -89,7 +109,10 @@ func NewVectorIndexScanMatchCandidate(
 		columnNames:                  cols,
 		parameters:                   params,
 		orderingAliases:              ordering,
-		parametersRequiredForBinding: reqSet,
+		parametersRequiredForBinding: map[values.CorrelationIdentifier]struct{}{distanceAlias: {}},
+		partitionCount:               partitionCount,
+		distanceAlias:                distanceAlias,
+		metric:                       metric,
 		flowedType:                   flowedType,
 		unique:                       unique,
 		primaryKeyColumns:            pkCols,
@@ -103,7 +126,7 @@ func (c *VectorIndexScanMatchCandidate) CandidateName() string { return c.indexN
 // tree, built lazily on first access.
 func (c *VectorIndexScanMatchCandidate) GetTraversal() *Traversal {
 	c.traversalOnce.Do(func() {
-		c.traversal = ExpandValueIndex(c)
+		c.traversal = ExpandVectorIndex(c)
 	})
 	return c.traversal
 }
@@ -192,30 +215,82 @@ func (c *VectorIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 	return prefix
 }
 
-// ToScanPlan converts the matched prefix into a physical plan.
-// Produces a RecordQueryIndexPlan wrapped in a
-// FetchFromPartialRecordPlan.
-//
-// Ports Java's VectorIndexScanMatchCandidate.toEquivalentPlan().
+// ToScanPlan converts the matched bindings into a vector (BY_DISTANCE) scan
+// plan. It separates the partition-key equality bindings (which form the HNSW
+// partition prefix) from the single DistanceRank binding (which carries the
+// query vector + k + ef_search). Ports Java's
+// VectorIndexScanMatchCandidate.toEquivalentPlan / toVectorIndexScanComparisons.
 func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 	prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
-	reverse bool,
+	_ bool,
 ) plans.RecordQueryPlan {
-	comps := make([]*predicates.ComparisonRange, len(c.parameters))
-	for i, alias := range c.parameters {
-		if cr, ok := prefixMap[alias]; ok {
-			comps[i] = cr
+	// Partition prefix: the equality ranges of the partition aliases, in order.
+	prefixComps := make([]*predicates.ComparisonRange, c.partitionCount)
+	for i := 0; i < c.partitionCount; i++ {
+		if cr, ok := prefixMap[c.parameters[i]]; ok && cr != nil {
+			prefixComps[i] = cr
 		} else {
-			comps[i] = predicates.EmptyComparisonRange()
+			prefixComps[i] = predicates.EmptyComparisonRange()
 		}
 	}
-	return plans.NewRecordQueryIndexPlan(
+
+	// Distance binding: extract the DistanceRank comparison (query vector + k +
+	// ef_search) bound to the distance alias.
+	var queryVector, k values.Value
+	var efSearch *int
+	var isReturningVectors *bool
+	if cr, ok := prefixMap[c.distanceAlias]; ok {
+		if drc := extractDistanceRankComparison(cr); drc != nil {
+			queryVector = drc.QueryVector
+			k = drc.Operand
+			efSearch = drc.EfSearch
+			isReturningVectors = drc.IsReturningVectors
+		}
+	}
+
+	return plans.NewRecordQueryVectorIndexPlan(
 		c.indexName,
-		comps,
+		prefixComps,
+		queryVector,
+		k,
+		efSearch,
+		isReturningVectors,
 		c.recordTypes,
 		c.flowedType,
-		reverse,
 	)
+}
+
+// extractDistanceRankComparison pulls the DistanceRank comparison out of a
+// bound ComparisonRange (it rides as an equality- or inequality-shaped range
+// depending on how ComparisonRange.Merge classified it).
+func extractDistanceRankComparison(cr *predicates.ComparisonRange) *predicates.Comparison {
+	if cr == nil {
+		return nil
+	}
+	switch cr.GetRangeType() {
+	case predicates.ComparisonRangeEquality:
+		if c := cr.GetEqualityComparison(); c != nil && isDistanceRankType(c.Type) {
+			return c
+		}
+	case predicates.ComparisonRangeInequality:
+		for _, c := range cr.GetInequalityComparisons() {
+			if c != nil && isDistanceRankType(c.Type) {
+				return c
+			}
+		}
+	}
+	return nil
+}
+
+func isDistanceRankType(t predicates.ComparisonType) bool {
+	switch t {
+	case predicates.ComparisonDistanceRankEquals,
+		predicates.ComparisonDistanceRankLessThan,
+		predicates.ComparisonDistanceRankLessThanOrEq:
+		return true
+	default:
+		return false
+	}
 }
 
 // String returns a human-readable label for debugging.

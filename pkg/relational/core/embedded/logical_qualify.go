@@ -38,6 +38,26 @@ func buildQualifyPredicate(
 	return pred, true
 }
 
+// combineQualifyPred AND-combines the QUALIFY-clause predicate (the vector
+// K-NN ROW_NUMBER() <= K DistanceRank comparison) with the WHERE predicate so
+// both attach to the same LogicalFilter. Returns pred unchanged when there is
+// no QUALIFY clause.
+func combineQualifyPred(
+	md *recordlayer.RecordMetaData,
+	sq *selectQuery,
+	cteScopes map[string]semantic.ScopeSource,
+	pred predicates.QueryPredicate,
+) predicates.QueryPredicate {
+	qualPred, ok := buildQualifyPredicate(md, sq, cteScopes)
+	if !ok {
+		return pred
+	}
+	if pred == nil {
+		return qualPred
+	}
+	return predicates.NewAnd(pred, qualPred)
+}
+
 // attachOrSynthesizeFilter attaches pred to the first LogicalFilter on op's
 // unary spine; if there is none (a query with QUALIFY but no WHERE builds no
 // filter), it synthesizes a LogicalFilter directly above the base LogicalScan

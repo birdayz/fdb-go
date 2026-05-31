@@ -215,7 +215,18 @@ and a `DistanceRank` comparison stub all exist. The SQL **grammar** is complete:
 
 **The gap = the relational front-end + Cascades wiring** (the "just not relational bits"):
 
-- [ ] **9.1 DDL: `CREATE VECTOR INDEX … USING HNSW … PARTITION BY … OPTIONS(…)`** → metadata vector
+**Status (RFC-045 accepted, Graefe+Torvalds ACK on the foundation):** 9.1 + 9.2 + 9.3c
+landed, tested, green. The SQL front-end produces the correct DistanceRank predicate and
+a directly-constructed vector plan executes a correct BY_DISTANCE KNN scan against FDB
+(also fixed a latent PK-extraction bug). **Remaining = 9.3a/b match-wiring** (so the
+planner PICKS the vector scan) + **9.4 e2e**. Graefe-confirmed design: custom
+`ExpandVectorIndex` (partition FieldValue placeholders + one metric-specific
+`DistanceRowNumberValue` distance placeholder via `createDistanceValuePlaceholder`);
+extend `valuesMatchColumn` to alias-invariantly match the distance placeholder; treat
+`ComparisonDistanceRank*` as equality-shaped in `ComparisonRange.Merge`; `ToScanPlan`
+buckets the DistanceRank into the rank slot + partition equalities into the prefix.
+
+- [x] **9.1 DDL: `CREATE VECTOR INDEX … USING HNSW … PARTITION BY … OPTIONS(…)`** → metadata vector
   `Index` (type `vector`, HNSW options). No `vectorIndexDefinition` handler exists in `pkg/relational`
   today. Wire-compat: the index metadata + on-disk HNSW format must match Java byte-for-byte (core
   already does; DDL must produce the same `Index` proto + options).
