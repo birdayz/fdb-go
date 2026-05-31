@@ -197,6 +197,13 @@ func TestFDB_VectorSearch_MultiPartition_Pagination(t *testing.T) {
 		for page := 0; page < 100; page++ {
 			rows, c := collectVectorPage(t, ctx, store, idx, partial, q, k, ef, cont)
 			paged = append(paged, rows...)
+			// A page that delivered a row MUST carry a non-nil resume token until
+			// the stream truly ends — a nil continuation on a delivered row reads
+			// downstream as end-of-scan and would silently truncate the result.
+			// Pins wrapContinuation against the silent-nil failure (@claude F3).
+			if len(rows) > 0 && c == nil && len(paged) < len(unpaged) {
+				t.Fatalf("page %d delivered a row but returned a nil continuation with %d/%d rows seen (silent truncation)", page, len(paged), len(unpaged))
+			}
 			if c == nil {
 				break
 			}
@@ -212,6 +219,95 @@ func TestFDB_VectorSearch_MultiPartition_Pagination(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("pagination test: %v", err)
+	}
+}
+
+// TestFDB_VectorSearch_MultiPartition_DimensionValidation pins codex P2: the
+// partial-prefix fan-out path must validate the query-vector dimension UP FRONT,
+// before any partition is matched — so an invalid-length vector errors
+// consistently even when the partial prefix matches NO partitions (the
+// empty-range case). Without the up-front check the cursor returns
+// SourceExhausted (zero rows, no error), unlike the full-prefix and
+// unpartitioned paths which validate before touching graph contents.
+func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db, md, ks := multiPartitionVectorSetup(t, ctx)
+
+	// Capture the cursor error in an outer var — db.Run's own error is the
+	// transaction result, not the per-row scan error we want to assert on
+	// (codex: the closure must not return the cursor error as the `any` result).
+	var scanErr error
+	_, runErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, sErr := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+		if sErr != nil {
+			return nil, sErr
+		}
+		idx := store.GetMetaData().GetIndex("VEC_IDX")
+		// 2-d query against a 3-d index, partial prefix "zX" matching NO partition
+		// (the corpus only has z1/z2) — the empty-range fan-out case.
+		badVec := []float64{1, 0}
+		cur := store.ScanVectorIndexWithPrefix(idx, tuple.Tuple{"zX"}, badVec, 1, 64, nil,
+			recordlayer.ScanProperties{ExecuteProperties: recordlayer.DefaultExecuteProperties(), CursorStreamingMode: recordlayer.StreamingModeIterator})
+		defer cur.Close()
+		_, scanErr = cur.OnNext(ctx)
+		return nil, nil
+	})
+	if runErr != nil {
+		t.Fatalf("run: %v", runErr)
+	}
+	if scanErr == nil {
+		t.Fatal("partial-prefix scan with a wrong-dimension query vector over an empty partition range did not error (codex P2 regression)")
+	}
+	if !strings.Contains(scanErr.Error(), "dimension") {
+		t.Fatalf("expected a dimension error, got: %v", scanErr)
+	}
+}
+
+// TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual addresses codex
+// Finding P1 — which does NOT reproduce as wrong rows. Scenario: a partition
+// equality on a NON-leading column with the LEADING column unbound
+// (`WHERE region = 'r1'`, zone unbound) over a `PARTITION BY (zone, region)`
+// vector index. ComputeBoundParameterPrefixMap consumes the contiguous leading
+// EQUALITY run and stops at the first unbound column (zone) — so region='r1' is
+// not consumed into the scan prefix, because a positional prefix cannot fix
+// column 1 while column 0 ranges free (Java's nextPrefixTuple extracts a leading
+// subTuple(key, 0, prefixSize) likewise — Java cannot express this either).
+//
+// Go does NOT silently drop region and return wrong rows (the codex P1 failure
+// mode). The index-only DistanceRank, AND-combined with the unconsumed
+// region='r1', cannot be lowered to a residual filter and no index serves the
+// composite, so the final-plan guard rejects it with UnplannableIndexOnly-
+// ResidualError. That is a safe outcome (a clean planning error, never wrong
+// results), it matches Java (equally unserviceable; Go's typed error beats
+// Java's Verify blow-up), and it was unplannable before this change too (no
+// regression). Graefe ACK: assert UNPLANNABLE; a Go-only trailing-partition
+// fan-out (plan + residual) is an allowed but out-of-scope follow-up. Pinning
+// the error is the regression sentinel proving the absence of the wrong-rows
+// behavior codex flagged. Plan-only — the query never reaches execution.
+func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	_, md, _ := multiPartitionVectorSetup(t, ctx)
+
+	sql := `SELECT id, region FROM docs WHERE region = 'r1'
+		QUALIFY ROW_NUMBER() OVER (PARTITION BY zone, region
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 1`
+
+	_, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+	if err == nil {
+		t.Fatal("trailing-equality vector query (leading partition column unbound) unexpectedly planned; " +
+			"expected unplannable (the unconsumed partition equality + index-only DistanceRank cannot be a residual)")
+	}
+	if !strings.Contains(err.Error(), "not plannable") && !strings.Contains(err.Error(), "index-only") {
+		t.Fatalf("expected an unplannable / index-only planning error, got: %v", err)
 	}
 }
 

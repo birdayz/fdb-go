@@ -279,16 +279,3 @@ index `metric`; ORDER BY must be ascending; `ROW_NUMBER()` is INDEX-ONLY (refuse
 `@API(EXPERIMENTAL)` in Java — landed Jan–Mar 2026, just before the 4.11.1.0 tag.
 
 - [x] **9.5 Multi-partition vector scan (partial partition prefix).** Done in RFC-046 — `vectorMultiPartitionCursor` ports Java's `flatMapPipelined(prefixSkipScan, scanSinglePartition)`: `findNextPartition` skip-scans the distinct partition prefixes, `searchOnePartition` runs one HNSW search per partition, per-partition top-K concatenated, full cross-partition `FlatMapContinuation` resume. Planner: `ComputeBoundParameterPrefixMap` keeps the equality prefix + always the DistanceRank binding (no nil-query-vector on a partial prefix); `parametersRequiredForBinding={distanceAlias}` (the full-prefix guard dropped, matching Java's `VectorIndexExpansionVisitor`). Partition inequality left unconsumed → residual (documented; endpoint-into-skip-scan is a perf follow-up). Graefe+Torvalds ACK. Pinned by `TestVectorPlan_PartialPrefixPlansMultiPartition`, `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`, FDB E2E `TestFDB_VectorSearch_MultiPartition_{Fanout,InequalityResidual,Pagination}`. DIVERGENCES.md "Vector scan multi-partition" closed.
-
-  ~~Java's~~
-  `VectorIndexMaintainer.scan` fans out — `flatMapPipelined(prefixSkipScan(prefixSize, range), … scanSinglePartition …)`
-  (VectorIndexMaintainer.java ~134-150): it skip-scans the distinct full partition prefixes within a
-  possibly-partial bound, runs one HNSW search per partition, and merges top-K across them. So a
-  `PARTITION BY (zone, region)` index queried with only `WHERE zone='z1'` is a multi-partition K-NN over all
-  regions. Go is single-partition (`scanByDistanceWithParams` → one `getStorageForPrefix` → one graph). Until
-  ported, `VectorIndexScanMatchCandidate` requires the FULL partition prefix for binding so a partial-prefix
-  query is cleanly unplannable (NOT a nil-query-vector plan / wrong rows) — see DIVERGENCES.md "Vector scan is
-  single-partition" + `TestVectorPlan_PartitionedRequiresFullPrefix`. **To close:** port the prefix skip-scan +
-  per-partition search + cross-partition top-K merge into the Go maintainer, then drop the
-  partition-aliases-required-for-binding guard (vector_index_match_candidate.go) so the planner admits a partial
-  prefix as in Java. (Graefe ACK'd the interim reject-at-binding as a documented executor-gap divergence.)

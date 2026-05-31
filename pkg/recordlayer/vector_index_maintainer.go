@@ -772,6 +772,18 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	// Validate the query-vector dimension up front, before any partition is
+	// matched. searchOnePartition checks this too, but only per matched
+	// partition — so without this an invalid-length vector over a partial prefix
+	// that matches NO partitions would return SourceExhausted instead of the
+	// dimension error, unlike the full-prefix/unpartitioned paths which validate
+	// before touching graph contents (codex P2). Validate once here for
+	// consistent input validation regardless of how many partitions match.
+	if len(queryVector) != m.hnswConfig.NumDimensions {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
+			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))}
+	}
+
 	// Enumeration subspace: partitions under partialPrefix (whole index if empty).
 	base := m.getSubspaceForPrefix(partialPrefix)
 	end, err := fdb.Strinc(base.Bytes())
@@ -833,7 +845,10 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 			}
 			if res.HasNext() {
 				c.totalDelivered++
-				cont := c.wrapContinuation(res.GetContinuation())
+				cont, werr := c.wrapContinuation(res.GetContinuation())
+				if werr != nil {
+					return RecordCursorResult[*IndexEntry]{}, werr
+				}
 				c.lastContinuation = cont
 				return NewResultWithValue(res.GetValue(), &BytesContinuation{bytes: cont}), nil
 			}
@@ -858,7 +873,10 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 
 		var entries []*IndexEntry
 		var inner []byte
-		if c.pendingInner != nil {
+		// len() > 0, not != nil: an empty-but-non-nil InnerContinuation would pass
+		// a nil check, make newVectorSearchCursor take the fresh path with nil
+		// entries, and silently skip the resumed partition (@claude Finding 1).
+		if len(c.pendingInner) > 0 {
 			// Resumed partition: replay from the saved inner continuation; no
 			// fresh HNSW search needed (matches Java's replay-from-continuation).
 			inner = c.pendingInner
@@ -875,10 +893,18 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 
 // wrapContinuation wraps a per-partition continuation in a FlatMapContinuation
 // carrying the current full partition prefix as the outer continuation.
-func (c *vectorMultiPartitionCursor) wrapContinuation(inner RecordCursorContinuation) []byte {
+//
+// Errors are PROPAGATED, never swallowed into a nil result: a nil continuation
+// on a HasNext row reads downstream as end-of-scan, so swallowing a marshal
+// failure here would silently truncate results (return fewer rows than exist
+// with no error) — a silent-data-loss path (@claude review). In practice neither
+// step fails — the inner is a BytesContinuation whose ToBytes is infallible, and
+// FlatMapContinuation marshals two []byte fields — but we surface any failure as
+// a cursor error rather than a short read.
+func (c *vectorMultiPartitionCursor) wrapContinuation(inner RecordCursorContinuation) ([]byte, error) {
 	innerBytes, err := inner.ToBytes()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("VECTOR index %q multi-partition continuation: inner: %w", c.m.index.Name, err)
 	}
 	fm := &gen.FlatMapContinuation{
 		OuterContinuation: c.currentPrefix.Pack(),
@@ -886,9 +912,9 @@ func (c *vectorMultiPartitionCursor) wrapContinuation(inner RecordCursorContinua
 	}
 	data, err := fm.MarshalVT()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("VECTOR index %q multi-partition continuation: marshal: %w", c.m.index.Name, err)
 	}
-	return data
+	return data, nil
 }
 
 // findNextPartition reads one key at/after nextPartitionStart within the
@@ -907,8 +933,17 @@ func (c *vectorMultiPartitionCursor) findNextPartition() (tuple.Tuple, bool, err
 	}
 
 	t, err := fastSubspaceUnpack(kvs[0].Key, len(c.m.hnswSubspace.Bytes()))
-	if err != nil || len(t) < c.partitionSize {
-		return nil, false, nil
+	if err != nil {
+		return nil, false, fmt.Errorf("VECTOR index %q multi-partition skip-scan: unpack key: %w", c.m.index.Name, err)
+	}
+	// A key under the HNSW subspace with fewer than partitionSize leading
+	// elements is malformed — surface it as an error rather than silently
+	// terminating the fan-out (which would skip every partition after it).
+	// The write path always writes full partition prefixes, so this never fires
+	// in practice (@claude Finding 2).
+	if len(t) < c.partitionSize {
+		return nil, false, fmt.Errorf("VECTOR index %q multi-partition skip-scan: key has %d tuple elements, need partition prefix of %d",
+			c.m.index.Name, len(t), c.partitionSize)
 	}
 	prefix := make(tuple.Tuple, c.partitionSize)
 	copy(prefix, t[:c.partitionSize])
