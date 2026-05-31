@@ -966,6 +966,83 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
+	t.Run("having_different_aggregate_than_projection", func(t *testing.T) {
+		// Codex P1: HAVING references COUNT(*) while the projection is SUM —
+		// both aggregates must be computed. Single group per customer
+		// (correlation key) => deterministic.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 1)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 300.50}, // 2 orders, COUNT 2 > 1 => SUM kept
+			{"Bob", 125.25},   // 2 orders
+			{"Charlie", nil},  // 1 order, COUNT 1 not > 1 => filtered => NULL
+			{"Diana", nil},    // 1 order
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL (HAVING COUNT>1 filtered), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("undefined_group_key_rejected", func(t *testing.T) {
+		// Codex P2: a non-existent GROUP BY column (aggregate-only projection,
+		// so validateGroupByProjection does not catch it) must error, not
+		// silently group every row under a null key.
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.no_such_col)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for undefined GROUP BY column")
+		}
+	})
+
+	t.Run("duplicate_alias_multi_column_rejected", func(t *testing.T) {
+		// Codex P2: two visible SELECT items sharing an alias are still two
+		// output columns — reject on item count, not distinct name count.
+		err := expectError(t, db, `SELECT name,
+			(SELECT o.status AS x, COUNT(*) AS x FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for two same-aliased output columns")
+		}
+		if !strings.Contains(err.Error(), "exactly one column") {
+			t.Errorf("error should mention one-column rule, got: %v", err)
+		}
+	})
+
+	t.Run("qualified_group_key_projection", func(t *testing.T) {
+		// Codex P2: a QUALIFIED group-key projection (`SELECT o.status`) must
+		// resolve, not double-prefix into O.O.STATUS => NULL. Charlie has one
+		// order so the single group is deterministic.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT o.status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if got := fmt.Sprintf("%v", rows[0][1]); got != "shipped" {
+			t.Errorf("Charlie: want 'shipped', got %q", got)
+		}
+	})
+
 	t.Run("having_with_exists_rejected", func(t *testing.T) {
 		// EXISTS inside HAVING of a correlated scalar subquery mixes pre/post
 		// grouping scope and has no subquery planner on the HAVING resolver —
