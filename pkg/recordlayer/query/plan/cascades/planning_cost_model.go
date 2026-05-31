@@ -185,23 +185,6 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return 1
 	}
 
-	// A plan with an un-lowered residual DistanceRank predicate is invalid: the
-	// index-only vector K-NN comparison can only be evaluated by a vector index
-	// scan (a residual filter over it panics — see Comparison.EvalAgainst). Such
-	// a plan must never beat one that consumed the DistanceRank via a vector
-	// scan. The structurally-cleaner fix (refusing to emit the residual filter in
-	// rule_implement_index_scan) was tried and rejected: it removes the bad plan
-	// but also strands the vector plan's root projection (no physical winner at
-	// the filter Reference), so the comparator is the load-bearing chokepoint.
-	aBadRank := hasResidualDistanceRank(a)
-	bBadRank := hasResidualDistanceRank(b)
-	if aBadRank != bBadRank {
-		if aBadRank {
-			return 1 // a invalid → b wins
-		}
-		return -1 // b invalid → a wins
-	}
-
 	opsA := findExpressionsByType(a, stats)
 	opsB := findExpressionsByType(b, stats)
 
@@ -459,65 +442,6 @@ func walkExpressionTree(e expressions.RelationalExpression, counts *expressionCo
 			walkExpressionTree(child, counts, stats, visited)
 		}
 	}
-}
-
-// hasResidualDistanceRank reports whether the plan tree contains a filter with
-// an un-lowered DistanceRank predicate (a vector K-NN comparison left as a
-// residual instead of consumed by a vector index scan).
-func hasResidualDistanceRank(e expressions.RelationalExpression) bool {
-	found := false
-	hasResidualDistanceRankRec(e, &found)
-	return found
-}
-
-func hasResidualDistanceRankRec(e expressions.RelationalExpression, found *bool) {
-	if e == nil || *found {
-		return
-	}
-	if pf, ok := e.(*physicalPredicatesFilterWrapper); ok {
-		for _, p := range pf.plan.GetPredicates() {
-			if predicateHasDistanceRank(p) {
-				*found = true
-				return
-			}
-		}
-	} else if ff, ok := e.(*physicalFilterWrapper); ok {
-		for _, p := range ff.plan.GetPredicates() {
-			if predicateHasDistanceRank(p) {
-				*found = true
-				return
-			}
-		}
-	}
-	for _, q := range e.GetQuantifiers() {
-		if ref := q.GetRangesOver(); ref != nil {
-			if child := firstPhysicalChild(ref); child != nil {
-				hasResidualDistanceRankRec(child, found)
-			}
-		}
-	}
-}
-
-func predicateHasDistanceRank(p predicates.QueryPredicate) bool {
-	switch pred := p.(type) {
-	case *predicates.ComparisonPredicate:
-		return isDistanceRankType(pred.Comparison.Type)
-	case *predicates.AndPredicate:
-		for _, s := range pred.SubPredicates {
-			if predicateHasDistanceRank(s) {
-				return true
-			}
-		}
-	case *predicates.OrPredicate:
-		for _, s := range pred.SubPredicates {
-			if predicateHasDistanceRank(s) {
-				return true
-			}
-		}
-	case *predicates.NotPredicate:
-		return predicateHasDistanceRank(pred.Child)
-	}
-	return false
 }
 
 func countResidualPredicates(e expressions.RelationalExpression) int {
