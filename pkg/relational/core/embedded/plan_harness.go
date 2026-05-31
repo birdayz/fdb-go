@@ -180,3 +180,74 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 	}
 	return physPlan.Explain(), nil
 }
+
+// PlanRecordQueryWithMetadata is like PlanQueryWithMetadata but returns the
+// physical RecordQueryPlan (so callers can execute it against a real store),
+// not just its Explain string.
+func PlanRecordQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
+	root, err := parser.Parse(sql)
+	if err != nil {
+		return nil, fmt.Errorf("parse SQL: %w", err)
+	}
+	stmts := root.Statements()
+	if stmts == nil || len(stmts.AllStatement()) == 0 {
+		return nil, fmt.Errorf("no statements in SQL")
+	}
+	sel := stmts.AllStatement()[0].SelectStatement()
+	if sel == nil {
+		return nil, fmt.Errorf("not a SELECT statement")
+	}
+	q := sel.Query()
+	if q == nil {
+		return nil, fmt.Errorf("malformed SELECT")
+	}
+
+	visitor := NewPlanVisitor(md)
+	logicalOp, buildErr := visitor.VisitQuery(q)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	if logicalOp == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
+	}
+	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
+		return nil, err
+	}
+	if err := validateTablesAndColumns(logicalOp, md); err != nil {
+		return nil, err
+	}
+
+	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp)
+	if ref == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
+	}
+
+	rules := cascades.DefaultExpressionRules()
+	rules = append(rules, cascades.RewritingRules()...)
+	planCtx := buildCascadesPlanContext(md)
+	planner := cascades.NewPlanner(rules, planCtx).
+		WithImplementationRules(cascades.DefaultImplementationRules()).
+		WithPlanningExpressionRules(cascades.BatchAExpressionRules()).
+		WithStatistics(stats).
+		WithMaxTasks(100_000)
+
+	bestExpr, _, planErr := planner.Plan(ref)
+	if planErr != nil {
+		return nil, fmt.Errorf("planning failed: %w", planErr)
+	}
+	if bestExpr == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no plan found")
+	}
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		return nil, fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
+	}
+	physPlan := ph.GetRecordQueryPlan()
+	if physPlan == nil {
+		return nil, fmt.Errorf("physical plan is nil")
+	}
+	return physPlan, nil
+}

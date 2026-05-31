@@ -1869,6 +1869,11 @@ func serializeVector(vec []float64) []byte {
 	return buf
 }
 
+// SerializeVector encodes a float64 vector into the on-disk byte format the
+// HNSW vector index reads (RealVector.fromBytes). Exported so callers/tests can
+// populate a record's vector column.
+func SerializeVector(vec []float64) []byte { return serializeVector(vec) }
+
 // deserializeVector deserializes a vector from bytes, returning float64 values.
 // Supports all three Java RealVector types (ordinals match Java's VectorType enum):
 //   - Type 0: HALF (16-bit IEEE 754, 2 bytes per component)
