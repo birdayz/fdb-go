@@ -180,6 +180,64 @@ func TestImplementIndexScanRule_ResidualPredicate(t *testing.T) {
 	}
 }
 
+// TestImplementIndexScanRule_SkipsIndexOnlyResidual pins the implement-path
+// compensatability guard directly (Graefe): a candidate that consumes only the
+// partition key and would leave an index-only predicate (a vector K-NN
+// DistanceRank over a DistanceRowNumberValue) as a residual filter must NOT
+// produce a plan — the index-only value can't be evaluated on a base-record
+// scan (it panics in Comparison.EvalAgainst). Mirror of the match-path guard in
+// predicate_multi_map; ImplementIndexScanRule must reject it independently
+// because it iterates predicates directly instead of routing through
+// Compensation.isImpossible. Contrast with TestImplementIndexScanRule_ResidualPredicate,
+// where an *ordinary* residual (AMOUNT>100) is allowed through as a filter.
+func TestImplementIndexScanRule_SkipsIndexOnlyResidual(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+		nil,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			// Consumed by the candidate (the partition key).
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+			// Index-only residual: a DistanceRank over a DistanceRowNumberValue.
+			// This candidate can't bind it, so it would become a residual filter —
+			// the guard must skip the whole candidate.
+			predicates.NewComparisonPredicate(
+				values.NewEuclideanDistanceRowNumberValue(
+					[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.TypeString}},
+					[]values.Value{&values.FieldValue{Field: "EMBEDDING"}},
+				),
+				predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(3)),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	rule := NewImplementIndexScanRule()
+	results := FireExpressionRuleWithMemo(rule, filterRef, ctx, nil)
+
+	if len(results) != 0 {
+		t.Fatalf("expected 0 yields (index-only residual must skip the candidate), got %d", len(results))
+	}
+}
+
 func TestImplementIndexScanRule_NoMatchingCandidate(t *testing.T) {
 	t.Parallel()
 

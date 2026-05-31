@@ -183,6 +183,22 @@ synthesized stable alias with structural interning when the ≥5-way enumeration
 work lands (it ties into RFC-039 broad memo merging). Until then: do NOT expand the string
 scheme further. Scoped to the deferred ≥5-way path; 4-way is unaffected.
 
+### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
+
+Go reaches a physical index scan via two paths: the data-access/compensation match path
+(`predicate_multi_map.go`) and the Go-only `ImplementIndexScanRule` (a fusion of Java's
+`ImplementPhysicalScanRule` + candidate matching that iterates predicates directly, bypassing
+`Compensation`). Java has ONE path (`AbstractDataAccessRule` → `toEquivalentPlan`) and enforces
+"index-only value can't be a residual" ONCE via `Compensation.isImpossible()`. Because Go's
+implement rule doesn't route through `Compensation`, RFC-045 had to apply the index-only
+compensatability guard at BOTH layers (`valueContainsUncompensatable` + the residual-skip loop in
+`ImplementIndexScanRule.OnMatch`). Both are load-bearing and pinned (`TestVectorPlan_QualifyPlansToVectorScan`,
+`TestImplementIndexScanRule_SkipsIndexOnlyResidual`), so there is **no live bug** — but the
+duplication is a smell whose root is the duplicated path. Root fix (Graefe-endorsed): retire
+`ImplementIndexScanRule` so the single data-access rule routes through `Compensation`, at which
+point the implement-layer guard deletes itself and the property is enforced once, as in Java.
+See DIVERGENCES.md "ImplementIndexScanRule is a Go-only second index-scan path". Not urgent.
+
 ### 7.6 Source-anchored field pull-up — retire `composeFieldOverJoinMerge` (RFC-044 follow-up)
 
 Multi-source pull-up (pullup.go:71-78) produces **bare** `FieldValue`s with no source

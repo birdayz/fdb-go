@@ -27,6 +27,14 @@ Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional
 
 Same timing and inputs. Go creates physical plans directly (single intersection strategy); Java goes through `LogicalIntersectionExpression` → `ImplementIntersectionRule` (supports multiple strategies).
 
+### ImplementIndexScanRule is a Go-only second index-scan path (compensatability guarded at two layers)
+
+**Java:** One rule family — `AbstractDataAccessRule` — turns a `PartialMatch` into a scan/index-scan/fetch via `toEquivalentPlan`. The "index-only value can't be a residual" property is enforced ONCE: `PredicateMultiMap.ofPredicate` stamps `isImpossible = predicateContainsUncompensatableValues(predicate)` (true when a predicate operand `instanceof Value.IndexOnlyValue`), and `applyCompensationForSingleDataAccessMaybe` drops any match whose compensation `isImpossible()`. No separate "implement index scan" rule exists, so the property can't leak.
+
+**Go:** Two paths reach a physical index scan: (1) the data-access/compensation match path (`predicate_multi_map.go`), and (2) `ImplementIndexScanRule` — a Go-only fusion of Java's `ImplementPhysicalScanRule` + candidate matching that iterates `ComparisonPredicate`s directly and synthesizes residual filters itself, bypassing `Compensation`. So the index-only compensatability check is applied at BOTH layers: `valueContainsUncompensatable` via `values.IsIndexOnly` (match path) and the residual-skip loop in `ImplementIndexScanRule.OnMatch` (implement path). Both are load-bearing — removing either makes `TestVectorPlan_QualifyPlansToVectorScan` fail; the implement layer is pinned directly by `TestImplementIndexScanRule_SkipsIndexOnlyResidual`. This surfaced wiring up vector K-NN (RFC-045): the `DistanceRowNumberValue` operand is index-only, and a partition-only primary-scan candidate would otherwise leave the `DistanceRank` comparison as a residual filter (panics in `Comparison.EvalAgainst`).
+
+**End-state:** retire `ImplementIndexScanRule` in favour of a single data-access rule routing through `Compensation`, at which point the implement-layer guard deletes itself and the property is enforced once (as in Java). Until then the two-layer guard is the correct defensive choice — the alternative is a latent panic. Tracked in TODO.md (Phase 7).
+
 ### Type mismatch detection: eval-time vs compile-time
 
 **Java:** `SemanticAnalyzer` catches type mismatches at query compilation (before execution).
