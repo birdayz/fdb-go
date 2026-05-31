@@ -517,15 +517,27 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 		key = append(key, prefix...)
 		key = append(key, r.PrimaryKey...)
 
+		// Reconstruct and pin the FULL primary key the same way SearchKNN does.
+		// IndexEntry.PrimaryKey()'s default getEntryPrimaryKey() assumes the
+		// value-index key layout (indexValues[colSize] + pk) and mis-extracts a
+		// vector entry's key (prefix + trimmedPK), so set primaryKey explicitly.
+		var fullPK tuple.Tuple
+		if m.index.HasPrimaryKeyComponentPositions() {
+			fullPK = m.index.getEntryPrimaryKey(key)
+		} else {
+			fullPK = r.PrimaryKey
+		}
+
 		// Value: Java puts vector raw bytes here (or null if returnVectors=false/RaBitQ).
 		// Our hnswSearchResult doesn't carry vector bytes through search, so always nil.
 		// This matches Java's behavior when RaBitQ is enabled or returnVectors=false.
 		value := tuple.Tuple{nil}
 
 		entries[i] = &IndexEntry{
-			Index: m.index,
-			Key:   key,
-			Value: value,
+			Index:      m.index,
+			Key:        key,
+			Value:      value,
+			primaryKey: fullPK,
 		}
 	}
 

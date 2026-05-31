@@ -48,6 +48,7 @@ go_library(
         "unordered_union.go",
         "update.go",
         "values.go",
+        "vector_index_scan.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans",
     visibility = ["//visibility:public"],

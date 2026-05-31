@@ -41,6 +41,7 @@ go_test(
         "executor_test.go",
         "limit_extension_test.go",
         "resultset_test.go",
+        "vector_index_scan_integration_test.go",
     ],
     embed = [":executor"],
     deps = [
