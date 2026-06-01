@@ -735,6 +735,9 @@ func (c *Conn) connectionMonitor() {
 			select {
 			case <-replyCh:
 				// PING reply arrived — connection alive. C++ line 710-714.
+				// replyCh is nil when the ping couldn't be sent (writeCh
+				// saturated); a nil channel is never selected, so this case is
+				// dead and we correctly fall through to the bytesReceived check.
 				timer.Stop()
 			case <-timer.C:
 				// Timeout. Check if ANY bytes arrived.
@@ -774,12 +777,18 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	select {
 	case c.writeCh <- writeReq{token: pingEP, body: body}:
 	default:
-		// Write channel full — cancel and return closed channel
-		// so the inner loop falls through to bytesReceived check.
+		// writeCh is saturated — we could not send the PING. Return a nil
+		// channel, NOT a closed one. A closed channel makes the monitor's
+		// `case <-replyCh` fire immediately and falsely conclude "connection
+		// alive", skipping the bytesReceived liveness check exactly when a
+		// saturated buffer signals a stuck connection (writeLoop blocked on an
+		// undrained socket). A nil channel is never selected, so the monitor
+		// falls through to the timer → bytesReceived check and kills a genuinely
+		// stuck conn. The pending reply is cancelled here (no leak); the
+		// reply-waiter goroutine below is only reached on the sent path.
 		replyHandle.Cancel()
 		replyHandle.Release()
-		close(done)
-		return done
+		return nil
 	}
 	// Wait for reply in background, then signal done.
 	go func() {

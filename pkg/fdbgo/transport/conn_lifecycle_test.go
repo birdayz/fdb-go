@@ -65,6 +65,41 @@ func (s *simServer) drainUntilClosed() {
 	}
 }
 
+// TestSendPingWithReply_DropsToNilOnFullWriteCh pins RFC-052 (#14): when writeCh
+// is saturated the monitor ping is dropped, and the drop MUST return a nil
+// channel — not a closed one. A closed channel makes the monitor's
+// `case <-replyCh` fire immediately and falsely conclude "connection alive",
+// skipping the bytesReceived liveness check exactly when a saturated buffer
+// signals a stuck connection. A nil channel is never selected, so the monitor
+// falls through to that check. (The monitor's correct behavior then follows from
+// Go's guaranteed nil-channel select semantics + the sent-path kill already
+// pinned by TestConn_MonitorDeathClosesSocket.) Fails on the pre-fix code, which
+// returned a closed non-nil channel.
+func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &Conn{
+		ctx:     ctx,
+		cancel:  cancel,
+		writeCh: make(chan writeReq, 1),
+		pending: make(map[UID]chan Response),
+	}
+	c.writeCh <- writeReq{} // saturate the 1-slot writeCh (no writeLoop draining it)
+
+	got := c.sendPingWithReply()
+	if got != nil {
+		t.Fatalf("on a saturated writeCh the dropped ping must return a nil channel "+
+			"(a closed one is read as 'PING reply arrived → alive', defeating the liveness check); got %v", got)
+	}
+	c.pendingMu.Lock()
+	n := len(c.pending)
+	c.pendingMu.Unlock()
+	if n != 0 {
+		t.Errorf("dropped ping left a pending reply registered (leak): %d", n)
+	}
+}
+
 // awaitWithin fails the test if done has not fired within d.
 func awaitWithin(t *testing.T, d time.Duration, done <-chan struct{}, msg string) {
 	t.Helper()
