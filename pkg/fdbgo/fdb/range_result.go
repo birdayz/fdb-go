@@ -22,6 +22,18 @@ func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) Rang
 	return RangeResult{tx: tx, r: r, options: options, snapshot: true}
 }
 
+// keyAfter returns the smallest key strictly greater than k — a fresh copy of
+// k with a trailing 0x00 byte. It MUST copy: `append([]byte(k), 0)` would
+// scribble k's own backing array (and alias it) whenever cap(k) > len(k). The
+// range-reply parser currently hands out length-capped key slices
+// (data[pos:pos+n:pos+n]), so the bare append happens to reallocate today — but
+// relying on that invariant is a latent corruption bug. Copy unconditionally,
+// matching the reverse path's `append([]byte(nil), lastKey...)` and the client
+// continuation sites.
+func keyAfter(k []byte) []byte {
+	return append(append([]byte(nil), k...), 0)
+}
+
 // effectiveLimit returns the limit to use for a range read.
 // Apple API: Limit=0 means unlimited.
 func effectiveLimit(limit int) int {
@@ -231,7 +243,7 @@ func (ri *RangeIterator) Advance() bool {
 		ri.end = append([]byte(nil), lastKey...)
 	} else {
 		// Next batch: begin after the last key we received.
-		ri.begin = append([]byte(lastKey), 0)
+		ri.begin = keyAfter(lastKey)
 	}
 
 	if !more {
