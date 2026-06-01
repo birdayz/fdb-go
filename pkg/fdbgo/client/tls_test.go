@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -65,50 +66,56 @@ func TestParseClusterString_TLS(t *testing.T) {
 	}
 }
 
+// fakeEnv returns a getenv func backed by m — lets the TLS-resolution tests run
+// in parallel without mutating process environment (t.Setenv forbids t.Parallel).
+func fakeEnv(m map[string]string) func(string) string {
+	return func(k string) string { return m[k] }
+}
+
 // TestResolveTLSPath pins the C++ per-field precedence: env var wins, else
 // <configDir>/<defaultFile> if it exists, else "".
 func TestResolveTLSPath(t *testing.T) {
+	t.Parallel()
 	t.Run("env wins", func(t *testing.T) {
-		t.Setenv("FDB_TLS_CERTIFICATE_FILE", "/env/cert.pem")
-		if got := resolveTLSPath("FDB_TLS_CERTIFICATE_FILE", "/ignored", "cert.pem"); got != "/env/cert.pem" {
+		t.Parallel()
+		env := fakeEnv(map[string]string{"FDB_TLS_CERTIFICATE_FILE": "/env/cert.pem"})
+		if got := resolveTLSPath(env, "FDB_TLS_CERTIFICATE_FILE", "/ignored", "cert.pem"); got != "/env/cert.pem" {
 			t.Errorf("env should win: got %q", got)
 		}
 	})
 	t.Run("default dir if file exists", func(t *testing.T) {
-		t.Setenv("FDB_TLS_CERTIFICATE_FILE", "")
+		t.Parallel()
 		dir := t.TempDir()
 		p := filepath.Join(dir, "cert.pem")
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := resolveTLSPath("FDB_TLS_CERTIFICATE_FILE", dir, "cert.pem"); got != p {
+		if got := resolveTLSPath(fakeEnv(nil), "FDB_TLS_CERTIFICATE_FILE", dir, "cert.pem"); got != p {
 			t.Errorf("default-dir resolution: got %q, want %q", got, p)
 		}
 	})
 	t.Run("empty when nothing", func(t *testing.T) {
-		t.Setenv("FDB_TLS_CA_FILE", "")
-		if got := resolveTLSPath("FDB_TLS_CA_FILE", t.TempDir(), "ca.pem"); got != "" {
+		t.Parallel()
+		if got := resolveTLSPath(fakeEnv(nil), "FDB_TLS_CA_FILE", t.TempDir(), "ca.pem"); got != "" {
 			t.Errorf("nothing present → empty, got %q", got)
 		}
 		// CA has no default file at all (configDir/defaultFile empty).
-		if got := resolveTLSPath("FDB_TLS_CA_FILE", "", ""); got != "" {
+		if got := resolveTLSPath(fakeEnv(nil), "FDB_TLS_CA_FILE", "", ""); got != "" {
 			t.Errorf("no default → empty, got %q", got)
 		}
 	})
 }
 
 // TestResolveTLSConfig loads real files into a *tls.Config and checks the error
-// paths. The default-dir stat is reached only via this path (callers gate on a
-// TLS cluster), so a plaintext open never touches /etc/foundationdb.
+// paths. Uses an injected getenv (no global env mutation) so it stays parallel.
 func TestResolveTLSConfig(t *testing.T) {
+	t.Parallel()
 	caPEM, certPEM, keyPEM := testCertPEM(t)
 
-	t.Run("CA only from env → RootCAs set, no client cert", func(t *testing.T) {
-		caFile := writeTLSTemp(t, "ca.pem", caPEM)
-		t.Setenv("FDB_TLS_CA_FILE", caFile)
-		t.Setenv("FDB_TLS_CERTIFICATE_FILE", "")
-		t.Setenv("FDB_TLS_KEY_FILE", "")
-		cfg, err := resolveTLSConfig(t.TempDir()) // empty default dir
+	t.Run("CA only → RootCAs set, no client cert", func(t *testing.T) {
+		t.Parallel()
+		env := fakeEnv(map[string]string{"FDB_TLS_CA_FILE": writeTLSTemp(t, "ca.pem", caPEM)})
+		cfg, err := resolveTLSConfig(t.TempDir(), env)
 		if err != nil {
 			t.Fatalf("resolveTLSConfig: %v", err)
 		}
@@ -121,10 +128,13 @@ func TestResolveTLSConfig(t *testing.T) {
 	})
 
 	t.Run("cert+key+CA → mutual config", func(t *testing.T) {
-		t.Setenv("FDB_TLS_CA_FILE", writeTLSTemp(t, "ca.pem", caPEM))
-		t.Setenv("FDB_TLS_CERTIFICATE_FILE", writeTLSTemp(t, "cert.pem", certPEM))
-		t.Setenv("FDB_TLS_KEY_FILE", writeTLSTemp(t, "key.pem", keyPEM))
-		cfg, err := resolveTLSConfig(t.TempDir())
+		t.Parallel()
+		env := fakeEnv(map[string]string{
+			"FDB_TLS_CA_FILE":          writeTLSTemp(t, "ca.pem", caPEM),
+			"FDB_TLS_CERTIFICATE_FILE": writeTLSTemp(t, "cert.pem", certPEM),
+			"FDB_TLS_KEY_FILE":         writeTLSTemp(t, "key.pem", keyPEM),
+		})
+		cfg, err := resolveTLSConfig(t.TempDir(), env)
 		if err != nil {
 			t.Fatalf("resolveTLSConfig: %v", err)
 		}
@@ -134,33 +144,66 @@ func TestResolveTLSConfig(t *testing.T) {
 	})
 
 	t.Run("cert without key → error", func(t *testing.T) {
-		t.Setenv("FDB_TLS_CERTIFICATE_FILE", writeTLSTemp(t, "cert.pem", certPEM))
-		t.Setenv("FDB_TLS_KEY_FILE", "")
-		t.Setenv("FDB_TLS_CA_FILE", "")
-		if _, err := resolveTLSConfig(t.TempDir()); err == nil {
+		t.Parallel()
+		env := fakeEnv(map[string]string{"FDB_TLS_CERTIFICATE_FILE": writeTLSTemp(t, "cert.pem", certPEM)})
+		if _, err := resolveTLSConfig(t.TempDir(), env); err == nil {
 			t.Error("cert without key must error")
 		}
 	})
 
 	t.Run("unreadable CA → error", func(t *testing.T) {
-		t.Setenv("FDB_TLS_CA_FILE", filepath.Join(t.TempDir(), "missing.pem"))
-		t.Setenv("FDB_TLS_CERTIFICATE_FILE", "")
-		t.Setenv("FDB_TLS_KEY_FILE", "")
-		if _, err := resolveTLSConfig(t.TempDir()); err == nil {
+		t.Parallel()
+		env := fakeEnv(map[string]string{"FDB_TLS_CA_FILE": filepath.Join(t.TempDir(), "missing.pem")})
+		if _, err := resolveTLSConfig(t.TempDir(), env); err == nil {
 			t.Error("missing CA file must error, not silently run without it")
 		}
 	})
 
 	t.Run("nothing configured → empty non-nil config", func(t *testing.T) {
-		t.Setenv("FDB_TLS_CA_FILE", "")
-		t.Setenv("FDB_TLS_CERTIFICATE_FILE", "")
-		t.Setenv("FDB_TLS_KEY_FILE", "")
-		cfg, err := resolveTLSConfig(t.TempDir())
+		t.Parallel()
+		cfg, err := resolveTLSConfig(t.TempDir(), fakeEnv(nil))
 		if err != nil || cfg == nil {
 			t.Fatalf("want empty non-nil config, got cfg=%v err=%v", cfg, err)
 		}
 		if cfg.RootCAs != nil || len(cfg.Certificates) != 0 {
 			t.Errorf("expected empty config, got %+v", cfg)
+		}
+	})
+}
+
+// TestOpenTLSConfigPrecedence pins the WithTLSConfig > ":tls"/env > plaintext
+// precedence — in particular the explicit-wins invariant (@claude review): an
+// explicit config is returned unchanged (same pointer ⇒ env resolution is NOT
+// consulted), and it enables TLS even without a ":tls" cluster string.
+func TestOpenTLSConfigPrecedence(t *testing.T) {
+	t.Parallel()
+	explicit := &tls.Config{ServerName: "explicit-marker"}
+
+	t.Run("explicit on non-TLS cluster → TLS engages", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := openTLSConfig(openOptions{tlsConfig: explicit}, &ClusterFile{UseTLS: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg != explicit {
+			t.Errorf("explicit config must pass through (TLS engages without :tls), got %+v", cfg)
+		}
+	})
+	t.Run("explicit on TLS cluster → wins over env resolution", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := openTLSConfig(openOptions{tlsConfig: explicit}, &ClusterFile{UseTLS: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg != explicit {
+			t.Errorf("explicit config must win over FDB_TLS_* resolution, got %+v", cfg)
+		}
+	})
+	t.Run("non-TLS cluster, no explicit → plaintext (nil)", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := openTLSConfig(openOptions{}, &ClusterFile{UseTLS: false})
+		if err != nil || cfg != nil {
+			t.Errorf("plaintext expected, got cfg=%+v err=%v", cfg, err)
 		}
 	})
 }

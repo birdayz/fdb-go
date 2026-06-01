@@ -45,6 +45,10 @@ func WithDialFunc(fn DialFunc) Option {
 // supplied, a ":tls" cluster string falls back to the FDB_TLS_* env convenience
 // layer (matching the C++ client). A non-nil config is the only "use TLS" signal
 // — there is no separate boolean, so TLS can never be silently downgraded.
+//
+// WithTLSConfig(nil) is a no-op (it does NOT force plaintext): a ":tls" cluster
+// string + FDB_TLS_* env still enables TLS. To stay plaintext, use a cluster
+// string without ":tls".
 func WithTLSConfig(cfg *tls.Config) Option {
 	return func(o *openOptions) { o.tlsConfig = cfg }
 }

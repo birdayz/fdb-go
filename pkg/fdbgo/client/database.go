@@ -448,18 +448,13 @@ func OpenDatabase(ctx context.Context, clusterFilePath string, opts ...Option) (
 func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option) (*Database, error) {
 	o := applyOptions(opts)
 
-	// Resolve transport security. A non-nil tlsConfig is the only "use TLS"
-	// signal. WithTLSConfig wins; otherwise a ":tls" cluster string falls back
-	// to the FDB_TLS_* env convenience layer. resolveTLSConfig (incl. the
-	// default-config-dir stat) is only reached for a TLS cluster, so a plaintext
-	// open never touches /etc/foundationdb.
-	tlsConfig := o.tlsConfig
-	if tlsConfig == nil && cf.UseTLS {
-		resolved, err := resolveTLSConfig(defaultTLSConfigDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve TLS config: %w", err)
-		}
-		tlsConfig = resolved
+	// Resolve transport security (WithTLSConfig > ":tls"+FDB_TLS_* > plaintext).
+	// A non-nil tlsConfig is the only "use TLS" signal. The default-config-dir
+	// stat inside resolveTLSConfig is reached only for a TLS cluster, so a
+	// plaintext open never touches /etc/foundationdb.
+	tlsConfig, err := openTLSConfig(o, cf)
+	if err != nil {
+		return nil, err
 	}
 
 	bgCtx, cancel := context.WithCancel(context.Background())
