@@ -10,7 +10,7 @@ quality, an FDB-C-programmer persona for wire conformance vs release-7.3) ACKed:
 - **#8** `ReadErrorOr` parses the union tag (not field count); `Error` code as uint16; pins the one-field-success regression.
 - **#5** hedge loser/timeout/cancel QueueModel deltas released (`hedgeResult.others`); deterministic baseline test.
 - **#1** inline `LoadBalancedReply.error` decoded from the nested Error table on the three read parsers, routed into classify→invalidate→retry.
-- **#3** pipelined `Get` shares the full classify→invalidate→retry; legal-key check at enqueue; `fdb.Get` falls back only on `ErrNeedFullRYW`.
+- **#3** pipelined `Get` shares the full classify→invalidate→retry (+ `handleConnError` parity); legal-key check at enqueue; `fdb.Get` re-drives through the full path on every `GetPipelined` error (incl. 1006 — corrected after codex review; surfacing it would fail the tx since `OnError` doesn't retry 1006).
 
 Phases 1–3 and the systemic prevention (P1–P6) remain open.
 
@@ -172,14 +172,22 @@ work.
   `smoothOutstanding` returns to baseline on winner/loser/timeout/cancel.
 - **#3 pipelined read semantics (targeted, localized to the pipelined path).** Make
   `PendingGet.Resolve` run the same classify→cache-invalidate→retry as `getValue` for the single
-  key it owns, and fall back to the full path **only** on `ErrNeedFullRYW`. Critically — the
-  legal-key-range rejection must stay at **`GetPipelined` enqueue time, before `SendFrameDeferred`**,
-  not in `Resolve` (by `Resolve` the illegal frame is already on the wire). Retrying an individual
-  wrong-shard key is necessarily synchronous (locate→send→wait) — that's the rare slow path and
-  matches C++. **Batching is preserved:** N `Get`s still queue N deferred frames and the first
-  `Resolve` flushes them in one syscall. Pin *both* axes: the injected-error matrix (correctness)
-  **and** a test asserting N pipelined Gets still produce exactly one flush (the perf feature
-  didn't silently turn into N round-trips).
+  key it owns (a wrong_shard/all-alternatives reply, transport error, or flush failure re-drives
+  through `getValue`; it also calls `handleConnError` on transport/flush failures, matching the
+  sync path). The legal-key-range rejection must stay at **`GetPipelined` enqueue time, before
+  `SendFrameDeferred`**, not in `Resolve` (by `Resolve` the illegal frame is already on the wire).
+  Retrying an individual wrong-shard key is necessarily synchronous (locate→send→wait) — the rare
+  slow path, matching C++. **Batching is preserved:** N `Get`s still queue N deferred frames and the
+  first `Resolve` flushes them in one syscall (the deferred-send path is untouched).
+  - **CORRECTION (codex review):** the `fdb.Get` fallback when `GetPipelined` returns an error
+    (could not get a request in flight) must re-drive through the full `inner.Get`/`getValue` path
+    for **every** such error, **not** only `ErrNeedFullRYW`. An earlier draft surfaced non-RYW
+    errors directly — but `GetPipelined` returns `all_alternatives_failed` (1006) when it can't
+    enqueue to any located server, and `Transact.OnError` does **not** retry 1006 (the read path is
+    expected to absorb it via `getValue`'s local retry). Surfacing it would turn a transient
+    layer-2 send failure into a failed transaction. The blanket fallback *is* the read-retry path;
+    a terminal error (e.g. `key_outside_legal_range`) re-fails identically in `inner.Get`, so nothing
+    is masked. Pinned by `TestOnError_NonRetryable/all_alternatives_failed`.
 
 ### Phase 1 — read-path consolidation (refactor, non-gating, behavior-identical)
 

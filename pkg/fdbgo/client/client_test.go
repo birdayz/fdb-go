@@ -244,6 +244,22 @@ func TestOnError_NonRetryable(t *testing.T) {
 		}
 	})
 
+	t.Run("all_alternatives_failed", func(t *testing.T) {
+		t.Parallel()
+		// all_alternatives_failed (1006) is absorbed by the read path (getValue's
+		// local invalidate+retry loop), so OnError must NOT retry it. This is the
+		// load-bearing fact behind RFC-010 #3 / the codex finding: fdb.Get must
+		// re-drive a pipelined-enqueue 1006 through the full read path, because if
+		// 1006 ever surfaced to OnError it would fail the transaction rather than
+		// retry. If this ever became OnError-retryable, that fallback would be moot
+		// — so pin it here.
+		tx := &Transaction{}
+		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: ErrAllAlternativesFailed})
+		if tx.OnError(context.Background(), err) == nil {
+			t.Error("all_alternatives_failed should not be retryable at Transact level")
+		}
+	})
+
 	t.Run("transaction_timed_out", func(t *testing.T) {
 		t.Parallel()
 		// 1031 = transaction_timed_out — NEVER retryable.
