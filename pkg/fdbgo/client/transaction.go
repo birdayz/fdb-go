@@ -736,8 +736,19 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		Key:   key,
 		Value: operand,
 	})
-	// Atomic ops add write conflict but NOT read conflict.
-	tx.addWriteConflictForKeyLocked(key)
+	// Atomic ops add a write conflict range but NOT a read conflict range —
+	// EXCEPT SetVersionstampedKey. Its key carries an incomplete versionstamp
+	// (the 10-byte stamp is filled in server-side at commit), so a conflict range
+	// over the placeholder bytes is meaningless and would spuriously conflict two
+	// transactions that stamp "the same" logical key. C++ RYW atomicOp forces
+	// AddConflictRange::False for SetVersionstampedKey (ReadYourWrites.actor.cpp:2268)
+	// while STILL consuming the NEXT_WRITE_NO_WRITE_CONFLICT_RANGE flag (getAndReset
+	// at :2220). Match both: consume the flag, skip the range.
+	if op == MutSetVersionstampedKey {
+		tx.nextWriteNoConflict = false
+	} else {
+		tx.addWriteConflictForKeyLocked(key)
+	}
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
 		tx.ryw.atomic(op, key, operand)

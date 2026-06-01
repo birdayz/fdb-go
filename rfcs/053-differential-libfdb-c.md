@@ -162,6 +162,23 @@ per the corpus discipline):
 
 `just test` green; new target tagged for the FDB env.
 
+## Divergences found & fixed
+
+Tracked here as C2 surfaces them (the corpus discipline: find → fix → pin).
+
+1. **`SetVersionstampedKey` added a spurious write-conflict range** (found during
+   L1 investigation, fixed in this branch). `client.Atomic` added a
+   write-conflict range for *every* atomic op; C++ RYW `atomicOp` forces
+   `AddConflictRange::False` for `SetVersionstampedKey`
+   (`ReadYourWrites.actor.cpp:2268`) because its key carries an incomplete
+   versionstamp — a conflict range over the placeholder bytes is meaningless and
+   would spuriously conflict two txns stamping the same logical key. Fix: skip the
+   range for `SetVersionstampedKey` while still consuming the
+   `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` flag (C++ `getAndReset`, `:2220`). Pinned
+   by `TestAtomic_SetVersionstampedKey_NoWriteConflictRange` /
+   `…_ConsumesNextWriteNoConflictFlag` (taps the marshaled `CommitTransactionRequest`,
+   verified to fail on the pre-fix code).
+
 ## Open questions / stretch
 
 - **MITM wire-capture of libfdb_c.** L1 proves the Go client emits the C++-spec
