@@ -604,7 +604,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	return kvs, more, err
 }
 
-// isWrongShardServer returns true if the error is FDB error 1062.
+// isWrongShardServer returns true if the error is FDB error 1001 (wrong_shard_server).
 func isWrongShardServer(err error) bool {
 	var fdbErr *wire.FDBError
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrWrongShardServer

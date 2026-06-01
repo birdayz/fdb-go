@@ -328,14 +328,19 @@ func (d *wrongShardDialer) armAll() {
 	}
 }
 
-// TestWrongShardServer_FaultInjection verifies that wrong_shard_server (1062)
+// TestWrongShardServer_FaultInjection verifies that wrong_shard_server (1001)
 // triggers location cache invalidation and automatic retry.
 //
 // Uses a wrongShardConn at the net.Conn level (via custom dialer) to replace
-// the next server response frame with ErrorOr(1062). The client should:
-//  1. Receive 1062, invalidate the location cache
+// the next server response frame with ErrorOr(1001). The client should:
+//  1. Receive 1001, invalidate the location cache
 //  2. Re-query the commit proxy for fresh locations
 //  3. Retry the read and succeed
+//
+// The injected code is the canonical literal 1001, NOT the ErrWrongShardServer
+// constant: injecting the code-under-test's own constant makes the test
+// self-confirming (it would pass for any value the constant happened to hold,
+// which is exactly how the 1062 bug stayed green). See RFC-010 prevention P6.
 func TestWrongShardServer_FaultInjection(t *testing.T) {
 	t.Parallel()
 
@@ -378,8 +383,12 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		connectCF.InternalKey += a
 	}
 
-	// Verify the crafted error response parses correctly.
-	errBody := buildFDBErrorResponse(int32(ErrWrongShardServer))
+	// Verify the crafted error response parses correctly. Inject the canonical
+	// wrong_shard_server code (1001) directly, NOT ErrWrongShardServer — see the
+	// doc comment above on why injecting the code-under-test's constant is a
+	// self-confirming test.
+	const wrongShardServerCode = 1001
+	errBody := buildFDBErrorResponse(wrongShardServerCode)
 	if _, parseErr := wire.ReadErrorOr(errBody); parseErr == nil {
 		t.Fatal("buildFDBErrorResponse should produce an error response")
 	}
@@ -417,11 +426,11 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		t.Fatalf("GRV: %v", err)
 	}
 
-	// Arm: the next frame read on any connection will be replaced with 1062.
+	// Arm: the next frame read on any connection will be replaced with 1001.
 	wd.armAll()
 
 	// Read with pre-set read version. The first getValue attempt will get
-	// a replaced frame (1062), causing cache invalidation and retry.
+	// a replaced frame (1001), causing cache invalidation and retry.
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
 	got, err := tx.Get(ctx, key)

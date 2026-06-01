@@ -516,6 +516,7 @@ func (e *FDBError) Error() string {
 //     ErrAllProxiesUnreachable, distinct from C++'s 1200=recruitment_failed
 //     which never surfaces over the wire to a Go client).
 var fdbErrorDescriptions = map[int]string{
+	1001: "wrong_shard_server",
 	1006: "all_alternatives_failed",
 	1007: "transaction_too_old",
 	1009: "future_version",

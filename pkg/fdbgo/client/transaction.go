@@ -26,7 +26,7 @@ const (
 	ErrCommitUnknownResult       = 1021 // commit_unknown_result
 	ErrTransactionTooOld         = 1007 // transaction_too_old
 	ErrFutureVersion             = 1009 // future_version
-	ErrWrongShardServer          = 1062 // wrong_shard_server (Layer 2 only)
+	ErrWrongShardServer          = 1001 // wrong_shard_server (1062 is change_feed_cancelled — do not confuse)
 	ErrTransactionTimedOut       = 1031 // transaction_timed_out (NEVER retryable)
 	ErrProcessBehind             = 1037 // process_behind
 	ErrDatabaseLocked            = 1038 // database_locked

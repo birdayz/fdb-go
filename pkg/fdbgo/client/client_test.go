@@ -234,10 +234,11 @@ func TestOnError_NonRetryable(t *testing.T) {
 
 	t.Run("wrong_shard_server", func(t *testing.T) {
 		t.Parallel()
-		// 1062 is handled at the read path level, NOT by Transact.
-		// OnError should treat it as non-retryable.
+		// wrong_shard_server (1001) is handled at the read path level (cache
+		// invalidation + local retry), NOT by Transact. OnError treats it as
+		// non-retryable.
 		tx := &Transaction{}
-		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: 1062})
+		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: 1001})
 		if tx.OnError(context.Background(), err) == nil {
 			t.Error("wrong_shard_server should not be retryable at Transact level")
 		}
