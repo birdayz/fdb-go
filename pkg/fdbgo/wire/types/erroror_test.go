@@ -143,11 +143,15 @@ func TestReadErrorOr_ErrorCodeIsUint16(t *testing.T) {
 	// Error vtable {6,6,4}: ErrorCode uint16 at object offset 4; the two bytes
 	// at offsets 6..7 are the int32-over-read region.
 	hi := errObj + 6
+	// The two bytes after the uint16 ErrorCode are this object's zero padding;
+	// the layout is fixed by ErrorOrError.MarshalFDB, so these guards can never
+	// legitimately fire — a failure means the layout changed and the over-read
+	// guarantee must be re-examined (NOT skipped).
 	if hi+2 > len(buf) {
-		t.Skipf("buffer too small to exercise over-read (len %d, hi %d)", len(buf), hi)
+		t.Fatalf("buffer too small to exercise over-read (len %d, hi %d) — layout changed", len(buf), hi)
 	}
 	if buf[hi] != 0 || buf[hi+1] != 0 {
-		t.Skipf("bytes after ErrorCode not zero padding (%d,%d) — layout changed", buf[hi], buf[hi+1])
+		t.Fatalf("bytes after ErrorCode expected to be zero padding, got (%#x,%#x) — layout changed", buf[hi], buf[hi+1])
 	}
 	buf[hi], buf[hi+1] = 0xAB, 0xCD
 
