@@ -290,8 +290,8 @@ func (db Database) OpenTenant(name KeyConvertible) (Tenant, error) {
 	}
 	var tenantId int64
 	_, err := db.Transact(func(tr Transaction) (any, error) {
-		tr.Options().SetAccessSystemKeys()
-		tr.Options().SetReadLockAware() // C++ getTenant: READ_SYSTEM_KEYS + READ_LOCK_AWARE
+		tr.Options().SetReadSystemKeys()
+		tr.Options().SetReadLockAware() // C++ tryGetTenant: READ_SYSTEM_KEYS + READ_LOCK_AWARE
 		var err error
 		tenantId, err = openTenantInternal(tr, tenantName)
 		return nil, err
@@ -334,8 +334,8 @@ func (db Database) DeleteTenant(name KeyConvertible) error {
 // ListTenants lists all tenants by scanning the name index.
 func (db Database) ListTenants() ([]Key, error) {
 	result, err := db.Transact(func(tr Transaction) (any, error) {
-		tr.Options().SetAccessSystemKeys()
-		tr.Options().SetReadLockAware() // C++ listTenants: READ_SYSTEM_KEYS + READ_LOCK_AWARE
+		tr.Options().SetReadSystemKeys()
+		tr.Options().SetLockAware() // C++ listTenants: READ_SYSTEM_KEYS + LOCK_AWARE
 		return listTenantsInternal(tr)
 	})
 	if err != nil {

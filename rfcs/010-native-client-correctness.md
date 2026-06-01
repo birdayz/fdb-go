@@ -234,8 +234,10 @@ work.
   pretending the whole transaction is unsafe. `-race` tests for `Set`+`Commit`,
   `Set`+`GetApproximateSize`, and the RYW lost-update.
 - **#10 — LANDED.** Decoupled: `fdb/options.go` `SetAccessSystemKeys` no longer auto-sets lock-aware;
-  tenant writes set `SetLockAware()` and tenant reads `SetReadLockAware()` explicitly at each
-  `fdb/database.go` call site (matching C++ `TenantManagement`). Added `client.Transaction.LockAware()`/
+  Each `fdb/database.go` tenant call site sets the exact C++ `TenantManagement` options: writes
+  (`CreateTenant`/`DeleteTenant`) ACCESS_SYSTEM_KEYS+LOCK_AWARE; `OpenTenant` (C++ `tryGetTenant`)
+  READ_SYSTEM_KEYS+READ_LOCK_AWARE; `ListTenants` (C++ `listTenants`) READ_SYSTEM_KEYS+LOCK_AWARE.
+  Added `client.Transaction.LockAware()`/
   `ReadLockAware()` accessors; pinned by `TestSetAccessSystemKeys_DoesNotImplyLockAware` /
   `TestSetReadLockAware_Independent` (facade unit tests, no DB). Original plan below.
 - **#10 — decouple, don't couple (conformance-corrected).** In the C client `ACCESS_SYSTEM_KEYS`

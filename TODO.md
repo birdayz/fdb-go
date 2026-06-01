@@ -305,8 +305,9 @@ Each open item is gated by *why it isn't trivially done*, not by another item.
 - [x] **#9** rename `isSystemKey` → `isSpecialKey` (tests `\xff\xff` special-key space; behavior unchanged)
 - [x] **#10** decoupled `ACCESS_SYSTEM_KEYS` from `LOCK_AWARE` in `fdb/options.go` (C sets them
   independently — confirmed NativeAPI 7159 / RYW 2557 / TenantManagement). Facade no longer
-  auto-sets lock-aware; tenant writes now set `SetLockAware()` and tenant reads `SetReadLockAware()`
-  explicitly at each `fdb/database.go` call site, matching C++. Behavior change: external callers
+  auto-sets lock-aware; each `fdb/database.go` tenant call site sets the exact C++ options (writes
+  ACCESS+LOCK_AWARE; OpenTenant READ_SYSTEM_KEYS+READ_LOCK_AWARE; ListTenants
+  READ_SYSTEM_KEYS+LOCK_AWARE). Behavior change: external callers
   relying on the implicit coupling must set `SetLockAware` explicitly (as a Java/CGo app must) — only
   observable on a *locked* DB; wire-safe (lock-aware is a commit flag, not persisted bytes).
   Pinned by `TestSetAccessSystemKeys_DoesNotImplyLockAware` (facade unit test, fails if the coupling returns).
