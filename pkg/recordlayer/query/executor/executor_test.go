@@ -745,11 +745,13 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if r.Low != nil {
-		t.Fatalf("low=%v, want nil (no lower bound but has exclusion mark)", r.Low)
+	// Upper-only `<= 50` excludes nulls: low is the NULL boundary (one nil
+	// tuple element) RANGE_EXCLUSIVE, not TreeStart. Mirrors Java ScanComparisons.
+	if len(r.Low) != 1 || r.Low[0] != nil {
+		t.Fatalf("low=%v, want [null] (null boundary)", r.Low)
 	}
-	if r.LowEndpoint != recordlayer.EndpointTypeTreeStart {
-		t.Fatalf("lowEndpoint=%v, want TreeStart for LT-only (scan from beginning)", r.LowEndpoint)
+	if r.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("lowEndpoint=%v, want RangeExclusive (null boundary)", r.LowEndpoint)
 	}
 	if len(r.High) != 1 || r.High[0] != int64(50) {
 		t.Fatalf("high=%v, want [50]", r.High)
@@ -1877,14 +1879,18 @@ func TestScanComparisons_LessThanNoPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart {
-		t.Fatalf("expected low TreeStart for LT-only, got %d", tr.LowEndpoint)
+	// An upper-only range must EXCLUDE NULL index entries (NULL sorts first;
+	// `a < 50` is UNKNOWN, not TRUE, on NULL). The low bound is therefore the
+	// NULL boundary — one nil tuple element, RANGE_EXCLUSIVE — not TreeStart,
+	// which would sweep nulls in. Mirrors Java ScanComparisons.
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low RangeExclusive (null boundary) for LT-only, got %d", tr.LowEndpoint)
 	}
 	if tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected high exclusive, got %d", tr.HighEndpoint)
 	}
-	if tr.Low != nil {
-		t.Fatalf("expected nil low, got %v", tr.Low)
+	if len(tr.Low) != 1 || tr.Low[0] != nil {
+		t.Fatalf("expected low=[null] (null boundary), got %v", tr.Low)
 	}
 	if len(tr.High) != 1 || tr.High[0] != int64(50) {
 		t.Fatalf("expected high=[50], got %v", tr.High)
@@ -1899,17 +1905,48 @@ func TestScanComparisons_LessThanOrEqNoPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart {
-		t.Fatalf("expected low TreeStart for LTE-only, got %d", tr.LowEndpoint)
+	// Upper-only range excludes nulls via the NULL boundary low (see LT case).
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low RangeExclusive (null boundary) for LTE-only, got %d", tr.LowEndpoint)
 	}
 	if tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("expected high inclusive, got %d", tr.HighEndpoint)
 	}
-	if tr.Low != nil {
-		t.Fatalf("expected nil low, got %v", tr.Low)
+	if len(tr.Low) != 1 || tr.Low[0] != nil {
+		t.Fatalf("expected low=[null] (null boundary), got %v", tr.Low)
 	}
 	if len(tr.High) != 1 || tr.High[0] != int64(50) {
 		t.Fatalf("expected high=[50], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_NullComparand_EmptyRange(t *testing.T) {
+	t.Parallel()
+	// `a < NULL` (and >, >=, <=) is UNKNOWN for every row (SQL 3VL) →
+	// unsatisfiable → empty result. Must be an empty range (begin == end),
+	// NOT the null-boundary low with an unbounded high (which would strinc to
+	// an inverted FDB range begin > end). Regression for the Codex P2 finding.
+	for _, typ := range []predicates.ComparisonType{
+		predicates.ComparisonLessThan,
+		predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan,
+		predicates.ComparisonGreaterThanEq,
+	} {
+		tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+			ineqRange(predicates.Comparison{Type: typ, Operand: &values.NullValue{}}),
+		}, nil)
+		if err != nil {
+			t.Fatalf("%v: unexpected error: %v", typ, err)
+		}
+		// Empty range: Low == High with inclusive/exclusive endpoints → begin == end.
+		if len(tr.Low) != len(tr.High) {
+			t.Fatalf("%v: expected empty range (Low==High), got Low=%v High=%v", typ, tr.Low, tr.High)
+		}
+		if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive ||
+			tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
+			t.Fatalf("%v: expected empty range endpoints (Inclusive/Exclusive on equal bounds), got low=%d high=%d",
+				typ, tr.LowEndpoint, tr.HighEndpoint)
+		}
 	}
 }
 
@@ -1989,14 +2026,18 @@ func TestScanComparisons_EqualityPrefixThenLT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
-		t.Fatalf("expected low inclusive (prefix-based range starts at prefix), got %d", tr.LowEndpoint)
+	// With an equality prefix [alice] and an upper-only `a < 50`, the low bound
+	// is the NULL boundary for the next column: [alice, null] RANGE_EXCLUSIVE,
+	// which excludes rows where x=alice and a IS NULL. Mirrors Java
+	// ScanComparisons (baseTuple + null element, exclusive).
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low RangeExclusive (null boundary after prefix), got %d", tr.LowEndpoint)
 	}
 	if tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
 		t.Fatalf("expected high exclusive, got %d", tr.HighEndpoint)
 	}
-	if len(tr.Low) != 1 || tr.Low[0] != "alice" {
-		t.Fatalf("expected low=[alice] (prefix only), got %v", tr.Low)
+	if len(tr.Low) != 2 || tr.Low[0] != "alice" || tr.Low[1] != nil {
+		t.Fatalf("expected low=[alice null] (prefix + null boundary), got %v", tr.Low)
 	}
 	if len(tr.High) != 2 || tr.High[0] != "alice" || tr.High[1] != int64(50) {
 		t.Fatalf("expected high=[alice 50], got %v", tr.High)
@@ -2043,8 +2084,12 @@ func TestScanComparisons_IsNotNullNoPrefix(t *testing.T) {
 	if tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
 		t.Fatalf("expected high TreeEnd, got %d", tr.HighEndpoint)
 	}
-	if tr.Low != nil {
-		t.Fatalf("expected nil low tuple (no comparand), got %v", tr.Low)
+	// IS NOT NULL is the pure NULL boundary: low is one nil tuple element,
+	// RANGE_EXCLUSIVE — the scan starts strictly after all null entries
+	// (Java: lowItem null, RANGE_EXCLUSIVE). A nil low tuple would scan from
+	// the index start and wrongly include nulls.
+	if len(tr.Low) != 1 || tr.Low[0] != nil {
+		t.Fatalf("expected low=[null] (null boundary), got %v", tr.Low)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -107,6 +108,47 @@ func collectRows(t *testing.T, db *sql.DB, query string) [][]any {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	return result
+}
+
+// assertScalarAggRows checks a (name, scalar-aggregate-value) result set in
+// order. A want.val of nil asserts SQL NULL; a float64 asserts an exact
+// double; any other type is compared with reflect.DeepEqual. Used by the
+// correlated-scalar-subquery probes to keep the per-row plumbing out of the
+// test bodies.
+func assertScalarAggRows(t *testing.T, rows [][]any, want []struct {
+	name string
+	val  any
+},
+) {
+	t.Helper()
+	if len(rows) != len(want) {
+		t.Fatalf("row count: want %d, got %d (%v)", len(want), len(rows), rows)
+	}
+	for i, w := range want {
+		if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+			t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+		}
+		if w.val == nil {
+			if rows[i][1] != nil {
+				t.Errorf("%s: want NULL, got %v (%T)", w.name, rows[i][1], rows[i][1])
+			}
+			continue
+		}
+		switch want := w.val.(type) {
+		case float64:
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: value not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != want {
+				t.Errorf("%s: want %v, got %v", w.name, want, got)
+			}
+		default:
+			if !reflect.DeepEqual(rows[i][1], w.val) {
+				t.Errorf("%s: want %v (%T), got %v (%T)", w.name, w.val, w.val, rows[i][1], rows[i][1])
+			}
+		}
+	}
 }
 
 func expectError(t *testing.T, db *sql.DB, query string) error {
@@ -586,33 +628,632 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("having_rejected", func(t *testing.T) {
-		err := expectError(t, db, `SELECT name,
+	t.Run("group_by_correlation_key_sum", func(t *testing.T) {
+		// Aggregate + GROUP BY on a correlation-determined key (o.customer_id
+		// = c.id) => exactly one group per outer row => deterministic. SUM
+		// over the group.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id)
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// Alice: 100.50+200.00=300.50; Bob: 50.25+75.00=125.25; Charlie: 300.00;
+		// Diana: order 15 amount is NULL => SUM over one NULL = NULL.
+		type exp struct {
+			name string
+			sum  any // float64 or nil
+		}
+		expected := []exp{
+			{"Alice", 300.50},
+			{"Bob", 125.25},
+			{"Charlie", 300.00},
+			{"Diana", nil},
+		}
+		for i, e := range expected {
+			name := fmt.Sprintf("%v", rows[i][0])
+			if name != e.name {
+				t.Fatalf("row %d: want name %s, got %s", i, e.name, name)
+			}
+			if e.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL sum, got %v", e.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", e.name, rows[i][1], rows[i][1])
+			}
+			if got != e.sum.(float64) {
+				t.Errorf("%s: want sum %v, got %v", e.name, e.sum, got)
+			}
+		}
+	})
+
+	t.Run("group_by_count_empty_is_null", func(t *testing.T) {
+		// The load-bearing GROUP BY semantic: zero matching rows => zero
+		// groups => NULL scalar (the LEFT-OUTER NULL-on-empty default).
+		// Diana has only a 'pending' order, so 0 'shipped' => NULL.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped' GROUP BY o.customer_id)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			cnt  any // int64 or nil
+		}{
+			{"Alice", int64(1)},   // order 10 shipped
+			{"Bob", int64(1)},     // order 12 shipped
+			{"Charlie", int64(1)}, // order 14 shipped
+			{"Diana", nil},        // no shipped order => 0 groups => NULL
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.cnt == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL count (GROUP BY, empty), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			if rows[i][1] != w.cnt {
+				t.Errorf("%s: want %v, got %v", w.name, w.cnt, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("no_group_by_count_empty_is_zero", func(t *testing.T) {
+		// Contrast with group_by_count_empty_is_null: WITHOUT GROUP BY the
+		// scalar aggregate emits one row even on empty input => Diana => 0
+		// (not NULL). Pins that the NULL above comes from grouping, not from
+		// the filter.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped')
+			FROM customers c WHERE c.id = 4`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if rows[0][1] != int64(0) {
+			t.Errorf("Diana: want 0 (no GROUP BY), got %v", rows[0][1])
+		}
+	})
+
+	t.Run("having_reduces_to_one_group", func(t *testing.T) {
+		// HAVING filters the per-customer group. Customers with >1 order get
+		// the count; the rest get NULL (group filtered out => zero groups).
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 1)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			cnt  any
+		}{
+			{"Alice", int64(2)}, // 2 orders, 2>1
+			{"Bob", int64(2)},   // 2 orders
+			{"Charlie", nil},    // 1 order, filtered => NULL
+			{"Diana", nil},      // 1 order, filtered => NULL
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.cnt == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL (HAVING filtered), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			if rows[i][1] != w.cnt {
+				t.Errorf("%s: want %v, got %v", w.name, w.cnt, rows[i][1])
+			}
+		}
+	})
+
+	t.Run("having_without_group_by", func(t *testing.T) {
+		// HAVING with no GROUP BY: the whole filtered set is one group. If the
+		// HAVING is false the single group drops => NULL.
+		rows := collectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id HAVING COUNT(*) > 1)
 			FROM customers c ORDER BY name`)
-		if err == nil {
-			t.Fatal("expected error for HAVING in correlated scalar subquery")
-		}
-		if !strings.Contains(err.Error(), "HAVING") {
-			t.Errorf("error should mention HAVING, got: %v", err)
+		want := []any{int64(2), int64(2), nil, nil} // Alice, Bob, Charlie, Diana
+		for i, w := range want {
+			if w == nil {
+				if rows[i][1] != nil {
+					t.Errorf("row %d: want NULL, got %v", i, rows[i][1])
+				}
+				continue
+			}
+			if rows[i][1] != w {
+				t.Errorf("row %d: want %v, got %v", i, w, rows[i][1])
+			}
 		}
 	})
 
-	t.Run("group_by_aggregate_rejected", func(t *testing.T) {
-		err := expectError(t, db, `SELECT name,
+	t.Run("non_aggregate_group_by", func(t *testing.T) {
+		// Non-aggregate GROUP BY (DISTINCT-of-key). Charlie has a single order
+		// => single status group => deterministic.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if got := fmt.Sprintf("%v", rows[0][1]); got != "shipped" {
+			t.Errorf("Charlie: want 'shipped', got %q", got)
+		}
+	})
+
+	t.Run("group_by_plans_streaming_aggregate", func(t *testing.T) {
+		// EXPLAIN proof: the inner GROUP BY produces a streaming aggregation,
+		// not a silently-dropped GROUP BY. Without this, the feature could
+		// "pass" by ignoring the GROUP BY entirely.
+		plan := planExplainVia(t, context.Background(), db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id)
+			FROM customers c`)
+		if !strings.Contains(plan, "StreamingAgg") {
+			t.Errorf("expected StreamingAgg in inner plan, got: %s", plan)
+		}
+	})
+
+	t.Run("group_by_non_key_first_or_default", func(t *testing.T) {
+		// GROUP BY a non-correlation key may yield multiple groups. Per the
+		// FirstOrDefault contract we take the first group (no runtime
+		// cardinality error). Each (customer,status) pair has exactly one
+		// order here, so every group's COUNT is 1 regardless of group order —
+		// assert membership (>=1, non-NULL), NOT a specific group, to avoid
+		// pinning a nondeterministic group choice.
+		rows := collectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c ORDER BY name`)
-		if err == nil {
-			t.Fatal("expected error for GROUP BY in correlated scalar subquery")
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		for _, r := range rows {
+			cnt, ok := r[1].(int64)
+			if !ok {
+				t.Fatalf("%v: count not int64, got %T (%v)", r[0], r[1], r[1])
+			}
+			if cnt < 1 {
+				t.Errorf("%v: want a positive group count, got %d", r[0], cnt)
+			}
 		}
 	})
 
-	t.Run("group_by_non_aggregate_rejected", func(t *testing.T) {
+	t.Run("group_by_non_key_projection_rejected", func(t *testing.T) {
+		// SELECT amount ... GROUP BY status: amount is neither grouped nor
+		// aggregated => 42803 (grouping error), via validateGroupByProjection.
 		err := expectError(t, db, `SELECT name,
-			(SELECT status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status LIMIT 1)
+			(SELECT amount FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c ORDER BY name`)
 		if err == nil {
-			t.Fatal("expected error for GROUP BY without aggregate in correlated scalar subquery")
+			t.Fatal("expected 42803 for non-grouped non-aggregated projection")
+		}
+		requireSQLSTATE(t, err, api.ErrCodeGroupingError)
+	})
+
+	t.Run("multi_column_with_group_by_rejected", func(t *testing.T) {
+		// SELECT status, COUNT(*) ... GROUP BY status: two output columns
+		// violates the scalar one-column rule.
+		err := expectError(t, db, `SELECT name,
+			(SELECT status, COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for multi-column aggregate scalar subquery")
+		}
+		if !strings.Contains(err.Error(), "exactly one column") {
+			t.Errorf("error should mention one-column rule, got: %v", err)
+		}
+	})
+
+	t.Run("expression_group_key", func(t *testing.T) {
+		// An expression GROUP BY key (groupByExprs non-nil) resolves via
+		// WalkExpressionForProjection. Charlie has one order so the single
+		// group is deterministic.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.amount + 1)
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 || rows[0][1] != int64(1) {
+			t.Fatalf("Charlie: want COUNT 1, got %v", rows)
+		}
+	})
+
+	t.Run("expression_group_key_unresolvable_rejected", func(t *testing.T) {
+		// Regression for the silently-swallowed group-key walk error: an
+		// expression GROUP BY key that fails to resolve must error, not fall
+		// back to an unresolvable raw FieldValue that groups every row under a
+		// null key.
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.nosuchcol + 1)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for unresolvable expression GROUP BY key")
+		}
+		if !strings.Contains(err.Error(), "GROUP BY key") && !strings.Contains(err.Error(), "NOSUCHCOL") {
+			t.Errorf("error should reference the failed GROUP BY key, got: %v", err)
+		}
+	})
+
+	t.Run("order_by_with_group_by_rejected", func(t *testing.T) {
+		// ORDER BY combined with GROUP BY (ordering the groups) is rejected
+		// rather than silently dropped — the FirstOrDefault group choice would
+		// otherwise be nondeterministic with no signal.
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for ORDER BY combined with GROUP BY")
+		}
+		if !strings.Contains(err.Error(), "ORDER BY") {
+			t.Errorf("error should mention ORDER BY, got: %v", err)
+		}
+	})
+
+	t.Run("group_by_unqualified_key_in_join", func(t *testing.T) {
+		// Same as group_by_with_join_sum but the GROUP BY key is UNqualified
+		// (`GROUP BY customer_id`, only in orders) under a join. The merged
+		// join rows expose both bare and alias-qualified keys, so the bare
+		// FieldValue resolves — pins that the hasJoins resolution is correct
+		// for unqualified keys too (the case Finding 2 asked to confirm).
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(i.price) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY customer_id)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 100.50},
+			{"Bob", 50.25},
+			{"Charlie", 30.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL, got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("group_by_with_join_sum", func(t *testing.T) {
+		// GROUP BY + aggregate over a JOINed inner: exercises the join branch
+		// of group-key AND operand resolution (merged rows carry qualified
+		// keys). SUM(i.price) per customer through orders->items, grouped by
+		// the correlation key.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(i.price) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY o.customer_id)
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// Alice: items 100(25.25)+101(50.00)+102(25.25)=100.50; Bob: 103(50.25);
+		// Charlie: 104(30.00)+105(null)=30.00; Diana: no items => no group => NULL.
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 100.50},
+			{"Bob", 50.25},
+			{"Charlie", 30.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL (no join rows => no group), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("group_by_expression_arg_aggregate", func(t *testing.T) {
+		// Aggregate over an EXPRESSION argument (not a bare column) + GROUP BY:
+		// exercises the aggExpr resolution path (resolver.WalkExpression). A
+		// resolution failure on this path must reject, not degrade to SUM(*).
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id)
+			FROM customers c ORDER BY name`)
+		if len(rows) != 4 {
+			t.Fatalf("want 4 rows, got %d", len(rows))
+		}
+		// Alice: 2*(100.50+200.00)=601.00; Bob: 2*(50.25+75.00)=250.50;
+		// Charlie: 2*300.00=600.00; Diana: amount NULL => SUM=NULL.
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", 250.50},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL, got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("having_different_aggregate_than_projection", func(t *testing.T) {
+		// Codex P1: HAVING references COUNT(*) while the projection is SUM —
+		// both aggregates must be computed. Single group per customer
+		// (correlation key) => deterministic.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 1)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 300.50}, // 2 orders, COUNT 2 > 1 => SUM kept
+			{"Bob", 125.25},   // 2 orders
+			{"Charlie", nil},  // 1 order, COUNT 1 not > 1 => filtered => NULL
+			{"Diana", nil},    // 1 order
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL (HAVING COUNT>1 filtered), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("count_constant_with_having_works", func(t *testing.T) {
+		// Single-source: aggregates now materialise under the canonical name the
+		// HAVING rewrite resolves by, so COUNT(1)≡COUNT(*) works in BOTH
+		// directions (the reverse was a prior silent-wrong). Charlie (1 order)
+		// => COUNT=1 > 0 => kept = 1.
+		fwd := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
+			FROM customers c WHERE c.id = 3`)
+		if len(fwd) != 1 || fwd[0][1] != int64(1) {
+			t.Fatalf("COUNT(1) + HAVING COUNT(*): want Charlie=1, got %v", fwd)
+		}
+		rev := collectRows(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(1) > 0)
+			FROM customers c WHERE c.id = 3`)
+		if len(rev) != 1 || rev[0][1] != int64(1) {
+			t.Fatalf("COUNT(*) + HAVING COUNT(1): want Charlie=1, got %v", rev)
+		}
+	})
+
+	t.Run("count_distinct_constant_rejected", func(t *testing.T) {
+		// COUNT(DISTINCT 1) is NOT COUNT(*) (it is 1), and DISTINCT aggregates
+		// are unsupported here — rejected explicitly, never reused as COUNT(*).
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(DISTINCT 1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for COUNT(DISTINCT 1) + HAVING COUNT(*)")
+		}
+	})
+
+	t.Run("expression_aggregate_in_having_works", func(t *testing.T) {
+		// Single-source: HAVING references a DIFFERENT expression aggregate than
+		// the projection (SUM(amount*2) projected + HAVING SUM(amount*3)). Both
+		// now materialise under their canonical names, so HAVING resolves the
+		// right slot. HAVING SUM(amount*3) > 700: Alice 901.5>700 keep => 601.00;
+		// Bob 375.75 drop; Charlie 900>700 keep => 600.00; Diana NULL.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 3) > 700)
+			FROM customers c ORDER BY name`)
+		want := []struct {
+			name string
+			sum  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", nil},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		}
+		for i, w := range want {
+			if got := fmt.Sprintf("%v", rows[i][0]); got != w.name {
+				t.Fatalf("row %d: want name %s, got %s", i, w.name, got)
+			}
+			if w.sum == nil {
+				if rows[i][1] != nil {
+					t.Errorf("%s: want NULL (HAVING SUM(amount*3)>700 filtered), got %v", w.name, rows[i][1])
+				}
+				continue
+			}
+			got, ok := rows[i][1].(float64)
+			if !ok {
+				t.Fatalf("%s: sum not float64, got %T (%v)", w.name, rows[i][1], rows[i][1])
+			}
+			if got != w.sum.(float64) {
+				t.Errorf("%s: want %v, got %v", w.name, w.sum, got)
+			}
+		}
+	})
+
+	t.Run("decimal_literal_aggregate_arg_in_having", func(t *testing.T) {
+		// RFC-048 Exhibit-A (Codex): a decimal-literal factor (amount*1.5)
+		// canonicalises to "SUM(AMOUNT*1.5)" — a DOT in the materialised slot
+		// name. If the dot is mis-parsed as a qualifier separator anywhere on
+		// the producer/consumer path, the HAVING reference resolves to NULL and
+		// EVERY group is silently dropped. Correct: HAVING SUM(amount*1.5)>400
+		// keeps Alice (450.75) and Charlie (450.00); Bob (187.875) and Diana
+		// (NULL) drop. Projected SUM(amount*2): Alice 601.00, Charlie 600.00.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 1.5) > 400)
+			FROM customers c ORDER BY name`)
+		assertScalarAggRows(t, rows, []struct {
+			name string
+			val  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", nil},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		})
+	})
+
+	t.Run("nested_arithmetic_aggregate_arg_in_having", func(t *testing.T) {
+		// RFC-048 Exhibit-A (Codex): a nested-arithmetic argument
+		// SUM((amount+10)*2) round-trips through parse->explain. If the
+		// materialised slot name and the HAVING-rewrite name disagree (lossy
+		// reparse), the HAVING reads NULL and silently drops groups. Correct:
+		// HAVING SUM((amount+10)*2)>600 keeps Alice (641.00) and Charlie
+		// (620.00); Bob (290.50) and Diana (NULL) drop. Projected SUM(amount*2):
+		// Alice 601.00, Charlie 600.00.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM((o.amount + 10) * 2) > 600)
+			FROM customers c ORDER BY name`)
+		assertScalarAggRows(t, rows, []struct {
+			name string
+			val  any
+		}{
+			{"Alice", 601.00},
+			{"Bob", nil},
+			{"Charlie", 600.00},
+			{"Diana", nil},
+		})
+	})
+
+	t.Run("join_expression_aggregate_in_having_rejected", func(t *testing.T) {
+		// The deferred residual: over a JOIN, an expression-argument aggregate in
+		// HAVING still can't be resolved (the operand binds to the wrong
+		// quantifier through the parser round-trip), so the join path keeps the
+		// fail-safe rejection. Single-source is fully supported (above); joins are
+		// the tracked follow-up.
+		err := expectError(t, db, `SELECT name,
+			(SELECT SUM(i.price * 2) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(i.price * 3) > 0)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for an expression aggregate in HAVING over a join")
+		}
+	})
+
+	t.Run("post_aggregate_expression_rejected", func(t *testing.T) {
+		// Codex delta P2: a post-aggregation expression output (`SUM(x) + 1`)
+		// is a visible aggCol with empty aggFunc + outExpr. It must NOT be
+		// misclassified as a group-key projection (which would read an
+		// unmaterialized column => NULL). Computing the expression over the
+		// aggregate row is out of scope, so reject cleanly.
+		err := expectError(t, db, `SELECT name,
+			(SELECT SUM(o.amount) + 1 FROM orders o WHERE o.customer_id = c.id)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for post-aggregation expression in correlated scalar subquery")
+		}
+	})
+
+	t.Run("undefined_group_key_rejected", func(t *testing.T) {
+		// Codex P2: a non-existent GROUP BY column (aggregate-only projection,
+		// so validateGroupByProjection does not catch it) must error, not
+		// silently group every row under a null key.
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.no_such_col)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for undefined GROUP BY column")
+		}
+	})
+
+	t.Run("duplicate_alias_multi_column_rejected", func(t *testing.T) {
+		// Codex P2: two visible SELECT items sharing an alias are still two
+		// output columns — reject on item count, not distinct name count.
+		err := expectError(t, db, `SELECT name,
+			(SELECT o.status AS x, COUNT(*) AS x FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c`)
+		if err == nil {
+			t.Fatal("expected error for two same-aliased output columns")
+		}
+		if !strings.Contains(err.Error(), "exactly one column") {
+			t.Errorf("error should mention one-column rule, got: %v", err)
+		}
+	})
+
+	t.Run("qualified_group_key_projection", func(t *testing.T) {
+		// Codex P2: a QUALIFIED group-key projection (`SELECT o.status`) must
+		// resolve, not double-prefix into O.O.STATUS => NULL. Charlie has one
+		// order so the single group is deterministic.
+		rows := collectRows(t, db, `SELECT name,
+			(SELECT o.status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
+			FROM customers c WHERE c.id = 3`)
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d", len(rows))
+		}
+		if got := fmt.Sprintf("%v", rows[0][1]); got != "shipped" {
+			t.Errorf("Charlie: want 'shipped', got %q", got)
+		}
+	})
+
+	t.Run("having_with_exists_rejected", func(t *testing.T) {
+		// EXISTS inside HAVING of a correlated scalar subquery mixes pre/post
+		// grouping scope and has no subquery planner on the HAVING resolver —
+		// must reject cleanly, not return wrong rows (mirrors the top-level
+		// translateAggregate HavingExistsSubqueries guard).
+		err := expectError(t, db, `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.id))
+			FROM customers c ORDER BY name`)
+		if err == nil {
+			t.Fatal("expected error for EXISTS inside HAVING of a correlated scalar subquery")
+		}
+	})
+
+	t.Run("group_by_having_deterministic_10x", func(t *testing.T) {
+		// Plan/result determinism for the deterministic shapes: run the
+		// single-group GROUP BY and the HAVING-reduces case repeatedly; the
+		// plan is deterministic so results must be stable.
+		const q = `SELECT name,
+			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 1)
+			FROM customers c ORDER BY name`
+		var first [][]any
+		for i := 0; i < 10; i++ {
+			rows := collectRows(t, db, q)
+			if i == 0 {
+				first = rows
+				continue
+			}
+			if !reflect.DeepEqual(rows, first) {
+				t.Fatalf("run %d differs from run 0:\n run0=%v\n run%d=%v", i, first, i, rows)
+			}
 		}
 	})
 

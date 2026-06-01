@@ -342,7 +342,7 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 			}
 		}
 	}
-	return QueryResult{Datum: result}
+	return QueryResult{Datum: result, Complete: true}
 }
 
 func (c *aggregateCursor) emptyScalarResult() QueryResult {
@@ -358,7 +358,7 @@ func (c *aggregateCursor) emptyScalarResult() QueryResult {
 			result[agg.Alias] = val
 		}
 	}
-	return QueryResult{Datum: result}
+	return QueryResult{Datum: result, Complete: true}
 }
 
 func (c *aggregateCursor) Close() error {

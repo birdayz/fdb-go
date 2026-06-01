@@ -214,9 +214,23 @@ func (f *FieldValue) Evaluate(evalCtx any) any {
 		return row[f.Field]
 	}
 	if rc, ok := evalCtx.(*RowEvalContext); ok && rc.Datum != nil {
-		return rc.Datum[f.Field]
+		v, present := rc.Datum[f.Field]
+		if !present && rc.Strict && ReportUnresolvedReference != nil {
+			ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
+		}
+		return v
 	}
 	return nil
+}
+
+// mapKeys returns the keys of a datum map, for unresolved-reference
+// diagnostics. Only called on the W1 violation path (never in prod).
+func mapKeys(m map[string]any) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
 }
 
 func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) any {
@@ -712,7 +726,26 @@ type RowEvalContext struct {
 	Binder           ParameterBinder
 	Correlations     CorrelationBinder
 	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
+	// Strict turns a local field-reference miss (a top-level FieldValue whose
+	// name is absent from Datum) from a silent nil into a reported violation
+	// via ReportUnresolvedReference. It is set ONLY when evaluating against a
+	// row whose key set is complete — i.e. a computed/synthetic row (aggregate
+	// output, projection, join-merge) that has no proto-style optional-field
+	// omissions, where an absent name is unambiguously an unresolved reference
+	// rather than a legitimate SQL NULL. Base-record rows (which legitimately
+	// omit unset optional fields) leave this false. See RFC-048 W1.
+	Strict bool
 }
+
+// ReportUnresolvedReference, when non-nil, is invoked by FieldValue.Evaluate
+// whenever a Strict RowEvalContext is asked for a local field name that is not
+// present in its (complete) row. It is the RFC-048 W1 "no unresolved
+// reference" invariant: a silent name->NULL — the cardinal silent-wrong — is
+// turned into a loud, attributable signal. It is nil by default (zero
+// production overhead and behaviour beyond the map lookup that already
+// happens); test/debug builds install a hook that fails the test. `field` is
+// the missing name; `available` is the row's actual key set (for diagnostics).
+var ReportUnresolvedReference func(field string, available []string)
 
 func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
 	if r.Binder == nil {

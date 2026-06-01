@@ -477,10 +477,18 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		if !ok {
 			return nil
 		}
+		// The resolved operand (set by upgradeAggregateOperands /
+		// buildCorrelatedScalar via resolver.WalkExpression) is the single
+		// source of truth. parseAggregateText only reconstructs the operand by
+		// re-scanning the slot-name text, and parseOperandValue is a naive
+		// left-to-right splitter that mangles nested/parenthesised arithmetic
+		// (e.g. "(AMOUNT+10)*2" splits on the inner '+' into garbage atoms),
+		// yielding an unresolvable operand that accumulates to NULL and silently
+		// drops HAVING groups. Whenever a resolved operand is present, it wins —
+		// never the lossy reparse. (A prior `!isArith` guard preferred the
+		// reparse for arithmetic operands; that was the operand-routing hole.)
 		if i < len(a.AggregateOperands) && a.AggregateOperands[i] != nil {
-			if _, isArith := spec.Operand.(*values.ArithmeticValue); !isArith {
-				spec.Operand = a.AggregateOperands[i]
-			}
+			spec.Operand = a.AggregateOperands[i]
 		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
 			spec.Alias = strings.ToUpper(a.Aliases[i])

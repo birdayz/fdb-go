@@ -144,6 +144,7 @@ go_test(
         "values_helpers_test.go",
         "values_java_inspired_test.go",
         "values_test.go",
+        "w1_unresolved_reference_test.go",
     ],
     embed = [":values"],
     deps = ["//pkg/recordlayer/vectorcodec"],

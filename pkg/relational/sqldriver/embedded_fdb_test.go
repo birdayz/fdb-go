@@ -14,11 +14,14 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/onsi/gomega"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
@@ -27,14 +30,60 @@ import (
 // clusterFilePath is written once in TestMain and shared across tests.
 var clusterFilePath string
 
+// RFC-048 W1: the entire sqldriver test binary runs with the executor's
+// "no unresolved reference" invariant armed. Every query in every test — all
+// the aggregate / HAVING / correlated-scalar-subquery shapes Exhibit-A came
+// from — is therefore checked: if any of them evaluates a reference to a name
+// absent from a *complete* row (aggregate output), it is recorded here and the
+// binary fails, even when the individual test "passed". This is the standing
+// E2E proof of the RFC-048 success criterion ("no production code path emits
+// an unresolved reference today"). The flag is set ONCE in TestMain before any
+// test runs and never mutated afterwards, so it is safe under t.Parallel();
+// the hook only appends under a mutex. Strict mode does not change any returned
+// value — it only reports misses — so results are identical with it on.
+var (
+	w1mu         sync.Mutex
+	w1violations = map[string]int{}
+)
+
+func armW1() {
+	executor.StrictReferenceCheck = true
+	values.ReportUnresolvedReference = func(field string, available []string) {
+		avail := append([]string(nil), available...)
+		sort.Strings(avail)
+		key := fmt.Sprintf("unresolved reference %q against complete-row keys %v", field, avail)
+		w1mu.Lock()
+		w1violations[key]++
+		w1mu.Unlock()
+	}
+}
+
+func finishW1(code int) int {
+	w1mu.Lock()
+	defer w1mu.Unlock()
+	if len(w1violations) == 0 {
+		return code
+	}
+	fmt.Fprintf(os.Stderr, "\nRFC-048 W1: %d distinct unresolved-reference violation(s) — a silent name->NULL was emitted against a complete row:\n", len(w1violations))
+	for v, n := range w1violations {
+		fmt.Fprintf(os.Stderr, "  - %s (x%d)\n", v, n)
+	}
+	if code == 0 {
+		return 1
+	}
+	return code
+}
+
 func TestMain(m *testing.M) {
+	armW1() // RFC-048 W1: arm the invariant for the whole test binary.
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
 		// No Docker — run non-FDB tests only.
-		os.Exit(m.Run())
+		os.Exit(finishW1(m.Run()))
 	}
 	defer container.Terminate(context.Background()) //nolint:errcheck
 
@@ -57,7 +106,7 @@ func TestMain(m *testing.M) {
 	tmp.Close()
 	clusterFilePath = tmp.Name()
 
-	os.Exit(m.Run())
+	os.Exit(finishW1(m.Run()))
 }
 
 // expectUnsupportedOperator asserts that err unwraps to an *api.Error

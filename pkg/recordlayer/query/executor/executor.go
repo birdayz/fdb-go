@@ -476,6 +476,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 	var lowItem, highItem any
 	hasLow := false
 	hasHigh := false
+	lowIsNullBoundary := false // low bound is the NULL exclusion (prefix + null, exclusive)
 
 	if len(prefix) == 0 {
 		lowEndpoint = recordlayer.EndpointTypeTreeStart
@@ -485,10 +486,34 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		highEndpoint = recordlayer.EndpointTypeRangeInclusive
 	}
 
+	// Java's InequalityRangeCombiner keeps the *tightest* of multiple low (or
+	// high) comparisons via Comparisons.compare(); here a later >/>= simply
+	// wins last. That is harmless because upstream ComparisonRange merging has
+	// already combined comparisons on the same column into one tightest range
+	// before we get here, so this loop never sees two competing low bounds.
 	for _, ineq := range nextRange.GetInequalityComparisons() {
 		var comparand any
 		if ineq.Operand != nil {
 			comparand = ineq.Operand.Evaluate(binder)
+		}
+		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
+		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
+		// fall through to the endpoint logic: a `< NULL` would otherwise install
+		// the NULL low boundary with a nil high, producing an inverted FDB range
+		// (begin strinc(prefix,NULL) > end prefix). Return an explicit empty
+		// range (begin == end). IS NOT NULL has no operand and is the legitimate
+		// null-boundary case, handled below.
+		switch ineq.Type {
+		case predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+			predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+			if comparand == nil {
+				return recordlayer.TupleRange{
+					Low:          prefix,
+					High:         prefix,
+					LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+					HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
+				}, nil
+			}
 		}
 		switch ineq.Type {
 		case predicates.ComparisonGreaterThan:
@@ -503,22 +528,48 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			highItem = comparand
 			highEndpoint = recordlayer.EndpointTypeRangeExclusive
 			hasHigh = true
+			// An upper-only range must EXCLUDE NULL index entries: NULL sorts
+			// first in the index, and `col < v` is UNKNOWN (not TRUE) on NULL,
+			// so those rows must not appear. Mirror Java
+			// ScanComparisons.InequalityRangeCombiner: when no low bound is set,
+			// pin the low to the NULL boundary (lowItem stays nil) RANGE_EXCLUSIVE,
+			// which strinc's past the null prefix and skips every null entry.
+			if !hasLow {
+				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				lowIsNullBoundary = true
+				hasLow = true
+			}
 		case predicates.ComparisonLessThanOrEq:
 			highItem = comparand
 			highEndpoint = recordlayer.EndpointTypeRangeInclusive
 			hasHigh = true
-		case predicates.ComparisonIsNotNull:
 			if !hasLow {
 				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				lowIsNullBoundary = true
+				hasLow = true
+			}
+		case predicates.ComparisonIsNotNull:
+			// IS NOT NULL is the pure NULL-boundary range: everything strictly
+			// after the null entries (Java: lowItem null, RANGE_EXCLUSIVE).
+			if !hasLow {
+				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				lowIsNullBoundary = true
 				hasLow = true
 			}
 		}
 	}
 
+	// Build the endpoint tuples, mirroring Java's buildEndpointTuple:
+	//   hasX  -> prefix + [item]; item==nil with a null boundary appends the
+	//            NULL element (a low of (…,null) RANGE_EXCLUSIVE skips nulls).
+	//   !hasX -> the prefix itself (if any), else unbounded (TREE_START/END).
 	var low, high tuple.Tuple
-	if hasLow && lowItem != nil {
+	switch {
+	case hasLow && lowItem != nil:
 		low = append(append(tuple.Tuple{}, prefix...), lowItem)
-	} else if len(prefix) > 0 {
+	case hasLow && lowIsNullBoundary:
+		low = append(append(tuple.Tuple{}, prefix...), nil)
+	case len(prefix) > 0:
 		low = prefix
 	}
 	if hasHigh && highItem != nil {
@@ -688,8 +739,13 @@ func executeFilter(
 				}
 			}()
 			var rowCtx any = qr.Datum
-			if needsRowCtx {
-				if m, ok := qr.Datum.(map[string]any); ok {
+			if m, ok := qr.Datum.(map[string]any); ok {
+				switch {
+				case StrictReferenceCheck && qr.Complete:
+					// RFC-048 W1: a HAVING/filter reference to a name absent from
+					// a complete row (aggregate output) is a bug, not a NULL.
+					rowCtx = evalCtx.RowContextStrict(m)
+				case needsRowCtx:
 					rowCtx = evalCtx.RowContext(m)
 				}
 			}
@@ -845,8 +901,13 @@ func executeProjection(
 		}
 		projected := make(map[string]any, len(projections))
 		var rowCtx any = qr.Datum
-		if needsRowCtx {
-			if m, ok := qr.Datum.(map[string]any); ok {
+		if m, ok := qr.Datum.(map[string]any); ok {
+			switch {
+			case StrictReferenceCheck && qr.Complete:
+				// RFC-048 W1: a projection reading a name absent from a complete
+				// row (aggregate output) is a bug, not a NULL.
+				rowCtx = evalCtx.RowContextStrict(m)
+			case needsRowCtx:
 				rowCtx = evalCtx.RowContext(m)
 			}
 		}

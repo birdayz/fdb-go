@@ -2058,6 +2058,31 @@ func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	return v
 }
 
+// canonicalAggName is the single canonicaliser for an aggregate's result-row
+// column name. Both the HAVING-predicate rewrite (rewriteAggregateValue) and the
+// correlated-scalar-subquery aggregate builder name aggregates through it, so a
+// HAVING reference always resolves against the materialised slot — they cannot
+// drift. funcSymbol is the aggregate function symbol (e.g. "SUM", "COUNT", or
+// the count-star op's "COUNT(*)"); operand is the (already-resolved) argument
+// Value, or nil for a no-operand aggregate. The form mirrors what the executor's
+// aggResultName produces: FN(<uppercased ExplainValue, spaces stripped, one
+// outer-paren pair stripped>), with COUNT(*)/no-operand => "FN(*)".
+func canonicalAggName(funcSymbol string, operand values.Value) string {
+	fn := strings.ToUpper(funcSymbol)
+	if fn == "COUNT(*)" {
+		return "COUNT(*)"
+	}
+	inner := "*"
+	if operand != nil {
+		inner = strings.ToUpper(values.ExplainValue(operand))
+		inner = strings.ReplaceAll(inner, " ", "")
+		if len(inner) > 2 && inner[0] == '(' && inner[len(inner)-1] == ')' {
+			inner = inner[1 : len(inner)-1]
+		}
+	}
+	return fn + "(" + inner + ")"
+}
+
 func rewriteAggregateValue(v values.Value) values.Value {
 	if v == nil {
 		return nil
@@ -2066,23 +2091,8 @@ func rewriteAggregateValue(v values.Value) values.Value {
 	if !ok {
 		return v
 	}
-	var innerText string
-	if av.Operand != nil {
-		innerText = strings.ToUpper(values.ExplainValue(av.Operand))
-		innerText = strings.ReplaceAll(innerText, " ", "")
-		if len(innerText) > 2 && innerText[0] == '(' && innerText[len(innerText)-1] == ')' {
-			innerText = innerText[1 : len(innerText)-1]
-		}
-	} else {
-		innerText = "*"
-	}
-	funcName := strings.ToUpper(av.Op.Symbol())
-	if funcName == "COUNT(*)" {
-		return &values.FieldValue{Field: "COUNT(*)", Typ: values.UnknownType}
-	}
-	name := funcName + "(" + innerText + ")"
 	return &values.FieldValue{
-		Field: name,
+		Field: canonicalAggName(av.Op.Symbol(), av.Operand),
 		Typ:   values.UnknownType,
 	}
 }
@@ -3819,6 +3829,64 @@ func (p *existsSubqueryPlanner) BuildScalar(q antlrgen.IQueryContext) (values.Co
 	return alias, nil
 }
 
+// resolveCorrelatedColumnValue resolves a (possibly alias-qualified) column
+// name to a Value through the semantic scope — the same resolution the
+// correlated WHERE clause uses. With a single inner source the scope returns a
+// bare FieldValue (matching the bare keys a single scan flows); with joins the
+// merged rows carry alias-qualified keys, so use the qualified FieldValue, as
+// the top-level projection path does (logical_predicate.go ResolveIdentifier
+// branch). A genuinely unresolvable column (single-source path) returns the
+// resolver error so the caller can reject — silently falling back to a raw
+// FieldValue would group every row under a null key (wrong results).
+func resolveCorrelatedColumnValue(resolver *expr.Resolver, col string, hasJoins bool) (values.Value, error) {
+	if hasJoins {
+		// Merged join rows carry alias-qualified keys; use the qualified name
+		// directly (ResolveIdentifier would yield a QOV-anchored value that does
+		// not match the flat merged row). Existence is not validated here — the
+		// same limitation as the top-level join GROUP BY path.
+		return &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}, nil
+	}
+	ref := parseColRef(col)
+	var qualifier semantic.Identifier
+	id := semantic.NewUnquoted(ref.bare())
+	if ref.isQualified() {
+		qualifier = semantic.NewUnquoted(ref.table)
+	}
+	return resolver.ResolveIdentifier(qualifier, id)
+}
+
+// resolveCorrelatedGroupKeyValues resolves the GROUP BY keys of a correlated
+// scalar subquery's inner aggregate to Value trees. The builder stores group
+// keys as raw (often qualified) column-name strings with no expression context
+// (groupByExprs nil), so resolve each name through the semantic scope rather
+// than walking a parse node. An expression key (e.g. GROUP BY o.a + o.b) that
+// fails to resolve is returned as an error — matching the top-level path
+// (upgradeAggregate) — rather than silently falling back to an unresolvable
+// raw FieldValue that would group every row under a null key.
+func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQuery, resolver *expr.Resolver, hasJoins bool) error {
+	if agg == nil || len(agg.GroupKeys) == 0 {
+		return nil
+	}
+	keyValues := make([]values.Value, len(agg.GroupKeys))
+	for i, key := range agg.GroupKeys {
+		if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+			v, err := resolver.WalkExpressionForProjection(sq.groupByExprs[i])
+			if err != nil {
+				return err
+			}
+			keyValues[i] = v
+			continue
+		}
+		v, err := resolveCorrelatedColumnValue(resolver, key, hasJoins)
+		if err != nil {
+			return err
+		}
+		keyValues[i] = v
+	}
+	agg.GroupKeyValues = keyValues
+	return nil
+}
+
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
@@ -3841,8 +3909,6 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			Message: "correlated scalar subquery: WHERE clause required for correlation",
 		}
 	}
-
-	isAggregate := sq.countStar || len(sq.aggCols) > 0
 
 	innerAlias := sq.tableAlias
 	if innerAlias == "" {
@@ -3935,53 +4001,309 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		innerOp = logical.NewFilterWithPredicate(op, pred, "")
 	}
 
-	var scalarCol string
-	if isAggregate {
-		if len(sq.groupBy) > 0 {
+	// Validate the grouped projection (42803 / undefined column) with the
+	// exact helper the top-level GROUP BY path runs — buildCorrelatedScalar
+	// holds p.md and sq in scope. Catches `SELECT amount ... GROUP BY status`
+	// (amount neither grouped nor aggregated).
+	if len(sq.groupBy) > 0 {
+		if vErr := validateGroupByProjection(sq, p.md); vErr != nil {
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: GROUP BY in inner query not yet supported",
+				Message: fmt.Sprintf("correlated scalar subquery: %v", vErr), Cause: vErr,
+			}
+		}
+		// ORDER BY over grouped output (ordering the groups themselves) is not
+		// supported here: the sort would have to resolve its keys against the
+		// post-aggregation row, which this builder does not wire. Reject rather
+		// than silently drop the ORDER BY (which would leave the FirstOrDefault
+		// group choice nondeterministic with no signal). ORDER BY without
+		// GROUP BY (ordering rows before the LIMIT 1) is still supported.
+		if len(sq.orderBy) > 0 {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: ORDER BY combined with GROUP BY is not supported",
+			}
+		}
+	}
+
+	// A real aggregate function (COUNT/SUM/MIN/MAX/AVG) is present iff
+	// countStar is set or some aggCol carries an aggFunc. Under a GROUP BY a
+	// bare group-key projection is ALSO stored as a (visible, empty-aggFunc)
+	// aggCol, so len(aggCols)>0 does not by itself mean "aggregate" — route on
+	// the presence of a real aggregate function.
+	hasRealAgg := sq.countStar
+	for i := range sq.aggCols {
+		if sq.aggCols[i].aggFunc != "" {
+			hasRealAgg = true
+			break
+		}
+	}
+
+	// A scalar subquery must produce exactly one output column. Count the
+	// visible SELECT items: under a GROUP BY each item is a visible aggCol (an
+	// aggregate or a bare group-key projection), while a sole COUNT(*) is also
+	// echoed into projCols — so count visible aggCols plus only those projCols
+	// NOT already represented as a visible aggregate (the COUNT(*) echo).
+	// Without aggregation the items are plain projCols; a no-GROUP-BY sole
+	// COUNT(*) is the countStar case. Counting items (not distinct names) is
+	// load-bearing: two items sharing an alias are still two columns.
+	visAggNames := make(map[string]struct{}, len(sq.aggCols))
+	outCount := 0
+	for _, ac := range sq.aggCols {
+		if ac.visible {
+			outCount++
+			visAggNames[strings.ToUpper(ac.outName)] = struct{}{}
+		}
+	}
+	for _, pc := range sq.projCols {
+		if _, echo := visAggNames[strings.ToUpper(pc)]; !echo {
+			outCount++
+		}
+	}
+	if outCount == 0 && sq.countStar {
+		outCount = 1
+	}
+	if outCount > 1 {
+		return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+			Message: fmt.Sprintf("scalar subquery must return exactly one column, got %d", outCount),
+		}
+	}
+
+	var scalarCol string
+	if hasRealAgg {
+		// Build the aggregate over the correlated filter. With GROUP BY the
+		// aggregate may emit more than one group; the scalar contract is then
+		// enforced by FirstOrDefault — the LIMIT 1 below plus the LEFT-OUTER
+		// NULL-on-empty wrap in the translator — not a runtime cardinality
+		// assertion (which would need look-ahead and breaks continuation-based
+		// pagination). Empty input => zero groups => NULL falls out naturally,
+		// whereas the no-GROUP-BY scalar aggregate emits one row (e.g. COUNT=0).
+		//
+		// Compute EVERY aggregate the query needs — the single visible one (the
+		// scalar's value) AND any non-visible ones the parser harvested for
+		// HAVING — so a HAVING that references a different aggregate than the
+		// projection (e.g. `SELECT SUM(x) ... HAVING COUNT(*) > 1`) is evaluated
+		// correctly. Aggregate output names use the BARE operand: a qualified
+		// arg (`o.amount`) would embed a '.' in "SUM(O.AMOUNT)" that the
+		// join-merge resolver mis-parses as a qualifier separator; the operand
+		// itself is resolved separately so the qualifier still binds.
+		singleSource := len(sq.joins) == 0
+		var aggTexts, aggAliases []string
+		var aggOperands []values.Value
+		aggSeen := make(map[string]struct{})
+		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
+		addAgg := func(fn, arg string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
+			// An expression argument has no bare column name, so it collapses to
+			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
+			// and SUM(c*d) in HAVING) would both synthesize "SUM(*)" and the
+			// second would silently overwrite the first — so the HAVING would
+			// read the projected aggregate's value. We cannot disambiguate them
+			// by name, so reject rather than return wrong rows.
+			bareArg := parseColRef(arg).bare()
+			if bareArg == "" {
+				bareArg = "*"
+			}
+			name := strings.ToUpper(fn) + "(" + strings.ToUpper(bareArg) + ")"
+			// Resolve the operand first so we can recognise COUNT(<non-null
+			// constant>) — e.g. COUNT(1) — which is exactly COUNT(*): it counts
+			// every row, so it can safely share the COUNT(*) slot rather than
+			// being treated as an opaque, collision-prone expression aggregate.
+			var opVal values.Value
+			if e != nil {
+				v, err := resolver.WalkExpression(e)
+				if err != nil {
+					return "", err
+				}
+				opVal = v
+			} else if arg != "" {
+				v, err := resolveCorrelatedColumnValue(resolver, arg, len(sq.joins) > 0)
+				if err != nil {
+					return "", err
+				}
+				opVal = v
+			}
+			// DISTINCT aggregates are unsupported here (aggDistinct is not threaded
+			// into the materialised slot, and COUNT(DISTINCT 1) != COUNT(*)). Reject
+			// explicitly rather than rely on a name-prefix check.
+			if distinct {
+				return "", fmt.Errorf("DISTINCT aggregate not supported in a correlated scalar subquery")
+			}
+			if singleSource {
+				// Single-source inner: materialise under the canonical name the
+				// HAVING rewrite resolves by (canonicalAggName, shared with
+				// rewriteAggregateValue). The name is dot-free (safe scalarCol) and
+				// distinct expressions get distinct slots, so a HAVING referencing
+				// any aggregate resolves in either direction; identical func+operand
+				// reuses one slot.
+				cname := canonicalAggName(fn, opVal)
+				if _, dup := aggSeen[cname]; dup {
+					return cname, nil
+				}
+				aggSeen[cname] = struct{}{}
+				aggTexts = append(aggTexts, cname)
+				aggAliases = append(aggAliases, cname)
+				aggOperands = append(aggOperands, opVal)
+				return cname, nil
+			}
+			// Join path: an expression/constant argument has no bare column name, so it
+			// collapses to FN(*) here — but the HAVING rewrite
+			// (rewriteAggregateValue) names an aggregate by the operand's
+			// *explain* (COUNT(1), SUM(A+B)), which FN(*) does not match. Any
+			// such aggregate is therefore "opaque": it cannot be safely shared
+			// with, or referenced by, a differently-named aggregate. We do NOT
+			// special-case COUNT(<const>)≡COUNT(*): although equal in value, the
+			// reuse repeatedly opened silent-wrong corners (HAVING COUNT(*) vs a
+			// projected COUNT(1), COUNT(DISTINCT 1), a HAVING that repeats the
+			// visible constant aggregate) because the two name schemes still
+			// diverge. Treat every expression/constant arg as opaque and reject
+			// collisions fail-safe; full support needs the materialised names
+			// aligned with the HAVING rewrite (tracked follow-up).
+			opaqueExpr := e != nil
+			if _, dup := aggSeen[name]; dup {
+				_, priorExpr := exprAggNames[name]
+				if opaqueExpr || priorExpr {
+					return "", fmt.Errorf("an expression-argument aggregate (e.g. SUM(<expr>)) collides with another aggregate named %q; not supported in a correlated scalar subquery", name)
+				}
+				// Identical bare-column / star aggregate referenced twice (e.g.
+				// COUNT(*) in both SELECT and HAVING) — safe to reuse the slot.
+				// (Any expression/constant arg is opaque and exited above, so
+				// this dup is always a non-opaque, identically-named aggregate.)
+				return name, nil
+			}
+			aggSeen[name] = struct{}{}
+			if opaqueExpr {
+				exprAggNames[name] = struct{}{}
+			}
+			aggTexts = append(aggTexts, fn+"("+bareArg+")")
+			aggAliases = append(aggAliases, name)
+			aggOperands = append(aggOperands, opVal)
+			return name, nil
+		}
+		for i := range sq.aggCols {
+			ac := &sq.aggCols[i]
+			if ac.aggFunc == "" {
+				continue // bare group-key projection — handled as scalarCol below
+			}
+			// A HAVING-only (non-visible) aggregate over an expression/constant
+			// argument cannot be resolved: addAgg materialises it under the bare
+			// FN(*) name, but the HAVING-predicate rewrite looks it up by operand
+			// explain (e.g. COUNT(1), SUM(A*3)) -- a name never exposed, so the
+			// predicate reads NULL and silently drops valid groups. Reject it. A
+			// visible expression aggregate is fine (its scalarCol uses the same
+			// FN(*) name); a HAVING COUNT(*)/bare-column aggregate names
+			// identically in both schemes, so COUNT(1) projected + HAVING COUNT(*)
+			// still works.
+			if !singleSource && !ac.visible && ac.aggExpr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: "correlated scalar subquery over a join: HAVING references an expression/constant-argument aggregate (e.g. COUNT(1), SUM(<expr>)) that cannot be resolved against the grouped output",
+				}
+			}
+			name, err := addAgg(ac.aggFunc, ac.aggArg, ac.aggExpr, ac.aggDistinct)
+			if err != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: resolve aggregate argument: %v", err), Cause: err,
+				}
+			}
+			if ac.visible {
+				scalarCol = name
+			}
+		}
+		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
+		if sq.countStar {
+			name, _ := addAgg("COUNT", "", nil, false) // -> COUNT(*)
+			scalarCol = name
+		}
+		// If the single visible output is a bare group-key projection (e.g.
+		// `SELECT status ... GROUP BY status HAVING COUNT(*) > 1`), the scalar
+		// value is the group key, not an aggregate. Match ONLY a real group-key
+		// entry (groupCol set) — NOT a post-aggregation expression such as
+		// `SUM(x) + 1` (visible aggCol with aggFunc=="" but outExpr!=nil), whose
+		// value the aggregate row never materializes; those fall through to the
+		// error below rather than silently resolving to NULL. Use the grouping
+		// column (qualifier stripped) so the name matches the grouped row key
+		// (and replaceScalarSubqueryRef does not double-prefix `O.O.STATUS`).
+		if scalarCol == "" {
+			for i := range sq.aggCols {
+				if sq.aggCols[i].visible && sq.aggCols[i].aggFunc == "" && sq.aggCols[i].groupCol != "" {
+					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
+					break
+				}
+			}
+		}
+		if scalarCol == "" {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: "correlated scalar subquery: expected an aggregate function or grouping-key projection",
+			}
+		}
+		aggOp := logical.NewAggregate(innerOp, sq.groupBy, aggTexts, aggAliases, "")
+		aggOp.AggregateOperands = aggOperands
+		if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+				Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
 			}
 		}
 		if sq.havingExpr != nil {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: HAVING in inner query not yet supported",
+			havingPred, hErr := resolver.WalkPredicate(sq.havingExpr)
+			if hErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: walk HAVING: %v", hErr), Cause: hErr,
+				}
 			}
+			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred)
 		}
-
-		// Build aggregate on top of the correlated filter.
-		// No GROUP BY — the aggregate covers the entire filtered set
-		// and produces exactly 1 row (the scalar subquery contract).
-		if sq.countStar {
-			scalarCol = "COUNT(*)"
-			innerOp = logical.NewAggregate(innerOp, nil, []string{"COUNT(*)"}, []string{scalarCol}, "")
-		} else {
-			agg := sq.aggCols[0]
-			if agg.aggArg != "" {
-				scalarCol = strings.ToUpper(agg.aggFunc) + "(" + strings.ToUpper(agg.aggArg) + ")"
-			} else {
-				scalarCol = strings.ToUpper(agg.aggFunc) + "(*)"
-			}
-			aggText := agg.aggFunc + "(" + agg.aggArg + ")"
-			innerOp = logical.NewAggregate(innerOp, nil, []string{aggText}, []string{scalarCol}, "")
+		innerOp = aggOp
+		// GROUP BY may yield many groups; HAVING may filter the single group
+		// to none. Cap at the first group (FirstOrDefault) for the scalar
+		// contract. The plain scalar aggregate (no GROUP BY, no HAVING) already
+		// emits exactly one row, so it is left uncapped.
+		if len(sq.groupBy) > 0 || sq.havingExpr != nil {
+			innerOp = logical.NewLimit(innerOp, 1, 0)
 		}
 	} else {
-		// Non-aggregate correlated scalar subquery.
-		if len(sq.groupBy) > 0 {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: GROUP BY without aggregate in inner query not supported",
+		// Non-aggregate correlated scalar subquery. The single output column is
+		// either a plain projected column or, under a GROUP BY, a bare
+		// group-key projection stored as a visible aggCol (DISTINCT-of-key).
+		switch {
+		case len(sq.projCols) == 1:
+			scalarCol = strings.ToUpper(sq.projCols[0])
+		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
+			// The output is the bare group-key projection (stored as a visible
+			// aggCol with groupCol set). Use the grouping column (qualifier
+			// stripped) so the name matches the grouped row key — otherwise
+			// replaceScalarSubqueryRef double-prefixes the inner alias
+			// (`O.O.STATUS`) and the scalar resolves to NULL. A visible
+			// expression-of-group-keys (outExpr, groupCol=="") is NOT a plain
+			// key — the aggregate row never materializes it — so it falls through
+			// to the error rather than silently resolving to NULL.
+			for i := range sq.aggCols {
+				if sq.aggCols[i].visible && sq.aggCols[i].groupCol != "" {
+					scalarCol = strings.ToUpper(parseColRef(sq.aggCols[i].groupCol).bare())
+					break
+				}
 			}
-		}
-		if len(sq.projCols) == 0 {
+			if scalarCol == "" {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
+				}
+			}
+		default:
 			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
 				Message: "correlated scalar subquery: non-aggregate subquery must have explicit projection",
 			}
 		}
-		if len(sq.projCols) > 1 {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: fmt.Sprintf("scalar subquery must return exactly one column, got %d", len(sq.projCols)),
+
+		// Non-aggregate GROUP BY (`SELECT status ... GROUP BY status`): zero
+		// aggregate functions, projecting a grouping key (DISTINCT-of-key).
+		// validateGroupByProjection above already confirmed the projected
+		// column is a grouping key. Build the GroupBy below the optional
+		// ORDER BY so the sort runs over the grouped output.
+		if len(sq.groupBy) > 0 {
+			aggOp := logical.NewAggregate(innerOp, sq.groupBy, nil, nil, "")
+			if gkErr := resolveCorrelatedGroupKeyValues(aggOp, sq, resolver, len(sq.joins) > 0); gkErr != nil {
+				return values.CorrelationIdentifier{}, &CorrelatedExistsError{
+					Message: fmt.Sprintf("correlated scalar subquery: resolve GROUP BY key: %v", gkErr), Cause: gkErr,
+				}
 			}
+			innerOp = aggOp
 		}
-		scalarCol = strings.ToUpper(sq.projCols[0])
 
 		// Add ORDER BY if present.
 		if len(sq.orderBy) > 0 {

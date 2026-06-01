@@ -51,6 +51,8 @@ go_test(
         "twotable_order_invariant_test.go",
         "vector_multipartition_e2e_fdb_test.go",
         "vector_search_e2e_fdb_test.go",
+        "w2_metamorphic_test.go",
+        "w3_5_plan_diversity_test.go",
     ],
     embed = [":sqldriver"],
     deps = [
@@ -59,6 +61,7 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",

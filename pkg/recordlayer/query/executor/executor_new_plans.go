@@ -303,15 +303,20 @@ func executePredicatesFilter(
 				}
 			}()
 			var rowCtx any = qr.Datum
-			if needsRowCtx {
-				if m, ok := qr.Datum.(map[string]any); ok {
-					ec := evalCtx
-					if ec == nil {
-						ec = EmptyEvaluationContext()
-					}
-					if bindAlias {
-						ec = ec.WithBinding(innerAlias, m)
-					}
+			// RFC-048 W1: a HAVING/filter reference to a name absent from a
+			// complete row (aggregate output) is a bug, not a NULL.
+			strict := StrictReferenceCheck && qr.Complete
+			if m, ok := qr.Datum.(map[string]any); ok && (strict || needsRowCtx) {
+				ec := evalCtx
+				if ec == nil {
+					ec = EmptyEvaluationContext()
+				}
+				if bindAlias {
+					ec = ec.WithBinding(innerAlias, m)
+				}
+				if strict {
+					rowCtx = ec.RowContextStrict(m)
+				} else {
 					rowCtx = ec.RowContext(m)
 				}
 			}
@@ -340,7 +345,20 @@ func executeMap(
 	}
 	resultValue := p.GetResultValue()
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
-		m := resultValue.Evaluate(qr.Datum)
+		var rowCtx any = qr.Datum
+		// RFC-048 W1: a projection reading a name absent from a complete row
+		// (aggregate output) is a bug, not a NULL. Production passes the raw
+		// Datum map here (no parameter binder / scalar-subquery resolver), so
+		// the strict context must carry ONLY Datum + Strict — adding a Binder or
+		// ScalarSubqueries would let a param/subquery resolve in the test binary
+		// while it returns NULL in production, i.e. strict mode would change
+		// results. Bare strict context = identical resolution + miss reporting.
+		if StrictReferenceCheck && qr.Complete {
+			if m, ok := qr.Datum.(map[string]any); ok {
+				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
+			}
+		}
+		m := resultValue.Evaluate(rowCtx)
 		return QueryResult{Datum: m, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
 	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
