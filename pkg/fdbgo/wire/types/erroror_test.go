@@ -164,3 +164,50 @@ func TestReadErrorOr_ErrorCodeIsUint16(t *testing.T) {
 		t.Errorf("over-read: decoded %d, want 1009 (read 4 bytes instead of 2?)", fdbErr.Code)
 	}
 }
+
+// TestReadErrorOr_NoneTag pins that an ErrorOr with union tag 0 (NONE / empty)
+// is rejected, not silently treated as success. Edge case for #8.
+func TestReadErrorOr_NoneTag(t *testing.T) {
+	t.Parallel()
+	buf := (&ErrorOrError{ErrorCode: 1234}).MarshalFDB()
+	buf[footerRootObject(buf)+errorOrTagByteOffset] = 0 // tag 1 (Error) -> 0 (NONE)
+	if _, err := wire.ReadErrorOr(buf); err == nil {
+		t.Fatal("ErrorOr with NONE tag should be rejected, got success")
+	}
+}
+
+// TestReadInlineReplyError_Malformed pins the deliberate safe false-negative: a
+// present error tag whose nested-Error RelativeOffset is unreadable (here zeroed)
+// yields nil rather than a bogus FDBError or a panic. Edge case for #1.
+func TestReadInlineReplyError_Malformed(t *testing.T) {
+	t.Parallel()
+	buf := (&ErrorOrError{ErrorCode: 1234}).MarshalFDB()
+	root := footerRootObject(buf)
+	// Tag stays present (1) at root+8; zero the value RelativeOffset at root+4.
+	for i := root + errorOrValueRelOffByte; i < root+errorOrValueRelOffByte+4; i++ {
+		buf[i] = 0
+	}
+	r, err := wire.ReaderAtRootObject(buf)
+	if err != nil {
+		t.Fatalf("ReaderAtRootObject: %v", err)
+	}
+	if ferr := wire.ReadInlineReplyError(r, 0); ferr != nil {
+		t.Errorf("malformed inline error: want nil (safe false-negative), got %v", ferr)
+	}
+}
+
+// TestLoadBalancedReplyErrorSlots pins the wire-layout assumption #1 depends on:
+// every LoadBalancedReply-derived read reply carries its Optional<Error>
+// present-tag at slot 1 (so the nested Error table is at slot 2), and the Error
+// table's uint16 code is at slot 0. A schema-extractor regen that shifted these
+// would silently break inline wrong-shard decode — this catches it.
+func TestLoadBalancedReplyErrorSlots(t *testing.T) {
+	t.Parallel()
+	if GetValueReplySlotError != 1 || GetKeyReplySlotError != 1 || GetKeyValuesReplySlotError != 1 {
+		t.Errorf("LoadBalancedReply error tag slot drifted: GetValue=%d GetKey=%d GetKeyValues=%d, want all 1",
+			GetValueReplySlotError, GetKeyReplySlotError, GetKeyValuesReplySlotError)
+	}
+	if ErrorSlotErrorCode != 0 {
+		t.Errorf("Error.ErrorCode slot = %d, want 0", ErrorSlotErrorCode)
+	}
+}

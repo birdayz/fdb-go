@@ -281,3 +281,53 @@ index `metric`; ORDER BY must be ascending; `ROW_NUMBER()` is INDEX-ONLY (refuse
 `@API(EXPERIMENTAL)` in Java — landed Jan–Mar 2026, just before the 4.11.1.0 tag.
 
 - [x] **9.5 Multi-partition vector scan (partial partition prefix).** Done in RFC-046 — `vectorMultiPartitionCursor` ports Java's `flatMapPipelined(prefixSkipScan, scanSinglePartition)`: `findNextPartition` skip-scans the distinct partition prefixes, `searchOnePartition` runs one HNSW search per partition, per-partition top-K concatenated, full cross-partition `FlatMapContinuation` resume. Planner: `ComputeBoundParameterPrefixMap` keeps the equality prefix + always the DistanceRank binding (no nil-query-vector on a partial prefix); `parametersRequiredForBinding={distanceAlias}` (the full-prefix guard dropped, matching Java's `VectorIndexExpansionVisitor`). Partition inequality left unconsumed → residual (documented; endpoint-into-skip-scan is a perf follow-up). Graefe+Torvalds ACK. Pinned by `TestVectorPlan_PartialPrefixPlansMultiPartition`, `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`, FDB E2E `TestFDB_VectorSearch_MultiPartition_{Fanout,InequalityResidual,Pagination}`. DIVERGENCES.md "Vector scan multi-partition" closed.
+
+## Native fdbgo client — conformance & differential testing (RFC-010 Phase 1+)
+
+RFC-010 Phase 0 (the wire-correctness fires: #1 inline reply error, #2 wrong_shard_server code,
+#3 pipelined retry, #5 hedge queue-model leak, #8 ErrorOr union parse) landed. These three items
+close the testing/conformance gaps its prevention plan (P5/P7) calls for.
+
+We **cannot** run FDB's deterministic simulation: Sim2 is a hermetic single-threaded Flow event
+loop with an in-memory network and no external socket, so a real Go client can't join it, and
+server-side BUGGIFY edge-case injection exists only inside Sim2. But three of FDB's real,
+externally-usable artifacts CAN be exercised against a testcontainer cluster our Go client
+mutated. (Determinism for our OWN retry/LB/wire-error paths — `PendingGet.Resolve`'s
+flush/transport/timeout arms, the codex 1006 drop-between-dial-and-send race, transparent
+wrong-shard retry — comes from a seeded in-process `SimTransport` fake server behind
+`transport.DialFunc`, extending the existing `wrongShardConn`; tracked as a separate Phase-1 item.)
+
+- [ ] **C1. Ride their oracle — FDB `ConsistencyCheck` after Go-client writes.** After our Go
+  client writes records/indexes to a real testcontainer cluster, run FDB's own consistency check
+  (`fdbcli` consistency check / the consistency-scan role) and assert it reports clean. Validates
+  that our writes leave replicas + shard metadata in a state FDB itself considers consistent —
+  their checker, our writes, zero reimplementation. Cheapest of the three; do first.
+
+- [ ] **C2. Ride their client — differential vs the official C binding (`libfdb_c`).** The C
+  binding is the client FDB simulation-tests on every CI run, so matching it is the closest we get
+  to inheriting that coverage (RFC-010 prevention P5, corrected). Run the SAME operations through
+  our Go client and `libfdb_c` against the same testcontainer cluster. **CRITICAL: compare at the
+  DATA plane, never the wire.** Request frames are legitimately NOT byte-identical — reply-promise
+  UIDs, read/committed versions, trace/span IDs, GRV batching, mutation/conflict ordering, and
+  range chunk boundaries all vary per client. So:
+    - **Writes → byte-exact on PERSISTED bytes.** Write the same logical mutation via each client,
+      read the raw keys/values back out of FDB, assert byte-identical: key/tuple encoding, value &
+      record format, index entries, version at `pk+\xff`, split chunking, continuation-token bytes
+      + magic `6773487359078157740`. This is the cross-client compatibility hard line — where
+      byte-identity is both *required* (Java/Go share a cluster) and *achievable* (the persisted
+      format is spec-fixed; control-plane randomness never touches it).
+    - **Reads → semantic, control-plane excluded.** Same key/range + a pinned read version →
+      compare returned value / merged KV set + order / error CODE (not message). Ignore reply
+      tokens; don't compare the literal version number (compare the data it produced); merge range
+      chunks before comparing. Under deliberate concurrency, compare error CLASSES, not exact codes.
+    - **Continuations → mutually resumable** (a Go-produced continuation resumes correctly when fed
+      back; byte-equal where the format is fully spec-pinned). Any *data-plane* byte difference is a
+      real wire-compat bug, NOT a tolerance to normalize away.
+
+- [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
+  `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
+  FuzzApiCorrectness, …) are unrunnable for us (Sim2-only), but each scenario + invariant is
+  language-agnostic. Port the adversarial designs — e.g. Cycle: maintain a ring of pointer K/Vs,
+  hammer it concurrently (+faults), verify the ring stays unbroken — to drive our client against
+  testcontainers (and later `SimTransport`). Reimplement the harness; reuse the proven scenarios.
+  Extends the existing `pkg/recordlayer/chaos` model-based approach + `cmd/fdb-binding-stress`.

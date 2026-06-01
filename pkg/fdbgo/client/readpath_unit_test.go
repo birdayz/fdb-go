@@ -281,3 +281,25 @@ func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 			req.HasOptions, req.Options.HasLockAware)
 	}
 }
+
+// TestPendingGet_Resolve_ContextCancelled pins the context-cancel arm of
+// PendingGet.Resolve (RFC-010 #3): a cancelled context returns ctx.Err()
+// directly — it does NOT re-drive through getValue (no point retrying a
+// cancelled read), unlike the wrong-shard/transport/timeout arms. Deterministic:
+// flushed=true skips the Flush, and the cancel arm never dereferences tx/conn.
+func TestPendingGet_Resolve_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := &PendingGet{
+		flushed:     true,                          // skip conn.Flush (no conn needed)
+		ctx:         ctx,                           // already cancelled
+		replyCh:     make(chan transport.Response), // never fires
+		replyHandle: &transport.ReplyHandle{},      // zero handle: Cancel/Release are no-ops
+		timer:       getTimer(DefaultRPCTimeout),
+	}
+	_, err := p.Resolve()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve on cancelled context: got %v, want context.Canceled", err)
+	}
+}

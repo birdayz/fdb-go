@@ -261,6 +261,23 @@ func TestHedge_QueueModelOutstandingReturnsToBaseline(t *testing.T) {
 		g.Expect(totalOf(qm, "a")).To(gomega.BeNumerically("~", baseA, 1e-9))
 		g.Expect(totalOf(qm, "b")).To(gomega.BeNumerically("~", baseB, 1e-9))
 	})
+
+	t.Run("context cancel releases both", func(t *testing.T) {
+		t.Parallel()
+		g := gomega.NewWithT(t)
+		qm := newQueueModel()
+		baseA, baseB := totalOf(qm, "a"), totalOf(qm, "b")
+		dA := qm.startRequest("a")
+		dB := qm.startRequest("b")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		res := raceReplies(ctx, mkInflight("a", dA, false), mkInflight("b", dB, false), 5*time.Second)
+		applyCallerAccounting(qm, res)
+
+		g.Expect(totalOf(qm, "a")).To(gomega.BeNumerically("~", baseA, 1e-9))
+		g.Expect(totalOf(qm, "b")).To(gomega.BeNumerically("~", baseB, 1e-9))
+	})
 }
 
 func TestHedge_ConnErrorOnReply(t *testing.T) {

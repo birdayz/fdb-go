@@ -446,6 +446,98 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	t.Log("wrong_shard_server fault injection: retry succeeded with correct value")
 }
 
+// TestWrongShardServer_GetKey covers the wrong-shard retry loop on the key-selector
+// read path (getKey), not just point Get. Same injection, asserts GetKey still
+// resolves correctly after a 1001 reply. RFC-010 #2 (error case across read surface).
+func TestWrongShardServer_GetKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, wd := newWrongShardTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Warm the cache. firstGreaterOrEqual(key) = {key, orEqual=false, offset=1}.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetKey(ctx, key, false, 1)
+	}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	wd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	got, err := tx.GetKey(ctx, key, false, 1)
+	if err != nil {
+		t.Fatalf("GetKey after fault: %v", err)
+	}
+	if string(got) != string(key) {
+		t.Fatalf("GetKey: got %q, want %q", got, key)
+	}
+}
+
+// TestWrongShardServer_GetRange covers the wrong-shard retry loop on the range
+// read path (getRange). Same injection, asserts GetRange returns the full range
+// after a 1001 reply. RFC-010 #2 (error case across read surface).
+func TestWrongShardServer_GetRange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, wd := newWrongShardTestDB(t, ctx)
+
+	pfx := t.Name() + "_"
+	want := map[string]string{}
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			k := fmt.Sprintf("%s%02d", pfx, i)
+			v := fmt.Sprintf("v%d", i)
+			tx.Set([]byte(k), []byte(v))
+			want[k] = v
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	begin := []byte(pfx)
+	end := append([]byte(pfx), 0xFF)
+	// Warm the cache.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRange(ctx, begin, end, 100)
+		return kvs, err
+	}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	wd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	kvs, _, err := tx.GetRange(ctx, begin, end, 100)
+	if err != nil {
+		t.Fatalf("GetRange after fault: %v", err)
+	}
+	if len(kvs) != len(want) {
+		t.Fatalf("GetRange: got %d kvs, want %d", len(kvs), len(want))
+	}
+	for _, kv := range kvs {
+		if want[string(kv.Key)] != string(kv.Value) {
+			t.Errorf("kv %q: got %q, want %q", kv.Key, kv.Value, want[string(kv.Key)])
+		}
+	}
+}
+
 // TestPipelinedGet_WrongShardRetry verifies the pipelined read path
 // (GetPipelined + PendingGet.Resolve) applies the SAME wrong_shard_server
 // invalidate+retry as the synchronous getValue path. Before RFC-010 #3, Resolve
