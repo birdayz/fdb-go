@@ -492,7 +492,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(DefaultRPCTimeout)
-		return nil, &PendingGet{key: key, tx: tx, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}, nil
+		return nil, &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}, nil
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -501,6 +501,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 type PendingGet struct {
 	key         []byte
 	tx          *Transaction
+	addr        string // storage server the deferred frame was sent to
 	replyCh     <-chan transport.Response
 	replyHandle *transport.ReplyHandle
 	conn        *transport.Conn
@@ -524,7 +525,9 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 	if !p.flushed {
 		p.flushed = true
 		if err := p.conn.Flush(); err != nil {
-			// The request never reached the server — re-locate and retry.
+			// The request never reached the server — mark the connection bad
+			// (parity with the sync getValue/SendFrame path) and re-locate+retry.
+			p.tx.db.handleConnError(p.addr)
 			p.replyHandle.Cancel()
 			p.replyHandle.Release()
 			putTimer(p.timer)
@@ -536,7 +539,10 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 	select {
 	case resp := <-p.replyCh:
 		if resp.Err != nil {
-			// Transport/connection error — re-drive through the full read path.
+			// Transport/connection error — mark the connection bad before
+			// retrying so server selection avoids it, matching sendGetValue. Then
+			// re-drive through the full read path.
+			p.tx.db.handleConnError(p.addr)
 			return p.tx.getValue(p.ctx, p.key)
 		}
 		val, _, err := parseGetValueReply(resp.Body)

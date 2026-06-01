@@ -344,11 +344,11 @@ func (d *wrongShardDialer) armAll() {
 // self-confirming (it would pass for any value the constant happened to hold,
 // which is exactly how the 1062 bug stayed green). See RFC-010 prevention P6.
 // newWrongShardTestDB starts an FDB container and returns a Database that dials
-// through a wrongShardDialer, so wd.armAll() replaces the next server frame with
-// an injected wrong_shard_server (1001) error. The injected code is the
-// canonical literal 1001, NOT ErrWrongShardServer — injecting the code-under-test's
-// own constant would make the test self-confirming (RFC-010 P6). Cleanup is
-// registered via t.Cleanup.
+// through a wrongShardDialer; wd.armAll() then replaces the next server frame
+// with an injected wrong_shard_server error. The injected code is the canonical
+// literal 1001, NOT the ErrWrongShardServer constant — injecting the
+// code-under-test's own constant would make the test self-confirming (RFC-010 P6).
+// Cleanup is registered via t.Cleanup.
 func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongShardDialer) {
 	t.Helper()
 
@@ -388,7 +388,7 @@ func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongSh
 		connectCF.InternalKey += a
 	}
 
-	const wrongShardServerCode = 1001 // canonical wrong_shard_server (NOT ErrWrongShardServer; RFC-010 P6)
+	const wrongShardServerCode = 1001 // canonical wrong_shard_server (see func doc)
 	errBody := buildFDBErrorResponse(wrongShardServerCode)
 	if _, parseErr := wire.ReadErrorOr(errBody); parseErr == nil {
 		t.Fatal("buildFDBErrorResponse should produce an error response")
