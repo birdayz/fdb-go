@@ -243,11 +243,21 @@ work.
   separately, matching the C client. (Caveat: this is a behavior change to the existing facade —
   call it out in the PR; any code relying on the implicit coupling must set `SetLockAware`
   explicitly, exactly as a Java/CGo app must.)
+  **Researched targets (the explicit options C++ sets per tenant op, so decoupling doesn't regress
+  behavior):** tenant **writes** (`CreateTenant`/`DeleteTenant`) set `ACCESS_SYSTEM_KEYS` +
+  `LOCK_AWARE` together (`TenantManagement.actor.h:258-259,413-414`); tenant **reads**
+  (`OpenTenant`/`ListTenants`) set `READ_SYSTEM_KEYS` + `READ_LOCK_AWARE` (`688-699`); the low-level
+  `*Transaction` helpers set `RAW_ACCESS` (`166,357`). So #10 = drop the facade's auto-`SetLockAware`
+  **and** add these explicit options at each `fdb/database.go` tenant call site.
 - **#11** Either wire TLS config through `ParseClusterString`/`ClusterFile` → `getOrDial`, or
   drop the README claim and make `DialWithTLS(useTLS=true, tlsCfg=nil)` reject rather than emit
   TLS-framed plaintext. (Pick: keep the claim, do the wiring — it's the spec'd capability.)
-- **#15** `ri.begin = append(append([]byte(nil), lastKey...), 0)` — mirror the reverse path's
-  defensive copy. Test with a `Key` whose `cap > len`. (Reachable today via RYW passthrough keys.)
+- **#15 — LANDED** `ri.begin = keyAfter(lastKey)` via a documented helper that copies
+  unconditionally (`append(append([]byte(nil), k...), 0)`); the reverse path already copied. Test
+  `TestKeyAfter_NoAliasOnSpareCapacity` feeds a `cap>len` slice and asserts no scribble + no alias —
+  the real range path hands out length-capped keys (`cap==len`), so a unit probe is the only
+  non-vacuous pin. FDB-C-programmer confirmed `lastKey + \x00` == C++ `nextBeginKeySelector`.
+  Torvalds + FDB-C-programmer ACKed.
 - **#9** Rename `isSystemKey` → `isSpecialKey` (it tests `\xff\xff`); fix the comment. No behavior
   change — current resolver-conflict handling is correct.
 - **#12** Add a defensive length guard in `locality.refresh` returning a typed error on empty
