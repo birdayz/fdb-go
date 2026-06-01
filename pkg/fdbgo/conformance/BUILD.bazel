@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "conformance_test",
+    srcs = ["consistencycheck_test.go"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_testcontainers_testcontainers_go//exec",
+    ],
+)

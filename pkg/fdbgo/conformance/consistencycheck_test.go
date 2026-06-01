@@ -1,0 +1,228 @@
+// Package conformance hosts oracle-style integration tests for the pure-Go FDB
+// client (RFC-010 Phase 1+). C1: after the Go client writes, run FDB's OWN
+// consistency check and assert it reports the cluster internally consistent —
+// their checker, our writes, zero reimplementation.
+package conformance
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+	"testing"
+	"time"
+
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
+)
+
+// ccTraceEvent is the subset of an FDB JSON trace event we inspect. The
+// consistency-check role emits newline-delimited JSON objects like:
+//
+//	{  "Severity": "40", "Type": "ConsistencyCheck_DataInconsistent", ... }
+type ccTraceEvent struct {
+	Severity string `json:"Severity"`
+	Type     string `json:"Type"`
+	Reason   string `json:"Reason"`
+}
+
+// TestConsistencyCheck_AfterGoClientWrites is RFC-010 C1: write a dataset
+// through the pure-Go client, then run FoundationDB's own consistency-check role
+// and assert it finds the cluster consistent.
+//
+// Why double redundancy across 3 nodes: the checker's data comparison only fires
+// for shards with ≥2 replicas — it records the first replica as the baseline and
+// byte-compares every subsequent replica against it (ConsistencyScan.actor.cpp
+// checkDataConsistency). Under single redundancy there is one copy per shard and
+// the comparison is a no-op, so this test would be near-vacuous. With double
+// redundancy every shard is cross-validated (the trace shows
+// ConsistencyCheck_CheckCustomReplica), which is the whole point: prove our
+// client's committed writes are replicated byte-identically and the shard/
+// key-server metadata is what FDB itself expects.
+//
+// Records/indexes ride this exact commit path; from the checker's perspective
+// they are the same replicated stored bytes, so raw KV writes exercise the same
+// property without the record-layer schema setup.
+func TestConsistencyCheck_AfterGoClientWrites(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+
+	cluster, err := foundationdb.RunCluster(ctx, 3,
+		foundationdb.WithRedundancyMode("double"),
+		foundationdb.WithStorageEngine("ssd"),
+	)
+	if err != nil {
+		t.Skipf("FDB not available (no Docker): %v", err)
+	}
+	defer cluster.Terminate(ctx)
+
+	// Connect the pure-Go client.
+	path, err := cluster.Coordinator.ClusterFilePath(ctx)
+	if err != nil {
+		t.Fatalf("ClusterFilePath: %v", err)
+	}
+	gofdb.MustAPIVersion(730)
+	db, err := gofdb.OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("OpenDatabase: %v", err)
+	}
+	defer db.Close()
+
+	// Write a non-trivial dataset via the Go client.
+	const batches, perBatch = 10, 100
+	for b := 0; b < batches; b++ {
+		bb := b
+		if _, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+			for i := 0; i < perBatch; i++ {
+				k := gofdb.Key(tuple.Tuple{"c1", bb, i}.Pack())
+				tr.Set(k, []byte(fmt.Sprintf("v-%d-%d-%s", bb, i, strings.Repeat("x", 256))))
+			}
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("write batch %d: %v", b, err)
+		}
+	}
+	t.Logf("wrote %d keys via the pure-Go client", batches*perBatch)
+
+	// Let replication settle so the checker sees fully-replicated shards.
+	waitReplicationHealthy(ctx, t, cluster)
+
+	// Run FDB's one-shot consistency-check role. The check itself completes in
+	// ~1-2s, but the role process does not self-terminate (no -p allowed, so it
+	// lingers), hence: launch it in the background, poll the trace for the
+	// completion event, then kill it. Polling-until-done (not a fixed sleep)
+	// keeps the test fast on a quick cluster and robust on a slow one.
+	const script = `mkdir -p /tmp/cc /tmp/ccdata && rm -f /tmp/cc/trace.* ;
+fdbserver -r consistencycheck -C /var/fdb/fdb.cluster --datadir /tmp/ccdata --logdir /tmp/cc --trace-format json > /tmp/cc.out 2>&1 &
+CCPID=$! ;
+for i in $(seq 1 90); do grep -q ConsistencyCheck_FinishedCheck /tmp/cc/trace.*.json 2>/dev/null && break ; sleep 1 ; done ;
+kill $CCPID 2>/dev/null ; wait $CCPID 2>/dev/null ;
+cat /tmp/cc/trace.*.json 2>/dev/null`
+	_, reader, err := cluster.Coordinator.Exec(ctx, []string{"sh", "-c", script}, tcexec.Multiplexed())
+	if err != nil {
+		t.Fatalf("exec consistencycheck role: %v", err)
+	}
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read consistency-check trace: %v", err)
+	}
+
+	finished, examinedData, comparedReplicas, inconsistencies := parseConsistencyTrace(raw)
+
+	// Inconsistency is the headline failure: report it first and verbatim.
+	if len(inconsistencies) > 0 {
+		t.Fatalf("FDB consistency check found %d inconsistency event(s) after Go-client writes:\n  %s",
+			len(inconsistencies), strings.Join(inconsistencies, "\n  "))
+	}
+	// Guard against a vacuous pass: the check must have run to completion AND
+	// actually examined shard data (a crashed/empty check must not read as clean).
+	if !finished {
+		t.Fatalf("consistency check did not complete (no ConsistencyCheck_FinishedCheck); trace had %d bytes", len(raw))
+	}
+	if !examinedData {
+		t.Fatal("consistency check completed but examined no shards (no ConsistencyCheck_FirstValidServer) — vacuous pass")
+	}
+	t.Logf("FDB consistency check CLEAN: completed, examined data, cross-replica comparison fired=%v, 0 inconsistencies", comparedReplicas)
+}
+
+// parseConsistencyTrace walks the newline-delimited JSON trace and reports:
+// whether the check completed, whether it examined any shard, whether the
+// cross-replica comparison fired, and the list of inconsistency events found.
+//
+// An inconsistency is a SevError (40) event that is either a *_Inconsistent type
+// or a TestFailure whose reason references the consistency check — matching
+// FDB's checkDataConsistency / testFailure signalling (the process exit code is
+// NOT a reliable signal, so we parse trace severity).
+func parseConsistencyTrace(raw []byte) (finished, examinedData, comparedReplicas bool, inconsistencies []string) {
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var ev ccTraceEvent
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "ConsistencyCheck_FinishedCheck":
+			finished = true
+		case "ConsistencyCheck_FirstValidServer":
+			examinedData = true
+		case "ConsistencyCheck_CheckCustomReplica":
+			comparedReplicas = true
+		}
+		if ev.Severity == "40" && (strings.Contains(ev.Type, "Inconsistent") ||
+			(ev.Type == "TestFailure" && strings.Contains(ev.Reason, "Consistency check"))) {
+			inconsistencies = append(inconsistencies, fmt.Sprintf("%s: %s", ev.Type, ev.Reason))
+		}
+	}
+	return finished, examinedData, comparedReplicas, inconsistencies
+}
+
+// TestParseConsistencyTrace pins the inconsistency-detection logic
+// deterministically — the integration test runs clean, so it can never exercise
+// the failure path. A real consistency violation surfaces as a SevError (40)
+// trace event; this proves we flag those and ignore benign severities, so the
+// oracle isn't a vacuous always-pass.
+func TestParseConsistencyTrace(t *testing.T) {
+	t.Parallel()
+
+	clean := strings.Join([]string{
+		`{ "Severity": "10", "Type": "ProgramStart" }`,
+		`{ "Severity": "20", "Type": "ConsistencyCheck_StorageServerUnavailable" }`, // benign warning
+		`{ "Severity": "10", "Type": "ConsistencyCheck_FirstValidServer" }`,
+		`{ "Severity": "10", "Type": "ConsistencyCheck_CheckCustomReplica" }`,
+		`{ "Severity": "10", "Type": "ConsistencyCheck_FinishedCheck" }`,
+	}, "\n")
+	finished, examined, compared, bad := parseConsistencyTrace([]byte(clean))
+	if !finished || !examined || !compared {
+		t.Errorf("clean trace: finished=%v examined=%v compared=%v, want all true", finished, examined, compared)
+	}
+	if len(bad) != 0 {
+		t.Errorf("clean trace flagged %d inconsistencies, want 0: %v", len(bad), bad)
+	}
+
+	dirty := strings.Join([]string{
+		`{ "Severity": "10", "Type": "ConsistencyCheck_FirstValidServer" }`,
+		`{ "Severity": "40", "Type": "ConsistencyCheck_DataInconsistent", "Reason": "" }`,
+		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Consistency check: Data inconsistent" }`,
+		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Consistency check: Key servers inconsistent" }`,
+		`{ "Severity": "40", "Type": "SomeUnrelatedError", "Reason": "disk full" }`, // NOT a consistency failure
+		`{ "Severity": "10", "Type": "ConsistencyCheck_FinishedCheck" }`,
+	}, "\n")
+	finished, examined, _, bad = parseConsistencyTrace([]byte(dirty))
+	if !finished || !examined {
+		t.Errorf("dirty trace: finished=%v examined=%v, want both true", finished, examined)
+	}
+	if len(bad) != 3 {
+		t.Errorf("dirty trace flagged %d inconsistencies, want 3 (DataInconsistent + 2 consistency TestFailures, NOT the unrelated SevError): %v", len(bad), bad)
+	}
+
+	// Incomplete run (checker crashed before finishing) must NOT read as a clean pass.
+	incomplete := `{ "Severity": "10", "Type": "ConsistencyCheck_FirstValidServer" }`
+	finished, _, _, _ = parseConsistencyTrace([]byte(incomplete))
+	if finished {
+		t.Error("incomplete trace (no FinishedCheck) reported finished=true")
+	}
+}
+
+// waitReplicationHealthy polls cluster status until replication reports healthy,
+// so the consistency check sees fully-replicated shards rather than data still
+// in flight. Best-effort: the check tolerates non-quiescence, so on timeout we
+// log and proceed rather than fail.
+func waitReplicationHealthy(ctx context.Context, t *testing.T, cluster *foundationdb.Cluster) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := cluster.Coordinator.FDBCLIExec(ctx, "status")
+		if err == nil && strings.Contains(out, "Replication health") && strings.Contains(out, "Healthy") {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Log("warning: replication did not report Healthy within 90s; running consistency check anyway")
+}

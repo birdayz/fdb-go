@@ -326,11 +326,17 @@ flush/transport/timeout arms, the codex 1006 drop-between-dial-and-send race, tr
 wrong-shard retry — comes from a seeded in-process `SimTransport` fake server behind
 `transport.DialFunc`, extending the existing `wrongShardConn`; tracked as a separate Phase-1 item.)
 
-- [ ] **C1. Ride their oracle — FDB `ConsistencyCheck` after Go-client writes.** After our Go
-  client writes records/indexes to a real testcontainer cluster, run FDB's own consistency check
-  (`fdbcli` consistency check / the consistency-scan role) and assert it reports clean. Validates
-  that our writes leave replicas + shard metadata in a state FDB itself considers consistent —
-  their checker, our writes, zero reimplementation. Cheapest of the three; do first.
+- [x] **C1. Ride their oracle — FDB `ConsistencyCheck` after Go-client writes.** DONE
+  (`pkg/fdbgo/conformance/consistencycheck_test.go`). `RunCluster(3, double, ssd)` →
+  pure-Go client writes 1000 keys → wait replication-healthy → run FDB's one-shot
+  `fdbserver -r consistencycheck` role → parse its JSON trace and assert it completed
+  (`ConsistencyCheck_FinishedCheck`), examined data, and emitted **no** Severity-40
+  inconsistency/`TestFailure` event. **Double redundancy is required** — under single
+  redundancy the checker's replica comparison is a no-op (one copy per shard); the trace
+  confirms `ConsistencyCheck_CheckCustomReplica` fired, so our client's writes were
+  cross-replica-validated. The process exit code is unreliable (exits 0 even on
+  inconsistency), so detection is by trace severity. Detection logic pinned by a
+  deterministic unit test (`TestParseConsistencyTrace`) since the live run is always clean.
 
 - [ ] **C2. Ride their client — differential vs the official C binding (`libfdb_c`).** The C
   binding is the client FDB simulation-tests on every CI run, so matching it is the closest we get
