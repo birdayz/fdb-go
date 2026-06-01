@@ -1,6 +1,18 @@
 # RFC 010: Native fdb-go Client — Correctness Hardening & Systemic Prevention
 
-## Status: PROPOSED (Torvalds-reviewed + C-client conformance-reviewed vs FDB 7.3.75; changes folded in)
+## Status: Phase 0 IMPLEMENTED (Torvalds-reviewed + C-client conformance-reviewed vs FDB 7.3.75)
+
+**Phase 0 landed** — all five wire-correctness fires fixed with regression tests,
+full `just test` green on each commit, and both reviewers (Torvalds for code
+quality, an FDB-C-programmer persona for wire conformance vs release-7.3) ACKed:
+
+- **#2** `ErrWrongShardServer` 1062 → 1001 (+ self-confirming fault test rewritten to inject canonical 1001; value-equality guard).
+- **#8** `ReadErrorOr` parses the union tag (not field count); `Error` code as uint16; pins the one-field-success regression.
+- **#5** hedge loser/timeout/cancel QueueModel deltas released (`hedgeResult.others`); deterministic baseline test.
+- **#1** inline `LoadBalancedReply.error` decoded from the nested Error table on the three read parsers, routed into classify→invalidate→retry.
+- **#3** pipelined `Get` shares the full classify→invalidate→retry; legal-key check at enqueue; `fdb.Get` falls back only on `ErrNeedFullRYW`.
+
+Phases 1–3 and the systemic prevention (P1–P6) remain open.
 
 ## Problem
 
