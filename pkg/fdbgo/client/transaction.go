@@ -687,6 +687,11 @@ func (tx *Transaction) Set(key, value []byte) {
 
 // Clear deletes a key.
 func (tx *Transaction) Clear(key []byte) {
+	// C++ clear(KeyRef) drops an oversized single-key clear entirely
+	// (NativeAPI.actor.cpp:6045-6047): no mutation, no conflict range, no RYW write.
+	if len(key) > getMaxClearKeySize(key) {
+		return
+	}
 	end := make([]byte, len(key)+1)
 	copy(end, key)
 	end[len(key)] = 0
@@ -707,12 +712,22 @@ func (tx *Transaction) Clear(key []byte) {
 // Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
 // Zero-width ranges (begin == end) are silently ignored, matching C++.
 func (tx *Transaction) ClearRange(begin, end []byte) error {
-	cmp := bytes.Compare(begin, end)
-	if cmp > 0 {
+	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
-	if cmp == 0 {
-		return nil // C++ ignores zero-width ClearRange.
+	// C++ clear(KeyRangeRef) clamps oversized range keys to maxSize+1 bytes rather
+	// than rejecting (NativeAPI.actor.cpp:6019-6028) — there are no stored keys
+	// larger than the max, so a too-large bound is equivalent to its truncation.
+	if bmax := getMaxClearKeySize(begin); len(begin) > bmax {
+		begin = begin[:bmax+1]
+	}
+	if emax := getMaxClearKeySize(end); len(end) > emax {
+		end = end[:emax+1]
+	}
+	// Zero-width (begin == end) or clamped-to-empty (begin >= end): C++ returns
+	// without recording a mutation (r.empty()).
+	if bytes.Compare(begin, end) >= 0 {
+		return nil
 	}
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
@@ -807,11 +822,29 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2004} // key_outside_legal_range
 		}
-		// ClearRange: also check end key (stored in Value).
-		// C++ clear(range): if (range.begin > maxKey || range.end > maxKey) → reject
-		if m.Type == MutClearRange && bytes.Compare(m.Value, maxWrite) > 0 {
+		if m.Type == MutClearRange {
+			// ClearRange: also check end key (stored in Value).
+			// C++ clear(range): if (range.begin > maxKey || range.end > maxKey) → reject
+			if bytes.Compare(m.Value, maxWrite) > 0 {
+				tx.state.Store(int32(txStateErrored))
+				return &wire.FDBError{Code: 2004}
+			}
+			// Clear key SIZES are clamped at build time (Clear/ClearRange), matching
+			// C++ clear() which translates an oversized range rather than rejecting —
+			// so no key_too_large check here.
+			continue
+		}
+		// set()/atomicOp() reject oversized keys/values. The C binding aborts the
+		// process (CATCH_AND_DIE on the key_too_large/value_too_large throw); we
+		// reject the commit instead so the oversized data never reaches the shared
+		// cluster. See sizelimits.go.
+		if len(m.Key) > getMaxWriteKeySize(m.Key, tx.writeSystemKeys) {
 			tx.state.Store(int32(txStateErrored))
-			return &wire.FDBError{Code: 2004}
+			return &wire.FDBError{Code: 2102} // key_too_large
+		}
+		if len(m.Value) > valueSizeLimit {
+			tx.state.Store(int32(txStateErrored))
+			return &wire.FDBError{Code: 2103} // value_too_large
 		}
 	}
 

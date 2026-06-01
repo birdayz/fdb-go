@@ -991,8 +991,7 @@ func doAppendIfFits(base, param []byte) []byte {
 	if len(param) == 0 {
 		return append([]byte(nil), e...)
 	}
-	const valueSizeLimit = 100000 // CLIENT_KNOBS->VALUE_SIZE_LIMIT
-	if len(e)+len(param) > valueSizeLimit {
+	if len(e)+len(param) > valueSizeLimit { // CLIENT_KNOBS->VALUE_SIZE_LIMIT (pkg const)
 		return append([]byte(nil), e...)
 	}
 	result := make([]byte, len(e)+len(param))
