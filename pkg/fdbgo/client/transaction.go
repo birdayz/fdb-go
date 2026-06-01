@@ -415,9 +415,9 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
-	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
+	// Special keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map.
-	if !isSystemKey(key) {
+	if !isSpecialKey(key) {
 		tx.addReadConflictForKey(key)
 	}
 	if tx.rywDisabled {
@@ -443,7 +443,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
-	if !isSystemKey(key) {
+	if !isSpecialKey(key) {
 		tx.addReadConflictForKey(key)
 	}
 
@@ -569,7 +569,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if bytes.Compare(selectorKey, tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	if !isSystemKey(selectorKey) {
+	if !isSpecialKey(selectorKey) {
 		tx.addReadConflictForKey(selectorKey)
 	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
@@ -624,8 +624,11 @@ func (tx *Transaction) SetAccessSystemKeys() {
 	tx.writeSystemKeys = true
 }
 
-// isSystemKey returns true for keys with the \xff\xff prefix (FDB system key space).
-func isSystemKey(key []byte) bool {
+// isSpecialKey returns true for keys with the \xff\xff prefix (FDB special key
+// space). Note this is the special-key module range (\xff\xff/...), NOT the
+// system keyspace (single \xff/... prefix); the name reflects what the byte
+// check actually tests.
+func isSpecialKey(key []byte) bool {
 	return len(key) >= 2 && key[0] == 0xff && key[1] == 0xff
 }
 
@@ -649,10 +652,10 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
-	// Only add read conflict if range is valid (begin <= end) and not system keys.
+	// Only add read conflict if range is valid (begin <= end) and not special keys.
 	// C++ client validates inverted ranges and handles \xff\xff keys internally
 	// without adding resolver conflict ranges.
-	if bytes.Compare(begin, end) <= 0 && !isSystemKey(begin) && !isSystemKey(end) {
+	if bytes.Compare(begin, end) <= 0 && !isSpecialKey(begin) && !isSpecialKey(end) {
 		tx.addReadConflict(begin, end)
 	}
 
