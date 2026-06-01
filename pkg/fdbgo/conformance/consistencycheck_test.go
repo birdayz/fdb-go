@@ -198,22 +198,25 @@ func parseConsistencyTrace(raw []byte) ccResult {
 // consistency violation, else "". It matches FDB release-7.3 checkDataConsistency
 // / testFailure signalling across all inconsistency classes:
 //
-//   - SevError (40) *_Inconsistent (ConsistencyCheck_DataInconsistent, etc.).
-//     Gated on Sev40 so a transient mismatch against a failed/TSS server — which
-//     FDB deliberately downgrades to SevWarn — is NOT flagged (avoids false
-//     positives while data distribution is still moving).
+//   - ANY SevError (40) ConsistencyCheck_* event. A clean run emits zero Sev40
+//     events, so this catch-all flags DataInconsistent, key-server/shard-boundary
+//     violations, AND any future/reworded severe event type at zero false-positive
+//     cost. Transient mismatches against a failed/TSS server are deliberately
+//     downgraded by FDB to SevWarn, so they're excluded (no false positives while
+//     data distribution is still moving).
 //   - ConsistencyCheck_InconsistentStorageMetrics regardless of severity: FDB
-//     emits this at SevInfo with no paired TestFailure, so a Sev40-only filter
+//     emits this at SevInfo with no paired TestFailure, so the Sev40 rule above
 //     would silently miss a replica byte-size divergence.
-//   - SevError TestFailure whose reason mentions "inconsistent" — the reason
-//     wording ("Data inconsistent" / "Key servers inconsistent", with or without
-//     a "Consistency check:" prefix) is matched case-insensitively so we don't
-//     depend on the exact framework prefix.
+//   - SevError TestFailure whose reason mentions "inconsistent" — TestFailure is
+//     framework-emitted (not ConsistencyCheck_-prefixed); the reason wording
+//     ("Data inconsistent" / "Key servers inconsistent", with or without a
+//     "Consistency check:" prefix) is matched case-insensitively so we don't
+//     depend on the exact prefix.
 func inconsistencyReason(ev ccTraceEvent) string {
 	switch {
 	case ev.Type == "ConsistencyCheck_InconsistentStorageMetrics":
 		return ev.Type + ": replica storage-metrics divergence"
-	case strings.Contains(ev.Type, "Inconsistent") && ev.Severity == "40":
+	case ev.Severity == "40" && strings.HasPrefix(ev.Type, "ConsistencyCheck_"):
 		return ev.Type + ": " + ev.Reason
 	case ev.Type == "TestFailure" && ev.Severity == "40" && strings.Contains(strings.ToLower(ev.Reason), "inconsistent"):
 		return ev.Type + ": " + ev.Reason
@@ -268,18 +271,19 @@ func TestParseConsistencyTrace(t *testing.T) {
 
 	dirty := strings.Join([]string{
 		`{ "Severity": "40", "Type": "ConsistencyCheck_DataInconsistent", "Reason": "" }`,
-		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Data inconsistent" }`,        // no "Consistency check:" prefix
-		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Key servers inconsistent" }`, // keyserver class
-		`{ "Severity": "10", "Type": "ConsistencyCheck_InconsistentStorageMetrics" }`,       // SevInfo, no TestFailure — must still be flagged
-		`{ "Severity": "40", "Type": "SomeUnrelatedError", "Reason": "disk full" }`,         // NOT a consistency failure
+		`{ "Severity": "40", "Type": "ConsistencyCheck_SomeFutureFailure", "Reason": "reworded" }`, // Sev40 CC_* catch-all (no "Inconsistent" in name)
+		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Data inconsistent" }`,               // no "Consistency check:" prefix
+		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Key servers inconsistent" }`,        // keyserver class
+		`{ "Severity": "10", "Type": "ConsistencyCheck_InconsistentStorageMetrics" }`,              // SevInfo, no TestFailure — must still be flagged
+		`{ "Severity": "40", "Type": "SomeUnrelatedError", "Reason": "disk full" }`,                // NOT a consistency event — must be ignored
 		`{ "Severity": "10", "Type": "ConsistencyCheck_FinishedCheck" }`,
 	}, "\n")
 	res = parseConsistencyTrace([]byte(dirty))
 	if !res.finished {
 		t.Error("dirty trace: finished=false, want true")
 	}
-	if len(res.inconsistencies) != 4 {
-		t.Errorf("dirty trace flagged %d inconsistencies, want 4 (Sev40 DataInconsistent + 2 TestFailures + SevInfo InconsistentStorageMetrics, NOT the unrelated SevError): %v", len(res.inconsistencies), res.inconsistencies)
+	if len(res.inconsistencies) != 5 {
+		t.Errorf("dirty trace flagged %d inconsistencies, want 5 (Sev40 DataInconsistent + Sev40 CC_* catch-all + 2 TestFailures + SevInfo InconsistentStorageMetrics, NOT the unrelated SevError): %v", len(res.inconsistencies), res.inconsistencies)
 	}
 
 	// Incomplete run (checker crashed before finishing) must NOT read as a clean pass.

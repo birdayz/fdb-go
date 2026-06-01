@@ -333,11 +333,13 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   (`ConsistencyCheck_FinishedCheck`), examined data, and emitted **no** Severity-40
   inconsistency/`TestFailure` event. **Double redundancy is required** — under single
   redundancy the checker's replica comparison is a no-op (one copy per shard). Anti-vacuity:
-  assert ≥2 `ConsistencyCheck_GetKeyValuesStream` events (one read per replica per shard, so
-  ≥2 proves a second replica was fetched and compared) — `FirstValidServer`/`CheckCustomReplica`
-  fire even under single redundancy and do NOT prove a comparison. The process exit code is
-  unreliable (exits 0 even on inconsistency), so detection is by trace event (Sev40 *_Inconsistent
-  / TestFailure + the SevInfo InconsistentStorageMetrics). Detection logic pinned by a
+  require `GetKeyValuesStream` reads (one per replica per shard) **>** `FirstValidServer`
+  baselines (one per shard) — i.e. some single shard was read on ≥2 replicas, which a bare
+  "≥2 reads total" count can't prove (N single-replica shards defeat it). `FirstValidServer`/
+  `CheckCustomReplica` fire even under single redundancy and do NOT prove a comparison. The
+  process exit code is unreliable (exits 0 even on inconsistency), so detection is by trace
+  event: any Sev40 `ConsistencyCheck_*` (catch-all), the SevInfo `InconsistentStorageMetrics`,
+  and Sev40 `TestFailure` reasons containing "inconsistent". Detection logic pinned by a
   deterministic unit test (`TestParseConsistencyTrace`) since the live run is always clean.
 
 - [ ] **C2. Ride their client — differential vs the official C binding (`libfdb_c`).** The C
