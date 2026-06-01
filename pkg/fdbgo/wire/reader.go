@@ -663,6 +663,43 @@ func ReadErrorOrInto(data []byte, r *Reader) error {
 	}
 }
 
+// ReadInlineReplyError decodes the Optional<Error> that LoadBalancedReply-derived
+// storage replies carry INLINE (GetValueReply, GetKeyReply, GetKeyValuesReply).
+// r must be positioned at the reply object. The optional is two vtable slots:
+// a uint8 present-tag at tagSlot and, at tagSlot+1, a RelativeOffset to a nested
+// Error table whose uint16 error_code is at the Error table's own slot 0.
+// Returns the decoded *FDBError, or nil if the field is absent.
+//
+// FDB delivers wrong_shard_server / future_version / process_behind for reads
+// through this field, not the ErrorOr root (C++ storageserver.actor.cpp
+// sendErrorWithPenalty sets reply.error; LoadBalance.actor.h re-throws it). The
+// generated reply structs mis-decode this field as a length-prefixed byte string
+// (Optional<Error> wrongly classified as Optional<bytes>), so callers MUST use
+// this helper and ignore the generated reply.Error field.
+func ReadInlineReplyError(r *Reader, tagSlot int) *FDBError {
+	if !r.FieldPresent(tagSlot) || r.ReadUint8(tagSlot) == 0 {
+		return nil
+	}
+	var errObj Reader
+	if err := r.readNestedInto(tagSlot+1, &errObj); err != nil {
+		return nil
+	}
+	// Error table: uint16 error_code at slot 0.
+	return &FDBError{Code: int(errObj.ReadUint16(0))}
+}
+
+// ReaderAtRootObject positions a Reader at the object the footer's root_offset
+// points to, WITHOUT NewReader's FakeRoot field-0 indirection. Exposed for tests
+// that inspect a union/root object directly (e.g. an ErrorOr root, whose slot 0
+// tag + slot 1 nested Error mirror an inline reply error).
+func ReaderAtRootObject(data []byte) (*Reader, error) {
+	r := &Reader{}
+	if err := initReaderAtRootObject(data, r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // initReaderAtRootObject positions r at the object the footer's root_offset
 // points to, WITHOUT NewReader's FakeRoot field-0 indirection. For an ErrorOr<T>
 // response that root object is the ErrorOr union itself.

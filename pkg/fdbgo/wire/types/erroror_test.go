@@ -88,6 +88,45 @@ func TestReadErrorOr_ZeroFieldSuccess(t *testing.T) {
 	}
 }
 
+// TestReadInlineReplyError decodes the inline LoadBalancedReply.error
+// (Optional<Error>) that storage read replies carry (RFC-010 #1). An ErrorOrError
+// buffer's root object is byte-identical to that inline field: a uint8 present-tag
+// at slot 0 and a RelativeOffset to a nested Error table at slot 1. The real
+// replies put the same structure at slot 1/2 (the generated SlotError constant);
+// this exercises the nested-Error-table decode the generated reply.Error mis-handles.
+func TestReadInlineReplyError(t *testing.T) {
+	t.Parallel()
+	for _, code := range []uint16{1001, 1009, 1037, 0xFFFF} {
+		buf := (&ErrorOrError{ErrorCode: code}).MarshalFDB()
+		r, err := wire.ReaderAtRootObject(buf)
+		if err != nil {
+			t.Fatalf("code %d: ReaderAtRootObject: %v", code, err)
+		}
+		ferr := wire.ReadInlineReplyError(r, 0) // ErrorOr root: tag@0, nested Error@1
+		if ferr == nil {
+			t.Fatalf("code %d: expected inline error, got nil", code)
+		}
+		if ferr.Code != int(code) {
+			t.Errorf("code %d: decoded %d", code, ferr.Code)
+		}
+	}
+}
+
+// TestReadInlineReplyError_Absent: a reply with no inline error returns nil (the
+// common success case must not be misread as an error). VoidReply success lands
+// on EnsureTable<Void>, which has no error field at the queried slot.
+func TestReadInlineReplyError_Absent(t *testing.T) {
+	t.Parallel()
+	buf := (&VoidReply{}).MarshalFDB()
+	r, err := wire.ReadErrorOr(buf) // success → nested EnsureTable<Void>
+	if err != nil {
+		t.Fatalf("VoidReply ReadErrorOr: %v", err)
+	}
+	if ferr := wire.ReadInlineReplyError(r, 1); ferr != nil {
+		t.Errorf("absent inline error: expected nil, got %v", ferr)
+	}
+}
+
 // TestReadErrorOr_ErrorCodeIsUint16 proves the error code is read as a 2-byte
 // uint16, not a 4-byte int32 that would over-read into adjacent bytes. We set
 // the two bytes immediately following the uint16 ErrorCode to non-zero and
