@@ -343,7 +343,15 @@ func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongSh
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	t.Cleanup(func() { container.Terminate(ctx) })
+	// Terminate on a FRESH context, not the test's ctx: t.Cleanup runs AFTER the
+	// caller's `defer cancel()`, so terminating on the (cancelled) test ctx makes
+	// testcontainers bail with context.Canceled and leak the container. RFC-010
+	// codex review finding. Matches the multishard env's cleanup convention.
+	t.Cleanup(func() {
+		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer termCancel()
+		container.Terminate(termCtx)
+	})
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
