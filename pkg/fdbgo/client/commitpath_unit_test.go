@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -430,6 +431,59 @@ func TestIsRetryable_NotRetryableSet(t *testing.T) {
 			t.Errorf("isRetryable(%d) = true, want false", code)
 		}
 	}
+}
+
+// ============================================================================
+// clearAndReturn — clears a pooled slice's full backing array before returning
+// it, so the pool never retains committed key/value byte slices: mutSlicePool
+// (values up to 100KB) and crSlicePool (conflict-range keys). Codex review on #4.
+//
+// Each subtest uses a LOCAL sync.Pool, not the package-global mutSlicePool /
+// crSlicePool: clearAndReturn publishes the slice into the pool, so sharing a
+// global pool here would race the parallel tenant-commit tests that borrow from
+// it (those Get the pointer and append into the shared backing array).
+// ============================================================================
+
+func TestClearAndReturn_ClearsBackingArray(t *testing.T) {
+	t.Parallel()
+
+	t.Run("MutationRef", func(t *testing.T) {
+		t.Parallel()
+		var pool sync.Pool
+		// Refs in EVERY slot, returned at a short len (1) over a larger cap (3):
+		// the clear must drop refs in all slots, including the two "beyond len"
+		// ones a smaller follow-up commit would leave untouched.
+		backing := make([]types.MutationRef, 3)
+		for i := range backing {
+			backing[i] = types.MutationRef{MutType: uint8(i + 1), Param1: []byte{'k', byte(i)}, Param2: []byte{'v', byte(i)}}
+		}
+		s := backing[:1] // len 1, cap 3
+		clearAndReturn(&pool, &s)
+		for i := range backing {
+			if backing[i].MutType != 0 || backing[i].Param1 != nil || backing[i].Param2 != nil {
+				t.Errorf("slot %d not cleared (pool would retain its byte slices): %+v", i, backing[i])
+			}
+		}
+		if len(s) != 0 || cap(s) != 3 {
+			t.Errorf("released slice len=%d cap=%d, want 0/3 (capacity preserved)", len(s), cap(s))
+		}
+	})
+
+	t.Run("KeyRangeRef", func(t *testing.T) {
+		t.Parallel()
+		var pool sync.Pool
+		backing := make([]types.KeyRangeRef, 3)
+		for i := range backing {
+			backing[i] = types.KeyRangeRef{Begin: []byte{'b', byte(i)}, End: []byte{'e', byte(i)}}
+		}
+		s := backing[:1]
+		clearAndReturn(&pool, &s)
+		for i := range backing {
+			if backing[i].Begin != nil || backing[i].End != nil {
+				t.Errorf("slot %d not cleared (pool would retain conflict-range keys): %+v", i, backing[i])
+			}
+		}
+	})
 }
 
 // ============================================================================

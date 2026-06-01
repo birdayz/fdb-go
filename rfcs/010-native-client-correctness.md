@@ -12,7 +12,9 @@ quality, an FDB-C-programmer persona for wire conformance vs release-7.3) ACKed:
 - **#1** inline `LoadBalancedReply.error` decoded from the nested Error table on the three read parsers, routed into classify→invalidate→retry.
 - **#3** pipelined `Get` shares the full classify→invalidate→retry (+ `handleConnError` parity); legal-key check at enqueue; `fdb.Get` re-drives through the full path on every `GetPipelined` error (incl. 1006 — corrected after codex review; surfacing it would fail the tx since `OnError` doesn't retry 1006).
 
-Phases 1–3 and the systemic prevention (P1–P6) remain open.
+**#4 also landed** (tenant commit builder no longer mutates `tx.mutations` in place — pulled ahead
+of its Phase-2 slot since it's independent and needs no new infra; both reviewers ACKed). The rest
+of Phases 1–3 and the systemic prevention (P1–P6) remain open.
 
 ## Problem
 
@@ -44,7 +46,7 @@ reproducing it. Severity is **recalibrated** from the report where verification 
 | 2 | `ErrWrongShardServer = 1062` (real code is 1001; 1062 = `change_feed_cancelled`) | **REAL** | High | **High** | + self-confirming test injects 1062 and asserts success |
 | 3 | `Transaction.Get` pipelined path skips wrong-shard retry / hedge / cache-invalidate; falls back on *any* error not just `ErrNeedFullRYW` | **REAL** | High | **High** | default path for every public point read |
 | 8 | `ReadErrorOr` shape heuristic misclassifies 1-field success replies; `GetRangeSplitPoints` silently drops real split points | **REAL** | Medium | **High ↑** | report *under*-rated; silent data loss, untested |
-| 4 | Tenant commit builder mutates `tx.mutations` in place via unsafe alias; rebuild double-prefixes / double-adjusts versionstamp | **REAL** | High | **High** | tenant-scoped |
+| 4 | Tenant commit builder mutates `tx.mutations` in place via unsafe alias; rebuild double-prefixes / double-adjusts versionstamp | **REAL** | High | **High** | tenant-scoped — **LANDED** (scratch-copy on tenant path) |
 | 6 | Conn shutdown: writeLoop exits on ctx.Done without waking queued `errCh`; monitor declares dead without closing socket / failing pending | **REAL** (two bugs) | High | **High** | unbounded goroutine hang + fd/goroutine leak |
 | 5 | Hedge loser's `startRequest` delta never paired with `endRequest`; timeout/cancel leaks **both** | **REAL** | High | **Medium** | slow-bleed load-model/selection bias, not data loss; 15-line fix |
 | 11 | TLS advertised in README but never wired into DB dial; `DialWithTLS(useTLS=true, nil)` corrupts framing | **REAL** | Medium | **Medium** | no TLS path through public API |
@@ -207,9 +209,12 @@ work.
   `connectionMonitor` all route through it. The errCh waits in `SendFrame`/`Flush` gain a
   `<-c.ctx.Done()` escape. Tests: `Close` racing `SendFrame`/`Flush`; monitor-driven dead-conn
   cleanup wakes pending reads without waiting for RPC timeout.
-- **#4** Tenant commit builder snapshots into a scratch `[]MutationRef` with copied slice headers
-  before prefixing; the unsafe zero-copy alias is kept **only** for the no-tenant path. Test:
-  build twice on the same tenant tx → no double-prefix, `tx.mutations` unmodified.
+- **#4 — LANDED** (ahead of its Phase-2 slot; independent, no new infra). Tenant commit builder
+  snapshots into a pooled scratch `[]MutationRef` with copied slice headers before prefixing; the
+  unsafe zero-copy alias is kept **only** for the no-tenant path. Mirrors C++ `applyTenantPrefix`
+  (fresh `updatedMutations`, `withPrefix`-allocated) + `tryCommit`-by-value. Test
+  `TestTenantCommit_BuildTwiceNoDoublePrefix`: build twice on the same tenant tx → byte-identical
+  output (no double-prefix), `tx.mutations` unmodified. Torvalds + FDB-C-programmer ACKed.
 - **#13** Return the reply channel to the pool exactly once on the success path; fix the false
   doc comments. Guard against double-put across `Cancel`/`Release`.
 
@@ -228,6 +233,13 @@ work.
   a real perf decision, so document *that specific method* as not-concurrent-safe rather than
   pretending the whole transaction is unsafe. `-race` tests for `Set`+`Commit`,
   `Set`+`GetApproximateSize`, and the RYW lost-update.
+- **#10 — LANDED.** Decoupled: `fdb/options.go` `SetAccessSystemKeys` no longer auto-sets lock-aware;
+  Each `fdb/database.go` tenant call site sets the exact C++ `TenantManagement` options: writes
+  (`CreateTenant`/`DeleteTenant`) ACCESS_SYSTEM_KEYS+LOCK_AWARE; `OpenTenant` (C++ `tryGetTenant`)
+  READ_SYSTEM_KEYS+READ_LOCK_AWARE; `ListTenants` (C++ `listTenants`) READ_SYSTEM_KEYS+LOCK_AWARE.
+  Added `client.Transaction.LockAware()`/
+  `ReadLockAware()` accessors; pinned by `TestSetAccessSystemKeys_DoesNotImplyLockAware` /
+  `TestSetReadLockAware_Independent` (facade unit tests, no DB). Original plan below.
 - **#10 — decouple, don't couple (conformance-corrected).** In the C client `ACCESS_SYSTEM_KEYS`
   sets only `rawAccess`, never `lockAware` (`NativeAPI.actor.cpp:7159-7171`); the two are
   independent. So the conformant fix is to make the two Go entrypoints agree by **removing** the
@@ -238,11 +250,24 @@ work.
   separately, matching the C client. (Caveat: this is a behavior change to the existing facade —
   call it out in the PR; any code relying on the implicit coupling must set `SetLockAware`
   explicitly, exactly as a Java/CGo app must.)
+  **Researched targets (the explicit options C++ sets per tenant op, so decoupling doesn't regress
+  behavior):** tenant **writes** (`CreateTenant`/`DeleteTenant`) set `ACCESS_SYSTEM_KEYS` +
+  `LOCK_AWARE` together (`TenantManagement.actor.h:258-259,413-414`); `OpenTenant` (C++ `tryGetTenant`)
+  sets `READ_SYSTEM_KEYS` + `READ_LOCK_AWARE` (`70-71`); `ListTenants` (C++ `listTenants`) sets
+  `READ_SYSTEM_KEYS` + `LOCK_AWARE` (`541-542`) — note `LOCK_AWARE`, not `READ_LOCK_AWARE`; the
+  `READ_LOCK_AWARE` reads at `688-699` are `tryGetTenantGroup` (tenant **groups**, which Go doesn't
+  implement), not `listTenants`. The low-level `*Transaction` helpers set `RAW_ACCESS` (`166,357`).
+  So #10 = drop the facade's auto-`SetLockAware` **and** add these explicit options at each
+  `fdb/database.go` tenant call site.
 - **#11** Either wire TLS config through `ParseClusterString`/`ClusterFile` → `getOrDial`, or
   drop the README claim and make `DialWithTLS(useTLS=true, tlsCfg=nil)` reject rather than emit
   TLS-framed plaintext. (Pick: keep the claim, do the wiring — it's the spec'd capability.)
-- **#15** `ri.begin = append(append([]byte(nil), lastKey...), 0)` — mirror the reverse path's
-  defensive copy. Test with a `Key` whose `cap > len`. (Reachable today via RYW passthrough keys.)
+- **#15 — LANDED** `ri.begin = keyAfter(lastKey)` via a documented helper that copies
+  unconditionally (`append(append([]byte(nil), k...), 0)`); the reverse path already copied. Test
+  `TestKeyAfter_NoAliasOnSpareCapacity` feeds a `cap>len` slice and asserts no scribble + no alias —
+  the real range path hands out length-capped keys (`cap==len`), so a unit probe is the only
+  non-vacuous pin. FDB-C-programmer confirmed `lastKey + \x00` == C++ `nextBeginKeySelector`.
+  Torvalds + FDB-C-programmer ACKed.
 - **#9** Rename `isSystemKey` → `isSpecialKey` (it tests `\xff\xff`); fix the comment. No behavior
   change — current resolver-conflict handling is correct.
 - **#12** Add a defensive length guard in `locality.refresh` returning a typed error on empty

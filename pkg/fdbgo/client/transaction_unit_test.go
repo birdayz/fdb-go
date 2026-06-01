@@ -126,10 +126,10 @@ func TestKeyAfterBytes_ReturnsCopy(t *testing.T) {
 }
 
 // ============================================================================
-// isSystemKey — \xff\xff prefix check.
+// isSpecialKey — \xff\xff (special key space) prefix check.
 // ============================================================================
 
-func TestIsSystemKey(t *testing.T) {
+func TestIsSpecialKey(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -148,8 +148,8 @@ func TestIsSystemKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isSystemKey(tt.key); got != tt.want {
-				t.Errorf("isSystemKey(%q) = %v, want %v", tt.key, got, tt.want)
+			if got := isSpecialKey(tt.key); got != tt.want {
+				t.Errorf("isSpecialKey(%q) = %v, want %v", tt.key, got, tt.want)
 			}
 		})
 	}

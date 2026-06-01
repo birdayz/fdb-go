@@ -55,9 +55,16 @@ func (o TransactionOptions) SetWriteConflictsDisabled() {
 	o.tx.inner.SetWriteConflictsDisabled()
 }
 
+// SetAccessSystemKeys grants read AND write access to the \xff system keyspace.
+// It does NOT imply lock-aware: in the C client ACCESS_SYSTEM_KEYS sets only
+// rawAccess (NativeAPI.actor.cpp setOption / ReadYourWrites.actor.cpp), and
+// LOCK_AWARE / READ_LOCK_AWARE are independent options. Callers that must commit
+// or read against a *locked* database set SetLockAware()/SetReadLockAware()
+// explicitly, exactly as a Java/CGo app does — see the tenant operations in
+// database.go. (Previously this method auto-set lock-aware, diverging from C;
+// that coupling is removed.)
 func (o TransactionOptions) SetAccessSystemKeys() error {
 	o.tx.inner.SetAccessSystemKeys()
-	o.tx.inner.SetLockAware(true) // lock_aware on commit allows system key writes
 	return nil
 }
 
