@@ -120,10 +120,16 @@ resolution) parity. Not "byte-equal continuation format" (record-layer).
 ### Harness shape & layout
 
 L1 is a fast unit test (no container, no CGo) in `package client` white-box. L2/L3
-live in a new `pkg/fdbgo/differential` package and drive **both public facades**
-(`pkg/fdbgo/fdb` + `apple/.../bindings/go`) against one container — a reusable
-table `differentialOp{name, goFn, cFn, verify}`, new shapes one-liners, CI-gated
-behind the FDB-container tag.
+drive **both public facades** (`pkg/fdbgo/fdb` + `apple/.../bindings/go`) against
+one container — a reusable table `diffOp{name, goW, cW}`, new shapes one-liners.
+
+**Layout note (deviation from "new `pkg/fdbgo/differential` package"):** the dual-
+client fixture — one container, `goClient` (pure-Go) + `cgoClient` (libfdb_c), the
+network-thread singleton, cluster-file plumbing — *already exists* in
+`pkg/fdbgo/bench` (`TestMain` + `interop_test.go`). L2 reuses it
+(`pkg/fdbgo/bench/differential_test.go`) rather than duplicating the fixture in a
+new package. The `sync.Once` network-thread concern (Torvalds #3) is handled there
+already (`MustAPIVersion` once per process).
 
 **Facade op-code upgrade (Min→MinV2) is pinned behaviorally, not via a seam.** The
 upgrade decision lives in the `fdb` facade; cross-package white-box can't reach
@@ -152,15 +158,19 @@ batteries; runs under the existing `--local_test_jobs` cap.
 Phased (each phase lands green; each divergence → **fix the Go client, pin it**,
 per the corpus discipline):
 
-1. **L1 golden vectors** first — catches/pins the encoding-identity facts
-   (MinV2/AndV2 op-codes, versionstamp 4-byte LE suffix, per-op conflict ranges,
-   value_too_large threshold). Highest value, most likely to surface a real Go
-   divergence (FDB-C-dev §6).
-2. **L2 end-to-end** — Set/Clear/ClearRange/versionstamp byte-identical persisted
-   state; atomic end-to-end equivalence; error-class parity.
-3. **L3 range invariance** — chunking-invariant merged reads + `GetKey` parity.
+1. **L1 golden vectors** — pins encoding-identity facts (per-op conflict ranges,
+   value_too_large threshold) in `package client` (`atomic_conflictrange_test.go`,
+   `sizelimits_test.go`).
+2. **L2 end-to-end** ✅ landed (`pkg/fdbgo/bench/differential_test.go`):
+   `TestDifferential_WriteBattery` (Set shapes incl. exactly-VALUE_SIZE_LIMIT, all
+   atomics on a missing key, byte-identical persisted state via the C reference
+   reader + Go cross-read) and `TestDifferential_VersionstampedValue` (stamp-offset
+   placement, stamp masked). **Verified to have teeth:** reverting the Min→MinV2
+   upgrade makes `min_missing_V2` fail byte-exactly (`go=00…` legacy `min(0,8)`=0 vs
+   `cgo=08…` MinV2=8) — so the harness detects real op-code divergence, not theater.
+3. **L3 range invariance** — chunking-invariant merged reads + `GetKey` parity (next).
 
-`just test` green; new target tagged for the FDB env.
+`just test` green.
 
 ## Divergences found & fixed
 
