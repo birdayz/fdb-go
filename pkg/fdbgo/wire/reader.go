@@ -599,44 +599,125 @@ func (e *FDBError) Retryable() bool {
 	return false
 }
 
-// ReadErrorOr unwraps an ErrorOr<T> response. FDB's ErrorOr uses FakeRoot
-// flattening: the inner struct is either Error (1 field: error_code) or T (N fields).
-// Returns the Reader positioned at the success value T, or an *FDBError if
-// the response contains an error code.
+// ErrorOr<T> is serialized as a flow union_like: a root object carrying a uint8
+// type tag at vtable slot 0 and a RelativeOffset to the chosen alternative at
+// slot 1. The tag is the union index + 1, so 1 = Error, 2 = the value T (0 = the
+// empty NONE state). Matches C++ flow.h union_like_traits<ErrorOr<T>> +
+// flat_buffers.h save_with_vtables; the Go writer in wire/types/erroror.go emits
+// the identical layout. FDB sends every ReplyPromise<T> reply this way.
+const (
+	errorOrTagSlot   = 0 // uint8 union type tag
+	errorOrValueSlot = 1 // RelativeOffset to the chosen alternative (Error or T)
+	errorOrTagError  = 1 // Error alternative (union index 0 + 1)
+	errorOrTagValue  = 2 // value T alternative (union index 1 + 1)
+)
+
+// ReadErrorOr unwraps an ErrorOr<T> response. On the value tag it returns a
+// Reader positioned at T; on the error tag it returns the decoded *FDBError.
+//
+// The success/error decision reads the explicit union tag — it does NOT infer
+// from the nested object's field count. A one-field success T (e.g.
+// SplitRangeReply, whose only field is SplitPoints) is structurally
+// indistinguishable from a one-field Error table, so the old field-count
+// heuristic silently misread such successes as errors.
 func ReadErrorOr(data []byte) (*Reader, error) {
-	r, err := NewReader(data)
-	if err != nil {
+	r := &Reader{}
+	if err := ReadErrorOrInto(data, r); err != nil {
 		return nil, err
-	}
-	nfields := r.VTableLength() - 2
-	if nfields <= 1 {
-		if r.FieldPresent(0) {
-			code := r.ReadInt32(0)
-			return nil, &FDBError{Code: int(code)}
-		}
-		return nil, fmt.Errorf("empty ErrorOr response")
 	}
 	return r, nil
 }
 
-// ReadErrorOrInto is like ReadErrorOr but initializes the Reader in-place.
-// This allows the caller to stack-allocate the Reader, avoiding a heap alloc:
+// ReadErrorOrInto is like ReadErrorOr but writes the success Reader in-place,
+// letting the caller stack-allocate it and avoid a heap alloc on the hot path:
 //
 //	var r wire.Reader
 //	if err := wire.ReadErrorOrInto(data, &r); err != nil { ... }
 //	reply.UnmarshalFromReader(&r)
 func ReadErrorOrInto(data []byte, r *Reader) error {
-	if err := InitReader(data, r); err != nil {
+	// Position a Reader at the ErrorOr union root itself — NOT NewReader, which
+	// applies the FakeRoot field-0 indirection and would land directly on the
+	// alternative, hiding the tag.
+	var root Reader
+	if err := initReaderAtRootObject(data, &root); err != nil {
 		return err
 	}
-	nfields := r.VTableLength() - 2
-	if nfields <= 1 {
-		if r.FieldPresent(0) {
-			code := r.ReadInt32(0)
-			return &FDBError{Code: int(code)}
-		}
-		return fmt.Errorf("empty ErrorOr response")
+	if !root.FieldPresent(errorOrTagSlot) {
+		return fmt.Errorf("wire: ErrorOr response has no union tag")
 	}
+	switch tag := root.ReadUint8(errorOrTagSlot); tag {
+	case errorOrTagError:
+		var errObj Reader
+		if err := root.readNestedInto(errorOrValueSlot, &errObj); err != nil {
+			return fmt.Errorf("wire: ErrorOr error payload: %w", err)
+		}
+		// Error is a single-field table: uint16 error_code at slot 0.
+		return &FDBError{Code: int(errObj.ReadUint16(0))}
+	case errorOrTagValue:
+		if err := root.readNestedInto(errorOrValueSlot, r); err != nil {
+			return fmt.Errorf("wire: ErrorOr value payload: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("wire: ErrorOr response has unexpected union tag %d", tag)
+	}
+}
+
+// initReaderAtRootObject positions r at the object the footer's root_offset
+// points to, WITHOUT NewReader's FakeRoot field-0 indirection. For an ErrorOr<T>
+// response that root object is the ErrorOr union itself.
+func initReaderAtRootObject(data []byte, r *Reader) error {
+	if len(data) < 8 {
+		return fmt.Errorf("wire: buffer too short (%d bytes, need at least 8)", len(data))
+	}
+	offset := 0
+	if len(data) >= 16 && data[7] == 0x0F && data[6] == 0xDB {
+		offset = 8
+	}
+	rootOffset := binary.LittleEndian.Uint32(data[offset : offset+4])
+	absRoot := offset + int(rootOffset)
+	if absRoot+4 > len(data) {
+		return fmt.Errorf("wire: root_offset %d out of bounds (buffer length %d)", rootOffset, len(data))
+	}
+	vtableSoffset := int32(binary.LittleEndian.Uint32(data[absRoot:]))
+	vtableAbsPos := absRoot - int(vtableSoffset)
+	if vtableAbsPos < 0 || vtableAbsPos+4 > len(data) {
+		return fmt.Errorf("wire: vtable position %d out of bounds", vtableAbsPos)
+	}
+	r.data = data
+	r.object = data[absRoot:]
+	r.objPos = absRoot
+	r.vtable = data[vtableAbsPos:]
+	r.headerOff = offset
+	return nil
+}
+
+// readNestedInto follows the RelativeOffset at the given slot to a nested
+// FlatBuffers object and writes the sub-Reader into dst (no heap alloc, unlike
+// ReadNestedReader). dst may alias r's buffer.
+func (r *Reader) readNestedInto(vtableSlot int, dst *Reader) error {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 || int(off)+4 > len(r.object) {
+		return fmt.Errorf("wire: nested struct field not present (slot %d)", vtableSlot)
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return fmt.Errorf("wire: nested struct RelativeOffset is 0 (slot %d)", vtableSlot)
+	}
+	targetPos := r.objPos + int(off) + int(relOffset)
+	if targetPos+4 > len(r.data) {
+		return fmt.Errorf("wire: object position %d out of bounds (buf %d)", targetPos, len(r.data))
+	}
+	vtableSoffset := int32(binary.LittleEndian.Uint32(r.data[targetPos:]))
+	vtableAbsPos := targetPos - int(vtableSoffset)
+	if vtableAbsPos < 0 || vtableAbsPos+4 > len(r.data) {
+		return fmt.Errorf("wire: vtable position %d out of bounds", vtableAbsPos)
+	}
+	dst.data = r.data
+	dst.object = r.data[targetPos:]
+	dst.objPos = targetPos
+	dst.vtable = r.data[vtableAbsPos:]
+	dst.headerOff = r.headerOff
 	return nil
 }
 
