@@ -23,15 +23,18 @@ func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) Rang
 }
 
 // keyAfter returns the smallest key strictly greater than k — a fresh copy of
-// k with a trailing 0x00 byte. It MUST copy: `append([]byte(k), 0)` would
-// scribble k's own backing array (and alias it) whenever cap(k) > len(k). The
-// range-reply parser currently hands out length-capped key slices
-// (data[pos:pos+n:pos+n]), so the bare append happens to reallocate today — but
-// relying on that invariant is a latent corruption bug. Copy unconditionally,
-// matching the reverse path's `append([]byte(nil), lastKey...)` and the client
-// continuation sites.
+// k with a trailing 0x00 byte. It MUST copy into independent storage:
+// `append([]byte(k), 0)` would scribble k's own backing array (and alias it)
+// whenever cap(k) > len(k). The range-reply parser currently hands out
+// length-capped key slices (data[pos:pos+n:pos+n]), so that bare append happens
+// to reallocate today — but relying on that invariant is a latent corruption
+// bug. The exact-sized make+copy guarantees a single allocation and an exact
+// cap (len(k)+1), documenting the no-alias invariant unambiguously.
 func keyAfter(k []byte) []byte {
-	return append(append([]byte(nil), k...), 0)
+	result := make([]byte, len(k)+1)
+	copy(result, k)
+	result[len(k)] = 0
+	return result
 }
 
 // effectiveLimit returns the limit to use for a range read.

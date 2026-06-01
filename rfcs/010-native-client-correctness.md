@@ -252,10 +252,13 @@ work.
   explicitly, exactly as a Java/CGo app must.)
   **Researched targets (the explicit options C++ sets per tenant op, so decoupling doesn't regress
   behavior):** tenant **writes** (`CreateTenant`/`DeleteTenant`) set `ACCESS_SYSTEM_KEYS` +
-  `LOCK_AWARE` together (`TenantManagement.actor.h:258-259,413-414`); tenant **reads**
-  (`OpenTenant`/`ListTenants`) set `READ_SYSTEM_KEYS` + `READ_LOCK_AWARE` (`688-699`); the low-level
-  `*Transaction` helpers set `RAW_ACCESS` (`166,357`). So #10 = drop the facade's auto-`SetLockAware`
-  **and** add these explicit options at each `fdb/database.go` tenant call site.
+  `LOCK_AWARE` together (`TenantManagement.actor.h:258-259,413-414`); `OpenTenant` (C++ `tryGetTenant`)
+  sets `READ_SYSTEM_KEYS` + `READ_LOCK_AWARE` (`70-71`); `ListTenants` (C++ `listTenants`) sets
+  `READ_SYSTEM_KEYS` + `LOCK_AWARE` (`541-542`) — note `LOCK_AWARE`, not `READ_LOCK_AWARE`; the
+  `READ_LOCK_AWARE` reads at `688-699` are `tryGetTenantGroup` (tenant **groups**, which Go doesn't
+  implement), not `listTenants`. The low-level `*Transaction` helpers set `RAW_ACCESS` (`166,357`).
+  So #10 = drop the facade's auto-`SetLockAware` **and** add these explicit options at each
+  `fdb/database.go` tenant call site.
 - **#11** Either wire TLS config through `ParseClusterString`/`ClusterFile` → `getOrDial`, or
   drop the README claim and make `DialWithTLS(useTLS=true, tlsCfg=nil)` reject rather than emit
   TLS-framed plaintext. (Pick: keep the claim, do the wiring — it's the spec'd capability.)
