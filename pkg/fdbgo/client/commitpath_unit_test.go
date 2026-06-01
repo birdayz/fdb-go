@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -433,42 +434,56 @@ func TestIsRetryable_NotRetryableSet(t *testing.T) {
 }
 
 // ============================================================================
-// releaseMutScratch — clears the tenant-path scratch before pooling so the
-// pool doesn't retain committed key/value byte slices (Codex P2 on #4).
+// clearAndReturn — clears a pooled slice's full backing array before returning
+// it, so the pool never retains committed key/value byte slices: mutSlicePool
+// (values up to 100KB) and crSlicePool (conflict-range keys). Codex review on #4.
+//
+// Each subtest uses a LOCAL sync.Pool, not the package-global mutSlicePool /
+// crSlicePool: clearAndReturn publishes the slice into the pool, so sharing a
+// global pool here would race the parallel tenant-commit tests that borrow from
+// it (those Get the pointer and append into the shared backing array).
 // ============================================================================
 
-func TestReleaseMutScratch_ClearsBackingArray(t *testing.T) {
+func TestClearAndReturn_ClearsBackingArray(t *testing.T) {
 	t.Parallel()
-	// A scratch with refs in EVERY slot, returned at a short len (1) over a
-	// larger cap (3): the pool must drop refs in all slots, including the two
-	// "beyond len" ones a smaller follow-up commit would leave untouched. Values
-	// stand in for up-to-100KB application buffers we must not pin in the pool.
-	backing := make([]types.MutationRef, 3)
-	for i := range backing {
-		backing[i] = types.MutationRef{
-			MutType: uint8(i + 1),
-			Param1:  []byte{'k', byte(i)},
-			Param2:  []byte{'v', byte(i)},
-		}
-	}
-	s := backing[:1] // len 1, cap 3
 
-	releaseMutScratch(&s)
-
-	// releaseMutScratch shares backing with s, so the clear is visible here.
-	for i := 0; i < len(backing); i++ {
-		e := backing[i]
-		if e.MutType != 0 || e.Param1 != nil || e.Param2 != nil {
-			t.Errorf("slot %d not cleared (pool would retain its byte slices): %+v", i, e)
+	t.Run("MutationRef", func(t *testing.T) {
+		t.Parallel()
+		var pool sync.Pool
+		// Refs in EVERY slot, returned at a short len (1) over a larger cap (3):
+		// the clear must drop refs in all slots, including the two "beyond len"
+		// ones a smaller follow-up commit would leave untouched.
+		backing := make([]types.MutationRef, 3)
+		for i := range backing {
+			backing[i] = types.MutationRef{MutType: uint8(i + 1), Param1: []byte{'k', byte(i)}, Param2: []byte{'v', byte(i)}}
 		}
-	}
-	// The returned slice must be empty (len 0) but keep its capacity for reuse.
-	if len(s) != 0 {
-		t.Errorf("released scratch len = %d, want 0", len(s))
-	}
-	if cap(s) != 3 {
-		t.Errorf("released scratch cap = %d, want 3 (capacity preserved for reuse)", cap(s))
-	}
+		s := backing[:1] // len 1, cap 3
+		clearAndReturn(&pool, &s)
+		for i := range backing {
+			if backing[i].MutType != 0 || backing[i].Param1 != nil || backing[i].Param2 != nil {
+				t.Errorf("slot %d not cleared (pool would retain its byte slices): %+v", i, backing[i])
+			}
+		}
+		if len(s) != 0 || cap(s) != 3 {
+			t.Errorf("released slice len=%d cap=%d, want 0/3 (capacity preserved)", len(s), cap(s))
+		}
+	})
+
+	t.Run("KeyRangeRef", func(t *testing.T) {
+		t.Parallel()
+		var pool sync.Pool
+		backing := make([]types.KeyRangeRef, 3)
+		for i := range backing {
+			backing[i] = types.KeyRangeRef{Begin: []byte{'b', byte(i)}, End: []byte{'e', byte(i)}}
+		}
+		s := backing[:1]
+		clearAndReturn(&pool, &s)
+		for i := range backing {
+			if backing[i].Begin != nil || backing[i].End != nil {
+				t.Errorf("slot %d not cleared (pool would retain conflict-range keys): %+v", i, backing[i])
+			}
+		}
+	})
 }
 
 // ============================================================================

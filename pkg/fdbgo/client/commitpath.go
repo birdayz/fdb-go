@@ -255,18 +255,19 @@ var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 
 // needs no scratch; only the tenant path must copy (see buildCommitTransactionRequest).
 var mutSlicePool = sync.Pool{New: func() any { s := make([]types.MutationRef, 0, 8); return &s }}
 
-// releaseMutScratch zeroes the tenant-path scratch slice and returns it to
-// mutSlicePool. The clear is mandatory: each MutationRef still references the
-// (prefixed) key and — for non-ClearRange mutations — the original application
-// value byte slice. Without it, sync.Pool keeps those buffers (values can be up
-// to 100KB) reachable from the global pool long after the transaction is reset.
-// Clearing the FULL capacity, not just len, drops references in slots a larger
-// earlier commit populated, so a later smaller commit can't leave stale ones.
-func releaseMutScratch(s *[]types.MutationRef) {
+// clearAndReturn zeroes a pooled slice and returns it to pool. The clear is
+// mandatory for slices whose elements hold []byte references: the mutation
+// scratch keeps the (prefixed) key and — for non-ClearRange mutations — the
+// original application value buffer (up to 100KB); the conflict-range slices
+// keep begin/end key bytes. Without it, sync.Pool pins those buffers reachable
+// from the global pool long after the transaction is reset. Clearing the FULL
+// capacity (not just len) drops references in slots a larger earlier commit
+// populated, so a later smaller commit can't leave stale ones behind.
+func clearAndReturn[T any](pool *sync.Pool, s *[]T) {
 	full := (*s)[:cap(*s)]
 	clear(full)
 	*s = full[:0]
-	mutSlicePool.Put(s)
+	pool.Put(s)
 }
 
 // marshalBufPool pools the serialization buffer for CommitTransactionRequest.
@@ -381,12 +382,12 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (b
 	// into result, so the scratch/conflict slices are no longer referenced.
 	if mutScratch != nil {
 		*mutScratch = mutations
-		releaseMutScratch(mutScratch)
+		clearAndReturn(&mutSlicePool, mutScratch)
 	}
 	*readCRSlice = readCRs
-	crSlicePool.Put(readCRSlice)
+	clearAndReturn(&crSlicePool, readCRSlice)
 	*writeCRSlice = writeCRs
-	crSlicePool.Put(writeCRSlice)
+	clearAndReturn(&crSlicePool, writeCRSlice)
 
 	return result, bufp
 }
