@@ -2,6 +2,7 @@ package fdb
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -74,9 +75,24 @@ type Database struct {
 	d *internalDB
 }
 
+// Option configures a database opened via OpenDatabase / OpenDatabaseFromConfig
+// (e.g. WithTLSConfig, WithDialFunc). It is an alias for client.Option so the
+// two packages share one option type.
+type Option = client.Option
+
+// WithTLSConfig connects to the cluster over TLS using a standard
+// *crypto/tls.Config (in-memory certs, GetClientCertificate rotation, custom
+// VerifyPeerCertificate, cipher/version policy). It takes precedence over the
+// FDB_TLS_* environment / cluster-file ":tls" resolution and enables TLS even
+// when the cluster string lacks ":tls".
+func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
+
+// WithDialFunc overrides the dialer used for every connection (advanced / tests).
+func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
+
 // OpenDatabase opens a connection using the specified cluster file path.
-// APIVersion must have been called first.
-func OpenDatabase(clusterFile string) (Database, error) {
+// APIVersion must have been called first. See WithTLSConfig / WithDialFunc.
+func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
@@ -84,7 +100,7 @@ func OpenDatabase(clusterFile string) (Database, error) {
 	// context must NOT be the bootstrap context (which we cancel after connect).
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer bootstrapCancel()
-	db, err := client.OpenDatabase(bootstrapCtx, clusterFile)
+	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, opts...)
 	if err != nil {
 		return Database{}, err
 	}
@@ -95,22 +111,22 @@ func OpenDatabase(clusterFile string) (Database, error) {
 
 // OpenWithConnectionString opens a connection using a cluster connection string
 // (e.g., "description:id@host1:port1,host2:port2").
-func OpenWithConnectionString(connStr string) (Database, error) {
+func OpenWithConnectionString(connStr string, opts ...Option) (Database, error) {
 	cf, err := client.ParseClusterString(connStr)
 	if err != nil {
 		return Database{}, fmt.Errorf("parse connection string: %w", err)
 	}
-	return OpenDatabaseFromConfig(context.Background(), cf)
+	return OpenDatabaseFromConfig(context.Background(), cf, opts...)
 }
 
 // OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
 // The provided ctx is used only for the initial bootstrap (coordinator
 // connection). The Database uses context.Background() for ongoing operations.
-func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile) (Database, error) {
+func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	db, err := client.OpenDatabaseFromConfig(ctx, cf, nil)
+	db, err := client.OpenDatabaseFromConfig(ctx, cf, opts...)
 	if err != nil {
 		return Database{}, err
 	}

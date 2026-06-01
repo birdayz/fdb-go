@@ -5,6 +5,7 @@ package client
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -21,8 +22,12 @@ import (
 type ClusterFile struct {
 	Description  string
 	ID           string
-	Coordinators []string // "host:port" addresses for TCP connection
+	Coordinators []string // "host:port" addresses for TCP connection (":tls" suffix stripped)
 	InternalKey  string   // optional: full internal cluster key for request clusterKey field
+	// UseTLS is true when the coordinators carry the ":tls" suffix (FDB
+	// FLAG_TLS). A real cluster is uniformly TLS, so this is a single flag;
+	// mixed TLS/non-TLS coordinators are rejected at parse time.
+	UseTLS bool
 }
 
 // ParseClusterFile reads and parses an fdb.cluster file.
@@ -65,21 +70,43 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 		ID:          prefix[colonIdx+1:],
 	}
 
+	tlsCount := 0
 	for _, addr := range strings.Split(addrs, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
 			continue
+		}
+		// Faithful to C++ NetworkAddress::parse (flow/network.cpp): strip a
+		// trailing "(fromHostname)" marker, then a trailing ":tls" — but only
+		// when the string is longer than 4 chars (a bare ":tls" is not a flag,
+		// it's an invalid address). The remaining text is host:port.
+		addr = strings.TrimSuffix(addr, "(fromHostname)")
+		isTLS := false
+		if len(addr) > 4 && strings.HasSuffix(addr, ":tls") {
+			isTLS = true
+			addr = addr[:len(addr)-len(":tls")]
 		}
 		// Validate it's host:port.
 		if _, _, err := net.SplitHostPort(addr); err != nil {
 			return nil, fmt.Errorf("invalid coordinator address %q: %w", addr, err)
 		}
 		cf.Coordinators = append(cf.Coordinators, addr)
+		if isTLS {
+			tlsCount++
+		}
 	}
 
 	if len(cf.Coordinators) == 0 {
 		return nil, fmt.Errorf("no coordinators in cluster string: %q", s)
 	}
+
+	// A real cluster is uniformly TLS or uniformly plaintext. A database-level
+	// flag can't represent a mix, so reject it rather than silently dialing some
+	// coordinators plaintext.
+	if tlsCount > 0 && tlsCount != len(cf.Coordinators) {
+		return nil, fmt.Errorf("mixed TLS and non-TLS coordinators not supported: %q", s)
+	}
+	cf.UseTLS = tlsCount > 0
 
 	return cf, nil
 }
@@ -120,6 +147,11 @@ type database struct {
 	// Immutable after creation.
 	clusterFile *ClusterFile
 	dialFn      transport.DialFunc // nil = net.DialTimeout
+	// tlsConfig is the single source of truth for transport security: non-nil =>
+	// every connection (coordinators, proxies, storage) is dialed over TLS with
+	// this *tls.Config; nil => plaintext. Set at open from WithTLSConfig (which
+	// wins) or the cluster ":tls" suffix + FDB_TLS_* resolution.
+	tlsConfig *tls.Config
 
 	// Topology: atomically swapped on coordinator refresh.
 	// C++: clientInfo (AsyncVar<ClientDBInfo>)
@@ -251,7 +283,7 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
-	c, dialErr := transport.DialWith(dialCtx, addr, false, db.dialFn)
+	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
 	if dialErr != nil {
 		return nil, false, dialErr
 	}
@@ -402,22 +434,39 @@ func (d *Database) HedgeEnabled() bool {
 // OpenDatabase opens a database connection using a cluster file.
 // The provided ctx is used for the initial bootstrap (coordinator connection).
 // Background goroutines use an internal context cancelled by Close().
-func OpenDatabase(ctx context.Context, clusterFilePath string) (*Database, error) {
+func OpenDatabase(ctx context.Context, clusterFilePath string, opts ...Option) (*Database, error) {
 	cf, err := ParseClusterFile(clusterFilePath)
 	if err != nil {
 		return nil, err
 	}
 
-	return OpenDatabaseFromConfig(ctx, cf, nil)
+	return OpenDatabaseFromConfig(ctx, cf, opts...)
 }
 
 // OpenDatabaseFromConfig creates and bootstraps a Database from a ClusterFile.
-// dialFn may be nil for default dialing.
-func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) (*Database, error) {
+// See WithDialFunc / WithTLSConfig for options.
+func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option) (*Database, error) {
+	o := applyOptions(opts)
+
+	// Resolve transport security. A non-nil tlsConfig is the only "use TLS"
+	// signal. WithTLSConfig wins; otherwise a ":tls" cluster string falls back
+	// to the FDB_TLS_* env convenience layer. resolveTLSConfig (incl. the
+	// default-config-dir stat) is only reached for a TLS cluster, so a plaintext
+	// open never touches /etc/foundationdb.
+	tlsConfig := o.tlsConfig
+	if tlsConfig == nil && cf.UseTLS {
+		resolved, err := resolveTLSConfig(defaultTLSConfigDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve TLS config: %w", err)
+		}
+		tlsConfig = resolved
+	}
+
 	bgCtx, cancel := context.WithCancel(context.Background())
 	db := &database{
 		clusterFile:    cf,
-		dialFn:         dialFn,
+		dialFn:         o.dialFn,
+		tlsConfig:      tlsConfig,
 		connPool:       make(map[string]*transport.Conn),
 		topologyKick:   make(chan struct{}, 1),
 		proxiesChanged: make(chan struct{}),

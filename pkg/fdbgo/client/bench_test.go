@@ -150,7 +150,7 @@ func openBenchDB(b *testing.B, ctx context.Context) *Database {
 		connectCF.InternalKey += a
 	}
 
-	db, err := OpenDatabaseFromConfig(ctx, connectCF, nil)
+	db, err := OpenDatabaseFromConfig(ctx, connectCF)
 	if err != nil {
 		b.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}

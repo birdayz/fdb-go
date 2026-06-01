@@ -125,7 +125,7 @@ func TestConn_CtxCancelUnblocksStrandedSendFrame(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Long monitor cadence so the monitor never pings/interferes.
-	c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestConn_CtxCancelUnblocksStrandedFlush(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestConn_MonitorDeathClosesSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Tiny cadence: monitor fires in ~ (loop + loop + timeout) = 60ms.
-	c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(20*time.Millisecond, 20*time.Millisecond))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(20*time.Millisecond, 20*time.Millisecond))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestConn_AbruptServerCloseFailsPending(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestConn_FailConnectionIdempotent(t *testing.T) {
 		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Millisecond, time.Millisecond))
+		c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Millisecond, time.Millisecond))
 		if err != nil {
 			cancel()
 			t.Fatalf("dial: %v", err)
@@ -306,7 +306,7 @@ func TestConn_StrandedSenderStress(t *testing.T) {
 			<-s.stop // stall
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+		c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
 		if err != nil {
 			cancel()
 			t.Fatalf("dial: %v", err)
