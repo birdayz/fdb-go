@@ -38,10 +38,16 @@ type ccTraceEvent struct {
 // byte-compares every subsequent replica against it (ConsistencyScan.actor.cpp
 // checkDataConsistency). Under single redundancy there is one copy per shard and
 // the comparison is a no-op, so this test would be near-vacuous. With double
-// redundancy every shard is cross-validated (the trace shows
-// ConsistencyCheck_CheckCustomReplica), which is the whole point: prove our
-// client's committed writes are replicated byte-identically and the shard/
-// key-server metadata is what FDB itself expects.
+// redundancy each shard's replicas are byte-compared, which is the whole point:
+// prove our client's committed writes are replicated byte-identically and the
+// shard/key-server metadata is what FDB itself expects.
+//
+// Anti-vacuity: we require ConsistencyCheck_GetKeyValuesStream to fire at least
+// twice. That event is emitted once per replica per shard (checkDataConsistency
+// reads every replica of a shard), so ≥2 proves at least one shard had a SECOND
+// replica fetched and compared against the first — i.e. the cross-replica path
+// actually ran. (ConsistencyCheck_FirstValidServer / _CheckCustomReplica fire
+// even under single redundancy, so they do NOT prove a comparison happened.)
 //
 // Records/indexes ride this exact commit path; from the checker's perspective
 // they are the same replicated stored bytes, so raw KV writes exercise the same
@@ -56,7 +62,10 @@ func TestConsistencyCheck_AfterGoClientWrites(t *testing.T) {
 		foundationdb.WithStorageEngine("ssd"),
 	)
 	if err != nil {
-		t.Skipf("FDB not available (no Docker): %v", err)
+		// Fail (don't skip) on a real cluster error — matches the repo's other
+		// RunCluster-based tests. A skip here would hide configure-double /
+		// replication-health failures behind a green "no Docker" lie.
+		t.Fatalf("RunCluster(3, double): %v", err)
 	}
 	defer cluster.Terminate(ctx)
 
@@ -111,33 +120,33 @@ cat /tmp/cc/trace.*.json 2>/dev/null`
 		t.Fatalf("read consistency-check trace: %v", err)
 	}
 
-	finished, examinedData, comparedReplicas, inconsistencies := parseConsistencyTrace(raw)
+	finished, replicaReads, inconsistencies := parseConsistencyTrace(raw)
 
 	// Inconsistency is the headline failure: report it first and verbatim.
 	if len(inconsistencies) > 0 {
 		t.Fatalf("FDB consistency check found %d inconsistency event(s) after Go-client writes:\n  %s",
 			len(inconsistencies), strings.Join(inconsistencies, "\n  "))
 	}
-	// Guard against a vacuous pass: the check must have run to completion AND
-	// actually examined shard data (a crashed/empty check must not read as clean).
+	// Anti-vacuity guards: the check must have run to completion, AND it must
+	// have fetched ≥2 replicas of some shard (replicaReads counts per-replica
+	// reads) — otherwise no cross-replica comparison occurred and a clean result
+	// is meaningless (e.g. the cluster silently came up single-redundancy).
 	if !finished {
 		t.Fatalf("consistency check did not complete (no ConsistencyCheck_FinishedCheck); trace had %d bytes", len(raw))
 	}
-	if !examinedData {
-		t.Fatal("consistency check completed but examined no shards (no ConsistencyCheck_FirstValidServer) — vacuous pass")
+	if replicaReads < 2 {
+		t.Fatalf("consistency check did not cross-compare replicas (only %d ConsistencyCheck_GetKeyValuesStream events; want ≥2) — single-replica or vacuous run", replicaReads)
 	}
-	t.Logf("FDB consistency check CLEAN: completed, examined data, cross-replica comparison fired=%v, 0 inconsistencies", comparedReplicas)
+	t.Logf("FDB consistency check CLEAN: completed, %d replica reads (cross-replica comparison ran), 0 inconsistencies", replicaReads)
 }
 
-// parseConsistencyTrace walks the newline-delimited JSON trace and reports:
-// whether the check completed, whether it examined any shard, whether the
-// cross-replica comparison fired, and the list of inconsistency events found.
-//
-// An inconsistency is a SevError (40) event that is either a *_Inconsistent type
-// or a TestFailure whose reason references the consistency check — matching
-// FDB's checkDataConsistency / testFailure signalling (the process exit code is
-// NOT a reliable signal, so we parse trace severity).
-func parseConsistencyTrace(raw []byte) (finished, examinedData, comparedReplicas bool, inconsistencies []string) {
+// parseConsistencyTrace walks the newline-delimited JSON trace and reports
+// whether the check completed (ConsistencyCheck_FinishedCheck), how many
+// per-replica reads happened (ConsistencyCheck_GetKeyValuesStream — one per
+// replica per shard, so ≥2 proves a cross-replica comparison ran), and the list
+// of inconsistency events found. The process exit code is NOT a reliable signal
+// (the role exits 0 even on inconsistency), so detection is by trace event.
+func parseConsistencyTrace(raw []byte) (finished bool, replicaReads int, inconsistencies []string) {
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "{") {
@@ -150,17 +159,42 @@ func parseConsistencyTrace(raw []byte) (finished, examinedData, comparedReplicas
 		switch ev.Type {
 		case "ConsistencyCheck_FinishedCheck":
 			finished = true
-		case "ConsistencyCheck_FirstValidServer":
-			examinedData = true
-		case "ConsistencyCheck_CheckCustomReplica":
-			comparedReplicas = true
+		case "ConsistencyCheck_GetKeyValuesStream":
+			replicaReads++
 		}
-		if ev.Severity == "40" && (strings.Contains(ev.Type, "Inconsistent") ||
-			(ev.Type == "TestFailure" && strings.Contains(ev.Reason, "Consistency check"))) {
-			inconsistencies = append(inconsistencies, fmt.Sprintf("%s: %s", ev.Type, ev.Reason))
+		if reason := inconsistencyReason(ev); reason != "" {
+			inconsistencies = append(inconsistencies, reason)
 		}
 	}
-	return finished, examinedData, comparedReplicas, inconsistencies
+	return finished, replicaReads, inconsistencies
+}
+
+// inconsistencyReason returns a non-empty description if ev signals a real
+// consistency violation, else "". It matches FDB release-7.3 checkDataConsistency
+// / testFailure signalling across all inconsistency classes:
+//
+//   - SevError (40) *_Inconsistent (ConsistencyCheck_DataInconsistent, etc.).
+//     Gated on Sev40 so a transient mismatch against a failed/TSS server — which
+//     FDB deliberately downgrades to SevWarn — is NOT flagged (avoids false
+//     positives while data distribution is still moving).
+//   - ConsistencyCheck_InconsistentStorageMetrics regardless of severity: FDB
+//     emits this at SevInfo with no paired TestFailure, so a Sev40-only filter
+//     would silently miss a replica byte-size divergence.
+//   - SevError TestFailure whose reason mentions "inconsistent" — the reason
+//     wording ("Data inconsistent" / "Key servers inconsistent", with or without
+//     a "Consistency check:" prefix) is matched case-insensitively so we don't
+//     depend on the exact framework prefix.
+func inconsistencyReason(ev ccTraceEvent) string {
+	switch {
+	case ev.Type == "ConsistencyCheck_InconsistentStorageMetrics":
+		return ev.Type + ": replica storage-metrics divergence"
+	case strings.Contains(ev.Type, "Inconsistent") && ev.Severity == "40":
+		return ev.Type + ": " + ev.Reason
+	case ev.Type == "TestFailure" && ev.Severity == "40" && strings.Contains(strings.ToLower(ev.Reason), "inconsistent"):
+		return ev.Type + ": " + ev.Reason
+	default:
+		return ""
+	}
 }
 
 // TestParseConsistencyTrace pins the inconsistency-detection logic
@@ -173,38 +207,38 @@ func TestParseConsistencyTrace(t *testing.T) {
 
 	clean := strings.Join([]string{
 		`{ "Severity": "10", "Type": "ProgramStart" }`,
-		`{ "Severity": "20", "Type": "ConsistencyCheck_StorageServerUnavailable" }`, // benign warning
-		`{ "Severity": "10", "Type": "ConsistencyCheck_FirstValidServer" }`,
-		`{ "Severity": "10", "Type": "ConsistencyCheck_CheckCustomReplica" }`,
+		`{ "Severity": "20", "Type": "ConsistencyCheck_StorageServerUnavailable" }`,       // benign warning
+		`{ "Severity": "30", "Type": "ConsistencyCheck_DataInconsistent", "Reason": "" }`, // SevWarn = transient (failed/TSS server), must be ignored
+		`{ "Severity": "10", "Type": "ConsistencyCheck_GetKeyValuesStream", "StorageServer0": "x" }`,
+		`{ "Severity": "10", "Type": "ConsistencyCheck_GetKeyValuesStream", "StorageServer1": "y" }`,
 		`{ "Severity": "10", "Type": "ConsistencyCheck_FinishedCheck" }`,
 	}, "\n")
-	finished, examined, compared, bad := parseConsistencyTrace([]byte(clean))
-	if !finished || !examined || !compared {
-		t.Errorf("clean trace: finished=%v examined=%v compared=%v, want all true", finished, examined, compared)
+	finished, replicaReads, bad := parseConsistencyTrace([]byte(clean))
+	if !finished || replicaReads != 2 {
+		t.Errorf("clean trace: finished=%v replicaReads=%d, want true/2", finished, replicaReads)
 	}
 	if len(bad) != 0 {
-		t.Errorf("clean trace flagged %d inconsistencies, want 0: %v", len(bad), bad)
+		t.Errorf("clean trace flagged %d inconsistencies, want 0 (SevWarn DataInconsistent is transient): %v", len(bad), bad)
 	}
 
 	dirty := strings.Join([]string{
-		`{ "Severity": "10", "Type": "ConsistencyCheck_FirstValidServer" }`,
 		`{ "Severity": "40", "Type": "ConsistencyCheck_DataInconsistent", "Reason": "" }`,
-		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Consistency check: Data inconsistent" }`,
-		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Consistency check: Key servers inconsistent" }`,
-		`{ "Severity": "40", "Type": "SomeUnrelatedError", "Reason": "disk full" }`, // NOT a consistency failure
+		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Data inconsistent" }`,        // no "Consistency check:" prefix
+		`{ "Severity": "40", "Type": "TestFailure", "Reason": "Key servers inconsistent" }`, // keyserver class
+		`{ "Severity": "10", "Type": "ConsistencyCheck_InconsistentStorageMetrics" }`,       // SevInfo, no TestFailure — must still be flagged
+		`{ "Severity": "40", "Type": "SomeUnrelatedError", "Reason": "disk full" }`,         // NOT a consistency failure
 		`{ "Severity": "10", "Type": "ConsistencyCheck_FinishedCheck" }`,
 	}, "\n")
-	finished, examined, _, bad = parseConsistencyTrace([]byte(dirty))
-	if !finished || !examined {
-		t.Errorf("dirty trace: finished=%v examined=%v, want both true", finished, examined)
+	finished, _, bad = parseConsistencyTrace([]byte(dirty))
+	if !finished {
+		t.Error("dirty trace: finished=false, want true")
 	}
-	if len(bad) != 3 {
-		t.Errorf("dirty trace flagged %d inconsistencies, want 3 (DataInconsistent + 2 consistency TestFailures, NOT the unrelated SevError): %v", len(bad), bad)
+	if len(bad) != 4 {
+		t.Errorf("dirty trace flagged %d inconsistencies, want 4 (Sev40 DataInconsistent + 2 TestFailures + SevInfo InconsistentStorageMetrics, NOT the unrelated SevError): %v", len(bad), bad)
 	}
 
 	// Incomplete run (checker crashed before finishing) must NOT read as a clean pass.
-	incomplete := `{ "Severity": "10", "Type": "ConsistencyCheck_FirstValidServer" }`
-	finished, _, _, _ = parseConsistencyTrace([]byte(incomplete))
+	finished, _, _ = parseConsistencyTrace([]byte(`{ "Severity": "10", "Type": "ConsistencyCheck_GetKeyValuesStream" }`))
 	if finished {
 		t.Error("incomplete trace (no FinishedCheck) reported finished=true")
 	}

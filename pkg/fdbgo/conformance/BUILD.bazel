@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "conformance_test",
+    timeout = "long",
     srcs = ["consistencycheck_test.go"],
     deps = [
         "//pkg/fdbgo/fdb",

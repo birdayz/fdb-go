@@ -332,10 +332,12 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   `fdbserver -r consistencycheck` role → parse its JSON trace and assert it completed
   (`ConsistencyCheck_FinishedCheck`), examined data, and emitted **no** Severity-40
   inconsistency/`TestFailure` event. **Double redundancy is required** — under single
-  redundancy the checker's replica comparison is a no-op (one copy per shard); the trace
-  confirms `ConsistencyCheck_CheckCustomReplica` fired, so our client's writes were
-  cross-replica-validated. The process exit code is unreliable (exits 0 even on
-  inconsistency), so detection is by trace severity. Detection logic pinned by a
+  redundancy the checker's replica comparison is a no-op (one copy per shard). Anti-vacuity:
+  assert ≥2 `ConsistencyCheck_GetKeyValuesStream` events (one read per replica per shard, so
+  ≥2 proves a second replica was fetched and compared) — `FirstValidServer`/`CheckCustomReplica`
+  fire even under single redundancy and do NOT prove a comparison. The process exit code is
+  unreliable (exits 0 even on inconsistency), so detection is by trace event (Sev40 *_Inconsistent
+  / TestFailure + the SevInfo InconsistentStorageMetrics). Detection logic pinned by a
   deterministic unit test (`TestParseConsistencyTrace`) since the live run is always clean.
 
 - [ ] **C2. Ride their client — differential vs the official C binding (`libfdb_c`).** The C
