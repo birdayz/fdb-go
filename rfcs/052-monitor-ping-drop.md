@@ -76,6 +76,29 @@ default:
 `bytesReceived`. The ping pending entry is still cancelled/released on drop (no
 leak). One-line behavioral change; no API change.
 
+### Follow-up: re-ping after a dropped ping (codex P2)
+
+A `nil` `replyCh` removes the inner loop's only success path. The inner loop can
+then only **kill** (frozen bytes) or **continue** (traffic observed) — it returns
+to the outer loop (which re-pings) *exclusively* via the now-dead `<-replyCh`
+branch. So a connection whose PING was dropped would **never ping again**: it
+survives only on incidental traffic and dies on the first idle window, failing
+slow-but-live requests. C++ never hits this — `Peer::send` is unbounded, so the
+ping always goes out; this is purely a bounded-`writeCh` artifact.
+
+Fix: in the `timer.C` branch, after confirming bytes advanced (not frozen), if
+`replyCh == nil` **break to the outer loop** to re-attempt the PING next cycle (by
+which point `writeCh` has likely drained), instead of `continue`-ing the inner
+loop forever:
+
+```go
+startingBytes = current
+if replyCh == nil {
+    break pingWait // re-attempt PING next outer cycle; don't wait for an impossible reply
+}
+continue
+```
+
 ## Performance
 
 None. The drop path runs only when `writeCh` is already full (a rare, degenerate
@@ -91,5 +114,11 @@ untouched.
   closed non-nil `done`). Combined with Go's guaranteed nil-channel `select`
   semantics — a `nil` `replyCh` is never selected, so the monitor must take the
   `timer.C` → `bytesReceived` branch — this pins the corrected liveness behavior.
+- **`TestMonitor_DroppedPingRePingsInsteadOfStalling`** (unit, deterministic):
+  pins the codex P2. The single `writeCh` slot is held by a dummy so every PING
+  attempt drops; steady `bytesReceived` traffic keeps the liveness check from
+  firing; draining the dummy then lets the next attempt enqueue a real PING — which
+  appears only if the monitor is still cycling the outer loop. **Fails on the
+  pre-fix (continue-only) code** ("monitor never re-pinged … inner loop wedged").
 - The sent-ping kill path remains covered by `TestConn_MonitorDeathClosesSocket`.
 - `just test` (48 targets) green, `-race`.

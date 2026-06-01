@@ -730,6 +730,7 @@ func (c *Conn) connectionMonitor() {
 		// Inner loop: C++ lines 690-720.
 		// Wait 2s per round. Kill only if bytesReceived is truly frozen.
 		startingBytes := c.bytesReceived.Load()
+	pingWait:
 		for {
 			timer := time.NewTimer(c.monitorTimeout)
 			select {
@@ -737,7 +738,8 @@ func (c *Conn) connectionMonitor() {
 				// PING reply arrived — connection alive. C++ line 710-714.
 				// replyCh is nil when the ping couldn't be sent (writeCh
 				// saturated); a nil channel is never selected, so this case is
-				// dead and we correctly fall through to the bytesReceived check.
+				// dead and we fall through to the bytesReceived check (and, on
+				// observed traffic, the re-ping break below).
 				timer.Stop()
 			case <-timer.C:
 				// Timeout. Check if ANY bytes arrived.
@@ -756,6 +758,18 @@ func (c *Conn) connectionMonitor() {
 				// C++ uses timeouts counter here only for logging (ConnectionSlowPing),
 				// NOT for kill decisions — the kill condition is solely bytesReceived.
 				startingBytes = current
+				if replyCh == nil {
+					// The PING was never sent (writeCh was saturated), so no reply can
+					// arrive on this nil channel — the inner loop has no success path.
+					// We just confirmed bytes are still flowing, so the connection is
+					// NOT frozen; staying here would wait forever for an impossible
+					// reply and kill a healthy-but-quiet connection on the next idle
+					// window (failing slow-but-live requests). Break to the outer loop
+					// to re-attempt the PING next cycle, by which point writeCh has
+					// likely drained. C++ never hits this — Peer::send is unbounded, so
+					// the ping always goes out; this is the bounded-writeCh fallback.
+					break pingWait
+				}
 				continue
 			case <-c.ctx.Done():
 				timer.Stop()
