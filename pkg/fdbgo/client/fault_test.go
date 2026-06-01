@@ -330,19 +330,6 @@ func (d *wrongShardDialer) armAll() {
 	}
 }
 
-// TestWrongShardServer_FaultInjection verifies that wrong_shard_server (1001)
-// triggers location cache invalidation and automatic retry.
-//
-// Uses a wrongShardConn at the net.Conn level (via custom dialer) to replace
-// the next server response frame with ErrorOr(1001). The client should:
-//  1. Receive 1001, invalidate the location cache
-//  2. Re-query the commit proxy for fresh locations
-//  3. Retry the read and succeed
-//
-// The injected code is the canonical literal 1001, NOT the ErrWrongShardServer
-// constant: injecting the code-under-test's own constant makes the test
-// self-confirming (it would pass for any value the constant happened to hold,
-// which is exactly how the 1062 bug stayed green). See RFC-010 prevention P6.
 // newWrongShardTestDB starts an FDB container and returns a Database that dials
 // through a wrongShardDialer; wd.armAll() then replaces the next server frame
 // with an injected wrong_shard_server error. The injected code is the canonical
@@ -400,6 +387,11 @@ func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongSh
 	return db, wd
 }
 
+// TestWrongShardServer_FaultInjection verifies that an injected wrong_shard_server
+// (1001) reply on the synchronous read path triggers location-cache invalidation
+// and an automatic retry: the client receives 1001, invalidates the cache,
+// re-queries the proxy for fresh locations, and retries the read to success.
+// (See newWrongShardTestDB for why the injected code is the literal 1001.)
 func TestWrongShardServer_FaultInjection(t *testing.T) {
 	t.Parallel()
 
