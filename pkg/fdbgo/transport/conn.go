@@ -770,7 +770,6 @@ func (c *Conn) connectionMonitor() {
 // when the PING reply arrives. Matches C++ pingRequest.reply.getFuture().
 // The reply is registered in the pending map so readLoop dispatches it.
 func (c *Conn) sendPingWithReply() <-chan struct{} {
-	done := make(chan struct{})
 	replyToken, replyCh, replyHandle := c.PrepareReply()
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
@@ -790,7 +789,10 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 		replyHandle.Release()
 		return nil
 	}
-	// Wait for reply in background, then signal done.
+	// Sent path only — allocate the done channel here so the drop path above
+	// doesn't allocate one it never uses. Wait for the reply in the background,
+	// then signal done.
+	done := make(chan struct{})
 	go func() {
 		defer replyHandle.Release()
 		defer close(done)
