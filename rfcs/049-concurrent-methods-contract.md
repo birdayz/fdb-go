@@ -142,12 +142,21 @@ moved under `conflictMu` (see Fix #6).
 Pure locking discipline — no signature or behavior change on the single-threaded
 (C-binding-equivalent) path; identical bytes on the wire.
 
-1. **`buildCommitTransactionRequest`** — snapshot the three headers under
-   `conflictMu` at entry, release, then build from the locals (the unsafe cast
-   reads the snapshot header, the conflict loops range over the snapshots).
+1. **`buildCommitTransactionRequest`** — marshal the validated `muts` snapshot
+   threaded in by `Commit` (the zero-copy cast reads that snapshot's header).
+   Snapshot the (unvalidated) read/write conflict headers under `conflictMu` at
+   entry, release, then range over the locals.
 2. **`Commit`** — snapshot `mutations` + `len(writeConflicts)` once under the
    lock; the two validation loops and the read-only short-circuit use the snapshot.
-   (Safe: only an out-of-contract concurrent `Commit`/`Reset` could reset mid-validation.)
+   **Thread that same `muts` snapshot into `commit()` → `buildCommitTransactionRequest`**
+   so the marshaled (shipped) set is byte-identical to the validated set. Without
+   this the marshal re-read `tx.mutations` independently, and a `Set` landing on
+   another goroutine between validation and marshal (allowed by the contract)
+   would ship an **unvalidated** mutation to the commit proxy — bypassing the
+   `maxWriteKey`/`metadataVersionKey`/versionstamp-offset checks (FDB-C reviewer
+   catch). The racing `Set` now lands in `tx.mutations` *beyond* the snapshot and
+   is simply not in this commit. (Safe against buffer reuse too: only an
+   out-of-contract concurrent `Commit`/`Reset` could reset mid-validation.)
 3. **`GetApproximateSize`** — iterate all three **under** `conflictMu` (not a
    released snapshot): it can race `Commit`'s in-contract auto-reset, which reuses
    the backing arrays. (Caller `Commit` does *not* hold `conflictMu`, so no

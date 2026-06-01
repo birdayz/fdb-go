@@ -54,7 +54,12 @@ func TestConcurrent_ConflictReaders_NoRace(t *testing.T) {
 			defer wg.Done()
 			for !stop.Load() {
 				_ = tx.GetApproximateSize()
-				_, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2})
+				// Mimic Commit: snapshot the validated mutation set under the
+				// lock, then marshal exactly it.
+				tx.conflictMu.Lock()
+				muts := tx.mutations
+				tx.conflictMu.Unlock()
+				_, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, muts)
 				marshalBufPool.Put(bufp)
 			}
 		}()
@@ -164,7 +169,7 @@ func TestBuildCommitRequest_TenantNoAlias(t *testing.T) {
 	prefix[7] = tenantID // 8-byte big-endian tenant id
 
 	for attempt := 0; attempt < 2; attempt++ {
-		body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2})
+		body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
 
 		// tx.mutations backing array must be byte-for-byte the originals — the
 		// prefix must NOT have been written through the zero-copy alias.
@@ -186,5 +191,37 @@ func TestBuildCommitRequest_TenantNoAlias(t *testing.T) {
 		if len(req.Transaction.Mutations) != 1 || !bytes.Equal(req.Transaction.Mutations[0].Param1, want) {
 			t.Fatalf("attempt %d: marshaled key: got %q, want %q (single tenant prefix)", attempt, req.Transaction.Mutations[0].Param1, want)
 		}
+	}
+}
+
+// TestBuildCommitRequest_MarshalsValidatedSnapshot pins the validation-consistency
+// fix (FDB-C reviewer): the marshal ships EXACTLY the validated mutation snapshot
+// Commit threads in — never a live re-read of tx.mutations. Models a Set that
+// landed on another goroutine AFTER Commit validated but BEFORE the marshal: the
+// validated snapshot has one mutation, tx.mutations has grown to two; the shipped
+// request must carry only the validated one, so a racing unvalidated mutation can
+// never reach the commit proxy. (On the pre-fix code the marshal re-snapshotted
+// tx.mutations and would ship both.)
+func TestBuildCommitRequest_MarshalsValidatedSnapshot(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.tenantId = NoTenantID
+	validated := []Mutation{{Type: MutSetValue, Key: []byte("validated"), Value: []byte("v")}}
+	// tx.mutations has grown past the validated snapshot (a concurrent Set landed).
+	tx.mutations = append(append([]Mutation{}, validated...),
+		Mutation{Type: MutSetValue, Key: []byte("racing-unvalidated"), Value: []byte("v")})
+
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, validated)
+	defer marshalBufPool.Put(bufp)
+
+	var req types.CommitTransactionRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if len(req.Transaction.Mutations) != 1 {
+		t.Fatalf("marshaled %d mutations, want 1 (only the validated snapshot, not the racing append)", len(req.Transaction.Mutations))
+	}
+	if string(req.Transaction.Mutations[0].Param1) != "validated" {
+		t.Fatalf("marshaled key %q, want \"validated\"", req.Transaction.Mutations[0].Param1)
 	}
 }

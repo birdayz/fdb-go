@@ -833,7 +833,12 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return err
 	}
 
-	if err := tx.commit(ctx); err != nil {
+	// Pass the SAME validated snapshot to the marshal so the shipped mutation
+	// set is byte-identical to the set we just validated. Without this the
+	// marshal re-reads tx.mutations independently, and a Set landing on another
+	// goroutine between validation and marshal (allowed by the concurrent-use
+	// contract) would ship an UNVALIDATED mutation to the commit proxy.
+	if err := tx.commit(ctx, muts); err != nil {
 		return err
 	}
 

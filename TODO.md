@@ -291,7 +291,7 @@ close the testing/conformance gaps its prevention plan (P5/P7) calls for.
 ### RFC-010 audit findings (the original 15 — correctness fires)
 
 The execution list for the Codex source audit (`TODO_client.md`); full detail + C-conformance
-reasoning per item in `rfcs/010-native-client-correctness.md`. **8 landed, 6 open, 1 false positive.**
+reasoning per item in `rfcs/010-native-client-correctness.md`. **9 landed, 5 open, 1 false positive.**
 Each open item is gated by *why it isn't trivially done*, not by another item.
 
 - [x] **#1** inline `LoadBalancedReply.error` decoded on read parsers (Phase 0)
@@ -300,7 +300,7 @@ Each open item is gated by *why it isn't trivially done*, not by another item.
 - [x] **#4** tenant commit builder uses a scratch `[]MutationRef` — no in-place mutation of `tx.mutations`, no double-prefix on rebuild (build-twice regression; Torvalds + FDB-C ACK)
 - [x] **#5** hedge loser/timeout/cancel QueueModel deltas released (Phase 0)
 - [ ] **#6 — HIGH.** Conn shutdown: (1) `Close`/cancel strands a `SendFrame`/`Flush` caller on `errCh`; (2) `connectionMonitor` declares dead without closing the socket / failing pending → fd+goroutine leak. Fix: one `failConnection(err)` path. **Gated on `SimTransport`** (the failure is a race; test it deterministically, not on real network).
-- [ ] **#7 — MEDIUM.** Honor the published "methods safe for concurrent use" contract: snapshot `mutations`/`readConflicts`/`writeConflicts` under `conflictMu` in `Commit`/marshal/`GetApproximateSize`, and move the `[:0]` clears inside `conflictMu` in reset/postCommitReset. `-race` tests. (RYW lost-update stays documented-not-safe.)
+- [x] **#7 — MEDIUM.** Honor the "methods safe for concurrent use" contract — fixed in RFC-049. Writers already appended under `conflictMu`; the unprotected readers/clears now do too: `Commit` validation + read-only check snapshot `mutations`/`len(writeConflicts)` under the lock and **thread that validated snapshot into the marshal** (so a `Set` racing `Commit` can't ship an *unvalidated* mutation to the proxy — FDB-C catch); `buildCommitTransactionRequest`/`commitDummyTransaction` snapshot the conflict headers under the lock (append-only + `conflictBuf`-only-grows ⇒ snapshot-and-release is race-free for them); `GetApproximateSize` iterates **under** the lock (not a released snapshot — it can race `Commit`'s in-contract auto-reset, which `[:0]`-reuses the backing arrays); `mutations[:0]` clears moved inside `conflictMu` in reset/postCommitReset; `addWriteConflict*` moved the `nextWriteNoConflict`/`writeConflictsDisabled` gate inside the lock (the one-shot flag is read+cleared on the `Set` path → two concurrent `Set`s raced). Contract doc narrowed: option setters (`SetXxx`) + `Reset` are configure-before-use, not concurrent-safe (matches `fdb_transaction_set_option`); RYW lost-update stays documented-not-safe. 4 deterministic `-race` tests (3 verified failing on master) + tenant no-alias sentinel + validated-snapshot pin. FDB-C + Torvalds ACK.
 - [x] **#8** `ReadErrorOr` parses the union tag (not field count); error code uint16 (Phase 0)
 - [x] **#9** rename `isSystemKey` → `isSpecialKey` (tests `\xff\xff` special-key space; behavior unchanged)
 - [x] **#10** decoupled `ACCESS_SYSTEM_KEYS` from `LOCK_AWARE` in `fdb/options.go` (C sets them
