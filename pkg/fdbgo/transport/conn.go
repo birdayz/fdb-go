@@ -477,6 +477,11 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 func (c *Conn) Close() error {
 	c.failConnection(errConnClosed)
 	c.loopWG.Wait()
+	// Always nil: the socket close happens inside failConnection, whose error is
+	// not actionable (closing an already-dead/closed conn yields a spurious
+	// "use of closed connection"; C++ likewise does not surface it). The previous
+	// implementation returned conn.Close()'s error here — callers that checked it
+	// will now always see nil.
 	return nil
 }
 
@@ -538,7 +543,16 @@ func (c *Conn) PeerProtocolVersion() uint64 {
 //
 // Both paths: deliver errors to all pending, signal WaitGroup, return.
 func (c *Conn) readLoop() {
-	defer c.loopWG.Done()
+	// Teardown on ANY exit — the normal read-error path AND an unexpected panic
+	// in frame parsing. The single failConnection path (cancel + close socket +
+	// fail all pending; C++ disconnect-promise equivalent) is idempotent, so if
+	// Close/monitor already fired this is a no-op, and the first caller's error
+	// wins. exitErr carries the real read error when there is one.
+	exitErr := errConnClosed
+	defer func() {
+		c.failConnection(exitErr)
+		c.loopWG.Done()
+	}()
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
 	var fr FrameReader
@@ -550,10 +564,7 @@ func (c *Conn) readLoop() {
 			if c.debugFrames && c.ctx.Err() == nil {
 				fmt.Fprintf(c.debugWriter, "[recv] ERROR: %v\n", err)
 			}
-			// Single teardown path: cancel ctx, close socket, fail all pending
-			// (C++ disconnect promise equivalent). Idempotent if Close/monitor
-			// already fired.
-			c.failConnection(err)
+			exitErr = err
 			return
 		}
 

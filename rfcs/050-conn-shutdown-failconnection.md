@@ -135,26 +135,25 @@ build it then.
 ## Test plan
 
 Deterministic, in-process, `-race`, no Docker (via the `net.Pipe` fake-server helper):
-- **`TestConn_CloseUnblocksBlockedSendFrame`**: stall the server (stop reading) so
-  a `SendFrame` blocks in `writeLoop`/`writeCh`; from another goroutine call
-  `Close()`; assert the `SendFrame` returns `errConnClosed` within a deadline (it
-  hangs forever on master). Same for `Flush`.
-- **`TestConn_MonitorDeathClosesSocketAndFailsPending`**: server completes the
-  handshake then goes silent; with a tiny monitor cadence, assert (a) a pending
-  `SendAndWait` reply is failed, (b) `IsClosed()` becomes true, (c) `loopWG`
-  drains (no leaked `readLoop`) within a deadline. On master the socket is never
-  closed, so `readLoop` stays blocked past the deadline.
-- **`TestConn_ServerAbruptCloseFailsPending`**: server closes mid-RPC; assert
-  `failAllPending` fires and `Close()` is clean (regression for the readLoop path
-  now routed through `failConnection`).
+- **`TestConn_CtxCancelUnblocksStrandedSendFrame`**: the server reads one byte of
+  sender A's frame then stalls, so `writeLoop` is *provably* stuck in `Flush`;
+  sender B then provably sits in `writeCh` (`len==1`, a stable observable).
+  Cancelling the context (what `Close`/monitor/readLoop-error all do) must return
+  B; on the pre-fix code B hangs on `<-errCh` forever → times out, **every run**.
+  **`TestConn_CtxCancelUnblocksStrandedFlush`** is the `Flush` analog.
+- **`TestConn_MonitorDeathClosesSocket`**: server completes the handshake then
+  goes silent; with a tiny monitor cadence, assert (a) the server observes EOF
+  (the monitor *closed the socket* — the Bug 2 fix), (b) a pending `SendAndWait`
+  is failed, (c) `IsClosed()` is true. On the pre-fix code the socket is never
+  closed, so the server never sees EOF and this times out.
+- **`TestConn_AbruptServerCloseFailsPending`**: server closes mid-RPC; assert the
+  pending request is failed and `Close()` is clean (guards the readLoop path now
+  routed through `failConnection`).
 - **`TestConn_FailConnectionIdempotent`**: the **real** `readLoop`-error path (via
   abrupt server close) racing a monitor-triggered `failConnection` and an explicit
-  `Close()` — i.e. the genuine three-way race, not a strawman calling
-  `failConnection` directly. Assert no panic, exactly-once teardown, every pending
-  reply delivered exactly once, clean `loopWG.Wait()`. `-race`.
-- **`TestConn_NoErrChStalePoolValue`**: drive the Close-vs-`SendFrame` race in a
-  tight loop; assert a `SendFrame` that observes its own `errCh` never receives a
-  value belonging to a *different* call — pins that the `ctx.Done()` path must not
-  return `errCh` to the pool (audit #13). (No drain exists, so there is no
-  drain-side stale-pool path to cover.)
+  `Close()` — the genuine three-way race, not a strawman. Assert no panic,
+  exactly-once teardown, clean `loopWG.Wait()`. 50×, `-race`.
+- **`TestConn_StrandedSenderStress`**: hammer the Close-vs-`SendFrame` race 30× so
+  the `errCh`-pool path (the `ctx.Done()` arm that must NOT return `errCh` to the
+  pool — audit #13) is exercised under `-race`; every `SendFrame` must return.
 - Existing transport + client suites stay green (`just test`, 48 targets), `-race`.
