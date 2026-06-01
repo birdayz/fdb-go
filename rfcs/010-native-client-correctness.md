@@ -12,7 +12,9 @@ quality, an FDB-C-programmer persona for wire conformance vs release-7.3) ACKed:
 - **#1** inline `LoadBalancedReply.error` decoded from the nested Error table on the three read parsers, routed into classify→invalidate→retry.
 - **#3** pipelined `Get` shares the full classify→invalidate→retry (+ `handleConnError` parity); legal-key check at enqueue; `fdb.Get` re-drives through the full path on every `GetPipelined` error (incl. 1006 — corrected after codex review; surfacing it would fail the tx since `OnError` doesn't retry 1006).
 
-Phases 1–3 and the systemic prevention (P1–P6) remain open.
+**#4 also landed** (tenant commit builder no longer mutates `tx.mutations` in place — pulled ahead
+of its Phase-2 slot since it's independent and needs no new infra; both reviewers ACKed). The rest
+of Phases 1–3 and the systemic prevention (P1–P6) remain open.
 
 ## Problem
 
@@ -44,7 +46,7 @@ reproducing it. Severity is **recalibrated** from the report where verification 
 | 2 | `ErrWrongShardServer = 1062` (real code is 1001; 1062 = `change_feed_cancelled`) | **REAL** | High | **High** | + self-confirming test injects 1062 and asserts success |
 | 3 | `Transaction.Get` pipelined path skips wrong-shard retry / hedge / cache-invalidate; falls back on *any* error not just `ErrNeedFullRYW` | **REAL** | High | **High** | default path for every public point read |
 | 8 | `ReadErrorOr` shape heuristic misclassifies 1-field success replies; `GetRangeSplitPoints` silently drops real split points | **REAL** | Medium | **High ↑** | report *under*-rated; silent data loss, untested |
-| 4 | Tenant commit builder mutates `tx.mutations` in place via unsafe alias; rebuild double-prefixes / double-adjusts versionstamp | **REAL** | High | **High** | tenant-scoped |
+| 4 | Tenant commit builder mutates `tx.mutations` in place via unsafe alias; rebuild double-prefixes / double-adjusts versionstamp | **REAL** | High | **High** | tenant-scoped — **LANDED** (scratch-copy on tenant path) |
 | 6 | Conn shutdown: writeLoop exits on ctx.Done without waking queued `errCh`; monitor declares dead without closing socket / failing pending | **REAL** (two bugs) | High | **High** | unbounded goroutine hang + fd/goroutine leak |
 | 5 | Hedge loser's `startRequest` delta never paired with `endRequest`; timeout/cancel leaks **both** | **REAL** | High | **Medium** | slow-bleed load-model/selection bias, not data loss; 15-line fix |
 | 11 | TLS advertised in README but never wired into DB dial; `DialWithTLS(useTLS=true, nil)` corrupts framing | **REAL** | Medium | **Medium** | no TLS path through public API |
@@ -207,9 +209,12 @@ work.
   `connectionMonitor` all route through it. The errCh waits in `SendFrame`/`Flush` gain a
   `<-c.ctx.Done()` escape. Tests: `Close` racing `SendFrame`/`Flush`; monitor-driven dead-conn
   cleanup wakes pending reads without waiting for RPC timeout.
-- **#4** Tenant commit builder snapshots into a scratch `[]MutationRef` with copied slice headers
-  before prefixing; the unsafe zero-copy alias is kept **only** for the no-tenant path. Test:
-  build twice on the same tenant tx → no double-prefix, `tx.mutations` unmodified.
+- **#4 — LANDED** (ahead of its Phase-2 slot; independent, no new infra). Tenant commit builder
+  snapshots into a pooled scratch `[]MutationRef` with copied slice headers before prefixing; the
+  unsafe zero-copy alias is kept **only** for the no-tenant path. Mirrors C++ `applyTenantPrefix`
+  (fresh `updatedMutations`, `withPrefix`-allocated) + `tryCommit`-by-value. Test
+  `TestTenantCommit_BuildTwiceNoDoublePrefix`: build twice on the same tenant tx → byte-identical
+  output (no double-prefix), `tx.mutations` unmodified. Torvalds + FDB-C-programmer ACKed.
 - **#13** Return the reply channel to the pool exactly once on the success path; fix the false
   doc comments. Guard against double-put across `Cancel`/`Release`.
 
