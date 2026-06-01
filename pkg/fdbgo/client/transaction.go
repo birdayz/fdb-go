@@ -667,14 +667,19 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 
 // Set writes a key-value pair.
 func (tx *Transaction) Set(key, value []byte) {
+	// The mutation and its write-conflict range must become visible to a
+	// concurrent Commit snapshot as ONE atomic unit — otherwise the snapshot
+	// could ship the mutation without its conflict range, so a concurrent
+	// transaction that read the key would not be conflicted (a missed conflict,
+	// not just a spurious one). Hold conflictMu across both appends.
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutSetValue,
 		Key:   key,
 		Value: value,
 	})
+	tx.addWriteConflictForKeyLocked(key)
 	tx.conflictMu.Unlock()
-	tx.addWriteConflictForKey(key)
 	if !tx.rywDisabled {
 		tx.ryw.set(key, value)
 	}
@@ -691,8 +696,8 @@ func (tx *Transaction) Clear(key []byte) {
 		Key:   key,
 		Value: end,
 	})
+	tx.addWriteConflictLocked(key, end)
 	tx.conflictMu.Unlock()
-	tx.addWriteConflict(key, end)
 	if !tx.rywDisabled {
 		tx.ryw.clear(key)
 	}
@@ -715,8 +720,8 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 		Key:   begin,
 		Value: end,
 	})
+	tx.addWriteConflictLocked(begin, end)
 	tx.conflictMu.Unlock()
-	tx.addWriteConflict(begin, end)
 	if !tx.rywDisabled {
 		tx.ryw.clearRange(begin, end)
 	}
@@ -731,9 +736,9 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		Key:   key,
 		Value: operand,
 	})
-	tx.conflictMu.Unlock()
 	// Atomic ops add write conflict but NOT read conflict.
-	tx.addWriteConflictForKey(key)
+	tx.addWriteConflictForKeyLocked(key)
+	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
 		tx.ryw.atomic(op, key, operand)
 	}
@@ -1248,16 +1253,24 @@ func (tx *Transaction) conflictBufAlloc(n int) []byte {
 	return tx.conflictBuf[start : start+n]
 }
 
-// addWriteConflictForKey adds a write conflict range [key, key\x00) using the
-// shared conflictBuf.
+// addWriteConflictForKey adds a write conflict range [key, key\x00). Takes
+// conflictMu itself — used by the public AddWriteConflictKey and the dummy-tx
+// builder. The Set/Clear/Atomic paths instead call addWriteConflictForKeyLocked
+// while already holding the lock, so the mutation and its conflict append
+// atomically (see Set).
 func (tx *Transaction) addWriteConflictForKey(key []byte) {
-	// nextWriteNoConflict is read AND cleared here on the Set/Clear/Atomic path,
-	// so two concurrent writes race on it unless this runs under conflictMu.
-	// Hold the lock across the gating flags as well as the append (it's taken
-	// for the append anyway). writeConflictsDisabled short-circuits WITHOUT
-	// touching nextWriteNoConflict — exact prior semantics.
 	tx.conflictMu.Lock()
-	defer tx.conflictMu.Unlock()
+	tx.addWriteConflictForKeyLocked(key)
+	tx.conflictMu.Unlock()
+}
+
+// addWriteConflictForKeyLocked appends a write conflict range [key, key\x00)
+// using the shared conflictBuf. Caller MUST hold conflictMu.
+//
+// nextWriteNoConflict is read AND cleared here on the Set/Clear/Atomic path, so
+// two concurrent writes would race on it without the lock. writeConflictsDisabled
+// short-circuits WITHOUT touching nextWriteNoConflict — exact prior semantics.
+func (tx *Transaction) addWriteConflictForKeyLocked(key []byte) {
 	if tx.writeConflictsDisabled {
 		return
 	}
@@ -1273,9 +1286,18 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
 }
 
+// addWriteConflict adds a write conflict range [begin, end). Takes conflictMu
+// itself (public AddWriteConflictRange); the Clear/ClearRange paths call the
+// Locked variant under the already-held lock.
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	tx.conflictMu.Lock()
-	defer tx.conflictMu.Unlock()
+	tx.addWriteConflictLocked(begin, end)
+	tx.conflictMu.Unlock()
+}
+
+// addWriteConflictLocked appends a write conflict range [begin, end). Caller
+// MUST hold conflictMu.
+func (tx *Transaction) addWriteConflictLocked(begin, end []byte) {
 	if tx.writeConflictsDisabled {
 		return
 	}

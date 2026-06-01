@@ -179,6 +179,19 @@ Pure locking discipline — no signature or behavior change on the single-thread
    use; option setters (`SetXxx`) and `Reset` are **not** — configure the
    transaction before issuing concurrent operations (matches the FDB C API's
    `fdb_transaction_set_option` contract).
+8. **`Set`/`Clear`/`ClearRange`/`Atomic` publish the mutation + its write-conflict
+   range atomically** — hold `conflictMu` across *both* appends (via new
+   `addWriteConflictForKeyLocked`/`addWriteConflictLocked` bodies; the lock-taking
+   `addWriteConflictForKey`/`addWriteConflict` survive as thin wrappers for the
+   public `AddWriteConflict*` methods + the dummy-tx builder). **Codex catch:** the
+   old code appended the mutation under the lock, *released*, then re-acquired to
+   append the write conflict. A `Commit` snapshot landing in that window shipped
+   the mutation **without** its conflict range → a concurrent transaction that read
+   the key would not be conflicted (a **missed** conflict — the dangerous
+   direction, not a spurious one). One lock now covers both, so a Commit snapshot
+   sees the whole write or none of it. (This also subsumes Fix #6 — the
+   `nextWriteNoConflict` consume now happens inside the same critical section — and
+   *reduces* `Set` from two lock acquisitions to one.)
 
 ## Performance
 
@@ -204,7 +217,12 @@ needed — `Transaction{}` is directly constructible, per existing
   panic. **Fails on master under `-race`** (proves the bug), passes after the fix.
 - **`TestConcurrent_NextWriteNoConflict_NoRace`**: `SetNextWriteNoWriteConflictRange()`
   then many concurrent `Set`s. **Fails on master under `-race`** (the read+write of
-  `nextWriteNoConflict` on the `Set` path), passes after Fix #6.
+  `nextWriteNoConflict` on the `Set` path), passes after Fix #6/#8.
+- **`TestConcurrent_SetIsAtomic`** (Fix #8, codex): 20k plain `Set`s + an observer
+  snapshotting `len(mutations)` and `len(writeConflicts)` under the lock — they must
+  never differ. **Fails on the pre-fix code** (5985 torn-write observations: a
+  mutation visible without its conflict), 0 after. A logical-invariant test (no
+  `-race` needed).
 - **`TestConcurrent_ResetWhileSizing_NoRace`**: races `postCommitReset`/`reset`'s
   `mutations[:0]` against `GetApproximateSize`/`Set` to pin the moved clear.
   (Does NOT race `Reset` against a live `Commit` snapshot — that is the

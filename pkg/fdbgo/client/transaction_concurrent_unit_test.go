@@ -150,6 +150,55 @@ func TestConcurrent_ResetWhileSizing_NoRace(t *testing.T) {
 	wg.Wait()
 }
 
+// TestConcurrent_SetIsAtomic pins the codex finding: a Set must publish its
+// mutation and its write-conflict range as ONE atomic unit. With plain Sets
+// (no flags), each Set adds exactly one mutation and one write conflict, so an
+// observer snapshotting both counts under conflictMu must NEVER see them differ.
+// On the pre-fix code Set appended the mutation and the conflict in two separate
+// critical sections, so the observer caught len(mutations)==len(writeConflicts)+1
+// mid-Set — meaning a Commit snapshot there would ship a mutation WITHOUT its
+// write conflict (a missed conflict). This is a logical-invariant test (no -race
+// needed), and the window is hit reliably across 20k Sets.
+func TestConcurrent_SetIsAtomic(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.rywDisabled = true
+	val := []byte("v")
+
+	var stop atomic.Bool
+	var mismatch atomic.Int64
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20000; i++ {
+			tx.Set([]byte(fmt.Sprintf("k%06d", i)), val)
+		}
+		stop.Store(true)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			tx.conflictMu.Lock()
+			nm := len(tx.mutations)
+			nc := len(tx.writeConflicts)
+			tx.conflictMu.Unlock()
+			if nm != nc {
+				mismatch.Add(1)
+			}
+		}
+	}()
+	wg.Wait()
+
+	if mismatch.Load() > 0 {
+		t.Fatalf("observed %d snapshots where len(mutations) != len(writeConflicts) — "+
+			"Set is not atomic; a Commit could ship a mutation without its write-conflict range", mismatch.Load())
+	}
+}
+
 // TestBuildCommitRequest_TenantNoAlias is the FDB-C reviewer's ask: after the
 // snapshot-under-lock change, the tenant path must STILL copy mutation headers
 // into a scratch slice before prefixing — it must never write the tenant prefix
