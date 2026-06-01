@@ -331,3 +331,19 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   hammer it concurrently (+faults), verify the ring stays unbroken — to drive our client against
   testcontainers (and later `SimTransport`). Reimplement the harness; reuse the proven scenarios.
   Extends the existing `pkg/recordlayer/chaos` model-based approach + `cmd/fdb-binding-stress`.
+
+- [ ] **C4. Deferred Phase-0 test gaps (need `SimTransport` / faithful inline-error injection).**
+  A coverage audit (codex) found these error/edge dimensions; the cheap deterministic ones were
+  closed inline, these need infra and fold into the `SimTransport` build:
+    - **Inline `LoadBalancedReply.error` on the `parseGetKeyReply` / `parseGetKeyValuesReply`
+      parsers specifically.** The decode helper (`wire.ReadInlineReplyError`) and the slot
+      constants are unit-pinned, but no test feeds those two parsers a *faithful* reply carrying an
+      inline error, because the generated writer mis-marshals `Optional<Error>` (as length-prefixed
+      bytes, not a nested Error table) — and the current fault harness injects ROOT `ErrorOr` errors,
+      whereas real FDB delivers read wrong-shard via the INLINE field. `SimTransport` (or a
+      hand-built fixture) must emit a correct nested-Error inline reply.
+    - **`PendingGet.Resolve` flush-error arm** (needs a conn whose `Flush()` errors).
+    - **Range wrong-shard across a partial continuation / `more=true`** (inject `1001` on the 2nd
+      `GetKeyValues` frame mid-scan; assert no dup/drop, correct `more`; forward + reverse).
+    - **`future_version` (1009) / `process_behind` (1037) read-path QueueModel backoff wiring**
+      (assert `failedUntil` advances and the address is deprioritized).

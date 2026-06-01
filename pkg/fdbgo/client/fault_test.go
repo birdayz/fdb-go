@@ -760,3 +760,91 @@ func TestCommitDummyTransaction_IsDummyGuard(t *testing.T) {
 		t.Log("dummy commit succeeded")
 	}
 }
+
+// TestPipelinedGet_Resolve_TransportErrorRetries covers PendingGet.Resolve's
+// transport-error arm (RFC-010 #3 + the handleConnError parity fix / codex gap 2):
+// a reply carrying a connection-layer error re-drives through the full getValue
+// path and returns the seeded value. Built by hand-constructing a PendingGet
+// against a real transaction with a pre-loaded error reply.
+func TestPipelinedGet_Resolve_TransportErrorRetries(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_key")
+	want := []byte("value")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, want)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	tx := db.CreateTransaction()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	replyCh := make(chan transport.Response, 1)
+	replyCh <- transport.Response{Err: io.EOF} // connection/transport error
+	p := &PendingGet{
+		key:         key,
+		tx:          tx,
+		addr:        "0.0.0.0:1", // bogus addr; handleConnError marks it, no real conn
+		replyCh:     replyCh,
+		replyHandle: &transport.ReplyHandle{},
+		ctx:         ctx,
+		timer:       getTimer(DefaultRPCTimeout),
+		flushed:     true, // skip conn.Flush (no conn)
+	}
+	got, err := p.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve (transport error -> retry): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q (transport error should re-drive through getValue)", got, want)
+	}
+}
+
+// TestPipelinedGet_Resolve_TimeoutRetries covers PendingGet.Resolve's RPC-timeout
+// arm (RFC-010 #3 / codex gap 3): when the reply never arrives, the timer fires
+// and Resolve re-drives through getValue rather than surfacing DeadlineExceeded.
+func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_key")
+	want := []byte("value")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, want)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	tx := db.CreateTransaction()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	p := &PendingGet{
+		key:         key,
+		tx:          tx,
+		addr:        "0.0.0.0:1",
+		replyCh:     make(chan transport.Response), // never fires
+		replyHandle: &transport.ReplyHandle{},
+		ctx:         ctx,
+		timer:       getTimer(time.Millisecond), // fires fast
+		flushed:     true,
+	}
+	got, err := p.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve (timeout -> retry): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q (timeout should re-drive through getValue)", got, want)
+	}
+}

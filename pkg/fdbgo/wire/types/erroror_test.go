@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -209,5 +210,34 @@ func TestLoadBalancedReplyErrorSlots(t *testing.T) {
 	}
 	if ErrorSlotErrorCode != 0 {
 		t.Errorf("Error.ErrorCode slot = %d, want 0", ErrorSlotErrorCode)
+	}
+}
+
+// TestReadErrorOr_MalformedPayload pins the malformed-payload arms of ReadErrorOr
+// (#8 / codex gap 9): for both the Error (tag=1) and value (tag=2) alternatives,
+// a corrupt/zeroed value RelativeOffset yields a deterministic, tag-specific
+// error — never a panic or a false success.
+func TestReadErrorOr_MalformedPayload(t *testing.T) {
+	t.Parallel()
+	for _, tag := range []byte{1, 2} { // 1=Error, 2=value
+		buf := (&ErrorOrError{ErrorCode: 1234}).MarshalFDB()
+		root := footerRootObject(buf)
+		buf[root+errorOrTagByteOffset] = tag
+		// Zero the value RelativeOffset (slot 1, object offset 4) so the nested
+		// navigation fails.
+		for i := root + errorOrValueRelOffByte; i < root+errorOrValueRelOffByte+4; i++ {
+			buf[i] = 0
+		}
+		_, err := wire.ReadErrorOr(buf)
+		if err == nil {
+			t.Fatalf("tag=%d: corrupt payload must error, got success", tag)
+		}
+		want := "error payload"
+		if tag == 2 {
+			want = "value payload"
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("tag=%d: error %q, want substring %q", tag, err.Error(), want)
+		}
 	}
 }

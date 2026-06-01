@@ -301,3 +301,49 @@ func TestHedge_ConnErrorOnReply(t *testing.T) {
 	g.Expect(result.connErr).To(gomega.BeTrue())
 	g.Expect(result.err).To(gomega.HaveOccurred())
 }
+
+// TestWaitForReply_AccountsSingleRequest covers the non-hedge (single-server)
+// path's QueueModel accounting (RFC-010 #5 / codex gap 7): on timeout and on
+// context-cancel, waitForReply returns the started request's addr/delta so the
+// caller ends it exactly once and outstanding returns to baseline. Complements
+// the raceReplies (two-server) accounting tests.
+func TestWaitForReply_AccountsSingleRequest(t *testing.T) {
+	t.Parallel()
+
+	applyCallerAccounting := func(qm *QueueModel, res hedgeResult) {
+		for _, o := range res.others {
+			qm.endRequest(o.addr, o.delta, time.Since(o.start), false)
+		}
+		if res.addr != "" {
+			qm.endRequest(res.addr, res.delta, time.Since(res.start), res.err == nil)
+		}
+	}
+	totalOf := func(qm *QueueModel, addr string) float64 {
+		return qm.getOrCreate(addr).smoothOutstanding.total
+	}
+
+	t.Run("timeout", func(t *testing.T) {
+		t.Parallel()
+		g := gomega.NewWithT(t)
+		qm := newQueueModel()
+		base := totalOf(qm, "a")
+		d := qm.startRequest("a")
+		res := waitForReply(context.Background(), mkInflight("a", d, false), 20*time.Millisecond)
+		g.Expect(res.addr).To(gomega.Equal("a"), "timeout must report the started addr so the caller can end it")
+		applyCallerAccounting(qm, res)
+		g.Expect(totalOf(qm, "a")).To(gomega.BeNumerically("~", base, 1e-9))
+	})
+
+	t.Run("context cancel", func(t *testing.T) {
+		t.Parallel()
+		g := gomega.NewWithT(t)
+		qm := newQueueModel()
+		base := totalOf(qm, "a")
+		d := qm.startRequest("a")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		res := waitForReply(ctx, mkInflight("a", d, false), 5*time.Second)
+		applyCallerAccounting(qm, res)
+		g.Expect(totalOf(qm, "a")).To(gomega.BeNumerically("~", base, 1e-9))
+	})
+}
