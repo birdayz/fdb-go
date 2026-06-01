@@ -308,3 +308,93 @@ func TestTenantPrefixInCommit(t *testing.T) {
 
 	_ = g // parent g used only for shared prefix; subtests create their own
 }
+
+// TestTenantCommit_BuildTwiceNoDoublePrefix pins the #4 fix: building the commit
+// request must be a pure read of transaction state. The tenant path used to
+// prefix tx.mutations IN PLACE through the zero-copy unsafe alias, so a second
+// build (e.g. a re-Commit without an intervening reset — commit() leaves the tx
+// in txStateActive on failure) double-prefixed every key and double-bumped the
+// versionstamp offset. C++ avoids this entirely: applyTenantPrefix builds a fresh
+// VectorRef<MutationRef> and tryCommit takes the request by value
+// (NativeAPI.actor.cpp:6523,6565). We mirror that with a scratch copy.
+//
+// This test fails on both axes if the scratch-copy fix is reverted:
+//  1. the two builds produce different bytes (second is double-prefixed), and
+//  2. tx.mutations is mutated in place after the first build.
+func TestTenantCommit_BuildTwiceNoDoublePrefix(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	const tenantID int64 = 42
+	prefix := tenantPrefix(tenantID)
+
+	// SetVersionstampedKey with a trailing 4-byte LE offset = 7.
+	vsKey := make([]byte, len("somekey")+4)
+	copy(vsKey, []byte("somekey"))
+	binary.LittleEndian.PutUint32(vsKey[len(vsKey)-4:], 7)
+
+	tx := &Transaction{tenantId: tenantID}
+	tx.mutations = []Mutation{
+		{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")},
+		{Type: MutClearRange, Key: []byte("a"), Value: []byte("z")},
+		{Type: MutSetVersionstampedKey, Key: vsKey, Value: []byte("vv")},
+		{Type: MutSetValue, Key: []byte("\xff/metadataVersion"), Value: []byte("m")},
+	}
+	tx.readConflicts = []KeyRange{{Begin: []byte("rk"), End: []byte("rkZ")}}
+	tx.writeConflicts = []KeyRange{{Begin: []byte("wk"), End: []byte("wkZ")}}
+
+	// Snapshot the originals (type + key + value bytes) before any build, so an
+	// in-place mutation of the persistent buffer is detectable byte-for-byte.
+	type snap struct {
+		typ      MutationType
+		key, val []byte
+	}
+	before := make([]snap, len(tx.mutations))
+	for i, m := range tx.mutations {
+		before[i] = snap{m.Type, append([]byte(nil), m.Key...), append([]byte(nil), m.Value...)}
+	}
+
+	build := func() []byte {
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{})
+		out := append([]byte(nil), body...) // copy before the buffer returns to the pool
+		marshalBufPool.Put(poolBuf)
+		return out
+	}
+
+	body1 := build()
+
+	// After the first build, the persistent mutation buffer must be untouched.
+	g.Expect(tx.mutations).To(gomega.HaveLen(len(before)))
+	for i := range before {
+		g.Expect(tx.mutations[i].Type).To(gomega.Equal(before[i].typ),
+			"build mutated tx.mutations[%d].Type in place", i)
+		g.Expect([]byte(tx.mutations[i].Key)).To(gomega.Equal(before[i].key),
+			"build mutated tx.mutations[%d].Key in place", i)
+		g.Expect([]byte(tx.mutations[i].Value)).To(gomega.Equal(before[i].val),
+			"build mutated tx.mutations[%d].Value in place", i)
+	}
+
+	body2 := build()
+
+	// Identical input → identical wire bytes. A double-prefix on the rebuild
+	// would change every key and the versionstamp offset.
+	g.Expect(body2).To(gomega.Equal(body1), "rebuild produced different bytes (double-prefix)")
+
+	// Decode the second build and assert exactly ONE tenant prefix everywhere.
+	req := parseSerialized(g, body2)
+	g.Expect(req.Transaction.Mutations).To(gomega.HaveLen(4))
+	g.Expect(req.Transaction.Mutations[0].Param1).To(gomega.Equal(append(prefix, 'k')))
+	g.Expect(req.Transaction.Mutations[1].Param1).To(gomega.Equal(append(prefix, 'a')))
+	g.Expect(req.Transaction.Mutations[1].Param2).To(gomega.Equal(append(prefix, 'z')))
+
+	// Versionstamp offset bumped by exactly 8 (single prefix), not 16.
+	vs := req.Transaction.Mutations[2].Param1
+	gotOffset := binary.LittleEndian.Uint32(vs[len(vs)-4:])
+	g.Expect(gotOffset).To(gomega.Equal(uint32(7 + 8)))
+
+	// metadataVersionKey stays exempt across rebuilds.
+	g.Expect(req.Transaction.Mutations[3].Param1).To(gomega.Equal([]byte("\xff/metadataVersion")))
+
+	// Conflict ranges carry exactly one prefix.
+	g.Expect(req.Transaction.ReadConflictRanges[0].Begin).To(gomega.Equal(append(prefix, []byte("rk")...)))
+	g.Expect(req.Transaction.WriteConflictRanges[0].End).To(gomega.Equal(append(prefix, []byte("wkZ")...)))
+}

@@ -250,6 +250,11 @@ var (
 // Pool for conflict range slices. Avoids per-commit alloc.
 var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
 
+// Pool for the scratch mutation slice used by the tenant-prefix path. The
+// no-tenant path reuses tx.mutations' backing array via the zero-copy cast and
+// needs no scratch; only the tenant path must copy (see buildCommitTransactionRequest).
+var mutSlicePool = sync.Pool{New: func() any { s := make([]types.MutationRef, 0, 8); return &s }}
+
 // marshalBufPool pools the serialization buffer for CommitTransactionRequest.
 // Avoids ~11% of total commit-path allocations. Uses *[]byte to avoid
 // interface boxing allocation (same pattern as writeFramePool).
@@ -280,7 +285,21 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (b
 
 	// C++ applyTenantPrefix: when a tenant is set, prepend 8-byte big-endian tenant ID
 	// to all mutation keys, read/write conflict range keys. Skip metadataVersionKey.
+	//
+	// mutScratch is borrowed only on the tenant path. The zero-copy cast above
+	// aliases tx.mutations' backing array, so prefixing m.Param1/Param2 in place
+	// would corrupt the persistent buffer and double-prefix on any rebuild
+	// (e.g. a re-Commit without an intervening reset). C++ avoids this by
+	// building a fresh VectorRef<MutationRef> (applyTenantPrefix, NativeAPI.actor.cpp:6523:
+	// `updatedMutations`, `withPrefix` allocating, then `req.transaction.mutations = updatedMutations`)
+	// and by passing the request to tryCommit by value. We mirror that: copy the
+	// mutation headers into a pooled scratch slice and prefix THAT. The conflict
+	// ranges already build fresh KeyRangeRef copies above, so they are not aliased.
+	var mutScratch *[]types.MutationRef
 	if tx.tenantId >= 0 {
+		mutScratch = mutSlicePool.Get().(*[]types.MutationRef)
+		mutations = append((*mutScratch)[:0], mutations...)
+
 		var prefix [8]byte
 		binary.BigEndian.PutUint64(prefix[:], uint64(tx.tenantId))
 		for i := range mutations {
@@ -344,7 +363,12 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (b
 	result := req.MarshalFDBPooled(*bufp)
 	*bufp = result // track capacity for pool reuse
 
-	// Return pooled slices.
+	// Return pooled slices. Safe after marshal: MarshalFDBPooled copies bytes
+	// into result, so the scratch/conflict slices are no longer referenced.
+	if mutScratch != nil {
+		*mutScratch = mutations
+		mutSlicePool.Put(mutScratch)
+	}
 	*readCRSlice = readCRs
 	crSlicePool.Put(readCRSlice)
 	*writeCRSlice = writeCRs
