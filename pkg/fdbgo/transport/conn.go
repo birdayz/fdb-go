@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -67,14 +68,22 @@ var errChanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 // If the server kills the connection, readLoop cancels the context
 // and IsClosed() returns true — the connection pool will evict it.
 type Conn struct {
-	conn     net.Conn
-	useTLS   bool
-	wbuf     *bufio.Writer // owned exclusively by writeLoop
-	hasDirty atomic.Bool   // true when wbuf has unflushed data
-	writeCh  chan writeReq // channel-based write loop for coalescing
-	ctx      context.Context
-	cancel   context.CancelFunc
-	loopWG   sync.WaitGroup // tracks readLoop + writeLoop goroutines
+	conn      net.Conn
+	useTLS    bool
+	wbuf      *bufio.Writer // owned exclusively by writeLoop
+	hasDirty  atomic.Bool   // true when wbuf has unflushed data
+	writeCh   chan writeReq // channel-based write loop for coalescing
+	ctx       context.Context
+	cancel    context.CancelFunc
+	loopWG    sync.WaitGroup // tracks readLoop + writeLoop goroutines
+	closeOnce sync.Once      // guards the single failConnection teardown
+
+	// Connection monitor cadence. Defaults match C++ CONNECTION_MONITOR_LOOP_TIME
+	// (0.75s) / CONNECTION_MONITOR_TIMEOUT (2s); set once at dial time before the
+	// monitor goroutine starts. Tests inject small values for deterministic,
+	// fast monitor-death assertions (see withMonitorCadence).
+	monitorLoopInterval time.Duration
+	monitorTimeout      time.Duration
 
 	// Typed pending map avoids sync.Map's interface boxing (saves 3 allocs/RPC).
 	pendingMu sync.RWMutex
@@ -130,9 +139,33 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 	return DialWithTLS(ctx, addr, tls, dialFn, nil)
 }
 
+// errConnClosed is delivered to in-flight requests and queued senders when the
+// connection is torn down (by Close, the monitor, or a read error). The client
+// treats any non-nil transport error as a connection failure → retry, so the
+// concrete value only needs to be non-nil and stable.
+var errConnClosed = errors.New("connection closed")
+
+// connOption tweaks a Conn before its loop goroutines start. Test-only knobs
+// (e.g. monitor cadence) ride this so the public Dial signatures stay clean.
+type connOption func(*Conn)
+
+// withMonitorCadence overrides the connection-monitor loop interval and timeout.
+// Test-only: lets the monitor-death path fire in tens of ms instead of ~3.5s.
+func withMonitorCadence(loop, timeout time.Duration) connOption {
+	return func(c *Conn) {
+		c.monitorLoopInterval = loop
+		c.monitorTimeout = timeout
+	}
+}
+
 // DialWithTLS connects to an FDB server with optional TLS.
 // If tlsCfg is non-nil and tls is true, the connection is encrypted.
 func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc, tlsCfg *TLSConfig) (*Conn, error) {
+	return dialWith(ctx, addr, useTLS, dialFn, tlsCfg)
+}
+
+// dialWith is the implementation behind DialWithTLS, plus test-only connOptions.
+func dialWith(ctx context.Context, addr string, useTLS bool, dialFn DialFunc, tlsCfg *TLSConfig, opts ...connOption) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer
 		dialFn = d.DialContext
@@ -180,6 +213,13 @@ func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc,
 		pending: make(map[UID]chan Response, 16),
 		ctx:     connCtx,
 		cancel:  cancel,
+		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT defaults.
+		monitorLoopInterval: 750 * time.Millisecond,
+		monitorTimeout:      2 * time.Second,
+	}
+	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).
+	for _, o := range opts {
+		o(c)
 	}
 
 	// Exchange ConnectPackets.
@@ -288,11 +328,21 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
 	case <-c.ctx.Done():
 		errChanPool.Put(errCh)
-		return fmt.Errorf("connection closed")
+		return errConnClosed
 	}
-	err := <-errCh
-	errChanPool.Put(errCh)
-	return err
+	// Wait for writeLoop to write+flush, OR bail if the connection is torn down
+	// (Close/monitor/read-error cancels ctx). Without the ctx.Done arm a sender
+	// whose frame is still queued when writeLoop exits would block on errCh
+	// forever. On the ctx.Done path errCh is deliberately NOT returned to the
+	// pool: writeLoop may still hold a reference and send to it, which would
+	// surface as a stale buffered value on the next pool user (audit #13).
+	select {
+	case err := <-errCh:
+		errChanPool.Put(errCh)
+		return err
+	case <-c.ctx.Done():
+		return errConnClosed
+	}
 }
 
 // SendFrameDeferred writes a raw frame WITHOUT waiting for flush.
@@ -305,7 +355,7 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	case c.writeCh <- writeReq{token: destToken, body: body}:
 		return nil
 	case <-c.ctx.Done():
-		return fmt.Errorf("connection closed")
+		return errConnClosed
 	}
 }
 
@@ -321,12 +371,18 @@ func (c *Conn) Flush() error {
 	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
 	case <-c.ctx.Done():
 		errChanPool.Put(errCh)
-		return fmt.Errorf("connection closed")
+		return errConnClosed
 	}
-	err := <-errCh
-	c.hasDirty.Store(false)
-	errChanPool.Put(errCh)
-	return err
+	// Bail on connection teardown rather than block forever on errCh (see SendFrame).
+	// errCh is not pooled on the ctx.Done path (stale-value hazard, audit #13).
+	select {
+	case err := <-errCh:
+		c.hasDirty.Store(false)
+		errChanPool.Put(errCh)
+		return err
+	case <-c.ctx.Done():
+		return errConnClosed
+	}
 }
 
 // writeLoop is the dedicated write goroutine. It reads frames from writeCh,
@@ -404,7 +460,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-c.ctx.Done():
-		return nil, fmt.Errorf("connection closed")
+		return nil, errConnClosed
 	}
 }
 
@@ -419,10 +475,30 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 // 4. readLoop exits, signals WaitGroup
 // 5. Close returns
 func (c *Conn) Close() error {
-	c.cancel() // idempotent — safe to call multiple times
-	err := c.conn.Close()
+	c.failConnection(errConnClosed)
 	c.loopWG.Wait()
-	return err
+	return nil
+}
+
+// failConnection is the single connection-teardown path (C++ connectionKeeper):
+// cancel the context (unblocks SendFrame/Flush/SendAndWait selects), close the
+// socket (unblocks readLoop's blocking Read so the fd + goroutine can't leak),
+// and deliver err to every in-flight reply. sync.Once makes the trio run exactly
+// once with the FIRST caller's error, no matter how many of {Close, monitor
+// death, readLoop error} fire. Single-delivery to a given pending reply is
+// guaranteed by failAllPending's own pendingMu + delete-as-you-go, not by the
+// Once; the Once only ensures the meaningful error wins over a later
+// "use of closed connection" read error.
+//
+// Callable from a loop goroutine (readLoop/monitor): the Once body never touches
+// loopWG, and only Close() waits on loopWG — after failConnection returns — so
+// there is no self-deadlock.
+func (c *Conn) failConnection(err error) {
+	c.closeOnce.Do(func() {
+		c.cancel()
+		_ = c.conn.Close()
+		c.failAllPending(err)
+	})
 }
 
 // SetDebug enables frame-level debug tracing to stderr.
@@ -463,8 +539,6 @@ func (c *Conn) PeerProtocolVersion() uint64 {
 // Both paths: deliver errors to all pending, signal WaitGroup, return.
 func (c *Conn) readLoop() {
 	defer c.loopWG.Done()
-	defer c.cancel()     // if server kills us, mark connection dead
-	defer c.conn.Close() // close TCP socket — prevents fd leak on Path B (server dies)
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
 	var fr FrameReader
@@ -476,8 +550,10 @@ func (c *Conn) readLoop() {
 			if c.debugFrames && c.ctx.Err() == nil {
 				fmt.Fprintf(c.debugWriter, "[recv] ERROR: %v\n", err)
 			}
-			// Deliver error to all pending requests (C++ disconnect promise equivalent).
-			c.failAllPending(err)
+			// Single teardown path: cancel ctx, close socket, fail all pending
+			// (C++ disconnect promise equivalent). Idempotent if Close/monitor
+			// already fired.
+			c.failConnection(err)
 			return
 		}
 
@@ -626,9 +702,9 @@ func (c *Conn) connectionMonitor() {
 
 	for {
 		// Outer loop: sleep, then decide whether to PING.
-		// C++ CONNECTION_MONITOR_LOOP_TIME = 0.75s
+		// C++ CONNECTION_MONITOR_LOOP_TIME = 0.75s (configurable for tests).
 		select {
-		case <-time.After(750 * time.Millisecond):
+		case <-time.After(c.monitorLoopInterval):
 		case <-c.ctx.Done():
 			return
 		}
@@ -644,7 +720,7 @@ func (c *Conn) connectionMonitor() {
 
 		// C++ second delay (jittered) before sending PING.
 		select {
-		case <-time.After(750 * time.Millisecond):
+		case <-time.After(c.monitorLoopInterval):
 		case <-c.ctx.Done():
 			return
 		}
@@ -656,18 +732,21 @@ func (c *Conn) connectionMonitor() {
 		// Wait 2s per round. Kill only if bytesReceived is truly frozen.
 		startingBytes := c.bytesReceived.Load()
 		for {
-			timer := time.NewTimer(2 * time.Second)
+			timer := time.NewTimer(c.monitorTimeout)
 			select {
 			case <-replyCh:
 				// PING reply arrived — connection alive. C++ line 710-714.
 				timer.Stop()
 			case <-timer.C:
-				// 2s timeout. Check if ANY bytes arrived.
+				// Timeout. Check if ANY bytes arrived.
 				current := c.bytesReceived.Load()
 				if current == startingBytes {
 					// No bytes at all since PING was sent — connection is dead.
-					// C++ line 698-699: throw connection_failed.
-					c.cancel()
+					// C++ line 698-699: throw connection_failed. Route through the
+					// single teardown path: cancel + CLOSE THE SOCKET (so readLoop's
+					// blocking Read unblocks — the old bare cancel() leaked the fd +
+					// goroutine until TCP keepalive) + fail all pending.
+					c.failConnection(errConnClosed)
 					return
 				}
 				// Bytes arrived (server PINGs, other traffic) but not our PING reply.
