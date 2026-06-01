@@ -160,6 +160,23 @@ func mkInflight(addr string, delta float64, ready bool) inFlightRPC {
 	}
 }
 
+// applyCallerAccounting mirrors the post-hedge QueueModel accounting in
+// readpath.go: end every non-winner started request (result.others), then the
+// winner. Shared by the hedge + waitForReply accounting tests.
+func applyCallerAccounting(qm *QueueModel, res hedgeResult) {
+	for _, o := range res.others {
+		qm.endRequest(o.addr, o.delta, time.Since(o.start), false)
+	}
+	if res.addr != "" {
+		qm.endRequest(res.addr, res.delta, time.Since(res.start), res.err == nil)
+	}
+}
+
+// totalOf returns a server's raw smoothOutstanding running total (the leak sentinel).
+func totalOf(qm *QueueModel, addr string) float64 {
+	return qm.getOrCreate(addr).smoothOutstanding.total
+}
+
 // TestRaceReplies_AccountsEveryStartedRequest pins RFC-010 #5: every request
 // that startRequest was called for must be recoverable for endRequest. The
 // winner is in result.addr/delta; every OTHER started request (the loser, or
@@ -216,19 +233,6 @@ func TestRaceReplies_AccountsEveryStartedRequest(t *testing.T) {
 // (and both arms on timeout) leaked their startRequest delta forever.
 func TestHedge_QueueModelOutstandingReturnsToBaseline(t *testing.T) {
 	t.Parallel()
-
-	// applyCallerAccounting mirrors the post-hedge block in readpath.go.
-	applyCallerAccounting := func(qm *QueueModel, res hedgeResult) {
-		for _, o := range res.others {
-			qm.endRequest(o.addr, o.delta, time.Since(o.start), false)
-		}
-		if res.addr != "" {
-			qm.endRequest(res.addr, res.delta, time.Since(res.start), res.err == nil)
-		}
-	}
-	totalOf := func(qm *QueueModel, addr string) float64 {
-		return qm.getOrCreate(addr).smoothOutstanding.total
-	}
 
 	t.Run("winner+loser both released", func(t *testing.T) {
 		t.Parallel()
@@ -309,18 +313,6 @@ func TestHedge_ConnErrorOnReply(t *testing.T) {
 // the raceReplies (two-server) accounting tests.
 func TestWaitForReply_AccountsSingleRequest(t *testing.T) {
 	t.Parallel()
-
-	applyCallerAccounting := func(qm *QueueModel, res hedgeResult) {
-		for _, o := range res.others {
-			qm.endRequest(o.addr, o.delta, time.Since(o.start), false)
-		}
-		if res.addr != "" {
-			qm.endRequest(res.addr, res.delta, time.Since(res.start), res.err == nil)
-		}
-	}
-	totalOf := func(qm *QueueModel, addr string) float64 {
-		return qm.getOrCreate(addr).smoothOutstanding.total
-	}
 
 	t.Run("timeout", func(t *testing.T) {
 		t.Parallel()
