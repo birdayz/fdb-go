@@ -730,11 +730,16 @@ func (c *Conn) connectionMonitor() {
 		// Inner loop: C++ lines 690-720.
 		// Wait 2s per round. Kill only if bytesReceived is truly frozen.
 		startingBytes := c.bytesReceived.Load()
+	pingWait:
 		for {
 			timer := time.NewTimer(c.monitorTimeout)
 			select {
 			case <-replyCh:
 				// PING reply arrived — connection alive. C++ line 710-714.
+				// replyCh is nil when the ping couldn't be sent (writeCh
+				// saturated); a nil channel is never selected, so this case is
+				// dead and we fall through to the bytesReceived check (and, on
+				// observed traffic, the re-ping break below).
 				timer.Stop()
 			case <-timer.C:
 				// Timeout. Check if ANY bytes arrived.
@@ -753,6 +758,18 @@ func (c *Conn) connectionMonitor() {
 				// C++ uses timeouts counter here only for logging (ConnectionSlowPing),
 				// NOT for kill decisions — the kill condition is solely bytesReceived.
 				startingBytes = current
+				if replyCh == nil {
+					// The PING was never sent (writeCh was saturated), so no reply can
+					// arrive on this nil channel — the inner loop has no success path.
+					// We just confirmed bytes are still flowing, so the connection is
+					// NOT frozen; staying here would wait forever for an impossible
+					// reply and kill a healthy-but-quiet connection on the next idle
+					// window (failing slow-but-live requests). Break to the outer loop
+					// to re-attempt the PING next cycle, by which point writeCh has
+					// likely drained. C++ never hits this — Peer::send is unbounded, so
+					// the ping always goes out; this is the bounded-writeCh fallback.
+					break pingWait
+				}
 				continue
 			case <-c.ctx.Done():
 				timer.Stop()
@@ -767,21 +784,29 @@ func (c *Conn) connectionMonitor() {
 // when the PING reply arrives. Matches C++ pingRequest.reply.getFuture().
 // The reply is registered in the pending map so readLoop dispatches it.
 func (c *Conn) sendPingWithReply() <-chan struct{} {
-	done := make(chan struct{})
 	replyToken, replyCh, replyHandle := c.PrepareReply()
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
 	select {
 	case c.writeCh <- writeReq{token: pingEP, body: body}:
 	default:
-		// Write channel full — cancel and return closed channel
-		// so the inner loop falls through to bytesReceived check.
+		// writeCh is saturated — we could not send the PING. Return a nil
+		// channel, NOT a closed one. A closed channel makes the monitor's
+		// `case <-replyCh` fire immediately and falsely conclude "connection
+		// alive", skipping the bytesReceived liveness check exactly when a
+		// saturated buffer signals a stuck connection (writeLoop blocked on an
+		// undrained socket). A nil channel is never selected, so the monitor
+		// falls through to the timer → bytesReceived check and kills a genuinely
+		// stuck conn. The pending reply is cancelled here (no leak); the
+		// reply-waiter goroutine below is only reached on the sent path.
 		replyHandle.Cancel()
 		replyHandle.Release()
-		close(done)
-		return done
+		return nil
 	}
-	// Wait for reply in background, then signal done.
+	// Sent path only — allocate the done channel here so the drop path above
+	// doesn't allocate one it never uses. Wait for the reply in the background,
+	// then signal done.
+	done := make(chan struct{})
 	go func() {
 		defer replyHandle.Release()
 		defer close(done)

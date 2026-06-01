@@ -65,6 +65,123 @@ func (s *simServer) drainUntilClosed() {
 	}
 }
 
+// TestSendPingWithReply_DropsToNilOnFullWriteCh pins RFC-052 (#14): when writeCh
+// is saturated the monitor ping is dropped, and the drop MUST return a nil
+// channel — not a closed one. A closed channel makes the monitor's
+// `case <-replyCh` fire immediately and falsely conclude "connection alive",
+// skipping the bytesReceived liveness check exactly when a saturated buffer
+// signals a stuck connection. A nil channel is never selected, so the monitor
+// falls through to that check. (The monitor's correct behavior then follows from
+// Go's guaranteed nil-channel select semantics + the sent-path kill already
+// pinned by TestConn_MonitorDeathClosesSocket.) Fails on the pre-fix code, which
+// returned a closed non-nil channel.
+func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &Conn{
+		ctx:     ctx,
+		cancel:  cancel,
+		writeCh: make(chan writeReq, 1),
+		pending: make(map[UID]chan Response),
+	}
+	c.writeCh <- writeReq{} // saturate the 1-slot writeCh (no writeLoop draining it)
+
+	got := c.sendPingWithReply()
+	if got != nil {
+		t.Fatalf("on a saturated writeCh the dropped ping must return a nil channel "+
+			"(a closed one is read as 'PING reply arrived → alive', defeating the liveness check); got %v", got)
+	}
+	c.pendingMu.Lock()
+	n := len(c.pending)
+	c.pendingMu.Unlock()
+	if n != 0 {
+		t.Errorf("dropped ping left a pending reply registered (leak): %d", n)
+	}
+}
+
+// TestMonitor_DroppedPingRePingsInsteadOfStalling pins the codex P2 on RFC-052
+// (#14). Returning a nil channel on a dropped PING fixes the closed-channel
+// false-alive bug, but the inner monitor loop then has NO <-replyCh success path:
+// it can only kill (frozen bytes) or continue (traffic). The re-ping happens only
+// via the outer loop, reached on the dead <-replyCh branch — so a connection whose
+// PING was dropped would NEVER ping again and would die on the first idle window,
+// failing slow-but-live requests. The fix breaks back to the outer loop on
+// observed traffic so the next cycle re-attempts the PING.
+//
+// Deterministic: the single writeCh slot is held by a dummy, so every PING attempt
+// drops while it sits there. Steady traffic keeps the liveness check from firing.
+// Draining the dummy then lets the NEXT attempt enqueue a real PING — which appears
+// only if the monitor is still cycling the outer loop (the fix); with the bug it is
+// wedged in the inner loop and no further PING is ever enqueued.
+func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Conn{
+		ctx:                 ctx,
+		cancel:              cancel,
+		writeCh:             make(chan writeReq, 1),
+		pending:             make(map[UID]chan Response),
+		monitorLoopInterval: 5 * time.Millisecond,
+		monitorTimeout:      5 * time.Millisecond,
+	}
+	// Pending work so the monitor actually pings (C++ outstandingReplies > 0).
+	c.pending[UID{First: 99}] = make(chan Response, 1)
+	// Occupy the only writeCh slot so every PING attempt drops to nil.
+	c.writeCh <- writeReq{}
+
+	// Steady traffic: bytesReceived advances so the liveness check never declares
+	// the conn dead — failConnection on this socket-less test Conn would panic, and
+	// the healthy-but-quiet path is exactly what we're proving.
+	stop := make(chan struct{})
+	go func() {
+		tk := time.NewTicker(time.Millisecond)
+		defer tk.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+				c.bytesReceived.Add(1)
+			}
+		}
+	}()
+
+	c.loopWG.Add(1)
+	go c.connectionMonitor()
+	t.Cleanup(func() {
+		cancel()        // stop the monitor
+		c.loopWG.Wait() // no goroutine leak
+		close(stop)     // stop traffic
+	})
+
+	// Let several ping cycles elapse — each drops because the dummy holds the slot.
+	time.Sleep(100 * time.Millisecond)
+
+	// Free the slot. With the fix the monitor is still cycling the outer loop and
+	// the next attempt enqueues a real PING here; with the bug it is wedged in the
+	// inner loop and nothing more is ever enqueued.
+	select {
+	case <-c.writeCh: // drain the dummy
+	default:
+		t.Fatal("dummy writeReq unexpectedly already drained — monitor consumed the slot?")
+	}
+
+	pingEP := WellKnownToken(WLTokenPingPacket)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case req := <-c.writeCh:
+			if req.token == pingEP {
+				return // re-ping observed — fix works
+			}
+		case <-deadline:
+			t.Fatal("monitor never re-pinged after a dropped ping + observed traffic: " +
+				"inner loop wedged with no success path (codex P2 on #14)")
+		}
+	}
+}
+
 // awaitWithin fails the test if done has not fired within d.
 func awaitWithin(t *testing.T, d time.Duration, done <-chan struct{}, msg string) {
 	t.Helper()
