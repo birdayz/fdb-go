@@ -42,21 +42,33 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 	// return a future backed by the reply channel. This enables true pipelining —
 	// N Gets send N frames immediately, then N future.Get() calls collect responses.
 	val, pending, err := inner.GetPipelined(ctx, key.FDBKey())
-	if err == nil {
-		if pending != nil {
-			// Server request in flight — future resolves when response arrives.
-			return newPendingFutureByteSlice(pending)
-		}
-		// RYW cache hit or cleared key.
-		return newReadyFutureByteSlice(val, nil)
+	if err != nil {
+		// GetPipelined failed before any request was in flight — either
+		// ErrNeedFullRYW (the key has pending atomics needing a server read +
+		// merge) or a layer-2 locate/send failure (e.g. every located connection
+		// dropped between getOrDial and SendFrameDeferred, surfaced as
+		// all_alternatives_failed / 1006). Re-drive through the full
+		// ryw.get()/getValue path, which does the RYW merge AND the local
+		// wrong-shard/all-alternatives retry loop.
+		//
+		// This MUST fall back for all of them, not just ErrNeedFullRYW: 1006 is
+		// retried locally by getValue, but Transact.OnError does NOT retry 1006
+		// (the read path is expected to absorb it), so surfacing it here would
+		// turn a transient send failure into a failed transaction (RFC-010 #3,
+		// regression caught by codex review). A genuinely terminal error (e.g.
+		// key_outside_legal_range) re-fails identically in inner.Get — nothing is
+		// masked, and the illegal frame was already rejected before send.
+		return newFutureByteSlice(func() ([]byte, error) {
+			v, gerr := inner.Get(ctx, key.FDBKey())
+			return v, convertError(gerr)
+		})
 	}
-	// GetPipelined returned errNeedFullRYW — key has pending atomics that
-	// require a server read + merge. Fall back to goroutine-based Get which
-	// goes through the full ryw.get() path.
-	return newFutureByteSlice(func() ([]byte, error) {
-		v, gerr := inner.Get(ctx, key.FDBKey())
-		return v, convertError(gerr)
-	})
+	if pending != nil {
+		// Server request in flight — future resolves when response arrives.
+		return newPendingFutureByteSlice(pending)
+	}
+	// RYW cache hit or cleared key.
+	return newReadyFutureByteSlice(val, nil)
 }
 
 // GetKey returns the key referenced by the given key selector.

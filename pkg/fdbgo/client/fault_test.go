@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -328,25 +330,28 @@ func (d *wrongShardDialer) armAll() {
 	}
 }
 
-// TestWrongShardServer_FaultInjection verifies that wrong_shard_server (1062)
-// triggers location cache invalidation and automatic retry.
-//
-// Uses a wrongShardConn at the net.Conn level (via custom dialer) to replace
-// the next server response frame with ErrorOr(1062). The client should:
-//  1. Receive 1062, invalidate the location cache
-//  2. Re-query the commit proxy for fresh locations
-//  3. Retry the read and succeed
-func TestWrongShardServer_FaultInjection(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+// newWrongShardTestDB starts an FDB container and returns a Database that dials
+// through a wrongShardDialer; wd.armAll() then replaces the next server frame
+// with an injected wrong_shard_server error. The injected code is the canonical
+// literal 1001, NOT the ErrWrongShardServer constant — injecting the
+// code-under-test's own constant would make the test self-confirming (RFC-010 P6).
+// Cleanup is registered via t.Cleanup.
+func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongShardDialer) {
+	t.Helper()
 
 	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	t.Cleanup(func() { container.Terminate(ctx) })
+	// Terminate on a FRESH context, not the test's ctx: t.Cleanup runs AFTER the
+	// caller's `defer cancel()`, so terminating on the (cancelled) test ctx makes
+	// testcontainers bail with context.Canceled and leak the container. RFC-010
+	// codex review finding. Matches the multishard env's cleanup convention.
+	t.Cleanup(func() {
+		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer termCancel()
+		container.Terminate(termCtx)
+	})
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
@@ -378,21 +383,36 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		connectCF.InternalKey += a
 	}
 
-	// Verify the crafted error response parses correctly.
-	errBody := buildFDBErrorResponse(int32(ErrWrongShardServer))
+	const wrongShardServerCode = 1001 // canonical wrong_shard_server (see func doc)
+	errBody := buildFDBErrorResponse(wrongShardServerCode)
 	if _, parseErr := wire.ReadErrorOr(errBody); parseErr == nil {
 		t.Fatal("buildFDBErrorResponse should produce an error response")
 	}
 
 	wd := &wrongShardDialer{errBody: errBody}
 	db := newTestDatabase(t, ctx, connectCF, wd.dial)
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
+	return db, wd
+}
+
+// TestWrongShardServer_FaultInjection verifies that an injected wrong_shard_server
+// (1001) reply on the synchronous read path triggers location-cache invalidation
+// and an automatic retry: the client receives 1001, invalidates the cache,
+// re-queries the proxy for fresh locations, and retries the read to success.
+// (See newWrongShardTestDB for why the injected code is the literal 1001.)
+func TestWrongShardServer_FaultInjection(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, wd := newWrongShardTestDB(t, ctx)
 
 	key := []byte(t.Name() + "_key")
 	expected := []byte("correct_value")
 
 	// Seed the key.
-	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, expected)
 		return nil, nil
 	})
@@ -417,11 +437,11 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		t.Fatalf("GRV: %v", err)
 	}
 
-	// Arm: the next frame read on any connection will be replaced with 1062.
+	// Arm: the next frame read on any connection will be replaced with 1001.
 	wd.armAll()
 
 	// Read with pre-set read version. The first getValue attempt will get
-	// a replaced frame (1062), causing cache invalidation and retry.
+	// a replaced frame (1001), causing cache invalidation and retry.
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
 	got, err := tx.Get(ctx, key)
@@ -432,6 +452,241 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		t.Fatalf("Get value: got %q, want %q", got, expected)
 	}
 	t.Log("wrong_shard_server fault injection: retry succeeded with correct value")
+}
+
+// TestWrongShardServer_GetKey covers the wrong-shard retry loop on the key-selector
+// read path (getKey), not just point Get. Same injection, asserts GetKey still
+// resolves correctly after a 1001 reply. RFC-010 #2 (error case across read surface).
+func TestWrongShardServer_GetKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, wd := newWrongShardTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Warm the cache. firstGreaterOrEqual(key) = {key, orEqual=false, offset=1}.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetKey(ctx, key, false, 1)
+	}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	wd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	got, err := tx.GetKey(ctx, key, false, 1)
+	if err != nil {
+		t.Fatalf("GetKey after fault: %v", err)
+	}
+	if string(got) != string(key) {
+		t.Fatalf("GetKey: got %q, want %q", got, key)
+	}
+}
+
+// TestWrongShardServer_GetRange covers the wrong-shard retry loop on the range
+// read path (getRange). Same injection, asserts GetRange returns the full range
+// after a 1001 reply. RFC-010 #2 (error case across read surface).
+func TestWrongShardServer_GetRange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, wd := newWrongShardTestDB(t, ctx)
+
+	pfx := t.Name() + "_"
+	want := map[string]string{}
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			k := fmt.Sprintf("%s%02d", pfx, i)
+			v := fmt.Sprintf("v%d", i)
+			tx.Set([]byte(k), []byte(v))
+			want[k] = v
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	begin := []byte(pfx)
+	end := append([]byte(pfx), 0xFF)
+	// Warm the cache.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRange(ctx, begin, end, 100)
+		return kvs, err
+	}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	wd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	kvs, _, err := tx.GetRange(ctx, begin, end, 100)
+	if err != nil {
+		t.Fatalf("GetRange after fault: %v", err)
+	}
+	if len(kvs) != len(want) {
+		t.Fatalf("GetRange: got %d kvs, want %d", len(kvs), len(want))
+	}
+	for _, kv := range kvs {
+		if want[string(kv.Key)] != string(kv.Value) {
+			t.Errorf("kv %q: got %q, want %q", kv.Key, kv.Value, want[string(kv.Key)])
+		}
+	}
+}
+
+// TestPipelinedGet_WrongShardRetry verifies the pipelined read path
+// (GetPipelined + PendingGet.Resolve) applies the SAME wrong_shard_server
+// invalidate+retry as the synchronous getValue path. Before RFC-010 #3, Resolve
+// returned the wrong-shard reply flattened to all_alternatives_failed without
+// invalidating the location cache or retrying — so the public API's most common
+// point-read silently skipped wrong-shard recovery.
+func TestPipelinedGet_WrongShardRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, wd := newWrongShardTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	expected := []byte("pipelined_value")
+
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, expected)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Warm the location cache with a successful read.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	}); err != nil {
+		t.Fatalf("warm read: %v", err)
+	}
+
+	// Pre-fetch read version so no GRV request during the fault window.
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+
+	// Arm: the next frame on any connection becomes 1001 (wrong_shard_server).
+	wd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	_, pending, err := tx.GetPipelined(ctx, key)
+	if err != nil {
+		t.Fatalf("GetPipelined: %v", err)
+	}
+	if pending == nil {
+		t.Fatal("expected a pending pipelined get for a server-resident key")
+	}
+	// The reply is the injected wrong_shard_server; Resolve must invalidate the
+	// cache and re-drive through the full read path, returning the real value.
+	got, err := pending.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve after wrong-shard: %v", err)
+	}
+	if string(got) != string(expected) {
+		t.Fatalf("Resolve value: got %q, want %q", got, expected)
+	}
+	t.Log("pipelined wrong_shard_server: Resolve invalidated + retried, returned correct value")
+}
+
+// TestPipelinedGet_IllegalKeyRejectedAtEnqueue verifies GetPipelined rejects an
+// out-of-legal-range key BEFORE sending (matching Transaction.Get), rather than
+// putting the illegal frame on the wire and discovering it at response time. RFC-010 #3.
+func TestPipelinedGet_IllegalKeyRejectedAtEnqueue(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	tx := db.CreateTransaction()
+	// Beyond \xff\xff (the max read key for any transaction) — illegal.
+	illegal := []byte{0xff, 0xff, 0xff}
+	val, pending, err := tx.GetPipelined(ctx, illegal)
+	if pending != nil {
+		t.Fatal("illegal key must not produce a pending request (frame would already be on the wire)")
+	}
+	if val != nil {
+		t.Fatalf("illegal key: unexpected value %q", val)
+	}
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != 2004 {
+		t.Fatalf("illegal key: got err %v, want FDBError 2004 (key_outside_legal_range)", err)
+	}
+}
+
+// TestPipelinedGet_BatchResolvesCorrectly verifies pipelining still works after
+// the #3 retry change: N deferred sends followed by N Resolves return the right
+// values. The retry logic only activates on error, so the happy-path batched
+// send/flush is structurally unchanged — this pins that end to end.
+func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const n = 16
+	keys := make([][]byte, n)
+	vals := make([][]byte, n)
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < n; i++ {
+			keys[i] = []byte(fmt.Sprintf("%s_k%03d", t.Name(), i))
+			vals[i] = []byte(fmt.Sprintf("v%03d", i))
+			tx.Set(keys[i], vals[i])
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		// Enqueue all N pipelined gets (deferred sends, no flush yet)...
+		pendings := make([]*PendingGet, n)
+		for i := 0; i < n; i++ {
+			_, p, err := tx.GetPipelined(ctx, keys[i])
+			if err != nil {
+				return nil, fmt.Errorf("GetPipelined %d: %w", i, err)
+			}
+			if p == nil {
+				t.Fatalf("key %d: expected a pending server request", i)
+			}
+			pendings[i] = p
+		}
+		// ...then resolve them; the first Resolve flushes the batch.
+		for i := 0; i < n; i++ {
+			got, err := pendings[i].Resolve()
+			if err != nil {
+				return nil, fmt.Errorf("Resolve %d: %w", i, err)
+			}
+			if string(got) != string(vals[i]) {
+				t.Errorf("key %d: got %q, want %q", i, got, vals[i])
+			}
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("pipelined batch: %v", err)
+	}
 }
 
 // TestCommitDummyTransaction verifies that commitDummyTransaction works as a
@@ -511,5 +766,93 @@ func TestCommitDummyTransaction_IsDummyGuard(t *testing.T) {
 		t.Logf("dummy commit error (expected): %v", err)
 	} else {
 		t.Log("dummy commit succeeded")
+	}
+}
+
+// TestPipelinedGet_Resolve_TransportErrorRetries covers PendingGet.Resolve's
+// transport-error arm (RFC-010 #3 + the handleConnError parity fix / codex gap 2):
+// a reply carrying a connection-layer error re-drives through the full getValue
+// path and returns the seeded value. Built by hand-constructing a PendingGet
+// against a real transaction with a pre-loaded error reply.
+func TestPipelinedGet_Resolve_TransportErrorRetries(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_key")
+	want := []byte("value")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, want)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	tx := db.CreateTransaction()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	replyCh := make(chan transport.Response, 1)
+	replyCh <- transport.Response{Err: io.EOF} // connection/transport error
+	p := &PendingGet{
+		key:         key,
+		tx:          tx,
+		addr:        "0.0.0.0:1", // bogus addr; handleConnError marks it, no real conn
+		replyCh:     replyCh,
+		replyHandle: &transport.ReplyHandle{},
+		ctx:         ctx,
+		timer:       getTimer(DefaultRPCTimeout),
+		flushed:     true, // skip conn.Flush (no conn)
+	}
+	got, err := p.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve (transport error -> retry): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q (transport error should re-drive through getValue)", got, want)
+	}
+}
+
+// TestPipelinedGet_Resolve_TimeoutRetries covers PendingGet.Resolve's RPC-timeout
+// arm (RFC-010 #3 / codex gap 3): when the reply never arrives, the timer fires
+// and Resolve re-drives through getValue rather than surfacing DeadlineExceeded.
+func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_key")
+	want := []byte("value")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, want)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	tx := db.CreateTransaction()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	p := &PendingGet{
+		key:         key,
+		tx:          tx,
+		addr:        "0.0.0.0:1",
+		replyCh:     make(chan transport.Response), // never fires
+		replyHandle: &transport.ReplyHandle{},
+		ctx:         ctx,
+		timer:       getTimer(time.Millisecond), // fires fast
+		flushed:     true,
+	}
+	got, err := p.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve (timeout -> retry): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q (timeout should re-drive through getValue)", got, want)
 	}
 }

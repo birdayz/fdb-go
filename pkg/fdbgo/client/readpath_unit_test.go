@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,8 +28,12 @@ func TestIsWrongShardServer(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"plain", errors.New("boom"), false},
-		{"FDB 1062", &wire.FDBError{Code: ErrWrongShardServer}, true},
-		{"wrapped FDB 1062", fmt.Errorf("send: %w", &wire.FDBError{Code: ErrWrongShardServer}), true},
+		// Inject literal canonical codes, not the code-under-test's constant
+		// (anti-self-confirming, RFC-010 P6): 1001 is wrong_shard_server, 1062
+		// is change_feed_cancelled and must NOT be treated as wrong-shard.
+		{"FDB 1001 wrong_shard_server", &wire.FDBError{Code: 1001}, true},
+		{"wrapped FDB 1001", fmt.Errorf("send: %w", &wire.FDBError{Code: 1001}), true},
+		{"FDB 1062 change_feed_cancelled NOT wrong-shard", &wire.FDBError{Code: 1062}, false},
 		{"FDB other", &wire.FDBError{Code: 1007}, false},
 		{"FDB 1006", &wire.FDBError{Code: ErrAllAlternativesFailed}, false},
 	}
@@ -38,6 +43,24 @@ func TestIsWrongShardServer(t *testing.T) {
 				t.Errorf("isWrongShardServer(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestWrongShardServerCode_Canonical pins ErrWrongShardServer to the canonical
+// FDB code and proves it is NOT change_feed_cancelled. This is the value-equality
+// guard that would have caught the 1062 bug: the constant must equal the wire
+// code named "wrong_shard_server", independent of any matcher that consumes it.
+func TestWrongShardServerCode_Canonical(t *testing.T) {
+	t.Parallel()
+	if ErrWrongShardServer != 1001 {
+		t.Fatalf("ErrWrongShardServer = %d, want canonical 1001 (wrong_shard_server)", ErrWrongShardServer)
+	}
+	if desc := (&wire.FDBError{Code: ErrWrongShardServer}).Error(); !strings.Contains(desc, "wrong_shard_server") {
+		t.Errorf("FDBError{Code: ErrWrongShardServer}.Error() = %q, want substring %q", desc, "wrong_shard_server")
+	}
+	// 1062 is change_feed_cancelled — guard against the historical confusion.
+	if desc := (&wire.FDBError{Code: 1062}).Error(); !strings.Contains(desc, "change_feed_cancelled") {
+		t.Errorf("FDBError{Code: 1062}.Error() = %q, want substring %q", desc, "change_feed_cancelled")
 	}
 }
 
@@ -75,7 +98,7 @@ func TestIsFutureVersionOrProcessBehind(t *testing.T) {
 		{"FDB 1009", &wire.FDBError{Code: ErrFutureVersion}, true},
 		{"FDB 1037", &wire.FDBError{Code: ErrProcessBehind}, true},
 		{"wrapped 1009", fmt.Errorf("send: %w", &wire.FDBError{Code: ErrFutureVersion}), true},
-		{"FDB 1062", &wire.FDBError{Code: ErrWrongShardServer}, false},
+		{"FDB 1001 wrong_shard", &wire.FDBError{Code: 1001}, false},
 		{"FDB 1007", &wire.FDBError{Code: 1007}, false},
 	}
 	for _, tt := range tests {
@@ -256,5 +279,27 @@ func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 	if !req.HasOptions || !req.Options.HasLockAware {
 		t.Errorf("lock-aware not set: HasOptions=%v Options.HasLockAware=%v",
 			req.HasOptions, req.Options.HasLockAware)
+	}
+}
+
+// TestPendingGet_Resolve_ContextCancelled pins the context-cancel arm of
+// PendingGet.Resolve (RFC-010 #3): a cancelled context returns ctx.Err()
+// directly — it does NOT re-drive through getValue (no point retrying a
+// cancelled read), unlike the wrong-shard/transport/timeout arms. Deterministic:
+// flushed=true skips the Flush, and the cancel arm never dereferences tx/conn.
+func TestPendingGet_Resolve_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := &PendingGet{
+		flushed:     true,                          // skip conn.Flush (no conn needed)
+		ctx:         ctx,                           // already cancelled
+		replyCh:     make(chan transport.Response), // never fires
+		replyHandle: &transport.ReplyHandle{},      // zero handle: Cancel/Release are no-ops
+		timer:       getTimer(DefaultRPCTimeout),
+	}
+	_, err := p.Resolve()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve on cancelled context: got %v, want context.Canceled", err)
 	}
 }

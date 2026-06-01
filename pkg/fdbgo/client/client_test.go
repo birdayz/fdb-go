@@ -234,12 +234,29 @@ func TestOnError_NonRetryable(t *testing.T) {
 
 	t.Run("wrong_shard_server", func(t *testing.T) {
 		t.Parallel()
-		// 1062 is handled at the read path level, NOT by Transact.
-		// OnError should treat it as non-retryable.
+		// wrong_shard_server (1001) is handled at the read path level (cache
+		// invalidation + local retry), NOT by Transact. OnError treats it as
+		// non-retryable.
 		tx := &Transaction{}
-		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: 1062})
+		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: 1001})
 		if tx.OnError(context.Background(), err) == nil {
 			t.Error("wrong_shard_server should not be retryable at Transact level")
+		}
+	})
+
+	t.Run("all_alternatives_failed", func(t *testing.T) {
+		t.Parallel()
+		// all_alternatives_failed (1006) is absorbed by the read path (getValue's
+		// local invalidate+retry loop), so OnError must NOT retry it. This is the
+		// load-bearing fact behind RFC-010 #3 / the codex finding: fdb.Get must
+		// re-drive a pipelined-enqueue 1006 through the full read path, because if
+		// 1006 ever surfaced to OnError it would fail the transaction rather than
+		// retry. If this ever became OnError-retryable, that fallback would be moot
+		// — so pin it here.
+		tx := &Transaction{}
+		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: ErrAllAlternativesFailed})
+		if tx.OnError(context.Background(), err) == nil {
+			t.Error("all_alternatives_failed should not be retryable at Transact level")
 		}
 	})
 

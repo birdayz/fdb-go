@@ -173,6 +173,13 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
 	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
 
+	// End every started request that did not become the winner (hedge losers;
+	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
+	// permanently and biases server selection. RFC-010 #5.
+	for _, o := range result.others {
+		tx.db.queueModel.endRequest(o.addr, o.delta, time.Since(o.start), false)
+	}
+
 	if result.addr != "" {
 		if result.connErr {
 			tx.db.handleConnError(result.addr)
@@ -201,6 +208,11 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 	penalty = -1.0
 	if r.FieldPresent(types.GetKeyReplySlotPenalty) {
 		penalty = r.ReadFloat64(types.GetKeyReplySlotPenalty)
+	}
+	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
+	// reads through this field, not the ErrorOr root. RFC-010 #1.
+	if ferr := wire.ReadInlineReplyError(&r, types.GetKeyReplySlotError); ferr != nil {
+		return nil, false, 0, penalty, ferr
 	}
 	// Navigate into the KeySelector nested struct to extract all three fields.
 	selR, selErr := r.ReadNestedReader(types.GetKeyReplySlotSel)
@@ -307,6 +319,13 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
 	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+
+	// End every started request that did not become the winner (hedge losers;
+	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
+	// permanently and biases server selection. RFC-010 #5.
+	for _, o := range result.others {
+		tx.db.queueModel.endRequest(o.addr, o.delta, time.Since(o.start), false)
+	}
 
 	// Process result.
 	if result.addr != "" {
@@ -587,6 +606,13 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
 	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
 
+	// End every started request that did not become the winner (hedge losers;
+	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
+	// permanently and biases server selection. RFC-010 #5.
+	for _, o := range result.others {
+		tx.db.queueModel.endRequest(o.addr, o.delta, time.Since(o.start), false)
+	}
+
 	if result.addr != "" {
 		if result.connErr {
 			tx.db.handleConnError(result.addr)
@@ -604,7 +630,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	return kvs, more, err
 }
 
-// isWrongShardServer returns true if the error is FDB error 1062.
+// isWrongShardServer returns true if the error is FDB error 1001 (wrong_shard_server).
 func isWrongShardServer(err error) bool {
 	var fdbErr *wire.FDBError
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrWrongShardServer
@@ -660,6 +686,11 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, float64, error) {
 	}
 	var reply types.GetKeyValuesReply
 	reply.UnmarshalFromReader(&r)
+	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
+	// reads through this field, not the ErrorOr root. RFC-010 #1.
+	if ferr := wire.ReadInlineReplyError(&r, types.GetKeyValuesReplySlotError); ferr != nil {
+		return nil, false, reply.Penalty, ferr
+	}
 
 	kvs := types.ParseKeyValueRefStringVector(reply.Data)
 	return kvs, reply.More, reply.Penalty, nil
@@ -712,6 +743,12 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 	}
 	var reply types.GetValueReply
 	reply.UnmarshalFromReader(&r)
+	// Inline LoadBalancedReply.error: the SS delivers wrong_shard_server etc. for
+	// reads through this field, not the ErrorOr root. Decoded from the nested
+	// Error table (the generated reply.Error is mis-typed). RFC-010 #1.
+	if ferr := wire.ReadInlineReplyError(&r, types.GetValueReplySlotError); ferr != nil {
+		return nil, reply.Penalty, ferr
+	}
 	if !reply.HasValue {
 		return nil, reply.Penalty, nil // key not found
 	}

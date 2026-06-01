@@ -531,22 +531,24 @@ func testMultiShard_ConcurrentReadsWrites(t *testing.T, ctx context.Context, env
 func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *multiShardEnv) {
 	g := gomega.NewWithT(t)
 
+	begin := []byte(env.prefix)
+	end := append([]byte(env.prefix), 0xFF)
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
-		begin := []byte(env.prefix)
-		end := append([]byte(env.prefix), 0xFF)
 		return tx.GetRangeSplitPoints(ctx, begin, end, 100000) // 100KB chunks
 	})
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	points := result.([][]byte)
-	// With 1MB of data and 100KB chunks, expect ~10 split points.
-	// The exact count depends on FDB's internal layout.
+	// GetRangeSplitPoints queries only begin's shard. This env forces many tiny
+	// shards (~27KB each) which are smaller than the 100KB chunk, so 0 points is
+	// the correct answer here — the populated-reply path (RFC-010 #8) is proven
+	// by TestGetRangeSplitPoints (single large shard) and the wire-level
+	// TestReadErrorOr_OneFieldSuccess. Just validate any returned points are in range.
 	t.Logf("split points (100KB chunks): %d points across %d shards", len(points), env.numShards)
-	if len(points) > 0 {
-		// Verify split points are within our key range.
-		for i, p := range points {
-			g.Expect(bytes.Compare(p, []byte(env.prefix))).To(gomega.BeNumerically(">=", 0),
-				"split point %d below range: %x", i, p)
-		}
+	for i, p := range points {
+		g.Expect(bytes.Compare(p, begin)).To(gomega.BeNumerically(">=", 0),
+			"split point %d below range: %x", i, p)
+		g.Expect(bytes.Compare(p, end)).To(gomega.BeNumerically("<=", 0),
+			"split point %d above range: %x", i, p)
 	}
 }
 

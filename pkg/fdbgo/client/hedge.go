@@ -7,7 +7,25 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 )
 
+// rpcAccount carries the QueueModel bookkeeping for one started request:
+// the value returned by startRequest (delta) plus the server and start time.
+// Every startRequest must be matched by exactly one endRequest or its
+// smoothOutstanding contribution leaks permanently.
+type rpcAccount struct {
+	addr  string
+	delta float64
+	start time.Time
+}
+
 // hedgeResult is the result of a hedged RPC.
+//
+// addr/delta/start describe the WINNER (or the single in-flight request) — the
+// caller does its full accounting (latency, penalty, futureVersion) on these.
+// others lists every OTHER request that startRequest was called for but which
+// did not become the winner: the hedge loser, or BOTH arms on a timeout/cancel.
+// The caller must endRequest each of these exactly once, else their delta leaks.
+// Matches C++ LoadBalance.actor.h, where ModelHolder releases the delta for the
+// winning request and every cancelled laggard alike.
 type hedgeResult struct {
 	body    []byte
 	addr    string
@@ -15,6 +33,7 @@ type hedgeResult struct {
 	start   time.Time
 	err     error
 	connErr bool // true if connection error (not a reply error)
+	others  []rpcAccount
 }
 
 // sendFrameWithHedge sends an RPC to the primary server and, after hedgeDelay,
@@ -126,25 +145,36 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 		a.replyHandle.Release() // Winner: release
 		b.replyHandle.Cancel()  // Loser: cancel + release
 		b.replyHandle.Release()
-		return processReply(a, resp)
+		res := processReply(a, resp)
+		res.others = []rpcAccount{accountOf(b)} // loser b: caller must endRequest it
+		return res
 	case resp := <-b.replyCh:
 		b.replyHandle.Release() // Winner: release
 		a.replyHandle.Cancel()  // Loser: cancel + release
 		a.replyHandle.Release()
-		return processReply(b, resp)
+		res := processReply(b, resp)
+		res.others = []rpcAccount{accountOf(a)} // loser a: caller must endRequest it
+		return res
 	case <-timer.C:
 		a.replyHandle.Cancel()
 		a.replyHandle.Release()
 		b.replyHandle.Cancel()
 		b.replyHandle.Release()
-		return hedgeResult{err: context.DeadlineExceeded}
+		// No winner — both started requests must still be ended by the caller.
+		return hedgeResult{err: context.DeadlineExceeded, others: []rpcAccount{accountOf(a), accountOf(b)}}
 	case <-ctx.Done():
 		a.replyHandle.Cancel()
 		a.replyHandle.Release()
 		b.replyHandle.Cancel()
 		b.replyHandle.Release()
-		return hedgeResult{err: ctx.Err()}
+		return hedgeResult{err: ctx.Err(), others: []rpcAccount{accountOf(a), accountOf(b)}}
 	}
+}
+
+// accountOf captures the QueueModel bookkeeping for an in-flight request so the
+// caller can endRequest it exactly once.
+func accountOf(r inFlightRPC) rpcAccount {
+	return rpcAccount{addr: r.addr, delta: r.delta, start: r.start}
 }
 
 func processReply(inflight inFlightRPC, resp transport.Response) hedgeResult {

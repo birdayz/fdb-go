@@ -26,7 +26,7 @@ const (
 	ErrCommitUnknownResult       = 1021 // commit_unknown_result
 	ErrTransactionTooOld         = 1007 // transaction_too_old
 	ErrFutureVersion             = 1009 // future_version
-	ErrWrongShardServer          = 1062 // wrong_shard_server (Layer 2 only)
+	ErrWrongShardServer          = 1001 // wrong_shard_server (1062 is change_feed_cancelled — do not confuse)
 	ErrTransactionTimedOut       = 1031 // transaction_timed_out (NEVER retryable)
 	ErrProcessBehind             = 1037 // process_behind
 	ErrDatabaseLocked            = 1038 // database_locked
@@ -437,6 +437,12 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, nil, err
 	}
+	// Legal key range check BEFORE sending — matches Transaction.Get. The illegal
+	// key must be rejected at enqueue, not after the frame is on the wire. RFC-010 #3.
+	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
+	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
+		return nil, nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
 	if !isSystemKey(key) {
 		tx.addReadConflictForKey(key)
 	}
@@ -486,13 +492,16 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(DefaultRPCTimeout)
-		return nil, &PendingGet{replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}, nil
+		return nil, &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}, nil
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 // PendingGet represents a GetValue request that has been sent but not yet resolved.
 type PendingGet struct {
+	key         []byte
+	tx          *Transaction
+	addr        string // storage server the deferred frame was sent to
 	replyCh     <-chan transport.Response
 	replyHandle *transport.ReplyHandle
 	conn        *transport.Conn
@@ -501,28 +510,53 @@ type PendingGet struct {
 	flushed     bool
 }
 
-// Resolve blocks until the response arrives or timeout.
-// Flushes the write buffer on first call to ensure the request reaches the server.
+// Resolve blocks until the response arrives or timeout, then applies the SAME
+// classify/invalidate/retry semantics as the synchronous getValue path: a
+// wrong_shard_server or all_alternatives_failed reply (including the inline
+// LoadBalancedReply.error, RFC-010 #1) invalidates the stale location and
+// re-drives through the full read path; transport errors, a flush failure, or a
+// timeout likewise fall through to the full path rather than surfacing a bare
+// error or skipping the wrong-shard retry. Pipelining only defers the wait — it
+// must not own a different error policy. RFC-010 #3.
+//
+// Flushes the write buffer on first call to ensure the request reaches the
+// server (batched with any other deferred frames on the same connection).
 func (p *PendingGet) Resolve() ([]byte, error) {
 	if !p.flushed {
 		p.flushed = true
-		p.conn.Flush()
+		if err := p.conn.Flush(); err != nil {
+			// The request never reached the server — mark the connection bad
+			// (parity with the sync getValue/SendFrame path) and re-locate+retry.
+			p.tx.db.handleConnError(p.addr)
+			p.replyHandle.Cancel()
+			p.replyHandle.Release()
+			putTimer(p.timer)
+			return p.tx.getValue(p.ctx, p.key)
+		}
 	}
 	defer putTimer(p.timer)
 	defer p.replyHandle.Release()
 	select {
 	case resp := <-p.replyCh:
 		if resp.Err != nil {
-			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+			// Transport/connection error — mark the connection bad before
+			// retrying so server selection avoids it, matching sendGetValue. Then
+			// re-drive through the full read path.
+			p.tx.db.handleConnError(p.addr)
+			return p.tx.getValue(p.ctx, p.key)
 		}
 		val, _, err := parseGetValueReply(resp.Body)
+		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+			p.tx.db.locCache.invalidate(p.key, p.tx.tenantId)
+			return p.tx.getValue(p.ctx, p.key)
+		}
 		return val, err
 	case <-p.timer.C:
 		p.replyHandle.Cancel()
-		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		return p.tx.getValue(p.ctx, p.key)
 	case <-p.ctx.Done():
 		p.replyHandle.Cancel()
-		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		return nil, p.ctx.Err()
 	}
 }
 
