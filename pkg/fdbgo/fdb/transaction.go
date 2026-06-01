@@ -42,21 +42,27 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 	// return a future backed by the reply channel. This enables true pipelining —
 	// N Gets send N frames immediately, then N future.Get() calls collect responses.
 	val, pending, err := inner.GetPipelined(ctx, key.FDBKey())
-	if err == nil {
-		if pending != nil {
-			// Server request in flight — future resolves when response arrives.
-			return newPendingFutureByteSlice(pending)
+	if err != nil {
+		// Fall back to the goroutine-based full ryw.get() path ONLY for
+		// ErrNeedFullRYW (the key has pending atomics that require a server read
+		// + merge). Any other error — illegal key, all_alternatives_failed,
+		// locate failure — is surfaced directly; the retryable ones are retried
+		// by the Transact loop. Do NOT silently re-run through inner.Get, which
+		// has divergent semantics and would mask the failure. RFC-010 #3.
+		if errors.Is(err, client.ErrNeedFullRYW) {
+			return newFutureByteSlice(func() ([]byte, error) {
+				v, gerr := inner.Get(ctx, key.FDBKey())
+				return v, convertError(gerr)
+			})
 		}
-		// RYW cache hit or cleared key.
-		return newReadyFutureByteSlice(val, nil)
+		return newReadyFutureByteSlice(nil, convertError(err))
 	}
-	// GetPipelined returned errNeedFullRYW — key has pending atomics that
-	// require a server read + merge. Fall back to goroutine-based Get which
-	// goes through the full ryw.get() path.
-	return newFutureByteSlice(func() ([]byte, error) {
-		v, gerr := inner.Get(ctx, key.FDBKey())
-		return v, convertError(gerr)
-	})
+	if pending != nil {
+		// Server request in flight — future resolves when response arrives.
+		return newPendingFutureByteSlice(pending)
+	}
+	// RYW cache hit or cleared key.
+	return newReadyFutureByteSlice(val, nil)
 }
 
 // GetKey returns the key referenced by the given key selector.

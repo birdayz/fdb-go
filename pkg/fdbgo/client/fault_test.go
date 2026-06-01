@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -341,11 +343,14 @@ func (d *wrongShardDialer) armAll() {
 // constant: injecting the code-under-test's own constant makes the test
 // self-confirming (it would pass for any value the constant happened to hold,
 // which is exactly how the 1062 bug stayed green). See RFC-010 prevention P6.
-func TestWrongShardServer_FaultInjection(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+// newWrongShardTestDB starts an FDB container and returns a Database that dials
+// through a wrongShardDialer, so wd.armAll() replaces the next server frame with
+// an injected wrong_shard_server (1001) error. The injected code is the
+// canonical literal 1001, NOT ErrWrongShardServer — injecting the code-under-test's
+// own constant would make the test self-confirming (RFC-010 P6). Cleanup is
+// registered via t.Cleanup.
+func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongShardDialer) {
+	t.Helper()
 
 	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
@@ -383,11 +388,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		connectCF.InternalKey += a
 	}
 
-	// Verify the crafted error response parses correctly. Inject the canonical
-	// wrong_shard_server code (1001) directly, NOT ErrWrongShardServer — see the
-	// doc comment above on why injecting the code-under-test's constant is a
-	// self-confirming test.
-	const wrongShardServerCode = 1001
+	const wrongShardServerCode = 1001 // canonical wrong_shard_server (NOT ErrWrongShardServer; RFC-010 P6)
 	errBody := buildFDBErrorResponse(wrongShardServerCode)
 	if _, parseErr := wire.ReadErrorOr(errBody); parseErr == nil {
 		t.Fatal("buildFDBErrorResponse should produce an error response")
@@ -395,13 +396,23 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 
 	wd := &wrongShardDialer{errBody: errBody}
 	db := newTestDatabase(t, ctx, connectCF, wd.dial)
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
+	return db, wd
+}
+
+func TestWrongShardServer_FaultInjection(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, wd := newWrongShardTestDB(t, ctx)
 
 	key := []byte(t.Name() + "_key")
 	expected := []byte("correct_value")
 
 	// Seed the key.
-	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, expected)
 		return nil, nil
 	})
@@ -441,6 +452,149 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		t.Fatalf("Get value: got %q, want %q", got, expected)
 	}
 	t.Log("wrong_shard_server fault injection: retry succeeded with correct value")
+}
+
+// TestPipelinedGet_WrongShardRetry verifies the pipelined read path
+// (GetPipelined + PendingGet.Resolve) applies the SAME wrong_shard_server
+// invalidate+retry as the synchronous getValue path. Before RFC-010 #3, Resolve
+// returned the wrong-shard reply flattened to all_alternatives_failed without
+// invalidating the location cache or retrying — so the public API's most common
+// point-read silently skipped wrong-shard recovery.
+func TestPipelinedGet_WrongShardRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, wd := newWrongShardTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	expected := []byte("pipelined_value")
+
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, expected)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Warm the location cache with a successful read.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	}); err != nil {
+		t.Fatalf("warm read: %v", err)
+	}
+
+	// Pre-fetch read version so no GRV request during the fault window.
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+
+	// Arm: the next frame on any connection becomes 1001 (wrong_shard_server).
+	wd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	_, pending, err := tx.GetPipelined(ctx, key)
+	if err != nil {
+		t.Fatalf("GetPipelined: %v", err)
+	}
+	if pending == nil {
+		t.Fatal("expected a pending pipelined get for a server-resident key")
+	}
+	// The reply is the injected wrong_shard_server; Resolve must invalidate the
+	// cache and re-drive through the full read path, returning the real value.
+	got, err := pending.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve after wrong-shard: %v", err)
+	}
+	if string(got) != string(expected) {
+		t.Fatalf("Resolve value: got %q, want %q", got, expected)
+	}
+	t.Log("pipelined wrong_shard_server: Resolve invalidated + retried, returned correct value")
+}
+
+// TestPipelinedGet_IllegalKeyRejectedAtEnqueue verifies GetPipelined rejects an
+// out-of-legal-range key BEFORE sending (matching Transaction.Get), rather than
+// putting the illegal frame on the wire and discovering it at response time. RFC-010 #3.
+func TestPipelinedGet_IllegalKeyRejectedAtEnqueue(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	tx := db.CreateTransaction()
+	// Beyond \xff\xff (the max read key for any transaction) — illegal.
+	illegal := []byte{0xff, 0xff, 0xff}
+	val, pending, err := tx.GetPipelined(ctx, illegal)
+	if pending != nil {
+		t.Fatal("illegal key must not produce a pending request (frame would already be on the wire)")
+	}
+	if val != nil {
+		t.Fatalf("illegal key: unexpected value %q", val)
+	}
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != 2004 {
+		t.Fatalf("illegal key: got err %v, want FDBError 2004 (key_outside_legal_range)", err)
+	}
+}
+
+// TestPipelinedGet_BatchResolvesCorrectly verifies pipelining still works after
+// the #3 retry change: N deferred sends followed by N Resolves return the right
+// values. The retry logic only activates on error, so the happy-path batched
+// send/flush is structurally unchanged — this pins that end to end.
+func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const n = 16
+	keys := make([][]byte, n)
+	vals := make([][]byte, n)
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < n; i++ {
+			keys[i] = []byte(fmt.Sprintf("%s_k%03d", t.Name(), i))
+			vals[i] = []byte(fmt.Sprintf("v%03d", i))
+			tx.Set(keys[i], vals[i])
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		// Enqueue all N pipelined gets (deferred sends, no flush yet)...
+		pendings := make([]*PendingGet, n)
+		for i := 0; i < n; i++ {
+			_, p, err := tx.GetPipelined(ctx, keys[i])
+			if err != nil {
+				return nil, fmt.Errorf("GetPipelined %d: %w", i, err)
+			}
+			if p == nil {
+				t.Fatalf("key %d: expected a pending server request", i)
+			}
+			pendings[i] = p
+		}
+		// ...then resolve them; the first Resolve flushes the batch.
+		for i := 0; i < n; i++ {
+			got, err := pendings[i].Resolve()
+			if err != nil {
+				return nil, fmt.Errorf("Resolve %d: %w", i, err)
+			}
+			if string(got) != string(vals[i]) {
+				t.Errorf("key %d: got %q, want %q", i, got, vals[i])
+			}
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("pipelined batch: %v", err)
+	}
 }
 
 // TestCommitDummyTransaction verifies that commitDummyTransaction works as a
