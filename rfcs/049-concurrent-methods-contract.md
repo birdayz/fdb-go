@@ -1,6 +1,6 @@
 # RFC-049: Honor the "methods safe for concurrent use" transaction contract
 
-**Status:** Draft
+**Status:** Implemented (FDB C++ dev ACK, Torvalds ACK, Codex clean, @claude LGTM) — landed on `fix/client-7-concurrent-methods-contract`
 **Item:** RFC-010 audit #7 (MEDIUM)
 **Scope:** `pkg/fdbgo/client` transaction conflict/mutation buffers
 
