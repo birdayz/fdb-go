@@ -173,6 +173,13 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
 	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
 
+	// End every started request that did not become the winner (hedge losers;
+	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
+	// permanently and biases server selection. RFC-010 #5.
+	for _, o := range result.others {
+		tx.db.queueModel.endRequest(o.addr, o.delta, time.Since(o.start), false)
+	}
+
 	if result.addr != "" {
 		if result.connErr {
 			tx.db.handleConnError(result.addr)
@@ -307,6 +314,13 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
 	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+
+	// End every started request that did not become the winner (hedge losers;
+	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
+	// permanently and biases server selection. RFC-010 #5.
+	for _, o := range result.others {
+		tx.db.queueModel.endRequest(o.addr, o.delta, time.Since(o.start), false)
+	}
 
 	// Process result.
 	if result.addr != "" {
@@ -586,6 +600,13 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
 	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+
+	// End every started request that did not become the winner (hedge losers;
+	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
+	// permanently and biases server selection. RFC-010 #5.
+	for _, o := range result.others {
+		tx.db.queueModel.endRequest(o.addr, o.delta, time.Since(o.start), false)
+	}
 
 	if result.addr != "" {
 		if result.connErr {
