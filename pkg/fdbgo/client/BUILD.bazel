@@ -80,6 +80,7 @@ go_test(
         "testmain_test.go",
         "topology_unit2_test.go",
         "topology_unit_test.go",
+        "transaction_concurrent_unit_test.go",
         "transaction_options_test.go",
         "transaction_unit_test.go",
     ],

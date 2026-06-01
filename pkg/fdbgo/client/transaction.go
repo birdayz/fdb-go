@@ -765,13 +765,24 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
+	// Snapshot the mutation/conflict buffers under conflictMu before reading
+	// them. The published contract (fdb/transaction.go) makes Set/Get/Commit
+	// safe for concurrent use: a Get future resolving on another goroutine
+	// appends conflicts under this lock. The slices are append-only (elements
+	// are never mutated in place), so the header snapshot stays valid after
+	// release — we only iterate [0:len) and a concurrent append writes beyond it.
+	tx.conflictMu.Lock()
+	muts := tx.mutations
+	nWriteConflicts := len(tx.writeConflicts)
+	tx.conflictMu.Unlock()
+
 	// C++ RYW write checks (deferred to commit since our Set/Clear are void):
 	// - set(): if key == metadataVersionKey → client_invalid_operation
 	//          if key >= maxWriteKey → key_outside_legal_range
 	// - atomicOp(): if key == metadataVersionKey → allow (only SVV)
 	//               if key >= maxWriteKey → key_outside_legal_range
 	maxWrite := tx.maxWriteKey()
-	for _, m := range tx.mutations {
+	for _, m := range muts {
 		if bytes.Equal(m.Key, metadataVersionKeyBytes) {
 			// metadataVersionKey is exempt — only allowed via SetVersionstampedValue
 			continue
@@ -791,7 +802,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// Validate versionstamp offsets. C++ ReadYourWritesTransaction::atomicOp
 	// validates immediately; we defer to commit time since Atomic() is void.
 	// Error: client_invalid_operation (2000).
-	for _, m := range tx.mutations {
+	for _, m := range muts {
 		switch m.Type {
 		case MutSetVersionstampedKey:
 			if err := validateVersionstampOffset(m.Key); err != nil {
@@ -806,7 +817,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		}
 	}
 
-	if len(tx.mutations) == 0 && len(tx.writeConflicts) == 0 {
+	if len(muts) == 0 && nWriteConflicts == 0 {
 		// Read-only transaction — no commit needed.
 		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
 		// Reset for reuse (matches C client behavior).
@@ -1099,6 +1110,15 @@ const (
 // sizeof(KeyRangeRef). For set/atomic with write conflicts, C++ also adds the
 // key length again for the auto-generated write conflict range.
 func (tx *Transaction) GetApproximateSize() int64 {
+	// Iterate the buffers UNDER conflictMu, not a released snapshot. This is a
+	// public method callers may poll concurrently with Commit on another
+	// goroutine, and Commit's auto-reset (postCommitReset) reuses the buffer
+	// backing arrays via [:0] — a released snapshot would then read memory a
+	// post-reset Set overwrites. Holding the lock across the iteration prevents
+	// reset/append from running concurrently with the read. The body is pure CPU
+	// (no I/O), so the critical section is short.
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
 	var size int64
 	for _, m := range tx.mutations {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
@@ -1226,6 +1246,13 @@ func (tx *Transaction) conflictBufAlloc(n int) []byte {
 // addWriteConflictForKey adds a write conflict range [key, key\x00) using the
 // shared conflictBuf.
 func (tx *Transaction) addWriteConflictForKey(key []byte) {
+	// nextWriteNoConflict is read AND cleared here on the Set/Clear/Atomic path,
+	// so two concurrent writes race on it unless this runs under conflictMu.
+	// Hold the lock across the gating flags as well as the append (it's taken
+	// for the append anyway). writeConflictsDisabled short-circuits WITHOUT
+	// touching nextWriteNoConflict — exact prior semantics.
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
 	if tx.writeConflictsDisabled {
 		return
 	}
@@ -1234,16 +1261,16 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 		return
 	}
 	n := len(key)
-	tx.conflictMu.Lock()
 	buf := tx.conflictBufAlloc(n + n + 1)
 	copy(buf, key)
 	copy(buf[n:], key)
 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
-	tx.conflictMu.Unlock()
 }
 
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
 	if tx.writeConflictsDisabled {
 		return
 	}
@@ -1251,13 +1278,11 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 		tx.nextWriteNoConflict = false
 		return
 	}
-	tx.conflictMu.Lock()
 	buf := tx.conflictBufAlloc(len(begin) + len(end))
 	nb := len(begin)
 	copy(buf, begin)
 	copy(buf[nb:], end)
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
-	tx.conflictMu.Unlock()
 }
 
 // SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
@@ -1447,10 +1472,12 @@ func (tx *Transaction) postCommitReset() {
 	tx.userSetReadVersion = false
 	tx.readVersion = 0
 	tx.readVersionMu.Unlock()
-	tx.mutations = tx.mutations[:0]
-	// Hold conflictMu while clearing conflict slices: Watch() goroutines may
-	// be concurrently calling AddReadConflictKey() which appends under this lock.
+	// Hold conflictMu while clearing ALL three buffers: Watch() goroutines may
+	// be concurrently calling AddReadConflictKey() which appends under this lock,
+	// and a concurrent Set/Commit reads mutations under it (concurrent-use
+	// contract). The mutations clear must be inside too, not above the lock.
 	tx.conflictMu.Lock()
+	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	// Return conflict buffer to pool for reuse by next transaction.
@@ -1480,11 +1507,14 @@ func (tx *Transaction) reset() {
 	tx.committedVersion = 0
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
+	// Hold conflictMu: Watch() goroutines may still be running after
+	// cancelWatches() (cancel is async — goroutines drain on ctx.Done), and the
+	// concurrent-use contract means Set/Commit may touch these under the lock.
+	// mutations[:0] and nextWriteNoConflict are written here too — both are read
+	// on the Set path under conflictMu, so their clears must be inside the lock.
+	tx.conflictMu.Lock()
 	tx.nextWriteNoConflict = false // C++ creates fresh state on reset
 	tx.mutations = tx.mutations[:0]
-	// Hold conflictMu: Watch() goroutines may still be running after
-	// cancelWatches() (cancel is async — goroutines drain on ctx.Done).
-	tx.conflictMu.Lock()
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry

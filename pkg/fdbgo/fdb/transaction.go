@@ -22,10 +22,21 @@ type transaction struct {
 }
 
 // Transaction is a handle to a FoundationDB transaction.
-// Individual methods (Get, Set, Commit, etc.) are safe for concurrent use
-// by multiple goroutines. However, Reset() is NOT concurrent-safe — callers
-// must drain all pending futures before calling Reset, as in-flight
-// goroutines hold references to the internal transaction handle.
+//
+// Data operations — Get, GetRange, GetKey, Set, Clear, ClearRange, Atomic,
+// Commit, GetApproximateSize, and the conflict-range adders — are safe for
+// concurrent use by multiple goroutines (the shared mutation/conflict buffers
+// are guarded internally). Read-your-writes ordering across concurrent
+// read-modify-write on the SAME key is still racy (lost update), matching the
+// C binding; serialize such sequences yourself.
+//
+// Option setters (the Set* configuration methods, e.g. SetPriority,
+// SetWriteConflictsDisabled, SetTag, SetReadVersion) and Reset() are NOT
+// concurrent-safe with operations or each other — configure the transaction
+// BEFORE issuing concurrent operations, and drain all pending futures before
+// calling Reset (in-flight goroutines hold references to the internal handle).
+// This mirrors the FDB C API, where fdb_transaction_set_option is not meant to
+// race the transaction's data calls.
 //
 // In the Apple binding, Transaction is a concrete struct with value
 // receiver methods. We match this by making Transaction a struct that
