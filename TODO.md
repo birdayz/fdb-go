@@ -288,6 +288,28 @@ RFC-010 Phase 0 (the wire-correctness fires: #1 inline reply error, #2 wrong_sha
 #3 pipelined retry, #5 hedge queue-model leak, #8 ErrorOr union parse) landed. These three items
 close the testing/conformance gaps its prevention plan (P5/P7) calls for.
 
+### RFC-010 audit findings (the original 15 — correctness fires)
+
+The execution list for the Codex source audit (`TODO_client.md`); full detail + C-conformance
+reasoning per item in `rfcs/010-native-client-correctness.md`. **8 landed, 6 open, 1 false positive.**
+Each open item is gated by *why it isn't trivially done*, not by another item.
+
+- [x] **#1** inline `LoadBalancedReply.error` decoded on read parsers (Phase 0)
+- [x] **#2** `ErrWrongShardServer` 1062 → 1001 + anti-self-confirming fault test (Phase 0)
+- [x] **#3** pipelined `Get` shares full classify→invalidate→retry; 1006 surfaced correctly (Phase 0)
+- [x] **#4** tenant commit builder uses a scratch `[]MutationRef` — no in-place mutation of `tx.mutations`, no double-prefix on rebuild (build-twice regression; Torvalds + FDB-C ACK)
+- [x] **#5** hedge loser/timeout/cancel QueueModel deltas released (Phase 0)
+- [ ] **#6 — HIGH.** Conn shutdown: (1) `Close`/cancel strands a `SendFrame`/`Flush` caller on `errCh`; (2) `connectionMonitor` declares dead without closing the socket / failing pending → fd+goroutine leak. Fix: one `failConnection(err)` path. **Gated on `SimTransport`** (the failure is a race; test it deterministically, not on real network).
+- [ ] **#7 — MEDIUM.** Honor the published "methods safe for concurrent use" contract: snapshot `mutations`/`readConflicts`/`writeConflicts` under `conflictMu` in `Commit`/marshal/`GetApproximateSize`, and move the `[:0]` clears inside `conflictMu` in reset/postCommitReset. `-race` tests. (RYW lost-update stays documented-not-safe.)
+- [x] **#8** `ReadErrorOr` parses the union tag (not field count); error code uint16 (Phase 0)
+- [x] **#9** rename `isSystemKey` → `isSpecialKey` (tests `\xff\xff` special-key space; behavior unchanged)
+- [ ] **#10 — MEDIUM (public-API behavior change — needs sign-off before doing).** Decouple `ACCESS_SYSTEM_KEYS` from `LOCK_AWARE` in `fdb/options.go:58` (C sets them independently — confirmed NativeAPI 7159 / RYW 2557 / TenantManagement). Drop the facade's auto-`SetLockAware` **and** set explicit options at each `fdb/database.go` tenant call site (writes: ACCESS_SYSTEM_KEYS+LOCK_AWARE; reads: READ_SYSTEM_KEYS+READ_LOCK_AWARE; low-level: RAW_ACCESS). Existing callers relying on the implicit coupling must then set `SetLockAware` explicitly (as a Java/CGo app must).
+- [ ] **#11 — MEDIUM.** Wire TLS config through `ParseClusterString`/`ClusterFile` → `getOrDial` (the spec'd capability), or drop the README claim and make `DialWithTLS(useTLS=true, nil)` reject rather than emit TLS-framed plaintext.
+- [ ] **#13 — LOW (concurrency-sensitive).** Reply channel never returned to the pool on the success path (both `PrepareReply`/`Release` and `Send`/`SendAndWait`) — hot-path alloc, and the line-23 "readLoop returns it after dispatch" comment is false. Fix must return the channel **only when no send can race** (success: caller received; Cancel: only when it won the `delete`) to avoid a stale-buffered-value bug on the timeout/delivery race; leave the rare race-loser leaked. Best validated with `SimTransport`.
+- [ ] **#14 — LOW.** Monitor ping can block on a full `writeCh`. Narrow/relax. (Folds into the #6 `failConnection`/conn-lifecycle work.)
+- [x] **#15** range-iterator next-begin via `keyAfter` helper that copies (no alias/scribble of `lastKey`); spare-capacity unit pin
+- **#12 — FALSE POSITIVE.** Locality never panics (invariant guarantees non-empty); add a defensive guard at most.
+
 We **cannot** run FDB's deterministic simulation: Sim2 is a hermetic single-threaded Flow event
 loop with an in-memory network and no external socket, so a real Go client can't join it, and
 server-side BUGGIFY edge-case injection exists only inside Sim2. But three of FDB's real,
