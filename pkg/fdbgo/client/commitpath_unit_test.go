@@ -433,6 +433,45 @@ func TestIsRetryable_NotRetryableSet(t *testing.T) {
 }
 
 // ============================================================================
+// releaseMutScratch — clears the tenant-path scratch before pooling so the
+// pool doesn't retain committed key/value byte slices (Codex P2 on #4).
+// ============================================================================
+
+func TestReleaseMutScratch_ClearsBackingArray(t *testing.T) {
+	t.Parallel()
+	// A scratch with refs in EVERY slot, returned at a short len (1) over a
+	// larger cap (3): the pool must drop refs in all slots, including the two
+	// "beyond len" ones a smaller follow-up commit would leave untouched. Values
+	// stand in for up-to-100KB application buffers we must not pin in the pool.
+	backing := make([]types.MutationRef, 3)
+	for i := range backing {
+		backing[i] = types.MutationRef{
+			MutType: uint8(i + 1),
+			Param1:  []byte{'k', byte(i)},
+			Param2:  []byte{'v', byte(i)},
+		}
+	}
+	s := backing[:1] // len 1, cap 3
+
+	releaseMutScratch(&s)
+
+	// releaseMutScratch shares backing with s, so the clear is visible here.
+	for i := 0; i < len(backing); i++ {
+		e := backing[i]
+		if e.MutType != 0 || e.Param1 != nil || e.Param2 != nil {
+			t.Errorf("slot %d not cleared (pool would retain its byte slices): %+v", i, e)
+		}
+	}
+	// The returned slice must be empty (len 0) but keep its capacity for reuse.
+	if len(s) != 0 {
+		t.Errorf("released scratch len = %d, want 0", len(s))
+	}
+	if cap(s) != 3 {
+		t.Errorf("released scratch cap = %d, want 3 (capacity preserved for reuse)", cap(s))
+	}
+}
+
+// ============================================================================
 // Helpers.
 // ============================================================================
 

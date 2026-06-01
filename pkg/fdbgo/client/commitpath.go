@@ -255,6 +255,20 @@ var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 
 // needs no scratch; only the tenant path must copy (see buildCommitTransactionRequest).
 var mutSlicePool = sync.Pool{New: func() any { s := make([]types.MutationRef, 0, 8); return &s }}
 
+// releaseMutScratch zeroes the tenant-path scratch slice and returns it to
+// mutSlicePool. The clear is mandatory: each MutationRef still references the
+// (prefixed) key and — for non-ClearRange mutations — the original application
+// value byte slice. Without it, sync.Pool keeps those buffers (values can be up
+// to 100KB) reachable from the global pool long after the transaction is reset.
+// Clearing the FULL capacity, not just len, drops references in slots a larger
+// earlier commit populated, so a later smaller commit can't leave stale ones.
+func releaseMutScratch(s *[]types.MutationRef) {
+	full := (*s)[:cap(*s)]
+	clear(full)
+	*s = full[:0]
+	mutSlicePool.Put(s)
+}
+
 // marshalBufPool pools the serialization buffer for CommitTransactionRequest.
 // Avoids ~11% of total commit-path allocations. Uses *[]byte to avoid
 // interface boxing allocation (same pattern as writeFramePool).
@@ -367,7 +381,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (b
 	// into result, so the scratch/conflict slices are no longer referenced.
 	if mutScratch != nil {
 		*mutScratch = mutations
-		mutSlicePool.Put(mutScratch)
+		releaseMutScratch(mutScratch)
 	}
 	*readCRSlice = readCRs
 	crSlicePool.Put(readCRSlice)
