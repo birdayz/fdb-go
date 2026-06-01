@@ -1,6 +1,6 @@
 # RFC-050: Connection shutdown — one `failConnection` path + SimTransport
 
-**Status:** Draft
+**Status:** Implemented (FDB C++ dev ACK, Torvalds ACK) — landed on `fix/client-6-conn-shutdown-failconnection`
 **Item:** RFC-010 audit #6 (HIGH)
 **Scope:** `pkg/fdbgo/transport` connection lifecycle + an in-process fake server for deterministic tests
 
