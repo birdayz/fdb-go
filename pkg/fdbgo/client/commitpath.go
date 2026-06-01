@@ -25,7 +25,7 @@ import (
 // barrier before returning the error. This matches C++ NativeAPI.actor.cpp
 // tryCommit() which calls commitDummyTransaction to confirm the original
 // request is no longer in-flight before allowing OnError to retry.
-func (tx *Transaction) commit(ctx context.Context) error {
+func (tx *Transaction) commit(ctx context.Context, muts []Mutation) error {
 	proxy, err := tx.db.getCommitProxy()
 	if err != nil {
 		return &wire.FDBError{Code: ErrAllProxiesUnreachable}
@@ -44,7 +44,7 @@ func (tx *Transaction) commit(ctx context.Context) error {
 
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body, poolBuf := buildCommitTransactionRequest(tx, replyToken)
+	body, poolBuf := buildCommitTransactionRequest(tx, replyToken, muts)
 
 	// Capture the proxy-change channel BEFORE sending the commit frame.
 	// C++ captures onProxiesChanged before dispatch. If we captured after
@@ -110,7 +110,14 @@ func (tx *Transaction) commit(ctx context.Context) error {
 // OnError will later copy write→read conflicts, so this key will be in both
 // the read and write conflict sets of the retry, ensuring detection.
 func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
-	if len(tx.writeConflicts) == 0 {
+	// Snapshot conflict slices under conflictMu (concurrent-use contract): a Get
+	// future on another goroutine may still be appending read conflicts.
+	// Append-only elements → the header snapshots are stable after release.
+	tx.conflictMu.Lock()
+	writeConflicts := tx.writeConflicts
+	readConflicts := tx.readConflicts
+	tx.conflictMu.Unlock()
+	if len(writeConflicts) == 0 {
 		return // no write conflicts → read-only, nothing to synchronize
 	}
 
@@ -118,7 +125,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 	// write and read conflict ranges to minimize false conflicts. If no
 	// intersection exists (shouldn't happen since makeSelfConflicting adds
 	// a shared range), fall back to the first write conflict key.
-	key := intersectConflictRanges(tx.writeConflicts, tx.readConflicts)
+	key := intersectConflictRanges(writeConflicts, readConflicts)
 
 	// Retry loop matching C++ commitDummyTransaction's catch/onError pattern.
 	// Create a fresh dummy each iteration because OnError/reset clears conflict
@@ -281,20 +288,41 @@ var marshalBufPool = sync.Pool{New: func() any {
 // buildCommitTransactionRequest constructs the full request. Returns the
 // serialized body and a pool handle — caller MUST call releaseMarshalBuf
 // after the body is no longer needed (after SendFrame).
-func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (body []byte, poolBuf *[]byte) {
+func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, muts []Mutation) (body []byte, poolBuf *[]byte) {
+	// `muts` is the mutation snapshot Commit already validated — marshal exactly
+	// it, so the shipped set is byte-identical to the validated set (a Set racing
+	// Commit on another goroutine appends to tx.mutations BEYOND this snapshot and
+	// is simply not in this commit; it can never be shipped unvalidated).
+	//
+	// Conflict ranges are not validated, so snapshot their headers here under
+	// conflictMu: a Get future resolving on another goroutine appends to
+	// readConflicts under this lock, so this reader must take it too. The slices
+	// are append-only (elements never mutated in place) and conflictBuf only ever
+	// reserves NEW regions or reallocates (never overwrites live bytes), so the
+	// header snapshots stay valid after release — no need to hold the lock across
+	// marshal. (The one buffer-overwriting op, reset's conflictBuf[:0], cannot
+	// overlap a live snapshot in-contract: it runs sequentially after this
+	// returns, or via a Reset() the caller must not issue concurrently with a
+	// pending Commit — see RFC-049.) Mirrors C++ tryCommit building
+	// CommitTransactionRequest once from a stable snapshot.
+	tx.conflictMu.Lock()
+	readSnap := tx.readConflicts
+	writeSnap := tx.writeConflicts
+	tx.conflictMu.Unlock()
+
 	// Zero-copy reinterpret: Mutation and MutationRef have identical memory layout
 	// (uint8 + []byte + []byte). Avoid copying 200+ mutations per batch.
-	mutations := *(*[]types.MutationRef)(unsafe.Pointer(&tx.mutations))
+	mutations := *(*[]types.MutationRef)(unsafe.Pointer(&muts))
 
 	readCRSlice := crSlicePool.Get().(*[]types.KeyRangeRef)
 	readCRs := (*readCRSlice)[:0]
-	for _, kr := range tx.readConflicts {
+	for _, kr := range readSnap {
 		readCRs = append(readCRs, types.KeyRangeRef{Begin: kr.Begin, End: kr.End})
 	}
 
 	writeCRSlice := crSlicePool.Get().(*[]types.KeyRangeRef)
 	writeCRs := (*writeCRSlice)[:0]
-	for _, kr := range tx.writeConflicts {
+	for _, kr := range writeSnap {
 		writeCRs = append(writeCRs, types.KeyRangeRef{Begin: kr.Begin, End: kr.End})
 	}
 
