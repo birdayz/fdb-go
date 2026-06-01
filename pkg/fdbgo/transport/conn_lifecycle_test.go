@@ -75,75 +75,111 @@ func awaitWithin(t *testing.T, d time.Duration, done <-chan struct{}, msg string
 	}
 }
 
-// TestConn_CloseUnblocksStrandedSendFrame is the Bug 1 proof. A frame is left in
-// writeCh while writeLoop is blocked flushing an earlier frame to a stalled
-// server. On Close, the pre-fix SendFrame (no ctx.Done arm) blocks on <-errCh
-// forever because writeLoop exits on ctx.Done without notifying the queued
-// sender. With the fix, ctx cancellation unblocks it. FAILS (times out) on the
-// pre-fix code.
-func TestConn_CloseUnblocksStrandedSendFrame(t *testing.T) {
-	t.Parallel()
-	s := newSimServer(t)
-	go func() {
-		_ = s.handshake()
-		// Stall: never read again, so the client's first post-handshake flush
-		// blocks on the synchronous pipe and writeLoop gets stuck there.
-		<-s.stop
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	// Long monitor cadence so the monitor never pings/interferes during the test.
-	c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+// readOneThenStall does the handshake, reads exactly ONE byte of the next frame,
+// then signals and stops reading. Because net.Pipe is synchronous, the client's
+// writeLoop is now provably blocked inside Flush (its Write can't complete until
+// the rest of the frame is read, which never happens). This is the deterministic
+// "writeLoop is stuck" signal the Bug 1 tests gate on — no timing guess.
+func (s *simServer) readOneThenStall(started chan<- struct{}) {
+	if s.handshake() != nil {
+		return
 	}
-
-	tok := UID{First: 1, Second: 2}
-
-	// Sender A: writeLoop dequeues it and blocks flushing to the stalled server.
-	aDone := make(chan struct{})
-	go func() { _ = c.SendFrame(tok, []byte("A")); close(aDone) }()
-	time.Sleep(50 * time.Millisecond) // let writeLoop reach the blocked Flush
-
-	// Sender B: enqueues into writeCh behind the blocked writeLoop — this is the
-	// frame that strands on the pre-fix code.
-	bDone := make(chan struct{})
-	go func() { _ = c.SendFrame(tok, []byte("B")); close(bDone) }()
-	time.Sleep(50 * time.Millisecond) // ensure B is enqueued
-
-	if err := c.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	var one [1]byte
+	if _, err := s.srv.Read(one[:]); err != nil {
+		return
 	}
-
-	awaitWithin(t, 3*time.Second, aDone, "SendFrame A stranded after Close (writeLoop never notified it)")
-	awaitWithin(t, 3*time.Second, bDone, "SendFrame B stranded after Close — Bug 1: queued sender hangs on <-errCh forever")
+	close(started)
+	<-s.stop
 }
 
-// TestConn_CloseUnblocksStrandedFlush is the Flush analog of the above.
-func TestConn_CloseUnblocksStrandedFlush(t *testing.T) {
+// waitWriteChLen blocks until c.writeCh holds at least n queued frames (a stable
+// observable: once a sender enqueues behind a stuck writeLoop, the count cannot
+// drop). Channel len is safe to read concurrently with sends.
+func waitWriteChLen(t *testing.T, c *Conn, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(c.writeCh) >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("writeCh never reached len %d (got %d) — sender did not enqueue", n, len(c.writeCh))
+}
+
+// TestConn_CtxCancelUnblocksStrandedSendFrame is the Bug 1 proof, made
+// deterministic. Sender A blocks writeLoop *permanently* inside Flush (the server
+// reads one byte then stalls), and sender B then provably sits in writeCh
+// (len==1) where writeLoop — being stuck — can never dequeue it. Cancelling the
+// context (what Close / monitor death / readLoop error all do) must unblock B.
+// On the pre-fix code B has no ctx.Done() escape and writeLoop never reaches B,
+// so B hangs forever → this times out, EVERY run (verified 30/30). The cancel is
+// done WITHOUT closing the socket precisely so writeLoop stays stuck and no
+// select-randomness can let it drain B.
+func TestConn_CtxCancelUnblocksStrandedSendFrame(t *testing.T) {
 	t.Parallel()
 	s := newSimServer(t)
-	go func() {
-		_ = s.handshake()
-		<-s.stop // stall: never read, exit on cleanup
-	}()
+	readStarted := make(chan struct{})
+	go s.readOneThenStall(readStarted)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Long monitor cadence so the monitor never pings/interferes.
+	c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	// Sender A → writeLoop dequeues it and blocks in Flush (server reads 1 byte).
+	aDone := make(chan struct{})
+	go func() { _ = c.SendFrame(UID{First: 1}, []byte("AAAAAAAA")); close(aDone) }()
+	awaitWithin(t, 2*time.Second, readStarted, "writeLoop never reached Flush (server saw no bytes)")
+
+	// Sender B queues behind the stuck writeLoop. Wait until it is provably in
+	// writeCh — writeLoop is blocked, so it cannot have consumed it.
+	bDone := make(chan struct{})
+	go func() { _ = c.SendFrame(UID{First: 2}, []byte("B")); close(bDone) }()
+	waitWriteChLen(t, c, 1)
+
+	// Cancel the context (without closing the socket → writeLoop stays stuck in
+	// Flush and can never dequeue B). The ctx.Done() arm is the only thing that
+	// can return B now.
+	c.cancel()
+
+	awaitWithin(t, 3*time.Second, bDone, "SendFrame B stranded — Bug 1: queued sender hangs on <-errCh after ctx cancel")
+	awaitWithin(t, 3*time.Second, aDone, "SendFrame A stranded after ctx cancel")
+}
+
+// TestConn_CtxCancelUnblocksStrandedFlush is the Flush analog: a flush-only
+// request queues behind a writeLoop stuck flushing a deferred frame, then ctx
+// cancel must return it. Deterministic for the same reason.
+func TestConn_CtxCancelUnblocksStrandedFlush(t *testing.T) {
+	t.Parallel()
+	s := newSimServer(t)
+	readStarted := make(chan struct{})
+	go s.readOneThenStall(readStarted)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, err := dialWith(ctx, "sim", false, s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
+	defer c.Close()
 
-	// Deferred frame marks the conn dirty so Flush actually synchronizes; the
-	// flush then blocks on the stalled server. A second Flush queues behind it.
-	_ = c.SendFrameDeferred(UID{First: 9}, []byte("x"))
+	// Deferred frame → writeLoop dequeues, blocks in Flush (server reads 1 byte).
+	// It also marks the conn dirty so Flush() actually synchronizes.
+	_ = c.SendFrameDeferred(UID{First: 9}, []byte("xxxxxxxx"))
+	awaitWithin(t, 2*time.Second, readStarted, "writeLoop never reached Flush")
+
+	// Flush() enqueues a flush-only request behind the stuck writeLoop.
 	fDone := make(chan struct{})
 	go func() { _ = c.Flush(); close(fDone) }()
-	time.Sleep(50 * time.Millisecond)
+	waitWriteChLen(t, c, 1)
 
-	_ = c.Close()
-	awaitWithin(t, 3*time.Second, fDone, "Flush stranded after Close — Bug 1")
+	c.cancel()
+	awaitWithin(t, 3*time.Second, fDone, "Flush stranded — Bug 1: queued flush hangs on <-errCh after ctx cancel")
 }
 
 // TestConn_MonitorDeathClosesSocket is the Bug 2 proof. The server completes the
