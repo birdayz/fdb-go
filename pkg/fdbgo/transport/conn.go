@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -113,30 +112,22 @@ type Response struct {
 	Err  error
 }
 
-// Dial connects to an FDB process, exchanges ConnectPackets, and starts
-// the read loop for response multiplexing.
 // DialFunc is the signature for custom dialers. Same as net.Dialer.DialContext.
 // Default is net.Dialer{}.DialContext. Override for testing (fault injection,
 // custom Docker networking, traffic shaping).
 type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// Dial connects to an FDB server using the default net.Dialer.
-func Dial(ctx context.Context, addr string, tls bool) (*Conn, error) {
-	return DialWith(ctx, addr, tls, nil)
-}
-
-// DialWith connects to an FDB server using a custom dialer.
-// If dialFn is nil, uses the default net.Dialer.
-// TLSConfig holds TLS configuration for FDB connections.
-// If non-nil, connections use TLS with the specified certificates.
-type TLSConfig struct {
-	CertFile string // Path to client certificate (PEM)
-	KeyFile  string // Path to client private key (PEM)
-	CAFile   string // Path to CA certificate (PEM)
-}
-
-func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Conn, error) {
-	return DialWithTLS(ctx, addr, tls, dialFn, nil)
+// Dial connects to an FDB process, exchanges ConnectPackets, and starts the
+// read/write/monitor loops.
+//
+// tlsConfig is the single source of truth for transport security: non-nil wraps
+// the connection in TLS using that standard *crypto/tls.Config (bring any config
+// — in-memory certs, rotation via GetClientCertificate, custom
+// VerifyPeerCertificate, cipher/version policy); nil means plaintext. There is no
+// separate "use TLS" bool to disagree with it, so a connection can never be
+// silently downgraded. dialFn overrides the dialer (nil → net.Dialer).
+func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, dialFn DialFunc) (*Conn, error) {
+	return dialWith(ctx, addr, dialFn, tlsConfig)
 }
 
 // errConnClosed is delivered to in-flight requests and queued senders when the
@@ -146,7 +137,7 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 var errConnClosed = errors.New("connection closed")
 
 // connOption tweaks a Conn before its loop goroutines start. Test-only knobs
-// (e.g. monitor cadence) ride this so the public Dial signatures stay clean.
+// (e.g. monitor cadence) ride this so the public Dial signature stays clean.
 type connOption func(*Conn)
 
 // withMonitorCadence overrides the connection-monitor loop interval and timeout.
@@ -158,14 +149,8 @@ func withMonitorCadence(loop, timeout time.Duration) connOption {
 	}
 }
 
-// DialWithTLS connects to an FDB server with optional TLS.
-// If tlsCfg is non-nil and tls is true, the connection is encrypted.
-func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc, tlsCfg *TLSConfig) (*Conn, error) {
-	return dialWith(ctx, addr, useTLS, dialFn, tlsCfg)
-}
-
-// dialWith is the implementation behind DialWithTLS, plus test-only connOptions.
-func dialWith(ctx context.Context, addr string, useTLS bool, dialFn DialFunc, tlsCfg *TLSConfig, opts ...connOption) (*Conn, error) {
+// dialWith is the implementation behind Dial, plus test-only connOptions.
+func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.Config, opts ...connOption) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer
 		dialFn = d.DialContext
@@ -194,9 +179,12 @@ func dialWith(ctx context.Context, addr string, useTLS bool, dialFn DialFunc, tl
 		tc.SetKeepAlivePeriod(10 * time.Second)
 	}
 
-	// Wrap in TLS if configured.
-	if useTLS && tlsCfg != nil {
-		tlsConn, tlsErr := upgradeTLS(netConn, addr, tlsCfg)
+	// Wrap in TLS iff a config was supplied. The non-nil config is the only
+	// "use TLS" signal — there is no bool to disagree with it, so plaintext can
+	// never be sent on a connection the caller wanted encrypted. An empty config
+	// still attempts a real handshake and fails closed (never plaintext).
+	if tlsConfig != nil {
+		tlsConn, tlsErr := upgradeTLS(netConn, addr, tlsConfig)
 		if tlsErr != nil {
 			netConn.Close()
 			return nil, fmt.Errorf("TLS handshake %s: %w", addr, tlsErr)
@@ -207,7 +195,7 @@ func dialWith(ctx context.Context, addr string, useTLS bool, dialFn DialFunc, tl
 	connCtx, cancel := context.WithCancel(context.Background())
 	c := &Conn{
 		conn:    netConn,
-		useTLS:  useTLS,
+		useTLS:  tlsConfig != nil, // drives frame-checksum omission; not a TLS switch
 		wbuf:    bufio.NewWriterSize(netConn, 64*1024),
 		writeCh: make(chan writeReq, 256), // buffered for concurrent senders
 		pending: make(map[UID]chan Response, 16),
@@ -896,40 +884,23 @@ func newConnectionID() uint64 {
 	return binary.LittleEndian.Uint64(buf[:])
 }
 
-// upgradeTLS wraps a TCP connection in TLS using the provided certificates.
-// Matches FDB's TLS requirements: mutual authentication with client cert.
-func upgradeTLS(conn net.Conn, addr string, cfg *TLSConfig) (net.Conn, error) {
-	tlsConf := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-
-	// Load client certificate for mutual TLS.
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("load client cert: %w", err)
+// upgradeTLS wraps conn in TLS using the caller's *tls.Config. The config is
+// cloned so the caller's value is never mutated; we fill in two FDB-shaped
+// defaults ONLY when the caller left them unset — ServerName (from the dialed
+// host, for SNI + verification) and MinVersion (TLS 1.2). Everything else
+// (certs, RootCAs, GetClientCertificate, VerifyPeerCertificate, cipher suites)
+// is the caller's to control — this is a plain *crypto/tls.Config.
+func upgradeTLS(conn net.Conn, addr string, cfg *tls.Config) (net.Conn, error) {
+	cfg = cfg.Clone()
+	if cfg.ServerName == "" {
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			cfg.ServerName = host
 		}
-		tlsConf.Certificates = []tls.Certificate{cert}
 	}
-
-	// Load CA certificate for server verification.
-	if cfg.CAFile != "" {
-		caCert, err := os.ReadFile(cfg.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("load CA cert: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("failed to parse CA cert")
-		}
-		tlsConf.RootCAs = pool
+	if cfg.MinVersion == 0 {
+		cfg.MinVersion = tls.VersionTLS12
 	}
-
-	// Extract hostname for SNI.
-	host, _, _ := net.SplitHostPort(addr)
-	tlsConf.ServerName = host
-
-	tlsConn := tls.Client(conn, tlsConf)
+	tlsConn := tls.Client(conn, cfg)
 	if err := tlsConn.Handshake(); err != nil {
 		return nil, err
 	}

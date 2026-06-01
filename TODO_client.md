@@ -206,24 +206,20 @@ Fix notes:
 - Either make `client.Transaction.SetAccessSystemKeys` also set `lockAware`, or have database defaults apply both flags.
 - Add a commit-request unit test proving database-level access-system-keys sets `FLAG_IS_LOCK_AWARE`.
 
-### 11. Medium - TLS support is advertised but not wired into database connections
+### 11. Medium - TLS support is advertised but not wired into database connections — FIXED (RFC-051)
 
-Evidence:
-
-- `pkg/fdbgo/README.md:22` advertises TLS support.
-- `pkg/fdbgo/client/database.go:254` always calls `transport.DialWith(..., false, ...)`.
-- `pkg/fdbgo/client/ClusterFile` has no TLS fields, and `ParseClusterString` does not parse TLS options.
-- `pkg/fdbgo/transport/conn.go:165` only wraps in TLS when `useTLS && tlsCfg != nil`, but `pkg/fdbgo/transport/conn.go:177` still stores `useTLS` even if no TLS wrapper was applied.
-
-Impact:
-
-The database client cannot open TLS-enabled clusters through the normal API. Direct `DialWithTLS(useTLS=true, tlsCfg=nil)` creates a plaintext TCP connection but uses TLS framing rules, which will break protocol framing.
-
-Fix notes:
-
-- Parse and store TLS configuration from cluster configuration or explicit database options.
-- Plumb `TLSConfig` to `getOrDial`.
-- Set `Conn.useTLS` based on the actual wrapped connection, or reject `useTLS=true` without TLS configuration.
+`ParseClusterString` now parses the `:tls` coordinator suffix (→ `ClusterFile.UseTLS`),
+`resolveTLSConfig` loads `FDB_TLS_{CERTIFICATE,KEY,CA}_FILE` (C++ precedence) into a
+standard `*crypto/tls.Config`, and `database.getOrDialConn` dials over TLS via
+`transport.Dial(ctx, addr, *tls.Config, dialFn)`. The user-facing API is functional
+options — `fdb.OpenDatabase(clusterFile, WithTLSConfig(*tls.Config), WithDialFunc(...))`
+(bradfitz review). The plaintext-on-TLS-framing footgun is gone by construction: a
+non-nil `*tls.Config` is the *only* "use TLS" signal (nil = plaintext); the old
+`useTLS bool` / `DialWith` / `DialWithTLS` / bespoke `transport.TLSConfig` are deleted.
+`Conn.useTLS` survives only as the internal frame-checksum-omission flag, derived from
+`tlsConfig != nil`. FDB-C + Torvalds + bradfitz ACK. Follow-ups: per-address TLS flag
+(dual-listen), `FDB_TLS_VERIFY_PEERS` rule DSL, `FDB_TLS_PASSWORD`/encrypted keys,
+FDB-TLS testcontainer e2e.
 
 ### 12. Medium - Location refresh can panic on empty location responses
 

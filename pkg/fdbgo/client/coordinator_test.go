@@ -83,7 +83,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	connectCF.InternalKey = internalClusterKey
 
 	// Create database and connect.
-	db, err := OpenDatabaseFromConfig(ctx, connectCF, nil)
+	db, err := OpenDatabaseFromConfig(ctx, connectCF)
 	if err != nil {
 		// If bootstrap fails, try raw coordinator exchange for debugging.
 		t.Logf("OpenDatabaseFromConfig failed: %v", err)
@@ -327,7 +327,7 @@ func TestGetRange(t *testing.T) {
 	}
 	connectCF.InternalKey = internalClusterKey
 
-	db, err := OpenDatabaseFromConfig(ctx, connectCF, nil)
+	db, err := OpenDatabaseFromConfig(ctx, connectCF)
 	if err != nil {
 		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}

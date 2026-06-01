@@ -291,7 +291,7 @@ close the testing/conformance gaps its prevention plan (P5/P7) calls for.
 ### RFC-010 audit findings (the original 15 — correctness fires)
 
 The execution list for the Codex source audit (`TODO_client.md`); full detail + C-conformance
-reasoning per item in `rfcs/010-native-client-correctness.md`. **10 landed, 4 open, 1 false positive.**
+reasoning per item in `rfcs/010-native-client-correctness.md`. **11 landed, 3 open, 1 false positive.**
 Each open item is gated by *why it isn't trivially done*, not by another item.
 
 - [x] **#1** inline `LoadBalancedReply.error` decoded on read parsers (Phase 0)
@@ -311,7 +311,7 @@ Each open item is gated by *why it isn't trivially done*, not by another item.
   relying on the implicit coupling must set `SetLockAware` explicitly (as a Java/CGo app must) — only
   observable on a *locked* DB; wire-safe (lock-aware is a commit flag, not persisted bytes).
   Pinned by `TestSetAccessSystemKeys_DoesNotImplyLockAware` (facade unit test, fails if the coupling returns).
-- [ ] **#11 — MEDIUM.** Wire TLS config through `ParseClusterString`/`ClusterFile` → `getOrDial` (the spec'd capability), or drop the README claim and make `DialWithTLS(useTLS=true, nil)` reject rather than emit TLS-framed plaintext.
+- [x] **#11 — MEDIUM.** TLS wired end-to-end — fixed in RFC-051. `ParseClusterString` parses the `:tls` coordinator suffix (faithful to C++ `NetworkAddress::parse`: strip `(fromHostname)` then `:tls` when len>4; uniform-cluster, mixed rejected) → `ClusterFile.UseTLS`; `database` carries `tlsConfig *tls.Config` and `getOrDialConn` dials TLS; `resolveTLSConfig` loads `FDB_TLS_{CERTIFICATE,KEY,CA}_FILE` (→ `/etc/foundationdb/{cert,key}.pem` default) into a standard config, C++-precedence-faithful. **Go-idiomatic user-facing API (bradfitz review):** `transport.Dial(ctx, addr, *tls.Config, dialFn)` — the non-nil config is the *only* "use TLS" signal (nil = plaintext), so the silent-downgrade footgun is gone by construction (the `useTLS bool` + `DialWith`/`DialWithTLS` overloads + bespoke `transport.TLSConfig` are deleted); `fdb.OpenDatabase(clusterFile, WithTLSConfig(*tls.Config), WithDialFunc(...))` functional options, precedence explicit > `FDB_TLS_*` env > default; `upgradeTLS` clones + fills `ServerName`/`MinVersion` only if unset. 6 deterministic tests incl. a real in-process mutual-TLS handshake (FDB ConnectPacket inside the tunnel) + wrong-CA/missing-client-cert rejects. FDB-C + Torvalds + bradfitz ACK. Follow-ups: per-address TLS flag (dual-listen), `FDB_TLS_VERIFY_PEERS` rule DSL, `FDB_TLS_PASSWORD`/encrypted keys, FDB-TLS testcontainer e2e.
 - [ ] **#13 — LOW (concurrency-sensitive).** Reply channel never returned to the pool on the success path (both `PrepareReply`/`Release` and `Send`/`SendAndWait`) — hot-path alloc, and the line-23 "readLoop returns it after dispatch" comment is false. Fix must return the channel **only when no send can race** (success: caller received; Cancel: only when it won the `delete`) to avoid a stale-buffered-value bug on the timeout/delivery race; leave the rare race-loser leaked. Best validated with `SimTransport`.
 - [ ] **#14 — LOW.** Monitor ping can block on a full `writeCh`. Narrow/relax. (Folds into the #6 `failConnection`/conn-lifecycle work.)
 - [x] **#15** range-iterator next-begin via `keyAfter` helper that copies (no alias/scribble of `lastKey`); spare-capacity unit pin
