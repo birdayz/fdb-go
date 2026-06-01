@@ -1289,6 +1289,18 @@ func (tx *Transaction) SetReadLockAware(v bool) {
 	tx.readLockAware = v
 }
 
+// LockAware reports whether the commit is lock-aware (sets FLAG_IS_LOCK_AWARE,
+// bypassing the locked-database check). Mirrors SetLockAware.
+func (tx *Transaction) LockAware() bool {
+	return tx.lockAware
+}
+
+// ReadLockAware reports whether reads bypass the locked-database check.
+// Mirrors SetReadLockAware.
+func (tx *Transaction) ReadLockAware() bool {
+	return tx.readLockAware
+}
+
 // SetSizeLimit sets the maximum transaction size in bytes.
 // If the transaction exceeds this size, commit returns error 2101.
 // Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.

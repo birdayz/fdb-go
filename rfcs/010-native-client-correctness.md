@@ -233,6 +233,11 @@ work.
   a real perf decision, so document *that specific method* as not-concurrent-safe rather than
   pretending the whole transaction is unsafe. `-race` tests for `Set`+`Commit`,
   `Set`+`GetApproximateSize`, and the RYW lost-update.
+- **#10 — LANDED.** Decoupled: `fdb/options.go` `SetAccessSystemKeys` no longer auto-sets lock-aware;
+  tenant writes set `SetLockAware()` and tenant reads `SetReadLockAware()` explicitly at each
+  `fdb/database.go` call site (matching C++ `TenantManagement`). Added `client.Transaction.LockAware()`/
+  `ReadLockAware()` accessors; pinned by `TestSetAccessSystemKeys_DoesNotImplyLockAware` /
+  `TestSetReadLockAware_Independent` (facade unit tests, no DB). Original plan below.
 - **#10 — decouple, don't couple (conformance-corrected).** In the C client `ACCESS_SYSTEM_KEYS`
   sets only `rawAccess`, never `lockAware` (`NativeAPI.actor.cpp:7159-7171`); the two are
   independent. So the conformant fix is to make the two Go entrypoints agree by **removing** the

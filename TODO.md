@@ -303,7 +303,13 @@ Each open item is gated by *why it isn't trivially done*, not by another item.
 - [ ] **#7 — MEDIUM.** Honor the published "methods safe for concurrent use" contract: snapshot `mutations`/`readConflicts`/`writeConflicts` under `conflictMu` in `Commit`/marshal/`GetApproximateSize`, and move the `[:0]` clears inside `conflictMu` in reset/postCommitReset. `-race` tests. (RYW lost-update stays documented-not-safe.)
 - [x] **#8** `ReadErrorOr` parses the union tag (not field count); error code uint16 (Phase 0)
 - [x] **#9** rename `isSystemKey` → `isSpecialKey` (tests `\xff\xff` special-key space; behavior unchanged)
-- [ ] **#10 — MEDIUM (public-API behavior change — needs sign-off before doing).** Decouple `ACCESS_SYSTEM_KEYS` from `LOCK_AWARE` in `fdb/options.go:58` (C sets them independently — confirmed NativeAPI 7159 / RYW 2557 / TenantManagement). Drop the facade's auto-`SetLockAware` **and** set explicit options at each `fdb/database.go` tenant call site (writes: ACCESS_SYSTEM_KEYS+LOCK_AWARE; reads: READ_SYSTEM_KEYS+READ_LOCK_AWARE; low-level: RAW_ACCESS). Existing callers relying on the implicit coupling must then set `SetLockAware` explicitly (as a Java/CGo app must).
+- [x] **#10** decoupled `ACCESS_SYSTEM_KEYS` from `LOCK_AWARE` in `fdb/options.go` (C sets them
+  independently — confirmed NativeAPI 7159 / RYW 2557 / TenantManagement). Facade no longer
+  auto-sets lock-aware; tenant writes now set `SetLockAware()` and tenant reads `SetReadLockAware()`
+  explicitly at each `fdb/database.go` call site, matching C++. Behavior change: external callers
+  relying on the implicit coupling must set `SetLockAware` explicitly (as a Java/CGo app must) — only
+  observable on a *locked* DB; wire-safe (lock-aware is a commit flag, not persisted bytes).
+  Pinned by `TestSetAccessSystemKeys_DoesNotImplyLockAware` (facade unit test, fails if the coupling returns).
 - [ ] **#11 — MEDIUM.** Wire TLS config through `ParseClusterString`/`ClusterFile` → `getOrDial` (the spec'd capability), or drop the README claim and make `DialWithTLS(useTLS=true, nil)` reject rather than emit TLS-framed plaintext.
 - [ ] **#13 — LOW (concurrency-sensitive).** Reply channel never returned to the pool on the success path (both `PrepareReply`/`Release` and `Send`/`SendAndWait`) — hot-path alloc, and the line-23 "readLoop returns it after dispatch" comment is false. Fix must return the channel **only when no send can race** (success: caller received; Cancel: only when it won the `delete`) to avoid a stale-buffered-value bug on the timeout/delivery race; leave the rare race-loser leaked. Best validated with `SimTransport`.
 - [ ] **#14 — LOW.** Monitor ping can block on a full `writeCh`. Narrow/relax. (Folds into the #6 `failConnection`/conn-lifecycle work.)

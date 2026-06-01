@@ -35,6 +35,7 @@ go_test(
         "error_test.go",
         "fdb_test.go",
         "key_test.go",
+        "options_internal_test.go",
         "range_iterator_test.go",
         "range_result_internal_test.go",
         "range_test.go",
