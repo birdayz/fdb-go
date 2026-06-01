@@ -91,26 +91,36 @@ write_files:
     permissions: "0755"
     content: |
       #!/bin/bash
-      set -euo pipefail
-
-      # Bump Ryuk priority — make it the LAST thing the OOM-killer picks.
-      docker ps --filter ancestor=testcontainers/ryuk --format '{{.ID}}' | while read -r id; do
-        pid=$(docker inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true)
-        if [ -n "$pid" ] && [ -w "/proc/$pid/oom_score_adj" ]; then
-          echo -500 > "/proc/$pid/oom_score_adj" 2>/dev/null || true
-        fi
-      done
-
-      # Kill FDB containers running > 30 minutes (orphan).
-      docker ps --filter ancestor=foundationdb/foundationdb --format '{{.ID}}' | while read -r id; do
-        started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null)
-        if [ -z "$started" ]; then continue; fi
-        age=$(( $(date -u +%s) - $(date -u -d "$started" +%s 2>/dev/null || echo 0) ))
-        if [ "$age" -gt 1800 ]; then
-          echo "killing orphan FDB container $id (running $${age}s)"
-          docker kill "$id" 2>/dev/null || true
-          docker rm -f "$id" 2>/dev/null || true
-        fi
+      # Match containers by IMAGE NAME (tag-agnostic). The previous version used
+      # `docker ps --filter ancestor=foundationdb/foundationdb` (no tag), which on
+      # this Docker version matches NOTHING — the containers are tagged `:7.3.75`
+      # and the untagged ancestor filter does not match a tagged image. That made
+      # the whole sweep AND the Ryuk priority bump a silent no-op (exit 0, killed
+      # nothing), so FDB orphans accumulated for weeks until a fresh CI run OOMed
+      # (fdbserver code 137 / bazel "Server terminated abruptly").
+      set -uo pipefail
+      now=$(date -u +%s)
+      docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | while read -r id image; do
+        case "$image" in
+          testcontainers/ryuk*)
+            # Make Ryuk the LAST thing the OOM-killer picks, so it survives to reap.
+            pid=$(docker inspect -f '{{.State.Pid}}' "$id" 2>/dev/null || true)
+            if [ -n "$${pid:-}" ] && [ -w "/proc/$pid/oom_score_adj" ]; then
+              echo -500 > "/proc/$pid/oom_score_adj" 2>/dev/null || true
+            fi
+            ;;
+          foundationdb/foundationdb*)
+            # Kill FDB containers running > 30 min — no per-test container lives
+            # that long, so these are orphans.
+            started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null || true)
+            [ -z "$${started:-}" ] && continue
+            age=$(( now - $(date -u -d "$started" +%s 2>/dev/null || echo "$now") ))
+            if [ "$age" -gt 1800 ]; then
+              echo "killing orphan FDB container $id ($image, running $${age}s)"
+              docker rm -f "$id" 2>/dev/null || true
+            fi
+            ;;
+        esac
       done
 
   - path: /etc/systemd/system/orphan-fdb-sweep.service
