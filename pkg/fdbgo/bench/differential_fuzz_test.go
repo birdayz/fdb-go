@@ -1,8 +1,10 @@
 package bench
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -35,6 +37,7 @@ const (
 	fzByteMin
 	fzByteMax
 	fzAppendIfFits
+	fzCompareAndClear
 	fzCommit // transaction boundary
 	fzNumKinds
 )
@@ -144,6 +147,8 @@ func applyGo(tx gofdb.Transaction, ops []fuzzOp, pfx string) {
 			tx.ByteMax(gk(op.keyIdx), op.operand)
 		case fzAppendIfFits:
 			tx.AppendIfFits(gk(op.keyIdx), op.operand)
+		case fzCompareAndClear:
+			tx.CompareAndClear(gk(op.keyIdx), op.operand)
 		}
 	}
 }
@@ -183,6 +188,8 @@ func applyC(tx cgofdb.Transaction, ops []fuzzOp, pfx string) {
 			tx.ByteMax(ck(op.keyIdx), op.operand)
 		case fzAppendIfFits:
 			tx.AppendIfFits(ck(op.keyIdx), op.operand)
+		case fzCompareAndClear:
+			tx.CompareAndClear(ck(op.keyIdx), op.operand)
 		}
 	}
 }
@@ -221,11 +228,17 @@ func stripNormC(t *testing.T, v int64, pfx string) []kvPair {
 // (a fuzz exec or a named corpus case) on failure.
 func runDifferentialSequence(t *testing.T, label string, txns [][]fuzzOp) {
 	t.Helper()
-	// Per-process nonce so parallel fuzz workers (separate processes, shared
-	// container) never collide; clear first so sequential execs in one worker start
-	// clean. The prefix is stripped before compare, so it never affects the result.
-	goPfx := fmt.Sprintf("fuzzdiff_%d_go_", os.Getpid())
-	cPfx := fmt.Sprintf("fuzzdiff_%d_c_", os.Getpid())
+	// Isolation has two axes: a per-PROCESS nonce (os.Getpid) so parallel fuzz
+	// workers — separate processes sharing the container — never collide, and the
+	// per-TEST name so different test functions in this package (FuzzDifferential vs
+	// TestDifferential_RYWCoalescing) get separate FDB key namespaces even in one
+	// process. With both, a clear-at-start, AND a unique-per-call namespace, the
+	// subtests are safe to run in parallel. The prefix is stripped before compare,
+	// so it never affects the logical result. (t.Name() is ASCII [A-Za-z0-9_/]; we
+	// replace '/' to keep the FDB key a single flat component.)
+	ns := strings.ReplaceAll(t.Name(), "/", "_")
+	goPfx := fmt.Sprintf("fuzzdiff_%d_%s_go_", os.Getpid(), ns)
+	cPfx := fmt.Sprintf("fuzzdiff_%d_%s_c_", os.Getpid(), ns)
 	clearPrefix(t, goPfx)
 	clearPrefix(t, cPfx)
 
@@ -246,7 +259,7 @@ func runDifferentialSequence(t *testing.T, label string, txns [][]fuzzOp) {
 		t.Fatalf("%s: persisted KV count differs: go=%d cgo=%d\nseq=%s", label, len(goState), len(cState), fmtTxns(txns))
 	}
 	for i := range goState {
-		if string(goState[i].k) != string(cState[i].k) || string(goState[i].v) != string(cState[i].v) {
+		if !bytes.Equal(goState[i].k, cState[i].k) || !bytes.Equal(goState[i].v, cState[i].v) {
 			t.Fatalf("%s: pair %d differs: go=(%q,%x) cgo=(%q,%x)\nseq=%s",
 				label, i, goState[i].k, goState[i].v, cState[i].k, cState[i].v, fmtTxns(txns))
 		}
@@ -263,7 +276,7 @@ func clearPrefix(t *testing.T, pfx string) {
 }
 
 func fmtTxns(txns [][]fuzzOp) string {
-	kindName := []string{"Set", "Clear", "ClearRange", "Add", "And", "Or", "Xor", "Max", "Min", "ByteMin", "ByteMax", "AppendIfFits"}
+	kindName := []string{"Set", "Clear", "ClearRange", "Add", "And", "Or", "Xor", "Max", "Min", "ByteMin", "ByteMax", "AppendIfFits", "CompareAndClear"}
 	s := ""
 	for ti, ops := range txns {
 		s += fmt.Sprintf("\n  txn%d:", ti)
@@ -288,7 +301,8 @@ func FuzzDifferential(f *testing.F) {
 	f.Add([]byte{fzAdd, 0, 1, 0x05, fzAdd, 0, 1, 0x03, fzMin, 0, 1, 0x02, fzCommit})
 	f.Add([]byte{fzSet, 0, 2, 0xde, 0xad, fzClearRange, 0, 3, fzSet, 1, 1, 0xff, fzCommit})
 	f.Add([]byte{fzByteMax, 0, 3, 0x6d, 0x6d, 0x6d, fzByteMin, 0, 1, 0x7a, fzCommit})
-	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})
+	f.Add([]byte{fzSet, 0, 1, 0x77, fzCompareAndClear, 0, 1, 0x77, fzCommit}) // CAC match → clear
+	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		txns := decodeFuzzOps(data)
 		if len(txns) == 0 {
@@ -308,6 +322,12 @@ func TestDifferential_RYWCoalescing(t *testing.T) {
 		name string
 		txns [][]fuzzOp
 	}{
+		// Set(8-byte 0x0a..) then Add(1-byte 0x01): the RYW fold (AddValue onto
+		// SetValue) runs doLittleEndianAdd, which returns a value of the OPERAND
+		// width (Atomic.h: `StringRef(buf, otherOperand.size())`) — so the persisted
+		// result is the single byte 0x0b, NOT an 8-byte 0x0b00.. This width
+		// truncation is the subtle bit both clients must agree on; a byte-slice
+		// compare catches a width divergence.
 		{"set_then_add_same_txn", [][]fuzzOp{{
 			{kind: fzSet, keyIdx: 0, operand: []byte{0x0a, 0, 0, 0, 0, 0, 0, 0}},
 			{kind: fzAdd, keyIdx: 0, operand: []byte{0x01}},
@@ -335,12 +355,22 @@ func TestDifferential_RYWCoalescing(t *testing.T) {
 			{kind: fzAppendIfFits, keyIdx: 0, operand: []byte("ab")},
 			{kind: fzAppendIfFits, keyIdx: 0, operand: []byte("cd")},
 		}}},
+		// CompareAndClear coalesces specially in RYW (WriteMap.cpp:373): set k, then
+		// CAC with the matching value clears it; CAC with a non-matching value is a
+		// no-op. Both shapes must agree across clients.
+		{"set_then_compareandclear_match", [][]fuzzOp{{
+			{kind: fzSet, keyIdx: 0, operand: []byte("v")},
+			{kind: fzCompareAndClear, keyIdx: 0, operand: []byte("v")}, // matches → clears
+		}}},
+		{"set_then_compareandclear_nomatch", [][]fuzzOp{{
+			{kind: fzSet, keyIdx: 1, operand: []byte("v")},
+			{kind: fzCompareAndClear, keyIdx: 1, operand: []byte("x")}, // no match → kept
+		}}},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			// Not parallel: shares the per-process prefix with the fuzzer/other cases;
-			// each case clears first, so sequential execution is clean.
+			t.Parallel() // unique per-test prefix (t.Name()) makes this collision-safe
 			runDifferentialSequence(t, tc.name, tc.txns)
 		})
 	}
