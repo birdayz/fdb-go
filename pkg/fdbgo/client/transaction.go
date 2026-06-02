@@ -686,7 +686,25 @@ func (tx *Transaction) Set(key, value []byte) {
 }
 
 // Clear deletes a key.
+// consumeNextWriteNoConflict resets the one-shot NEXT_WRITE_NO_WRITE_CONFLICT_RANGE
+// flag without adding a conflict range. C++ RYW set/clear/atomicOp consume the flag
+// (getAndResetWriteConflictDisabled) at the TOP, before any size-based no-op return
+// (ReadYourWrites.actor.cpp:2407 for clear), so an oversized/empty clear still
+// consumes it and it never leaks to the following write.
+func (tx *Transaction) consumeNextWriteNoConflict() {
+	tx.conflictMu.Lock()
+	tx.nextWriteNoConflict = false
+	tx.conflictMu.Unlock()
+}
+
 func (tx *Transaction) Clear(key []byte) {
+	// C++ clear(KeyRef) drops an oversized single-key clear entirely
+	// (NativeAPI.actor.cpp:6045-6047): no mutation, no conflict range, no RYW write —
+	// but the no-conflict flag is still consumed (RYW :2407, above the size check).
+	if len(key) > getMaxClearKeySize(key) {
+		tx.consumeNextWriteNoConflict()
+		return
+	}
 	end := make([]byte, len(key)+1)
 	copy(end, key)
 	end[len(key)] = 0
@@ -707,12 +725,24 @@ func (tx *Transaction) Clear(key []byte) {
 // Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
 // Zero-width ranges (begin == end) are silently ignored, matching C++.
 func (tx *Transaction) ClearRange(begin, end []byte) error {
-	cmp := bytes.Compare(begin, end)
-	if cmp > 0 {
+	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
-	if cmp == 0 {
-		return nil // C++ ignores zero-width ClearRange.
+	// C++ clear(KeyRangeRef) clamps oversized range keys to maxSize+1 bytes rather
+	// than rejecting (NativeAPI.actor.cpp:6019-6028) — there are no stored keys
+	// larger than the max, so a too-large bound is equivalent to its truncation.
+	if bmax := getMaxClearKeySize(begin); len(begin) > bmax {
+		begin = begin[:bmax+1]
+	}
+	if emax := getMaxClearKeySize(end); len(end) > emax {
+		end = end[:emax+1]
+	}
+	// Zero-width (begin == end) or clamped-to-empty (begin >= end): C++ returns
+	// without recording a mutation (r.empty()), but still consumes the no-conflict
+	// flag (consumed at the top of RYW clear, above the empty check).
+	if bytes.Compare(begin, end) >= 0 {
+		tx.consumeNextWriteNoConflict()
+		return nil
 	}
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
@@ -736,8 +766,19 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		Key:   key,
 		Value: operand,
 	})
-	// Atomic ops add write conflict but NOT read conflict.
-	tx.addWriteConflictForKeyLocked(key)
+	// Atomic ops add a write conflict range but NOT a read conflict range —
+	// EXCEPT SetVersionstampedKey. Its key carries an incomplete versionstamp
+	// (the 10-byte stamp is filled in server-side at commit), so a conflict range
+	// over the placeholder bytes is meaningless and would spuriously conflict two
+	// transactions that stamp "the same" logical key. C++ RYW atomicOp forces
+	// AddConflictRange::False for SetVersionstampedKey (ReadYourWrites.actor.cpp:2268)
+	// while STILL consuming the NEXT_WRITE_NO_WRITE_CONFLICT_RANGE flag (getAndReset
+	// at :2220). Match both: consume the flag, skip the range.
+	if op == MutSetVersionstampedKey {
+		tx.nextWriteNoConflict = false
+	} else {
+		tx.addWriteConflictForKeyLocked(key)
+	}
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
 		tx.ryw.atomic(op, key, operand)
@@ -796,11 +837,48 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2004} // key_outside_legal_range
 		}
-		// ClearRange: also check end key (stored in Value).
-		// C++ clear(range): if (range.begin > maxKey || range.end > maxKey) → reject
-		if m.Type == MutClearRange && bytes.Compare(m.Value, maxWrite) > 0 {
+		if m.Type == MutClearRange {
+			// ClearRange: also check end key (stored in Value).
+			// C++ clear(range): if (range.begin > maxKey || range.end > maxKey) → reject
+			if bytes.Compare(m.Value, maxWrite) > 0 {
+				tx.state.Store(int32(txStateErrored))
+				return &wire.FDBError{Code: 2004}
+			}
+			// Clear key SIZES are clamped at build time (Clear/ClearRange), matching
+			// C++ clear() which translates an oversized range rather than rejecting —
+			// so no key_too_large check here.
+			continue
+		}
+		// set()/atomicOp() reject oversized keys/values. The C binding aborts the
+		// process (CATCH_AND_DIE on the key_too_large/value_too_large throw); we
+		// reject the commit instead so the oversized data never reaches the shared
+		// cluster. See sizelimits.go.
+		//
+		// hasRawAccess: C++ sets options.rawAccess = true for ANY of RAW_ACCESS,
+		// ACCESS_SYSTEM_KEYS, or READ_SYSTEM_KEYS (NativeAPI.actor.cpp:7159-7170 —
+		// the three cases fall through to one assignment). We don't model the bare
+		// RAW_ACCESS option, but ACCESS_SYSTEM_KEYS == writeSystemKeys and
+		// READ_SYSTEM_KEYS == readSystemKeys, and either raises the non-system key
+		// limit by the tenant-prefix slack (KEY_SIZE_LIMIT+8). Passing false here
+		// would reject 10001-10008-byte keys that libfdb_c accepts.
+		//
+		// BUT the +8 slack IS the tenant-prefix allowance (getMaxWriteKeySize's
+		// `tenantSize = hasRawAccess ? PREFIX_SIZE : 0`, NativeAPI.actor.cpp:11630):
+		// it exists for raw access where the CALLER already included the 8-byte
+		// prefix. When THIS client will prepend the prefix itself (tenantId >= 0,
+		// commitpath.go), the user key must stay within KEY_SIZE_LIMIT so the
+		// prefixed physical key is ≤ KEY_SIZE_LIMIT+8 — otherwise a 10001-10008-byte
+		// user key serializes to a 10009-10016-byte physical key. C++ forbids
+		// raw-access options on tenant transactions for exactly this reason; we gate
+		// the slack on the no-tenant case to the same effect.
+		rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
+		if len(m.Key) > getMaxWriteKeySize(m.Key, rawAccess) {
 			tx.state.Store(int32(txStateErrored))
-			return &wire.FDBError{Code: 2004}
+			return &wire.FDBError{Code: 2102} // key_too_large
+		}
+		if len(m.Value) > valueSizeLimit {
+			tx.state.Store(int32(txStateErrored))
+			return &wire.FDBError{Code: 2103} // value_too_large
 		}
 	}
 
