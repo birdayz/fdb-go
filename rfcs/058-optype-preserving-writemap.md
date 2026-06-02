@@ -1,6 +1,11 @@
 # RFC-058: Op-type-preserving write-map (phantom slots + exact conflict filtering)
 
-**Status:** Draft
+**Status:** Implemented — both sub-edges shipped + differential-proven vs libfdb_c. (a) getKey
+phantom slots via `segPhantom` (count-in-walk + skip-at-landing — the RFC-056 "counted" guess was
+disproved by the differential; getKey is a limit-1 range read) + a fold-path nil bug the same
+differential caught. (b) `updateConflictMap` filtering via `conflictRangesLocked`, with a
+commit-order conflict differential that fails without the fix (go over-conflicts on INDEPENDENT
+writes + cleared ranges) and passes with it.
 **Item:** RFC-056 continuation (2). Follows the merged getKey-RYW core (#235, RFC-056) and
 the lazy iterator (#236, RFC-057). Closes BOTH deferred sub-edges of RFC-056 item (2).
 
@@ -269,19 +274,19 @@ already had, extended to phantoms and made direction-aware. No wire-format chang
   driving the correct `segPhantom` model (count-in-walk + skip-at-landing). It also surfaced the
   pre-existing fold-path `nil`-normalization bug (pinned as a corpus seed + the
   `max_empty_then_cac_stays_present` case). A 92k-exec fuzz burst runs clean (0 mismatches).
-- **Sub-edge 2 — conflict filtering, deterministic commit-order differential.** New
-  `TestDifferential_GetKeyConflict` (in `pkg/fdbgo/bench/`, modeled on the commit-order pattern
-  in `interop_test.go:478`): for each (selector, probe-write-K) pair, on EACH client:
-  open txn A at a fixed read version, `A.GetKey(selector)` (registers the read-conflict), commit
-  a separate txn B that writes K (commit version > A's read version), then commit A — A fails
-  `not_committed(1020)` iff K ∈ A's read-conflict range. Assert go-A's commit outcome ==
-  cgo-A's for K placed on: an UNMODIFIED gap (both conflict), an INDEPENDENT-write key (neither
-  conflicts), a CLEARED key (neither), a DEPENDENT-atomic key (both conflict), and outside the
-  range (neither). Currently go over-conflicts on the INDEPENDENT/CLEARED cases → test fails;
-  after porting `updateConflictMap` → passes. (The Go client does not expose the
-  `\xff\xff/transaction/read_conflict_range/` special-key space, so the commit-order race is the
-  proof; it is fully deterministic because B commits before A and A reads at a fixed prior
-  version.)
+- **Sub-edge 2 — conflict filtering, deterministic commit-order differential (done).**
+  `TestDifferential_GetKeyConflict` (`pkg/fdbgo/bench/`, modeled on `interop_test.go:478`): on
+  EACH client — `A.GetKey(selector)` (pins A's read version + registers the read-conflict),
+  `A.Set(sentinel)`, commit a separate txn B that writes probe-K (commit version > A's read
+  version), then commit A — A fails `not_committed(1020)` iff K ∈ A's read-conflict range. Assert
+  go-A's outcome == cgo-A's == the expected C++ outcome, for K on: an UNMODIFIED gap (both
+  conflict), an INDEPENDENT-write key (neither), a CLEARED key (neither), a DEPENDENT-atomic key
+  (both conflict — proves no UNDER-conflict, the codex #235 safety concern), and outside the span
+  (neither). **Teeth verified:** with the old full-range conflict, the INDEPENDENT and CLEARED
+  cases FAIL (go-A conflicts where cgo-A does not); with `conflictRangesLocked` they pass. The Go
+  client does not expose `\xff\xff/transaction/read_conflict_range/`, so the commit-order race is
+  the proof — fully deterministic because B commits strictly between A's read version and A's
+  commit.
 - **Value-preservation net (must stay green UNCHANGED):** the RFC-055 Get/GetRange differential
   + the RFC-056 getKey differential + the RFC-057 equivalence property-test. If any getRange/Get
   value changed, these fail — they ARE the spec that the fold stays value-correct.

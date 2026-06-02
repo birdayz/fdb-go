@@ -772,6 +772,82 @@ func (c *rywCache) isClearedLocked(key []byte) bool {
 	return bytes.Compare(key, r.end) < 0
 }
 
+// conflictRangesLocked walks the write-map over [begin, end) and returns the maximal
+// sub-ranges that must be added to the getKey read-conflict map — a faithful port of C++
+// updateConflictMap (ReadYourWrites.actor.cpp:335-351), which iterates the WriteMap (NOT the
+// merged RYWIterator — the snapshot cache is irrelevant) and records a conflict for a segment
+// iff `is_unmodified_range() || (is_operation() && !is_independent())`. I.e.:
+//   - UNMODIFIED gap (no write key, not cleared) → conflict (a DB read resolved it).
+//   - operation key with isDependentLocked() (DEPENDENT_WRITE — a standalone atomic that read
+//     the DB base) → conflict, as the single key [k, keyAfter(k)).
+//   - INDEPENDENT write key (plain Set, folded atomic, matched-CAC phantom) → NO conflict.
+//   - CLEARED range (no operation key) → NO conflict.
+//
+// Adjacent qualifying sub-ranges are coalesced. Caller holds c.mu. The over-conflict that the
+// old full-range conflict caused (on INDEPENDENT writes + cleared ranges) is thereby removed,
+// matching C++ exactly. (RFC-058 sub-edge b.)
+func (c *rywCache) conflictRangesLocked(begin, end []byte) [][2][]byte {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil
+	}
+	c.ensureSortedLocked()
+
+	// Collect the segment boundaries within [begin, end]: begin, end, every write key in
+	// range AND its keyAfter (so an operation occupies its own single-key segment [k,
+	// keyAfter(k)) and the following gap is classified separately), and every cleared-range
+	// bound clamped into the window.
+	bounds := [][]byte{append([]byte(nil), begin...), append([]byte(nil), end...)}
+	addBound := func(b []byte) {
+		if bytes.Compare(b, begin) > 0 && bytes.Compare(b, end) < 0 {
+			bounds = append(bounds, append([]byte(nil), b...))
+		}
+	}
+	wStart := sort.SearchStrings(c.sortedKeys, string(begin))
+	for i := wStart; i < len(c.sortedKeys) && c.sortedKeys[i] < string(end); i++ {
+		k := []byte(c.sortedKeys[i])
+		addBound(k)
+		addBound(keyAfterBytes(k))
+	}
+	for _, r := range c.cleared {
+		if bytes.Compare(r.begin, end) >= 0 {
+			break
+		}
+		if bytes.Compare(r.end, begin) <= 0 {
+			continue
+		}
+		addBound(r.begin)
+		addBound(r.end)
+	}
+	sort.Slice(bounds, func(i, j int) bool { return bytes.Compare(bounds[i], bounds[j]) < 0 })
+
+	var out [][2][]byte
+	for i := 0; i+1 < len(bounds); i++ {
+		lo, hi := bounds[i], bounds[i+1]
+		if bytes.Equal(lo, hi) {
+			continue // deduped boundary
+		}
+		conflict := false
+		if entry, ok := c.writes[string(lo)]; ok && bytes.Equal(hi, keyAfterBytes(lo)) {
+			// Operation key occupying the single-key segment [lo, keyAfter(lo)).
+			conflict = entry.isDependentLocked()
+		} else if c.isClearedLocked(lo) {
+			conflict = false // CLEARED range — no DB read.
+		} else {
+			conflict = true // UNMODIFIED gap — a DB read resolved it.
+		}
+		if !conflict {
+			continue
+		}
+		// Coalesce with the previous sub-range if adjacent.
+		if n := len(out); n > 0 && bytes.Equal(out[n-1][1], lo) {
+			out[n-1][1] = append([]byte(nil), hi...)
+		} else {
+			out = append(out, [2][]byte{append([]byte(nil), lo...), append([]byte(nil), hi...)})
+		}
+	}
+	return out
+}
+
 func (c *rywCache) hasWritesInRangeLocked(begin, end []byte) bool {
 	c.ensureSortedLocked()
 	if len(c.sortedKeys) == 0 {

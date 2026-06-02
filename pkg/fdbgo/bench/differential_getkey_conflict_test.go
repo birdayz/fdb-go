@@ -1,0 +1,207 @@
+package bench
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+
+	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+)
+
+// GetKey read-CONFLICT differential vs libfdb_c — RFC-058 sub-edge (2).
+//
+// getKey registers a read-conflict over the selector base ↔ resolved span, then C++
+// updateConflictMap (ReadYourWrites.actor.cpp:335) SUBTRACTS the segments resolved locally
+// with no DB read (INDEPENDENT writes + cleared ranges), keeping only UNMODIFIED gaps +
+// DEPENDENT writes. The Go client used to keep the FULL span (safe over-conflict); this proves
+// the ported filtering matches libfdb_c EXACTLY — neither over- nor under-conflicting.
+//
+// The Go client does not expose the \xff\xff/transaction/read_conflict_range/ special-key
+// space, so we prove the conflict SET behaviorally with a deterministic commit-order race:
+//
+//	A.GetKey(selector)            // pins A's read version V_A, registers the read-conflict
+//	A.Set(sentinel)               // a committable write (so A reaches the resolver)
+//	B.Set(probeKey); B.Commit()   // commits at V_B > V_A
+//	A.Commit()                    // fails not_committed(1020) IFF probeKey ∈ A's read-conflict
+//
+// B commits strictly between A's read version and A's commit, so the outcome is a pure
+// function of whether probeKey is in A's (filtered) read-conflict range. Running the IDENTICAL
+// scenario on each client and asserting go-A's outcome == cgo-A's outcome is the differential;
+// we also assert the expected C++ outcome to catch a both-wrong regression. Before the fix the
+// INDEPENDENT/CLEARED cases diverge (go over-conflicts → 1020 where cgo commits); after, they
+// match. Write-write on probeKey does NOT conflict (last-writer-wins), so only A's READ
+// conflict can trip 1020 — isolating exactly the read-conflict set under test.
+
+// fdbErrorCode extracts the FDB error code from either client's error (0 if nil / non-FDB).
+func fdbErrorCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ge gofdb.Error
+	if errors.As(err, &ge) {
+		return ge.Code
+	}
+	var ce cgofdb.Error
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	return -1
+}
+
+// conflictOutcome runs the commit-order race for one client and reports whether A's commit
+// conflicted (1020). retry=true signals a transient retryable error (1007 etc., NOT 1020) —
+// the caller re-runs with a fresh version.
+type conflictOutcome struct {
+	conflicted bool
+	retry      bool
+}
+
+func goConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel selSpec, probeKey string) conflictOutcome {
+	t.Helper()
+	clearPrefix(t, pfx)
+	if len(seed) > 0 {
+		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			applyGo(tx, seed, pfx)
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("go seed: %v", err)
+		}
+	}
+	a, err := goClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("go A create: %v", err)
+	}
+	defer a.Cancel()
+	applyGo(a, pending, pfx)
+	if _, err := a.GetKey(goSel(pfx, sel)).Get(); err != nil {
+		if isFDBRetryable(err) {
+			return conflictOutcome{retry: true}
+		}
+		t.Fatalf("go A GetKey: %v", err)
+	}
+	a.Set(gofdb.Key(pfx+"~sentinel"), []byte("s")) // committable write, far from any probe
+	// Concurrent B writes the probe key and commits FIRST (V_B > A's read version).
+	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		tx.Set(gofdb.Key(pfx+probeKey), []byte("B"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("go B commit: %v", err)
+	}
+	switch code := fdbErrorCode(a.Commit().Get()); code {
+	case 0:
+		return conflictOutcome{conflicted: false}
+	case 1020:
+		return conflictOutcome{conflicted: true}
+	default:
+		return conflictOutcome{retry: true} // 1007 etc. — transient
+	}
+}
+
+func cgoConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel selSpec, probeKey string) conflictOutcome {
+	t.Helper()
+	clearPrefix(t, pfx)
+	if len(seed) > 0 {
+		mustCGo(t, func(tx cgofdb.Transaction) { applyC(tx, seed, pfx) })
+	}
+	a, err := cgoClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("cgo A create: %v", err)
+	}
+	defer a.Cancel()
+	applyC(a, pending, pfx)
+	if _, err := a.GetKey(cSel(pfx, sel)).Get(); err != nil {
+		if isFDBRetryable(err) {
+			return conflictOutcome{retry: true}
+		}
+		t.Fatalf("cgo A GetKey: %v", err)
+	}
+	a.Set(cgofdb.Key(pfx+"~sentinel"), []byte("s"))
+	if _, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		tx.Set(cgofdb.Key(pfx+probeKey), []byte("B"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("cgo B commit: %v", err)
+	}
+	switch code := fdbErrorCode(a.Commit().Get()); code {
+	case 0:
+		return conflictOutcome{conflicted: false}
+	case 1020:
+		return conflictOutcome{conflicted: true}
+	default:
+		return conflictOutcome{retry: true}
+	}
+}
+
+func runGetKeyConflictDifferential(t *testing.T, name string, seed, pending []fuzzOp, sel selSpec, probeKey string, wantConflict bool) {
+	t.Helper()
+	ns := strings.ReplaceAll(t.Name(), "/", "_")
+	const maxAttempts = 12
+	for attempt := 0; ; attempt++ {
+		if attempt >= maxAttempts {
+			t.Fatalf("%s: conflict differential did not clear transient errors in %d attempts", name, maxAttempts)
+		}
+		goPfx := fmt.Sprintf("gkconf_%d_%s_%d_go_", os.Getpid(), ns, attempt)
+		cPfx := fmt.Sprintf("gkconf_%d_%s_%d_c_", os.Getpid(), ns, attempt)
+		goOut := goConflictScenario(t, goPfx, seed, pending, sel, probeKey)
+		cOut := cgoConflictScenario(t, cPfx, seed, pending, sel, probeKey)
+		if goOut.retry || cOut.retry {
+			continue // transient (1007) on either side — fresh prefixes + versions, retry
+		}
+		if goOut.conflicted != cOut.conflicted {
+			t.Fatalf("%s: read-conflict DIVERGES: go-A conflicted=%v cgo-A conflicted=%v (probe=%q sel=%s)",
+				name, goOut.conflicted, cOut.conflicted, probeKey, sel.name)
+		}
+		if goOut.conflicted != wantConflict {
+			t.Fatalf("%s: both clients conflicted=%v but expected %v — conflict set wrong in BOTH (probe=%q sel=%s)",
+				name, goOut.conflicted, wantConflict, probeKey, sel.name)
+		}
+		return
+	}
+}
+
+// TestDifferential_GetKeyConflict pins the getKey read-conflict SET against libfdb_c. fuzzKeys
+// = {a,b,c,d}; the selector is firstGreaterThan("a") (orEqual, offset 1) unless noted, so the
+// conflict span runs from just after "a" to the resolved key. Probe keys land on each segment
+// CLASS to exercise every arm of updateConflictMap.
+func TestDifferential_GetKeyConflict(t *testing.T) {
+	t.Parallel()
+	b := func(s string) []byte { return []byte(s) }
+	set := func(ki int, v string) fuzzOp { return fuzzOp{kind: fzSet, keyIdx: ki, operand: b(v)} }
+	add := func(ki int, v string) fuzzOp { return fuzzOp{kind: fzAdd, keyIdx: ki, operand: b(v)} }
+	crange := func(bi, ei int) fuzzOp { return fuzzOp{kind: fzClearRange, keyIdx: bi, key2Idx: ei} }
+	fgt := func(ki int) selSpec { return selSpec{"FGT", ki, true, 1} } // firstGreaterThan(key)
+
+	cases := []struct {
+		name          string
+		seed, pending []fuzzOp
+		sel           selSpec
+		probeKey      string // raw key suffix (within prefix) that B writes
+		wantConflict  bool
+	}{
+		// INDEPENDENT pending write (Set c) — getKey(FGT a) resolves to c via the local write,
+		// NO DB read at c, so C++ excludes c from the conflict. Probe ON c → must NOT conflict.
+		// (Pre-fix go kept the full span → conflicted here. The distinguishing case.)
+		{"independent_write_excluded", nil, []fuzzOp{set(2, "v")}, fgt(0), "c", false},
+		// Same setup, probe in the UNMODIFIED gap (a,c) → DB read region → MUST conflict.
+		{"unmodified_gap_conflicts", nil, []fuzzOp{set(2, "v")}, fgt(0), "b", true},
+		// CLEARED range [b,d) then resolve to d (committed) — probe in the cleared part → no DB
+		// read → must NOT conflict. (Pre-fix go over-conflicted here too.)
+		{"cleared_range_excluded", []fuzzOp{set(3, "z")}, []fuzzOp{crange(1, 3)}, fgt(0), "b", false},
+		// DEPENDENT atomic (Add onto a committed value) — getKey reads the DB base to resolve,
+		// so C++ KEEPS the conflict. Probe ON c → MUST conflict. Proves the filter does not
+		// UNDER-conflict on a dependent atomic (the codex #235 safety concern).
+		{"dependent_atomic_conflicts", []fuzzOp{set(2, "\x05\x00\x00\x00")}, []fuzzOp{add(2, "\x01\x00\x00\x00")}, fgt(0), "c", true},
+		// Probe OUTSIDE the span (d, beyond resolved c) → never in the conflict range.
+		{"outside_span_no_conflict", nil, []fuzzOp{set(2, "v")}, fgt(0), "d", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runGetKeyConflictDifferential(t, tc.name, tc.seed, tc.pending, tc.sel, tc.probeKey, tc.wantConflict)
+		})
+	}
+}
