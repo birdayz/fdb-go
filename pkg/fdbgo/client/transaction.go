@@ -337,7 +337,10 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if bytes.Compare(key, s.tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	if s.tx.snapshotRYWDisableCount > 0 {
+	// Mirror C++ ReadYourWrites.actor.cpp:400-402: readYourWritesDisabled is checked FIRST (read
+	// through, for ALL reads incl. snapshot), then the snapshot-RYW counter. Both map to a
+	// storage read here (a snapshot read adds no conflict either way).
+	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		return s.tx.getValue(ctx, key)
 	}
 	return s.tx.ryw.get(ctx, key, s.tx.getValue)
@@ -355,7 +358,9 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	return s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
+	// includeWrites mirrors C++ :400-402: consult the RYW write map only when readYourWrites is
+	// NOT disabled AND snapshot RYW is net-enabled (count <= 0).
+	return s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.rywDisabled && s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
 }
 
 // GetRange reads a range without adding a read conflict range.
@@ -369,7 +374,7 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
-	if s.tx.snapshotRYWDisableCount > 0 {
+	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		return s.tx.getRange(ctx, begin, end, limit, false)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
@@ -386,7 +391,7 @@ func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
-	if s.tx.snapshotRYWDisableCount > 0 {
+	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		return s.tx.getRange(ctx, begin, end, limit, true)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
