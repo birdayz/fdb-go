@@ -1,6 +1,6 @@
 # RFC-062: Atomic-fold differential across operand/base widths and edge operands
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** RFC-010 C3 (fresh differential axes) — "atomic-op edge cases across ALL of `Atomic.h`
 (empty / missing / present-empty operand per op)". Atomic fold semantics are the **wire hard
 line**: the folded value is what gets persisted and what Java/C clients read.
@@ -91,7 +91,9 @@ exercise Go's fold via the in-txn read.
 4. **`TestDifferential_AppendIfFitsFold`** — present-base concat, empty base (→ operand), empty
    operand (→ base), missing-key, and a 90KB concat that still fits under the 100KB limit.
 
-All assert byte-identical persisted state via `runDifferentialSequence`.
+All run via the custom in-txn-read runner (goFold/cgoFold) described above — NOT
+`runDifferentialSequence`, which commits and reads back (server fold only) and would be blind to
+Go's client-side fold.
 
 ## Performance
 

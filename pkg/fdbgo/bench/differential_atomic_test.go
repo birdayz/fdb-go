@@ -216,7 +216,7 @@ func TestDifferential_AtomicFoldWidths(t *testing.T) {
 		{"add_carry_o8_wrap", fzAdd, bytesOf(8, 0xff), append([]byte{0x01}, bytesOf(7, 0x00)...)}, // 8-byte fast-path wrap → all 0x00
 		{"add_empty_operand", fzAdd, bytesOf(8, 0x0a), []byte{}},                                  // empty operand → empty result
 		{"add_empty_base", fzAdd, []byte{}, bytesOf(8, 0x05)},                                     // present-empty base → treated as 0
-		{"add_missing_o8", fzAdd, nil, bytesOf(8, 0x05)},                                          // SERVER fold (missing key)
+		{"add_missing_o8", fzAdd, nil, bytesOf(8, 0x05)},                                          // in-txn folds doAdd(nil,·) via resolveAtomics; committed = server fold
 
 		// --- And (AndV2 at API 730): operand-longer-than-base → trailing 0x00 ---
 		{"and_b8_o1", fzAnd, bytesOf(8, 0xff), []byte{0x0f}},
@@ -227,7 +227,7 @@ func TestDifferential_AtomicFoldWidths(t *testing.T) {
 		// present-empty base: AndV2 must fold via doAnd (→ all-zero result), NOT return operand
 		// (the absent path). This is the one place absent ≠ present-empty bites (FDB-C++ dev).
 		{"and_empty_base", fzAnd, []byte{}, bytesOf(8, 0xff)},
-		{"and_missing_o8", fzAnd, nil, bytesOf(8, 0xff)}, // SERVER fold; AndV2 absent → operand
+		{"and_missing_o8", fzAnd, nil, bytesOf(8, 0xff)}, // in-txn folds doAndV2(nil,·)→operand via resolveAtomics; committed = server fold
 
 		// --- Or: operand-longer-than-base → trailing param bytes copied ---
 		{"or_b8_o1", fzOr, bytesOf(8, 0xf0), []byte{0x0f}},
@@ -259,7 +259,7 @@ func TestDifferential_AtomicFoldWidths(t *testing.T) {
 		{"max_b1_o8_operandwins_earlyreturn", fzMax, []byte{0xff}, append([]byte{0x00}, bytesOf(7, 0x01)...)}, // operand high bytes nonzero → operand wins (early return)
 		{"max_empty_operand", fzMax, bytesOf(8, 0x07), []byte{}},
 		{"max_empty_base", fzMax, []byte{}, bytesOf(8, 0x07)},
-		{"max_missing_o8", fzMax, nil, bytesOf(8, 0x07)}, // SERVER fold
+		{"max_missing_o8", fzMax, nil, bytesOf(8, 0x07)}, // in-txn folds doMax(nil,·) via resolveAtomics; committed = server fold
 
 		// --- Min (MinV2 at API 730): symmetric to Max ---
 		{"min_b8high_o3_existingwins_trunc", fzMin, append([]byte{0, 0, 0, 0, 0, 0, 0}, 0x09), []byte{0x05, 0x00, 0x00}},
@@ -273,7 +273,7 @@ func TestDifferential_AtomicFoldWidths(t *testing.T) {
 		{"min_b8_o8_equal", fzMin, bytesOf(8, 0x07), bytesOf(8, 0x07)},
 		{"min_empty_operand", fzMin, bytesOf(8, 0x07), []byte{}},
 		{"min_empty_base", fzMin, []byte{}, bytesOf(8, 0x07)}, // present-empty → doMin (not absent→operand)
-		{"min_missing_o8", fzMin, nil, bytesOf(8, 0x07)},      // SERVER fold; MinV2 absent → operand
+		{"min_missing_o8", fzMin, nil, bytesOf(8, 0x07)},      // in-txn folds doMinV2(nil,·)→operand via resolveAtomics; committed = server fold
 	}
 	runAtomicFoldCases(t, cases)
 }
