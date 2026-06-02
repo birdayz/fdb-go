@@ -221,12 +221,18 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 				base, cleared = applyAtomic(m.typ, base, m.param)
 				if cleared {
 					base = nil
-				} else if base == nil {
-					// A non-clear atomic makes the key PRESENT, even if the resolved
+				} else if base == nil && !isUnresolvedVersionstamp(m.typ) {
+					// A RESOLVED non-clear atomic makes the key PRESENT, even if the
 					// value is empty (e.g. Xor(absent,"") → ""). Keep it non-nil so a
 					// later V2 op (MinV2/AndV2) sees "present" and does the op rather
 					// than the absent→operand path — matching C++ Optional.present()
 					// (Atomic.h doMinV2/doAndV2). nil stays reserved for absent.
+					//
+					// EXCEPT a versionstamped mutation on an absent key: applyAtomic
+					// returns (nil, false) because it CANNOT be resolved client-side
+					// (the stamp is unknown until commit). That nil is "unresolved",
+					// NOT present-empty — promoting it would surface a phantom empty
+					// key in Get/GetRange before commit. Leave it nil.
 					base = []byte{}
 				}
 			}
@@ -239,6 +245,16 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 				delete(c.writes, k)
 				c.sortedKeys = nil // key removed, invalidate sorted index
 				c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
+				c.mu.Unlock()
+				return nil, nil
+			}
+			if base == nil {
+				// Unresolved versionstamped atomic on an absent key (the gate above
+				// left it nil): it has no client-side value, so it reads as ABSENT
+				// (C++ marks it unreadable; we approximate as absent, consistent with
+				// the range path). Do NOT cache it as a resolved {value:nil} entry —
+				// that would later surface a phantom empty key. Leave the unresolved
+				// hasAtomics entry intact for re-resolution; it still commits.
 				c.mu.Unlock()
 				return nil, nil
 			}
@@ -556,8 +572,8 @@ func (c *rywCache) mergeBatch(
 				base, cleared = applyAtomic(m.typ, base, m.param)
 				if cleared {
 					base = nil
-				} else if base == nil {
-					base = []byte{} // present-empty atomic result (see get() path)
+				} else if base == nil && !isUnresolvedVersionstamp(m.typ) {
+					base = []byte{} // present-empty resolved atomic (see get() path)
 				}
 			}
 			// Cache resolved value.
@@ -575,6 +591,11 @@ func (c *rywCache) mergeBatch(
 				// a phantom that's handled by the `if !exists { continue }`
 				// guard at the top of this loop. Future mergeBatch calls
 				// will rebuild sortedKeys via ensureSortedLocked if needed.
+			} else if base == nil {
+				// Unresolved versionstamped atomic on an absent key (gate above left
+				// it nil): no client-side value → exclude from the merged range (it
+				// reads as absent, consistent with the single-key get() path; C++
+				// marks it unreadable). Don't cache it as a resolved {value:nil}.
 			} else {
 				c.writes[k] = rywEntry{value: base}
 				writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: base})
@@ -769,6 +790,15 @@ func (c *rywCache) addClearedRangeLocked(begin, end []byte) {
 // implementations in fdbclient/include/fdbclient/Atomic.h exactly.
 //
 // Convention: base==nil means "key absent" (C++ Optional<ValueRef> not present).
+// isUnresolvedVersionstamp reports whether op is a versionstamped mutation, which
+// applyAtomic cannot resolve client-side (the 10-byte stamp is assigned at commit).
+// For such an op on an ABSENT key applyAtomic returns (nil, false); that nil means
+// "unresolved", NOT present-empty — so the RYW chains must NOT promote it to a
+// present empty value (which would surface a phantom key in pre-commit Get/GetRange).
+func isUnresolvedVersionstamp(op MutationType) bool {
+	return op == MutSetVersionstampedKey || op == MutSetVersionstampedValue
+}
+
 // base==[]byte{} means "key present with empty value".
 // Returns (result, cleared). cleared=true means the key should be removed
 // (only happens for CompareAndClear).

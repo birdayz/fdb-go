@@ -1279,3 +1279,40 @@ func TestRYWGetRange_V2AtomicOnPresentEmpty(t *testing.T) {
 		t.Errorf("MinV2 on present-empty key: got %x, want 0x00 (little-endian min of \"\" and \"0\"); 0x30 means the absent→operand bug", result[0].Value)
 	}
 }
+
+// TestRYW_VersionstampedAbsentNoPhantom pins the codex RFC-056a finding: an
+// unresolved versionstamped mutation on an ABSENT key (applyAtomic → (nil,false),
+// the stamp is unknown until commit) must NOT surface as a phantom empty key in a
+// pre-commit read. The present-empty normalization is gated to exclude versionstamp
+// ops; Get reads absent (nil) and GetRange omits it (Go's approximation of C++
+// unreadable), consistently. Pre-fix the normalization made it a phantom {k, ""}.
+func TestRYW_VersionstampedAbsentNoPhantom(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	val := make([]byte, 14) // value w/ room for stamp+offset; unresolved client-side anyway
+	c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+
+	absent := func(ctx context.Context, key []byte) ([]byte, error) { return nil, nil }
+	absentRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+
+	// GetRange must omit the unresolved versionstamped key (no phantom).
+	result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	for _, kv := range result {
+		if string(kv.Key) == "vsk" {
+			t.Fatalf("versionstamped-pending absent key must NOT appear in GetRange (phantom): %v", result)
+		}
+	}
+	// Get must also read absent (nil).
+	got, err := c.get(context.Background(), []byte("vsk"), absent)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("versionstamped-pending absent key: Get must be nil (absent), got %x", got)
+	}
+}
