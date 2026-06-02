@@ -455,6 +455,12 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	tx.ryw.mu.Lock()
 	if entry, ok := tx.ryw.writes[string(key)]; ok {
 		if !entry.hasAtomics {
+			if entry.absent {
+				// Phantom (matched CompareAndClear): an is_kv slot for getKey but ABSENT for
+				// a point read — like a cleared key (RFC-058).
+				tx.ryw.mu.Unlock()
+				return nil, nil, nil
+			}
 			v := entry.value
 			tx.ryw.mu.Unlock()
 			return v, nil, nil

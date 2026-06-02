@@ -42,11 +42,56 @@ type rywCache struct {
 }
 
 // rywEntry represents a pending write for a single key.
+//
+// Op-type preservation (RFC-058) — mirrors the C++ WriteMap segment a key would occupy.
+// The eager value-fold (a resolved atomic stored as a plain entry) is correct for VALUES
+// but C++ classifies a key by its OPERATION, which two consumers need:
+//   - getKey offset walk counts by SEGMENT TYPE (is_kv), not by resolved value.
+//   - updateConflictMap records a read-conflict only for DEPENDENT writes + UNMODIFIED
+//     ranges, skipping INDEPENDENT writes + cleared ranges.
+//
+// Two flags capture exactly the C++ predicates without abandoning the value-fold:
 type rywEntry struct {
 	value []byte
+	// absent: the resolved value is "no value" (a matched CompareAndClear) — C++
+	// RYWMutation(Optional<ValueRef>(), SetValue). The key is STILL an is_kv slot for
+	// getKey (counted in the offset walk, a "phantom" slot), but Get/GetRange skip it.
+	// Distinct from value==nil ("Set to empty bytes", a present key).
+	absent bool
+	// dependent: a DEPENDENT_WRITE — a standalone atomic resolved against a DB base
+	// (C++ stack bottom is an atomic, isDependent()==true). Set ONCE at the entry's birth
+	// and carried UNCHANGED through later folds (C++ isDependent() reads singletonOperation,
+	// the stack bottom, which coalesceOver never mutates — WriteMap.cpp:480). Drives
+	// conflict filtering. A plain Set, a fold over a Set, and an atomic over a cleared base
+	// are all INDEPENDENT (dependent==false). Unused while hasAtomics (independence of an
+	// unresolved chain is derived from whether it contains a versionstamp — see
+	// isDependentLocked).
+	dependent bool
 	// If true, this entry has pending atomic mutations instead of a plain Set.
 	hasAtomics bool
 	atomics    []rywMutation
+}
+
+// isDependentLocked reports whether this entry is a C++ DEPENDENT_WRITE (is_independent()
+// false) for conflict-map purposes. A resolved entry uses its birth-time dependent flag; an
+// unresolved chain is INDEPENDENT iff it contains a versionstamp (unreadable — C++ marks
+// SetVersionstamped* independent), else DEPENDENT. Caller holds c.mu.
+//
+// Invariant (RFC-058 "Consistency"): a dependent==true entry is never cleared-based, because
+// an atomic over a cleared range is folded at the independent site (atomic() :!exists &&
+// isClearedLocked) with dependent=false. So !isDependentLocked() subsumes C++ is_independent's
+// `following_keys_cleared` disjunct for operation keys; pure cleared ranges (no operation key)
+// are classified separately via the cleared list.
+func (e *rywEntry) isDependentLocked() bool {
+	if e.hasAtomics {
+		for _, m := range e.atomics {
+			if isUnresolvedVersionstamp(m.typ) {
+				return false
+			}
+		}
+		return true
+	}
+	return e.dependent
 }
 
 // rywMutation represents a single atomic mutation.
@@ -182,23 +227,34 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	// across Get/GetRange). The mutation still commits via tx.mutations.
 	if !isUnresolvedVersionstamp(op) {
 		if exists && !entry.hasAtomics {
+			// Site B: fold over an existing resolved entry (plain Set or a prior fold). C++
+			// coalesces the op onto the stack TOP; the bottom (dependence) is unchanged, so
+			// keep entry.dependent. A matched CompareAndClear → a phantom is_kv slot
+			// (absent), NOT a cleared range (the key stays an operation in the write-map).
 			val, clr := applyAtomic(op, entry.value, param)
-			if clr {
-				delete(c.writes, k)
-				c.sortedKeys = nil
-				c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
-			} else {
-				entry.value = val
-				c.writes[k] = entry
+			if !clr && val == nil {
+				// A non-clear op that resolved to EMPTY (e.g. doMax(_, "")) is present-empty,
+				// NOT absent. Normalize nil→[]byte{} (C++ Optional present) so a LATER fold
+				// over this entry reads it as present — matching resolveAtomics. Without this,
+				// a subsequent CompareAndClear/V2 op misreads the nil base as absent.
+				val = []byte{}
 			}
+			entry.value = val
+			entry.absent = clr
+			c.writes[k] = entry
 			return
 		}
 		if !exists && c.isClearedLocked(key) {
+			// Site C: atomic over a locally-cleared range. C++ pushes a synthetic
+			// SetValue(empty) at the stack bottom (WriteMap.cpp:102-111) → INDEPENDENT
+			// (dependent=false). A CompareAndClear over the empty base → phantom (absent);
+			// other atomics → a present resolved value.
 			val, clr := applyAtomic(op, nil, param)
-			if !clr {
-				c.writes[k] = rywEntry{value: val}
-				c.sortedKeys = nil
+			if !clr && val == nil {
+				val = []byte{} // present-empty, not absent (see site B).
 			}
+			c.writes[k] = rywEntry{value: val, absent: clr}
+			c.sortedKeys = nil
 			return
 		}
 	}
@@ -247,9 +303,11 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 				return nil, nil
 			}
 			if cleared {
-				delete(c.writes, k)
-				c.sortedKeys = nil // key removed, invalidate sorted index
-				c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
+				// Site E: a standalone CompareAndClear matched its DB base. C++ keeps this
+				// as a DEPENDENT_WRITE phantom (is_kv slot, no value), NOT a cleared range.
+				// Cache it as absent+dependent (RFC-058) so getKey counts the slot and the
+				// conflict map still records the DB read — don't move it to the cleared list.
+				c.writes[k] = rywEntry{absent: true, dependent: true}
 				c.mu.Unlock()
 				return nil, nil
 			}
@@ -260,9 +318,17 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 				c.mu.Unlock()
 				return nil, nil
 			}
-			c.writes[k] = rywEntry{value: base}
+			// Site E: a resolved standalone atomic is a DEPENDENT_WRITE (it read the DB
+			// base). Preserve that op-type for conflict filtering.
+			c.writes[k] = rywEntry{value: base, dependent: true}
 			c.mu.Unlock()
 			return base, nil
+		}
+		if entry.absent {
+			// Phantom (matched CompareAndClear): an is_kv slot for getKey but ABSENT for a
+			// point read — do NOT treat its nil value as present-empty.
+			c.mu.Unlock()
+			return nil, nil
 		}
 		val := entry.value
 		c.mu.Unlock()
@@ -554,6 +620,18 @@ func (c *rywCache) mergeBatch(
 		if !exists {
 			continue // phantom key (deleted by prior atomic caching)
 		}
+		if entry.absent {
+			// Phantom slot (a matched CompareAndClear, RFC-058): an is_kv slot for getKey
+			// but ABSENT in a range read. Skip it from writeKVs AND shadow any server-present
+			// value at this key (the local clear wins) via atomicCleared — else this
+			// pre-existing absent entry would fall through to the plain-entry branch below
+			// and be emitted as a phantom KV.
+			if atomicCleared == nil {
+				atomicCleared = make(map[string]bool)
+			}
+			atomicCleared[k] = true
+			continue
+		}
 		if entry.hasAtomics {
 			// Lazily build server values map on first atomic encounter.
 			if serverValues == nil {
@@ -585,24 +663,24 @@ func (c *rywCache) mergeBatch(
 				}
 				atomicCleared[k] = true
 			} else if cleared {
-				delete(c.writes, k)
-				c.addClearedRangeLocked([]byte(k), append([]byte(k), 0))
-				// Track for merge phase: this key must also be excluded
-				// from filteredServer (it was built before atomic resolution).
+				// Site E: a standalone CompareAndClear matched. Cache as a DEPENDENT phantom
+				// (absent+dependent) — an is_kv slot for getKey that reads ABSENT here — NOT
+				// a cleared range (RFC-058). Still exclude the server entry from this merge
+				// (filteredServer was built before atomic resolution) via atomicCleared.
+				c.writes[k] = rywEntry{absent: true, dependent: true}
 				if atomicCleared == nil {
 					atomicCleared = make(map[string]bool)
 				}
 				atomicCleared[k] = true
-				// Note: sortedKeys is intentionally NOT invalidated here.
-				// We're mid-iteration over sortedKeys; the deleted key leaves
-				// a phantom that's handled by the `if !exists { continue }`
-				// guard at the top of this loop. Future mergeBatch calls
-				// will rebuild sortedKeys via ensureSortedLocked if needed.
+				// sortedKeys stays valid: the key remains in c.writes (now a phantom),
+				// it is not removed.
 			} else if base == nil {
 				// Defensive: resolveAtomics normalizes a resolved non-clear chain to
 				// non-nil (present-empty). Unreachable today; treat as absent.
 			} else {
-				c.writes[k] = rywEntry{value: base}
+				// Site E: a resolved standalone atomic is a DEPENDENT_WRITE — preserve the
+				// op-type for conflict filtering.
+				c.writes[k] = rywEntry{value: base, dependent: true}
 				writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: base})
 			}
 		} else {

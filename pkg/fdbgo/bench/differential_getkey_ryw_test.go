@@ -204,6 +204,7 @@ func TestDifferential_GetKeyRYW(t *testing.T) {
 	set := func(ki int, v string) fuzzOp { return fuzzOp{kind: fzSet, keyIdx: ki, operand: b(v)} }
 	clr := func(ki int) fuzzOp { return fuzzOp{kind: fzClear, keyIdx: ki} }
 	crange := func(bi, ei int) fuzzOp { return fuzzOp{kind: fzClearRange, keyIdx: bi, key2Idx: ei} }
+	cac := func(ki int, v string) fuzzOp { return fuzzOp{kind: fzCompareAndClear, keyIdx: ki, operand: b(v)} }
 
 	cases := []struct {
 		name          string
@@ -220,6 +221,34 @@ func TestDifferential_GetKeyRYW(t *testing.T) {
 		{"pending_set_new_first", []fuzzOp{set(2, "x"), set(3, "x")}, []fuzzOp{set(0, "x")}},
 		// pure pending (no seed) → resolution is entirely from the write map.
 		{"pending_only", nil, []fuzzOp{set(0, "x"), set(2, "x")}},
+
+		// --- Phantom-slot cases (RFC-058) -------------------------------------------------
+		// A matched CompareAndClear is an is_kv "phantom" slot in libfdb_c: COUNTED in the
+		// getKey offset walk and RESOLVED ONTO (the key has no value, but getKey returns
+		// keys). The Go client used to model it as absent (skip the slot) — these prove the
+		// offset walk now counts it identically.
+
+		// Standalone CAC over a committed value: b is a phantom slot — a forward selector
+		// landing on b resolves to b (not c), and offset selectors crossing b count it.
+		{"pending_cac_match_committed", []fuzzOp{set(0, "x"), set(1, "x"), set(2, "x"), set(3, "x")}, []fuzzOp{cac(1, "x")}},
+		// CAC folded over a PENDING Set (site B): b phantom via the in-txn write-map.
+		{"pending_cac_over_pending_set", []fuzzOp{set(0, "x"), set(3, "x")}, []fuzzOp{set(1, "x"), cac(1, "x")}},
+		// CAC over a locally-cleared base (site C): pending ClearRange covers b,c, then CAC
+		// on the now-cleared b → INDEPENDENT phantom; selectors across the hole must count b.
+		{"pending_cac_over_cleared", []fuzzOp{set(0, "x"), set(1, "x"), set(2, "x"), set(3, "x")}, []fuzzOp{crange(1, 3), cac(1, "x")}},
+		// CAC that does NOT match → b keeps its value (present, not a phantom): a control
+		// that must resolve identically whether or not the phantom path is taken.
+		{"pending_cac_nomatch", []fuzzOp{set(0, "x"), set(1, "y"), set(2, "x")}, []fuzzOp{cac(1, "x")}},
+		// Two adjacent phantoms (b and c both matched-CAC) → offset selectors must count
+		// BOTH slots, the tightest test of phantom counting in the walk.
+		{"pending_cac_two_phantoms", []fuzzOp{set(0, "x"), set(1, "x"), set(2, "x"), set(3, "x")}, []fuzzOp{cac(1, "x"), cac(2, "x")}},
+		// Fuzz find (RFC-058): an atomic that resolves to EMPTY over a locally-cleared base
+		// (Max(d,"") → present-empty) must NOT be misread as absent by a later
+		// CompareAndClear. The fold path used to leave the empty result as a nil value, which
+		// doCompareAndClear treated as absent → wrongly cleared d to a phantom, so getKey
+		// skipped d. d must stay present (FGT(a) → d, not the next key). Pins the fold-path
+		// nil→[]byte{} normalization.
+		{"max_empty_then_cac_stays_present", []fuzzOp{set(0, "x")}, []fuzzOp{clr(3), {kind: fzMax, keyIdx: 3, operand: b("")}, cac(3, "00")}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -249,6 +278,13 @@ func FuzzDifferential_GetKeyRYW(f *testing.F) {
 	f.Add([]byte{fzSet, 0, 1, 'x', fzSet, 2, 1, 'x', fzCommit, fzSet, 1, 1, 'x'})
 	f.Add([]byte{fzSet, 0, 1, 'x', fzSet, 1, 1, 'x', fzCommit, fzClear, 1})
 	f.Add([]byte{fzCommit, fzSet, 0, 1, 'x', fzSet, 2, 1, 'x'})
+	// Phantom-slot seeds (RFC-058): a matched CompareAndClear is an is_kv slot the offset
+	// walk must count. Seed a present key, then a pending CAC that matches it.
+	f.Add([]byte{fzSet, 1, 1, 'x', fzCommit, fzCompareAndClear, 1, 1, 'x'})
+	f.Add([]byte{fzSet, 0, 1, 'x', fzSet, 1, 1, 'x', fzSet, 2, 1, 'x', fzCommit, fzCompareAndClear, 1, 1, 'x'})
+	// Fuzz find: an atomic resolving to EMPTY (Max(d,"") over a cleared base) then a
+	// CompareAndClear — the empty result must read as present-empty, not absent.
+	f.Add([]byte("00000079707Z(700"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		txns := decodeFuzzOps(data)
 		var seed, pending []fuzzOp
@@ -258,27 +294,13 @@ func FuzzDifferential_GetKeyRYW(f *testing.F) {
 		if len(txns) > 1 {
 			pending = txns[1]
 		}
-		// Scope: PENDING is restricted to write-SHAPING ops (Set/Clear/ClearRange) — the
-		// keyspace shape is what a key selector resolves over, and that is the primary
-		// getKey-RYW divergence this RFC closes. PENDING atomics are intentionally
-		// excluded: libfdb_c keeps a pending atomic that resolves to no value (e.g.
-		// CompareAndClear) as a "phantom" is_kv slot COUNTED in the offset walk, whereas
-		// the Go rywCache eagerly collapses it — a deeper write-map-slot-preservation
-		// gap deferred under the RFC-056 audit (see ryw_getkey.go DEFERRED note). The
-		// committed SEED may still contain atomics (it just shapes the storage keyset).
-		pending = filterWriteShaping(pending)
+		// PENDING includes both keyspace-shaping ops (Set/Clear/ClearRange) AND atomics —
+		// the latter now that RFC-058 makes the Go client model a matched CompareAndClear as
+		// a "phantom" is_kv slot (counted in the offset walk, skipped by GetRange), matching
+		// libfdb_c. The only excluded op-class is versionstamped mutations, which are
+		// unreadable client-side and folded to absent per #234 (a distinct axis); the fuzz
+		// op alphabet has no versionstamp kind, so nothing to filter. The committed SEED may
+		// contain any op (it just shapes the storage keyset).
 		runGetKeyRYWDifferential(t, "fuzz", seed, pending)
 	})
-}
-
-// filterWriteShaping keeps only the ops that shape the keyspace (Set/Clear/ClearRange).
-func filterWriteShaping(ops []fuzzOp) []fuzzOp {
-	out := ops[:0]
-	for _, op := range ops {
-		switch op.kind {
-		case fzSet, fzClear, fzClearRange:
-			out = append(out, op)
-		}
-	}
-	return out
 }
