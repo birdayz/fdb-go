@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -57,33 +58,61 @@ func fdbErrorCode(err error) int {
 type conflictOutcome struct {
 	conflicted bool
 	retry      bool
+	resolved   string // DEBUG: prefix-stripped resolved getKey
 }
 
 func goConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel selSpec, probeKey string) conflictOutcome {
 	t.Helper()
-	clearPrefix(t, pfx)
-	if len(seed) > 0 {
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
-			applyGo(tx, seed, pfx)
-			return nil, nil
-		}); err != nil {
-			t.Fatalf("go seed: %v", err)
-		}
+	// Setup (clear + seed) in ONE committed txn; pin A's read version to its COMMIT version
+	// so A reads CAUSALLY AFTER the setup. Otherwise A's own GRV can land BEFORE the setup
+	// commit (FDB GRV is not strictly causal), and the setup's ClearRange — whose
+	// write-conflict range [pfx, strinc(pfx)) spans the getKey conflict range — then falls in
+	// A's commit window, tripping a spurious not_committed(1020). Each client's A gets an
+	// independent GRV, so the two diverge nondeterministically under load — the CI flake this
+	// fixes. Pinning to the exact setup version makes the conflict outcome a deterministic
+	// function of the scenario (the getKey read-conflict vs B's write), not of GRV timing.
+	r, err := gofdb.PrefixRange([]byte(pfx))
+	if err != nil {
+		t.Fatalf("go PrefixRange: %v", err)
 	}
+	setup, err := goClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("go setup create: %v", err)
+	}
+	setup.ClearRange(r)
+	applyGo(setup, seed, pfx)
+	if err := setup.Commit().Get(); err != nil {
+		setup.Cancel()
+		if isFDBRetryable(err) {
+			return conflictOutcome{retry: true}
+		}
+		t.Fatalf("go setup commit: %v", err)
+	}
+	vSetup, err := setup.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("go setup committed version: %v", err)
+	}
+
 	a, err := goClient.CreateTransaction()
 	if err != nil {
 		t.Fatalf("go A create: %v", err)
 	}
 	defer a.Cancel()
+	a.SetReadVersion(vSetup) // read exactly at the setup → the clear is NOT in A's window
 	applyGo(a, pending, pfx)
-	if _, err := a.GetKey(goSel(pfx, sel)).Get(); err != nil {
-		if isFDBRetryable(err) {
+	rk, gerr := a.GetKey(goSel(pfx, sel)).Get()
+	if gerr != nil {
+		if isFDBRetryable(gerr) {
 			return conflictOutcome{retry: true}
 		}
-		t.Fatalf("go A GetKey: %v", err)
+		t.Fatalf("go A GetKey: %v", gerr)
+	}
+	resolved := "<offprefix>"
+	if bytes.HasPrefix(rk, []byte(pfx)) {
+		resolved = string(rk[len(pfx):])
 	}
 	a.Set(gofdb.Key(pfx+"~sentinel"), []byte("s")) // committable write, far from any probe
-	// Concurrent B writes the probe key and commits FIRST (V_B > A's read version).
+	// Concurrent B writes the probe key and commits FIRST (V_B > vSetup = A's read version).
 	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
 		tx.Set(gofdb.Key(pfx+probeKey), []byte("B"))
 		return nil, nil
@@ -92,9 +121,9 @@ func goConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel se
 	}
 	switch code := fdbErrorCode(a.Commit().Get()); code {
 	case 0:
-		return conflictOutcome{conflicted: false}
+		return conflictOutcome{conflicted: false, resolved: resolved}
 	case 1020:
-		return conflictOutcome{conflicted: true}
+		return conflictOutcome{conflicted: true, resolved: resolved}
 	default:
 		return conflictOutcome{retry: true} // 1007 etc. — transient
 	}
@@ -102,21 +131,46 @@ func goConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel se
 
 func cgoConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel selSpec, probeKey string) conflictOutcome {
 	t.Helper()
-	clearPrefix(t, pfx)
-	if len(seed) > 0 {
-		mustCGo(t, func(tx cgofdb.Transaction) { applyC(tx, seed, pfx) })
+	// Setup committed in one txn; pin A to its commit version (see goConflictScenario).
+	r, err := cgofdb.PrefixRange([]byte(pfx))
+	if err != nil {
+		t.Fatalf("cgo PrefixRange: %v", err)
 	}
+	setup, err := cgoClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("cgo setup create: %v", err)
+	}
+	setup.ClearRange(r)
+	applyC(setup, seed, pfx)
+	if err := setup.Commit().Get(); err != nil {
+		setup.Cancel()
+		if isFDBRetryable(err) {
+			return conflictOutcome{retry: true}
+		}
+		t.Fatalf("cgo setup commit: %v", err)
+	}
+	vSetup, err := setup.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("cgo setup committed version: %v", err)
+	}
+
 	a, err := cgoClient.CreateTransaction()
 	if err != nil {
 		t.Fatalf("cgo A create: %v", err)
 	}
 	defer a.Cancel()
+	a.SetReadVersion(vSetup)
 	applyC(a, pending, pfx)
-	if _, err := a.GetKey(cSel(pfx, sel)).Get(); err != nil {
-		if isFDBRetryable(err) {
+	rk, gerr := a.GetKey(cSel(pfx, sel)).Get()
+	if gerr != nil {
+		if isFDBRetryable(gerr) {
 			return conflictOutcome{retry: true}
 		}
-		t.Fatalf("cgo A GetKey: %v", err)
+		t.Fatalf("cgo A GetKey: %v", gerr)
+	}
+	resolved := "<offprefix>"
+	if bytes.HasPrefix([]byte(rk), []byte(pfx)) {
+		resolved = string(rk[len(pfx):])
 	}
 	a.Set(cgofdb.Key(pfx+"~sentinel"), []byte("s"))
 	if _, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
@@ -127,9 +181,9 @@ func cgoConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel s
 	}
 	switch code := fdbErrorCode(a.Commit().Get()); code {
 	case 0:
-		return conflictOutcome{conflicted: false}
+		return conflictOutcome{conflicted: false, resolved: resolved}
 	case 1020:
-		return conflictOutcome{conflicted: true}
+		return conflictOutcome{conflicted: true, resolved: resolved}
 	default:
 		return conflictOutcome{retry: true}
 	}
@@ -151,8 +205,8 @@ func runGetKeyConflictDifferential(t *testing.T, name string, seed, pending []fu
 			continue // transient (1007) on either side — fresh prefixes + versions, retry
 		}
 		if goOut.conflicted != cOut.conflicted {
-			t.Fatalf("%s: read-conflict DIVERGES: go-A conflicted=%v cgo-A conflicted=%v (probe=%q sel=%s)",
-				name, goOut.conflicted, cOut.conflicted, probeKey, sel.name)
+			t.Fatalf("%s: read-conflict DIVERGES: go-A conflicted=%v (resolved=%q) cgo-A conflicted=%v (probe=%q sel=%s)",
+				name, goOut.conflicted, goOut.resolved, cOut.conflicted, probeKey, sel.name)
 		}
 		if goOut.conflicted != wantConflict {
 			t.Fatalf("%s: both clients conflicted=%v but expected %v — conflict set wrong in BOTH (probe=%q sel=%s)",
