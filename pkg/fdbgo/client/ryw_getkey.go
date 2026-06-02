@@ -148,9 +148,17 @@ func (cur *rywSegCursor) prev() {
 
 // boundCandidatesLocked gathers merged-boundary candidates in a bounded neighborhood of
 // p from every source (write keys + their successors, cleared bounds, cache-entry
-// bounds, cache keys + their successors), plus allKeysBegin and hi. The ±window margin
-// guarantees it contains the immediate floor (<=p), ceil (>p), and the boundary just
-// below floor — enough for mergedBounds + prevBoundary. Caller holds c.mu.
+// bounds, cache keys + their successors), plus allKeysBegin and hi. It must contain the
+// floor (largest boundary <= p) and ceil (smallest boundary > p); prevBoundaryLocked
+// re-centers on its own argument, so the below-floor case is covered by a separate call.
+//
+// Why the windows suffice: cleared ranges and cache entries are sorted, non-overlapping
+// AND coalesced, so the only boundaries that can be floor/ceil are at lo-1 / lo / lo+1
+// (where lo = first range with end > p) — the [lo-1, lo+1] window is load-bearing and
+// exactly sufficient. For the key sources (sortedKeys, cache kvs) the floor/ceil come
+// from the keys at Search(>=p) and Search(>=p)-1 plus their keyAfter successors; the
+// extra -2 index is conservative slack (the Search-2 successor is always dominated by
+// Search-1's contributions), kept as a cheap margin. Caller holds c.mu.
 func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool) [][]byte {
 	var cands [][]byte
 	add := func(b []byte) {
