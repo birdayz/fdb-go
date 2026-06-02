@@ -115,8 +115,12 @@ papered.
 - `writes` map + `sortedKeys` binary search; `cleared []rywRange` +
   `isClearedLocked` (sorted, non-overlapping, coalesced); `resolveAtomics` +
   `isUnresolvedVersionstamp` (post-#234) — for per-key value + unreadable resolution.
-- `tx.getKey(ctx, key, orEqual, offset)` storage primitive + `tx.GetRange` for the
-  unknown-tail server reads.
+- `tx.getKey(ctx, key, orEqual, offset)` storage primitive + the **raw** server range
+  read (`readpath.go` `getRange` / `tx.getRange`, NOT the public `Transaction.GetRange`)
+  for the unknown-tail cache fills. The public `GetRange` adds read conflicts and merges
+  pending writes — populating `snapshotCache` with non-storage data and adding spurious
+  conflicts (fatal for `Snapshot.GetKey`, which must add none). The cache must only ever
+  hold raw storage@V bytes.
 
 ## Design
 
@@ -144,9 +148,10 @@ Add, in `pkg/fdbgo/client`:
 
 4. **`getKeyRYW(ctx, sel)`** — port of `read(GetKeyReq)` (140-160) + the
    `getRangeValue` unknown-range loop, specialized to limit 1: forward/backward
-   branch, resolve from cache, and on land-on-unknown do a bounded server `GetRange`
-   over the tail → `snapshotCache.insert` → re-resolve → loop. Terminal clamps map to
-   `allKeys.begin` / `getMaxReadKey()`.
+   branch, resolve from cache, and on land-on-unknown do a bounded **raw** server range
+   read over the tail (NOT public `Transaction.GetRange` — see primitives) →
+   `snapshotCache.insert` → re-resolve → loop. Terminal clamps map to `allKeys.begin` /
+   `getMaxReadKey()`.
 
 5. **Read-conflict range** — port `addConflictRange(GetKeyReq)` (230-243) exactly:
    add the **base↔resolved RANGE** (offset-sign branch + orEqual `keyAfter`), replacing
@@ -155,14 +160,20 @@ Add, in `pkg/fdbgo/client`:
    range must make the txn conflict in both clients).
 
 6. **Wire into `Transaction.GetKey`** (replace the storage-only call when RYW is
-   enabled). **`Snapshot.GetKey`** is *also* storage-only today and therefore equally
-   wrong (it resolves against neither the snapshot cache nor — correctly — the writes);
-   the existing `transaction.go:581` "Snapshot.GetKey is correct" comment is FALSE and
-   is deleted. Match C++ `readWithConflictRangeSnapshot` (SnapshotCache::iterator — no
-   write map, no conflict range): the `rywSegmentIterator` takes an `includeWrites bool`,
-   and snapshot `GetKey` runs the SAME resolution with `includeWrites=false` (snapshot
-   cache only, no pending writes, no conflict range). This is one flag on the iterator,
-   not a separate port — so it ships in this RFC, not deferred.
+   enabled). **`Snapshot.GetKey`** is *also* storage-only today and therefore wrong; the
+   existing `transaction.go:581` "Snapshot.GetKey is correct" comment is FALSE and is
+   deleted.
+   **CORRECTION (codex re-review — supersedes the earlier FDB-C-dev/Torvalds note):** in
+   this Go client snapshot reads go through the RYW cache **by default** — `Snapshot.Get`/
+   `GetRange` SEE the txn's own uncommitted writes unless `SetSnapshotRYWDisable`
+   (`snapshotRYWDisabled`), pinned by `TestSnapshot_GetReadsUncommittedWrite` and
+   `TestSnapshotRYWEnable_CPort`. So `Snapshot.GetKey` MUST also merge pending writes by
+   default, or it would be inconsistent with `Snapshot.Get`/`GetRange` and libfdb_c. The
+   `rywSegmentIterator` takes `includeWrites bool`; `Snapshot.GetKey` runs the resolution
+   with `includeWrites = !snapshotRYWDisabled` (writes by default; snapshot-cache-only
+   when disabled) and adds **no** read-conflict range (snapshot reads never conflict).
+   C++ routes to `readWithConflictRangeSnapshot` (SnapshotCache::iterator, no writes) only
+   when `snapshotRywEnabled <= 0` — the same gate. One flag, shipped in this RFC.
 
 ## Performance
 
@@ -189,9 +200,10 @@ plus cache reuse for repeated selectors. Limit-1 specialization avoids the byte-
   the base↔resolved range from the *other* client and assert BOTH clients' txns
   conflict (`not_committed 1020`) identically — pins the range-conflict port and the
   fixed single-key→range divergence.
-- **`TestSnapshotGetKeyRYW_*`:** snapshot `GetKey` resolves against the snapshot cache
-  but NOT pending writes (a pending `Set` must NOT shift a snapshot selector), and adds
-  no conflict range.
+- **`TestSnapshotGetKeyRYW_*`:** by DEFAULT snapshot `GetKey` SEES pending writes (a
+  pending `Set` SHIFTS a snapshot selector, consistent with `Snapshot.Get`) and adds no
+  conflict range; with `SetSnapshotRYWDisable` it resolves against the snapshot cache
+  only (pending `Set` does NOT shift it). Both arms compared vs libfdb_c.
 - **Land the held `FuzzRYWRead` GetKey axis** — fuzz selector resolution over random
   pending-write sequences vs libfdb_c; a manual burst produces 0 mismatches.
 - **Teeth:** a deliberately broken resolution (ignore a pending Clear) makes a case
