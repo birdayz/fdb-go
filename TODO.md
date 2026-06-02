@@ -383,14 +383,17 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
 
 - [ ] **C2-followup. RYW key-selector + read-version correctness audit (RFC-056).** Remaining
   RYW read-resolution divergences from libfdb_c surfaced by the RFC-055 differential:
-  (2) a possible go-vs-cgo read-version
-  staleness asymmetry (one differential run showed go=`transaction_too_old(1007)` while cgo
-  succeeded on the SAME pinned read version near the 5s MVCC edge — reproduce + compare go vs
-  cgo SetReadVersion/window handling; may be a real divergence or a test-pin robustness issue).
-  This artifact RECURS in `FuzzDifferential_GetKeyRYW` under active `-test.fuzz` mutation (heavy
-  concurrent load on the shared container); failing inputs are pure-`Set` shapes that pass 20–30×
-  on deterministic replay, confirming it is environmental, not a resolution bug. See rfcs/055
-  "Findings & scope".
+  (2) a go-vs-cgo read-version
+  staleness asymmetry (go=`transaction_too_old(1007)` while cgo succeeds on the SAME pinned read
+  version near the 5s MVCC edge). **Characterized (RFC-056 #235): PERF/TIMING, not a wire/
+  behavioral divergence** — both clients correctly return 1007 once a read version genuinely ages
+  past the 5s window; go just reaches that edge sooner under CPU starvation because its getKey
+  does more per call (the materializing `buildSegmentsLocked` vs libfdb_c's lazy iterator), and
+  the differential pins one version then issues 28 selectors on it. So behavioral identity HOLDS;
+  the real fix is the lazy iterator (continuation item 1 below), which reduces the per-call work
+  at the source. The differential is already robust (retries the transient 1007 with a fresh
+  version via the canonical `gofdb.IsRetryable` predicate — `differential_getkey_ryw_test.go`).
+  REMAINING: profile go-getKey 1007-rate vs cgo to confirm item-1 closes it. See rfcs/055.
   - [x] **(1) `Transaction.GetKey` ignores pending writes** — FIXED (RFC-056): faithful port of
     C++ `resolveKeySelectorFromCache` over a merged segment view (`pkg/fdbgo/client/ryw_getkey.go`:
     `rywSegmentIterator`/`buildSegmentsLocked` + `getKeyRYW`'s unknown-range server-read-remerge
@@ -429,6 +432,54 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
     any stale storage value. Pinned by `TestRYW_VersionstampedAbsentNoPhantom` +
     `TestRYW_VersionstampedOverClearedOrPlainNoPhantom`. Full C++ parity (THROW on read) still
     needs an explicit unreadable concept — part of the RFC-056 audit.
+
+- [ ] **RFC-056 continuation — ordered, ONE AT A TIME (do 1, then 2, then 3).** After the merged
+  getKey-RYW core (#235), three follow-ups remain. Both 1 and 2 WILL be done (sequentially, not
+  batched); 3 is the ongoing hunt.
+
+  1. **[x] DONE (RFC-057).** Lazy `rywSegCursor` replaced the materializing
+     `buildSegmentsLocked`: getKey cost is now FLAT in cache size — **57 ms / 39 MB →
+     1 µs / 816 B at N=100k (55,437×)**, measured before/after (Torvalds's "no benchmark =
+     no merge" gate). Behavior-identical: a 4000-state equivalence property-test oracled
+     against the retained materializer + the RFC-056 differential + a 94k-exec fuzz burst,
+     all green. `next`/`prev` are a single merged-boundary `skip` (no view desync). The
+     original plan:
+     **Lazy/windowed segment iterator for getKey-RYW.** `buildSegmentsLocked`
+     (`pkg/fdbgo/client/ryw_getkey.go`) MATERIALIZES the whole merged-segment partition of
+     [allKeysBegin, maxKey) — O(writes + cacheKeys) per resolution attempt — whereas libfdb_c's
+     `RYWIterator` is LAZY (a steppable zip of the write-map + snapshot-cache sub-iterators).
+     Port the lazy cursor (skip/next/prev computing each segment on demand, no full
+     materialization), so getKey cost is bounded by the walk distance, not the cache size. This
+     ALSO shrinks **item (2)** below: less work per getKey under heavy parallel-container load →
+     less likely to drift past the 5s MVCC window mid-loop → fewer transient
+     `transaction_too_old(1007)`. Validate with a profiling probe: go-getKey wall-clock +
+     1007-rate vs libfdb_c, before/after; confirm resolution stays byte-identical
+     (`TestDifferential_GetKeyRYW` + unit tests green). Then this de-flakes item (2) at the source
+     rather than only via the differential's retry.
+
+  2. **Op-type-preserving write-map → closes BOTH deferred sub-edges at once.** Root cause shared
+     by both: the rywCache EAGERLY folds a resolved atomic into a plain entry (`hasAtomics`→false)
+     and moves a matched CompareAndClear into the `cleared` list, ERASING the per-key op-type that
+     C++'s `WriteMap` preserves (INDEPENDENT vs DEPENDENT vs versionstamp). Add op-type
+     preservation (retain the original op kind per key, surviving value-resolution/folding), then
+     close:
+     (a) **phantom-slot offset counting** — a PENDING atomic that resolves to no value
+         (CompareAndClear, or an atomic on a locally-cleared range) is an `is_kv` "phantom" slot
+         COUNTED in the getKey offset walk in libfdb_c, but Go currently models it as absent. With
+         op-type preserved, count it. (Re-enable pending-atomic shapes in the getKey differential.)
+     (b) **exact `updateConflictMap` conflict filtering** — getKey's read-conflict should SUBTRACT
+         independent-write + cleared segments (no DB read there); Go currently keeps the
+         conservative FULL base↔resolved range (safe over-conflict). With op-type preserved, the
+         subtraction is safe (a naive `!hasAtomics` filter was UNSAFE — it dropped the conflict
+         for a Get-folded dependent atomic; codex caught it on #235 → reverted). Port
+         `updateConflictMap` (ReadYourWrites.actor.cpp:335) faithfully and pin with a conflict
+         differential (concurrent write inside the range must conflict identically in both clients).
+
+  3. **Fresh differential axes (`/hunt-divergences`).** Probe axes still uncompared vs libfdb_c:
+     atomic-op edge cases across ALL of `Atomic.h` (empty / missing / present-empty operand per
+     op); error-code + option semantics (RAW_ACCESS / ACCESS_SYSTEM_KEYS / snapshot-RYW); key
+     encoding / tuple packing / versionstamp-offset validation. Each closed axis is more "absolute
+     proof we're identical to the C client."
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
