@@ -519,59 +519,63 @@ func TestDifferential_SelfWriteReadConflict(t *testing.T) {
 }
 
 // TestDifferential_ConflictRangeEdges pins the immediate error/accept behavior of the explicit
-// conflict-range API: inverted (begin>end → 2005), empty (begin==end → accept), normal (accept),
-// and an oversized (>10KB) key in the range. go==cgo asserted.
+// conflict-range API for BOTH the read and the write range methods: inverted (begin>end → 2005),
+// empty (begin==end → accept), normal (accept), and an oversized (>10KB) key in the range.
+// go==cgo asserted. (Covers AddWriteConflictRange too — its validation could diverge from the
+// read path independently; codex.)
 func TestDifferential_ConflictRangeEdges(t *testing.T) {
 	t.Parallel()
 	big := make([]byte, 11000)
 	for i := range big {
 		big[i] = 'x'
 	}
-	type probe struct {
-		name    string
-		goCode  func() int
-		cgoCode func() int
-	}
-	mk := func(beginSuf, endSuf string) (func() int, func() int) {
-		goFn := func() int {
-			tr, _ := goClient.CreateTransaction()
-			defer tr.Cancel()
-			return fdbErrorCode(tr.AddReadConflictRange(gofdb.KeyRange{Begin: gofdb.Key("cre_" + beginSuf), End: gofdb.Key("cre_" + endSuf)}))
-		}
-		cgoFn := func() int {
-			tr, _ := cgoClient.CreateTransaction()
-			defer tr.Cancel()
-			return fdbErrorCode(tr.AddReadConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key("cre_" + beginSuf), End: cgofdb.Key("cre_" + endSuf)}))
-		}
-		return goFn, cgoFn
-	}
-	gInv, cInv := mk("z", "a")
-	gEmp, cEmp := mk("a", "a")
-	gNorm, cNorm := mk("a", "z")
-	gBigF := func() int {
+	bigEnd := append(append([]byte{}, big...), 0x00)
+
+	// goCode/cgoCode run the chosen range method (read or write) with the given begin/end and
+	// return the immediate error code.
+	goCode := func(write bool, begin, end []byte) int {
 		tr, _ := goClient.CreateTransaction()
 		defer tr.Cancel()
-		return fdbErrorCode(tr.AddReadConflictRange(gofdb.KeyRange{Begin: gofdb.Key(big), End: gofdb.Key(append(append([]byte{}, big...), 0x00))}))
+		kr := gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}
+		if write {
+			return fdbErrorCode(tr.AddWriteConflictRange(kr))
+		}
+		return fdbErrorCode(tr.AddReadConflictRange(kr))
 	}
-	cBigF := func() int {
+	cgoCode := func(write bool, begin, end []byte) int {
 		tr, _ := cgoClient.CreateTransaction()
 		defer tr.Cancel()
-		return fdbErrorCode(tr.AddReadConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key(big), End: cgofdb.Key(append(append([]byte{}, big...), 0x00))}))
+		kr := cgofdb.KeyRange{Begin: cgofdb.Key(begin), End: cgofdb.Key(end)}
+		if write {
+			return fdbErrorCode(tr.AddWriteConflictRange(kr))
+		}
+		return fdbErrorCode(tr.AddReadConflictRange(kr))
 	}
-	cases := []probe{
-		{"inverted", gInv, cInv},
-		{"empty", gEmp, cEmp},
-		{"normal", gNorm, cNorm},
-		{"oversized", gBigF, cBigF},
+
+	shapes := []struct {
+		name       string
+		begin, end []byte
+	}{
+		{"inverted", []byte("cre_z"), []byte("cre_a")},
+		{"empty", []byte("cre_a"), []byte("cre_a")},
+		{"normal", []byte("cre_a"), []byte("cre_z")},
+		{"oversized", big, bigEnd},
 	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			g, cg := c.goCode(), c.cgoCode()
-			if g != cg {
-				t.Fatalf("%s: AddReadConflictRange code differs: go=%d cgo=%d", c.name, g, cg)
-			}
-		})
+	for _, write := range []bool{false, true} {
+		write := write
+		method := "read"
+		if write {
+			method = "write"
+		}
+		for _, s := range shapes {
+			s := s
+			t.Run(method+"_"+s.name, func(t *testing.T) {
+				t.Parallel()
+				g, cg := goCode(write, s.begin, s.end), cgoCode(write, s.begin, s.end)
+				if g != cg {
+					t.Fatalf("%s %s: AddConflictRange code differs: go=%d cgo=%d", method, s.name, g, cg)
+				}
+			})
+		}
 	}
 }
