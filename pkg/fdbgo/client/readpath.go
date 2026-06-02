@@ -235,6 +235,7 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 // Other FDB errors (transaction_too_old, etc.) are returned to the caller
 // for handling by the Transact retry loop.
 func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
+	tx.hadRead = true // a read was issued (RFC-059 poison signal)
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
 		if err != nil {
@@ -403,6 +404,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 // invalidates entire remaining range on wrong_shard_server, and passes reverse
 // to getKeyRangeLocations so the proxy returns shards in the right order.
 func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	tx.hadRead = true              // a read was issued (RFC-059 poison signal)
 	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
 	const maxRelocateRetries = 5   // Bound retry loop; C++ relies on transaction timeout (default 5s)
 

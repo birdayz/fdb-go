@@ -16,6 +16,13 @@ import (
 // gets all shard locations, sends WaitMetricsRequest to each with min.bytes=0,
 // max.bytes=-1 (reversed range = immediate response), and sums the bytes.
 func (tx *Transaction) GetEstimatedRangeSizeBytes(ctx context.Context, begin, end []byte) (int64, error) {
+	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
+	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
+	// path). This entry point does not fetch a read version, so it is gated explicitly rather
+	// than via ensureReadVersion (RFC-059).
+	if tx.rywPoisonErr != nil {
+		return 0, tx.rywPoisonErr
+	}
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
 	const shardLimit = math.MaxInt32
 

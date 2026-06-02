@@ -490,12 +490,16 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
      op); error-code + option semantics (RAW_ACCESS / ACCESS_SYSTEM_KEYS / snapshot-RYW); key
      encoding / tuple packing / versionstamp-offset validation. Each closed axis is more "absolute
      proof we're identical to the C client."
-     - **Known divergence to close here (found in RFC-058):** with `READ_YOUR_WRITES_DISABLE`,
-       libfdb_c rejects a read whose range overlaps a locally-written key with
-       `client_invalid_operation` (2000); the Go client does NOT raise it (it proceeds, resolving
-       against storage). Port the C-client rejection so go errors 2000 identically. (RFC-058's
-       conflict-filter already uses the full span when `rywDisabled` — the safe behavior should
-       the read ever proceed — so this is purely the missing validation.)
+     - **[RFC-059] RYW-disable-after-op poison.** Differential characterization corrected the
+       earlier (imprecise) framing: NOT a per-read overlap check, NOT an option-set-time error.
+       libfdb_c's `setOption(READ_YOUR_WRITES_DISABLE)` after any read or write throws
+       `client_invalid_operation` deferred via `deferredError`, so the option call succeeds but
+       EVERY subsequent op (regular + snapshot reads, GetKey, GetRange, GetReadVersion,
+       GetEstimatedRangeSizeBytes, Commit) returns 2000 — the whole txn is poisoned. Go was
+       silently permissive (returned 0). RFC-059 ports the poison (`Transaction.rywPoisonErr` set
+       on disable-after-op, gated uniformly at `ensureReadVersion` + the metrics path; a `hadRead`
+       signal covers the GetPipelined non-caching read). Pinned by
+       `TestDifferential_RYWDisableAfterOp` (9 sequences, 8 red→green).
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,

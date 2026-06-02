@@ -123,6 +123,18 @@ func (c *rywCache) allocBytes(n int) []byte {
 	return c.byteBuf[start : start+n]
 }
 
+// isEmpty reports whether the RYW layer holds NO read or write state — no pending writes
+// (writes/cleared) and no cached reads (serverCache). Mirrors C++ `writes.empty() &&
+// cache.empty()` (the `reading.getFutureCount() > 0` in-flight-future disjunct has no analog
+// in the synchronous Go read paths — a completed read always populates serverCache, even an
+// absent one; the only uncovered sub-case is an un-resolved GetPipelined future, RFC-059).
+// Used by SetReadYourWritesDisable to decide whether to poison the transaction.
+func (c *rywCache) isEmpty() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.writes) == 0 && len(c.cleared) == 0 && len(c.serverCache.entries) == 0
+}
+
 // reset clears all cached state.
 func (c *rywCache) reset() {
 	c.mu.Lock()
