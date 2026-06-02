@@ -170,6 +170,12 @@ func runAtomicFoldCases(t *testing.T, cases []atomicFoldCase) {
 	t.Helper()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
 	pfx := fmt.Sprintf("atomfold_%d_%s_", os.Getpid(), ns)
+	// Clear the whole namespace (covers both the go_ and c_ sub-prefixes) before the cases run.
+	// Without this, re-running the binary in one process (e.g. go test -count=2) would leave the
+	// prior run's committed values in storage, and a base==nil (missing-key) case would fold over
+	// them instead of the intended storage-absent path — passing while testing the wrong scenario
+	// (codex review).
+	clearPrefix(t, pfx)
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
