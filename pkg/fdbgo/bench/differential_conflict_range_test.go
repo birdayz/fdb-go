@@ -310,6 +310,7 @@ func TestDifferential_WriteConflictRange(t *testing.T) {
 		{"range_mid_r5", false, "r5", true},
 		{"range_end_r9", false, "r9", false},
 		{"range_above_zz", false, "zz", false},
+		{"range_below_q", false, "q", false}, // < begin → NO conflict (symmetric with the read test)
 		{"key_exact_r5", true, "r5", true},
 		{"key_other_r6", true, "r6", false},
 	}
