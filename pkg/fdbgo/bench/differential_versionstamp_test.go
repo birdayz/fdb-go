@@ -357,6 +357,7 @@ func TestDifferential_VersionstampErrors(t *testing.T) {
 	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
 	base := fmt.Sprintf("vserr_%d_%s_", os.Getpid(), ns)
+	clearPrefix(t, base) // the valid_tight case commits a key; clear for consistency with the other VS helpers and -count=2 (@claude)
 
 	negOffset := func() []byte { // body=10 placeholder, offset = 0xFFFFFFFF (negative int32)
 		b := make([]byte, 14)
