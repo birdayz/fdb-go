@@ -16,6 +16,13 @@ import (
 // gets all shard locations, sends WaitMetricsRequest to each with min.bytes=0,
 // max.bytes=-1 (reversed range = immediate response), and sums the bytes.
 func (tx *Transaction) GetEstimatedRangeSizeBytes(ctx context.Context, begin, end []byte) (int64, error) {
+	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
+	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
+	// path). This entry point does not fetch a read version, so it is gated explicitly rather
+	// than via ensureReadVersion (RFC-059).
+	if tx.rywPoisonErr != nil {
+		return 0, tx.rywPoisonErr
+	}
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
 	const shardLimit = math.MaxInt32
 
@@ -126,6 +133,12 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 // GetRangeSplitPoints returns suggested split points for the given key range.
 // Matches C++ Transaction::getRangeSplitPoints in NativeAPI.actor.cpp.
 func (tx *Transaction) GetRangeSplitPoints(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
+	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
+	// checkValid path) — RFC-059.
+	if tx.rywPoisonErr != nil {
+		return nil, tx.rywPoisonErr
+	}
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, err := tx.db.locCache.locate(tx.db, ctx, begin, tx.tenantId)
 		if err != nil {

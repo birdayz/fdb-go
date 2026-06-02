@@ -228,6 +228,24 @@ type Transaction struct {
 	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 	rywDisabled bool
 
+	// rywPoisonErr: set when SetReadYourWritesDisable is called AFTER a read or write
+	// (the RYW layer is non-empty). libfdb_c's ReadYourWritesTransaction throws
+	// client_invalid_operation on the network thread, captured into deferredError, so the
+	// option call itself succeeds but EVERY subsequent read/commit surfaces the error
+	// (RFC-059). When non-nil, every read entry point (via ensureReadVersion) + the metrics
+	// path returns it. Cleared on reset (the option is reapplied over an empty layer with no
+	// poison; 2000 is non-retryable, so a poisoned commit kills the txn). Read lock-free,
+	// like rywDisabled (FDB transactions are not for concurrent use).
+	rywPoisonErr error
+
+	// hadRead: set when any read is ISSUED (getValue / getRange / GetPipelined — the chokes
+	// every read funnels through, which GetReadVersion and Commit do NOT). Together with a
+	// non-empty write map it is the Go analog of C++'s
+	// `reading.getFutureCount() > 0 || !cache.empty()` — the signal that
+	// SetReadYourWritesDisable must poison. A serverCache check alone is insufficient: the
+	// facade's Get uses GetPipelined, which does not populate serverCache (RFC-059).
+	hadRead bool
+
 	// snapshotRYWDisabled: when true, Snapshot.Get/GetRange bypass the RYW cache.
 	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE. Note: by default, snapshot
 	// reads DO go through the RYW cache (matching FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE).
@@ -376,6 +394,15 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
+	// A transaction poisoned by SetReadYourWritesDisable-after-an-op surfaces
+	// client_invalid_operation on every subsequent read AND commit (RFC-059). This is the
+	// single uniform gate: all reads (regular + snapshot), Commit, and GetReadVersion fetch a
+	// read version through here — libfdb_c poisons all of them identically (verified
+	// differentially, incl. GetReadVersion). The metrics path bypasses this and is gated
+	// separately. (Cleared on reset.)
+	if tx.rywPoisonErr != nil {
+		return tx.rywPoisonErr
+	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
 	}
@@ -441,6 +468,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, nil, err
 	}
+	tx.hadRead = true // a read was issued; this path does NOT populate serverCache (RFC-059)
 	// Legal key range check BEFORE sending — matches Transaction.Get. The illegal
 	// key must be rejected at enqueue, not after the frame is on the wire. RFC-010 #3.
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
@@ -869,6 +897,16 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 func (tx *Transaction) Commit(ctx context.Context) error {
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
+	}
+	// A poisoned transaction (SetReadYourWritesDisable after an op) fails commit with
+	// client_invalid_operation. Checked HERE — before the read-only fast path below (a
+	// read-only poisoned commit has no mutations, so it would otherwise skip
+	// ensureReadVersion's gate and commit successfully) AND before checkTimeout: reads check
+	// the poison before the timeout, and libfdb_c's checkDeferredError runs before any commit
+	// logic, so the poison must out-rank a stale-timeout 1031 for parity. Returns without
+	// resetting (2000 is non-retryable). codex, RFC-059.
+	if tx.rywPoisonErr != nil {
+		return tx.rywPoisonErr
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
@@ -1524,8 +1562,17 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 // SetReadYourWritesDisable disables RYW for regular (non-snapshot) reads.
 // When set, Get/GetRange always read from the server, ignoring uncommitted writes.
 // Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
+//
+// libfdb_c forbids setting this option after any read or write: it throws
+// client_invalid_operation, deferred to the next operation (the option call itself succeeds).
+// So if the RYW layer is non-empty (a prior read cached, or a pending write), we POISON the
+// transaction — every subsequent read and commit returns 2000 — rather than silently
+// disabling RYW mid-transaction (RFC-059). A clean (pre-op) disable is unaffected.
 func (tx *Transaction) SetReadYourWritesDisable() {
 	tx.rywDisabled = true
+	if tx.hadRead || !tx.ryw.isEmpty() {
+		tx.rywPoisonErr = &wire.FDBError{Code: 2000} // client_invalid_operation, surfaces on next op
+	}
 }
 
 // SetWriteConflictsDisabled disables write conflict ranges for all subsequent
@@ -1674,6 +1721,8 @@ func (tx *Transaction) postCommitReset() {
 	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
+	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
+	tx.hadRead = false
 	// committedVersion and txnBatchId preserved intentionally.
 }
 
@@ -1701,6 +1750,8 @@ func (tx *Transaction) reset() {
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
+	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
+	tx.hadRead = false
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:
 	// onError does NOT update creationTime, so the timeout is an overall
 	// budget across all retries. Only user-facing Reset() updates creationTime.
