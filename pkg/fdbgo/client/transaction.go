@@ -838,7 +838,12 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		// process (CATCH_AND_DIE on the key_too_large/value_too_large throw); we
 		// reject the commit instead so the oversized data never reaches the shared
 		// cluster. See sizelimits.go.
-		if len(m.Key) > getMaxWriteKeySize(m.Key, tx.writeSystemKeys) {
+		//
+		// hasRawAccess is C++ FDB_TR_OPTION_RAW_ACCESS (NativeAPI.actor.cpp:5963),
+		// a DISTINCT option from ACCESS_SYSTEM_KEYS (tx.writeSystemKeys). This client
+		// does not model RAW_ACCESS, so writes always pass false. (Only clears use
+		// the rawAccess=true limit, via getMaxClearKeySize == getMaxKeySize.)
+		if len(m.Key) > getMaxWriteKeySize(m.Key, false) {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2102} // key_too_large
 		}

@@ -20,10 +20,12 @@ const (
 	tenantPrefixSize   = 8      // TenantAPI::PREFIX_SIZE (sizeof(int64_t))
 )
 
-// getMaxWriteKeySize mirrors NativeAPI.actor.cpp getMaxWriteKeySize: system keys
-// (\xff…) get SYSTEM_KEY_SIZE_LIMIT; others KEY_SIZE_LIMIT, plus the tenant prefix
-// length when raw access is enabled (the caller supplies an already-prefixed key,
-// so the extra 8 bytes are allowed).
+// getMaxWriteKeySize mirrors NativeAPI.actor.cpp:11629 getMaxWriteKeySize: system
+// keys (\xff…) get SYSTEM_KEY_SIZE_LIMIT; others KEY_SIZE_LIMIT, plus the tenant
+// prefix length when raw access is enabled. rawAccess is C++ FDB_TR_OPTION_RAW_ACCESS
+// — a DISTINCT option from ACCESS_SYSTEM_KEYS — which this client does not model, so
+// set/atomicOp always pass false. Only clear uses the rawAccess=true limit, via
+// getMaxClearKeySize == getMaxKeySize == getMaxWriteKeySize(key, true).
 func getMaxWriteKeySize(key []byte, rawAccess bool) int {
 	if len(key) > 0 && key[0] == 0xff {
 		return systemKeySizeLimit

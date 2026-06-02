@@ -117,6 +117,25 @@ func TestCommit_SystemKeyHasHigherLimit(t *testing.T) {
 	}
 }
 
+// TestCommit_SystemKeysOptionDoesNotRaiseNonSystemKeyLimit pins the commit-path
+// wiring of the key-size check: ACCESS_SYSTEM_KEYS (tx.writeSystemKeys) must NOT be
+// passed as RAW_ACCESS to getMaxWriteKeySize. A NON-system key of 10001 bytes must
+// be rejected even with writeSystemKeys set — otherwise it would wrongly get the
+// rawAccess limit (KEY_SIZE_LIMIT+8) and slip through (the divergence Torvalds/
+// FDB-C-dev flagged). Fails pre-fix (the key is accepted → no 2102).
+func TestCommit_SystemKeysOptionDoesNotRaiseNonSystemKeyLimit(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.tenantId = NoTenantID
+	tx.rywDisabled = true
+	tx.writeSystemKeys = true                                      // ACCESS_SYSTEM_KEYS — must not raise the non-system limit
+	tx.Set(bytes.Repeat([]byte("a"), keySizeLimit+1), []byte("v")) // 10001, non-system
+	if code := sizeErrCode(t, tx.Commit(context.Background())); code != 2102 {
+		t.Fatalf("non-system key 10001 with writeSystemKeys: Commit code=%d, want 2102 "+
+			"(ACCESS_SYSTEM_KEYS must not be treated as RAW_ACCESS)", code)
+	}
+}
+
 func TestClear_DropsOversizedKey(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()

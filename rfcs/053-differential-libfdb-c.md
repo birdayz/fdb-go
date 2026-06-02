@@ -168,7 +168,12 @@ per the corpus discipline):
    placement, stamp masked). **Verified to have teeth:** reverting the Min→MinV2
    upgrade makes `min_missing_V2` fail byte-exactly (`go=00…` legacy `min(0,8)`=0 vs
    `cgo=08…` MinV2=8) — so the harness detects real op-code divergence, not theater.
-3. **L3 range invariance** — chunking-invariant merged reads + `GetKey` parity (next).
+3. **L3 range invariance** ✅ landed (`pkg/fdbgo/bench/differential_read_test.go`):
+   `TestDifferential_RangeRead` (merged GetRange result identical across the Go
+   client and libfdb_c under varied limit/reverse and C-side StreamingMode —
+   WantAll/Iterator/Small/Exact — proving chunking-invariance) and
+   `TestDifferential_GetKey` (FGT/FGE/LLT/LLE selector resolution parity across
+   present/absent/boundary probes).
 
 `just test` green.
 
@@ -204,6 +209,26 @@ Tracked here as C2 surfaces them (the corpus discipline: find → fix → pin).
    does (NativeAPI.actor.cpp:6019-6047 — it translates, never throws). Pinned by
    `sizelimits_test.go` (reject codes, accept-at-limit, system-key higher limit,
    clear drop/clamp), with the value-reject verified to fail pre-fix.
+
+## Implementation review (FDB-C-dev + Torvalds)
+
+Core C++ fidelity verified sound (SVK conflict-range, size limits/knobs, clamp/drop
+all match `/tmp/fdbsrc`). Both reviewers NAK'd on three fixable points, all
+addressed:
+1. **Wrong knob:** the key-size check passed `tx.writeSystemKeys`
+   (ACCESS_SYSTEM_KEYS) as `getMaxWriteKeySize`'s `hasRawAccess`; C++ uses the
+   distinct `RAW_ACCESS` (not modeled here) → now passes `false` for set/atomic,
+   pinned by `TestCommit_SystemKeysOptionDoesNotRaiseNonSystemKeyLimit`.
+2. **L3 flake:** the read-parity tests compared across the two clients' independent
+   GRV caches; a boundary selector could escape the seeded prefix into
+   concurrently-mutated keyspace and resolve differently. Fixed by pinning both
+   reads to a **fresh shared read version** per read-unit (verified flake-free over
+   15 no-cache runs of the full bench target).
+3. **Constant parity unverified:** the limit knobs were only matched against
+   hardcoded constants. Added `TestDifferential_KeySizeBoundary` (a key at exactly
+   `KEY_SIZE_LIMIT` accepted + persisted identically by both clients); combined with
+   the battery's `set_at_value_limit` row, the key- and value-limit knobs are now
+   exercised against the linked libfdb_c so a drift surfaces.
 
 ## Open questions / stretch
 

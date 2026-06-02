@@ -163,6 +163,47 @@ func TestDifferential_VersionstampedValue(t *testing.T) {
 	}
 }
 
+// TestDifferential_KeySizeBoundary exercises the KEY_SIZE_LIMIT knob against the
+// LINKED libfdb_c, not just a hardcoded constant. A key of exactly KEY_SIZE_LIMIT
+// (10000) is at the boundary (`size > limit` is false) and must be accepted and
+// persist identically by both clients. If the Go KEY_SIZE_LIMIT knob drifted below
+// the C client's, Go would reject this key at commit and the read-back would differ
+// (go=nil vs cgo=value). The value-limit boundary is covered by the battery's
+// set_at_value_limit row.
+func TestDifferential_KeySizeBoundary(t *testing.T) {
+	t.Parallel()
+	const keyLimit = 10000 // CLIENT_KNOBS->KEY_SIZE_LIMIT
+	mkKey := func(prefix string) []byte {
+		k := make([]byte, keyLimit)
+		copy(k, prefix)
+		for i := len(prefix); i < keyLimit; i++ {
+			k[i] = 'k'
+		}
+		return k
+	}
+	goKey := mkKey("diff_ksz_go_")
+	cKey := mkKey("diff_ksz_c_")
+	val := []byte("boundary-value")
+
+	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		tx.Set(gofdb.Key(goKey), val)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("go write at key limit: %v", err)
+	}
+	mustCGo(t, func(tx cgofdb.Transaction) { tx.Set(cgofdb.Key(cKey), val) })
+
+	goByC := cgoGet(t, goKey)
+	cByC := cgoGet(t, cKey)
+	if !bytes.Equal(goByC, cByC) {
+		t.Fatalf("key at KEY_SIZE_LIMIT: persisted differs (go accepted=%v c accepted=%v) — knob drift?",
+			goByC != nil, cByC != nil)
+	}
+	if !bytes.Equal(goByC, val) {
+		t.Fatalf("key at KEY_SIZE_LIMIT must be accepted by both; got %x want %x", goByC, val)
+	}
+}
+
 func cgoGet(t *testing.T, key []byte) []byte {
 	t.Helper()
 	v, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
