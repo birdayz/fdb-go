@@ -1201,8 +1201,14 @@ var _ = Describe("BunchedMap methods", func() {
 			for i := 0; i < n; i++ {
 				k := tuple.Tuple{int64(i)}
 				v := []int{i * 10, i*10 + 1}
-				_, _, err := bm.Put(tx, ss, k, v)
-				Expect(err).NotTo(HaveOccurred())
+				// RETURN the error (do NOT Expect inside the closure): bm.Put can return
+				// a retryable transaction_too_old (1007) when a slow run drifts past the
+				// 5s MVCC window — returning it lets db.Transact retry with a fresh read
+				// version. An in-closure Expect would fail the spec before the retry,
+				// flaking under parallel-container load. The outer Expect catches real errors.
+				if _, _, err := bm.Put(tx, ss, k, v); err != nil {
+					return nil, err
+				}
 			}
 			return nil, nil
 		})
@@ -1231,7 +1237,9 @@ var _ = Describe("BunchedMap methods", func() {
 
 		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(3)})
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return nil, err
+			}
 			Expect(found).To(BeTrue())
 			return nil, nil
 		})
@@ -1246,7 +1254,9 @@ var _ = Describe("BunchedMap methods", func() {
 
 		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(99)})
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return nil, err
+			}
 			Expect(found).To(BeFalse())
 			return nil, nil
 		})
@@ -1259,7 +1269,9 @@ var _ = Describe("BunchedMap methods", func() {
 
 		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(0)})
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return nil, err
+			}
 			Expect(found).To(BeFalse())
 			return nil, nil
 		})
@@ -1281,7 +1293,9 @@ var _ = Describe("BunchedMap methods", func() {
 		// Compact with keyLimit=0 (all at once).
 		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			cont, err := bm.Compact(tx, ss, 0, nil)
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return nil, err
+			}
 			Expect(cont).To(BeNil(), "keyLimit=0 should complete in one call")
 			return nil, nil
 		})
@@ -1291,7 +1305,9 @@ var _ = Describe("BunchedMap methods", func() {
 		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			for i := 0; i < n; i++ {
 				val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(i)})
-				Expect(err).NotTo(HaveOccurred())
+				if err != nil {
+					return nil, err
+				}
 				Expect(found).To(BeTrue(), "key %d should exist after compact", i)
 				Expect(val).To(Equal([]int{i * 10, i*10 + 1}))
 			}
@@ -1308,7 +1324,9 @@ var _ = Describe("BunchedMap methods", func() {
 
 		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			cont, err := bm.Compact(tx, ss, 0, nil)
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return nil, err
+			}
 			Expect(cont).To(BeNil())
 			return nil, nil
 		})
@@ -1330,7 +1348,9 @@ var _ = Describe("BunchedMap methods", func() {
 			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 				var err error
 				cont, err = bm.Compact(tx, ss, 3, continuation)
-				Expect(err).NotTo(HaveOccurred())
+				if err != nil {
+					return nil, err
+				}
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1348,7 +1368,9 @@ var _ = Describe("BunchedMap methods", func() {
 		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			for i := 0; i < n; i++ {
 				val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(i)})
-				Expect(err).NotTo(HaveOccurred())
+				if err != nil {
+					return nil, err
+				}
 				Expect(found).To(BeTrue(), "key %d should exist after multi-call compact", i)
 				Expect(val).To(Equal([]int{i * 10, i*10 + 1}))
 			}
@@ -1366,7 +1388,9 @@ var _ = Describe("BunchedMap methods", func() {
 		// Compact all.
 		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			_, err := bm.Compact(tx, ss, 0, nil)
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return nil, err
+			}
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1374,7 +1398,9 @@ var _ = Describe("BunchedMap methods", func() {
 		// VerifyIntegrity should pass.
 		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
 			err := bm.VerifyIntegrity(tx, ss)
-			Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				return nil, err
+			}
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
