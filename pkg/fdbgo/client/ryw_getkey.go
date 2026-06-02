@@ -154,6 +154,64 @@ func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 	return segEmpty
 }
 
+// readConflictRangesLocked returns the sub-ranges of [begin, end) that getKey must
+// register as READ conflicts — a faithful port of C++ updateConflictMap
+// (ReadYourWrites.actor.cpp:335-351), which adds a conflict for UNMODIFIED segments and
+// DEPENDENT (atomic) writes — i.e. where a DB read actually happened — but SKIPS
+// INDEPENDENT writes (plain Set) and cleared ranges, since those were satisfied from
+// the local write-map with no server read (and the write itself carries its own write
+// conflict unless intentionally disabled). Caller holds c.mu.
+//
+// Implementation: collect the EXCLUDED sub-ranges (independent writes + cleared) clamped
+// to [begin, end), then emit the complement — which is exactly the unmodified gaps plus
+// the atomic-write keys.
+func (c *rywCache) readConflictRangesLocked(begin, end []byte) [][2][]byte {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil
+	}
+	type rng struct{ b, e []byte }
+	var excl []rng
+	c.ensureSortedLocked()
+	for i := sort.SearchStrings(c.sortedKeys, string(begin)); i < len(c.sortedKeys); i++ {
+		kb := []byte(c.sortedKeys[i])
+		if bytes.Compare(kb, end) >= 0 {
+			break
+		}
+		// Only INDEPENDENT writes (plain Set) are skipped; atomic (dependent) writes read
+		// the base and DO conflict, so they stay in the conflict set.
+		if e, ok := c.writes[c.sortedKeys[i]]; ok && !e.hasAtomics {
+			excl = append(excl, rng{kb, keyAfterBytes(kb)})
+		}
+	}
+	for _, r := range c.cleared {
+		b, e := r.begin, r.end
+		if bytes.Compare(b, begin) < 0 {
+			b = begin
+		}
+		if bytes.Compare(e, end) > 0 {
+			e = end
+		}
+		if bytes.Compare(b, e) < 0 {
+			excl = append(excl, rng{b, e})
+		}
+	}
+	sort.Slice(excl, func(i, j int) bool { return bytes.Compare(excl[i].b, excl[j].b) < 0 })
+	var out [][2][]byte
+	cur := begin
+	for _, r := range excl {
+		if bytes.Compare(r.b, cur) > 0 {
+			out = append(out, [2][]byte{cur, append([]byte(nil), r.b...)})
+		}
+		if bytes.Compare(r.e, cur) > 0 {
+			cur = r.e
+		}
+	}
+	if bytes.Compare(cur, end) < 0 {
+		out = append(out, [2][]byte{append([]byte(nil), cur...), append([]byte(nil), end...)})
+	}
+	return out
+}
+
 // segIdxContaining returns the index of the segment [begin, end) containing key
 // (begin <= key < end), or len(segs) if key >= the last segment's end.
 func segIdxContaining(segs []rywSegment, key []byte) int {
@@ -291,6 +349,10 @@ func (c *rywCache) getKeyRYW(
 	serverGetRange func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error),
 ) ([]byte, error) {
 	key := append([]byte(nil), selectorKey...)
+	// Resolution direction is fixed by the ORIGINAL selector: offset<=0 → backward
+	// (lastLess*), offset>0 → forward (firstGreater*). It anchors the unknown-tail
+	// server read NEAR the selector in that direction — never from the segment start.
+	backward := offset <= 0
 	const fillBatch = 256
 	for iter := 0; iter < 1<<20; iter++ {
 		c.mu.Lock()
@@ -311,19 +373,52 @@ func (c *rywCache) getKeyRYW(
 			return append([]byte(nil), res.key...), nil
 		}
 
-		// Unknown segment: raw server read of the WHOLE segment, cache it, re-resolve.
-		kvs, more, err := serverGetRange(ctx, res.unknownBegin, res.unknownEnd, fillBatch, false)
-		if err != nil {
-			return nil, err
+		// Unknown segment: a BOUNDED raw server read anchored at the resolved (FGE-form)
+		// selector position res.key — NOT from res.unknownBegin, which may be "" on an
+		// empty cache (reading from there would scan the whole keyspace up to the
+		// selector — a severe regression vs the old bounded getKey). Mirrors C++
+		// getRangeValue (forward, read_begin = transformed selector) / getRangeValueBack
+		// (backward, reverse read below the selector).
+		var kvs []KeyValue
+		var more bool
+		var err error
+		var insBegin, insEnd []byte
+		if backward {
+			kvs, more, err = serverGetRange(ctx, res.unknownBegin, res.key, fillBatch, true)
+			if err != nil {
+				return nil, err
+			}
+			// Reverse read returns descending keys; normalize to ascending for the cache.
+			for l, r := 0, len(kvs)-1; l < r; l, r = l+1, r-1 {
+				kvs[l], kvs[r] = kvs[r], kvs[l]
+			}
+			insEnd = res.key
+			insBegin = res.unknownBegin
+			if more && len(kvs) > 0 {
+				insBegin = kvs[0].Key // truncated below the smallest returned key — stays unknown
+			}
+		} else {
+			kvs, more, err = serverGetRange(ctx, res.key, res.unknownEnd, fillBatch, false)
+			if err != nil {
+				return nil, err
+			}
+			insBegin = res.key
+			insEnd = res.unknownEnd
+			if more && len(kvs) > 0 {
+				insEnd = keyAfterBytes(kvs[len(kvs)-1].Key)
+			}
 		}
-		// Known range covered by this read: the whole [begin, unknownEnd) if the server
-		// returned everything (not truncated), else only [begin, keyAfter(lastKey)).
-		knownEnd := res.unknownEnd
-		if more && len(kvs) > 0 {
-			knownEnd = keyAfterBytes(kvs[len(kvs)-1].Key)
+		if bytes.Compare(insBegin, insEnd) >= 0 {
+			// Empty read window: res.key sits at the segment edge, so there is no key to
+			// fetch in the resolution direction within this segment. Terminal — nothing
+			// further to resolve (readToBegin backward / readThroughEnd forward).
+			if backward {
+				return append([]byte(nil), allKeysBegin...), nil
+			}
+			return append([]byte(nil), maxKey...), nil
 		}
 		c.mu.Lock()
-		c.serverCache.insert(res.unknownBegin, knownEnd, kvs)
+		c.serverCache.insert(insBegin, insEnd, kvs)
 		c.mu.Unlock()
 	}
 	return nil, errGetKeyRYWLoop

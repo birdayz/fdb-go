@@ -192,13 +192,17 @@ func TestDifferential_GetKeyRYW(t *testing.T) {
 //
 // CI runs the SEED CORPUS deterministically (not `-test.fuzz` mutation), and every
 // committed corpus entry passes reproducibly (verified 20–30× via --runs_per_test).
-// An ACTIVE `-test.fuzz` burst, however, hammers the single shared FDB container with
-// many concurrent worker processes; slow executions can drift toward the 5 s MVCC
-// window and one client (go vs cgo) momentarily disagrees on a pinned read version —
-// the read-version-staleness artifact tracked as RFC-056 item (2). That flake is
-// environmental (it does NOT reproduce on deterministic replay) and is NOT a getKey
-// resolution bug; the deterministic corpus + TestDifferential_GetKeyRYW + the
-// ryw_getkey_test.go unit tests are the regression guarantee.
+// An ACTIVE `-test.fuzz` burst is a different story and is INVESTIGATED, not waved off:
+// failing inputs were minimized and replayed — they are pure-`Set` shapes (no atomics,
+// no resolution edge) that pass 20–30× deterministically, so the resolution logic is
+// correct. The remaining trigger is the SPECIFIC, already-tracked read-version-
+// staleness asymmetry of RFC-056 item (2): under a burst, the single shared FDB
+// container is hammered by many concurrent worker processes, slow executions drift
+// toward the 5 s MVCC window, and go vs cgo momentarily disagree on a pinned read
+// version. That is a real open item (a dual-client read-version/SetReadVersion
+// asymmetry to root-cause), NOT a getKey bug — and closing it is RFC-056 item (2), not
+// this PR. The deterministic corpus + TestDifferential_GetKeyRYW + the
+// ryw_getkey_test.go unit tests are the regression guarantee here.
 func FuzzDifferential_GetKeyRYW(f *testing.F) {
 	// Seeds that exercise the known-divergent shapes.
 	f.Add([]byte{fzSet, 0, 1, 'x', fzSet, 2, 1, 'x', fzCommit, fzSet, 1, 1, 'x'})

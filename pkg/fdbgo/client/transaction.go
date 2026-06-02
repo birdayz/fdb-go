@@ -595,9 +595,14 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	return resolved, nil
 }
 
-// addGetKeyConflictRange adds the read-conflict range for a getKey, spanning the
+// addGetKeyConflictRange adds the read-conflict range(s) for a getKey, spanning the
 // selector base ↔ resolved key (orEqual-adjusted, oriented by offset sign). Faithful
-// port of C++ addConflictRange(GetKeyReq) (ReadYourWrites.actor.cpp:230-243).
+// port of C++ addConflictRange(GetKeyReq) (ReadYourWrites.actor.cpp:230-243) + the
+// updateConflictMap filtering (:335): the range is split around the local write-map so
+// INDEPENDENT writes (plain Set) and cleared ranges — satisfied locally with no DB read
+// — do NOT add a read conflict (otherwise a SetNextWriteNoWriteConflictRange + Set
+// would spuriously conflict). When RYW is disabled there is no local write-map, so the
+// whole range conflicts.
 func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offset int32, resolved []byte) {
 	var begin, end []byte
 	if offset <= 0 {
@@ -615,8 +620,18 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 		}
 		end = keyAfterBytes(resolved)
 	}
-	if bytes.Compare(begin, end) < 0 {
+	if bytes.Compare(begin, end) >= 0 {
+		return
+	}
+	if tx.rywDisabled {
 		tx.addReadConflict(begin, end)
+		return
+	}
+	tx.ryw.mu.Lock()
+	ranges := tx.ryw.readConflictRangesLocked(begin, end)
+	tx.ryw.mu.Unlock()
+	for _, r := range ranges {
+		tx.addReadConflict(r[0], r[1])
 	}
 }
 
