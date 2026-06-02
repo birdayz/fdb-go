@@ -180,21 +180,20 @@ func runGetKeyRYWDifferential(t *testing.T, label string, seed, pending []fuzzOp
 // isFDBRetryable reports whether err is a transient, retryable FDB error from EITHER
 // client — the gofdb facade Error (returned by GetKey().Get() via convertError) or the
 // libfdb_c cgofdb.Error. The differential retries on these (with a fresh read version)
-// instead of treating them as a divergence.
+// instead of treating them as a divergence. Both clients hit the SAME FDB, so both use
+// the SAME canonical predicate (gofdb.IsRetryable) — a hand-maintained per-client code
+// set would be asymmetric and could itself mask or manufacture a false mismatch (codex).
 func isFDBRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
 	var ge gofdb.Error
 	if errors.As(err, &ge) {
-		return ge.Retryable()
+		return gofdb.IsRetryable(ge.Code)
 	}
 	var ce cgofdb.Error
 	if errors.As(err, &ce) {
-		switch ce.Code {
-		case 1004, 1007, 1009, 1020, 1021, 1037, 1038, 1042, 1051, 1078, 1213: // too_old / future / not_committed / process_behind / throttled / mem-limits
-			return true
-		}
+		return gofdb.IsRetryable(ce.Code)
 	}
 	return false
 }
