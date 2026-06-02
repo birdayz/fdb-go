@@ -512,6 +512,15 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        offset), the go-only helpers vs canonical `cgotuple.Pack()`, cross-client Unpack, and an
        end-to-end FDB wire round-trip. cgotuple is itself pinned to the cross-language
        `tuples.golden`, so this transitively pins go to the golden vectors.
+     - [x] **[RFC-061 — MERGED #240] SNAPSHOT_RYW_ENABLE/DISABLE counter.** Found via the
+       transaction-option-semantics survey, confirmed differentially: libfdb_c models snapshot
+       RYW as an integer counter (ENABLE++, DISABLE--, bypass iff <=0, default 1), but Go used a
+       boolean with `SetSnapshotRywEnable()` a no-op — so `disable→enable` left snapshot reads
+       stuck bypassing RYW (go silently too permissive). Fixed: `snapshotRYWDisableCount int`
+       (zero-value-safe inverse: DISABLE++, ENABLE--, bypass iff >0; preserved across reset as a
+       persistent option). Pinned by `TestDifferential_SnapshotRYWReenable` (10 sequences, 3
+       red→green + a counter-vs-boolean discriminator + negative-count axis + RYW-disable
+       dominance).
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,

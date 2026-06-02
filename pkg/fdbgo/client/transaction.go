@@ -246,10 +246,17 @@ type Transaction struct {
 	// facade's Get uses GetPipelined, which does not populate serverCache (RFC-059).
 	hadRead bool
 
-	// snapshotRYWDisabled: when true, Snapshot.Get/GetRange bypass the RYW cache.
-	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE. Note: by default, snapshot
-	// reads DO go through the RYW cache (matching FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE).
-	snapshotRYWDisabled bool
+	// snapshotRYWDisableCount: snapshot reads bypass the RYW cache iff this is > 0.
+	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_{ENABLE,DISABLE}, which libfdb_c models as an
+	// integer counter (ReadYourWrites.actor.cpp): ENABLE does enabledCount++, DISABLE does
+	// enabledCount--, and a snapshot read bypasses RYW iff enabledCount <= 0. We store the
+	// disabled-oriented inverse (disableCount = 1 - enabledCount for the modern-API default of
+	// 1), so DISABLE does count++, ENABLE does count--, and bypass iff count > 0 — exactly
+	// equivalent at every integer (enabledCount <= 0 ⟺ disableCount > 0) while keeping the Go
+	// zero value (0) mean "enabled", so a bare Transaction never silently bypasses RYW. This is
+	// a persistent option: it is preserved across reset() (re-applied on retry, like C++
+	// persistentOptions). By default (count 0) snapshot reads DO go through the RYW cache.
+	snapshotRYWDisableCount int
 
 	// System key access control. Matches C++ ReadYourWritesTransaction:
 	// getMaxReadKey() returns \xff without readSystemKeys, \xff\xff with it.
@@ -320,7 +327,8 @@ type Snapshot struct {
 }
 
 // Get reads a key without adding a read conflict range.
-// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
+// Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
+// (snapshotRYWDisableCount > 0).
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
@@ -329,7 +337,10 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if bytes.Compare(key, s.tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	if s.tx.snapshotRYWDisabled {
+	// Mirror C++ ReadYourWrites.actor.cpp:400-402: readYourWritesDisabled is checked FIRST (read
+	// through, for ALL reads incl. snapshot), then the snapshot-RYW counter. Both map to a
+	// storage read here (a snapshot read adds no conflict either way).
+	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		return s.tx.getValue(ctx, key)
 	}
 	return s.tx.ryw.get(ctx, key, s.tx.getValue)
@@ -338,8 +349,8 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 // GetKey resolves a key selector without adding a read conflict range.
 // Snapshot reads go through the snapshot cache, and — by default — SEE the txn's own
 // pending writes (matching Snapshot.Get/GetRange and libfdb_c, where snapshot RYW is
-// enabled unless SetSnapshotRYWDisable). With snapshotRYWDisabled the write map is
-// bypassed (snapshot cache only).
+// enabled unless net-disabled via SetSnapshotRYWDisable). When net-disabled
+// (snapshotRYWDisableCount > 0) the write map is bypassed (snapshot cache only).
 func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
@@ -347,11 +358,14 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	return s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.snapshotRYWDisabled, s.tx.getRange)
+	// includeWrites mirrors C++ :400-402: consult the RYW write map only when readYourWrites is
+	// NOT disabled AND snapshot RYW is net-enabled (count <= 0).
+	return s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.rywDisabled && s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
 }
 
 // GetRange reads a range without adding a read conflict range.
-// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
+// Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
+// (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
@@ -360,14 +374,15 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
-	if s.tx.snapshotRYWDisabled {
+	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		return s.tx.getRange(ctx, begin, end, limit, false)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
-// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
+// Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
+// (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
@@ -376,7 +391,7 @@ func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
-	if s.tx.snapshotRYWDisabled {
+	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		return s.tx.getRange(ctx, begin, end, limit, true)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
@@ -1600,11 +1615,20 @@ func (tx *Transaction) EnsureMutationCapacity(n int) {
 	tx.conflictMu.Unlock()
 }
 
-// SetSnapshotRYWDisable disables RYW for snapshot reads.
-// When set, Snapshot.Get/GetRange always read from the server.
-// Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE.
+// SetSnapshotRYWDisable decrements the snapshot-RYW enable count (stored as the
+// disabled-oriented inverse, so it increments here). Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE
+// (libfdb_c does enabledCount--). When the net count is > 0 (more disables than enables),
+// Snapshot.Get/GetRange/GetKey read from the server, bypassing the RYW cache.
 func (tx *Transaction) SetSnapshotRYWDisable() {
-	tx.snapshotRYWDisabled = true
+	tx.snapshotRYWDisableCount++
+}
+
+// SetSnapshotRYWEnable re-enables RYW for snapshot reads, undoing one prior
+// SetSnapshotRYWDisable. Matches FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE (libfdb_c does
+// enabledCount++). The option is a counter, not a toggle: two disables require two enables to
+// re-enable, and an enable from the default pushes the count negative (still enabled).
+func (tx *Transaction) SetSnapshotRYWEnable() {
+	tx.snapshotRYWDisableCount--
 }
 
 // SetTenantId sets the tenant for this transaction. All operations will
@@ -1764,7 +1788,7 @@ func (tx *Transaction) reset() {
 	// Preserved across reset (match C++ persistent option re-application):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
 	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled,
-	// snapshotRYWDisabled, tenantId, creationTime, tags.
+	// snapshotRYWDisableCount, tenantId, creationTime, tags.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows
