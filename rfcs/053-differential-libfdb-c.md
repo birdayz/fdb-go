@@ -257,6 +257,16 @@ Codex (third reviewer) caught two real divergences, both verified against
    clamped-to-empty `ClearRange` early-returned without consuming it, so it leaked
    to the next write. Fix: `consumeNextWriteNoConflict()` on both no-op paths.
    Pinned by `TestClear_NoOpConsumesNextWriteNoConflict` (fails pre-fix).
+3. **raw-access slack must be gated on non-tenant txns** (codex delta re-review of
+   the finding-#1 fix). The +8 slack IS the tenant-prefix allowance
+   (`getMaxWriteKeySize`: `tenantSize = hasRawAccess ? PREFIX_SIZE : 0`,
+   `NativeAPI.actor.cpp:11630`) — for raw access where the caller pre-includes the
+   prefix. When THIS client prepends the prefix itself (`tenantId >= 0`), a tenant
+   txn with `writeSystemKeys`/`readSystemKeys` must NOT also get the slack, or a
+   10001-10008-byte user key serializes to a 10009-10016-byte physical key. C++
+   forbids raw-access options on tenant txns for this reason; we gate the slack:
+   `(writeSystemKeys || readSystemKeys) && tenantId < 0`. Pinned by
+   `TestCommit_TenantDeniesRawAccessKeySlack` (fails pre-fix).
 
 This is the multi-reviewer system working as intended: "C++ is the spec" overrode
 two concurring human-style ACKs once the source was consulted.

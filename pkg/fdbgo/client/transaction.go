@@ -861,7 +861,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		// READ_SYSTEM_KEYS == readSystemKeys, and either raises the non-system key
 		// limit by the tenant-prefix slack (KEY_SIZE_LIMIT+8). Passing false here
 		// would reject 10001-10008-byte keys that libfdb_c accepts.
-		if len(m.Key) > getMaxWriteKeySize(m.Key, tx.writeSystemKeys || tx.readSystemKeys) {
+		//
+		// BUT the +8 slack IS the tenant-prefix allowance (getMaxWriteKeySize's
+		// `tenantSize = hasRawAccess ? PREFIX_SIZE : 0`, NativeAPI.actor.cpp:11630):
+		// it exists for raw access where the CALLER already included the 8-byte
+		// prefix. When THIS client will prepend the prefix itself (tenantId >= 0,
+		// commitpath.go), the user key must stay within KEY_SIZE_LIMIT so the
+		// prefixed physical key is ≤ KEY_SIZE_LIMIT+8 — otherwise a 10001-10008-byte
+		// user key serializes to a 10009-10016-byte physical key. C++ forbids
+		// raw-access options on tenant transactions for exactly this reason; we gate
+		// the slack on the no-tenant case to the same effect.
+		rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
+		if len(m.Key) > getMaxWriteKeySize(m.Key, rawAccess) {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2102} // key_too_large
 		}

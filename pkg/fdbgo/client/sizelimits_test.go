@@ -163,6 +163,26 @@ func TestCommit_RawAccessRaisesNonSystemKeyLimit(t *testing.T) {
 	}
 }
 
+// TestCommit_TenantDeniesRawAccessKeySlack pins codex's third finding: the +8
+// raw-access slack IS the tenant-prefix allowance (for raw access, where the caller
+// pre-includes the prefix). When THIS client will prepend the 8-byte prefix itself
+// (tenantId >= 0), a tenant transaction must NOT also get the slack — a 10001-byte
+// user key would serialize to a 10009-byte physical key. So even with writeSystemKeys
+// set, a tenant transaction's user key is capped at KEY_SIZE_LIMIT. Fails pre-fix
+// (the key is accepted under the un-gated slack → panics past validation).
+func TestCommit_TenantDeniesRawAccessKeySlack(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.tenantId = 5 // a tenant — client prepends an 8-byte prefix at commit
+	tx.rywDisabled = true
+	tx.writeSystemKeys = true
+	tx.Set(bytes.Repeat([]byte("a"), keySizeLimit+1), []byte("v")) // 10001-byte user key
+	if code := sizeErrCode(t, tx.Commit(context.Background())); code != 2102 {
+		t.Fatalf("tenant txn with writeSystemKeys: 10001-byte user key must be rejected "+
+			"(no raw-access slack for tenants; physical key would be 10009), got %d", code)
+	}
+}
+
 // TestClear_NoOpConsumesNextWriteNoConflict pins codex's second finding: C++ RYW
 // clear consumes the NEXT_WRITE_NO_WRITE_CONFLICT_RANGE flag at the top
 // (ReadYourWrites.actor.cpp:2407), above the size no-op. So an oversized single-key
