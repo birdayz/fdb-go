@@ -457,12 +457,22 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
      (`TestDifferential_GetKeyRYW` + unit tests green). Then this de-flakes item (2) at the source
      rather than only via the differential's retry.
 
-  2. **Op-type-preserving write-map → closes BOTH deferred sub-edges at once.** Root cause shared
-     by both: the rywCache EAGERLY folds a resolved atomic into a plain entry (`hasAtomics`→false)
-     and moves a matched CompareAndClear into the `cleared` list, ERASING the per-key op-type that
-     C++'s `WriteMap` preserves (INDEPENDENT vs DEPENDENT vs versionstamp). Add op-type
-     preservation (retain the original op kind per key, surviving value-resolution/folding), then
-     close:
+  2. **[x] DONE (RFC-058).** Op-type-preserving write-map closed BOTH sub-edges. Added `absent`
+     (phantom) + `dependent` (DEPENDENT_WRITE, carried unchanged through folds like C++
+     `isDependent()` reading the immutable stack bottom) to `rywEntry`; a matched CompareAndClear
+     now stays a write-map entry (never moved to `cleared`). The differential **disproved the
+     original framing of (a)**: getKey is a limit-1 range read in C++ (`read(GetKeyReq)` =
+     `getRangeValue`/`getRangeValueBack`), so a phantom is COUNTED in the offset walk but SKIPPED
+     at the landing — not "counted and landed on." Modeled as `segPhantom` (count-in-walk +
+     directional skip-at-landing); the old `segEmpty` under-counted for offset>1, a naive `segKV`
+     wrongly landed on it. Also fixed a pre-existing fold-path bug the same differential caught
+     (`doMax(_,"")`→nil misread as absent by a later CompareAndClear). (b) Ported `updateConflictMap`
+     (ReadYourWrites.actor.cpp:335) as `conflictRangesLocked` — the getKey read-conflict now
+     SUBTRACTS INDEPENDENT writes + cleared ranges (safe now that op-type is preserved; the naive
+     `!hasAtomics` filter codex NAK'd on #235 is impossible here). Proof: getKey differential
+     re-enabled for pending CAC/atomics + 92k-exec fuzz (sub-edge a); a deterministic commit-order
+     `TestDifferential_GetKeyConflict` whose INDEPENDENT/CLEARED cases FAIL without the filter and
+     pass with it (sub-edge b). FDB-C-dev + Torvalds ACK on the RFC. Original (a)/(b) text:
      (a) **phantom-slot offset counting** — a PENDING atomic that resolves to no value
          (CompareAndClear, or an atomic on a locally-cleared range) is an `is_kv` "phantom" slot
          COUNTED in the getKey offset walk in libfdb_c, but Go currently models it as absent. With
@@ -480,6 +490,12 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
      op); error-code + option semantics (RAW_ACCESS / ACCESS_SYSTEM_KEYS / snapshot-RYW); key
      encoding / tuple packing / versionstamp-offset validation. Each closed axis is more "absolute
      proof we're identical to the C client."
+     - **Known divergence to close here (found in RFC-058):** with `READ_YOUR_WRITES_DISABLE`,
+       libfdb_c rejects a read whose range overlaps a locally-written key with
+       `client_invalid_operation` (2000); the Go client does NOT raise it (it proceeds, resolving
+       against storage). Port the C-client rejection so go errors 2000 identically. (RFC-058's
+       conflict-filter already uses the full span when `rywDisabled` — the safe behavior should
+       the read ever proceed — so this is purely the missing validation.)
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,

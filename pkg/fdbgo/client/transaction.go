@@ -455,6 +455,12 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	tx.ryw.mu.Lock()
 	if entry, ok := tx.ryw.writes[string(key)]; ok {
 		if !entry.hasAtomics {
+			if entry.absent {
+				// Phantom (matched CompareAndClear): an is_kv slot for getKey but ABSENT for
+				// a point read — like a cleared key (RFC-058).
+				tx.ryw.mu.Unlock()
+				return nil, nil, nil
+			}
 			v := entry.value
 			tx.ryw.mu.Unlock()
 			return v, nil, nil
@@ -595,22 +601,17 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	return resolved, nil
 }
 
-// addGetKeyConflictRange adds the read-conflict range for a getKey, spanning the
+// addGetKeyConflictRange adds the read-conflict range(s) for a getKey, spanning the
 // selector base ↔ resolved key (orEqual-adjusted, oriented by offset sign) — a port of
-// C++ addConflictRange(GetKeyReq) (ReadYourWrites.actor.cpp:230-243). This fixes the
-// prior single-key conflict (which under-conflicted: a concurrent write between the
-// base and the resolved key would not conflict, an unsafe divergence).
-//
-// C++ then runs updateConflictMap (:335) to SUBTRACT segments satisfied locally with no
-// DB read (INDEPENDENT writes + cleared ranges). We DON'T do that subtraction: the
-// rywCache eagerly folds resolved atomics into plain entries (hasAtomics→false) and
-// moves a matched CompareAndClear into the cleared list, so it no longer preserves
-// which keys were DEPENDENT (read the base). Filtering on the post-fold state would drop
-// a required read conflict for a folded dependent atomic — an UNSAFE under-conflict
-// (codex). So we keep the FULL range: it over-conflicts on the no-DB-read segments
-// (extra retries, always SAFE) rather than risk a missed conflict. The exact
-// updateConflictMap filtering needs the rywCache to preserve per-key op-type (the same
-// gap as the deferred phantom-slot) and is tracked under RFC-056.
+// C++ addConflictRange(GetKeyReq) (ReadYourWrites.actor.cpp:230-243), THEN filtered by
+// updateConflictMap (:335). The base↔resolved span is the same range C++ computes; the
+// filter (conflictRangesLocked) then SUBTRACTS segments satisfied locally with no DB read —
+// INDEPENDENT writes (plain Set / folded atomic / matched-CAC phantom) and cleared ranges —
+// keeping only UNMODIFIED gaps + DEPENDENT writes (which did read the DB base). With op-type
+// now preserved (RFC-058), this subtraction is SAFE: a Get-folded DEPENDENT atomic keeps its
+// dependent flag, so it is NOT dropped (the unsafe under-conflict codex caught on #235 came
+// from a naive !hasAtomics filter on the lossy pre-fold state — not possible now). Matches
+// libfdb_c exactly instead of over-conflicting on the no-DB-read segments.
 func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offset int32, resolved []byte) {
 	var begin, end []byte
 	if offset <= 0 {
@@ -628,8 +629,25 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 		}
 		end = keyAfterBytes(resolved)
 	}
-	if bytes.Compare(begin, end) < 0 {
+	if bytes.Compare(begin, end) >= 0 {
+		return
+	}
+	// When RYW is disabled, GetKey resolved against STORAGE only (Transaction.GetKey uses
+	// tx.getKey, not getKeyRYW) — the local write-map did NOT satisfy the read, so every
+	// segment in the span was a real DB read. Filtering through the (bypassed) write-map
+	// would subtract a local Set/Clear segment and MISS a conflict from a concurrent insert
+	// into that gap (codex). Add the full span, matching C++ (RYW-disabled reads go through
+	// the underlying transaction, which records the full read-conflict; updateConflictMap is
+	// an RYW-layer step that does not run).
+	if tx.rywDisabled {
 		tx.addReadConflict(begin, end)
+		return
+	}
+	tx.ryw.mu.Lock()
+	ranges := tx.ryw.conflictRangesLocked(begin, end)
+	tx.ryw.mu.Unlock()
+	for _, r := range ranges {
+		tx.addReadConflict(r[0], r[1])
 	}
 }
 

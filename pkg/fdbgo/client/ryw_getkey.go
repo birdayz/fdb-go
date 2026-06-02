@@ -23,21 +23,23 @@ import (
 //   - segEmpty:   known to contain no key (a cleared range, a known-absent cache gap,
 //                 or — per #234 — a pending versionstamp key, which Go reads as absent).
 //   - segUnknown: contents not determinable locally; must read the server.
+//   - segPhantom: a matched CompareAndClear — is_kv (COUNTED in the offset walk like segKV)
+//                 but with no value (skipped at the landing like segEmpty). See segPhantom.
 // type() = the C++ typeMap cross-product of the write-map view and the cache view:
-// CLEARED→empty, INDEPENDENT_WRITE(plain Set)→KV, DEPENDENT_WRITE(atomic)→KV if the
-// cache base is known else unknown, UNMODIFIED→passthrough cache type, versionstamp→
-// empty (the #234 unreadable→absent approximation, consistent across Get/GetRange).
+// CLEARED→empty, INDEPENDENT_WRITE(plain Set / folded atomic)→KV, DEPENDENT_WRITE(standalone
+// atomic)→KV if the cache base is known else unknown, UNMODIFIED→passthrough cache type,
+// versionstamp→empty (the #234 unreadable→absent approximation), matched-CAC→phantom.
 //
-// DEFERRED (RFC-056 follow-up): a PENDING atomic that resolves to no value — a
-// CompareAndClear, or an atomic layered on a locally-cleared range — is modeled here as
-// segEmpty (not a key). libfdb_c keeps such a write-map entry as an is_kv "phantom"
-// slot that is COUNTED in the offset walk (but yields no value: it never appears in
-// GetRange, and getKey resolves THROUGH it to the next valued key). Matching that
-// requires the rywCache to preserve every atomic-touched key as a slot, which conflicts
-// with its eager value-resolution (the optimization Get/GetRange depend on) — a deeper
-// change. The getKey differential is therefore scoped to non-atomic pending writes
-// (Set/Clear/ClearRange — the primary divergence); pending-atomic getKey offset
-// resolution is tracked in TODO.md under the RFC-056 audit.
+// getKey is a limit-1 range read (RFC-058): C++ read(GetKeyReq) = getRangeValue /
+// getRangeValueBack(limit=1) over the RYWIterator. resolveKeySelectorFromCache counts is_kv
+// segments for the offset (a matched CompareAndClear is is_kv → COUNTED), but the range
+// iteration returns the first kv()-NON-NULL key, so a phantom is SKIPPED at the landing and
+// the selector resolves to the adjacent present key. The rywCache preserves the matched CAC
+// as a write-map entry (`absent:true`, never moved to the cleared list — so the conflict map
+// still sees it as a DEPENDENT operation), and segTypeAtLocked classifies it segPhantom:
+// counted by the offset walk, skipped at the landing, absent in Get/GetRange. An atomic over
+// a locally-cleared range is INDEPENDENT in C++ (synthetic SetValue base) and matches Go's
+// fold-over-empty; only CompareAndClear yields a phantom (no value).
 
 type rywSegType int
 
@@ -45,6 +47,13 @@ const (
 	segUnknown rywSegType = iota
 	segEmpty
 	segKV
+	// segPhantom: a matched CompareAndClear — an is_kv segment in C++ (COUNTED in the
+	// getKey offset walk, like segKV) whose resolved value is "no value" (skipped by the
+	// limit-1 range read that getKey actually is — RYWIterator::kv() returns nullptr). So a
+	// selector COUNTS a phantom but cannot LAND on it: at the resolved landing it is skipped
+	// in the resolution direction to the first present (segKV) key — exactly C++ getKey =
+	// getRangeValue/getRangeValueBack(limit=1) over RYWIterator (RFC-058).
+	segPhantom
 )
 
 // allKeysBegin is the empty key — the absolute start of the keyspace (C++ allKeys.begin).
@@ -55,21 +64,36 @@ var allKeysBegin = []byte{}
 func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 	if includeWrites {
 		if entry, ok := c.writes[string(p)]; ok {
-			// p is a pending write key (single-key segment [p, p+\x00)).
+			// p is a pending write key (single-key segment [p, p+\x00)). getKey classifies
+			// by SEGMENT TYPE (C++ RYWIterator type()), NOT by resolved value — the resolved
+			// value only matters for Get/GetRange.
 			if !entry.hasAtomics {
-				return segKV // plain Set — present regardless of value (incl. Set-to-empty).
+				if entry.absent {
+					// Phantom (matched CompareAndClear): is_kv (counted) but no value
+					// (skipped at the landing). See segPhantom.
+					return segPhantom
+				}
+				// A resolved present write slot (plain Set incl. Set-to-empty, or a folded
+				// atomic) → is_kv with a value.
+				return segKV
 			}
-			// Atomic chain: resolve over the storage base.
+			// Unresolved atomic chain: resolve over the storage base for its TYPE.
 			base, known := c.serverCache.getKey(p)
 			if !known {
 				return segUnknown // DEPENDENT_WRITE over unknown base — must read server.
 			}
 			_, cleared, unresolved := resolveAtomics(base, entry.atomics)
-			if cleared || unresolved {
-				// CompareAndClear matched (no value), or a versionstamp (unreadable →
-				// absent per #234). Modeled as absent here (see DEFERRED note above).
+			if unresolved {
+				// Versionstamp in the chain: unreadable client-side, folded to absent per
+				// #234 (a distinct axis, deliberately out of RFC-058 scope).
 				return segEmpty
 			}
+			if cleared {
+				// DEPENDENT_WRITE over a known base, cleared by a matched CompareAndClear:
+				// an is_kv phantom — counted by the offset walk, skipped at the landing.
+				return segPhantom
+			}
+			// DEPENDENT_WRITE over a KNOWN base, present → is_kv with a value.
 			return segKV
 		}
 		if c.isClearedLocked(p) {
@@ -250,7 +274,7 @@ type keySelResult struct {
 // ends of fully-known data, or stops at an unknown segment (leaving key as an
 // equivalent FGE selector adjoining it). Versionstamp keys are segEmpty (absent), so
 // there is no "unreadable stop" — the only halt is an unknown segment.
-func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, offset int32, maxKey []byte) keySelResult {
+func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, offset int32, maxKey []byte, backward bool) keySelResult {
 	// removeOrEqual: if orEqual, key = keyAfter(key); orEqual = false.
 	if orEqual {
 		key = keyAfterBytes(key)
@@ -270,9 +294,11 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 
 	keykey := key
 
-	// Forward walk toward FGE form.
+	// Forward walk toward FGE form. A phantom (matched CompareAndClear) is is_kv → it
+	// COUNTS toward the offset, exactly like a present key (C++ resolveKeySelectorFromCache
+	// counts it.is_kv(), which is true for a CAC-cleared DEPENDENT/INDEPENDENT segment).
 	for offset > 1 && cur.valid() && cur.typ != segUnknown && bytes.Compare(cur.end, maxKey) < 0 {
-		if cur.typ == segKV {
+		if cur.typ == segKV || cur.typ == segPhantom {
 			offset--
 		}
 		cur.next()
@@ -281,9 +307,10 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 		}
 		keykey = cur.begin
 	}
-	// Backward walk.
+	// Backward walk. Phantoms count here too (C++ lands on an is_kv phantom; the directional
+	// skip below moves off it to the first present key).
 	for offset < 1 && cur.valid() && cur.typ != segUnknown && !bytes.Equal(cur.begin, allKeysBegin) {
-		if cur.typ == segKV {
+		if cur.typ == segKV || cur.typ == segPhantom {
 			offset++
 			if offset == 1 {
 				keykey = cur.begin
@@ -306,19 +333,51 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 		return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
 	}
 
-	// Skip known empty ranges forward to the first present key. (The backward walk above
-	// already lands a backward selector on its KV, so a forward-only skip suffices for
-	// non-atomic pending — the scoped axis; see the DEFERRED note for pending atomics.)
-	for cur.valid() && cur.typ == segEmpty && bytes.Compare(cur.end, maxKey) < 0 {
-		cur.next()
-		if cur.offEnd() {
-			break
+	// Directional skip-to-present: getKey is a limit-1 range read (C++ getRangeValue /
+	// getRangeValueBack over RYWIterator), so the resolved key is the first PRESENT (segKV)
+	// key from the landing in the RESOLUTION direction — segEmpty and segPhantom (matched
+	// CompareAndClear: is_kv but no value, RYWIterator::kv()==nullptr) are skipped. Forward
+	// for offset>0 selectors, backward for offset<=0. (Without phantoms a backward selector
+	// already lands on its segKV, so this loop is a no-op there — preserving prior behavior.)
+	if backward {
+		for cur.valid() && (cur.typ == segEmpty || cur.typ == segPhantom) {
+			if bytes.Equal(cur.begin, allKeysBegin) {
+				return keySelResult{key: allKeysBegin, offset: 1, readToBegin: true}
+			}
+			cur.prev()
+			if cur.offBegin() {
+				return keySelResult{key: allKeysBegin, offset: 1, readToBegin: true}
+			}
+			// Track the FGE-form key adjoining the new segment, ONLY for segments this skip
+			// reached (a no-skip landing keeps the offset walk's keykey). For a present KV the
+			// resolved key is its begin; for an UNKNOWN segment the BACKWARD server read window
+			// is [unknownBegin, res.key), so res.key must be the segment END — else the window
+			// is empty [begin,begin) and getKey wrongly returns allKeysBegin without reading the
+			// preceding storage (codex P2-1). Mirrors the backward offset walk.
+			if cur.typ == segUnknown {
+				keykey = cur.end
+			} else {
+				keykey = cur.begin
+			}
 		}
-		keykey = cur.begin
+	} else {
+		for cur.valid() && (cur.typ == segEmpty || cur.typ == segPhantom) {
+			if bytes.Compare(cur.end, maxKey) >= 0 {
+				return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
+			}
+			cur.next()
+			if cur.offEnd() {
+				return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
+			}
+			keykey = cur.begin
+		}
 	}
 
 	if !cur.valid() {
-		// Walked off the end of known data → read through end.
+		// Walked off the end of known data.
+		if backward {
+			return keySelResult{key: allKeysBegin, offset: 1, readToBegin: true}
+		}
 		return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
 	}
 	switch cur.typ {
@@ -332,7 +391,12 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 	case segKV:
 		// Resolved on a present key.
 		return keySelResult{key: keykey, offset: offset}
-	default: // segEmpty at the maxKey edge — no present key >= the selector.
+	default: // segEmpty/segPhantom at the keyspace edge — no present key in direction.
+		// (Unreachable: the directional skip above exits only on segUnknown/segKV or a
+		// terminal return. Direction-correct anyway as a defensive backstop.)
+		if backward {
+			return keySelResult{key: allKeysBegin, offset: 1, readToBegin: true}
+		}
 		return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
 	}
 }
@@ -370,7 +434,7 @@ func (c *rywCache) getKeyRYW(
 	for iter := 0; iter < 1<<20; iter++ {
 		c.mu.Lock()
 		cur := c.newSegCursor(maxKey, includeWrites)
-		res := resolveKeySelectorFromCache(cur, key, orEqual, offset, maxKey)
+		res := resolveKeySelectorFromCache(cur, key, orEqual, offset, maxKey, backward)
 		c.mu.Unlock()
 
 		orEqual = false // removeOrEqual consumed it; re-resolve continues in FGE form.
