@@ -546,6 +546,17 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
          harness setup in `pkg/fdbgo/bench` (OpenTenant on both clients; cluster tenant_mode must
          be enabled). Open a tenant, write a versionstamped key in the tenant txn, read back within
          the tenant, mask, compare — verify go/cgo adjust the offset by the prefix length identically.
+     - [x] **[RFC-064 — MERGED #243] explicit conflict-range API differential.** AddReadConflictRange/
+       Key + AddWriteConflictRange/Key feed the resolver (isolation) but had no differential coverage
+       (RFC-058 covered only getKey-DERIVED conflict ranges). Empirically NO divergence — edges
+       (inverted→2005, empty→accept, oversized→accept) match go==cgo (the C++ NativeAPI source has no
+       release inverted-check, but the C binding cgo uses returns 2005 — the differential is the spec,
+       not the source). Pinned the conflict OUTCOME: read-conflict range/key (A fails 1020 iff probe
+       inside, half-open r0 incl / r9 excl), write-conflict range/key (a concurrent reader fails iff
+       inside A's write-conflict), snapshot-read-no-conflict, self-write+read-conflict. Reused RFC-058
+       pinning (both A+B SetReadVersion(vSetup), transient→retry, fresh prefix/attempt, bounded) →
+       flake-free (5 runs). Teeth: empty key-conflict range → key_exact_r5 diverges. Oversized
+       committed-truncation is unobservable (keys > maxKeySize are unwritable).
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
