@@ -898,16 +898,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
-	if err := tx.checkTimeout(); err != nil {
-		return err
-	}
 	// A poisoned transaction (SetReadYourWritesDisable after an op) fails commit with
-	// client_invalid_operation. Checked HERE, before the read-only fast path below — a
-	// read-only poisoned commit (e.g. Get; disable; Commit) has no mutations, so it would
-	// otherwise skip ensureReadVersion's gate and commit successfully, diverging from
-	// libfdb_c's 2000 (codex, RFC-059). Returns without resetting (2000 is non-retryable).
+	// client_invalid_operation. Checked HERE — before the read-only fast path below (a
+	// read-only poisoned commit has no mutations, so it would otherwise skip
+	// ensureReadVersion's gate and commit successfully) AND before checkTimeout: reads check
+	// the poison before the timeout, and libfdb_c's checkDeferredError runs before any commit
+	// logic, so the poison must out-rank a stale-timeout 1031 for parity. Returns without
+	// resetting (2000 is non-retryable). codex, RFC-059.
 	if tx.rywPoisonErr != nil {
 		return tx.rywPoisonErr
+	}
+	if err := tx.checkTimeout(); err != nil {
+		return err
 	}
 
 	// Validate size limit bounds. C++: valid range is [32, 10_000_000].

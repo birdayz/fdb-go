@@ -2,8 +2,35 @@ package client
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"testing"
+	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
+
+// TestCommit_RYWPoisonBeatsTimeout pins codex's RFC-059 precedence point: a transaction
+// poisoned by SetReadYourWritesDisable-after-an-op AND past its timeout must report
+// client_invalid_operation (2000), NOT transaction_timed_out (1031). Reads check the poison
+// before the timeout, and libfdb_c's checkDeferredError runs before any commit logic, so the
+// Commit gate must out-rank checkTimeout. White-box: the poison check returns before any DB
+// interaction, so no container is needed and it is deterministic (deadline set in the past, no
+// sleep).
+func TestCommit_RYWPoisonBeatsTimeout(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.state.Store(int32(txStateActive))
+	tx.timeout = time.Millisecond
+	tx.deadline = time.Now().Add(-time.Hour) // already elapsed → checkTimeout would return 1031
+	tx.rywPoisonErr = &wire.FDBError{Code: 2000}
+
+	err := tx.Commit(context.Background())
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != 2000 {
+		t.Fatalf("poisoned + timed-out Commit: want client_invalid_operation (2000), got %v", err)
+	}
+}
 
 // TestAddGetKeyConflictRange_RYWDisabledFullSpan pins codex's RFC-058 P2-2: when RYW is
 // disabled, GetKey resolves against STORAGE only (Transaction.GetKey uses tx.getKey, not
