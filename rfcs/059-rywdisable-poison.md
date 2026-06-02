@@ -1,6 +1,6 @@
 # RFC-059: Poison the transaction when READ_YOUR_WRITES_DISABLE is set after an operation
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** RFC-010 C3 (fresh differential axes — error-code/option semantics). A divergence
 surfaced while building the RFC-058 conflict differential.
 
@@ -58,10 +58,11 @@ Faithfully model the poisoned transaction:
   (regular + snapshot), `Commit`, and `GetReadVersion` fetch a read version through here — and
   libfdb_c poisons ALL of them, so the single gate is correct (NOT a divergence-creating
   over-gate, because GRV does poison empirically). `GetEstimatedRangeSizeBytes` bypasses
-  `ensureReadVersion`, so it gets an explicit check.
-- `reset()`/`resetForRetry()` clear `rywPoisonErr` + `hadRead` (a clean retry re-applies the
-  option over an empty layer with no poison — matching C++ persistentOptions reapplication; 2000
-  is non-retryable, so a poisoned commit kills the txn).
+  `ensureReadVersion`, so it gets an explicit check. Its sibling `GetRangeSplitPoints` bypasses
+  `ensureReadVersion` too and gets the same explicit check.
+- `reset()` (OnError) and `postCommitReset()` (after commit) clear `rywPoisonErr` + `hadRead` (a
+  clean retry re-applies the option over an empty layer with no poison — matching C++
+  persistentOptions reapplication; 2000 is non-retryable, so a poisoned commit kills the txn).
 
 ## Performance
 
@@ -70,9 +71,14 @@ bool store on each read. No wire impact.
 
 ## Test plan
 
-`TestDifferential_RYWDisableAfterOp` (`pkg/fdbgo/bench/`): nine sequences, on EACH client,
-asserting go error code == cgo error code. The clean-disable case proves the fix doesn't
-over-poison (both 0); the eight post-op cases prove the poison (both 2000) across regular Get,
-GetKey, GetRange, snapshot Get, GetReadVersion, GetEstimatedRangeSizeBytes, Commit, and
-read-(via GetPipelined)-then-disable. Verified red→green: all eight post-op cases fail without
-the poison (Go returns 0 where libfdb_c returns 2000) and pass after.
+`TestDifferential_RYWDisableAfterOp` (`pkg/fdbgo/bench/`): a battery of sequences, on EACH
+client, asserting go error code == cgo error code. The clean-disable case proves the fix doesn't
+over-poison (both 0); the post-op cases prove the poison (both 2000) across regular Get, GetKey,
+GetRange, snapshot Get, **snapshot GetKey**, GetReadVersion, GetEstimatedRangeSizeBytes,
+GetRangeSplitPoints, Commit, read-only Commit, and read-(via GetPipelined)-then-disable. Verified
+red→green: every post-op case fails without the poison (Go returns 0 where libfdb_c returns 2000)
+and passes after.
+
+`TestCommit_RYWPoisonBeatsTimeout` (`pkg/fdbgo/client/`): white-box, deterministic (deadline in
+the past, no container) — a poisoned AND timed-out Commit must report 2000, not 1031, pinning the
+poison-before-timeout precedence at the Commit gate.

@@ -127,6 +127,24 @@ func TestDifferential_RYWDisableAfterOp(t *testing.T) {
 				return fdbErrorCode(e)
 			},
 		},
+		// Set → disable → SNAPSHOT GetKey (snapshot getKey goes through ensureReadVersion, so
+		// it poisons exactly like snapshot Get — pins the axis @claude flagged as structurally
+		// argued but un-probed).
+		{
+			"set_disable_snapshot_getkey",
+			func(tx gofdb.Transaction) int {
+				tx.Set(gk, []byte("v"))
+				gd(tx)
+				_, e := tx.Snapshot().GetKey(gofdb.FirstGreaterOrEqual(gk)).Get()
+				return fdbErrorCode(e)
+			},
+			func(tx cgofdb.Transaction) int {
+				tx.Set(ck, []byte("v"))
+				cd(tx)
+				_, e := tx.Snapshot().GetKey(cgofdb.FirstGreaterOrEqual(ck)).Get()
+				return fdbErrorCode(e)
+			},
+		},
 		// Set → disable → GetReadVersion (empirically poisons too).
 		{
 			"set_disable_get_read_version",
