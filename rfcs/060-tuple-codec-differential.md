@@ -71,10 +71,12 @@ not the codec):
      adjacent `±2^(8n)` for each n (size-class transitions); `MinInt64`, `MaxInt64`;
      `MaxUint64` (as `uint64` — the `decodeInt` high-bit→only-uint64 path). Negative values at
      every class (not just positive).
-   - **`*big.Int`:** >8-byte positive (`posIntEnd`) and negative (`negIntStart`); an
-     exactly-8-byte negative that routes through `decodeBigInt` (the `length=8` fallthrough);
-     `MinInt64` as a `*big.Int` (the `minInt64BigInt` round-trip); a negative magnitude whose
-     transformed bytes lead with `0x00` (exercising the zero-fill loop).
+   - **`*big.Int`:** >8-byte positive (`posIntEnd`) and negative (`negIntStart`); a
+     **large-magnitude** (125-byte) pos/neg pair exercising a length-prefix byte well beyond
+     `0x0d` and the `length ^ 0xff` negative-length encoding; an exactly-8-byte negative that
+     routes through `decodeBigInt` (the `length=8` fallthrough); `MinInt64` as a `*big.Int`
+     (the `minInt64BigInt` round-trip); a negative magnitude whose transformed bytes lead with
+     `0x00` (exercising the zero-fill loop).
    - **`float32` and `float64`, each:** `+0`, `-0` (distinct sign bit), `+Inf`, `-Inf`, a
      **fixed-bit-pattern NaN** built via `math.Float32frombits(0x7fc00001)` /
      `Float64frombits(...)` (NOT `math.NaN()`, which is non-canonical) **asserted on Pack
