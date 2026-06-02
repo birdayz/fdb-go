@@ -341,16 +341,21 @@ func TestDifferential_TuplePackHelpers(t *testing.T) {
 		check("force_realloc", make([]byte, 3))  // cap==len → grow path
 	})
 
-	// packerPool reuse / Reset correctness: pack a COMPLETE-versionstamp tuple through a pooled
-	// helper (sets the internal buffer), return it, then pack a PLAIN tuple — the second result
-	// must equal the canonical cgo Pack() with no residue (esp. a stale versionstampPos).
-	t.Run("pool_reuse_after_versionstamp", func(t *testing.T) {
+	// packerPool buffer-reset correctness: pack a non-trivial tuple through a pooled helper, let
+	// it return to the pool, then pack a different tuple through the same pool — the second
+	// result must equal the canonical cgo Pack() with no leftover bytes from the first. This
+	// pins the buf[:0] reset on the hot path (a broken reset would prepend the first pack's
+	// bytes to the second). Note: versionstampPos cannot be left stale via the pooled helpers —
+	// they call encodeTuple(versionstamps=false), which rejects an incomplete versionstamp, and
+	// a complete versionstamp never sets versionstampPos; the field is also reset to -1 on each
+	// Get. So this is a general residue check, not a versionstampPos-staleness probe.
+	t.Run("pool_reuse_buffer_reset", func(t *testing.T) {
 		t.Parallel()
 		tv := [10]byte{0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00}
 		gvs := gotuple.Versionstamp{TransactionVersion: tv, UserVersion: 7}
-		// First pack (complete versionstamp) through the pool.
+		// First pack (a complete versionstamp + string — a non-trivial buffer) through the pool.
 		_ = gotuple.Tuple{gvs, "first"}.PackWithPrefix([]byte("A"))
-		// Second pack (plain) through the same pool — must be clean.
+		// Second pack (different, plain) through the same pool — must carry no residue.
 		got := gotuple.Tuple{int64(123), "second"}.PackWithPrefix([]byte("B"))
 		want := append([]byte("B"), cgotuple.Tuple{int64(123), "second"}.Pack()...)
 		if !bytes.Equal(got, want) {

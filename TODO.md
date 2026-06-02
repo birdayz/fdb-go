@@ -501,7 +501,7 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        the metrics path; a `hadRead` signal covers the GetPipelined non-caching read). Pinned by
        `TestDifferential_RYWDisableAfterOp` + `TestCommit_RYWPoisonBeatsTimeout`. Reviewed by
        FDB-C++ dev + Torvalds + codex + @claude.
-     - [ ] **[RFC-060] tuple-codec byte-identity differential.** The tuple/key encoding is the wire
+     - [x] **[RFC-060 — MERGED #239] tuple-codec byte-identity differential.** The tuple/key encoding is the wire
        hard line but has ZERO differential coverage vs libfdb_c's codec. `pkg/fdbgo/fdb/tuple` is a
        near-verbatim port (core encode/decode byte-identical by inspection) but adds go-only
        hot-path helpers (`PackWithPrefix`/`Pack1WithPrefix`/`Pack1ConcatWithPrefix`/

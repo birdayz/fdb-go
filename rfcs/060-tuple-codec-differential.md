@@ -1,6 +1,6 @@
 # RFC-060: Differential proof of tuple-codec byte-identity vs libfdb_c
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** RFC-010 C3 (fresh differential axes). The tuple/key encoding is the wire hard
 line (CLAUDE.md: "key encoding … MUST match Java exactly. Divergence there is a bug, full
 stop"); it currently has **zero** differential coverage against libfdb_c's codec.
