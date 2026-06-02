@@ -437,7 +437,14 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   getKey-RYW core (#235), three follow-ups remain. Both 1 and 2 WILL be done (sequentially, not
   batched); 3 is the ongoing hunt.
 
-  1. **[NEXT] Lazy/windowed segment iterator for getKey-RYW.** `buildSegmentsLocked`
+  1. **[x] DONE (RFC-057).** Lazy `rywSegCursor` replaced the materializing
+     `buildSegmentsLocked`: getKey cost is now FLAT in cache size — **57 ms / 39 MB →
+     1 µs / 816 B at N=100k (55,437×)**, measured before/after (Torvalds's "no benchmark =
+     no merge" gate). Behavior-identical: a 4000-state equivalence property-test oracled
+     against the retained materializer + the RFC-056 differential + a 94k-exec fuzz burst,
+     all green. `next`/`prev` are a single merged-boundary `skip` (no view desync). The
+     original plan:
+     **Lazy/windowed segment iterator for getKey-RYW.** `buildSegmentsLocked`
      (`pkg/fdbgo/client/ryw_getkey.go`) MATERIALIZES the whole merged-segment partition of
      [allKeysBegin, maxKey) — O(writes + cacheKeys) per resolution attempt — whereas libfdb_c's
      `RYWIterator` is LAZY (a steppable zip of the write-map + snapshot-cache sub-iterators).

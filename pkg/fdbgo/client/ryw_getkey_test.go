@@ -1,8 +1,10 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"testing"
 )
@@ -245,4 +247,196 @@ func BenchmarkGetKeyRYW_CacheSize(b *testing.B) {
 			}
 		})
 	}
+}
+
+// --- RFC-057: equivalence oracle (retained materializer) + property test --------------
+
+type rywSegment struct {
+	begin []byte
+	end   []byte
+	typ   rywSegType
+}
+
+// buildSegmentsLocked is the RETAINED materializer — kept ONLY as the equivalence-test
+// ORACLE for the lazy rywSegCursor (RFC-057). It produced byte-identical resolution in
+// production; the cursor must yield the identical segment partition. (Moved out of prod
+// to the test binary so the lazy cursor is the sole production path.)
+func (c *rywCache) buildSegmentsLocked(hi []byte, includeWrites bool) []rywSegment {
+	var bounds [][]byte
+	add := func(b []byte) {
+		if bytes.Compare(b, allKeysBegin) >= 0 && bytes.Compare(b, hi) <= 0 {
+			bounds = append(bounds, b)
+		}
+	}
+	add(allKeysBegin)
+	add(hi)
+	if includeWrites {
+		c.ensureSortedLocked()
+		for _, k := range c.sortedKeys {
+			kb := []byte(k)
+			add(kb)
+			add(keyAfterBytes(kb))
+		}
+		for _, r := range c.cleared {
+			add(r.begin)
+			add(r.end)
+		}
+	}
+	for i := range c.serverCache.entries {
+		e := &c.serverCache.entries[i]
+		add(e.begin)
+		add(e.end)
+		for _, kv := range e.kvs {
+			add(kv.Key)
+			add(keyAfterBytes(kv.Key))
+		}
+	}
+	sort.Slice(bounds, func(i, j int) bool { return bytes.Compare(bounds[i], bounds[j]) < 0 })
+	uniq := bounds[:0]
+	var last []byte
+	for _, b := range bounds {
+		if len(uniq) == 0 || !bytes.Equal(b, last) {
+			uniq = append(uniq, b)
+			last = b
+		}
+	}
+	segs := make([]rywSegment, 0, len(uniq))
+	for i := 0; i+1 < len(uniq); i++ {
+		segs = append(segs, rywSegment{begin: uniq[i], end: uniq[i+1], typ: c.segTypeAtLocked(uniq[i], includeWrites)})
+	}
+	return segs
+}
+
+// walkCursor collects the full segment sequence the lazy cursor yields walking forward
+// from allKeysBegin via seek+next, then verifies prev() reverses it.
+func walkCursorForward(c *rywCache, hi []byte, includeWrites bool) []rywSegment {
+	cur := c.newSegCursor(hi, includeWrites)
+	var got []rywSegment
+	for cur.seek(allKeysBegin); cur.valid(); cur.next() {
+		got = append(got, rywSegment{begin: append([]byte(nil), cur.begin...), end: append([]byte(nil), cur.end...), typ: cur.typ})
+	}
+	return got
+}
+
+func segsEqual(t *testing.T, label string, want, got []rywSegment) {
+	t.Helper()
+	if len(want) != len(got) {
+		t.Fatalf("%s: segment COUNT differs: oracle=%d cursor=%d\noracle=%v\ncursor=%v", label, len(want), len(got), segDump(want), segDump(got))
+	}
+	for i := range want {
+		if !bytes.Equal(want[i].begin, got[i].begin) || !bytes.Equal(want[i].end, got[i].end) || want[i].typ != got[i].typ {
+			t.Fatalf("%s: segment %d differs: oracle=(%q,%q,%d) cursor=(%q,%q,%d)", label, i,
+				want[i].begin, want[i].end, want[i].typ, got[i].begin, got[i].end, got[i].typ)
+		}
+	}
+}
+
+func segDump(s []rywSegment) string {
+	out := ""
+	for _, x := range s {
+		out += fmt.Sprintf("[%q,%q):%d ", x.begin, x.end, x.typ)
+	}
+	return out
+}
+
+// TestRYWSegCursor_EquivalentToMaterializer is the RFC-057 load-bearing faithfulness
+// check: over many random (writes, cleared, cache) states the lazy cursor must yield the
+// IDENTICAL segment partition the materializer does — forward (seek+next), per-probe
+// (seek to a key → containing segment), and backward (prev reverses). Seeded with the
+// reviewer-flagged successor-collision + shared-boundary cases.
+func TestRYWSegCursor_EquivalentToMaterializer(t *testing.T) {
+	t.Parallel()
+	hi := []byte("\xff")
+	// Alphabet kept tiny + including adjacent/successor bytes so boundaries collide.
+	alpha := []string{"\x00", "a", "a\x00", "b", "c", "c\x00", "d", "m", "\xee", "\xef"}
+	pick := func(rnd *rand.Rand) []byte { return []byte(alpha[rnd.Intn(len(alpha))]) }
+
+	build := func(rnd *rand.Rand) *rywCache {
+		c := &rywCache{}
+		// random pending writes
+		for n := rnd.Intn(6); n > 0; n-- {
+			k := pick(rnd)
+			switch rnd.Intn(5) {
+			case 0:
+				c.set(k, []byte("v"))
+			case 1:
+				c.clear(k)
+			case 2:
+				c.atomic(MutAddValue, k, []byte("\x01"))
+			case 3:
+				c.atomic(MutSetVersionstampedValue, k, make([]byte, 14))
+			case 4:
+				c.atomic(MutCompareAndClear, k, []byte("v"))
+			}
+		}
+		// random committed snapshot-cache ranges with random present keys
+		for n := rnd.Intn(3); n > 0; n-- {
+			b, e := pick(rnd), pick(rnd)
+			if bytes.Compare(b, e) >= 0 {
+				continue
+			}
+			var kvs []KeyValue
+			for _, a := range alpha {
+				ak := []byte(a)
+				if bytes.Compare(ak, b) >= 0 && bytes.Compare(ak, e) < 0 && rnd.Intn(2) == 0 {
+					kvs = append(kvs, KeyValue{Key: ak, Value: []byte("x")})
+				}
+			}
+			c.serverCache.insert(b, e, kvs)
+		}
+		return c
+	}
+
+	rnd := rand.New(rand.NewSource(1))
+	for iter := 0; iter < 4000; iter++ {
+		c := build(rnd)
+		for _, includeWrites := range []bool{true, false} {
+			want := c.buildSegmentsLocked(hi, includeWrites)
+			// Forward walk equivalence.
+			got := walkCursorForward(c, hi, includeWrites)
+			segsEqual(t, fmt.Sprintf("iter=%d iw=%v forward", iter, includeWrites), want, got)
+			// Per-probe seek: cursor.seek(probe) must equal the materialized segment containing probe.
+			for _, a := range alpha {
+				probe := []byte(a)
+				cur := c.newSegCursor(hi, includeWrites)
+				cur.seek(probe)
+				idx := segIdxOracle(want, probe)
+				if idx < 0 {
+					if !cur.offEnd() {
+						t.Fatalf("iter=%d iw=%v seek(%q): cursor valid but oracle off-end", iter, includeWrites, probe)
+					}
+					continue
+				}
+				if !cur.valid() || !bytes.Equal(cur.begin, want[idx].begin) || !bytes.Equal(cur.end, want[idx].end) || cur.typ != want[idx].typ {
+					t.Fatalf("iter=%d iw=%v seek(%q): cursor=(%q,%q,%d,valid=%v) oracle=(%q,%q,%d)", iter, includeWrites, probe,
+						cur.begin, cur.end, cur.typ, cur.valid(), want[idx].begin, want[idx].end, want[idx].typ)
+				}
+			}
+			// Backward walk: from the last segment, prev() must reverse the sequence.
+			if len(want) > 0 {
+				cur := c.newSegCursor(hi, includeWrites)
+				cur.seek(want[len(want)-1].begin)
+				var rev []rywSegment
+				for cur.valid() {
+					rev = append(rev, rywSegment{begin: append([]byte(nil), cur.begin...), end: append([]byte(nil), cur.end...), typ: cur.typ})
+					cur.prev()
+				}
+				// reverse rev and compare to want
+				for l, r := 0, len(rev)-1; l < r; l, r = l+1, r-1 {
+					rev[l], rev[r] = rev[r], rev[l]
+				}
+				segsEqual(t, fmt.Sprintf("iter=%d iw=%v backward", iter, includeWrites), want, rev)
+			}
+		}
+	}
+}
+
+// segIdxOracle returns the index of the materialized segment containing key, or -1 if key >= hi.
+func segIdxOracle(segs []rywSegment, key []byte) int {
+	for i := range segs {
+		if bytes.Compare(segs[i].begin, key) <= 0 && bytes.Compare(key, segs[i].end) < 0 {
+			return i
+		}
+	}
+	return -1
 }

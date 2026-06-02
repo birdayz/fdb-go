@@ -47,75 +47,8 @@ const (
 	segKV
 )
 
-type rywSegment struct {
-	begin []byte
-	end   []byte // exclusive
-	typ   rywSegType
-}
-
 // allKeysBegin is the empty key — the absolute start of the keyspace (C++ allKeys.begin).
 var allKeysBegin = []byte{}
-
-// buildSegmentsLocked materializes the merged segment partition of [allKeysBegin, hi).
-// Caller holds c.mu. includeWrites=false models a snapshot read (C++
-// SnapshotCache::iterator only — the write map is bypassed).
-//
-// The keyspace is tiled contiguously: boundaries are every write-key (and its
-// successor), cleared-range bound, snapshot-cache entry bound, and cache key (and its
-// successor); the gaps between them inherit their type from segTypeAtLocked. This is
-// O(writes + cacheKeys) per resolution attempt — fine for the small per-txn write set
-// and the bounded ranges a getKey actually reads; a windowed/lazy iterator (matching
-// C++'s laziness) is a perf follow-up if profiling shows it hot.
-func (c *rywCache) buildSegmentsLocked(hi []byte, includeWrites bool) []rywSegment {
-	var bounds [][]byte
-	add := func(b []byte) {
-		if bytes.Compare(b, allKeysBegin) >= 0 && bytes.Compare(b, hi) <= 0 {
-			bounds = append(bounds, b)
-		}
-	}
-	add(allKeysBegin)
-	add(hi)
-	if includeWrites {
-		c.ensureSortedLocked()
-		for _, k := range c.sortedKeys {
-			kb := []byte(k)
-			add(kb)
-			add(keyAfterBytes(kb))
-		}
-		for _, r := range c.cleared {
-			add(r.begin)
-			add(r.end)
-		}
-	}
-	for i := range c.serverCache.entries {
-		e := &c.serverCache.entries[i]
-		add(e.begin)
-		add(e.end)
-		for _, kv := range e.kvs {
-			add(kv.Key)
-			add(keyAfterBytes(kv.Key))
-		}
-	}
-	sort.Slice(bounds, func(i, j int) bool { return bytes.Compare(bounds[i], bounds[j]) < 0 })
-	// Dedupe in place.
-	uniq := bounds[:0]
-	var last []byte
-	for _, b := range bounds {
-		if len(uniq) == 0 || !bytes.Equal(b, last) {
-			uniq = append(uniq, b)
-			last = b
-		}
-	}
-	segs := make([]rywSegment, 0, len(uniq))
-	for i := 0; i+1 < len(uniq); i++ {
-		segs = append(segs, rywSegment{
-			begin: uniq[i],
-			end:   uniq[i+1],
-			typ:   c.segTypeAtLocked(uniq[i], includeWrites),
-		})
-	}
-	return segs
-}
 
 // segTypeAtLocked computes the merged segment type for the segment beginning at p.
 // Caller holds c.mu.
@@ -154,12 +87,142 @@ func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 	return segEmpty
 }
 
-// segIdxContaining returns the index of the segment [begin, end) containing key
-// (begin <= key < end), or len(segs) if key >= the last segment's end.
-func segIdxContaining(segs []rywSegment, key []byte) int {
-	return sort.Search(len(segs), func(i int) bool {
-		return bytes.Compare(segs[i].end, key) > 0
-	})
+// --- Lazy merged-segment cursor (RFC-057) --------------------------------------------
+//
+// rywSegCursor walks the same merged-segment partition as the (now test-only)
+// buildSegmentsLocked materializer, but LAZILY: it computes each segment's [begin, end)
+// on demand from the underlying sorted structures (sortedKeys, cleared, snapshotCache)
+// via bounded boundary searches, so getKey costs O(walk distance · log N) instead of
+// O(N) materialization per call. It mirrors C++ RYWIterator: next()/prev() are a single
+// MERGED-boundary skip (not independent per-view bumps), so the two views can't desync.
+// Behavior is identical to the materializer (pinned by the equivalence property test).
+//
+// state: 0 = valid (on a segment), +1 = off the end (>= hi), -1 = off the begin (< allKeysBegin).
+type rywSegCursor struct {
+	c             *rywCache
+	includeWrites bool
+	hi            []byte
+	begin, end    []byte
+	typ           rywSegType
+	state         int8
+}
+
+func (c *rywCache) newSegCursor(hi []byte, includeWrites bool) *rywSegCursor {
+	return &rywSegCursor{c: c, includeWrites: includeWrites, hi: hi}
+}
+
+func (cur *rywSegCursor) valid() bool    { return cur.state == 0 }
+func (cur *rywSegCursor) offEnd() bool   { return cur.state == 1 }
+func (cur *rywSegCursor) offBegin() bool { return cur.state == -1 }
+
+// seek positions the cursor on the segment containing key (begin <= key < end). Caller
+// holds c.mu.
+func (cur *rywSegCursor) seek(key []byte) {
+	if bytes.Compare(key, cur.hi) >= 0 {
+		cur.state = 1
+		return
+	}
+	if bytes.Compare(key, allKeysBegin) < 0 {
+		cur.state = -1
+		return
+	}
+	cur.begin, cur.end = cur.c.mergedBoundsLocked(key, cur.hi, cur.includeWrites)
+	cur.typ = cur.c.segTypeAtLocked(cur.begin, cur.includeWrites)
+	cur.state = 0
+}
+
+// next advances to the segment beginning at the current endKey (C++ operator++): a
+// single skip to the merged boundary, so the view(s) flush with endKey advance and the
+// other stays.
+func (cur *rywSegCursor) next() { cur.seek(cur.end) }
+
+// prev retreats to the segment ending at the current beginKey (C++ operator--): skip to
+// the merged predecessor boundary (largest boundary < begin across both views).
+func (cur *rywSegCursor) prev() {
+	if bytes.Equal(cur.begin, allKeysBegin) {
+		cur.state = -1
+		return
+	}
+	cur.seek(cur.c.prevBoundaryLocked(cur.begin, cur.hi, cur.includeWrites))
+}
+
+// boundCandidatesLocked gathers merged-boundary candidates in a bounded neighborhood of
+// p from every source (write keys + their successors, cleared bounds, cache-entry
+// bounds, cache keys + their successors), plus allKeysBegin and hi. The ±window margin
+// guarantees it contains the immediate floor (<=p), ceil (>p), and the boundary just
+// below floor — enough for mergedBounds + prevBoundary. Caller holds c.mu.
+func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool) [][]byte {
+	var cands [][]byte
+	add := func(b []byte) {
+		if bytes.Compare(b, allKeysBegin) >= 0 && bytes.Compare(b, hi) <= 0 {
+			cands = append(cands, b)
+		}
+	}
+	addKey := func(k []byte) { add(k); add(keyAfterBytes(k)) }
+	add(allKeysBegin)
+	add(hi)
+	if includeWrites {
+		c.ensureSortedLocked()
+		i := sort.SearchStrings(c.sortedKeys, string(p)) // first key >= p
+		for j := i - 2; j <= i+1; j++ {
+			if j >= 0 && j < len(c.sortedKeys) {
+				addKey([]byte(c.sortedKeys[j]))
+			}
+		}
+		n := len(c.cleared)
+		lo := sort.Search(n, func(i int) bool { return bytes.Compare(c.cleared[i].end, p) > 0 })
+		for j := lo - 1; j <= lo+1; j++ {
+			if j >= 0 && j < n {
+				add(c.cleared[j].begin)
+				add(c.cleared[j].end)
+			}
+		}
+	}
+	es := c.serverCache.entries
+	n := len(es)
+	lo := sort.Search(n, func(i int) bool { return bytes.Compare(es[i].end, p) > 0 })
+	for j := lo - 1; j <= lo+1; j++ {
+		if j < 0 || j >= n {
+			continue
+		}
+		add(es[j].begin)
+		add(es[j].end)
+		kvs := es[j].kvs
+		ki := sort.Search(len(kvs), func(i int) bool { return bytes.Compare(kvs[i].Key, p) >= 0 })
+		for m := ki - 2; m <= ki+1; m++ {
+			if m >= 0 && m < len(kvs) {
+				addKey(kvs[m].Key)
+			}
+		}
+	}
+	return cands
+}
+
+// mergedBoundsLocked returns the merged segment [floor, ceil) containing p:
+// floor = largest boundary <= p, ceil = smallest boundary > p. Caller holds c.mu.
+func (c *rywCache) mergedBoundsLocked(p, hi []byte, includeWrites bool) (floor, ceil []byte) {
+	floor, ceil = allKeysBegin, hi
+	for _, b := range c.boundCandidatesLocked(p, hi, includeWrites) {
+		if bytes.Compare(b, p) <= 0 {
+			if bytes.Compare(b, floor) > 0 {
+				floor = b
+			}
+		} else if bytes.Compare(b, ceil) < 0 {
+			ceil = b
+		}
+	}
+	return floor, ceil
+}
+
+// prevBoundaryLocked returns the largest merged boundary strictly < x. Caller holds c.mu.
+func (c *rywCache) prevBoundaryLocked(x, hi []byte, includeWrites bool) []byte {
+	best := allKeysBegin
+	for _, b := range c.boundCandidatesLocked(x, hi, includeWrites) {
+		if bytes.Compare(b, x) < 0 && bytes.Compare(b, best) > 0 {
+			best = b
+		}
+	}
+	return best
 }
 
 // keySelResult is the outcome of resolveKeySelectorFromCache.
@@ -179,55 +242,55 @@ type keySelResult struct {
 // ends of fully-known data, or stops at an unknown segment (leaving key as an
 // equivalent FGE selector adjoining it). Versionstamp keys are segEmpty (absent), so
 // there is no "unreadable stop" — the only halt is an unknown segment.
-func resolveKeySelectorFromCache(key []byte, orEqual bool, offset int32, segs []rywSegment, maxKey []byte) keySelResult {
+func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, offset int32, maxKey []byte) keySelResult {
 	// removeOrEqual: if orEqual, key = keyAfter(key); orEqual = false.
 	if orEqual {
 		key = keyAfterBytes(key)
 		orEqual = false
 	}
 
-	i := segIdxContaining(segs, key)
-	if i >= len(segs) {
+	cur.seek(key)
+	if cur.offEnd() {
 		// key is at/after maxKey — off the end.
 		return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
 	}
 
 	// if offset <= 0 && it.beginKey() == key && key != allKeysBegin: --it
-	if offset <= 0 && bytes.Equal(segs[i].begin, key) && !bytes.Equal(key, allKeysBegin) && i > 0 {
-		i--
+	if offset <= 0 && bytes.Equal(cur.begin, key) && !bytes.Equal(key, allKeysBegin) {
+		cur.prev()
 	}
 
 	keykey := key
 
 	// Forward walk toward FGE form.
-	for offset > 1 && segs[i].typ != segUnknown && bytes.Compare(segs[i].end, maxKey) < 0 {
-		if segs[i].typ == segKV {
+	for offset > 1 && cur.valid() && cur.typ != segUnknown && bytes.Compare(cur.end, maxKey) < 0 {
+		if cur.typ == segKV {
 			offset--
 		}
-		i++
-		if i >= len(segs) {
+		cur.next()
+		if cur.offEnd() {
 			break
 		}
-		keykey = segs[i].begin
+		keykey = cur.begin
 	}
 	// Backward walk.
-	for offset < 1 && i >= 0 && segs[i].typ != segUnknown && !bytes.Equal(segs[i].begin, allKeysBegin) {
-		if segs[i].typ == segKV {
+	for offset < 1 && cur.valid() && cur.typ != segUnknown && !bytes.Equal(cur.begin, allKeysBegin) {
+		if cur.typ == segKV {
 			offset++
 			if offset == 1 {
-				keykey = segs[i].begin
+				keykey = cur.begin
 				break
 			}
 		}
-		i--
-		if i < 0 {
+		cur.prev()
+		if cur.offBegin() {
 			break
 		}
-		keykey = segs[i].end
+		keykey = cur.end
 	}
 
 	// Terminal clamps — only valid on fully-known data (not an unknown stop).
-	known := i >= 0 && i < len(segs) && segs[i].typ != segUnknown
+	known := cur.valid() && cur.typ != segUnknown
 	if known && offset < 1 {
 		return keySelResult{key: allKeysBegin, offset: 1, readToBegin: true}
 	}
@@ -238,25 +301,25 @@ func resolveKeySelectorFromCache(key []byte, orEqual bool, offset int32, segs []
 	// Skip known empty ranges forward to the first present key. (The backward walk above
 	// already lands a backward selector on its KV, so a forward-only skip suffices for
 	// non-atomic pending — the scoped axis; see the DEFERRED note for pending atomics.)
-	for i >= 0 && i < len(segs) && segs[i].typ == segEmpty && bytes.Compare(segs[i].end, maxKey) < 0 {
-		i++
-		if i >= len(segs) {
+	for cur.valid() && cur.typ == segEmpty && bytes.Compare(cur.end, maxKey) < 0 {
+		cur.next()
+		if cur.offEnd() {
 			break
 		}
-		keykey = segs[i].begin
+		keykey = cur.begin
 	}
 
-	if i < 0 || i >= len(segs) {
+	if !cur.valid() {
 		// Walked off the end of known data → read through end.
 		return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
 	}
-	switch segs[i].typ {
+	switch cur.typ {
 	case segUnknown:
 		// Read the FULL unknown segment [begin, end) — the FGE-form key may sit at the
 		// segment's END (backward resolution), so reading [key, end) could be empty.
 		return keySelResult{
 			key: keykey, offset: offset, stoppedUnknown: true,
-			unknownBegin: segs[i].begin, unknownEnd: segs[i].end,
+			unknownBegin: cur.begin, unknownEnd: cur.end,
 		}
 	case segKV:
 		// Resolved on a present key.
@@ -298,8 +361,8 @@ func (c *rywCache) getKeyRYW(
 	const fillBatch = 256
 	for iter := 0; iter < 1<<20; iter++ {
 		c.mu.Lock()
-		segs := c.buildSegmentsLocked(maxKey, includeWrites)
-		res := resolveKeySelectorFromCache(key, orEqual, offset, segs, maxKey)
+		cur := c.newSegCursor(maxKey, includeWrites)
+		res := resolveKeySelectorFromCache(cur, key, orEqual, offset, maxKey)
 		c.mu.Unlock()
 
 		orEqual = false // removeOrEqual consumed it; re-resolve continues in FGE form.

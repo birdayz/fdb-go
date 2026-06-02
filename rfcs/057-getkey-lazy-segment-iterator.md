@@ -1,6 +1,6 @@
 # RFC-057: Lazy merged-segment iterator for getKey-RYW resolution
 
-**Status:** Reviewed (FDB-C-dev ACK w/ requirements incorporated; Torvalds NAK→re-review). Step 0 benchmark DONE → proceed.
+**Status:** Implemented (FDB-C-dev ACK, Torvalds ACK). Lazy `rywSegCursor` shipped in `pkg/fdbgo/client/ryw_getkey.go`; 55,437× faster at N=100k (57ms→1µs), behavior-identical (equivalence property-test + RFC-056 differential).
 **Item:** RFC-056 continuation (1). Follows the merged getKey-RYW core (#235, RFC-056).
 
 ## Problem
@@ -100,10 +100,20 @@ the cache size.
 
 ## Performance
 
-The win is exactly the avoided O(cacheKeys) materialization (Step 0: 57 ms / 39 MB at
-N=100k → expected flat in N after the fix). No regression for tiny caches (the
-materialization was already cheap there); large wins for big-cache + getKey-loop
-workloads. (Item-2's 1007-drift is NOT a justification — see Problem.)
+The win is exactly the avoided O(cacheKeys) materialization. **Measured after the fix —
+cost is now FLAT in N (the prediction confirmed):**
+
+| N | before (materializer) | after (lazy cursor) | speedup |
+|---|---|---|---|
+| 1 | 1,154 ns / 11 allocs | 541 ns / 6 allocs | — |
+| 1,000 | 441,093 ns | 1,028 ns | 429× |
+| 10,000 | 5,535,221 ns | 1,048 ns | 5,281× |
+| 100,000 | 56,989,918 ns / 39 MB / 100,037 allocs | 1,028 ns / 816 B / 10 allocs | **55,437×** |
+
+A getKey on a 100k-entry cache: **57 ms / 39 MB → 1 µs / 816 B**. Constant (~1 µs, 10
+allocs) regardless of cache size, and tiny-cache cost did not regress (it improved). No
+behavior change (equivalence property-test + the RFC-056 differential, both green).
+(Item-2's 1007-drift is NOT a justification — see Problem; this incidentally helps it.)
 
 ## Plan (ordered — STEP 0 is a go/no-go gate)
 
