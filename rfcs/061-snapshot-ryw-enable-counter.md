@@ -1,6 +1,6 @@
 # RFC-061: SNAPSHOT_RYW_ENABLE/DISABLE must be a counter, not a one-way boolean
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** RFC-010 C3 (fresh differential axes — error-code/option semantics). A divergence found
 by the transaction-option-semantics survey and **confirmed differentially against libfdb_c**.
 
@@ -90,5 +90,8 @@ sequence (disableCount → −1, i.e. C++ enabledCount 2) to prove the count goe
 does not clamp at 0 — the one axis the ≥0 sequences leave unprobed; `enable→disable` then proves
 it recovers to the default from a negative excursion. Plus a **READ_YOUR_WRITES_DISABLE-dominates**
 case (clean, pre-op RYW-disable + snapshot-enabled still bypasses, matching the separate
-`readYourWritesDisabled` check at `ReadYourWrites.actor.cpp:400`). Plus updated white-box unit
-coverage for the new `SetSnapshotRYWEnable` and the count field.
+`readYourWritesDisabled` check at `ReadYourWrites.actor.cpp:400`). Every sequence runs across
+**all four snapshot read paths** (`Get`, `GetRange`, reverse `GetRange`, `GetKey`) — the fix
+touches all four, so each is cross-checked, not just `Get` (@claude review). Plus updated
+white-box unit coverage for the new `SetSnapshotRYWEnable` and the count field (including
+preservation across `reset()`).

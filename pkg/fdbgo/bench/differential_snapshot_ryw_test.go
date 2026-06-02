@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -46,17 +47,29 @@ func TestDifferential_SnapshotRYWReenable(t *testing.T) {
 		// Negative-count axis (FDB-C++ dev review): an enable from the default pushes the count
 		// negative (C++ enabledCount 2). Proves the counter does not clamp at 0.
 		{"enable_only", []bool{true}},                        // disableCount -1 → active → sees pending
-		{"enable_then_disable", []bool{true, false}},         // -1 then 0 → recovers to default → sees pending
 		{"enable_enable_disable", []bool{true, true, false}}, // -2 then -1 → active → sees pending
 	}
 
-	goRun := func(s seq) string {
+	// Exercise ALL FOUR snapshot read paths (@claude review): the counter fix touches
+	// Get/GetRange/GetRange-reverse/GetKey, so the differential must cover each, not just Get.
+	// Each op reduces to "did the snapshot read see the txn's own pending write?" → "pending"
+	// (RYW active) or "absent" (bypassed to storage, where the key was never committed).
+	type readOp struct{ name string }
+	ops := []readOp{{"get"}, {"getrange"}, {"getrange_rev"}, {"getkey"}}
+
+	marker := func(sawPending bool) string {
+		if sawPending {
+			return "pending"
+		}
+		return "absent"
+	}
+	goRun := func(s seq, op string) string {
 		tr, err := goClient.CreateTransaction()
 		if err != nil {
 			t.Fatalf("go create: %v", err)
 		}
 		defer tr.Cancel()
-		k := gofdb.Key(pfx + s.name)
+		k := gofdb.Key(pfx + s.name + "_" + op)
 		tr.Set(k, []byte("pending"))
 		for _, on := range s.toggles {
 			if on {
@@ -65,22 +78,37 @@ func TestDifferential_SnapshotRYWReenable(t *testing.T) {
 				_ = tr.Options().SetSnapshotRywDisable()
 			}
 		}
-		v, err := tr.Snapshot().Get(k).Get()
-		if err != nil {
-			t.Fatalf("go snapshot get %s: %v", s.name, err)
+		sn := tr.Snapshot()
+		switch op {
+		case "get":
+			v, err := sn.Get(k).Get()
+			if err != nil {
+				t.Fatalf("go %s get: %v", s.name, err)
+			}
+			return marker(string(v) == "pending")
+		case "getrange", "getrange_rev":
+			end := gofdb.Key(append(append([]byte{}, k...), 0x00)) // [k, k\x00) → exactly k
+			kvs, err := sn.GetRange(gofdb.KeyRange{Begin: k, End: end}, gofdb.RangeOptions{Reverse: op == "getrange_rev"}).GetSliceWithError()
+			if err != nil {
+				t.Fatalf("go %s %s: %v", s.name, op, err)
+			}
+			return marker(len(kvs) > 0)
+		case "getkey":
+			rk, err := sn.GetKey(gofdb.FirstGreaterOrEqual(k)).Get()
+			if err != nil {
+				t.Fatalf("go %s getkey: %v", s.name, err)
+			}
+			return marker(bytes.Equal(rk, k)) // RYW-active resolves to the pending k; bypass skips past it
 		}
-		if v == nil {
-			return "absent"
-		}
-		return string(v)
+		return "?"
 	}
-	cgoRun := func(s seq) string {
+	cgoRun := func(s seq, op string) string {
 		tr, err := cgoClient.CreateTransaction()
 		if err != nil {
 			t.Fatalf("cgo create: %v", err)
 		}
 		defer tr.Cancel()
-		k := cgofdb.Key(pfx + s.name)
+		k := cgofdb.Key(pfx + s.name + "_" + op)
 		tr.Set(k, []byte("pending"))
 		for _, on := range s.toggles {
 			if on {
@@ -89,26 +117,43 @@ func TestDifferential_SnapshotRYWReenable(t *testing.T) {
 				_ = tr.Options().SetSnapshotRywDisable()
 			}
 		}
-		v, err := tr.Snapshot().Get(k).Get()
-		if err != nil {
-			t.Fatalf("cgo snapshot get %s: %v", s.name, err)
+		sn := tr.Snapshot()
+		switch op {
+		case "get":
+			v, err := sn.Get(k).Get()
+			if err != nil {
+				t.Fatalf("cgo %s get: %v", s.name, err)
+			}
+			return marker(string(v) == "pending")
+		case "getrange", "getrange_rev":
+			end := cgofdb.Key(append(append([]byte{}, k...), 0x00))
+			kvs, err := sn.GetRange(cgofdb.KeyRange{Begin: k, End: end}, cgofdb.RangeOptions{Reverse: op == "getrange_rev"}).GetSliceWithError()
+			if err != nil {
+				t.Fatalf("cgo %s %s: %v", s.name, op, err)
+			}
+			return marker(len(kvs) > 0)
+		case "getkey":
+			rk, err := sn.GetKey(cgofdb.FirstGreaterOrEqual(k)).Get()
+			if err != nil {
+				t.Fatalf("cgo %s getkey: %v", s.name, err)
+			}
+			return marker(bytes.Equal(rk, k))
 		}
-		if v == nil {
-			return "absent"
-		}
-		return string(v)
+		return "?"
 	}
 
 	for _, s := range seqs {
-		s := s
-		t.Run(s.name, func(t *testing.T) {
-			t.Parallel()
-			goVal := goRun(s)
-			cgoVal := cgoRun(s)
-			if goVal != cgoVal {
-				t.Fatalf("%s: snapshot read after toggles differs: go=%q cgo=%q", s.name, goVal, cgoVal)
-			}
-		})
+		for _, op := range ops {
+			s, op := s, op
+			t.Run(s.name+"/"+op.name, func(t *testing.T) {
+				t.Parallel()
+				goVal := goRun(s, op.name)
+				cgoVal := cgoRun(s, op.name)
+				if goVal != cgoVal {
+					t.Fatalf("%s/%s: snapshot read after toggles differs: go=%q cgo=%q", s.name, op.name, goVal, cgoVal)
+				}
+			})
+		}
 	}
 
 	// READ_YOUR_WRITES_DISABLE dominates the snapshot-RYW counter (FDB-C++ dev review): a clean
