@@ -318,6 +318,10 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 }
 
 // GetKey resolves a key selector without adding a read conflict range.
+// Snapshot reads go through the snapshot cache, and — by default — SEE the txn's own
+// pending writes (matching Snapshot.Get/GetRange and libfdb_c, where snapshot RYW is
+// enabled unless SetSnapshotRYWDisable). With snapshotRYWDisabled the write map is
+// bypassed (snapshot cache only).
 func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
@@ -325,7 +329,7 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	return s.tx.getKey(ctx, selectorKey, orEqual, offset)
+	return s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.snapshotRYWDisabled, s.tx.getRange)
 }
 
 // GetRange reads a range without adding a read conflict range.
@@ -569,17 +573,51 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if bytes.Compare(selectorKey, tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	if !isSpecialKey(selectorKey) {
-		tx.addReadConflictForKey(selectorKey)
+	// Resolve the selector. When RYW is enabled, resolve against the MERGED view
+	// (pending writes + snapshot cache) — matching C++ resolveKeySelectorFromCache
+	// (RFC-056). When RYW is disabled, the whole RYW layer is bypassed → storage only.
+	var resolved []byte
+	var err error
+	if tx.rywDisabled {
+		resolved, err = tx.getKey(ctx, selectorKey, orEqual, offset)
+	} else {
+		resolved, err = tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, tx.maxReadKey(), true, tx.getRange)
 	}
-	// KNOWN DIVERGENCE (RFC-055, deferred to RFC-056): this resolves the selector
-	// against STORAGE only and does NOT merge the transaction's own pending writes,
-	// so a key selector does not "see" a pending Set/Clear/ClearRange — unlike C++
-	// RYW::getKey (resolveKeySelectorFromCache). A faithful fix requires porting that
-	// algorithm (removeOrEqual + offset walk over the merged write-map with
-	// readToBegin/readThroughEnd) — a shortcut via merged GetRange does not capture
-	// FDB's offset/orEqual semantics. Snapshot.GetKey is correct on this path.
-	return tx.getKey(ctx, selectorKey, orEqual, offset)
+	if err != nil {
+		return nil, err
+	}
+	// Read-conflict range: getKey conflicts over the RANGE between the selector base
+	// and the resolved key (C++ addConflictRange(GetKeyReq), ReadYourWrites.actor.cpp:230),
+	// NOT a single key — a concurrent write anywhere in that span must conflict.
+	if !isSpecialKey(selectorKey) {
+		tx.addGetKeyConflictRange(selectorKey, orEqual, offset, resolved)
+	}
+	return resolved, nil
+}
+
+// addGetKeyConflictRange adds the read-conflict range for a getKey, spanning the
+// selector base ↔ resolved key (orEqual-adjusted, oriented by offset sign). Faithful
+// port of C++ addConflictRange(GetKeyReq) (ReadYourWrites.actor.cpp:230-243).
+func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offset int32, resolved []byte) {
+	var begin, end []byte
+	if offset <= 0 {
+		begin = resolved
+		if orEqual {
+			end = keyAfterBytes(selKey)
+		} else {
+			end = selKey
+		}
+	} else {
+		if orEqual {
+			begin = keyAfterBytes(selKey)
+		} else {
+			begin = selKey
+		}
+		end = keyAfterBytes(resolved)
+	}
+	if bytes.Compare(begin, end) < 0 {
+		tx.addReadConflict(begin, end)
+	}
 }
 
 // maxReadKey returns the maximum readable key for this transaction.

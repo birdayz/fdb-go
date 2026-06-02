@@ -5,11 +5,13 @@ go_test(
     srcs = [
         "bench_test.go",
         "differential_fuzz_test.go",
+        "differential_getkey_ryw_test.go",
         "differential_read_test.go",
         "differential_ryw_test.go",
         "differential_test.go",
         "interop_test.go",
     ],
+    data = glob(["testdata/**"]),
     deps = [
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",

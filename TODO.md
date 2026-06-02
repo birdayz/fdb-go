@@ -383,15 +383,27 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
 
 - [ ] **C2-followup. RYW key-selector + read-version correctness audit (RFC-056).** Remaining
   RYW read-resolution divergences from libfdb_c surfaced by the RFC-055 differential:
-  (1) `Transaction.GetKey` resolves selectors against storage ONLY and does not merge pending
-  writes — needs a faithful port of C++ `resolveKeySelectorFromCache` (removeOrEqual + offset
-  walk over the merged write-map via a RYWIterator segment model; a merged-GetRange shortcut
-  was tried and verified-WRONG on `{orEqual, offset>1}`); (2) a possible go-vs-cgo read-version
+  (2) a possible go-vs-cgo read-version
   staleness asymmetry (one differential run showed go=`transaction_too_old(1007)` while cgo
   succeeded on the SAME pinned read version near the 5s MVCC edge — reproduce + compare go vs
   cgo SetReadVersion/window handling; may be a real divergence or a test-pin robustness issue).
-  Land the held `FuzzRYWRead` (Get/GetRange/GetKey + atomics) to drive these. See rfcs/055
+  This artifact RECURS in `FuzzDifferential_GetKeyRYW` under active `-test.fuzz` mutation (heavy
+  concurrent load on the shared container); failing inputs are pure-`Set` shapes that pass 20–30×
+  on deterministic replay, confirming it is environmental, not a resolution bug. See rfcs/055
   "Findings & scope".
+  - [x] **(1) `Transaction.GetKey` ignores pending writes** — FIXED (RFC-056): faithful port of
+    C++ `resolveKeySelectorFromCache` over a merged segment view (`pkg/fdbgo/client/ryw_getkey.go`:
+    `rywSegmentIterator`/`buildSegmentsLocked` + `getKeyRYW`'s unknown-range server-read-remerge
+    loop), wired into `Transaction.GetKey` (+ the base↔resolved RANGE read-conflict, fixing the
+    old single-key conflict) and `Snapshot.GetKey` (writes visible by default via
+    `includeWrites=!snapshotRYWDisabled`). A merged-GetRange shortcut was verified-WRONG on
+    `{orEqual, offset>1}` — not used. Pinned by `ryw_getkey_test.go` + the
+    `TestDifferential_GetKeyRYW` differential (pending Set/Clear/ClearRange vs libfdb_c) + corpus
+    seeds. **Deferred sub-edge:** a PENDING atomic that resolves to no value (CompareAndClear, or
+    an atomic on a locally-cleared range) is modeled as absent; libfdb_c keeps it as a "phantom"
+    is_kv slot COUNTED in the offset walk. Matching that needs the rywCache to preserve every
+    atomic-touched key as a slot (conflicts with its eager value-resolution) — the getKey
+    differential is scoped to non-atomic pending writes until then.
   - [x] **RYW applyAtomic on present-empty values** — FIXED: the chain conflated `nil` (absent)
     with present-empty, so a V2 op after `Xor(k,"")` took the absent→operand path (`Min(k,"0")`
     → 0x30 vs libfdb_c 0x00). The get/merge chains now keep present-empty non-nil (nil reserved

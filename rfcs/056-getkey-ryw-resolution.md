@@ -1,6 +1,9 @@
 # RFC-056: GetKey read-your-writes resolution (faithful resolveKeySelectorFromCache port)
 
-**Status:** Reviewed (FDB-C-dev ACK, Torvalds ACK) — ready to implement
+**Status:** Implemented (FDB-C-dev ACK, Torvalds ACK, codex ACK on the RFC). Core
+getKey-RYW resolution shipped in `pkg/fdbgo/client/ryw_getkey.go`; the differential is
+scoped to non-atomic pending writes, with pending-atomic offset-slot counting deferred
+(see Design §6 / TODO RFC-056).
 **Item:** RFC-010 C2-followup (RFC-056 audit), sub-item (1). Extends RFC-055.
 
 ## Problem
