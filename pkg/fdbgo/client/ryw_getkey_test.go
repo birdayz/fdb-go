@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"testing"
 )
@@ -208,5 +209,40 @@ func TestGetKeyRYW_SnapshotBypassesWrites(t *testing.T) {
 	}
 	if string(got) != "c" {
 		t.Fatalf("snapshot fgt(a) ignoring pending Set(b): got %q, want c", got)
+	}
+}
+
+// BenchmarkGetKeyRYW_CacheSize is RFC-057 Step 0 — the go/no-go gate for the lazy
+// iterator. It measures whether getKeyRYW's per-call cost grows with the snapshot-cache
+// size (the predicted O(cacheKeys) materialization in buildSegmentsLocked). A fully
+// populated cache makes resolution cache-only (no server read), so this isolates the
+// segment-build cost. If ns/op grows materially with N, the lazy iterator is warranted;
+// if flat/negligible, the materializer is adequate and the refactor is dropped.
+func BenchmarkGetKeyRYW_CacheSize(b *testing.B) {
+	maxKey := []byte("\xff")
+	noServer := func(_ context.Context, _, _ []byte, _ int, _ bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+	for _, n := range []int{1, 100, 1000, 10000, 100000} {
+		b.Run(fmt.Sprintf("N=%d", n), func(b *testing.B) {
+			c := &rywCache{}
+			kvs := make([]KeyValue, n)
+			for i := 0; i < n; i++ {
+				kvs[i] = KeyValue{Key: []byte(fmt.Sprintf("k%08d", i)), Value: []byte("v")}
+			}
+			// One fully-known cache range covering all n keys → resolution is cache-only.
+			c.serverCache.insert([]byte("k"), []byte("k\xff"), kvs)
+			// Probe near the middle so the walk itself is short (offset 1) — what varies
+			// is only the per-call segment-build cost vs N.
+			mid := []byte(fmt.Sprintf("k%08d", n/2))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, err := c.getKeyRYW(context.Background(), mid, false, 1, maxKey, true, noServer)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
