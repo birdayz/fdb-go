@@ -1252,3 +1252,30 @@ func TestRYWGetRange_UnlimitedReverse(t *testing.T) {
 		t.Errorf("expected [C, A], got [%s, %s]", result[0].Key, result[1].Key)
 	}
 }
+
+// TestRYWGetRange_V2AtomicOnPresentEmpty pins the RFC-056a fix: an atomic that
+// makes a key present-empty (Xor(k,"") → "") followed by a V2 op (MinV2) must treat
+// the base as PRESENT (do the min) — not absent (return the operand). The merge
+// chain keeps present-empty results non-nil (nil reserved for absent), mirroring
+// C++ Optional.present() (Atomic.h doMinV2/doAndV2). Pre-fix the chain returned nil
+// after the Xor, so MinV2 took the absent→operand path (0x30 instead of 0x00).
+func TestRYWGetRange_V2AtomicOnPresentEmpty(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	c.atomic(MutXor, []byte("k"), []byte(""))    // k → present with empty value
+	c.atomic(MutMinV2, []byte("k"), []byte("0")) // 0x30; min("","0")=0x00, NOT operand 0x30
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil // k absent in storage
+	}
+	result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result (k present-empty after MinV2), got %d: %v", len(result), result)
+	}
+	if !bytes.Equal(result[0].Value, []byte{0x00}) {
+		t.Errorf("MinV2 on present-empty key: got %x, want 0x00 (little-endian min of \"\" and \"0\"); 0x30 means the absent→operand bug", result[0].Value)
+	}
+}

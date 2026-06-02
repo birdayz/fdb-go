@@ -381,14 +381,22 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
       real wire-compat bug, NOT a tolerance to normalize away.
   </details>
 
-- [ ] **C2-followup. RYW key-selector + atomic-resolution correctness audit (RFC-056).** The
-  RFC-055 RYW-read differential surfaced a cluster of RYW read-resolution divergences from
-  libfdb_c: (1) `Transaction.GetKey` resolves selectors against storage ONLY and does not merge
-  pending writes — needs a faithful port of C++ `resolveKeySelectorFromCache` (removeOrEqual +
-  offset walk over the merged write-map; a merged-GetRange shortcut does NOT capture FDB's
-  offset/orEqual semantics); (2) RYW `applyAtomic` on present empty values diverges (e.g.
-  `Xor(k,"")` then `Min(k,"0")` → Go `0x30` vs libfdb_c `0x00`). Land the held `FuzzRYWRead`
-  (Get/GetRange/GetKey + atomics) to drive + pin the fixes. See rfcs/055 "Findings & scope".
+- [ ] **C2-followup. RYW key-selector + read-version correctness audit (RFC-056).** Remaining
+  RYW read-resolution divergences from libfdb_c surfaced by the RFC-055 differential:
+  (1) `Transaction.GetKey` resolves selectors against storage ONLY and does not merge pending
+  writes — needs a faithful port of C++ `resolveKeySelectorFromCache` (removeOrEqual + offset
+  walk over the merged write-map via a RYWIterator segment model; a merged-GetRange shortcut
+  was tried and verified-WRONG on `{orEqual, offset>1}`); (2) a possible go-vs-cgo read-version
+  staleness asymmetry (one differential run showed go=`transaction_too_old(1007)` while cgo
+  succeeded on the SAME pinned read version near the 5s MVCC edge — reproduce + compare go vs
+  cgo SetReadVersion/window handling; may be a real divergence or a test-pin robustness issue).
+  Land the held `FuzzRYWRead` (Get/GetRange/GetKey + atomics) to drive these. See rfcs/055
+  "Findings & scope".
+  - [x] **RYW applyAtomic on present-empty values** — FIXED: the chain conflated `nil` (absent)
+    with present-empty, so a V2 op after `Xor(k,"")` took the absent→operand path (`Min(k,"0")`
+    → 0x30 vs libfdb_c 0x00). The get/merge chains now keep present-empty non-nil (nil reserved
+    for absent), mirroring C++ `Optional.present()`. Pinned by
+    `TestRYWGetRange_V2AtomicOnPresentEmpty`.
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,

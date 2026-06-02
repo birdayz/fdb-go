@@ -221,6 +221,13 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 				base, cleared = applyAtomic(m.typ, base, m.param)
 				if cleared {
 					base = nil
+				} else if base == nil {
+					// A non-clear atomic makes the key PRESENT, even if the resolved
+					// value is empty (e.g. Xor(absent,"") → ""). Keep it non-nil so a
+					// later V2 op (MinV2/AndV2) sees "present" and does the op rather
+					// than the absent→operand path — matching C++ Optional.present()
+					// (Atomic.h doMinV2/doAndV2). nil stays reserved for absent.
+					base = []byte{}
 				}
 			}
 			// Re-lock to cache result.
@@ -537,13 +544,20 @@ func (c *rywCache) mergeBatch(
 					serverValues[string(kv.Key)] = kv.Value
 				}
 			}
-			// Resolve atomics against server base.
-			base := serverValues[k]
+			// Resolve atomics against server base. nil = absent, non-nil = present
+			// (incl. present-empty) — mirroring C++ Optional<ValueRef> so V2 ops
+			// (MinV2/AndV2) distinguish "missing → operand" from "present-empty → op".
+			base, basePresent := serverValues[k]
+			if basePresent && base == nil {
+				base = []byte{} // present-empty storage value — keep non-nil
+			}
 			cleared := false
 			for _, m := range entry.atomics {
 				base, cleared = applyAtomic(m.typ, base, m.param)
 				if cleared {
 					base = nil
+				} else if base == nil {
+					base = []byte{} // present-empty atomic result (see get() path)
 				}
 			}
 			// Cache resolved value.
