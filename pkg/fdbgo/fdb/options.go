@@ -106,7 +106,9 @@ func (o TransactionOptions) SetMaxRetryDelay(ms int64) error {
 }
 
 func (o TransactionOptions) SetSnapshotRywEnable() error {
-	// Default behavior — snapshot reads already go through RYW cache.
+	// libfdb_c models this as a counter (enabledCount++), not a no-op: it undoes one prior
+	// SetSnapshotRywDisable. RFC-061.
+	o.tx.inner.SetSnapshotRYWEnable()
 	return nil
 }
 

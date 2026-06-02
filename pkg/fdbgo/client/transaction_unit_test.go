@@ -507,7 +507,7 @@ func TestReset_PreservesPersistentOptions(t *testing.T) {
 	tx.sizeLimit = 5_000_000
 	tx.maxRetryDelay = 10 * time.Second
 	tx.rywDisabled = true
-	tx.snapshotRYWDisabled = true
+	tx.snapshotRYWDisableCount = 1
 	tx.tenantId = 7
 	tx.tags = []string{"a", "b"}
 	tx.retryCount = 3
@@ -521,8 +521,8 @@ func TestReset_PreservesPersistentOptions(t *testing.T) {
 	if tx.sizeLimit != 5_000_000 || tx.maxRetryDelay != 10*time.Second {
 		t.Error("reset clobbered sizeLimit or maxRetryDelay")
 	}
-	if !tx.rywDisabled || !tx.snapshotRYWDisabled {
-		t.Error("reset clobbered RYW disable flags")
+	if !tx.rywDisabled || tx.snapshotRYWDisableCount != 1 {
+		t.Error("reset clobbered RYW disable flags (snapshotRYWDisableCount must be preserved across reset — persistent option)")
 	}
 	if tx.tenantId != 7 {
 		t.Errorf("reset clobbered tenantId: got %d, want 7", tx.tenantId)
