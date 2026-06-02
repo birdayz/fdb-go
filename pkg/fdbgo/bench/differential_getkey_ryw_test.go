@@ -259,6 +259,117 @@ func TestDifferential_GetKeyRYW(t *testing.T) {
 	}
 }
 
+// runGetKeyColdSelector resolves ONE selector on a FRESH txn per client (a COLD snapshot
+// cache — no prior selector has warmed it) and compares the resolved key. The shared-cache
+// runGetKeyRYWDifferential runs all selectors on one txn, so an earlier selector's storage
+// read warms the cache and MASKS a cold-path divergence; this isolates it. (codex P2-1: a
+// backward selector landing on a matched-CAC phantom whose preceding storage is uncached must
+// still read down to it — a buggy reverse-read window returned allKeysBegin instead.)
+func runGetKeyColdSelector(t *testing.T, label string, seed, pending []fuzzOp, sel selSpec) {
+	t.Helper()
+	ns := strings.ReplaceAll(t.Name(), "/", "_")
+	const maxAttempts = 12
+	for attempt := 0; ; attempt++ {
+		if attempt >= maxAttempts {
+			t.Fatalf("%s: cold getKey differential: retryable errors did not clear in %d attempts", label, maxAttempts)
+		}
+		goPfx := fmt.Sprintf("gkcold_%d_%s_%d_go_", os.Getpid(), ns, attempt)
+		cPfx := fmt.Sprintf("gkcold_%d_%s_%d_c_", os.Getpid(), ns, attempt)
+		clearPrefix(t, goPfx)
+		clearPrefix(t, cPfx)
+		sentinels := []string{"\x00", "\x01", "\xee", "\xef"}
+		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			for _, s := range sentinels {
+				tx.Set(gofdb.Key(goPfx+s), []byte("s"))
+			}
+			applyGo(tx, seed, goPfx)
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("%s: seed go: %v", label, err)
+		}
+		mustCGo(t, func(tx cgofdb.Transaction) {
+			for _, s := range sentinels {
+				tx.Set(cgofdb.Key(cPfx+s), []byte("s"))
+			}
+			applyC(tx, seed, cPfx)
+		})
+
+		v := freshSharedVersion(t)
+		goTxn, err := goClient.CreateTransaction()
+		if err != nil {
+			t.Fatalf("%s: go CreateTransaction: %v", label, err)
+		}
+		cTxn, err := cgoClient.CreateTransaction()
+		if err != nil {
+			goTxn.Cancel()
+			t.Fatalf("%s: cgo CreateTransaction: %v", label, err)
+		}
+		goTxn.SetReadVersion(v)
+		cTxn.SetReadVersion(v)
+		applyGo(goTxn, pending, goPfx)
+		applyC(cTxn, pending, cPfx)
+		// Cold cache: resolve ONLY this selector (no prior read warms the snapshot cache).
+		goK, goErr := goTxn.GetKey(goSel(goPfx, sel)).Get()
+		cK, cErr := cTxn.GetKey(cSel(cPfx, sel)).Get()
+		goTxn.Cancel()
+		cTxn.Cancel()
+		if isFDBRetryable(goErr) || isFDBRetryable(cErr) {
+			continue
+		}
+		if (goErr == nil) != (cErr == nil) {
+			t.Fatalf("%s: GetKey %s error mismatch: go=%v cgo=%v", label, sel.name, goErr, cErr)
+		}
+		if goErr != nil {
+			return
+		}
+		goIn := bytes.HasPrefix(goK, []byte(goPfx))
+		cIn := bytes.HasPrefix(cK, []byte(cPfx))
+		if goIn != cIn {
+			t.Fatalf("%s: GetKey %s in-prefix mismatch: go=%q(%v) cgo=%q(%v)", label, sel.name, goK, goIn, cK, cIn)
+		}
+		if !goIn {
+			return
+		}
+		if !bytes.Equal(goK[len(goPfx):], cK[len(cPfx):]) {
+			t.Fatalf("%s: GetKey %s COLD-resolved differs: go=%q cgo=%q", label, sel.name, goK[len(goPfx):], cK[len(cPfx):])
+		}
+		return
+	}
+}
+
+// TestDifferential_GetKeyRYW_ColdPhantom isolates the cold-cache backward-skip path (codex
+// P2-1): a matched-CAC phantom with a PRESENT key below it, resolved on a fresh txn so the
+// preceding storage is uncached. A buggy reverse-read window returned allKeysBegin; the fix
+// reads down to the phantom and finds the present key. Runs every selector COLD.
+func TestDifferential_GetKeyRYW_ColdPhantom(t *testing.T) {
+	t.Parallel()
+	b := func(s string) []byte { return []byte(s) }
+	set := func(ki int, v string) fuzzOp { return fuzzOp{kind: fzSet, keyIdx: ki, operand: b(v)} }
+	cac := func(ki int, v string) fuzzOp { return fuzzOp{kind: fzCompareAndClear, keyIdx: ki, operand: b(v)} }
+	cases := []struct {
+		name          string
+		seed, pending []fuzzOp
+	}{
+		// committed a,b,c,d; pending CAC matches b → b phantom, a present below it.
+		{"cac_b", []fuzzOp{set(0, "x"), set(1, "y"), set(2, "z"), set(3, "w")}, []fuzzOp{cac(1, "y")}},
+		// phantom c with a,b present below it.
+		{"cac_c", []fuzzOp{set(0, "x"), set(1, "y"), set(2, "z"), set(3, "w")}, []fuzzOp{cac(2, "z")}},
+		// phantom d (highest) — backward selectors over d must find c.
+		{"cac_d", []fuzzOp{set(0, "x"), set(1, "y"), set(2, "z"), set(3, "w")}, []fuzzOp{cac(3, "w")}},
+		// two adjacent phantoms b,c — backward across both must find a.
+		{"cac_bc", []fuzzOp{set(0, "x"), set(1, "y"), set(2, "z"), set(3, "w")}, []fuzzOp{cac(1, "y"), cac(2, "z")}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, sel := range getKeySelectors() {
+				runGetKeyColdSelector(t, tc.name+"_"+sel.name, tc.seed, tc.pending, sel)
+			}
+		})
+	}
+}
+
 // FuzzDifferential_GetKeyRYW drives random (seed, pending) op sequences and compares
 // GetKey resolution over the full selector matrix vs libfdb_c. The first decoded txn
 // is the committed seed; the second is the uncommitted pending set.

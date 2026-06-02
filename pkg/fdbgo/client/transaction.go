@@ -632,6 +632,17 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
+	// When RYW is disabled, GetKey resolved against STORAGE only (Transaction.GetKey uses
+	// tx.getKey, not getKeyRYW) — the local write-map did NOT satisfy the read, so every
+	// segment in the span was a real DB read. Filtering through the (bypassed) write-map
+	// would subtract a local Set/Clear segment and MISS a conflict from a concurrent insert
+	// into that gap (codex). Add the full span, matching C++ (RYW-disabled reads go through
+	// the underlying transaction, which records the full read-conflict; updateConflictMap is
+	// an RYW-layer step that does not run).
+	if tx.rywDisabled {
+		tx.addReadConflict(begin, end)
+		return
+	}
 	tx.ryw.mu.Lock()
 	ranges := tx.ryw.conflictRangesLocked(begin, end)
 	tx.ryw.mu.Unlock()

@@ -119,24 +119,32 @@ func cgoRangeAt(t *testing.T, v int64, r cgofdb.Range, opts cgofdb.RangeOptions)
 	return kvs
 }
 
-func goGetKeyAt(t *testing.T, v int64, sel gofdb.KeySelector) []byte {
+// goGetKeyAt resolves a selector at a pinned version, RETURNING any error (no MustGet) so a
+// transient transaction_too_old(1007) — when the pinned version drifts past the 5s MVCC window
+// under heavy parallel-container load — is retried with a fresh version by the caller rather
+// than panicking the test.
+func goGetKeyAt(t *testing.T, v int64, sel gofdb.KeySelector) ([]byte, error) {
 	t.Helper()
 	tr, err := goClient.CreateTransaction()
 	if err != nil {
 		t.Fatalf("go CreateTransaction: %v", err)
 	}
+	defer tr.Cancel()
 	tr.SetReadVersion(v)
-	return []byte(tr.GetKey(sel).MustGet())
+	k, err := tr.GetKey(sel).Get()
+	return []byte(k), err
 }
 
-func cgoGetKeyAt(t *testing.T, v int64, sel cgofdb.KeySelector) []byte {
+func cgoGetKeyAt(t *testing.T, v int64, sel cgofdb.KeySelector) ([]byte, error) {
 	t.Helper()
 	tr, err := cgoClient.CreateTransaction()
 	if err != nil {
 		t.Fatalf("cgo CreateTransaction: %v", err)
 	}
+	defer tr.Cancel()
 	tr.SetReadVersion(v)
-	return []byte(tr.GetKey(sel).MustGet())
+	k, err := tr.GetKey(sel).Get()
+	return []byte(k), err
 }
 
 func TestDifferential_RangeRead(t *testing.T) {
@@ -212,11 +220,24 @@ func TestDifferential_GetKey(t *testing.T) {
 		for _, sel := range sels {
 			sel := sel
 			t.Run(fmt.Sprintf("%s_%s", p, sel.name), func(t *testing.T) {
-				v := freshSharedVersion(t) // fresh per probe → within the MVCC window
-				goK := goGetKeyAt(t, v, sel.goS)
-				cK := cgoGetKeyAt(t, v, sel.cS)
-				if !bytes.Equal(goK, cK) {
-					t.Fatalf("GetKey %s(%q): go=%q cgo=%q", sel.name, key, goK, cK)
+				const maxAttempts = 12
+				for attempt := 0; ; attempt++ {
+					if attempt >= maxAttempts {
+						t.Fatalf("GetKey %s(%q): retryable errors (1007 read-version staleness) did not clear in %d attempts", sel.name, key, maxAttempts)
+					}
+					v := freshSharedVersion(t) // fresh per attempt → within the MVCC window
+					goK, goErr := goGetKeyAt(t, v, sel.goS)
+					cK, cErr := cgoGetKeyAt(t, v, sel.cS)
+					if isFDBRetryable(goErr) || isFDBRetryable(cErr) {
+						continue // transient version staleness under load — re-version and retry
+					}
+					if goErr != nil || cErr != nil {
+						t.Fatalf("GetKey %s(%q) error: go=%v cgo=%v", sel.name, key, goErr, cErr)
+					}
+					if !bytes.Equal(goK, cK) {
+						t.Fatalf("GetKey %s(%q): go=%q cgo=%q", sel.name, key, goK, cK)
+					}
+					return
 				}
 			})
 		}

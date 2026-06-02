@@ -292,6 +292,24 @@ already had, extended to phantoms and made direction-aware. No wire-format chang
   value changed, these fail — they ARE the spec that the fold stays value-correct.
 - **Fuzz:** `FuzzDifferential_GetKeyRYW` burst (≥100k execs, 0 mismatches) with CAC shapes live.
 
+### Review findings (codex, fixed)
+
+- **P2-1 — backward skip onto an uncached range.** When a backward selector lands on a phantom
+  and `prev()` moves onto an UNKNOWN segment, the reverse server-read window is
+  `[unknownBegin, res.key)`, so `res.key` must be the segment END — the first fix set it to the
+  begin, yielding an empty window that returned `allKeysBegin` without reading the preceding
+  storage. Fixed in the backward skip (keykey = segment end on an unknown landing, begin on a KV
+  landing — only for segments the skip itself reached). The shared-cache getKey differential
+  masked it (an earlier selector warms the cache); pinned by `TestDifferential_GetKeyRYW_ColdPhantom`
+  (a fresh txn per selector — verified to fail without the fix).
+- **P2-2 — RYW-disabled conflict.** When RYW is disabled, `addGetKeyConflictRange` must use the
+  FULL span (storage-only read), not the filtered one — filtering the bypassed write-map could
+  drop a conflict. Fixed (full span when `tx.rywDisabled`). Not differential-testable (libfdb_c
+  rejects the only scenario that would differ — reading a range overlapping a locally-written key
+  under RYW-disabled — with `client_invalid_operation` 2000); pinned by a white-box unit test
+  (`TestAddGetKeyConflictRange_RYWDisabledFullSpan`). That go does not itself raise the 2000 is a
+  distinct option-semantics divergence tracked under TODO item 3.
+
 ### Out of scope (explicitly)
 
 Versionstamp/unreadable getKey semantics (C++ `is_unreadable` halts the offset walk; Go's #234

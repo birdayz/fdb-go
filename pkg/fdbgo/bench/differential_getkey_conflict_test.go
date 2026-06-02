@@ -197,6 +197,14 @@ func TestDifferential_GetKeyConflict(t *testing.T) {
 		// Probe OUTSIDE the span (d, beyond resolved c) → never in the conflict range.
 		{"outside_span_no_conflict", nil, []fuzzOp{set(2, "v")}, fgt(0), "d", false},
 	}
+	// NOTE: the RYW-DISABLED conflict path (codex P2-2 — must use the full span, not the
+	// filtered one) is NOT differential-tested here: the only scenario where the filter would
+	// differ from the full span needs a local write INSIDE the read span, but libfdb_c rejects
+	// reading a range overlapping a locally-written key under RYW-disabled with
+	// client_invalid_operation (2000) — so the under-conflict is unreachable via the legal API.
+	// The fix is pinned by a white-box unit test (TestAddGetKeyConflictRange_RYWDisabledFullSpan
+	// in package client). The go-vs-cgo gap that go does NOT raise that 2000 is a distinct
+	// option-semantics axis tracked under TODO item 3.
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {

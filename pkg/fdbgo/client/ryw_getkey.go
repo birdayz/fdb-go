@@ -348,7 +348,17 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 			if cur.offBegin() {
 				return keySelResult{key: allKeysBegin, offset: 1, readToBegin: true}
 			}
-			keykey = cur.begin
+			// Track the FGE-form key adjoining the new segment, ONLY for segments this skip
+			// reached (a no-skip landing keeps the offset walk's keykey). For a present KV the
+			// resolved key is its begin; for an UNKNOWN segment the BACKWARD server read window
+			// is [unknownBegin, res.key), so res.key must be the segment END — else the window
+			// is empty [begin,begin) and getKey wrongly returns allKeysBegin without reading the
+			// preceding storage (codex P2-1). Mirrors the backward offset walk.
+			if cur.typ == segUnknown {
+				keykey = cur.end
+			} else {
+				keykey = cur.begin
+			}
 		}
 	} else {
 		for cur.valid() && (cur.typ == segEmpty || cur.typ == segPhantom) {
