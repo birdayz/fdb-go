@@ -490,16 +490,28 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
      op); error-code + option semantics (RAW_ACCESS / ACCESS_SYSTEM_KEYS / snapshot-RYW); key
      encoding / tuple packing / versionstamp-offset validation. Each closed axis is more "absolute
      proof we're identical to the C client."
-     - **[RFC-059] RYW-disable-after-op poison.** Differential characterization corrected the
-       earlier (imprecise) framing: NOT a per-read overlap check, NOT an option-set-time error.
-       libfdb_c's `setOption(READ_YOUR_WRITES_DISABLE)` after any read or write throws
-       `client_invalid_operation` deferred via `deferredError`, so the option call succeeds but
-       EVERY subsequent op (regular + snapshot reads, GetKey, GetRange, GetReadVersion,
-       GetEstimatedRangeSizeBytes, Commit) returns 2000 — the whole txn is poisoned. Go was
-       silently permissive (returned 0). RFC-059 ports the poison (`Transaction.rywPoisonErr` set
-       on disable-after-op, gated uniformly at `ensureReadVersion` + the metrics path; a `hadRead`
-       signal covers the GetPipelined non-caching read). Pinned by
-       `TestDifferential_RYWDisableAfterOp` (9 sequences, 8 red→green).
+     - [x] **[RFC-059 — MERGED #238] RYW-disable-after-op poison.** Differential characterization
+       corrected the earlier (imprecise) framing: NOT a per-read overlap check, NOT an
+       option-set-time error. libfdb_c's `setOption(READ_YOUR_WRITES_DISABLE)` after any read or
+       write throws `client_invalid_operation` deferred via `deferredError`, so the option call
+       succeeds but EVERY subsequent op (regular + snapshot reads/GetKey, GetRange, GetReadVersion,
+       GetEstimatedRangeSizeBytes, GetRangeSplitPoints, Commit) returns 2000 — the whole txn is
+       poisoned. Go was silently permissive (returned 0). RFC-059 ports the poison
+       (`Transaction.rywPoisonErr` set on disable-after-op, gated uniformly at `ensureReadVersion` +
+       the metrics path; a `hadRead` signal covers the GetPipelined non-caching read). Pinned by
+       `TestDifferential_RYWDisableAfterOp` + `TestCommit_RYWPoisonBeatsTimeout`. Reviewed by
+       FDB-C++ dev + Torvalds + codex + @claude.
+     - [x] **[RFC-060 — MERGED #239] tuple-codec byte-identity differential.** The tuple/key encoding is the wire
+       hard line but has ZERO differential coverage vs libfdb_c's codec. `pkg/fdbgo/fdb/tuple` is a
+       near-verbatim port (core encode/decode byte-identical by inspection) but adds go-only
+       hot-path helpers (`PackWithPrefix`/`Pack1WithPrefix`/`Pack1ConcatWithPrefix`/
+       `PackConcatWithPrefix`/`Packer.AppendInto`/`packerPool`) absent from libfdb_c that build the
+       actual index/record keys on the wire. Prove `gotuple.Pack() == cgotuple.Pack()` across all
+       type codes + boundaries (int size-limit boundaries, big.Int >8 bytes + leading-0xff
+       zero-fill, float/double sign-bit flip, nil-escaping in bytes/strings/nested, versionstamp
+       offset), the go-only helpers vs canonical `cgotuple.Pack()`, cross-client Unpack, and an
+       end-to-end FDB wire round-trip. cgotuple is itself pinned to the cross-language
+       `tuples.golden`, so this transitively pins go to the golden vectors.
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
