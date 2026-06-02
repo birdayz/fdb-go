@@ -1316,3 +1316,65 @@ func TestRYW_VersionstampedAbsentNoPhantom(t *testing.T) {
 		t.Fatalf("versionstamped-pending absent key: Get must be nil (absent), got %x", got)
 	}
 }
+
+// TestRYW_VersionstampedOverClearedOrPlainNoPhantom pins the codex re-review
+// finding on RFC-056a: the no-phantom behavior must hold when the key is absent
+// NOT because storage lacks it, but because THIS txn made it absent (a prior local
+// clear) — and, symmetrically, when a pending plain Set precedes the versionstamp.
+// Both used to be eagerly folded by atomic() into a plain rywEntry (the cleared
+// branch stored {value:nil}; the plain-Set branch left the stale value), so the
+// versionstamp surfaced as a present key in GetRange/Get despite the read-path gate
+// (which only runs on hasAtomics entries). atomic() now refuses to eager-fold a
+// versionstamped op, so all three base states (storage-absent, locally cleared,
+// pending plain Set) route through the unresolved-atomics path and read as absent.
+func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
+	t.Parallel()
+	val := make([]byte, 14) // operand w/ stamp room; unresolved client-side
+
+	// Server STILL has the key — proves "absent" comes from the txn, not storage.
+	withStorage := func(ctx context.Context, key []byte) ([]byte, error) {
+		return []byte("storage"), nil
+	}
+	withStorageRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{{Key: []byte("vsk"), Value: []byte("storage")}}, false, nil
+	}
+
+	assertAbsent := func(t *testing.T, c *rywCache) {
+		t.Helper()
+		result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, withStorageRange)
+		if err != nil {
+			t.Fatalf("getRange: %v", err)
+		}
+		for _, kv := range result {
+			if string(kv.Key) == "vsk" {
+				t.Fatalf("versionstamp over cleared/plain must NOT appear in GetRange (phantom): %v", result)
+			}
+		}
+		got, err := c.get(context.Background(), []byte("vsk"), withStorage)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("versionstamp over cleared/plain: Get must be nil (absent), got %x", got)
+		}
+	}
+
+	// (1) Cleared earlier in the txn, then versionstamped (codex's exact repro).
+	t.Run("cleared_then_versionstamp", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.clear([]byte("vsk"))
+		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+		assertAbsent(t, c)
+	})
+
+	// (2) Pending plain Set, then versionstamped — must read absent (unreadable in
+	// C++), NOT the stale pre-stamp value.
+	t.Run("plain_set_then_versionstamp", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.set([]byte("vsk"), []byte("pending"))
+		c.atomic(MutSetVersionstampedKey, []byte("vsk"), val)
+		assertAbsent(t, c)
+	})
+}

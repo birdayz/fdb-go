@@ -399,9 +399,14 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
     `TestRYWGetRange_V2AtomicOnPresentEmpty`.
   - (3) **versionstamped-pending read = unreadable.** A SetVersionstampedKey/Value pending on a
     key reads as ABSENT in Go pre-commit (Get→nil, GetRange→omit); C++ marks it `is_unreadable`
-    and THROWS `accessed_unreadable`. Go has no unreadable state — approximated as absent
-    (consistent across Get/GetRange, no phantom; pinned by `TestRYW_VersionstampedAbsentNoPhantom`).
-    Full C++ parity (throw on read) needs an unreadable concept — part of the RFC-056 audit.
+    and THROWS `accessed_unreadable`. Go has no unreadable state — approximated as absent,
+    consistently across ALL base states: storage-absent, locally cleared, a pending plain Set,
+    and a non-nil storage value the pending stamp shadows. `atomic()` refuses to eager-fold a
+    versionstamp into a plain entry, and `resolveAtomics` short-circuits the chain to
+    `unresolved` (terminal, dominant over cleared) so both read paths exclude the key and drop
+    any stale storage value. Pinned by `TestRYW_VersionstampedAbsentNoPhantom` +
+    `TestRYW_VersionstampedOverClearedOrPlainNoPhantom`. Full C++ parity (THROW on read) still
+    needs an explicit unreadable concept — part of the RFC-056 audit.
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
