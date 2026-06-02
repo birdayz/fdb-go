@@ -530,6 +530,22 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        committed read-back (server fold/wire). Verify-and-pin (fold is a faithful port); teeth
        confirmed on doAdd (6 rows) + doByteMin (4 rows). Found+fixed a test-isolation bug (go/cgo
        shared a key → missing-key fold saw the other's committed value).
+     - [x] **[RFC-063 — MERGED #242] versionstamp-mutation differential.** SetVersionstampedKey/Value
+       were excluded from the fuzz differential; only a Go-only interop check + an offset-0 Value
+       case existed. Added masked (10-byte stamp zeroed) go-vs-cgo differentials: VersionstampedKey
+       (offset 0 / after-prefix / mid-key / binary), VSValueOffsets (non-zero offsets), tuple
+       PackWithVersionstamp (offset + 2-byte user-version preservation), GetVersionstamp parity
+       (10-byte, == materialized stamp), error/boundary (tight-valid offset+10==body vs off-by-one
+       reject, negative, past-body, too-small, empty → 2000 go==cgo), multi-op. Mask offset is
+       template-derived + length/surround/non-zero guards (Torvalds). Teeth: loosening
+       validateVersionstampOffset by 1 reddens offbyone_reject. The differential CORRECTED a
+       reviewer assumption: two versionstamped ops in one txn get the SAME stamp (txn-level, not
+       per-op batch id; user differentiates via tuple user version).
+       - [ ] **Follow-up (tenant +8 offset):** differentially test the tenant-prefix offset
+         adjustment (`commitpath.go:354-363`, +8 for the 8-byte tenant prefix). Needs tenant
+         harness setup in `pkg/fdbgo/bench` (OpenTenant on both clients; cluster tenant_mode must
+         be enabled). Open a tenant, write a versionstamped key in the tenant txn, read back within
+         the tenant, mask, compare — verify go/cgo adjust the offset by the prefix length identically.
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
