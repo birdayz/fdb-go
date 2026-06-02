@@ -112,11 +112,22 @@ func goConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel se
 		resolved = string(rk[len(pfx):])
 	}
 	a.Set(gofdb.Key(pfx+"~sentinel"), []byte("s")) // committable write, far from any probe
-	// Concurrent B writes the probe key and commits FIRST (V_B > vSetup = A's read version).
-	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
-		tx.Set(gofdb.Key(pfx+probeKey), []byte("B"))
-		return nil, nil
-	}); err != nil {
+	// Concurrent B writes the probe and commits. Pin B to vSetup too (no fresh GRV) so B does
+	// NOT ratchet the client's minAcceptableReadVersion past vSetup — otherwise A's commit at
+	// vSetup is rejected client-side with transaction_too_old(1007) and the attempt is wasted,
+	// a residual flake under load (codex). B's COMMIT version is still assigned fresh
+	// (> vSetup), so the probe write remains in A's conflict window (vSetup, A_commit).
+	b, err := goClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("go B create: %v", err)
+	}
+	defer b.Cancel()
+	b.SetReadVersion(vSetup)
+	b.Set(gofdb.Key(pfx+probeKey), []byte("B"))
+	if err := b.Commit().Get(); err != nil {
+		if isFDBRetryable(err) {
+			return conflictOutcome{retry: true}
+		}
 		t.Fatalf("go B commit: %v", err)
 	}
 	switch code := fdbErrorCode(a.Commit().Get()); code {
@@ -173,10 +184,18 @@ func cgoConflictScenario(t *testing.T, pfx string, seed, pending []fuzzOp, sel s
 		resolved = string(rk[len(pfx):])
 	}
 	a.Set(cgofdb.Key(pfx+"~sentinel"), []byte("s"))
-	if _, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
-		tx.Set(cgofdb.Key(pfx+probeKey), []byte("B"))
-		return nil, nil
-	}); err != nil {
+	// B pinned to vSetup too (no fresh GRV ratcheting the read-version floor — see goConflictScenario).
+	b, err := cgoClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("cgo B create: %v", err)
+	}
+	defer b.Cancel()
+	b.SetReadVersion(vSetup)
+	b.Set(cgofdb.Key(pfx+probeKey), []byte("B"))
+	if err := b.Commit().Get(); err != nil {
+		if isFDBRetryable(err) {
+			return conflictOutcome{retry: true}
+		}
 		t.Fatalf("cgo B commit: %v", err)
 	}
 	switch code := fdbErrorCode(a.Commit().Get()); code {
