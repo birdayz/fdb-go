@@ -63,7 +63,10 @@ over `libfdb_c`). Key helpers (read these before writing a new probe):
 Axes where divergences hide (✓ = a differential exists; grep `bench/` to confirm):
 - ✓ committed write coalescing (RYW *writes*) — `differential_fuzz_test.go`.
 - ✓ RYW *reads*: `Get`/`GetRange` over pending — `differential_ryw_test.go`.
-- ✓ `GetKey` over pending writes — `differential_getkey_ryw_test.go`.
+- ⏳ `GetKey` over pending writes — **OPEN** (RFC-056). The Go client's `GetKey`
+  resolves selectors against storage only, ignoring pending writes; the differential
+  (`differential_getkey_ryw_test.go`) + the faithful `resolveKeySelectorFromCache` port
+  land together. Until then this is a known gap, not covered — keep hunting it.
 - ✓ size-limit rejection (key/value/txn), raw-access key limit — `differential_test.go`.
 - atomic-op edge cases on empty/missing/present-empty values (per-op, all of Atomic.h).
 - conflict ranges: which ops add read/write conflicts (and the no-conflict-flag), and
@@ -111,7 +114,11 @@ commit/RFC. Docker required (`docker ps`); if down, say so — don't fake it.
 
 ## Step 4 — root-cause against the C++ source (NEVER guess)
 
-C++ reference: `/tmp/fdbsrc` (gitignored, tag **4.11.1.0** = the MODULE.bazel pin). Key
+C++ reference: the **FoundationDB C++ source, version 7.3.75** — the `foundationdb` pin
+in `MODULE.bazel` (`bazel_dep(name = "foundationdb", version = "7.3.75")`), which is what
+`libfdb_c` (the cgo binding) is built from. (Do NOT confuse this with `4.11.1.0`, the
+*Java* `fdb-record-layer-core` artifact version — a different project.) Check it out at
+`/tmp/fdbsrc` (`git clone --branch 7.3.75 https://github.com/apple/foundationdb`). Key
 files: `fdbclient/NativeAPI.actor.cpp`, `ReadYourWrites.actor.cpp`, `WriteMap.cpp`,
 `RYWIterator.cpp`, `include/fdbclient/Atomic.h`, `ClientKnobs.cpp`, `SystemData.cpp`.
 Read the **actual** C++ function that handles the case, understand the algorithm, then
