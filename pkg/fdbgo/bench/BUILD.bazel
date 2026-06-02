@@ -14,6 +14,7 @@ go_test(
         "differential_snapshot_ryw_test.go",
         "differential_test.go",
         "differential_tuple_test.go",
+        "differential_versionstamp_test.go",
         "interop_test.go",
     ],
     data = glob(["testdata/**"]),
