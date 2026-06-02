@@ -32,7 +32,11 @@ import (
 // against storage only; some atomics resolve differently on empty values) that
 // constitute a dedicated RYW-correctness audit — deferred to RFC-056.
 
-func rywStrip(t *testing.T, goTxn gofdb.Transaction, cTxn cgofdb.Transaction, goPfx, cPfx string) ([]kvPair, []kvPair) {
+// rywStrip returns the prefix-stripped RYW GetRange of both clients. The GetRange
+// errors are RETURNED (not Fatal'd) so the caller can retry on a transient retryable
+// error (transaction_too_old etc.) — see runRYWReadDifferential. PrefixRange errors are
+// programming errors and stay fatal.
+func rywStrip(t *testing.T, goTxn gofdb.Transaction, cTxn cgofdb.Transaction, goPfx, cPfx string) ([]kvPair, []kvPair, error, error) {
 	t.Helper()
 	goR, err := gofdb.PrefixRange([]byte(goPfx))
 	if err != nil {
@@ -42,13 +46,10 @@ func rywStrip(t *testing.T, goTxn gofdb.Transaction, cTxn cgofdb.Transaction, go
 	if err != nil {
 		t.Fatalf("cgo PrefixRange: %v", err)
 	}
-	goKVs, err := goTxn.GetRange(goR, gofdb.RangeOptions{}).GetSliceWithError()
-	if err != nil {
-		t.Fatalf("go RYW GetRange: %v", err)
-	}
-	cKVs, err := cTxn.GetRange(cR, cgofdb.RangeOptions{}).GetSliceWithError()
-	if err != nil {
-		t.Fatalf("cgo RYW GetRange: %v", err)
+	goKVs, goErr := goTxn.GetRange(goR, gofdb.RangeOptions{}).GetSliceWithError()
+	cKVs, cErr := cTxn.GetRange(cR, cgofdb.RangeOptions{}).GetSliceWithError()
+	if goErr != nil || cErr != nil {
+		return nil, nil, goErr, cErr
 	}
 	goOut := make([]kvPair, len(goKVs))
 	for i, kv := range goKVs {
@@ -58,7 +59,7 @@ func rywStrip(t *testing.T, goTxn gofdb.Transaction, cTxn cgofdb.Transaction, go
 	for i, kv := range cKVs {
 		cOut[i] = kvPair{append([]byte(nil), kv.Key[len(cPfx):]...), append([]byte(nil), kv.Value...)}
 	}
-	return goOut, cOut
+	return goOut, cOut, nil, nil
 }
 
 // runRYWReadDifferential seeds identical storage, applies identical pending mutations
@@ -82,50 +83,72 @@ func runRYWReadDifferential(t *testing.T, label string, seed, pending []fuzzOp) 
 		mustCGo(t, func(tx cgofdb.Transaction) { applyC(tx, seed, cPfx) })
 	}
 
-	v := freshSharedVersion(t)
-
-	goTxn, err := goClient.CreateTransaction()
-	if err != nil {
-		t.Fatalf("%s: go CreateTransaction: %v", label, err)
-	}
-	defer goTxn.Cancel()
-	goTxn.SetReadVersion(v)
-
-	cTxn, err := cgoClient.CreateTransaction()
-	if err != nil {
-		t.Fatalf("%s: cgo CreateTransaction: %v", label, err)
-	}
-	defer cTxn.Cancel()
-	cTxn.SetReadVersion(v)
-
-	// Apply identical PENDING (uncommitted) mutations.
-	applyGo(goTxn, pending, goPfx)
-	applyC(cTxn, pending, cPfx)
-
 	seq := fmt.Sprintf("seed=%s pending=%s", fmtTxns([][]fuzzOp{seed}), fmtTxns([][]fuzzOp{pending}))
 
-	// (1) Get each domain key — RYW-resolved (pending merged with storage@V).
-	for _, k := range fuzzKeys {
-		gv, gerr := goTxn.Get(gofdb.Key(goPfx + k)).Get()
-		cv, cerr := cTxn.Get(cgofdb.Key(cPfx + k)).Get()
-		if (gerr == nil) != (cerr == nil) {
-			t.Fatalf("%s: RYW Get(%s) error mismatch: go=%v cgo=%v\n%s", label, k, gerr, cerr, seq)
+	// Compare under a fresh shared read version, retrying on a TRANSIENT retryable error
+	// (transaction_too_old(1007) etc. when a slow run under heavy parallel-container load
+	// drifts past the 5s MVCC window). That is the RFC-056 item (2) go-vs-cgo read-version
+	// asymmetry, NOT a resolution divergence — re-version and retry rather than flag a
+	// false error mismatch. The RYW merge is the invariant under test; version staleness
+	// is not. (Same pattern as runGetKeyRYWDifferential.)
+	const maxAttempts = 12
+	for attempt := 0; ; attempt++ {
+		if attempt >= maxAttempts {
+			t.Fatalf("%s: RYW-read differential: retryable errors (RFC-056 item 2 read-version staleness) did not clear in %d attempts\n%s", label, maxAttempts, seq)
 		}
-		if gerr == nil && !bytes.Equal(gv, cv) {
-			t.Fatalf("%s: RYW Get(%s) differs: go=%x cgo=%x\n%s", label, k, gv, cv, seq)
+		v := freshSharedVersion(t)
+		goTxn, err := goClient.CreateTransaction()
+		if err != nil {
+			t.Fatalf("%s: go CreateTransaction: %v", label, err)
 		}
-	}
+		cTxn, err := cgoClient.CreateTransaction()
+		if err != nil {
+			goTxn.Cancel()
+			t.Fatalf("%s: cgo CreateTransaction: %v", label, err)
+		}
+		goTxn.SetReadVersion(v)
+		cTxn.SetReadVersion(v)
+		applyGo(goTxn, pending, goPfx)
+		applyC(cTxn, pending, cPfx)
 
-	// (2) GetRange over the prefix — the merged pending+storage view.
-	goState, cState := rywStrip(t, goTxn, cTxn, goPfx, cPfx)
-	if len(goState) != len(cState) {
-		t.Fatalf("%s: RYW GetRange count differs: go=%d cgo=%d\ngoKVs=%v cgoKVs=%v\n%s",
-			label, len(goState), len(cState), kvDump(goState), kvDump(cState), seq)
-	}
-	for i := range goState {
-		if !bytes.Equal(goState[i].k, cState[i].k) || !bytes.Equal(goState[i].v, cState[i].v) {
-			t.Fatalf("%s: RYW GetRange pair %d differs: go=(%q,%x) cgo=(%q,%x)\n%s",
-				label, i, goState[i].k, goState[i].v, cState[i].k, cState[i].v, seq)
+		if retry := func() bool {
+			defer goTxn.Cancel()
+			defer cTxn.Cancel()
+			// (1) Get each domain key — RYW-resolved (pending merged with storage@V).
+			for _, k := range fuzzKeys {
+				gv, gerr := goTxn.Get(gofdb.Key(goPfx + k)).Get()
+				cv, cerr := cTxn.Get(cgofdb.Key(cPfx + k)).Get()
+				if isFDBRetryable(gerr) || isFDBRetryable(cerr) {
+					return true
+				}
+				if (gerr == nil) != (cerr == nil) {
+					t.Fatalf("%s: RYW Get(%s) error mismatch: go=%v cgo=%v\n%s", label, k, gerr, cerr, seq)
+				}
+				if gerr == nil && !bytes.Equal(gv, cv) {
+					t.Fatalf("%s: RYW Get(%s) differs: go=%x cgo=%x\n%s", label, k, gv, cv, seq)
+				}
+			}
+			// (2) GetRange over the prefix — the merged pending+storage view.
+			goState, cState, goErr, cErr := rywStrip(t, goTxn, cTxn, goPfx, cPfx)
+			if isFDBRetryable(goErr) || isFDBRetryable(cErr) {
+				return true
+			}
+			if goErr != nil || cErr != nil {
+				t.Fatalf("%s: RYW GetRange error: go=%v cgo=%v\n%s", label, goErr, cErr, seq)
+			}
+			if len(goState) != len(cState) {
+				t.Fatalf("%s: RYW GetRange count differs: go=%d cgo=%d\ngoKVs=%v cgoKVs=%v\n%s",
+					label, len(goState), len(cState), kvDump(goState), kvDump(cState), seq)
+			}
+			for i := range goState {
+				if !bytes.Equal(goState[i].k, cState[i].k) || !bytes.Equal(goState[i].v, cState[i].v) {
+					t.Fatalf("%s: RYW GetRange pair %d differs: go=(%q,%x) cgo=(%q,%x)\n%s",
+						label, i, goState[i].k, goState[i].v, cState[i].k, cState[i].v, seq)
+				}
+			}
+			return false
+		}(); !retry {
+			break
 		}
 	}
 
