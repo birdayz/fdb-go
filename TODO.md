@@ -399,11 +399,21 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
     `includeWrites=!snapshotRYWDisabled`). A merged-GetRange shortcut was verified-WRONG on
     `{orEqual, offset>1}` — not used. Pinned by `ryw_getkey_test.go` + the
     `TestDifferential_GetKeyRYW` differential (pending Set/Clear/ClearRange vs libfdb_c) + corpus
-    seeds. **Deferred sub-edge:** a PENDING atomic that resolves to no value (CompareAndClear, or
+    seeds. **Two deferred sub-edges, same root** (the rywCache doesn't preserve per-key op-type
+    — it eagerly folds resolved atomics into plain entries and moves a matched CompareAndClear
+    into the cleared list; faithfully closing either needs a write-map that retains op-type, like
+    C++'s):
+    (a) **phantom offset slot** — a PENDING atomic that resolves to no value (CompareAndClear, or
     an atomic on a locally-cleared range) is modeled as absent; libfdb_c keeps it as a "phantom"
-    is_kv slot COUNTED in the offset walk. Matching that needs the rywCache to preserve every
-    atomic-touched key as a slot (conflicts with its eager value-resolution) — the getKey
-    differential is scoped to non-atomic pending writes until then.
+    is_kv slot COUNTED in the offset walk. The getKey differential is scoped to non-atomic pending
+    writes until then.
+    (b) **conflict-range filtering** — C++ `updateConflictMap` SUBTRACTS independent-write/cleared
+    segments from the getKey read-conflict (no DB read there). Go keeps the FULL base↔resolved
+    range: it OVER-conflicts on those segments (extra retries, always SAFE) rather than risk a
+    missed conflict on a folded dependent atomic (an UNSAFE under-conflict — a naive
+    `!hasAtomics` filter was attempted and reverted after codex showed it drops the conflict for a
+    Get-folded atomic). The full range is strictly better than the old single-key conflict (which
+    under-conflicted). Exact filtering deferred with the op-type preservation above.
   - [x] **RYW applyAtomic on present-empty values** — FIXED: the chain conflated `nil` (absent)
     with present-empty, so a V2 op after `Xor(k,"")` took the absent→operand path (`Min(k,"0")`
     → 0x30 vs libfdb_c 0x00). The get/merge chains now keep present-empty non-nil (nil reserved

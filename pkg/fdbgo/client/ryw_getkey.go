@@ -154,64 +154,6 @@ func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 	return segEmpty
 }
 
-// readConflictRangesLocked returns the sub-ranges of [begin, end) that getKey must
-// register as READ conflicts — a faithful port of C++ updateConflictMap
-// (ReadYourWrites.actor.cpp:335-351), which adds a conflict for UNMODIFIED segments and
-// DEPENDENT (atomic) writes — i.e. where a DB read actually happened — but SKIPS
-// INDEPENDENT writes (plain Set) and cleared ranges, since those were satisfied from
-// the local write-map with no server read (and the write itself carries its own write
-// conflict unless intentionally disabled). Caller holds c.mu.
-//
-// Implementation: collect the EXCLUDED sub-ranges (independent writes + cleared) clamped
-// to [begin, end), then emit the complement — which is exactly the unmodified gaps plus
-// the atomic-write keys.
-func (c *rywCache) readConflictRangesLocked(begin, end []byte) [][2][]byte {
-	if bytes.Compare(begin, end) >= 0 {
-		return nil
-	}
-	type rng struct{ b, e []byte }
-	var excl []rng
-	c.ensureSortedLocked()
-	for i := sort.SearchStrings(c.sortedKeys, string(begin)); i < len(c.sortedKeys); i++ {
-		kb := []byte(c.sortedKeys[i])
-		if bytes.Compare(kb, end) >= 0 {
-			break
-		}
-		// Only INDEPENDENT writes (plain Set) are skipped; atomic (dependent) writes read
-		// the base and DO conflict, so they stay in the conflict set.
-		if e, ok := c.writes[c.sortedKeys[i]]; ok && !e.hasAtomics {
-			excl = append(excl, rng{kb, keyAfterBytes(kb)})
-		}
-	}
-	for _, r := range c.cleared {
-		b, e := r.begin, r.end
-		if bytes.Compare(b, begin) < 0 {
-			b = begin
-		}
-		if bytes.Compare(e, end) > 0 {
-			e = end
-		}
-		if bytes.Compare(b, e) < 0 {
-			excl = append(excl, rng{b, e})
-		}
-	}
-	sort.Slice(excl, func(i, j int) bool { return bytes.Compare(excl[i].b, excl[j].b) < 0 })
-	var out [][2][]byte
-	cur := begin
-	for _, r := range excl {
-		if bytes.Compare(r.b, cur) > 0 {
-			out = append(out, [2][]byte{cur, append([]byte(nil), r.b...)})
-		}
-		if bytes.Compare(r.e, cur) > 0 {
-			cur = r.e
-		}
-	}
-	if bytes.Compare(cur, end) < 0 {
-		out = append(out, [2][]byte{append([]byte(nil), cur...), append([]byte(nil), end...)})
-	}
-	return out
-}
-
 // segIdxContaining returns the index of the segment [begin, end) containing key
 // (begin <= key < end), or len(segs) if key >= the last segment's end.
 func segIdxContaining(segs []rywSegment, key []byte) int {

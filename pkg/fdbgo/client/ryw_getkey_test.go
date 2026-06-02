@@ -186,54 +186,6 @@ func TestGetKeyRYW_ServerRemerge(t *testing.T) {
 	}
 }
 
-// TestGetKeyConflictRanges_FilterLocalWrites pins codex's P2: the getKey read-conflict
-// range must SKIP locally-satisfied segments — INDEPENDENT writes (plain Set) and
-// cleared ranges had no DB read, so a SetNextWriteNoWriteConflictRange + Set must not
-// be turned into a spurious conflict. Atomic (dependent) writes + unmodified gaps stay.
-// Mirrors C++ updateConflictMap (ReadYourWrites.actor.cpp:335).
-func TestGetKeyConflictRanges_FilterLocalWrites(t *testing.T) {
-	t.Parallel()
-	rels := func(ranges [][2][]byte) []string {
-		out := make([]string, len(ranges))
-		for i, r := range ranges {
-			out[i] = string(r[0]) + ".." + string(r[1])
-		}
-		return out
-	}
-	eq := func(t *testing.T, got [][2][]byte, want ...string) {
-		t.Helper()
-		g := rels(got)
-		if len(g) != len(want) {
-			t.Fatalf("ranges: got %v, want %v", g, want)
-		}
-		for i := range want {
-			if g[i] != want[i] {
-				t.Fatalf("range %d: got %q, want %q (all: %v)", i, g[i], want[i], g)
-			}
-		}
-	}
-
-	// plain Set("b") is an INDEPENDENT write → excluded; conflict over [a,c) splits to
-	// [a,b) + [b\x00,c).
-	c := &rywCache{}
-	c.set([]byte("b"), []byte("x"))
-	eq(t, c.readConflictRangesLocked([]byte("a"), []byte("c")), "a..b", "b\x00..c")
-
-	// atomic (dependent) write reads the base → STAYS in the conflict range (no split).
-	c2 := &rywCache{}
-	c2.atomic(MutAddValue, []byte("b"), []byte("\x01"))
-	eq(t, c2.readConflictRangesLocked([]byte("a"), []byte("c")), "a..c")
-
-	// cleared range → excluded.
-	c3 := &rywCache{}
-	c3.clearRange([]byte("b"), []byte("c"))
-	eq(t, c3.readConflictRangesLocked([]byte("a"), []byte("d")), "a..b", "c..d")
-
-	// no local writes → whole range conflicts.
-	c4 := &rywCache{}
-	eq(t, c4.readConflictRangesLocked([]byte("a"), []byte("c")), "a..c")
-}
-
 // TestGetKeyRYW_SnapshotBypassesWrites: with includeWrites=false (snapshot RYW
 // disabled), a pending Set must NOT shift the selector.
 func TestGetKeyRYW_SnapshotBypassesWrites(t *testing.T) {

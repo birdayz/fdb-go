@@ -595,14 +595,22 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	return resolved, nil
 }
 
-// addGetKeyConflictRange adds the read-conflict range(s) for a getKey, spanning the
-// selector base ↔ resolved key (orEqual-adjusted, oriented by offset sign). Faithful
-// port of C++ addConflictRange(GetKeyReq) (ReadYourWrites.actor.cpp:230-243) + the
-// updateConflictMap filtering (:335): the range is split around the local write-map so
-// INDEPENDENT writes (plain Set) and cleared ranges — satisfied locally with no DB read
-// — do NOT add a read conflict (otherwise a SetNextWriteNoWriteConflictRange + Set
-// would spuriously conflict). When RYW is disabled there is no local write-map, so the
-// whole range conflicts.
+// addGetKeyConflictRange adds the read-conflict range for a getKey, spanning the
+// selector base ↔ resolved key (orEqual-adjusted, oriented by offset sign) — a port of
+// C++ addConflictRange(GetKeyReq) (ReadYourWrites.actor.cpp:230-243). This fixes the
+// prior single-key conflict (which under-conflicted: a concurrent write between the
+// base and the resolved key would not conflict, an unsafe divergence).
+//
+// C++ then runs updateConflictMap (:335) to SUBTRACT segments satisfied locally with no
+// DB read (INDEPENDENT writes + cleared ranges). We DON'T do that subtraction: the
+// rywCache eagerly folds resolved atomics into plain entries (hasAtomics→false) and
+// moves a matched CompareAndClear into the cleared list, so it no longer preserves
+// which keys were DEPENDENT (read the base). Filtering on the post-fold state would drop
+// a required read conflict for a folded dependent atomic — an UNSAFE under-conflict
+// (codex). So we keep the FULL range: it over-conflicts on the no-DB-read segments
+// (extra retries, always SAFE) rather than risk a missed conflict. The exact
+// updateConflictMap filtering needs the rywCache to preserve per-key op-type (the same
+// gap as the deferred phantom-slot) and is tracked under RFC-056.
 func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offset int32, resolved []byte) {
 	var begin, end []byte
 	if offset <= 0 {
@@ -620,18 +628,8 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 		}
 		end = keyAfterBytes(resolved)
 	}
-	if bytes.Compare(begin, end) >= 0 {
-		return
-	}
-	if tx.rywDisabled {
+	if bytes.Compare(begin, end) < 0 {
 		tx.addReadConflict(begin, end)
-		return
-	}
-	tx.ryw.mu.Lock()
-	ranges := tx.ryw.readConflictRangesLocked(begin, end)
-	tx.ryw.mu.Unlock()
-	for _, r := range ranges {
-		tx.addReadConflict(r[0], r[1])
 	}
 }
 
