@@ -1252,3 +1252,187 @@ func TestRYWGetRange_UnlimitedReverse(t *testing.T) {
 		t.Errorf("expected [C, A], got [%s, %s]", result[0].Key, result[1].Key)
 	}
 }
+
+// TestRYWGetRange_V2AtomicOnPresentEmpty pins the RFC-056a fix: an atomic that
+// makes a key present-empty (Xor(k,"") → "") followed by a V2 op (MinV2) must treat
+// the base as PRESENT (do the min) — not absent (return the operand). The merge
+// chain keeps present-empty results non-nil (nil reserved for absent), mirroring
+// C++ Optional.present() (Atomic.h doMinV2/doAndV2). Pre-fix the chain returned nil
+// after the Xor, so MinV2 took the absent→operand path (0x30 instead of 0x00).
+func TestRYWGetRange_V2AtomicOnPresentEmpty(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	c.atomic(MutXor, []byte("k"), []byte(""))    // k → present with empty value
+	c.atomic(MutMinV2, []byte("k"), []byte("0")) // 0x30; min("","0")=0x00, NOT operand 0x30
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil // k absent in storage
+	}
+	result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result (k present-empty after MinV2), got %d: %v", len(result), result)
+	}
+	if !bytes.Equal(result[0].Value, []byte{0x00}) {
+		t.Errorf("MinV2 on present-empty key: got %x, want 0x00 (little-endian min of \"\" and \"0\"); 0x30 means the absent→operand bug", result[0].Value)
+	}
+}
+
+// TestRYW_VersionstampedAbsentNoPhantom pins the codex RFC-056a finding: an
+// unresolved versionstamped mutation on an ABSENT key (applyAtomic → (nil,false),
+// the stamp is unknown until commit) must NOT surface as a phantom empty key in a
+// pre-commit read. The present-empty normalization is gated to exclude versionstamp
+// ops; Get reads absent (nil) and GetRange omits it (Go's approximation of C++
+// unreadable), consistently. Pre-fix the normalization made it a phantom {k, ""}.
+func TestRYW_VersionstampedAbsentNoPhantom(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	val := make([]byte, 14) // value w/ room for stamp+offset; unresolved client-side anyway
+	c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+
+	absent := func(ctx context.Context, key []byte) ([]byte, error) { return nil, nil }
+	absentRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+
+	// GetRange must omit the unresolved versionstamped key (no phantom).
+	result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	for _, kv := range result {
+		if string(kv.Key) == "vsk" {
+			t.Fatalf("versionstamped-pending absent key must NOT appear in GetRange (phantom): %v", result)
+		}
+	}
+	// Get must also read absent (nil).
+	got, err := c.get(context.Background(), []byte("vsk"), absent)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("versionstamped-pending absent key: Get must be nil (absent), got %x", got)
+	}
+}
+
+// TestRYW_VersionstampedOverClearedOrPlainNoPhantom pins the codex re-review
+// finding on RFC-056a: the no-phantom behavior must hold when the key is absent
+// NOT because storage lacks it, but because THIS txn made it absent (a prior local
+// clear) — and, symmetrically, when a pending plain Set precedes the versionstamp.
+// Both used to be eagerly folded by atomic() into a plain rywEntry (the cleared
+// branch stored {value:nil}; the plain-Set branch left the stale value), so the
+// versionstamp surfaced as a present key in GetRange/Get despite the read-path gate
+// (which only runs on hasAtomics entries). atomic() now refuses to eager-fold a
+// versionstamped op, so all three base states (storage-absent, locally cleared,
+// pending plain Set) route through the unresolved-atomics path and read as absent.
+func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
+	t.Parallel()
+	val := make([]byte, 14) // operand w/ stamp room; unresolved client-side
+
+	// Server STILL has the key — proves "absent" comes from the txn, not storage.
+	withStorage := func(ctx context.Context, key []byte) ([]byte, error) {
+		return []byte("storage"), nil
+	}
+	withStorageRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{{Key: []byte("vsk"), Value: []byte("storage")}}, false, nil
+	}
+
+	assertAbsent := func(t *testing.T, c *rywCache) {
+		t.Helper()
+		result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, withStorageRange)
+		if err != nil {
+			t.Fatalf("getRange: %v", err)
+		}
+		for _, kv := range result {
+			if string(kv.Key) == "vsk" {
+				t.Fatalf("versionstamp over cleared/plain must NOT appear in GetRange (phantom): %v", result)
+			}
+		}
+		got, err := c.get(context.Background(), []byte("vsk"), withStorage)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("versionstamp over cleared/plain: Get must be nil (absent), got %x", got)
+		}
+	}
+
+	// (1) Cleared earlier in the txn, then versionstamped (codex's exact repro).
+	t.Run("cleared_then_versionstamp", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.clear([]byte("vsk"))
+		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+		assertAbsent(t, c)
+	})
+
+	// (2) Pending plain Set, then versionstamped — must read absent (unreadable in
+	// C++), NOT the stale pre-stamp value.
+	t.Run("plain_set_then_versionstamp", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.set([]byte("vsk"), []byte("pending"))
+		c.atomic(MutSetVersionstampedKey, []byte("vsk"), val)
+		assertAbsent(t, c)
+	})
+}
+
+// TestRYW_VersionstampUnreadableIsSticky pins that an unresolved versionstamp makes
+// the key UNREADABLE for the rest of the chain — a later overwriting atomic
+// (MutSetValue, which ignores its base) does NOT make it readable again. This
+// matches C++ WriteMap exactly: WriteMap.cpp computes
+// `is_unreadable = it.is_unreadable() || <op is versionstamp>` (line 97) and the
+// stack-replacing fast path for SetValue is guarded by `!it.is_unreadable()`
+// (line 125) — so once a versionstamp poisons the entry, a subsequent SetValue
+// only pushes onto the stack and is_unreadable stays true. (A codex re-review
+// suggested "continue resolving after a SetValue overwrites the versionstamp";
+// that would surface the SetValue value and DIVERGE from C++, which keeps the
+// key unreadable. Go approximates unreadable as absent, so the key reads absent
+// regardless of a trailing SetValue.) Both orderings are unreadable.
+func TestRYW_VersionstampUnreadableIsSticky(t *testing.T) {
+	t.Parallel()
+	val := make([]byte, 14)
+	absent := func(ctx context.Context, key []byte) ([]byte, error) { return nil, nil }
+	absentRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+	assertAbsent := func(t *testing.T, c *rywCache) {
+		t.Helper()
+		result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+		if err != nil {
+			t.Fatalf("getRange: %v", err)
+		}
+		for _, kv := range result {
+			if string(kv.Key) == "vsk" {
+				t.Fatalf("versionstamp poisons the entry: a trailing SetValue must NOT make it readable (C++ keeps it unreadable); got %v", result)
+			}
+		}
+		got, err := c.get(context.Background(), []byte("vsk"), absent)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("versionstamp-then-SetValue must read absent (C++ unreadable), got %x", got)
+		}
+	}
+
+	// versionstamp THEN an overwriting SetValue atomic — stays unreadable.
+	t.Run("versionstamp_then_setvalue", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+		c.atomic(MutSetValue, []byte("vsk"), []byte("final"))
+		assertAbsent(t, c)
+	})
+
+	// SetValue THEN versionstamp — also unreadable (the versionstamp poisons it).
+	t.Run("setvalue_then_versionstamp", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.atomic(MutSetValue, []byte("vsk"), []byte("first"))
+		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+		assertAbsent(t, c)
+	})
+}
