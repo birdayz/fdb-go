@@ -521,6 +521,15 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        persistent option). Pinned by `TestDifferential_SnapshotRYWReenable` (10 sequences, 3
        red→green + a counter-vs-boolean discriminator + negative-count axis + RYW-disable
        dominance).
+     - [x] **[RFC-062 — MERGED #241] atomic-fold width/edge differential.** Atomic fold semantics
+       are the wire hard line; the existing differential only used 8-byte operands on missing keys.
+       Added a differential across operand/base widths + edge operands for all 12 ops. KEY finding
+       (teeth-check): tx.Set/tx.Atomic ship RAW mutations (server folds at commit), so Go's
+       client-side fold (doAdd/doMin/…) runs ONLY on in-txn reads — a commit-then-read-back test
+       passed even with doAdd broken. Restructured to read WITHIN the txn (exercises the fold) +
+       committed read-back (server fold/wire). Verify-and-pin (fold is a faithful port); teeth
+       confirmed on doAdd (6 rows) + doByteMin (4 rows). Found+fixed a test-isolation bug (go/cgo
+       shared a key → missing-key fold saw the other's committed value).
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
