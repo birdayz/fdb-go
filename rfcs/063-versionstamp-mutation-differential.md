@@ -14,7 +14,7 @@ suffix (4-byte for API ≥ 520, 2-byte for < 520) giving the position — within
 minus the offset suffix) — where the 10-byte stamp goes. At commit the server strips the offset
 suffix, writes the stamp at `offset`, and converts the op to `SetValue`
 (C++ `Atomic.h:249-315`, `transformVersionstampMutation`). Go validates the offset
-(`transaction.go:1388-1398`), adjusts it by +8 for a tenant prefix (`commitpath.go:354-363`),
+(`pkg/fdbgo/client/transaction.go:1388-1398`), adjusts it by +8 for a tenant prefix (`pkg/fdbgo/client/commitpath.go:354-363`),
 and ships the operand as-is for the server to transform.
 
 The differential fuzz **excludes** these ops (`differential_fuzz_test.go:24`). The existing
@@ -35,10 +35,10 @@ stamp lands** — must be byte-identical. Masking the 10-byte stamp makes a clea
 
 - Go facade: `tx.SetVersionstampedKey(key, param)` / `SetVersionstampedValue(key, param)` →
   `Atomic(MutSetVersionstampedKey/Value, …)`; `GetVersionstamp()` returns the committed 10-byte
-  stamp (`transaction.go:1138-1146`). cgo has the identical facade. Both at API 730 → 4-byte
+  stamp (`pkg/fdbgo/client/transaction.go:1138-1146`). cgo has the identical facade. Both at API 730 → 4-byte
   offset suffix.
 - Tuple layer: `tuple.PackWithVersionstamp(prefix)` encodes an incomplete versionstamp + the
-  offset suffix (`tuple.go:594-641`); the 12-byte tuple versionstamp is 10-byte tx version
+  offset suffix (`pkg/fdbgo/fdb/tuple/tuple.go:594-641`); the 12-byte tuple versionstamp is 10-byte tx version
   (replaced at commit) + 2-byte **user version** (preserved). Masking `[off, off+10)` leaves the
   user version intact for comparison.
 - Read-back: for `SetVersionstampedKey` the materialized **key** holds the stamp (unknown
@@ -58,8 +58,10 @@ case fails, then reverting.
 
 1. **`TestDifferential_VersionstampedKey`** — stamp at offset 0 (key == stamp), stamp after a
    prefix, stamp mid-key (prefix + stamp + suffix). Masked key + the (fixed) value compared.
-2. **`TestDifferential_VersionstampedValue`** — stamp at offset 0 (value == stamp), stamp
-   mid-value (prefix + stamp + suffix). Fixed key; masked value compared.
+2. **`TestDifferential_VSValueOffsets`** — `SetVersionstampedValue` at NON-zero offsets (after a
+   header, mid-value, binary surrounds), extending the existing offset-0
+   `TestDifferential_VersionstampedValue` (`differential_test.go:126`, left in place). Fixed key;
+   masked value compared.
 3. **`TestDifferential_VersionstampTuplePack`** — build the key with `tuple.PackWithVersionstamp`
    (go) / `cgotuple.PackWithVersionstamp` (cgo) including a non-trivial **user version**, write
    via `SetVersionstampedKey`, read back, mask the 10-byte stamp, compare — proves the tuple
@@ -74,9 +76,12 @@ case fails, then reverting.
    clients must agree (reject → 2000 at Commit, the client-side guard before the server's
    commit-time silent skip; valid → code 0), asserted go==cgo (FDB-C++ dev).
 6. **`TestDifferential_VersionstampMultiOp`** — two `SetVersionstampedKey` ops to distinct keys in
-   ONE txn share the transaction version but get distinct 2-byte batch ids. Both materialize;
-   masked-compare go-vs-cgo, and assert the two stamps within a commit are DISTINCT on each client
-   (batch-id advanced) — pins batch-id placement (FDB-C++ dev).
+   ONE txn. The differential **corrected a reviewer assumption**: the 10-byte stamp identifies the
+   TRANSACTION (commit version + batch order — `CommitProxyServer.actor.cpp` passes the same
+   `transactionNumberInBatch` to every mutation of a txn), NOT the operation, so both ops get the
+   **IDENTICAL** stamp (the user differentiates via the tuple user version). The test masked-compares
+   go-vs-cgo AND asserts both ops share the stamp on each client with the clients agreeing (a client
+   that wrongly advanced a per-op id would pass the masked compare but fail this).
 
 **Masking soundness (Torvalds):** the mask offset is derived from the **shared template** (the
 case's logical-data length), not from the per-client materialized output, so a Go offset bug
@@ -85,7 +90,7 @@ byte-equal to the template-derived expectation, (b) the materialized key still s
 isolation prefix, and (c) the masked region was non-zero (the stamp materialized). A one-byte-off
 stamp shifts the surrounding bytes into/out of the masked window, so the surround compare goes red.
 
-**Tenant +8 offset adjustment** (`commitpath.go:354-363`) is the highest-value remaining axis but
+**Tenant +8 offset adjustment** (`pkg/fdbgo/client/commitpath.go:354-363`) is the highest-value remaining axis but
 needs tenant infrastructure the bench harness lacks (no tenant setup; cluster tenant_mode
 unverified). Filed as a concrete TODO follow-up: open a tenant on both clients, write a
 versionstamped key in the tenant txn, read back within the tenant, mask, compare — verifying the
@@ -97,8 +102,8 @@ Test-only. No production change unless a divergence is found.
 
 ## Test plan
 
-The tests above ARE the plan. Teeth verified by fault injection (e.g. write the offset suffix
-big-endian, or mask `[offset+1, offset+11)`) and confirming the matching case fails, then
-reverting. Run under `bazelisk test //pkg/fdbgo/bench:bench_test`. Tenant-prefix +8 offset
-adjustment is exercised by the existing tenant tests; a differential tenant case is a possible
-follow-up (needs tenant setup in the bench harness).
+The tests above ARE the plan. Teeth verified live: loosening `validateVersionstampOffset`
+(`offset+10 > bodyLen` → `bodyLen+1`) reddens `offbyone_reject` (go=0 accepts, cgo=2000), the
+rest stay green; reverted. Run under `bazelisk test //pkg/fdbgo/bench:bench_test`. The tenant +8
+offset adjustment is the one wire path left untested here — filed as the concrete TODO follow-up
+above (needs tenant harness setup).
