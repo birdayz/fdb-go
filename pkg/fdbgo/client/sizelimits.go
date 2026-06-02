@@ -22,10 +22,11 @@ const (
 
 // getMaxWriteKeySize mirrors NativeAPI.actor.cpp:11629 getMaxWriteKeySize: system
 // keys (\xff…) get SYSTEM_KEY_SIZE_LIMIT; others KEY_SIZE_LIMIT, plus the tenant
-// prefix length when raw access is enabled. rawAccess is C++ FDB_TR_OPTION_RAW_ACCESS
-// — a DISTINCT option from ACCESS_SYSTEM_KEYS — which this client does not model, so
-// set/atomicOp always pass false. Only clear uses the rawAccess=true limit, via
-// getMaxClearKeySize == getMaxKeySize == getMaxWriteKeySize(key, true).
+// prefix slack when raw access is enabled. C++ sets options.rawAccess = true for
+// ANY of RAW_ACCESS, ACCESS_SYSTEM_KEYS, or READ_SYSTEM_KEYS (NativeAPI.actor.cpp:
+// 7159-7170). We don't model bare RAW_ACCESS, but callers pass
+// (writeSystemKeys || readSystemKeys) for the write path; clear always passes true
+// (getMaxClearKeySize == getMaxKeySize == getMaxWriteKeySize(key, true)).
 func getMaxWriteKeySize(key []byte, rawAccess bool) int {
 	if len(key) > 0 && key[0] == 0xff {
 		return systemKeySizeLimit

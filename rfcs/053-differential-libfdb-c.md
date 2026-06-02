@@ -68,17 +68,24 @@ made explicit so nothing is theater:
 
 ### L1 — Wire-encoding golden vectors (the client-identity core)
 
-A **white-box test in `package client`** (where the marshal lives) drives ops,
-calls `buildCommitTransactionRequest`, and **taps the bytes that
-`MarshalFDBPooled` actually emits** — NOT the `Mutation` structs the test built.
-Tapping the structs would be asserting the test's own input back (Torvalds caveat
-#1: that is the very circularity); the proof must be on the *serialized* output.
-Assert **byte-exact** against golden vectors derived from the **C++ reference**
-(`NativeAPI.actor.cpp`) — the neutral oracle, independent of either runtime client
-(closes Torvalds #2: the spec is the oracle, not a Go-family client reading its own
-writes). **Each golden byte vector carries the `NativeAPI.actor.cpp`/`Atomic.h`
-line ref it was derived from, in a comment beside it**, so the derivation is
-auditable and a misread can't silently become "truth" (Torvalds caveat #2). Pins:
+**White-box tests in `package client`** (where the marshal lives) drive ops, call
+`buildCommitTransactionRequest`, and **tap the bytes that `MarshalFDBPooled`
+actually emits** — NOT the `Mutation` structs the test built. Tapping the structs
+would be asserting the test's own input back (Torvalds caveat #1: the very
+circularity); the proof must be on the *serialized* output.
+
+**What landed (and how it differs from the first sketch):** rather than hand-rolled
+literal byte-array vectors (`[]byte{0x12, …}`), the tests **round-trip the marshaled
+`CommitTransactionRequest` through `UnmarshalFDB` and assert on the decoded mutation
+op-code + conflict-range vector + size-rejection codes**, with the
+`NativeAPI.actor.cpp`/`ReadYourWrites.actor.cpp`/`Atomic.h` line refs in comments
+beside each expectation. This is the same neutral oracle (the C++ reference,
+independent of either runtime client — closes Torvalds #2) but a more robust form:
+literal-byte goldens over the FlatBuffers ObjectSerializer rot the moment a vtable
+offset shifts, whereas decode-and-assert pins the *semantic* wire content (the
+client-determined op-code/operand/conflict-range) directly. The op-code-value
+question (Min→MinV2 etc.) is additionally pinned end-to-end by L2. Files:
+`atomic_conflictrange_test.go`, `sizelimits_test.go`. Pins:
 
 - op-codes incl. **Min→MinV2 / And→AndV2** at API≥510 (`:5990-5995`);
 - operand `param1`/`param2` byte encoding;
@@ -216,9 +223,9 @@ Core C++ fidelity verified sound (SVK conflict-range, size limits/knobs, clamp/d
 all match `/tmp/fdbsrc`). Both reviewers NAK'd on three fixable points, all
 addressed:
 1. **Wrong knob:** the key-size check passed `tx.writeSystemKeys`
-   (ACCESS_SYSTEM_KEYS) as `getMaxWriteKeySize`'s `hasRawAccess`; C++ uses the
-   distinct `RAW_ACCESS` (not modeled here) → now passes `false` for set/atomic,
-   pinned by `TestCommit_SystemKeysOptionDoesNotRaiseNonSystemKeyLimit`.
+   (ACCESS_SYSTEM_KEYS) as `getMaxWriteKeySize`'s `hasRawAccess`. Both reviewers
+   said to pass `false` ("RAW_ACCESS not modeled"). **Codex then proved that wrong**
+   — see below — so the final value is `tx.writeSystemKeys || tx.readSystemKeys`.
 2. **L3 flake:** the read-parity tests compared across the two clients' independent
    GRV caches; a boundary selector could escape the seeded prefix into
    concurrently-mutated keyspace and resolve differently. Fixed by pinning both
@@ -229,6 +236,30 @@ addressed:
    `KEY_SIZE_LIMIT` accepted + persisted identically by both clients); combined with
    the battery's `set_at_value_limit` row, the key- and value-limit knobs are now
    exercised against the linked libfdb_c so a drift surfaces.
+
+### Codex review — two P2s the human-style reviewers missed
+
+Codex (third reviewer) caught two real divergences, both verified against
+`/tmp/fdbsrc` and fixed:
+1. **raw-access key-size allowance.** C++ sets `options.rawAccess = true` for ANY
+   of `RAW_ACCESS`, `ACCESS_SYSTEM_KEYS`, or `READ_SYSTEM_KEYS`
+   (`NativeAPI.actor.cpp:7159-7170` — three cases, one assignment), and `rawAccess`
+   raises the non-system key limit to `KEY_SIZE_LIMIT+8`. So passing `false`
+   (finding #1's first fix) **regressed** the 10001-10008 boundary — Go rejected
+   keys libfdb_c accepts when the txn has system-key access. Fix: pass
+   `tx.writeSystemKeys || tx.readSystemKeys` (we don't model bare `RAW_ACCESS`, but
+   those two options set the same C++ `rawAccess` field). Pinned by
+   `TestCommit_RawAccessRaisesNonSystemKeyLimit` (10008 accepted, 10009 rejected,
+   for each option — fails pre-fix).
+2. **no-conflict flag leak on no-op clears.** C++ RYW `clear` consumes the
+   `NEXT_WRITE_NO_WRITE_CONFLICT_RANGE` flag at the top (`ReadYourWrites.actor.cpp:
+   2407`), above the size-based no-op return. Our oversized-`Clear` drop and
+   clamped-to-empty `ClearRange` early-returned without consuming it, so it leaked
+   to the next write. Fix: `consumeNextWriteNoConflict()` on both no-op paths.
+   Pinned by `TestClear_NoOpConsumesNextWriteNoConflict` (fails pre-fix).
+
+This is the multi-reviewer system working as intended: "C++ is the spec" overrode
+two concurring human-style ACKs once the source was consulted.
 
 ## Open questions / stretch
 

@@ -210,12 +210,15 @@ func TestDifferential_GetKey(t *testing.T) {
 			{"LLE", gofdb.LastLessOrEqual(gofdb.Key(key)), cgofdb.LastLessOrEqual(cgofdb.Key(key))},
 		}
 		for _, sel := range sels {
-			v := freshSharedVersion(t) // fresh per probe → within the MVCC window
-			goK := goGetKeyAt(t, v, sel.goS)
-			cK := cgoGetKeyAt(t, v, sel.cS)
-			if !bytes.Equal(goK, cK) {
-				t.Fatalf("GetKey %s(%q): go=%q cgo=%q", sel.name, key, goK, cK)
-			}
+			sel := sel
+			t.Run(fmt.Sprintf("%s_%s", p, sel.name), func(t *testing.T) {
+				v := freshSharedVersion(t) // fresh per probe → within the MVCC window
+				goK := goGetKeyAt(t, v, sel.goS)
+				cK := cgoGetKeyAt(t, v, sel.cS)
+				if !bytes.Equal(goK, cK) {
+					t.Fatalf("GetKey %s(%q): go=%q cgo=%q", sel.name, key, goK, cK)
+				}
+			})
 		}
 	}
 }

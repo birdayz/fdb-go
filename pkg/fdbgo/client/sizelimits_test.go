@@ -117,23 +117,96 @@ func TestCommit_SystemKeyHasHigherLimit(t *testing.T) {
 	}
 }
 
-// TestCommit_SystemKeysOptionDoesNotRaiseNonSystemKeyLimit pins the commit-path
-// wiring of the key-size check: ACCESS_SYSTEM_KEYS (tx.writeSystemKeys) must NOT be
-// passed as RAW_ACCESS to getMaxWriteKeySize. A NON-system key of 10001 bytes must
-// be rejected even with writeSystemKeys set — otherwise it would wrongly get the
-// rawAccess limit (KEY_SIZE_LIMIT+8) and slip through (the divergence Torvalds/
-// FDB-C-dev flagged). Fails pre-fix (the key is accepted → no 2102).
-func TestCommit_SystemKeysOptionDoesNotRaiseNonSystemKeyLimit(t *testing.T) {
+// TestCommit_RawAccessRaisesNonSystemKeyLimit pins the commit-path wiring of the
+// key-size check. C++ sets options.rawAccess for ANY of RAW_ACCESS,
+// ACCESS_SYSTEM_KEYS, or READ_SYSTEM_KEYS (NativeAPI.actor.cpp:7159-7170), and
+// rawAccess raises the non-system key limit to KEY_SIZE_LIMIT+8. So with
+// writeSystemKeys (ACCESS_SYSTEM_KEYS) or readSystemKeys (READ_SYSTEM_KEYS) set, a
+// non-system key of 10001-10008 bytes must be ACCEPTED (libfdb_c accepts it);
+// passing false would wrongly reject it (the regression codex caught). A key past
+// 10008 is still rejected.
+func TestCommit_RawAccessRaisesNonSystemKeyLimit(t *testing.T) {
 	t.Parallel()
-	tx := newTestTx()
-	tx.tenantId = NoTenantID
-	tx.rywDisabled = true
-	tx.writeSystemKeys = true                                      // ACCESS_SYSTEM_KEYS — must not raise the non-system limit
-	tx.Set(bytes.Repeat([]byte("a"), keySizeLimit+1), []byte("v")) // 10001, non-system
-	if code := sizeErrCode(t, tx.Commit(context.Background())); code != 2102 {
-		t.Fatalf("non-system key 10001 with writeSystemKeys: Commit code=%d, want 2102 "+
-			"(ACCESS_SYSTEM_KEYS must not be treated as RAW_ACCESS)", code)
+	mk := func(n int) []byte { return bytes.Repeat([]byte("a"), n) } // non-system
+
+	for _, opt := range []string{"writeSystemKeys", "readSystemKeys"} {
+		opt := opt
+		t.Run(opt, func(t *testing.T) {
+			t.Parallel()
+			// 10008 (== KEY_SIZE_LIMIT+8): accepted under raw access.
+			tx := newTestTx()
+			tx.tenantId = NoTenantID
+			tx.rywDisabled = true
+			if opt == "writeSystemKeys" {
+				tx.writeSystemKeys = true
+			} else {
+				tx.readSystemKeys = true
+			}
+			tx.Set(mk(keySizeLimit+tenantPrefixSize), []byte("v")) // 10008
+			if code := sizeErrCode(t, commitNoConn(tx)); code == 2102 {
+				t.Fatalf("%s: non-system key of KEY_SIZE_LIMIT+8 must be accepted (rawAccess), got 2102", opt)
+			}
+			// 10009 (> KEY_SIZE_LIMIT+8): still rejected.
+			tx2 := newTestTx()
+			tx2.tenantId = NoTenantID
+			tx2.rywDisabled = true
+			if opt == "writeSystemKeys" {
+				tx2.writeSystemKeys = true
+			} else {
+				tx2.readSystemKeys = true
+			}
+			tx2.Set(mk(keySizeLimit+tenantPrefixSize+1), []byte("v")) // 10009
+			if code := sizeErrCode(t, tx2.Commit(context.Background())); code != 2102 {
+				t.Fatalf("%s: non-system key past KEY_SIZE_LIMIT+8 must be rejected, got %d", opt, code)
+			}
+		})
 	}
+}
+
+// TestClear_NoOpConsumesNextWriteNoConflict pins codex's second finding: C++ RYW
+// clear consumes the NEXT_WRITE_NO_WRITE_CONFLICT_RANGE flag at the top
+// (ReadYourWrites.actor.cpp:2407), above the size no-op. So an oversized single-key
+// Clear (dropped) and a clamped-to-empty ClearRange must STILL consume the flag —
+// otherwise it leaks and the next real write wrongly skips its conflict range.
+func TestClear_NoOpConsumesNextWriteNoConflict(t *testing.T) {
+	t.Parallel()
+	t.Run("oversized_single_key", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.tenantId = NoTenantID
+		tx.rywDisabled = true
+		tx.nextWriteNoConflict = true
+		tx.Clear(bytes.Repeat([]byte("a"), keySizeLimit+tenantPrefixSize+1)) // dropped
+		if tx.nextWriteNoConflict {
+			t.Fatal("oversized Clear did not consume nextWriteNoConflict (C++ RYW :2407)")
+		}
+		tx.Set([]byte("k2"), []byte("v")) // next real write must add its range
+		if len(tx.writeConflicts) != 1 {
+			t.Fatalf("flag leaked: follow-up Set added %d conflict ranges, want 1", len(tx.writeConflicts))
+		}
+	})
+	t.Run("clamped_empty_range", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.tenantId = NoTenantID
+		tx.rywDisabled = true
+		tx.nextWriteNoConflict = true
+		// Two oversized keys that clamp to the same prefix → empty range, dropped.
+		big := bytes.Repeat([]byte("a"), 20000)
+		if err := tx.ClearRange(big, append(append([]byte(nil), big...), 0xff)); err != nil {
+			t.Fatalf("ClearRange: %v", err)
+		}
+		if len(tx.mutations) != 0 {
+			t.Fatalf("clamped-empty ClearRange should record no mutation, got %d", len(tx.mutations))
+		}
+		if tx.nextWriteNoConflict {
+			t.Fatal("clamped-empty ClearRange did not consume nextWriteNoConflict (C++ RYW)")
+		}
+		tx.Set([]byte("k2"), []byte("v"))
+		if len(tx.writeConflicts) != 1 {
+			t.Fatalf("flag leaked: follow-up Set added %d conflict ranges, want 1", len(tx.writeConflicts))
+		}
+	})
 }
 
 func TestClear_DropsOversizedKey(t *testing.T) {

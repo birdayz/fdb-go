@@ -686,10 +686,23 @@ func (tx *Transaction) Set(key, value []byte) {
 }
 
 // Clear deletes a key.
+// consumeNextWriteNoConflict resets the one-shot NEXT_WRITE_NO_WRITE_CONFLICT_RANGE
+// flag without adding a conflict range. C++ RYW set/clear/atomicOp consume the flag
+// (getAndResetWriteConflictDisabled) at the TOP, before any size-based no-op return
+// (ReadYourWrites.actor.cpp:2407 for clear), so an oversized/empty clear still
+// consumes it and it never leaks to the following write.
+func (tx *Transaction) consumeNextWriteNoConflict() {
+	tx.conflictMu.Lock()
+	tx.nextWriteNoConflict = false
+	tx.conflictMu.Unlock()
+}
+
 func (tx *Transaction) Clear(key []byte) {
 	// C++ clear(KeyRef) drops an oversized single-key clear entirely
-	// (NativeAPI.actor.cpp:6045-6047): no mutation, no conflict range, no RYW write.
+	// (NativeAPI.actor.cpp:6045-6047): no mutation, no conflict range, no RYW write —
+	// but the no-conflict flag is still consumed (RYW :2407, above the size check).
 	if len(key) > getMaxClearKeySize(key) {
+		tx.consumeNextWriteNoConflict()
 		return
 	}
 	end := make([]byte, len(key)+1)
@@ -725,8 +738,10 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 		end = end[:emax+1]
 	}
 	// Zero-width (begin == end) or clamped-to-empty (begin >= end): C++ returns
-	// without recording a mutation (r.empty()).
+	// without recording a mutation (r.empty()), but still consumes the no-conflict
+	// flag (consumed at the top of RYW clear, above the empty check).
 	if bytes.Compare(begin, end) >= 0 {
+		tx.consumeNextWriteNoConflict()
 		return nil
 	}
 	tx.conflictMu.Lock()
@@ -839,11 +854,14 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		// reject the commit instead so the oversized data never reaches the shared
 		// cluster. See sizelimits.go.
 		//
-		// hasRawAccess is C++ FDB_TR_OPTION_RAW_ACCESS (NativeAPI.actor.cpp:5963),
-		// a DISTINCT option from ACCESS_SYSTEM_KEYS (tx.writeSystemKeys). This client
-		// does not model RAW_ACCESS, so writes always pass false. (Only clears use
-		// the rawAccess=true limit, via getMaxClearKeySize == getMaxKeySize.)
-		if len(m.Key) > getMaxWriteKeySize(m.Key, false) {
+		// hasRawAccess: C++ sets options.rawAccess = true for ANY of RAW_ACCESS,
+		// ACCESS_SYSTEM_KEYS, or READ_SYSTEM_KEYS (NativeAPI.actor.cpp:7159-7170 —
+		// the three cases fall through to one assignment). We don't model the bare
+		// RAW_ACCESS option, but ACCESS_SYSTEM_KEYS == writeSystemKeys and
+		// READ_SYSTEM_KEYS == readSystemKeys, and either raises the non-system key
+		// limit by the tenant-prefix slack (KEY_SIZE_LIMIT+8). Passing false here
+		// would reject 10001-10008-byte keys that libfdb_c accepts.
+		if len(m.Key) > getMaxWriteKeySize(m.Key, tx.writeSystemKeys || tx.readSystemKeys) {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2102} // key_too_large
 		}
