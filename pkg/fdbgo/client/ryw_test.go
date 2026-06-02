@@ -1378,3 +1378,61 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 		assertAbsent(t, c)
 	})
 }
+
+// TestRYW_VersionstampUnreadableIsSticky pins that an unresolved versionstamp makes
+// the key UNREADABLE for the rest of the chain — a later overwriting atomic
+// (MutSetValue, which ignores its base) does NOT make it readable again. This
+// matches C++ WriteMap exactly: WriteMap.cpp computes
+// `is_unreadable = it.is_unreadable() || <op is versionstamp>` (line 97) and the
+// stack-replacing fast path for SetValue is guarded by `!it.is_unreadable()`
+// (line 125) — so once a versionstamp poisons the entry, a subsequent SetValue
+// only pushes onto the stack and is_unreadable stays true. (A codex re-review
+// suggested "continue resolving after a SetValue overwrites the versionstamp";
+// that would surface the SetValue value and DIVERGE from C++, which keeps the
+// key unreadable. Go approximates unreadable as absent, so the key reads absent
+// regardless of a trailing SetValue.) Both orderings are unreadable.
+func TestRYW_VersionstampUnreadableIsSticky(t *testing.T) {
+	t.Parallel()
+	val := make([]byte, 14)
+	absent := func(ctx context.Context, key []byte) ([]byte, error) { return nil, nil }
+	absentRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+	assertAbsent := func(t *testing.T, c *rywCache) {
+		t.Helper()
+		result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+		if err != nil {
+			t.Fatalf("getRange: %v", err)
+		}
+		for _, kv := range result {
+			if string(kv.Key) == "vsk" {
+				t.Fatalf("versionstamp poisons the entry: a trailing SetValue must NOT make it readable (C++ keeps it unreadable); got %v", result)
+			}
+		}
+		got, err := c.get(context.Background(), []byte("vsk"), absent)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("versionstamp-then-SetValue must read absent (C++ unreadable), got %x", got)
+		}
+	}
+
+	// versionstamp THEN an overwriting SetValue atomic — stays unreadable.
+	t.Run("versionstamp_then_setvalue", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+		c.atomic(MutSetValue, []byte("vsk"), []byte("final"))
+		assertAbsent(t, c)
+	})
+
+	// SetValue THEN versionstamp — also unreadable (the versionstamp poisons it).
+	t.Run("setvalue_then_versionstamp", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.atomic(MutSetValue, []byte("vsk"), []byte("first"))
+		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+		assertAbsent(t, c)
+	})
+}
