@@ -342,7 +342,22 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   and Sev40 `TestFailure` reasons containing "inconsistent". Detection logic pinned by a
   deterministic unit test (`TestParseConsistencyTrace`) since the live run is always clean.
 
-- [ ] **C2. Ride their client — differential vs the official C binding (`libfdb_c`).** The C
+- [x] **C2. Ride their client — differential vs the official C binding (`libfdb_c`).** Landed in
+  **RFC-053 (PR #231)**. Differential harness in `pkg/fdbgo/bench` (reuses the dual-client fixture):
+  L2 write battery (byte-identical persisted state — Set shapes incl. exactly-VALUE_SIZE_LIMIT, every
+  atomic on a missing key pinning the Min→MinV2/And→AndV2 upgrade, SetVersionstampedValue offset,
+  key-at-KEY_SIZE_LIMIT boundary) and L3 read parity (GetRange chunking-invariance across
+  StreamingModes/limits/reverse + GetKey selector parity, read-version-pinned). Proven to have teeth
+  (reverting Min→MinV2 fails it byte-exactly). **Surfaced & fixed FOUR real client divergences**, each
+  pinned with a fail-pre-fix test: SetVersionstampedKey spurious write-conflict range; client-side
+  key/value size-limit enforcement (set/atomic reject at commit, clear clamps/drops); raw-access key
+  limit set by ACCESS_SYSTEM_KEYS/READ_SYSTEM_KEYS (not just RAW_ACCESS); raw-access slack gated off
+  for tenant txns. Reviewed by FDB-C-dev + Torvalds + codex (3 P2s) + @claude.
+  **Follow-up RFC-054: `FuzzDifferential`** — random op sequences through both clients,
+  byte-identical persisted state (RYW coalescing, atomic accumulation, clear/overwrite
+  ordering); 40s burst = 8068 execs, 0 mismatches.
+  <details><summary>original spec</summary>
+  The C
   binding is the client FDB simulation-tests on every CI run, so matching it is the closest we get
   to inheriting that coverage (RFC-010 prevention P5, corrected). Run the SAME operations through
   our Go client and `libfdb_c` against the same testcontainer cluster. **CRITICAL: compare at the
@@ -362,6 +377,7 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
     - **Continuations → mutually resumable** (a Go-produced continuation resumes correctly when fed
       back; byte-equal where the format is fully spec-pinned). Any *data-plane* byte difference is a
       real wire-compat bug, NOT a tolerance to normalize away.
+  </details>
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
