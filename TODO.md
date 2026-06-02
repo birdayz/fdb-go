@@ -356,6 +356,8 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   **Follow-up RFC-054: `FuzzDifferential`** — random op sequences through both clients,
   byte-identical persisted state (RYW coalescing, atomic accumulation, clear/overwrite
   ordering); 40s burst = 8068 execs, 0 mismatches.
+  **Follow-up RFC-055: RYW-read differential (Get/GetRange)** — found+fixed a getRange
+  merge bug that dropped empty-value pending keys.
   <details><summary>original spec</summary>
   The C
   binding is the client FDB simulation-tests on every CI run, so matching it is the closest we get
@@ -378,6 +380,15 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
       back; byte-equal where the format is fully spec-pinned). Any *data-plane* byte difference is a
       real wire-compat bug, NOT a tolerance to normalize away.
   </details>
+
+- [ ] **C2-followup. RYW key-selector + atomic-resolution correctness audit (RFC-056).** The
+  RFC-055 RYW-read differential surfaced a cluster of RYW read-resolution divergences from
+  libfdb_c: (1) `Transaction.GetKey` resolves selectors against storage ONLY and does not merge
+  pending writes — needs a faithful port of C++ `resolveKeySelectorFromCache` (removeOrEqual +
+  offset walk over the merged write-map; a merged-GetRange shortcut does NOT capture FDB's
+  offset/orEqual semantics); (2) RYW `applyAtomic` on present empty values diverges (e.g.
+  `Xor(k,"")` then `Min(k,"0")` → Go `0x30` vs libfdb_c `0x00`). Land the held `FuzzRYWRead`
+  (Get/GetRange/GetKey + atomics) to drive + pin the fixes. See rfcs/055 "Findings & scope".
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
