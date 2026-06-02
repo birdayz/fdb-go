@@ -49,6 +49,7 @@ var allKeysEnd = []byte{0xFF, 0xFF}
 // resolution (non-zero offset). The client must then locate the new shard and
 // re-issue the request with the updated selector.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	tx.hadRead = true // a read was issued — the rywDisabled GetKey choke (RFC-059)
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
 		// if key == "" && offset <= 0 → return "" (empty key)

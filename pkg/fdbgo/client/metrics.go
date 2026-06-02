@@ -133,6 +133,12 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 // GetRangeSplitPoints returns suggested split points for the given key range.
 // Matches C++ Transaction::getRangeSplitPoints in NativeAPI.actor.cpp.
 func (tx *Transaction) GetRangeSplitPoints(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
+	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
+	// checkValid path) — RFC-059.
+	if tx.rywPoisonErr != nil {
+		return nil, tx.rywPoisonErr
+	}
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, err := tx.db.locCache.locate(tx.db, ctx, begin, tx.tenantId)
 		if err != nil {

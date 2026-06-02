@@ -901,6 +901,14 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if err := tx.checkTimeout(); err != nil {
 		return err
 	}
+	// A poisoned transaction (SetReadYourWritesDisable after an op) fails commit with
+	// client_invalid_operation. Checked HERE, before the read-only fast path below — a
+	// read-only poisoned commit (e.g. Get; disable; Commit) has no mutations, so it would
+	// otherwise skip ensureReadVersion's gate and commit successfully, diverging from
+	// libfdb_c's 2000 (codex, RFC-059). Returns without resetting (2000 is non-retryable).
+	if tx.rywPoisonErr != nil {
+		return tx.rywPoisonErr
+	}
 
 	// Validate size limit bounds. C++: valid range is [32, 10_000_000].
 	// Out-of-range values return invalid_option_value (2006) at commit time.
