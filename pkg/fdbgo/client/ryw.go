@@ -565,7 +565,14 @@ func (c *rywCache) mergeBatch(
 				c.writes[k] = rywEntry{value: base}
 				writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: base})
 			}
-		} else if entry.value != nil {
+		} else {
+			// A plain (non-atomic) entry is always a PRESENT key: cleared keys are
+			// removed from c.writes (never tombstoned), so entry.value == nil means
+			// "Set to empty bytes" / an atomic resolved to empty — NOT absent. The
+			// previous `entry.value != nil` guard dropped such empty-value keys from
+			// the merged range (e.g. after a Get resolved a pending Xor(k,"") into a
+			// nil-value entry), so getRange disagreed with libfdb_c. Found by the
+			// RFC-055 RYW-read differential.
 			writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: entry.value})
 		}
 	}

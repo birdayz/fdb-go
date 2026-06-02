@@ -572,6 +572,13 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if !isSpecialKey(selectorKey) {
 		tx.addReadConflictForKey(selectorKey)
 	}
+	// KNOWN DIVERGENCE (RFC-055, deferred to RFC-056): this resolves the selector
+	// against STORAGE only and does NOT merge the transaction's own pending writes,
+	// so a key selector does not "see" a pending Set/Clear/ClearRange — unlike C++
+	// RYW::getKey (resolveKeySelectorFromCache). A faithful fix requires porting that
+	// algorithm (removeOrEqual + offset walk over the merged write-map with
+	// readToBegin/readThroughEnd) — a shortcut via merged GetRange does not capture
+	// FDB's offset/orEqual semantics. Snapshot.GetKey is correct on this path.
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
 
