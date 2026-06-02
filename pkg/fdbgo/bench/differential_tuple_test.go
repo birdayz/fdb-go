@@ -410,11 +410,13 @@ func TestDifferential_TuplePackVersionstamp(t *testing.T) {
 			t.Parallel()
 			gb, gerr := tc.mkGo().PackWithVersionstamp(tc.prefix)
 			cb, cerr := tc.mkCgo().PackWithVersionstamp(tc.prefix)
-			if (gerr == nil) != (cerr == nil) {
-				t.Fatalf("%s: error mismatch go=%v cgo=%v", tc.name, gerr, cerr)
-			}
-			if gerr != nil {
-				return
+			// Every case here is a well-formed tuple with exactly one incomplete
+			// versionstamp, so BOTH codecs MUST succeed. Requiring success (rather than
+			// tolerating a both-error return) removes a vacuous-pass path: a (gerr!=nil →
+			// return) guard would silently skip the byte assertion if PackWithVersionstamp
+			// or GetAPIVersion ever errored (FDB-C++ dev review).
+			if gerr != nil || cerr != nil {
+				t.Fatalf("%s: PackWithVersionstamp must succeed for a well-formed one-incomplete-versionstamp tuple; go=%v cgo=%v", tc.name, gerr, cerr)
 			}
 			if !bytes.Equal(gb, cb) {
 				t.Fatalf("%s: PackWithVersionstamp mismatch\n go=%x\ncgo=%x", tc.name, gb, cb)
