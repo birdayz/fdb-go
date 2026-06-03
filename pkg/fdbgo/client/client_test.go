@@ -358,6 +358,38 @@ func TestClusterVersionChanged_SelfConflicting(t *testing.T) {
 	}
 }
 
+// TestApproximateCommitSize_SizesSnapshotNotLiveBuffer pins the codex (RFC-067) finding: the
+// commit-time transaction_too_large (2101) check must size the VALIDATED mutation snapshot, not
+// the live tx.mutations. Under the documented concurrent-use contract a Set racing Commit on
+// another goroutine appends to tx.mutations AFTER Commit snapshots it; sizing the live buffer
+// (GetApproximateSize) would fail a small commit for a mutation that is never marshaled/shipped.
+// The race window between snapshot and check can't be injected deterministically without a test
+// hook, so this pins the mechanism: approximateCommitSize(snapshot) sizes only the snapshot, even
+// when the live buffer dwarfs it — the exact gap that would spuriously trip 2101 under the old code.
+func TestApproximateCommitSize_SizesSnapshotNotLiveBuffer(t *testing.T) {
+	t.Parallel()
+	db := newTestDatabaseStub()
+	tx := db.CreateTransaction()
+
+	// The validated snapshot Commit will marshal: one tiny mutation.
+	snapshot := []Mutation{{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")}}
+
+	// The LIVE buffer additionally holds a 20 MB mutation appended "after" the snapshot
+	// (a concurrent Set racing Commit). It must NOT count toward the committed snapshot's size.
+	tx.mutations = append([]Mutation{}, snapshot...)
+	tx.mutations = append(tx.mutations, Mutation{Type: MutSetValue, Key: []byte("big"), Value: make([]byte, 20_000_000)})
+
+	snapSize := tx.approximateCommitSize(snapshot)
+	if snapSize > sizeofMutationRef+100 {
+		t.Fatalf("approximateCommitSize sized the live buffer (%d), not the validated snapshot — a small commit would spuriously hit 2101", snapSize)
+	}
+	// GetApproximateSize (live) DOES see the 20 MB mutation: this is precisely the value the
+	// commit check must NOT use, or it would reject a small commit for an unshipped mutation.
+	if live := tx.GetApproximateSize(); live <= 20_000_000 {
+		t.Fatalf("live GetApproximateSize=%d should include the 20 MB appended mutation (sanity)", live)
+	}
+}
+
 func TestReadOnlyCommit(t *testing.T) {
 	t.Parallel()
 
@@ -424,6 +456,29 @@ func newTestDatabaseStub() *Database {
 		cancel:         cancel,
 	}
 	return &Database{db: db}
+}
+
+// TestTransactionSizeLimit_DefaultsToKnob pins the C++-faithful default: every
+// transaction's sizeLimit defaults to CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT (10 MB,
+// NativeAPI.actor.cpp:6133), NOT 0/disabled. Without it a >10 MB transaction commits in
+// Go but is rejected client-side by libfdb_c with transaction_too_large (2101) — the
+// divergence the GetRange/error-code differential caught. Revert-proof: with the default
+// left at 0, the first assertion fails (0 != 10_000_000).
+func TestTransactionSizeLimit_DefaultsToKnob(t *testing.T) {
+	t.Parallel()
+	db := newTestDatabaseStub()
+
+	tx := db.CreateTransaction()
+	if tx.sizeLimit != transactionSizeLimit {
+		t.Fatalf("default txn sizeLimit = %d, want %d (CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT)", tx.sizeLimit, transactionSizeLimit)
+	}
+
+	// An explicit DB option lowers it (C++ SIZE_LIMIT option floor is 32, ceiling 10 MB).
+	db.SetTransactionSizeLimit(50000)
+	tx2 := db.CreateTransaction()
+	if tx2.sizeLimit != 50000 {
+		t.Fatalf("after SetTransactionSizeLimit(50000): sizeLimit = %d, want 50000", tx2.sizeLimit)
+	}
 }
 
 func TestParseClusterFile_Errors(t *testing.T) {

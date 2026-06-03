@@ -622,21 +622,29 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 // shouldLessenWork returns true if the error is a transient FDB error indicating
 // the transaction did too much work (too large, timed out, conflicted, etc.).
 // Only these errors warrant retrying with a smaller limit.
-// Matches Java's IndexingThrottle.shouldLessenWork() which whitelists:
-// TIMED_OUT, TRANSACTION_TOO_OLD, NOT_COMMITTED, TRANSACTION_TIMED_OUT,
-// COMMIT_READ_INCOMPLETE, TRANSACTION_TOO_LARGE.
+//
+// Ports Java's IndexingThrottle.lessenWorkCodes (IndexingThrottle.java:64-70)
+// 1:1, with codes from the FDB error table (flow/error_definitions.h):
+// TIMED_OUT(1004), TRANSACTION_TOO_OLD(1007), NOT_COMMITTED(1020),
+// TRANSACTION_TIMED_OUT(1031), COMMIT_READ_INCOMPLETE(2002),
+// TRANSACTION_TOO_LARGE(2101). The previous list had the right error NAMES but
+// wrong NUMBERS — 1028 is new_coordinators_timed_out, 1039 is
+// cluster_version_changed, 2501 is not transaction_timed_out — and was missing
+// 1004/2002/2101, so a transaction_too_large(2101) batch was not retried with a
+// smaller limit (the bug surfaced once the client started enforcing the txn-size
+// limit; see RFC-067).
 func shouldLessenWork(err error) bool {
 	var fdbErr fdb.Error
 	if !errors.As(err, &fdbErr) {
 		return false
 	}
 	switch fdbErr.Code {
-	case 1007, // transaction_too_old
+	case 1004, // timed_out
+		1007, // transaction_too_old
 		1020, // not_committed (conflict)
-		1028, // transaction_too_large
-		1031, // timed_out
-		1039, // commit_read_incomplete
-		2501: // transaction_timed_out
+		1031, // transaction_timed_out
+		2002, // commit_read_incomplete
+		2101: // transaction_too_large
 		return true
 	}
 	return false

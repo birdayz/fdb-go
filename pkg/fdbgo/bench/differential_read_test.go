@@ -91,32 +91,33 @@ func freshSharedVersion(t *testing.T) int64 {
 	return v
 }
 
-func goRangeAt(t *testing.T, v int64, r gofdb.Range, opts gofdb.RangeOptions) []gofdb.KeyValue {
+// goRangeAt/cgoRangeAt read at a PINNED version, RETURNING any error (no Fatalf) so a transient
+// transaction_too_old(1007) — when the pinned version drifts past the 5s MVCC window under heavy
+// parallel-container load — is retried with a fresh version by the caller rather than failing the
+// test. Mirrors goGetKeyAt/cgoGetKeyAt. Callers MUST re-pin a fresh shared version (via
+// freshSharedVersion) and re-read BOTH clients on a retryable error — see the re-pin-and-retry
+// loops in TestDifferential_RangeRead and runDifferentialSequence — so both clients keep
+// observing the IDENTICAL snapshot.
+func goRangeAt(t *testing.T, v int64, r gofdb.Range, opts gofdb.RangeOptions) ([]gofdb.KeyValue, error) {
 	t.Helper()
 	tr, err := goClient.CreateTransaction()
 	if err != nil {
 		t.Fatalf("go CreateTransaction: %v", err)
 	}
+	defer tr.Cancel()
 	tr.SetReadVersion(v)
-	kvs, err := tr.GetRange(r, opts).GetSliceWithError()
-	if err != nil {
-		t.Fatalf("go range: %v", err)
-	}
-	return kvs
+	return tr.GetRange(r, opts).GetSliceWithError()
 }
 
-func cgoRangeAt(t *testing.T, v int64, r cgofdb.Range, opts cgofdb.RangeOptions) []cgofdb.KeyValue {
+func cgoRangeAt(t *testing.T, v int64, r cgofdb.Range, opts cgofdb.RangeOptions) ([]cgofdb.KeyValue, error) {
 	t.Helper()
 	tr, err := cgoClient.CreateTransaction()
 	if err != nil {
 		t.Fatalf("cgo CreateTransaction: %v", err)
 	}
+	defer tr.Cancel()
 	tr.SetReadVersion(v)
-	kvs, err := tr.GetRange(r, opts).GetSliceWithError()
-	if err != nil {
-		t.Fatalf("cgo range: %v", err)
-	}
-	return kvs
+	return tr.GetRange(r, opts).GetSliceWithError()
 }
 
 // goGetKeyAt resolves a selector at a pinned version, RETURNING any error (no MustGet) so a
@@ -183,10 +184,26 @@ func TestDifferential_RangeRead(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			v := freshSharedVersion(t) // fresh per subtest → within the MVCC window
-			goKVs := normGo(goRangeAt(t, v, goPR, gofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse}))
-			cKVs := normC(cgoRangeAt(t, v, cPR, cgofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse, Mode: tc.cMode}))
-			assertKVEqual(t, tc.name, goKVs, cKVs)
+			const maxAttempts = 12
+			for attempt := 0; ; attempt++ {
+				if attempt >= maxAttempts {
+					t.Fatalf("%s: did not clear transient errors in %d attempts", tc.name, maxAttempts)
+				}
+				v := freshSharedVersion(t) // fresh per attempt → within the MVCC window
+				goRaw, goErr := goRangeAt(t, v, goPR, gofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse})
+				cRaw, cErr := cgoRangeAt(t, v, cPR, cgofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse, Mode: tc.cMode})
+				if (goErr != nil && isFDBRetryable(goErr)) || (cErr != nil && isFDBRetryable(cErr)) {
+					continue // stale pin (1007) under load — retry with a fresh shared version
+				}
+				if goErr != nil {
+					t.Fatalf("%s: go range: %v", tc.name, goErr)
+				}
+				if cErr != nil {
+					t.Fatalf("%s: cgo range: %v", tc.name, cErr)
+				}
+				assertKVEqual(t, tc.name, normGo(goRaw), normC(cRaw))
+				return
+			}
 		})
 	}
 }

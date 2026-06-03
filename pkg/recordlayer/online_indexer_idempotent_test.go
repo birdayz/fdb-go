@@ -67,14 +67,16 @@ func TestIsIndexIdempotent(t *testing.T) {
 func TestShouldLessenWork(t *testing.T) {
 	t.Parallel()
 
-	// FDB errors that should trigger limit reduction (transaction too big/slow).
+	// FDB errors that should trigger limit reduction — Java
+	// IndexingThrottle.lessenWorkCodes 1:1 (RFC-067), codes from
+	// flow/error_definitions.h.
 	lessenCodes := []int{
+		1004, // timed_out
 		1007, // transaction_too_old
 		1020, // not_committed (conflict)
-		1028, // transaction_too_large
-		1031, // timed_out
-		1039, // commit_read_incomplete
-		2501, // transaction_timed_out
+		1031, // transaction_timed_out
+		2002, // commit_read_incomplete
+		2101, // transaction_too_large
 	}
 	for _, code := range lessenCodes {
 		err := fdb.Error{Code: code}
@@ -88,12 +90,18 @@ func TestShouldLessenWork(t *testing.T) {
 		}
 	}
 
-	// FDB errors that should NOT trigger limit reduction.
+	// FDB errors that should NOT trigger limit reduction. Includes the codes
+	// the OLD (buggy) list wrongly whitelisted (RFC-067): 1028 is
+	// new_coordinators_timed_out, 1039 is cluster_version_changed, and 2501 is
+	// not transaction_timed_out — none are in Java's lessenWorkCodes.
 	noLessenCodes := []int{
 		1009, // future_version (retryable but not workload-related)
+		1028, // new_coordinators_timed_out (was wrongly whitelisted)
 		1038, // database_locked
+		1039, // cluster_version_changed (was wrongly whitelisted)
 		1070, // not_writable (permanent)
 		2000, // io_error
+		2501, // not a lessen-work code (was wrongly whitelisted)
 	}
 	for _, code := range noLessenCodes {
 		if shouldLessenWork(fdb.Error{Code: code}) {

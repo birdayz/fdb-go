@@ -145,7 +145,13 @@ func TestDecreaseLimit(t *testing.T) {
 func TestMayRetryAfterHandlingException(t *testing.T) {
 	t.Parallel()
 
-	retryableCodes := []int{1007, 1020, 1028, 1031, 1039, 2501}
+	// Java IndexingThrottle.lessenWorkCodes (1:1): timed_out(1004),
+	// transaction_too_old(1007), not_committed(1020), transaction_timed_out(1031),
+	// commit_read_incomplete(2002), transaction_too_large(2101). RFC-067.
+	retryableCodes := []int{1004, 1007, 1020, 1031, 2002, 2101}
+	// Codes the OLD (buggy) list wrongly whitelisted — must NOT lessen work now:
+	// 1028=new_coordinators_timed_out, 1039=cluster_version_changed, 2501≠any lessen code.
+	notRetryableCodes := []int{1028, 1039, 2501, 9999}
 
 	t.Run("returns false when attempt >= maxRetries", func(t *testing.T) {
 		t.Parallel()
@@ -183,6 +189,20 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 				err := fdb.Error{Code: code}
 				if !th.mayRetryAfterHandlingException(err, 0, 50) {
 					t.Errorf("should return true for fdb error code %d", code)
+				}
+			})
+		}
+	})
+
+	t.Run("does NOT retry codes outside the Java lessen-work set", func(t *testing.T) {
+		t.Parallel()
+		for _, code := range notRetryableCodes {
+			code := code
+			t.Run(fmt.Sprintf("code=%d", code), func(t *testing.T) {
+				t.Parallel()
+				th := newIndexingThrottle(100, 3, 0)
+				if th.mayRetryAfterHandlingException(fdb.Error{Code: code}, 0, 50) {
+					t.Errorf("code %d must NOT lessen work (not in Java lessenWorkCodes)", code)
 				}
 			})
 		}

@@ -717,6 +717,12 @@ func (tx *Transaction) maxWriteKey() []byte {
 // C++ RYW: `key != metadataVersionKey` in getValue check.
 var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
 
+// metadataVersionRequiredValue is the ONLY operand libfdb_c accepts for a
+// SetVersionstampedValue to metadataVersionKey (SystemData.cpp:1387 — 14 zero bytes: a
+// 10-byte versionstamp placeholder + the 4-byte LE offset suffix 0). C++ RYW::atomicOp
+// (:2226-2229) rejects any other operand — and any non-SVV op — with client_invalid_operation.
+var metadataVersionRequiredValue = []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+
 // conflictBufPool reuses backing buffers for conflict range keys (both read
 // and write). Each transaction needs ~200 conflict keys for a 50-record batch,
 // totaling ~20KB. Without pooling, the buffer grows 4K→8K→16K→32K
@@ -934,12 +940,6 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return &wire.FDBError{Code: 2006} // invalid_option_value
 	}
 
-	// Enforce size limit if set. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
-	if tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
-		tx.state.Store(int32(txStateErrored))
-		return &wire.FDBError{Code: 2101} // transaction_too_large
-	}
-
 	// Snapshot the mutation/conflict buffers under conflictMu before reading
 	// them. The published contract (fdb/transaction.go) makes Set/Get/Commit
 	// safe for concurrent use: a Get future resolving on another goroutine
@@ -954,15 +954,31 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// C++ RYW write checks (deferred to commit since our Set/Clear are void):
 	// - set(): if key == metadataVersionKey → client_invalid_operation
 	//          if key >= maxWriteKey → key_outside_legal_range
-	// - atomicOp(): if key == metadataVersionKey → allow (only SVV)
+	// - atomicOp(): if key == metadataVersionKey → ONLY SetVersionstampedValue with operand ==
+	//               metadataVersionRequiredValue is allowed; anything else →
+	//               client_invalid_operation. metadataVersionKey skips the legal-range check.
 	//               if key >= maxWriteKey → key_outside_legal_range
 	maxWrite := tx.maxWriteKey()
 	for _, m := range muts {
-		if bytes.Equal(m.Key, metadataVersionKeyBytes) {
-			// metadataVersionKey is exempt — only allowed via SetVersionstampedValue
-			continue
-		}
-		if bytes.Compare(m.Key, maxWrite) >= 0 {
+		if bytes.Equal(m.Key, metadataVersionKeyBytes) && m.Type != MutClearRange {
+			// C++ RYW::atomicOp (:2226-2229) and set() (:2300): the ONLY legal mutation to
+			// metadataVersionKey is SetVersionstampedValue with operand ==
+			// metadataVersionRequiredValue. A plain Set, any other atomic op (Add, SVK, …), or
+			// SVV with a different operand → client_invalid_operation (2000). This gate runs
+			// BEFORE the size/offset checks (it is the metadataVersionKey arm of the same
+			// if/else-if as the legal-range check). The legal write is exempt from the
+			// legal-range check (system key) but still subject to the key/value-size and
+			// versionstamp-offset checks below, which metadataVersionRequiredValue passes.
+			//
+			// clear()/clear(range) (C++ :2357, :2406) have NO metadataVersionKey gate — a clear
+			// whose begin is metadataVersionKey falls to the legal-range check below and reports
+			// key_outside_legal_range (2004), since metadataVersionKey >= maxWriteKey. Hence the
+			// `m.Type != MutClearRange` guard (Go models a single-key Clear as MutClearRange).
+			if m.Type != MutSetVersionstampedValue || !bytes.Equal(m.Value, metadataVersionRequiredValue) {
+				tx.state.Store(int32(txStateErrored))
+				return &wire.FDBError{Code: 2000} // client_invalid_operation
+			}
+		} else if bytes.Compare(m.Key, maxWrite) >= 0 {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2004} // key_outside_legal_range
 		}
@@ -1009,12 +1025,20 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2103} // value_too_large
 		}
-	}
-
-	// Validate versionstamp offsets. C++ ReadYourWritesTransaction::atomicOp
-	// validates immediately; we defer to commit time since Atomic() is void.
-	// Error: client_invalid_operation (2000).
-	for _, m := range muts {
+		// Versionstamp offset validation -- client_invalid_operation (2000). C++
+		// ReadYourWritesTransaction::atomicOp validates this EAGERLY at the atomicOp()
+		// call; our Atomic() is void so we defer to commit, but it must stay in THIS
+		// per-mutation loop (mutation order = call order) so the eager semantics match
+		// libfdb_c. Two ordering facts pinned by the differential
+		// (TestDifferential_VersionstampValidationOrder):
+		//   - ACROSS mutations the FIRST eagerly-invalid op wins, so a bad versionstamp
+		//     earlier in the buffer out-ranks a later oversized key/value (and
+		//     vice-versa); a fixed loop order in mutation order reproduces "first wins".
+		//   - WITHIN one op the key/value SIZE checks above run BEFORE this offset
+		//     check, so an oversized versionstamp key/value reports 2102/2103, not 2000
+		//     -- hence this sits after the size checks.
+		// It must also precede the transaction-size check below: 2101 is DEFERRED
+		// (commit-time) in libfdb_c and never pre-empts an eager 2000.
 		switch m.Type {
 		case MutSetVersionstampedKey:
 			if err := validateVersionstampOffset(m.Key); err != nil {
@@ -1027,6 +1051,22 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+
+	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
+	// order (NativeAPI.actor.cpp:6797-6836):
+	//   - The read-only fast path returns BEFORE the size check (:6800): a txn with NO
+	//     mutations AND NO write-conflict ranges is never rejected for size — even one
+	//     carrying >10 MB of READ-conflict ranges (which getSize would otherwise count).
+	//   - The size check runs AFTER per-mutation validation (key/value size AND the
+	//     eager versionstamp-offset check above), so an oversized key/value/bad
+	//     versionstamp that also crosses 10 MB reports 2102/2103/2000, not 2101.
+	// Size the VALIDATED snapshot `muts` (via approximateCommitSize), not the live buffer:
+	// a Set racing this Commit on another goroutine appends beyond `muts` and is not in this
+	// commit, so GetApproximateSize() could fail a small commit for an unshipped mutation.
+	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(muts) > tx.sizeLimit {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
 	if len(muts) == 0 && nWriteConflicts == 0 {
@@ -1340,6 +1380,31 @@ func (tx *Transaction) GetApproximateSize() int64 {
 	for _, m := range tx.mutations {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
 	}
+	for _, r := range tx.readConflicts {
+		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
+	}
+	for _, r := range tx.writeConflicts {
+		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
+	}
+	return size
+}
+
+// approximateCommitSize sizes the request that WILL be committed: the validated mutation
+// snapshot `muts` (the exact set Commit marshals — NOT the live tx.mutations) plus the current
+// conflict ranges. The commit-time size check (transaction_too_large, 2101) must use this, not
+// GetApproximateSize(): under the concurrent-use contract a Set racing Commit on another
+// goroutine appends to tx.mutations BEYOND `muts`, so GetApproximateSize() (which reads the live
+// buffer) could fail a small commit for a mutation that is never shipped. `muts` is an
+// append-only snapshot (elements never mutated in place) captured by Commit before this runs, so
+// iterating it needs no lock; the conflict buffers are read live under conflictMu (the marshal
+// likewise ships them from a live snapshot, so counting live conflicts matches what is sent).
+func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
+	var size int64
+	for _, m := range muts {
+		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
+	}
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
 	for _, r := range tx.readConflicts {
 		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}

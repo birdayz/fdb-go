@@ -132,7 +132,7 @@ type TransactionDefaults struct {
 	Timeout        int64 // FDB_DB_OPTION_TRANSACTION_TIMEOUT (ms), 0 = disabled
 	RetryLimit     int   // FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT
 	MaxRetryDelay  int64 // FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY (ms), 0 = use default
-	SizeLimit      int64 // FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT, 0 = disabled
+	SizeLimit      int64 // FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT; 0/unset → 10 MB default (C++ has no "disabled" state)
 	HasRetryLimit  bool
 	ReadSystemKeys bool // read \xff/* keys by default
 	AccessSysKeys  bool // read+write \xff/* keys by default
@@ -574,8 +574,16 @@ func (d *Database) CreateTransaction() *Transaction {
 	if td.MaxRetryDelay > 0 {
 		tx.SetMaxRetryDelay(td.MaxRetryDelay)
 	}
+	// C++ defaults EVERY transaction's sizeLimit to CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT
+	// (NativeAPI.actor.cpp:6133) — there is no "disabled" state: the SIZE_LIMIT option
+	// floor is 32 and its default/ceiling is 10 MB. A 0/unset DB default must therefore
+	// still enforce 10 MB, otherwise the Go client commits an oversized transaction that
+	// libfdb_c rejects client-side with transaction_too_large (2101) — a wire divergence.
+	// The DB option, when set (>0), lowers the limit.
 	if td.SizeLimit > 0 {
 		tx.SetSizeLimit(td.SizeLimit)
+	} else {
+		tx.SetSizeLimit(transactionSizeLimit)
 	}
 	if td.ReadSystemKeys {
 		tx.SetReadSystemKeys()
