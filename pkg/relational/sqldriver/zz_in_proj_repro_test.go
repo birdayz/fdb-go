@@ -100,6 +100,30 @@ func TestFDB_INProj_OuterProjectionOverInJoin(t *testing.T) {
 			t.Errorf("got %d rows, want 2", n)
 		}
 	})
+	t.Run("order_by_over_in", func(t *testing.T) {
+		// Project + InMemorySort + InJoin stacked: exercises the projection
+		// relink (RFC-070) together with the in-memory-sort relink (RFC-069).
+		rows, err := db.QueryContext(ctx, "SELECT id FROM ti WHERE a IN (3, 5, 1) ORDER BY id")
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		cols, _ := rows.Columns()
+		if len(cols) != 1 {
+			t.Errorf("ORDER BY over IN returned %d columns %v, want 1", len(cols), cols)
+		}
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, id)
+		}
+		if fmt.Sprint(got) != fmt.Sprint([]int64{1, 3, 5}) {
+			t.Errorf("got %v, want [1 3 5] (sorted)", got)
+		}
+	})
 	t.Run("expression_projection", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx, "SELECT id + 100 FROM ti WHERE a IN (1, 7)")
 		if err != nil {

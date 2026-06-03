@@ -115,6 +115,9 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// `yieldPlan(fetchPlan.getChild())`) leaks the full record and the
 	// wrong output schema. The covering-index branch above retains the
 	// projection for exactly this reason.
+	// fetchInnerExpr comes from findPhysicalExpr above, which only returns
+	// physicalPlanExpression members, so !ok is unreachable; the guard is
+	// defensive (avoids a panic if that invariant ever changes).
 	childPhys, ok := fetchInnerExpr.(physicalPlanExpression)
 	if !ok {
 		return
