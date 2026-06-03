@@ -483,3 +483,35 @@ func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
 	}
 	t.Fatal("inner filter should have equality predicate correlating to explode alias")
 }
+
+// TestDistinctInListValues covers IN-list dedup, including the panic-safety
+// case codex flagged: array / vector IN literals fold to non-comparable
+// slices ([]float64, []any), so the comparator must not use a bare `==`.
+func TestDistinctInListValues(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   []any
+		want int
+	}{
+		{"scalars_with_dups", []any{int64(1), int64(1), int64(2)}, 2},
+		{"strings", []any{"a", "b", "a"}, 2},
+		{"bytes_by_content", []any{[]byte{1, 2}, []byte{1, 2}, []byte{3}}, 2},
+		{"nil_collapses", []any{nil, nil, int64(1)}, 2},
+		// Non-comparable slice literals (array/vector IN list) — must dedupe
+		// structurally without panicking on ==.
+		{"float_slices", []any{[]float64{1, 0}, []float64{1, 0}, []float64{0, 1}}, 2},
+		{"any_slices", []any{[]any{int64(1)}, []any{int64(1)}, []any{int64(2)}}, 2},
+		{"mixed_slice_and_scalar", []any{[]float64{1}, int64(1), []float64{1}}, 2},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got := distinctInListValues(c.in) // must not panic
+			if len(got) != c.want {
+				t.Fatalf("distinctInListValues(%v) = %v (len %d), want len %d", c.in, got, len(got), c.want)
+			}
+		})
+	}
+}

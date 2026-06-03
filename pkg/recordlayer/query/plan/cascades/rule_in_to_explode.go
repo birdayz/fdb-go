@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"bytes"
+	"reflect"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
@@ -197,13 +198,21 @@ func distinctInListValues(in []any) []any {
 }
 
 // inListValueEqual reports SQL value equality for two IN-list literals.
-// []byte (BYTES literals) are not comparable with == so compare by content;
-// all other scalar literals (int64, float64, string, bool, nil) use ==.
+// It must never panic: an IN list can carry array / vector literals
+// (`WHERE v IN ([1,0], [0,1])`) that fold to non-comparable slices
+// ([]float64, []any, ...), so a bare `==` would crash planning. []byte
+// (BYTES) and other non-comparable kinds compare structurally; comparable
+// scalars (int64, float64, string, bool) use ==.
 func inListValueEqual(a, b any) bool {
-	ab, aok := a.([]byte)
-	bb, bok := b.([]byte)
-	if aok || bok {
-		return aok && bok && bytes.Equal(ab, bb)
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if ab, ok := a.([]byte); ok {
+		bb, ok := b.([]byte)
+		return ok && bytes.Equal(ab, bb)
+	}
+	if !reflect.TypeOf(a).Comparable() || !reflect.TypeOf(b).Comparable() {
+		return reflect.DeepEqual(a, b)
 	}
 	return a == b
 }
