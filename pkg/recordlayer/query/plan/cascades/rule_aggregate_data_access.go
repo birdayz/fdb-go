@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"fmt"
-
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -162,6 +160,20 @@ func buildAggScanPrefix(
 	return prefix
 }
 
+// aggregateFlowedColumnName returns the column name under which the
+// aggregate-index executor (aggregateIndexCursor.OnNext) flows an
+// aggregate value into the row. COUNT(*) (empty aggColumn) flows under
+// "FUNC(*)"; a column aggregate flows under "FUNC(col)". The
+// multi-aggregate intersection result value references these names so the
+// pick-up resolves against the row the child stream produces. Keep this in
+// sync with the executor's aggregateIndexCursor.
+func aggregateFlowedColumnName(aggFunc, aggColumn string) string {
+	if aggColumn == "" {
+		return aggFunc + "(*)"
+	}
+	return aggFunc + "(" + aggColumn + ")"
+}
+
 // fieldNameOnly strips a "TABLE." prefix from a qualified field name.
 func fieldNameOnly(qualified string) string {
 	for i := len(qualified) - 1; i >= 0; i-- {
@@ -251,7 +263,15 @@ func tryMultiAggregateIntersection(
 		}
 	}
 
-	// Build child index scan plans.
+	// Build child aggregate-index scan plans. Each child MUST be a
+	// RecordQueryAggregateIndexPlan (not a bare RecordQueryIndexPlan): an
+	// aggregate index stores the running aggregate IN the index entry
+	// (key=group cols, value=aggregate) and points at no base record, so a
+	// plain index scan would try to fetch a non-existent record and emit
+	// zero rows. The aggregate-index executor instead flows a row of
+	// {groupCol: value, "FUNC(col)": aggregate} — the same shape the
+	// single-aggregate path produces — which the comparison key and the
+	// merge step below depend on.
 	childPlans := make([]plans.RecordQueryPlan, len(matched))
 	for i, mc := range matched {
 		prefix := buildAggScanPrefix(mc, innerFilterPreds)
@@ -260,46 +280,46 @@ func tryMultiAggregateIntersection(
 		if idxPlan == nil {
 			return
 		}
-		childPlans[i] = idxPlan
+		var recordTypeName string
+		if rts := mc.GetRecordTypes(); len(rts) > 0 {
+			recordTypeName = rts[0]
+		}
+		childPlans[i] = plans.NewRecordQueryAggregateIndexPlan(
+			idxPlan, recordTypeName, values.UnknownType, mc.aggFunction.String(),
+		).WithGroupColumns(mc.groupCols, mc.aggColumn)
 	}
 
-	// Comparison key = grouping column FieldValues.
+	// Comparison key = grouping column FieldValues. The aggregate-index
+	// cursor flows each grouping column under its (uppercased) metadata
+	// name, so the comparison key matches identical group values across the
+	// per-aggregate streams. With a WHERE-equality prefix (cat='books')
+	// each stream emits exactly that one group; the keys still match.
 	comparisonKey := make([]values.Value, len(groupCols))
 	for i, col := range groupCols {
 		comparisonKey[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
 	}
 
-	// Result value = Record(groupCol0, groupCol1, ..., agg0, agg1, ...).
-	// Grouping columns come from the first child; each aggregate comes
-	// from its respective child. Mirrors Java's
-	// computeIntersectionResultValue(). Use unique field names to avoid
-	// collisions between grouping columns and aggregate pick-ups.
+	// Result value = Record(groupCol0, ..., agg0, agg1, ...).
+	// Grouping columns are identical across all streams; each aggregate is
+	// picked up from its respective stream. Mirrors Java's
+	// computeIntersectionResultValue(). The aggregate fields reference the
+	// canonical aggregate-column name the child cursor flows
+	// ("FUNC(col)" / "FUNC(*)") — NOT the bare aggColumn — so the pick-up
+	// resolves against the merged row the executor builds. Output field
+	// names match the single-aggregate path so the projection above reads
+	// the same keys regardless of which plan won.
 	fields := make([]values.RecordConstructorField, 0, len(groupCols)+len(aggs))
-	usedNames := make(map[string]struct{}, len(groupCols)+len(aggs))
 	for _, col := range groupCols {
 		fields = append(fields, values.RecordConstructorField{
 			Name:  col,
 			Value: &values.FieldValue{Field: col, Typ: values.UnknownType},
 		})
-		usedNames[col] = struct{}{}
 	}
-	for i, agg := range aggs {
-		name := matched[i].aggColumn
-		if agg.Alias != "" {
-			name = agg.Alias
-		}
-		// Ensure uniqueness — append _N suffix on collision.
-		base := name
-		for seq := 1; ; seq++ {
-			if _, dup := usedNames[name]; !dup {
-				break
-			}
-			name = fmt.Sprintf("%s_%d", base, seq)
-		}
-		usedNames[name] = struct{}{}
+	for i := range aggs {
+		colName := aggregateFlowedColumnName(matched[i].aggFunction.String(), matched[i].aggColumn)
 		fields = append(fields, values.RecordConstructorField{
-			Name:  name,
-			Value: &values.FieldValue{Field: matched[i].aggColumn, Typ: values.UnknownType},
+			Name:  colName,
+			Value: &values.FieldValue{Field: colName, Typ: values.UnknownType},
 		})
 	}
 	resultValue := values.NewRecordConstructorValue(fields...)

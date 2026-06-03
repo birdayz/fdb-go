@@ -190,8 +190,8 @@ func TestPlanningCostModel_TypeFilterCountsRecordTypes(t *testing.T) {
 		innerQ,
 	)
 
-	counts1 := findExpressionsByType(oneType, nil)
-	counts3 := findExpressionsByType(threeTypes, nil)
+	counts1 := findExpressionsByType(oneType, nil, nil)
+	counts3 := findExpressionsByType(threeTypes, nil, nil)
 
 	if counts1.typeFilterCount != 1 {
 		t.Errorf("typeFilterCount for 1-type filter = %d, want 1", counts1.typeFilterCount)
@@ -309,8 +309,8 @@ func TestCompareInPlan_FlipFlop_SargedVsUnsarged(t *testing.T) {
 	innerRefB := expressions.InitialOf(innerScanB)
 	wrapB := NewPhysicalInJoinWrapper(inJoinPlanB, expressions.NewPhysicalQuantifier(innerRefB))
 
-	opsA := findExpressionsByType(wrapA, nil)
-	opsB := findExpressionsByType(wrapB, nil)
+	opsA := findExpressionsByType(wrapA, nil, nil)
+	opsB := findExpressionsByType(wrapB, nil, nil)
 
 	cmp := compareInPlan(wrapA, wrapB, opsA, opsB)
 	if cmp != 0 {
@@ -448,16 +448,27 @@ func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *test
 	if !mr.Ok {
 		t.Fatal("failed to merge equality comparison")
 	}
+	// The cost-model walks the wrapper's CONCRETE plan tree (RFC-069 phantom-child
+	// fix) and reads the covering flag from the concrete plan (pl.IsCovering()), so
+	// the concrete plan must be marked covering via WithCovering — exactly as the
+	// data-access rule does in production (abstract_data_access_rule.go). Index
+	// metadata (key columns) is resolved from a PlanContext, also as in production.
+	idxPlan := plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false).
+		WithCovering([]string{"A"})
 	index := &physicalIndexScanWrapper{
-		plan:        plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false),
+		plan:        idxPlan,
 		columnNames: []string{"A"},
 		covering:    true,
 	}
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
+		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, false, nil),
+	}}
+	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
 
-	if !PlanningCostModelLess(index, primary) {
+	if !costLess(index, primary) {
 		t.Error("covering equality index scan should be preferred over primary scan")
 	}
-	if PlanningCostModelLess(primary, index) {
+	if costLess(primary, index) {
 		t.Error("primary scan should NOT be preferred over covering equality index scan")
 	}
 }
@@ -488,13 +499,25 @@ func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
 	if !mr.Ok {
 		t.Fatal("failed to merge equality comparison")
 	}
+	// The cost model now uses PROVABLE max-cardinality (Java's CardinalitiesProperty,
+	// RFC-069): a fully equality-bound UNIQUE index bounds the access at 1 row and so
+	// provably beats an unbounded full scan on criterion #2. (A non-unique equality
+	// index has no provable bound — it could match many rows — and under Java's
+	// semantics does NOT provably beat a full scan; the singular-index-with-fetch
+	// tie-breaker then prefers the primary scan to avoid per-row PK fetches.) Mark the
+	// candidate unique and resolve its metadata from a PlanContext, as in production.
 	index := &physicalIndexScanWrapper{
 		plan:        plans.NewRecordQueryIndexPlan("idx_a", []*predicates.ComparisonRange{mr.Range}, []string{"T"}, values.UnknownType, false),
 		columnNames: []string{"A"},
+		unique:      true,
 	}
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
+		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, true, nil),
+	}}
+	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
 
-	if !PlanningCostModelLess(index, primary) {
-		t.Error("equality-bound index scan should beat full primary scan")
+	if !costLess(index, primary) {
+		t.Error("fully equality-bound unique index scan should beat full primary scan")
 	}
 }
 
@@ -592,26 +615,42 @@ func TestPlanningCostModelLess_Criterion10_IndexScanFetchCount(t *testing.T) {
 	// Both have indexScanCount+coveringIndexCount > 0, so criterion 10 fires.
 	// fetchA (0) < fetchB (2) → plan A wins.
 
-	// Plan A: covering index scan (no fetch wrapper).
+	// The cost-model walks the wrapper's CONCRETE plan tree (RFC-069 phantom-child
+	// fix), so the operator nesting (fetch over index scan) must live in the
+	// concrete plans, and index metadata is resolved from a PlanContext supplied
+	// exactly as the planner does in production.
+	//
+	// Plan A: covering index scan (no fetch wrapper). The concrete plan must be
+	// marked covering (WithCovering) so the concrete-plan walk classifies it as a
+	// covering index, exactly as the production data-access rule does.
+	idxAPlan := plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false).
+		WithCovering([]string{"a"})
 	indexA := &physicalIndexScanWrapper{
-		plan:        plans.NewRecordQueryIndexPlan("idx_a", nil, []string{"T"}, values.UnknownType, false),
+		plan:        idxAPlan,
 		columnNames: []string{"a"},
 		covering:    true,
 	}
 
 	// Plan B: non-covering index scan + fetch wrapper.
+	idxBPlan := plans.NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, false)
 	indexB := &physicalIndexScanWrapper{
-		plan:        plans.NewRecordQueryIndexPlan("idx_b", nil, []string{"T"}, values.UnknownType, false),
+		plan:        idxBPlan,
 		columnNames: []string{"b"},
 	}
 	indexBRef := expressions.InitialOf(indexB)
 	indexBQ := expressions.NewPhysicalQuantifier(indexBRef)
-	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(nil, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+	fetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(idxBPlan, nil, nil, plans.FetchIndexRecordsPrimaryKey)
 	planB := NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, indexBQ)
 
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
+		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
+		NewValueIndexScanMatchCandidate("idx_b", []string{"T"}, []string{"b"}, nil, values.UnknownType, false, nil),
+	}}
+	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
+
 	// Verify counts are as expected before checking the full comparator.
-	opsA := findExpressionsByType(indexA, nil)
-	opsB := findExpressionsByType(planB, nil)
+	opsA := findExpressionsByType(indexA, nil, ctx)
+	opsB := findExpressionsByType(planB, nil, ctx)
 	if opsA.coveringIndexCount != 1 || opsA.indexScanCount != 0 || opsA.fetchCount != 0 {
 		t.Fatalf("plan A counts wrong: covering=%d index=%d fetch=%d", opsA.coveringIndexCount, opsA.indexScanCount, opsA.fetchCount)
 	}
@@ -625,10 +664,10 @@ func TestPlanningCostModelLess_Criterion10_IndexScanFetchCount(t *testing.T) {
 		t.Fatalf("test setup invalid: fetchA=%d should be < fetchB=%d", fetchA, fetchB)
 	}
 
-	if !PlanningCostModelLess(indexA, planB) {
+	if !costLess(indexA, planB) {
 		t.Error("plan with lower indexScanCount+fetchCount should win")
 	}
-	if PlanningCostModelLess(planB, indexA) {
+	if costLess(planB, indexA) {
 		t.Error("plan with higher indexScanCount+fetchCount should NOT win")
 	}
 }
@@ -683,7 +722,14 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	t.Parallel()
 
 	// Build two covering index scans with different numbers of unmatched fields.
-	// unmatchedFieldCount = totalCols - boundCols.
+	// unmatchedFieldCount = (index key columns) - (bound comparisons).
+	//
+	// The cost-model walks the wrapper's CONCRETE plan tree (RFC-069 phantom-child
+	// fix) and resolves index key-column counts from the PlanContext's match
+	// candidates by index name — so the test must supply a ctx carrying those
+	// candidates, exactly as the planner does in production
+	// (NewPlanningCostModelLessWithContext). With ctx==nil the column count is
+	// unresolvable and unmatchedFieldCount conservatively degrades to 0.
 	//
 	// Plan A: 1-column index, 1 equality bound → unmatched=0.
 	eqComp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}}
@@ -705,8 +751,14 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 		covering:    true,
 	}
 
-	opsA := findExpressionsByType(indexA, nil)
-	opsB := findExpressionsByType(indexB, nil)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
+		NewValueIndexScanMatchCandidate("idx_a", []string{"T"}, []string{"a"}, nil, values.UnknownType, false, nil),
+		NewValueIndexScanMatchCandidate("idx_b", []string{"T"}, []string{"a", "b", "c"}, nil, values.UnknownType, false, nil),
+	}}
+	costLess := NewPlanningCostModelLessWithContext(nil, ctx)
+
+	opsA := findExpressionsByType(indexA, nil, ctx)
+	opsB := findExpressionsByType(indexB, nil, ctx)
 	if opsA.unmatchedFieldCount != 0 {
 		t.Fatalf("plan A unmatchedFieldCount = %d, want 0", opsA.unmatchedFieldCount)
 	}
@@ -715,10 +767,10 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	}
 
 	// Both have inMemorySortCount=0, so criterion 12 fires: fewer unmatched wins.
-	if !PlanningCostModelLess(indexA, indexB) {
+	if !costLess(indexA, indexB) {
 		t.Error("unmatched=0 should beat unmatched=3 (no in-memory sort)")
 	}
-	if PlanningCostModelLess(indexB, indexA) {
+	if costLess(indexB, indexA) {
 		t.Error("unmatched=3 should NOT beat unmatched=0")
 	}
 
@@ -730,7 +782,7 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	indexBQ := expressions.NewPhysicalQuantifier(indexBRef)
 	withSort := newPhysicalInMemorySortWrapper(sortPlan, indexBQ)
 
-	opsWithSort := findExpressionsByType(withSort, nil)
+	opsWithSort := findExpressionsByType(withSort, nil, ctx)
 	if opsWithSort.inMemorySortCount != 1 {
 		t.Fatalf("withSort inMemorySortCount = %d, want 1", opsWithSort.inMemorySortCount)
 	}
@@ -738,7 +790,7 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 	// When plan B has an in-memory sort, the guard fires: criterion 12 must return 0.
 	// The guard condition is: opsA.inMemorySortCount==0 && opsB.inMemorySortCount==0.
 	// Verify via the counts directly.
-	opsNoSort := findExpressionsByType(indexA, nil)
+	opsNoSort := findExpressionsByType(indexA, nil, ctx)
 	if opsNoSort.inMemorySortCount != 0 || opsWithSort.inMemorySortCount != 1 {
 		t.Fatal("unexpected inMemorySortCount values")
 	}
@@ -750,14 +802,13 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 		t.Error("criterion 12 should be suppressed when plan B has in-memory sort")
 	}
 
-	// Behavioral check: PlanningCostModelLess should NOT pick indexA over
-	// withSort based on unmatchedFieldCount alone — the guard suppresses it.
-	// If criterion 12 were NOT suppressed, indexA (0 unmatched) would always
-	// beat withSort (3 unmatched). With suppression, the result depends on
-	// later criteria (hash tiebreak), so we just verify it doesn't crash and
-	// returns a deterministic result.
-	_ = PlanningCostModelLess(indexA, withSort)
-	_ = PlanningCostModelLess(withSort, indexA)
+	// Behavioral check: the cost model should NOT pick indexA over withSort based
+	// on unmatchedFieldCount alone — the guard suppresses it. If criterion 12 were
+	// NOT suppressed, indexA (0 unmatched) would always beat withSort (3 unmatched).
+	// With suppression, the result depends on later criteria (hash tiebreak), so we
+	// just verify it doesn't crash and returns a deterministic result.
+	_ = costLess(indexA, withSort)
+	_ = costLess(withSort, indexA)
 }
 
 // TestPlanningCostModelLess_Criterion13_InJoinCount verifies that
@@ -770,7 +821,11 @@ func TestPlanningCostModelLess_Criterion12_UnmatchedFieldCount(t *testing.T) {
 func TestPlanningCostModelLess_Criterion13_InJoinCount(t *testing.T) {
 	t.Parallel()
 
-	// Build nested in-join wrappers to verify count accumulation.
+	// Build nested in-join wrappers to verify count accumulation. The
+	// cost-model walks the wrapper's CONCRETE plan tree (RFC-069 phantom-child
+	// fix), so the nesting must live in the concrete plans: inJoinPlan2 wraps
+	// inJoinPlan1 (two InJoins in the concrete tree), and the wrapper-quantifier
+	// nesting mirrors it for the comparator path.
 	indexPlan := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
 	indexRef := expressions.InitialOf(&physicalIndexScanWrapper{
 		plan:        indexPlan,
@@ -784,11 +839,11 @@ func TestPlanningCostModelLess_Criterion13_InJoinCount(t *testing.T) {
 
 	outerRef := expressions.InitialOf(outerInJoin)
 	outerQ := expressions.NewPhysicalQuantifier(outerRef)
-	inJoinPlan2 := plans.NewRecordQueryInJoinPlan(indexPlan, "bind2", false, false)
+	inJoinPlan2 := plans.NewRecordQueryInJoinPlan(inJoinPlan1, "bind2", false, false)
 	twoInJoins := NewPhysicalInJoinWrapper(inJoinPlan2, outerQ)
 
-	opsOne := findExpressionsByType(outerInJoin, nil)
-	opsTwo := findExpressionsByType(twoInJoins, nil)
+	opsOne := findExpressionsByType(outerInJoin, nil, nil)
+	opsTwo := findExpressionsByType(twoInJoins, nil, nil)
 	if opsOne.inJoinCount != 1 {
 		t.Fatalf("outerInJoin inJoinCount = %d, want 1", opsOne.inJoinCount)
 	}
@@ -819,23 +874,24 @@ func TestPlanningCostModelLess_Criterion14_MapPredicatesFilterCount(t *testing.T
 	innerQ := expressions.ForEachQuantifier(scanRef)
 
 	// Plan A: one predicates filter on top of the scan → predicatesFilterCount=1, mapCount=0.
+	// The cost-model walks the wrapper's CONCRETE plan tree (RFC-069 phantom-child
+	// fix), so the operator nesting must live in the concrete plans, not only in
+	// the wrapper quantifiers.
 	pred := predicates.NewComparisonPredicate(
 		&values.FieldValue{Field: "x", Typ: values.TypeInt},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
-	oneFilter := NewPhysicalPredicatesFilterWrapper(
-		plans.NewRecordQueryPredicatesFilterPlan(nil, []predicates.QueryPredicate{pred}),
-		innerQ,
-	)
+	filterPlan := plans.NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{pred})
+	oneFilter := NewPhysicalPredicatesFilterWrapper(filterPlan, innerQ)
 
 	// Plan B: same filter, plus a map on top → predicatesFilterCount=1, mapCount=1 → sum=2.
 	filterRef := expressions.InitialOf(oneFilter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	mapPlan := plans.NewRecordQueryMapPlan(nil, &values.ConstantValue{Value: int64(0), Typ: values.TypeInt})
+	mapPlan := plans.NewRecordQueryMapPlan(filterPlan, &values.ConstantValue{Value: int64(0), Typ: values.TypeInt})
 	withMap := NewPhysicalMapWrapper(mapPlan, filterQ)
 
-	opsA := findExpressionsByType(oneFilter, nil)
-	opsB := findExpressionsByType(withMap, nil)
+	opsA := findExpressionsByType(oneFilter, nil, nil)
+	opsB := findExpressionsByType(withMap, nil, nil)
 	sumA := opsA.mapCount + opsA.predicatesFilterCount
 	sumB := opsB.mapCount + opsB.predicatesFilterCount
 	if sumA != 1 {

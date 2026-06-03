@@ -71,10 +71,8 @@ func (w *physicalFirstOrDefaultWrapper) HintCost(child []properties.Cost, _ prop
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	return properties.Cost{
-		Cardinality: 1 * physicalWrapperCostMultiplier,
-		CPU:         child[0].CPU * physicalWrapperCostMultiplier,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return firstOrDefaultCost(child[0])
 }
 
 func (w *physicalFirstOrDefaultWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

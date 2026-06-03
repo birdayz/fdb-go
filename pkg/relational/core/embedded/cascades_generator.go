@@ -1477,6 +1477,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if aggIdx, ok := plan.(*plans.RecordQueryAggregateIndexPlan); ok {
 		return deriveColumnsFromAggregateIndex(aggIdx, md)
 	}
+	if mi, ok := plan.(*plans.RecordQueryMultiIntersectionOnValuesPlan); ok {
+		return deriveColumnsFromMultiIntersection(mi, md)
+	}
 	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 		return deriveColumnsFromJoin(nlj, md)
 	}
@@ -1700,6 +1703,52 @@ func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan
 		TypeName: aggTypeName,
 		Nullable: api.ColumnNullable,
 	})
+	return cols
+}
+
+// deriveColumnsFromMultiIntersection derives result columns for a
+// multi-aggregate intersection plan. The plan's result value is a record
+// constructor whose field names are the output columns (grouping columns
+// followed by one aggregate column per intersected stream). Grouping-column
+// types resolve against the base record type; aggregate columns default to
+// BIGINT (mirroring deriveColumnsFromAggregateIndex), with COUNT pinned to
+// BIGINT and other column aggregates resolved against the descriptor.
+func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOnValuesPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	rc, ok := mi.GetResultValue().(*values.RecordConstructorValue)
+	if !ok {
+		return nil
+	}
+
+	var desc protoreflect.MessageDescriptor
+	if md != nil {
+		for _, child := range mi.GetChildren() {
+			if agg, ok := child.(*plans.RecordQueryAggregateIndexPlan); ok {
+				if rt := md.GetRecordType(agg.GetRecordTypeName()); rt != nil && rt.Descriptor != nil {
+					desc = rt.Descriptor
+					break
+				}
+			}
+		}
+	}
+
+	cols := make([]executor.ColumnDef, 0, len(rc.Fields))
+	for _, f := range rc.Fields {
+		name := strings.ToUpper(f.Name)
+		// Aggregate columns are flowed under "FUNC(col)" / "FUNC(*)"; a
+		// grouping column is a plain field name. Resolve grouping columns
+		// against the record type, default aggregates to BIGINT.
+		typeName := "BIGINT"
+		if !strings.Contains(name, "(") && desc != nil {
+			if t := protoFieldTypeName(desc, name); t != "UNKNOWN" {
+				typeName = t
+			}
+		}
+		cols = append(cols, executor.ColumnDef{
+			Name:     name,
+			TypeName: typeName,
+			Nullable: api.ColumnNullable,
+		})
+	}
 	return cols
 }
 

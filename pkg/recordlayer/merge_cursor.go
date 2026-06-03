@@ -484,3 +484,147 @@ func (c *intersectionCursor[T]) Close() error {
 }
 
 func (c *intersectionCursor[T]) IsClosed() bool { return c.closed }
+
+// intersectionMultiCursor merges multiple ordered cursors, returning, for
+// each set of matching elements (by comparison key), the list of matching
+// elements — one per child. This differs from intersectionCursor, which
+// returns only the first child's element. Mirrors Java's
+// IntersectionMultiCursor (getNextResult collects every child's result).
+//
+// It is used by RecordQueryMultiIntersectionOnValuesPlan, where each child
+// contributes a distinct aggregate column that must be picked up into the
+// merged result row — keeping only the first child would drop every other
+// aggregate.
+type intersectionMultiCursor[T any] struct {
+	children []*mergeChildState[T]
+	reverse  bool
+	started  bool
+	closed   bool
+}
+
+// IntersectionMulti creates a merge-intersection cursor that returns, for
+// each set of elements present in ALL child cursors (by comparison key),
+// the list of those elements (index i is the element from child i). All
+// cursors must be ordered by the same key. Matches Java's
+// IntersectionMultiCursor.create().
+func IntersectionMulti[T any](
+	cursors []RecordCursor[T],
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+) RecordCursor[[]T] {
+	if len(cursors) == 0 {
+		return Empty[[]T]()
+	}
+	children := make([]*mergeChildState[T], len(cursors))
+	for i, cur := range cursors {
+		children[i] = &mergeChildState[T]{
+			cursor:      cur,
+			compKeyFunc: compKeyFunc,
+		}
+	}
+	return &intersectionMultiCursor[T]{
+		children: children,
+		reverse:  reverse,
+	}
+}
+
+func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[[]T], error) {
+	if c.closed {
+		return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+	}
+
+	if !c.started {
+		for _, child := range c.children {
+			if err := child.advance(ctx); err != nil {
+				return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
+			}
+		}
+		c.started = true
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[[]T]{}, err
+		}
+		// If any child is exhausted, the intersection can produce no more.
+		for _, child := range c.children {
+			if !child.hasResult {
+				return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+			}
+		}
+
+		// Find the maximum comparison key.
+		maxKey := c.children[0].comparisonKey
+		for _, child := range c.children[1:] {
+			cmp, cmpErr := compareKeys(child.comparisonKey, maxKey)
+			if cmpErr != nil {
+				return RecordCursorResult[[]T]{}, cmpErr
+			}
+			if c.reverse {
+				cmp = -cmp
+			}
+			if cmp > 0 {
+				maxKey = child.comparisonKey
+			}
+		}
+
+		// Check if all children agree on the max key.
+		allMatch := true
+		for _, child := range c.children {
+			eq, eqErr := compareKeys(child.comparisonKey, maxKey)
+			if eqErr != nil {
+				return RecordCursorResult[[]T]{}, eqErr
+			}
+			if eq != 0 {
+				allMatch = false
+				break
+			}
+		}
+
+		if allMatch {
+			results := make([]T, len(c.children))
+			for i, child := range c.children {
+				results[i] = child.result.GetValue()
+			}
+			for _, child := range c.children {
+				if err := child.advance(ctx); err != nil {
+					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
+				}
+			}
+			// StartContinuation (non-end): this cursor does not support
+			// mid-stream resumption — the aggregate-index multi-intersection
+			// reads whole streams without per-child continuations. The
+			// invariant only forbids an EndContinuation alongside a value.
+			return NewResultWithValue[[]T](results, &StartContinuation{}), nil
+		}
+
+		// Advance all non-maximal children toward the max key.
+		for _, child := range c.children {
+			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
+			if neqErr != nil {
+				return RecordCursorResult[[]T]{}, neqErr
+			}
+			if neq != 0 {
+				if err := child.advance(ctx); err != nil {
+					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
+				}
+			}
+		}
+	}
+}
+
+func (c *intersectionMultiCursor[T]) Close() error {
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	var firstErr error
+	for _, child := range c.children {
+		if err := child.cursor.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (c *intersectionMultiCursor[T]) IsClosed() bool { return c.closed }

@@ -134,13 +134,17 @@ func executeMultiIntersection(
 	keyVals := p.GetComparisonKey()
 	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
 
-	innerCursor := recordlayer.Intersection(cursors, compKeyFunc, false)
+	// IntersectionMulti returns, per matching comparison key, the list of
+	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
+	// the regular intersection keeps only the first child, which would drop
+	// every aggregate but the first.
+	innerCursor := recordlayer.IntersectionMulti(cursors, compKeyFunc, false)
 
-	return &multiIntersectionMergeCursor{
-		inner:    innerCursor,
-		cursors:  cursors,
-		children: children,
-	}, nil
+	merged := &multiIntersectionMergeCursor{
+		inner:       innerCursor,
+		resultValue: p.GetResultValue(),
+	}
+	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
@@ -159,11 +163,17 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 	}
 }
 
+// multiIntersectionMergeCursor combines each set of matching child rows
+// into a single output row. It merges every child's Datum map (grouping
+// columns are identical across children; each child contributes its own
+// aggregate column) and then evaluates the plan's result value against the
+// merged row to produce the final record. Mirrors Java's
+// RecordQueryMultiIntersectionOnValuesPlan.executePlan, which binds each
+// child result to its quantifier and evaluates the resultValue.
 type multiIntersectionMergeCursor struct {
-	inner    recordlayer.RecordCursor[QueryResult]
-	cursors  []recordlayer.RecordCursor[QueryResult]
-	children []plans.RecordQueryPlan
-	closed   bool
+	inner       recordlayer.RecordCursor[[]QueryResult]
+	resultValue values.Value
+	closed      bool
 }
 
 func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -172,9 +182,24 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
 	if !result.HasNext() {
-		return result, nil
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
 	}
-	return result, nil
+
+	childResults := result.GetValue()
+	merged := make(map[string]any)
+	for _, cr := range childResults {
+		if m, ok := cr.Datum.(map[string]any); ok {
+			for k, v := range m {
+				merged[k] = v
+			}
+		}
+	}
+
+	var datum any = merged
+	if c.resultValue != nil {
+		datum = c.resultValue.Evaluate(merged)
+	}
+	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Complete: true}, result.GetContinuation()), nil
 }
 
 func (c *multiIntersectionMergeCursor) Close() error {
@@ -845,7 +870,8 @@ func newSingleResultCursor(v QueryResult) *singleResultCursor {
 func (c *singleResultCursor) OnNext(_ context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.done || c.closed {
 		return recordlayer.NewResultNoNext[QueryResult](
-			recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+			recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
+		), nil
 	}
 	c.done = true
 	// Use nil continuation — a single-result cursor doesn't support

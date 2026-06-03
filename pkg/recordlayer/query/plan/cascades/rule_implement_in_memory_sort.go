@@ -79,22 +79,27 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		planKeys[i] = plans.SortKey{Field: field, Desc: sk.Reverse, NullsFirst: nf, ValueExpr: valExpr}
 	}
 
+	// The baked innerPlan is only a PLACEHOLDER: range the sort's quantifier over
+	// the actual inner group (innerRef), not a fresh InitialOf(firstMember). At
+	// extraction the sort's WithChildren rebuilds it over innerRef's cost WINNER
+	// (chosen by OptimizeGroup), so the enforcer sorts the cheapest join order
+	// rather than whichever member happened to be yielded first. Pinning the first
+	// member (a customers-driven re-scan) was the RFC-069 regression: the good
+	// orders-driven plan won its group but the sort baked the loser.
 	sortPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, planKeys)
 
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
-		return
-	}
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerExpr))
+	innerQ := expressions.ForEachQuantifier(innerRef)
 	call.YieldFinalExpression(newPhysicalInMemorySortWrapper(sortPlan, innerQ))
 
 	// Also yield InMemorySort alternatives for InJoin/InUnion members
 	// and restricted Fetch plans (index scans with bound predicates).
 	// These selective plans may have much lower cardinality than the
 	// first physical plan, and sorting their small output is cheaper
-	// than sorting a full scan.
+	// than sorting a full scan. Skip the first physical member: it is the
+	// placeholder the group-ranged primary yield above already covers.
+	firstPhys := findPhysicalExpr(innerRef)
 	for _, m := range innerRef.AllMembers() {
-		if m == innerExpr {
+		if m == firstPhys {
 			continue
 		}
 		ph, ok := m.(physicalPlanExpression)

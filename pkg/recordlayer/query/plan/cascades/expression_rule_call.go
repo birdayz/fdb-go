@@ -59,7 +59,7 @@ type ExpressionRuleCall struct {
 // default-stats comparator.
 func (c *ExpressionRuleCall) CostModel() func(a, b expressions.RelationalExpression) bool {
 	if c.Stats != nil {
-		return NewPlanningCostModelLess(c.Stats)
+		return NewPlanningCostModelLessWithContext(c.Stats, c.Context)
 	}
 	return PlanningCostModelLess
 }

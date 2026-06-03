@@ -1419,56 +1419,91 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias string) QueryRes
 		innerQual = innerType
 	}
 
+	// Pass A — bare keys. The outer writes every bare key; the inner only
+	// overwrites bare keys when its namespace differs from the outer's (so a
+	// self-join under one alias doesn't clobber the outer's columns).
 	for k, v := range outerMap {
 		merged[k] = v
-		// If the key already contains a dot, it was qualified by a previous NLJ
-		// level (e.g. "EMP.NAME" from an inner join). Preserve it as-is to avoid
-		// double-qualification like "EMP.EMP.NAME". Only qualify bare keys.
-		if strings.Contains(k, ".") {
-			continue
-		}
-		// When the outer row is already a merged NLJ result, it may
-		// contain both bare keys (e.g. "NAME") and qualified keys
-		// (e.g. "EMP.NAME", "DEPT.NAME") from a previous join level.
-		// The bare key holds the value from whichever side wrote last
-		// (non-deterministic between outer/inner of the prior NLJ).
-		// Re-qualifying this bare key under outerQual/outerType would
-		// overwrite the correctly-qualified key that already exists.
-		// Only set the qualified form when it isn't already present.
-		if outerQual != "" {
-			qualKey := outerQual + "." + strings.ToUpper(k)
-			if _, exists := outerMap[qualKey]; !exists {
-				merged[qualKey] = v
-			}
-		}
-		if outerAlias != "" && outerType != "" && outerAlias != outerType {
-			qualKey := outerType + "." + strings.ToUpper(k)
-			if _, exists := outerMap[qualKey]; !exists {
-				merged[qualKey] = v
-			}
-		}
 	}
 	for k, v := range innerMap {
+		if strings.Contains(k, ".") {
+			merged[k] = v
+			continue
+		}
 		if innerQual == "" || innerQual != outerQual {
 			merged[k] = v
 		}
+	}
+
+	// Pass B — explicit-alias-qualified keys for BOTH legs. An explicit
+	// table alias is authoritative: `t.id` must resolve to the leg the user
+	// named `t`, regardless of join orientation. These are written before
+	// the record-type fallback (Pass C) so that when one leg's alias equals
+	// the OTHER leg's record type (e.g. self-join `FROM t, (SELECT ... FROM t) x`,
+	// where the inner leg's alias `T` collides with the outer leg's type `T`),
+	// the inner's alias-qualified `T.ID` wins over the outer's type fallback.
+	// Without this ordering the outer's `outerType + ".ID"` fallback claimed
+	// the `T.` namespace first and shadowed the inner alias (wrong results).
+	qualifyAlias(merged, outerMap, outerAlias)
+	qualifyAlias(merged, innerMap, innerAlias)
+
+	// Pass C — record-type fallback for unaliased references (`FROM t` →
+	// `t.col` where `t` is the type name). Only fills keys not already
+	// claimed by an explicit alias above.
+	qualifyTypeFallback(merged, outerMap, outerAlias, outerType)
+	qualifyTypeFallback(merged, innerMap, innerAlias, innerType)
+
+	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+}
+
+// qualifyAlias writes explicit-alias-qualified keys ("ALIAS.COL") for each
+// bare column in src into dst. An explicit table alias is authoritative, so
+// these keys are never overwritten by the record-type fallback. No-op when
+// alias is empty (unaliased reference — handled by qualifyTypeFallback).
+// Pre-qualified keys (containing a dot) carry their own namespace from a
+// prior join level and are left untouched.
+func qualifyAlias(dst, src map[string]any, alias string) {
+	if alias == "" {
+		return
+	}
+	for k, v := range src {
 		if strings.Contains(k, ".") {
 			continue
 		}
-		if innerQual != "" {
-			qualKey := innerQual + "." + strings.ToUpper(k)
-			if _, exists := merged[qualKey]; !exists {
-				merged[qualKey] = v
-			}
+		qualKey := alias + "." + strings.ToUpper(k)
+		if _, exists := src[qualKey]; exists {
+			// Already qualified under this alias by a prior level — keep it.
+			continue
 		}
-		if innerAlias != "" && innerType != "" && innerAlias != innerType {
-			qualKey := innerType + "." + strings.ToUpper(k)
-			if _, exists := merged[qualKey]; !exists {
-				merged[qualKey] = v
-			}
-		}
+		dst[qualKey] = v
 	}
-	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+}
+
+// qualifyTypeFallback writes record-type-qualified keys ("TYPE.COL") for
+// unaliased table references. It only fills keys not already claimed by an
+// explicit alias (qualifyAlias runs first), so a leg whose record type
+// happens to equal another leg's explicit alias cannot shadow that alias.
+func qualifyTypeFallback(dst, src map[string]any, alias, recType string) {
+	if recType == "" {
+		return
+	}
+	// When the alias equals the type, the alias pass already wrote TYPE.COL.
+	// When alias is non-empty and differs, TYPE is only a fallback for
+	// unaliased references; fill where absent. When alias is empty, TYPE is
+	// the primary namespace.
+	if alias == recType {
+		return
+	}
+	for k, v := range src {
+		if strings.Contains(k, ".") {
+			continue
+		}
+		qualKey := recType + "." + strings.ToUpper(k)
+		if _, exists := dst[qualKey]; exists {
+			continue
+		}
+		dst[qualKey] = v
+	}
 }
 
 // qualifyOuterRow builds a result row from an unmatched LEFT JOIN outer

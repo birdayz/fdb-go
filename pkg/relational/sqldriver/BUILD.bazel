@@ -53,6 +53,7 @@ go_test(
         "vector_search_e2e_fdb_test.go",
         "w2_metamorphic_test.go",
         "w3_5_plan_diversity_test.go",
+        "zz_join_selpred_repro_test.go",
     ],
     embed = [":sqldriver"],
     deps = [

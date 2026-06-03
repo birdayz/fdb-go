@@ -1415,6 +1415,44 @@ func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
 	}
 }
 
+// TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField pins the RFC-069
+// merged-Datum resolution fix. A re-enumerated N-way join collapses a buried
+// table (T3) into a merge quantifier ($m) whose row flows that table's columns
+// under their OWN qualified keys (T3.T2_ID), preserved verbatim by
+// JoinMergeAllValue / mergeRows — NOT re-prefixed with the merge alias. A
+// FieldValue{Child: QOV($m), Field: "T3.T2_ID"} accessed against the merged
+// Datum (map / RowEvalContext.Datum) must resolve "T3.T2_ID" directly; the naive
+// qualKey = $m + "." + Field would invent the never-written key "$M.T3.T2_ID"
+// and return nil → the 0-rows bug.
+func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
+	t.Parallel()
+	merge := NamedCorrelationIdentifier("$M_2:T3_2:T4")
+	fv := NewFieldValue(NewQuantifiedObjectValue(merge), "T3.T2_ID", UnknownType)
+
+	merged := map[string]any{
+		"T3.T2_ID": int64(7),
+		"T4.T3_ID": int64(3),
+		"ID":       int64(99), // bare key from the last-written table
+	}
+
+	// map[string]any context (the NLJ passesJoinPredicates path).
+	if got := fv.Evaluate(merged); got != int64(7) {
+		t.Errorf("map ctx: T3.T2_ID via $m = %v, want 7", got)
+	}
+
+	// RowEvalContext.Datum context (the PredicatesFilter path, no binding for $m).
+	rc := &RowEvalContext{Datum: merged}
+	if got := fv.Evaluate(rc); got != int64(7) {
+		t.Errorf("RowEvalContext.Datum ctx: T3.T2_ID via $m = %v, want 7", got)
+	}
+
+	// A qualified field NOT present must still miss (no spurious fallback).
+	missing := NewFieldValue(NewQuantifiedObjectValue(merge), "T9.X", UnknownType)
+	if got := missing.Evaluate(merged); got != nil {
+		t.Errorf("absent qualified key must resolve nil, got %v", got)
+	}
+}
+
 func TestFieldValue_QOV_FlatMap_NoFallbackToBareKey(t *testing.T) {
 	t.Parallel()
 	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("A")), "K", UnknownType)

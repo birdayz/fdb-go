@@ -511,6 +511,20 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	))
 }
 
+// physicalChildForCost wraps a concrete child plan in a physical wrapper so the FlatMap
+// wrapper's cost walk sees the child's REAL cardinality (a filtered/range scan, or a
+// single-row correlated PK probe) rather than the bare full-table Reference. RFC-069: without
+// this the join cost is blind to the selective outer filter and the PK-probe inner, so every
+// join orientation costs identically and the cheaper order cannot be selected. Only the scan
+// shape (the case that matters for PK/range-driven joins) is wrapped; any other shape falls
+// back to `fallback`, which preserves the prior behaviour.
+func physicalChildForCost(plan plans.RecordQueryPlan, fallback expressions.RelationalExpression) expressions.RelationalExpression {
+	if scan, ok := plan.(*plans.RecordQueryScanPlan); ok {
+		return &physicalScanWrapper{plan: scan}
+	}
+	return fallback
+}
+
 // tryFlatMapPlan checks whether the join can be implemented as a
 // FlatMap with correlated inner PK scan. Returns true (and yields)
 // if successful, false otherwise. Mirrors Java's pattern where
@@ -658,8 +672,17 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			}
 		}
 
-		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		// Cost-visibility (RFC-069 / Graefe): range the FlatMap wrapper's child quantifiers
+		// over the ACTUAL physical children — the pushed/filtered outer scan and the
+		// single-row correlated inner probe — NOT the bare full-table References. The cost
+		// walk (BestMemberCostWith / EstimateCostWith) recurses into these quantifiers'
+		// References; if they point at the unfiltered table groups it cannot see the
+		// selective outer filter or the PK-probe inner, so every join orientation costs the
+		// same and the cheaper order can't be selected. Wrapping the real children lets
+		// criterion #2 (max data-access cardinality) separate the orderings. Falls back to
+		// the bare expr for child plan shapes not wrapped here (no worse than before).
+		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(physicalChildForCost(flatMapPlan.GetOuter(), leftExpr)))
+		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(physicalChildForCost(flatMapPlan.GetInner(), rightExpr)))
 		if len(abovePreds) > 0 {
 			flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
 			flatMapRef := call.MemoizeExpression(flatMapWrapper)

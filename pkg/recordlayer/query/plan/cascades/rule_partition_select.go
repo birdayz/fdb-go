@@ -311,22 +311,34 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		noLowersCorrelatedToByUpperAliases := len(lowersCorrelatedToByUpperAliases) == 0
 		noLowersCorrelatedToByUppers := len(lowersCorrelatedToByUppers) == 0
 
-		// If THIS select is itself an intermediate join that must flow a merged
-		// row (its own result value is a JoinMergeAllValue), the upper must
-		// re-stamp the merge over its OWN immediate quantifiers (the new lower
-		// quantifier + the upper tables) — the original deep aliases are collapsed
-		// into the lower's merged map and are no longer directly bound here. At the
-		// top level the result value is the user projection and flows unchanged;
-		// each table's column resolves from the final merged row by qualified name.
-		// (RFC-043.)
-		// Re-stamp the upper's result only when this select is an INTERMEDIATE
-		// re-enumerated merge (its result is a JoinMergeAllValue). The flat seed's
-		// translator-built JoinMergeResultValue is the TOP output consumed by the
-		// Project above; it must flow unchanged so the Project's column derivation
-		// resolves. Intermediate merges re-stamp over their immediate quantifiers
-		// because the original deep aliases are collapsed into the lower's merged
-		// map. (RFC-043.)
-		_, parentIsMerge := resultValue.(*values.JoinMergeAllValue)
+		// The upper select must flow a result value over the aliases it ACTUALLY
+		// binds (the new lower quantifier + the upper tables). Both merge result
+		// values — the flat seed's translator-built JoinMergeResultValue and an
+		// intermediate re-enumerated JoinMergeAllValue — carry "flow all my tables'
+		// columns merged" intent, but they name the ORIGINAL deep aliases. When a
+		// partition collapses ≥2 of those tables into one merge quantifier ($m),
+		// those original aliases are NO LONGER bound at the upper level: they live
+		// inside $m's merged row under qualified ALIAS.COL keys. Flowing the original
+		// merge value unchanged would then look up correlations the upper never binds
+		// → every column resolves to nil → wrong rows (a two-level merge returning
+		// NULL for a deeply-nested projected column — the root-cause bug).
+		//
+		// So whenever the parent result is a merge value, re-stamp it as a
+		// JoinMergeAllValue over the upper's IMMEDIATE quantifiers. The new lower
+		// quantifier's merged row preserves every collapsed table's qualified keys
+		// verbatim (JoinMergeAllValue/JoinMergeResultValue Evaluate pass dotted keys
+		// through), so the re-stamped upper merge accumulates all live columns, and a
+		// projection/predicate above resolves each table's column from the final
+		// merged row by qualified name. This is correct at the top level too: the
+		// re-stamped JoinMergeAllValue is the output the Project consumes, and the
+		// Project's FieldValues resolve the qualified keys the merge flows. In the
+		// non-collapsing branches (case 1 / case 2 the new lower keeps its single
+		// table's original alias) the re-stamp is a no-op in effect — the alias is
+		// still bound — but covering all branches keeps the result value consistent
+		// with the aliases the upper binds. (RFC-043.)
+		_, parentIsAllMerge := resultValue.(*values.JoinMergeAllValue)
+		_, parentIsSeedMerge := resultValue.(*values.JoinMergeResultValue)
+		parentIsMerge := parentIsAllMerge || parentIsSeedMerge
 		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier) values.Value {
 			if !parentIsMerge {
 				return resultValue
@@ -347,8 +359,30 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		// addUpper appends the new lower quantifier, the upper tables, and the
-		// (untranslated) upper predicates to a fresh upper builder.
-		addUpper := func(newLowerQ expressions.Quantifier) *GraphExpansionBuilder {
+		// (rebased) upper predicates to a fresh upper builder.
+		//
+		// In the MERGE case the new lower quantifier collapses ≥2 live lower
+		// tables into ONE quantifier ($m) whose row flows their columns under
+		// qualified ALIAS.COL keys. A spanning upper predicate that named such a
+		// collapsed table by its bare QOV would reference a correlation the upper
+		// select no longer binds: that select would be an INVALID memo member (a
+		// predicate over an unbound alias), and a later re-partition would
+		// mis-classify it (its correlationTo names a buried table) and sink it
+		// into a half that cannot resolve the alias → silent NULL → wrong rows
+		// (the root-cause bug). So each such reference is REBASED to read the
+		// column through the merge quantifier by qualified name, exactly as the
+		// merge result value flows it (JoinMergeAllValue keys every live table as
+		// ALIAS.COL). After rebasing the predicate's correlation set names the
+		// merge alias, which the upper binds — valid AND re-partition-classifiable.
+		//
+		// In case 1 / case 2 the lower keeps each live table under its ORIGINAL
+		// alias (case 2 flows the single live table's row unchanged), so a
+		// predicate referencing it resolves directly — collapsedAliases is empty
+		// and the predicates pass through unchanged. (RFC-043.)
+		addUpper := func(
+			newLowerQ expressions.Quantifier,
+			collapsedAliases map[values.CorrelationIdentifier]struct{},
+		) *GraphExpansionBuilder {
 			upperBuilder := NewGraphExpansionBuilder()
 			upperBuilder.AddQuantifier(newLowerQ)
 			for _, a := range allAliases {
@@ -356,8 +390,9 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 					upperBuilder.AddQuantifier(aliasToQ[a])
 				}
 			}
+			mergeAlias := newLowerQ.GetAlias()
 			for _, p := range upperPredicates {
-				upperBuilder.AddPredicate(p)
+				upperBuilder.AddPredicate(rebaseBuriedLowerReferences(p, collapsedAliases, mergeAlias))
 			}
 			return upperBuilder
 		}
@@ -372,7 +407,9 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				lowerAliasCorrelatedToByUpperAliases,
 				call.MemoizeExpression(lowerSelectExpr),
 			)
-			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+			// No upper-to-lower correlation here, so no spanning predicate
+			// references a buried lower — nothing to rebase.
+			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
 				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases))
 
 		} else if len(lowersCorrelatedToByUppers) >= 2 {
@@ -402,7 +439,16 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				mergeAlias,
 				call.MemoizeExpression(lowerSelectExpr),
 			)
-			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+			// The merge collapses every live lower table into one quantifier
+			// keyed by ALIAS.COL. Any upper (spanning) predicate that named a
+			// collapsed lower table by its bare alias must be rebased to read
+			// that column through the merge quantifier — otherwise it references
+			// an alias the upper select no longer binds (the root-cause bug).
+			collapsed := make(map[values.CorrelationIdentifier]struct{}, len(lowersCorrelatedToByUppers))
+			for _, a := range lowersCorrelatedToByUppers {
+				collapsed[a] = struct{}{}
+			}
+			upperSelectExpression = addUpper(newLowerQ, collapsed).Build().Seal().
 				BuildSelectWithResultValue(buildUpperResult(mergeAlias))
 
 		} else {
@@ -422,7 +468,13 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				lowerAlias,
 				call.MemoizeExpression(lowerSelectExpr),
 			)
-			upperSelectExpression = addUpper(newLowerQ).Build().Seal().
+			// The lower flows its single live table's row UNDER ITS ORIGINAL
+			// ALIAS, so an upper predicate referencing that alias still resolves
+			// directly — nothing buried under a new name, nothing to rebase.
+			// (Every lower alias a spanning predicate touches is added to the live
+			// set, so with exactly one live lower the only lower alias an upper
+			// predicate can name is this one.)
+			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
 				BuildSelectWithResultValue(buildUpperResult(lowerAlias))
 		}
 
@@ -660,6 +712,11 @@ func aliasesIntersect(
 	return false
 }
 
+// mergeAliasPrefix marks a quantifier alias minted by this rule's re-enumeration
+// for a merged lower sub-join (see mergeQuantifierAlias). No SQL identifier can
+// start with "$", so it never collides with a table/quantifier alias.
+const mergeAliasPrefix = "$m"
+
 // mergeQuantifierAlias returns a STABLE, collision-free quantifier alias for the
 // merged lower over the given live aliases. Deterministic in the live SET, so
 // identical merged sub-joins reached from different bipartitions wrap under the
@@ -674,7 +731,7 @@ func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.Correlatio
 	}
 	sort.Strings(names)
 	var b strings.Builder
-	b.WriteString("$m")
+	b.WriteString(mergeAliasPrefix)
 	for _, n := range names {
 		// LENGTH-PREFIX each name (`_<len>:<name>`) so the encoding is INJECTIVE
 		// even when a name itself contains the '_' separator: {A, B_C} and
@@ -689,6 +746,56 @@ func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.Correlatio
 		b.WriteString(n)
 	}
 	return values.NamedCorrelationIdentifier(b.String())
+}
+
+// rebaseBuriedLowerReferences rewrites a spanning upper predicate so that every
+// reference to a lower table COLLAPSED INTO THE MERGE QUANTIFIER reads its column
+// THROUGH the merge quantifier by qualified name.
+//
+// The merge quantifier (mergeAlias) flows a JoinMergeAllValue: every live lower
+// table's columns are keyed in its row both bare (COL) and table-qualified
+// (ALIAS.COL); already-qualified keys (a column carried up from a nested merge)
+// pass through verbatim (JoinMergeAllValue / JoinMergeResultValue Evaluate, and
+// mergeRows at execution). So a buried table `T`'s column `c` is reachable as
+// mergeRow["T.C"]. A FieldValue{Child: QOV(T), Field: c} that referenced the
+// (now-buried) T directly is rewritten to FieldValue{Child: QOV(mergeAlias),
+// Field: "T.C"} (uppercased to match the qualified-key form). A Field already
+// qualified (contains a '.', i.e. T is itself a nested merge carrying
+// already-qualified keys) is kept as-is — JoinMergeAllValue propagates dotted
+// keys verbatim, so re-qualifying would invent a key the merge never wrote.
+//
+// buriedAliases is the set of lower QUANTIFIER aliases collapsed into the merge
+// (its live set). References to UPPER tables (or to lower tables not in the
+// merge) are left untouched. Reuses the generic value/predicate replace
+// infrastructure (replacePredicateValues + values.Replace) — no GetText hacks.
+// buriedAliases empty ⇒ identity (case 1 / case 2 keep their aliases).
+func rebaseBuriedLowerReferences(
+	p predicates.QueryPredicate,
+	buriedAliases map[values.CorrelationIdentifier]struct{},
+	mergeAlias values.CorrelationIdentifier,
+) predicates.QueryPredicate {
+	if len(buriedAliases) == 0 {
+		return p
+	}
+	mergeQOV := values.NewQuantifiedObjectValue(mergeAlias)
+	return replacePredicateValues(p, func(v values.Value) values.Value {
+		fv, ok := v.(*values.FieldValue)
+		if !ok {
+			return v
+		}
+		qov, ok := fv.Child.(*values.QuantifiedObjectValue)
+		if !ok {
+			return v
+		}
+		if _, buried := buriedAliases[qov.Correlation]; !buried {
+			return v
+		}
+		field := fv.Field
+		if !strings.Contains(field, ".") {
+			field = strings.ToUpper(qov.Correlation.Name()) + "." + strings.ToUpper(field)
+		}
+		return values.NewFieldValue(mergeQOV, field, fv.Typ)
+	})
 }
 
 var _ ExpressionRule = (*PartitionSelectRule)(nil)

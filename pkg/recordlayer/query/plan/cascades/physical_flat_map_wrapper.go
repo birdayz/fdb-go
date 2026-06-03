@@ -75,21 +75,8 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 	if len(child) < 2 {
 		return properties.Cost{}
 	}
-	outerCard := child[0].Cardinality
-	if outerCard == 0 {
-		outerCard = properties.LeafScanCardinality
-	}
-	// FlatMap with correlated index probe: inner cost is O(logM) per outer row.
-	innerCPU := child[1].CPU
-	if innerCPU == 0 {
-		innerCPU = properties.FilterCPU
-	}
-	outCard := outerCard * properties.FilterSelectivity * physicalWrapperCostMultiplier
-	cpu := (child[0].CPU + outerCard*innerCPU) * physicalWrapperCostMultiplier
-	return properties.Cost{
-		Cardinality: outCard,
-		CPU:         cpu,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return flatMapCost(child[0], child[1])
 }
 
 func (w *physicalFlatMapWrapper) HintOrdering() properties.Ordering {
