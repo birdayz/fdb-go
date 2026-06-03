@@ -90,20 +90,8 @@ func (w *physicalNestedLoopJoinWrapper) HintCost(child []properties.Cost, _ prop
 	if len(child) < 2 {
 		return properties.Cost{}
 	}
-	outerCard := child[0].Cardinality
-	innerCard := child[1].Cardinality
-	if outerCard == 0 {
-		outerCard = properties.LeafScanCardinality
-	}
-	if innerCard == 0 {
-		innerCard = properties.LeafScanCardinality
-	}
-	outCard := outerCard * innerCard * properties.FilterSelectivity * physicalWrapperCostMultiplier
-	cpu := (child[0].CPU + outerCard*child[1].CPU + outerCard*innerCard*properties.FilterCPU) * physicalWrapperCostMultiplier
-	return properties.Cost{
-		Cardinality: outCard,
-		CPU:         cpu,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return nestedLoopJoinCost(child[0], child[1])
 }
 
 func (w *physicalNestedLoopJoinWrapper) HintOrdering() properties.Ordering {

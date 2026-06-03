@@ -269,7 +269,7 @@ func (p *Planner) WithCostModel(less func(a, b expressions.RelationalExpression)
 // Replaces the cost model — call after WithCostModel if both are used.
 func (p *Planner) WithStatistics(stats properties.StatisticsProvider) *Planner {
 	p.stats = stats
-	p.costModel = NewPlanningCostModelLess(stats)
+	p.costModel = NewPlanningCostModelLessWithContext(stats, p.ctx)
 	return p
 }
 
@@ -472,9 +472,17 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		// Only include matches with non-empty bound parameter prefix
 		// (i.e., matches that actually restrict the scan). Zero-coverage
 		// matches produce full index scans that don't help with intersection.
+		//
+		// Also exclude CORRELATED matches: a leg whose bound prefix references
+		// an outer quantifier (a join predicate like customer_id = c.id) is not
+		// independently evaluable and must not be folded into a primary-key
+		// intersection. Java resolves such a predicate via the FlatMap/NLJ
+		// correlation plus a residual filter, never an index intersection;
+		// folding it in produces a plan whose correlated binding the
+		// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
 		var restrictedMatches []PartialMatch
 		for _, m := range allMatches {
-			if hasRestrictedScan(m) {
+			if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
 				restrictedMatches = append(restrictedMatches, m)
 			}
 		}

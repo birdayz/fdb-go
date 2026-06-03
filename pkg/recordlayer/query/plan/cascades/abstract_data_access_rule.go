@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
@@ -330,12 +331,6 @@ func DataAccessForMatchPartition(
 	return resultExprs
 }
 
-// wrapScanPlan converts a RecordQueryPlan from the data access pipeline
-// into the properly-typed RelationalExpression wrapper.
-func wrapScanPlan(plan plans.RecordQueryPlan) expressions.RelationalExpression {
-	return wrapScanPlanWithCoverage(plan, false, nil)
-}
-
 // wrapScanPlanWithCoverage converts a RecordQueryPlan into the
 // properly-typed RelationalExpression wrapper with coverage info.
 //
@@ -455,6 +450,76 @@ func hasRestrictedScan(pm PartialMatch) bool {
 	bindings := pmi.GetBoundParameterPrefixMap()
 	prefix := pm.GetMatchCandidate().ComputeBoundParameterPrefixMap(bindings)
 	return len(prefix) > 0
+}
+
+// matchBoundPrefixIsCorrelated reports whether the PartialMatch's bound
+// parameter prefix is restricted by a value that references an outer
+// quantifier — i.e., the scan it produces is a CORRELATED access (a join
+// predicate such as customer_id = c.id), not a local constant-bound
+// predicate (status <> 'cancelled').
+//
+// Primary-key index intersections combine multiple independently-evaluable
+// index scans by their shared primary key. A correlated leg is NOT
+// independently evaluable: it depends on the FlatMap/NLJ outer binding, and
+// Java never folds a correlated join predicate into an index intersection —
+// it resolves the correlation via the FlatMap/NLJ and applies any remaining
+// local predicate as a residual filter. Folding a correlated leg into a PK
+// intersection yields a plan whose per-leg correlated binding the
+// intersection cursor cannot evaluate, returning 0 rows (RFC-069). Such
+// matches must therefore be excluded from intersection candidacy.
+func matchBoundPrefixIsCorrelated(pm PartialMatch) bool {
+	pmi, ok := pm.(*PartialMatchImpl)
+	if !ok {
+		return false
+	}
+	for _, cr := range pmi.GetBoundParameterPrefixMap() {
+		if cr == nil || cr.IsEmpty() {
+			continue
+		}
+		if cr.IsEquality() {
+			if comparisonRowCorrelated(cr.GetEqualityComparison()) {
+				return true
+			}
+		}
+		if cr.IsInequality() {
+			for _, ineq := range cr.GetInequalityComparisons() {
+				if comparisonRowCorrelated(ineq) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// comparisonRowCorrelated reports whether a bound comparison's RHS operand
+// depends on a per-row OUTER quantifier (a join correlation such as c.id),
+// as opposed to only constants. Plain ConstantValue literals carry no
+// correlation at all; a ConstantObjectValue is a reference to the query's
+// constant pool — bound once per execution, not per outer row — and likewise
+// does not make the scan row-dependent. Only a genuine row-bearing correlation
+// (a QuantifiedObjectValue etc. that survives subtracting constant-pool aliases)
+// disqualifies a leg from an independently-evaluable primary-key intersection.
+// (Today the SQL layer lowers WHERE constants as ConstantValue, so the
+// subtraction is belt-and-suspenders, but it keeps the guard correct if literal
+// parameterization to ConstantObjectValue is added later — Graefe review.)
+func comparisonRowCorrelated(c *predicates.Comparison) bool {
+	if c == nil {
+		return false
+	}
+	corr := c.GetCorrelatedTo()
+	if len(corr) == 0 {
+		return false
+	}
+	if c.Operand != nil {
+		values.WalkValue(c.Operand, func(node values.Value) bool {
+			if cov, ok := node.(*values.ConstantObjectValue); ok {
+				delete(corr, cov.Alias)
+			}
+			return true
+		})
+	}
+	return len(corr) > 0
 }
 
 // SatisfiesRequestedOrdering checks if a PartialMatch's matched

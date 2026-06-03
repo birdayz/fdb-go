@@ -437,10 +437,24 @@ func strength(r NoNextReason) int {
 }
 
 func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
+	return buildIntersectionContinuation(c.children, c.started)
+}
+
+// buildIntersectionContinuation encodes a per-child IntersectionContinuation proto
+// (each child's continuation + started flag). Shared by intersectionCursor and
+// intersectionMultiCursor so the two never drift in continuation encoding.
+//
+// NOTE: producing this continuation is necessary but not sufficient for
+// mid-stream resumption — executeIntersection / executeMultiIntersection still
+// start every child from a nil continuation rather than deserializing this proto
+// and splitting per-child bytes (a pre-existing, codebase-wide limitation
+// documented at executeIntersection; tracked in TODO.md). Both intersection
+// cursors emit the SAME shape so that one executor-side fix covers both.
+func buildIntersectionContinuation[T any](children []*mergeChildState[T], started bool) (RecordCursorContinuation, error) {
 	cont := &gen.IntersectionContinuation{}
-	for i, child := range c.children {
+	for i, child := range children {
 		var contBytes []byte
-		started := child.hasResult || c.started
+		childStarted := child.hasResult || started
 		if child.hasResult || !child.result.GetNoNextReason().IsSourceExhausted() {
 			var err error
 			contBytes, err = child.result.GetContinuation().ToBytes()
@@ -451,14 +465,14 @@ func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, e
 
 		if i == 0 {
 			cont.FirstContinuation = contBytes
-			cont.FirstStarted = proto.Bool(started)
+			cont.FirstStarted = proto.Bool(childStarted)
 		} else if i == 1 {
 			cont.SecondContinuation = contBytes
-			cont.SecondStarted = proto.Bool(started)
+			cont.SecondStarted = proto.Bool(childStarted)
 		} else {
 			cont.OtherChildState = append(cont.OtherChildState, &gen.IntersectionContinuation_CursorState{
 				Continuation: contBytes,
-				Started:      proto.Bool(started),
+				Started:      proto.Bool(childStarted),
 			})
 		}
 	}
@@ -484,3 +498,154 @@ func (c *intersectionCursor[T]) Close() error {
 }
 
 func (c *intersectionCursor[T]) IsClosed() bool { return c.closed }
+
+// intersectionMultiCursor merges multiple ordered cursors, returning, for
+// each set of matching elements (by comparison key), the list of matching
+// elements — one per child. This differs from intersectionCursor, which
+// returns only the first child's element. Mirrors Java's
+// IntersectionMultiCursor (getNextResult collects every child's result).
+//
+// It is used by RecordQueryMultiIntersectionOnValuesPlan, where each child
+// contributes a distinct aggregate column that must be picked up into the
+// merged result row — keeping only the first child would drop every other
+// aggregate.
+type intersectionMultiCursor[T any] struct {
+	children []*mergeChildState[T]
+	reverse  bool
+	started  bool
+	closed   bool
+}
+
+// IntersectionMulti creates a merge-intersection cursor that returns, for
+// each set of elements present in ALL child cursors (by comparison key),
+// the list of those elements (index i is the element from child i). All
+// cursors must be ordered by the same key. Matches Java's
+// IntersectionMultiCursor.create().
+func IntersectionMulti[T any](
+	cursors []RecordCursor[T],
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+) RecordCursor[[]T] {
+	if len(cursors) == 0 {
+		return Empty[[]T]()
+	}
+	children := make([]*mergeChildState[T], len(cursors))
+	for i, cur := range cursors {
+		children[i] = &mergeChildState[T]{
+			cursor:      cur,
+			compKeyFunc: compKeyFunc,
+		}
+	}
+	return &intersectionMultiCursor[T]{
+		children: children,
+		reverse:  reverse,
+	}
+}
+
+func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[[]T], error) {
+	if c.closed {
+		return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+	}
+
+	if !c.started {
+		for _, child := range c.children {
+			if err := child.advance(ctx); err != nil {
+				return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
+			}
+		}
+		c.started = true
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return RecordCursorResult[[]T]{}, err
+		}
+		// If any child is exhausted, the intersection can produce no more.
+		for _, child := range c.children {
+			if !child.hasResult {
+				return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+			}
+		}
+
+		// Find the maximum comparison key.
+		maxKey := c.children[0].comparisonKey
+		for _, child := range c.children[1:] {
+			cmp, cmpErr := compareKeys(child.comparisonKey, maxKey)
+			if cmpErr != nil {
+				return RecordCursorResult[[]T]{}, cmpErr
+			}
+			if c.reverse {
+				cmp = -cmp
+			}
+			if cmp > 0 {
+				maxKey = child.comparisonKey
+			}
+		}
+
+		// Check if all children agree on the max key.
+		allMatch := true
+		for _, child := range c.children {
+			eq, eqErr := compareKeys(child.comparisonKey, maxKey)
+			if eqErr != nil {
+				return RecordCursorResult[[]T]{}, eqErr
+			}
+			if eq != 0 {
+				allMatch = false
+				break
+			}
+		}
+
+		if allMatch {
+			results := make([]T, len(c.children))
+			for i, child := range c.children {
+				results[i] = child.result.GetValue()
+			}
+			for _, child := range c.children {
+				if err := child.advance(ctx); err != nil {
+					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
+				}
+			}
+			// Emit a per-child continuation, identical in shape to
+			// intersectionCursor (shared buildIntersectionContinuation). Resuming
+			// from it requires the executor to split per-child bytes — a gap shared
+			// with the regular intersection (executeIntersection; tracked in TODO
+			// P2.3). Until that lands, executeMultiIntersection rejects a non-nil
+			// incoming continuation LOUDLY rather than silently restarting (so this
+			// non-nil continuation can never cause duplicate rows on resume).
+			cont, contErr := buildIntersectionContinuation(c.children, c.started)
+			if contErr != nil {
+				return RecordCursorResult[[]T]{}, contErr
+			}
+			return NewResultWithValue[[]T](results, cont), nil
+		}
+
+		// Advance all non-maximal children toward the max key.
+		for _, child := range c.children {
+			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
+			if neqErr != nil {
+				return RecordCursorResult[[]T]{}, neqErr
+			}
+			if neq != 0 {
+				if err := child.advance(ctx); err != nil {
+					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
+				}
+			}
+		}
+	}
+}
+
+func (c *intersectionMultiCursor[T]) Close() error {
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	var firstErr error
+	for _, child := range c.children {
+		if err := child.cursor.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (c *intersectionMultiCursor[T]) IsClosed() bool { return c.closed }

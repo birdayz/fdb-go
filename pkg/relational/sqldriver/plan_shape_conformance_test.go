@@ -89,7 +89,8 @@ func TestFDB_PlanShapePKLookup(t *testing.T) {
 		{3, "Carol"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO users VALUES (%d, '%s')", u.id, u.name)); err != nil {
+			"INSERT INTO users VALUES (%d, '%s')", u.id, u.name,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", u.id, err)
 		}
 	}
@@ -161,7 +162,8 @@ func TestFDB_PlanShapeIndexScanRange(t *testing.T) {
 		{5, 25},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO items VALUES (%d, %d)", item.id, item.price)); err != nil {
+			"INSERT INTO items VALUES (%d, %d)", item.id, item.price,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", item.id, err)
 		}
 	}
@@ -238,7 +240,8 @@ func TestFDB_PlanShapeStreamingAggIndex(t *testing.T) {
 		{5, "books", 25},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO items VALUES (%d, '%s', %d)", item.id, item.category, item.price)); err != nil {
+			"INSERT INTO items VALUES (%d, '%s', %d)", item.id, item.category, item.price,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", item.id, err)
 		}
 	}
@@ -319,7 +322,8 @@ func TestFDB_PlanShapeJoinFilterPushdown(t *testing.T) {
 		{3, "baz"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO a VALUES (%d, '%s')", row.id, row.name)); err != nil {
+			"INSERT INTO a VALUES (%d, '%s')", row.id, row.name,
+		)); err != nil {
 			t.Fatalf("INSERT a id=%d: %v", row.id, err)
 		}
 	}
@@ -333,7 +337,8 @@ func TestFDB_PlanShapeJoinFilterPushdown(t *testing.T) {
 		{30, 1},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO b VALUES (%d, %d)", row.bid, row.aid)); err != nil {
+			"INSERT INTO b VALUES (%d, %d)", row.bid, row.aid,
+		)); err != nil {
 			t.Fatalf("INSERT b bid=%d: %v", row.bid, err)
 		}
 	}
@@ -417,7 +422,8 @@ func TestFDB_PlanShapeDistinctOnPK(t *testing.T) {
 		{3, "Carol"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO users VALUES (%d, '%s')", u.id, u.name)); err != nil {
+			"INSERT INTO users VALUES (%d, '%s')", u.id, u.name,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", u.id, err)
 		}
 	}
@@ -498,7 +504,8 @@ func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 		{3, "hr"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO dept VALUES (%d, '%s')", d.did, d.dname)); err != nil {
+			"INSERT INTO dept VALUES (%d, '%s')", d.did, d.dname,
+		)); err != nil {
 			t.Fatalf("INSERT dept did=%d: %v", d.did, err)
 		}
 	}
@@ -513,7 +520,8 @@ func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 		{30, 2, "Charlie"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO emp VALUES (%d, %d, '%s')", e.eid, e.did, e.ename)); err != nil {
+			"INSERT INTO emp VALUES (%d, %d, '%s')", e.eid, e.did, e.ename,
+		)); err != nil {
 			t.Fatalf("INSERT emp eid=%d: %v", e.eid, err)
 		}
 	}
@@ -716,7 +724,8 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA TEMPLATE %s "+
 			"CREATE TABLE parent (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
-			"CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, PRIMARY KEY (id))", tmpl))
+			"CREATE TABLE child (id BIGINT NOT NULL, parent_id BIGINT NOT NULL, PRIMARY KEY (id))", tmpl,
+	))
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
@@ -774,7 +783,8 @@ func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 		{5, "delivered", "US", 500},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO orders VALUES (%d, '%s', '%s', %d)", o.id, o.status, o.region, o.amount)); err != nil {
+			"INSERT INTO orders VALUES (%d, '%s', '%s', %d)", o.id, o.status, o.region, o.amount,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", o.id, err)
 		}
 	}
@@ -881,7 +891,8 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 		{6, "gamma", 999},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO scores VALUES (%d, '%s', %d)", s.id, s.team, s.points)); err != nil {
+			"INSERT INTO scores VALUES (%d, '%s', %d)", s.id, s.team, s.points,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", s.id, err)
 		}
 	}
@@ -987,7 +998,8 @@ func TestFDB_AggregateIndex_BoundedScan(t *testing.T) {
 		{6, "delivered", 600},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount)); err != nil {
+			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", o.id, err)
 		}
 	}
@@ -1064,7 +1076,8 @@ func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
 		{6, "gamma", 999},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO scores VALUES (%d, '%s', %d)", s.id, s.team, s.points)); err != nil {
+			"INSERT INTO scores VALUES (%d, '%s', %d)", s.id, s.team, s.points,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", s.id, err)
 		}
 	}
@@ -1155,7 +1168,8 @@ func TestFDB_AggregateIndex_MinMaxEverSemantics(t *testing.T) {
 	}
 	for _, s := range inserts {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO highscores VALUES (%d, '%s', %d)", s.id, s.player, s.score)); err != nil {
+			"INSERT INTO highscores VALUES (%d, '%s', %d)", s.id, s.player, s.score,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", s.id, err)
 		}
 	}
@@ -1407,7 +1421,8 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 		{6, "APAC", 1000},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO sales VALUES (%d, '%s', %d)", s.id, s.region, s.amount)); err != nil {
+			"INSERT INTO sales VALUES (%d, '%s', %d)", s.id, s.region, s.amount,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", s.id, err)
 		}
 	}
@@ -1927,7 +1942,8 @@ func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
 		{7, "info", "low", 1},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO events VALUES (%d, '%s', '%s', %d)", e.id, e.cat, e.sev, e.dur)); err != nil {
+			"INSERT INTO events VALUES (%d, '%s', '%s', %d)", e.id, e.cat, e.sev, e.dur,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", e.id, err)
 		}
 	}
@@ -2088,7 +2104,8 @@ func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
 		{3, "bob", 500},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO accounts VALUES (%d, '%s', %d)", a.id, a.owner, a.balance)); err != nil {
+			"INSERT INTO accounts VALUES (%d, '%s', %d)", a.id, a.owner, a.balance,
+		)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", a.id, err)
 		}
 	}
@@ -2212,7 +2229,8 @@ func TestFDB_AggregateIndex_CompositeAggExpressions(t *testing.T) {
 		{6, "globex", 2000},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO invoices VALUES (%d, '%s', %d)", inv.id, inv.vendor, inv.amount)); err != nil {
+			"INSERT INTO invoices VALUES (%d, '%s', %d)", inv.id, inv.vendor, inv.amount,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -2297,7 +2315,8 @@ func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 	// Insert 3 records into bucket 'A'
 	for i := 1; i <= 3; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO counters VALUES (%d, 'A', %d)", i, i*100)); err != nil {
+			"INSERT INTO counters VALUES (%d, 'A', %d)", i, i*100,
+		)); err != nil {
 			t.Fatalf("INSERT %d: %v", i, err)
 		}
 	}
@@ -2651,7 +2670,8 @@ func TestFDB_DerivedTableJoinExists(t *testing.T) {
 		{8, "Megan", 3},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO emp VALUES (%d, '%s', %d)", e.id, e.name, e.dept)); err != nil {
+			"INSERT INTO emp VALUES (%d, '%s', %d)", e.id, e.name, e.dept,
+		)); err != nil {
 			t.Fatalf("INSERT emp: %v", err)
 		}
 	}
@@ -2662,7 +2682,8 @@ func TestFDB_DerivedTableJoinExists(t *testing.T) {
 		{1, "Engineering"}, {2, "Sales"}, {3, "Marketing"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name)); err != nil {
+			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name,
+		)); err != nil {
 			t.Fatalf("INSERT dept: %v", err)
 		}
 	}
@@ -2674,7 +2695,8 @@ func TestFDB_DerivedTableJoinExists(t *testing.T) {
 		{1, "OLAP", 3}, {2, "SEO", 8}, {3, "Feedback", 5},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO project VALUES (%d, '%s', %d)", p.id, p.name, p.empID)); err != nil {
+			"INSERT INTO project VALUES (%d, '%s', %d)", p.id, p.name, p.empID,
+		)); err != nil {
 			t.Fatalf("INSERT project: %v", err)
 		}
 	}
@@ -2923,7 +2945,8 @@ func TestFDB_CaseWhenWithInList(t *testing.T) {
 		{10, 20, 10},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -2990,7 +3013,8 @@ func TestFDB_CaseWhenWithoutElseReturnsNull(t *testing.T) {
 		{5, 20, 10},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -3070,7 +3094,8 @@ func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
 		{13, 20, 13},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -3146,7 +3171,8 @@ func TestFDB_JoinWithNotIn(t *testing.T) {
 		{9, "Harry", 3},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO emp VALUES (%d, '%s', %d)", e.id, e.name, e.dept)); err != nil {
+			"INSERT INTO emp VALUES (%d, '%s', %d)", e.id, e.name, e.dept,
+		)); err != nil {
 			t.Fatalf("INSERT emp: %v", err)
 		}
 	}
@@ -3157,7 +3183,8 @@ func TestFDB_JoinWithNotIn(t *testing.T) {
 		{1, "Engineering"}, {2, "Sales"}, {3, "Marketing"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name)); err != nil {
+			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name,
+		)); err != nil {
 			t.Fatalf("INSERT dept: %v", err)
 		}
 	}
@@ -3253,7 +3280,8 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 		{13, 20, 13},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2)); err != nil {
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.col1, r.col2,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -3440,7 +3468,8 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 		{5, 2, 200},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.grp, r.val)); err != nil {
+			"INSERT INTO t1 VALUES (%d, %d, %d)", r.id, r.grp, r.val,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -3530,7 +3559,8 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 		{1001, 1, 10, "a"}, {1002, 1, 11, "b"}, {1003, 1, 12, "a"}, {1004, 1, 13, "b"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO t1 VALUES (%d, %d, %d, '%s')", r.id, r.a1, r.a2, r.a3)); err != nil {
+			"INSERT INTO t1 VALUES (%d, %d, %d, '%s')", r.id, r.a1, r.a2, r.a3,
+		)); err != nil {
 			t.Fatalf("INSERT t1: %v", err)
 		}
 	}
@@ -3541,7 +3571,8 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 		{2001, 1, 20, "a"}, {2002, 1, 19, "a"}, {2003, 1, 18, "b"}, {2004, 1, 17, "b"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO t2 VALUES (%d, %d, %d, '%s')", r.id, r.b1, r.b2, r.b3)); err != nil {
+			"INSERT INTO t2 VALUES (%d, %d, %d, '%s')", r.id, r.b1, r.b2, r.b3,
+		)); err != nil {
 			t.Fatalf("INSERT t2: %v", err)
 		}
 	}
@@ -3638,7 +3669,8 @@ func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 		{6, "delivered", 600},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount)); err != nil {
+			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -3709,7 +3741,8 @@ func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 		{4, "shipped", 400},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount)); err != nil {
+			"INSERT INTO orders VALUES (%d, '%s', %d)", o.id, o.status, o.amount,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -3765,7 +3798,8 @@ func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 		{1, "Alice"}, {2, "Bob"}, {3, "Charlie"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO customers VALUES (%d, '%s')", c.id, c.name)); err != nil {
+			"INSERT INTO customers VALUES (%d, '%s')", c.id, c.name,
+		)); err != nil {
 			t.Fatalf("INSERT customers: %v", err)
 		}
 	}
@@ -3775,7 +3809,8 @@ func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 		{101, 1, 100}, {102, 1, 200}, {103, 2, 300},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO orders VALUES (%d, %d, %d)", o.id, o.cid, o.amount)); err != nil {
+			"INSERT INTO orders VALUES (%d, %d, %d)", o.id, o.cid, o.amount,
+		)); err != nil {
 			t.Fatalf("INSERT orders: %v", err)
 		}
 	}
@@ -3853,7 +3888,8 @@ func TestFDB_SelectStarWithJoin(t *testing.T) {
 		{1, "Engineering"}, {2, "Sales"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name)); err != nil {
+			"INSERT INTO dept VALUES (%d, '%s')", d.id, d.name,
+		)); err != nil {
 			t.Fatalf("INSERT dept: %v", err)
 		}
 	}
@@ -3864,7 +3900,8 @@ func TestFDB_SelectStarWithJoin(t *testing.T) {
 		{1, 1, 100, "Alice"}, {2, 1, 120, "Bob"}, {3, 2, 90, "Charlie"},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO emp VALUES (%d, '%s', %d, %d)", e.id, e.name, e.did, e.sal)); err != nil {
+			"INSERT INTO emp VALUES (%d, '%s', %d, %d)", e.id, e.name, e.did, e.sal,
+		)); err != nil {
 			t.Fatalf("INSERT emp: %v", err)
 		}
 	}
@@ -3934,7 +3971,8 @@ func TestFDB_DerivedTableArithmeticOnAggregates(t *testing.T) {
 		{1, 1, 100}, {2, 1, 200}, {3, 2, 300},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO emp VALUES (%d, %d, %d)", e.id, e.did, e.sal)); err != nil {
+			"INSERT INTO emp VALUES (%d, %d, %d)", e.id, e.did, e.sal,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -3994,7 +4032,8 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 		{6, "C", 50, 10},
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO items VALUES (%d, '%s', %d, %d)", r.id, r.cat, r.price, r.q)); err != nil {
+			"INSERT INTO items VALUES (%d, '%s', %d, %d)", r.id, r.cat, r.price, r.q,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -4138,7 +4177,8 @@ func TestFDB_AggregateExpressionVariants(t *testing.T) {
 	} {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
 			"INSERT INTO sales VALUES (%d, '%s', %d, %d, %d)",
-			r.id, r.region, r.units, r.price, r.discount)); err != nil {
+			r.id, r.region, r.units, r.price, r.discount,
+		)); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
 	}
@@ -4336,7 +4376,8 @@ func TestFDB_CTEWithAggregateExpression(t *testing.T) {
 		{4, "EU", 15, 80},
 	} {
 		db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO orders VALUES (%d, '%s', %d, %d)", o.id, o.region, o.qty, o.price))
+			"INSERT INTO orders VALUES (%d, '%s', %d, %d)", o.id, o.region, o.qty, o.price,
+		))
 	}
 
 	t.Run("cte_with_sum_expr", func(t *testing.T) {
@@ -4574,7 +4615,8 @@ func TestFDB_HavingWithAggExpr(t *testing.T) {
 		{5, "AP", 1, 10},
 	} {
 		db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO orders VALUES (%d, '%s', %d, %d)", o.id, o.r, o.qty, o.price))
+			"INSERT INTO orders VALUES (%d, '%s', %d, %d)", o.id, o.r, o.qty, o.price,
+		))
 	}
 
 	t.Run("having_sum_expr_threshold", func(t *testing.T) {
@@ -4779,7 +4821,8 @@ func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
 	} {
 		db.ExecContext(ctx, fmt.Sprintf(
 			"INSERT INTO sales VALUES (%d, '%s', %d, %d, %d)",
-			r.id, r.region, r.qty, r.price, r.cost))
+			r.id, r.region, r.qty, r.price, r.cost,
+		))
 	}
 
 	t.Run("revenue_and_cost_per_region", func(t *testing.T) {
@@ -4908,7 +4951,8 @@ func TestFDB_UpdateDeleteWithExpressions(t *testing.T) {
 		{4, "Thingamajig", 10, 100},
 	} {
 		db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO inventory VALUES (%d, '%s', %d, %d)", r.id, r.name, r.qty, r.price))
+			"INSERT INTO inventory VALUES (%d, '%s', %d, %d)", r.id, r.name, r.qty, r.price,
+		))
 	}
 
 	t.Run("update_with_arithmetic", func(t *testing.T) {
@@ -5063,7 +5107,8 @@ func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
 		{4, 2, 70, "Dave"},
 	} {
 		db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO emp VALUES (%d, '%s', %d, %d)", e.id, e.name, e.mgr, e.sal))
+			"INSERT INTO emp VALUES (%d, '%s', %d, %d)", e.id, e.name, e.mgr, e.sal,
+		))
 	}
 
 	t.Run("self_join_manager", func(t *testing.T) {
@@ -6091,7 +6136,8 @@ func TestFDB_LimitBasicPatterns(t *testing.T) {
 
 	for i := int64(1); i <= 10; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO items VALUES (%d, 'item%d', %d)", i, i, i*100)); err != nil {
+			"INSERT INTO items VALUES (%d, 'item%d', %d)", i, i, i*100,
+		)); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
 	}
@@ -9815,6 +9861,103 @@ func TestFDB_AggregateIndexUsage(t *testing.T) {
 			t.Errorf("books count after delete should be 2, got %v", rows[0][0])
 		}
 	})
+}
+
+// TestFDB_MultiAggregateIntersection_Filtered pins the multi-aggregate
+// intersection plan (one aggregate index per aggregate, intersected on the
+// group key) under a WHERE-equality filter on the group key. This is the
+// MultiIntersectionOnValues path built by tryMultiAggregateIntersection.
+//
+// Regression: the intersection's child plans were bare RecordQueryIndexPlans
+// over aggregate indexes — a plain index scan tries to FETCH a base record
+// that aggregate entries don't point at, so it yielded zero rows; and the
+// merge cursor returned only the first child (dropping every other
+// aggregate) without ever evaluating the plan's result value. With a
+// WHERE cat='X' prefix each per-aggregate stream emitted exactly one group,
+// and the broken merge produced zero rows. The fix routes children through
+// the aggregate-index executor, intersects with IntersectionMulti (keeping
+// every child's row), merges them, and evaluates the result value.
+func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "magi",
+		"CREATE TABLE mitems(id BIGINT, cat STRING, price BIGINT, PRIMARY KEY(id)) "+
+			"CREATE INDEX m_cnt_by_cat AS SELECT COUNT(*) FROM mitems GROUP BY cat "+
+			"CREATE INDEX m_sum_price_by_cat AS SELECT SUM(price) FROM mitems GROUP BY cat")
+	for i, item := range []struct {
+		cat   string
+		price int
+	}{
+		{"books", 15},
+		{"books", 25},
+		{"books", 35},
+		{"food", 5},
+		{"food", 10},
+		{"electronics", 100},
+		{"electronics", 200},
+		{"electronics", 300},
+	} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO mitems VALUES (%d, '%s', %d)", i+1, item.cat, item.price)); err != nil {
+			t.Fatalf("INSERT %d: %v", i+1, err)
+		}
+	}
+
+	const q = "SELECT cat, COUNT(*), SUM(price) FROM mitems WHERE cat = 'books' GROUP BY cat"
+
+	// Prove the multi-aggregate intersection plan actually fires — otherwise
+	// the correct counts below could be coming from a streaming-agg fallback.
+	plan := planExplainVia(t, ctx, db, q)
+	if !strings.Contains(plan, "Intersection(") {
+		t.Fatalf("expected multi-aggregate Intersection plan, got: %s", plan)
+	}
+
+	rows := collectRows(t, db, q)
+	if len(rows) != 1 {
+		t.Fatalf("filtered multi-aggregate: want 1 row, got %d: %v", len(rows), rows)
+	}
+	if fmt.Sprintf("%v", rows[0][0]) != "books" {
+		t.Errorf("group key: want books, got %v", rows[0][0])
+	}
+	if toInt64(rows[0][1]) != 3 {
+		t.Errorf("COUNT(*): want 3, got %v", rows[0][1])
+	}
+	if toInt64(rows[0][2]) != 75 {
+		t.Errorf("SUM(price): want 75 (15+25+35), got %v", rows[0][2])
+	}
+
+	// Unfiltered multi-aggregate over every group must also be correct.
+	// (The cost model may pick a streaming aggregation here rather than the
+	// intersection — the selective WHERE filter is what tips the cost toward
+	// the intersection above. We only pin correctness, not plan shape.)
+	const qAll = "SELECT cat, COUNT(*), SUM(price) FROM mitems GROUP BY cat ORDER BY cat"
+	allRows := collectRows(t, db, qAll)
+	if len(allRows) != 3 {
+		t.Fatalf("unfiltered multi-aggregate: want 3 rows, got %d: %v", len(allRows), allRows)
+	}
+	want := []struct {
+		cat   string
+		count int64
+		sum   int64
+	}{
+		{"books", 3, 75},
+		{"electronics", 3, 600},
+		{"food", 2, 15},
+	}
+	for i, w := range want {
+		if fmt.Sprintf("%v", allRows[i][0]) != w.cat {
+			t.Errorf("row %d cat: want %s, got %v", i, w.cat, allRows[i][0])
+		}
+		if toInt64(allRows[i][1]) != w.count {
+			t.Errorf("row %d count: want %d, got %v", i, w.count, allRows[i][1])
+		}
+		if toInt64(allRows[i][2]) != w.sum {
+			t.Errorf("row %d sum: want %d, got %v", i, w.sum, allRows[i][2])
+		}
+	}
 }
 
 // TestFDB_UpdateWithExpressions — UPDATE with arithmetic and conditional expressions

@@ -74,10 +74,8 @@ func (w *physicalMapWrapper) HintCost(child []properties.Cost, _ properties.Stat
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	return properties.Cost{
-		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * physicalWrapperCostMultiplier,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return mapCost(child[0])
 }
 
 func (w *physicalMapWrapper) HintOrdering() properties.Ordering {

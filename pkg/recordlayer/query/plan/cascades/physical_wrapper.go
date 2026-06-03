@@ -368,12 +368,21 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 	comps := w.plan.GetScanComparisons()
 	numBound := 0
 	allEquality := true
+	// Per-comparison selectivity: an open RANGE bound (RangeSelectivity) is less selective
+	// than an EQUALITY bound (FilterSelectivity). The flat-per-bound FilterSelectivity costed
+	// `id<10` like a point lookup, so a range-driven and a full-scan-driven join order cost the
+	// same and the cheaper order could not be preferred (RFC-069 / Graefe).
+	sel := 1.0
 	for _, cr := range comps {
-		if !cr.IsEmpty() {
-			numBound++
-			if !cr.IsEquality() {
-				allEquality = false
-			}
+		if cr.IsEmpty() {
+			continue
+		}
+		numBound++
+		if cr.IsEquality() {
+			sel *= properties.FilterSelectivity
+		} else {
+			allEquality = false
+			sel *= properties.RangeSelectivity
 		}
 	}
 	if numBound > 0 && allEquality && numBound == len(comps) {
@@ -387,10 +396,6 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 		for _, t := range types {
 			total += stats.RecordTypeCardinality(t)
 		}
-	}
-	sel := 1.0
-	for i := 0; i < numBound; i++ {
-		sel *= properties.FilterSelectivity
 	}
 	card := total * sel * physicalWrapperCostMultiplier
 	return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
@@ -541,20 +546,23 @@ func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats propertie
 	numBound := 0
 	allEquality := true
 	if w.plan != nil {
+		// Per-comparison selectivity (RFC-069 / Graefe): equality vs open range, matching
+		// the primary-scan wrapper so a range index probe isn't costed as a point lookup.
+		sel := 1.0
 		for _, cr := range w.plan.GetScanComparisons() {
-			if !cr.IsEmpty() {
-				numBound++
-				if !cr.IsEquality() {
-					allEquality = false
-				}
+			if cr.IsEmpty() {
+				continue
+			}
+			numBound++
+			if cr.IsEquality() {
+				sel *= properties.FilterSelectivity
+			} else {
+				allEquality = false
+				sel *= properties.RangeSelectivity
 			}
 		}
 		if w.unique && allEquality && numBound == len(w.columnNames) {
 			return properties.Cost{Cardinality: physicalWrapperCostMultiplier, CPU: 0}
-		}
-		sel := 1.0
-		for i := 0; i < numBound; i++ {
-			sel *= properties.FilterSelectivity
 		}
 		base *= sel
 	}
@@ -672,19 +680,8 @@ func (w *physicalFilterWrapper) HintCost(child []properties.Cost, _ properties.S
 	if len(child) == 0 || w.plan == nil {
 		return properties.Cost{}
 	}
-	in := child[0].Cardinality
-	numPreds := len(w.plan.GetPredicates())
-	if numPreds == 0 {
-		numPreds = 1
-	}
-	sel := properties.FilterSelectivity
-	for i := 1; i < numPreds; i++ {
-		sel *= properties.FilterSelectivity
-	}
-	return properties.Cost{
-		Cardinality: in * sel * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.FilterCPU*float64(numPreds)) * physicalWrapperCostMultiplier,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return filterCost(child[0], len(w.plan.GetPredicates()))
 }
 
 func (w *physicalFilterWrapper) HintOrdering() properties.Ordering {
@@ -789,11 +786,8 @@ func (w *physicalDistinctWrapper) HintCost(child []properties.Cost, _ properties
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * properties.DistinctSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.DistinctCPU) * physicalWrapperCostMultiplier,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return distinctCost(child[0])
 }
 
 func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
@@ -891,11 +885,8 @@ func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost, _ properti
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	in := child[0].Cardinality
-	return properties.Cost{
-		Cardinality: in * properties.TypeFilterSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.TypeFilterCPU) * physicalWrapperCostMultiplier,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return typeFilterCost(child[0])
 }
 
 func (w *physicalTypeFilterWrapper) HintOrdering() properties.Ordering {
@@ -1358,23 +1349,8 @@ func (w *physicalIntersectionWrapper) WithChildren(qs []expressions.Quantifier) 
 // (more expensive than Union — comparison-key-driven matching).
 // Mirrors LogicalIntersection.
 func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	minCard := child[0].Cardinality
-	sumCard := 0.0
-	sumCPU := 0.0
-	for _, c := range child {
-		if c.Cardinality < minCard {
-			minCard = c.Cardinality
-		}
-		sumCard += c.Cardinality
-		sumCPU += c.CPU
-	}
-	return properties.Cost{
-		Cardinality: minCard * physicalWrapperCostMultiplier,
-		CPU:         (sumCPU + sumCard*properties.IntersectionCPU) * physicalWrapperCostMultiplier,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return intersectionCost(child)
 }
 
 func (w *physicalIntersectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

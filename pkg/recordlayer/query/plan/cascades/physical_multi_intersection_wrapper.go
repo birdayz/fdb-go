@@ -96,20 +96,8 @@ func (w *physicalMultiIntersectionWrapper) HintCost(child []properties.Cost, _ p
 			CPU:         groupCard * properties.IntersectionCPU * float64(nChildren),
 		}
 	}
-	minCard := child[0].Cardinality
-	sumCard := 0.0
-	sumCPU := 0.0
-	for _, c := range child {
-		if c.Cardinality < minCard {
-			minCard = c.Cardinality
-		}
-		sumCard += c.Cardinality
-		sumCPU += c.CPU
-	}
-	return properties.Cost{
-		Cardinality: minCard * physicalWrapperCostMultiplier,
-		CPU:         (sumCPU + sumCard*properties.IntersectionCPU) * physicalWrapperCostMultiplier,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return intersectionCost(child)
 }
 
 // HintOrdering: multi-intersection output is ordered by the comparison

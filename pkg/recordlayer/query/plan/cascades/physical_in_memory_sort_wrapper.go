@@ -8,7 +8,6 @@ package cascades
 import (
 	"fmt"
 	"hash/fnv"
-	"math"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
@@ -63,7 +62,14 @@ func (w *physicalInMemorySortWrapper) WithChildren(qs []expressions.Quantifier) 
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalInMemorySortWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+	// Always rebuild the sort over the resolved child (the inner group's extracted
+	// WINNER), regardless of the child's plan shape. The isLeafReplaceable guard
+	// used elsewhere protects a join's INTERNAL structure from being swapped; a
+	// sort imposes no structural constraint on what it sorts, so restricting it to
+	// leaf inners would pin the stale first-member placeholder for join inners and
+	// silently sort the wrong (sub-optimal) join order (RFC-069). WithChildren runs
+	// only at extraction, where qs[0] resolves to the fully-formed winner.
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
 		newPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, w.plan.GetSortKeys())
 		return &physicalInMemorySortWrapper{plan: newPlan, innerQuant: qs[0]}, nil
 	}
@@ -90,16 +96,8 @@ func (w *physicalInMemorySortWrapper) HintCost(child []properties.Cost, _ proper
 	if len(child) == 0 {
 		return properties.Cost{}
 	}
-	n := child[0].Cardinality
-	if n < 1 {
-		n = 1
-	}
-	logN := math.Max(1, math.Log2(math.Max(2, n)))
-	sortCPU := n * properties.SortCPU * logN
-	return properties.Cost{
-		Cardinality: n,
-		CPU:         child[0].CPU + sortCPU,
-	}
+	// Single source of truth (cost_formulas.go) — shared with concretePlanCost.
+	return inMemorySortCost(child[0])
 }
 
 func (w *physicalInMemorySortWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {

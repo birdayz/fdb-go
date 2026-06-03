@@ -256,6 +256,22 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			if v, ok := ctx.Datum[qualKey]; ok {
 				return v
 			}
+			// Already-qualified field (e.g. "T3.ID") accessed through a merge
+			// quantifier: a re-enumerated N-way join collapses a buried table
+			// into a merge quantifier whose row flows that table's columns under
+			// their own qualified ALIAS.COL keys (JoinMergeAllValue / mergeRows
+			// preserve dotted keys verbatim — they are NOT re-prefixed with the
+			// merge alias). Prepending the merge alias above would invent a key
+			// (e.g. "$M.T3.ID") that was never written. Mirror the binding path
+			// (bm[f.Field]) by resolving the qualified field directly. (RFC-043.)
+			if strings.Contains(f.Field, ".") {
+				if v, ok := ctx.Datum[strings.ToUpper(f.Field)]; ok {
+					return v
+				}
+				if v, ok := ctx.Datum[f.Field]; ok {
+					return v
+				}
+			}
 		}
 		return nil
 	case CorrelationBinder:
@@ -279,7 +295,20 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 		}
 		return nil
 	case map[string]any:
-		return ctx[qualKey]
+		if v, ok := ctx[qualKey]; ok {
+			return v
+		}
+		// Already-qualified field accessed through a merge quantifier — see the
+		// *RowEvalContext branch above for the rationale. (RFC-043.)
+		if strings.Contains(f.Field, ".") {
+			if v, ok := ctx[strings.ToUpper(f.Field)]; ok {
+				return v
+			}
+			if v, ok := ctx[f.Field]; ok {
+				return v
+			}
+		}
+		return nil
 	}
 	return nil
 }
