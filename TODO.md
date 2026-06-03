@@ -569,6 +569,27 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        asserted < maxReadKey, empty/large-offset/past-max edges). Teeth: re-introducing the
        unconditional shortcut reddens LLT/LLE_maxReadKey. Only the RYW path had it; rywDisabled
        delegates to the server.
+     - [x] **[RFC-067 — MERGED #247] error-CODE differential → TRANSACTION_SIZE_LIMIT + 4 linked fixes.**
+       A fresh error-CODE differential (`TestDifferential_ErrorCodes`, comparing the FDB error code
+       each client returns for the same size/legal-range triggers) found a REAL write-path divergence:
+       the Go client did NOT enforce `TRANSACTION_SIZE_LIMIT` by default — it committed >10 MB txns
+       that libfdb_c rejects client-side with `transaction_too_large` (2101). C++ defaults every txn's
+       sizeLimit to the 10 MB knob (NativeAPI:6133); Go's `0=disabled` default left no enforcement.
+       Fix: default to the knob. Four more linked fixes surfaced via review + differential: (2) online-
+       indexer lessen-work codes (Torvalds — wrong numbers, missing 2101, made latent-live by the
+       limit; now matches Java `IndexingThrottle.lessenWorkCodes` 1:1); (3) commit-validation ORDER
+       (codex — read-only fast path + per-mutation-before-size; then the full eager-vs-deferred model:
+       key/value-size + versionstamp-offset are EAGER first-invalid-op-wins, txn-size DEFERRED; pinned
+       by `TestDifferential_VersionstampValidationOrder`, 8 cases); (4) `metadataVersionKey` write
+       contract (codex+FDB-C+++Torvalds — a blanket `continue` silently committed every illegal mvk
+       mutation where libfdb_c returns 2000/2004; replaced with the exact C++ gate; pinned by
+       `TestDifferential_MetadataVersionKey`, 8 cases); (5) size the VALIDATED snapshot not the live
+       buffer (codex — a Set racing Commit could fail a small commit for an unshipped mutation; pinned
+       by `TestApproximateCommitSize_SizesSnapshotNotLiveBuffer`). Also fixed a pre-existing
+       differential-harness flake: pinned-version range reads now retry the transient 1007 (stale pin
+       under parallel-container load) instead of `t.Fatalf` (pinned by
+       `TestDifferential_PinnedRangeRetriesStaleVersion`). Reviewed clean by FDB-C++ dev + Torvalds +
+       codex (per-commit deltas + full review) + @claude.
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,

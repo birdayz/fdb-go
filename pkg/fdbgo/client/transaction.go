@@ -402,9 +402,22 @@ func (s *Snapshot) GetReadVersion(ctx context.Context) (int64, error) {
 	return s.tx.GetReadVersion(ctx)
 }
 
-func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+// checkCancelled returns transaction_cancelled (1025) if the transaction has been cancelled.
+// C++ cancel() does resetPromise.sendError(transaction_cancelled) (ReadYourWrites.actor.cpp:2730)
+// and EVERY RYW op races resetPromise, so a cancelled txn resolves every op with 1025. This is
+// the Go analogue of that per-op resetPromise check: reads route through ensureReadVersion (which
+// calls this), and ops that bypass ensureReadVersion (metrics, OnError, GetVersionstamp, Commit)
+// call it directly at entry. Apps branch on err.Code == 1025 (RFC-068), so the code must match.
+func (tx *Transaction) checkCancelled() error {
 	if txState(tx.state.Load()) == txStateCancelled {
-		return fmt.Errorf("transaction cancelled")
+		return &wire.FDBError{Code: 1025} // transaction_cancelled
+	}
+	return nil
+}
+
+func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+	if err := tx.checkCancelled(); err != nil {
+		return err
 	}
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
@@ -916,6 +929,9 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 // This matches the C client's behavior where fdb_transaction_set() can be
 // called after commit to start building a new transaction.
 func (tx *Transaction) Commit(ctx context.Context) error {
+	if err := tx.checkCancelled(); err != nil {
+		return err // transaction_cancelled (1025), matching libfdb_c (RFC-068)
+	}
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
@@ -1176,6 +1192,9 @@ func (tx *Transaction) GetCommittedVersion() (int64, error) {
 // Format: [version 8 bytes big-endian][txnBatchId 2 bytes big-endian].
 // Must be called after a successful Commit.
 func (tx *Transaction) GetVersionstamp() ([]byte, error) {
+	if err := tx.checkCancelled(); err != nil {
+		return nil, err // transaction_cancelled (1025) out-ranks the not-yet-committed 2015 (RFC-068)
+	}
 	if !tx.hasCommitted {
 		return nil, &wire.FDBError{Code: 2015}
 	}
@@ -1207,6 +1226,13 @@ func backoffSleep(ctx context.Context, d time.Duration) error {
 // (the transaction has been reset for retry). Returns the error if non-retryable
 // or ctx.Err() if ctx fires during the backoff sleep.
 func (tx *Transaction) OnError(ctx context.Context, err error) error {
+	// A cancelled txn can never be retried — C++ OnError races resetPromise and returns
+	// transaction_cancelled (1025) (ReadYourWrites.actor.cpp). Without this, OnError on a
+	// cancelled txn would reset-and-retry a retryable input error (return nil), reusing a
+	// cancelled handle — a real divergence (RFC-068).
+	if cerr := tx.checkCancelled(); cerr != nil {
+		return cerr // transaction_cancelled (1025)
+	}
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
 		tx.state.Store(int32(txStateErrored))
@@ -1422,6 +1448,12 @@ func (tx *Transaction) GetLocations(ctx context.Context, begin, end []byte, limi
 // GetAddressesForKey returns the addresses of storage servers responsible for
 // the given key. Uses the location cache (queries cluster on miss).
 func (tx *Transaction) GetAddressesForKey(ctx context.Context, key []byte) ([]string, error) {
+	// A cancelled txn returns transaction_cancelled (1025) — C++ getAddressesForKey races
+	// resetPromise at op entry (ReadYourWrites.actor.cpp:1837); this path bypasses
+	// ensureReadVersion, so gate explicitly (RFC-068).
+	if err := tx.checkCancelled(); err != nil {
+		return nil, err
+	}
 	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
 	if err != nil {
 		return nil, fmt.Errorf("locate key: %w", err)
