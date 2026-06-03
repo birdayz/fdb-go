@@ -162,6 +162,24 @@ codex also flagged (P1) that the cgo `value_too_large`/`key_too_large` `Set` cas
 (CATCH_AND_RETURN), not aborted — verified empirically (those cases, and the new
 oversized-key case, run to completion returning 2102/2103).
 
+### Size-check the committed snapshot, not the live buffer (codex final review)
+
+A final full-PR codex pass flagged that the size check called `tx.GetApproximateSize()`, which
+iterates the **live** mutation/conflict buffers — but `Commit` snapshots `muts := tx.mutations`
+up front and marshals exactly that snapshot. Under the documented concurrent-use contract
+(`Set`/`Get`/`Commit` safe to call concurrently), a large `Set` appended on another goroutine
+*after* the snapshot but *before* the size check would inflate the live size and could fail a
+**small** commit with `transaction_too_large` (2101) for a mutation that is never validated or
+shipped.
+
+**Fix:** size the validated snapshot. New `approximateCommitSize(muts)` sizes `muts` (the exact
+set the marshal ships — `buildCommitTransactionRequest` reinterprets `muts`) plus the current
+conflict ranges (read live under `conflictMu`, matching the marshal which likewise ships a live
+conflict snapshot). The commit check uses it instead of `GetApproximateSize()` (which stays the
+public live-size poll). Pinned by `TestApproximateCommitSize_SizesSnapshotNotLiveBuffer`
+(no FDB): a one-mutation snapshot sizes small even when the live buffer holds an appended 20 MB
+mutation — the exact gap that would otherwise trip 2101.
+
 ## Follow-up (not blocking)
 
 `GetApproximateSize`'s per-mutation overhead constant `48` approximates

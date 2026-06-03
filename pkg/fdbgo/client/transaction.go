@@ -1061,7 +1061,10 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	//   - The size check runs AFTER per-mutation validation (key/value size AND the
 	//     eager versionstamp-offset check above), so an oversized key/value/bad
 	//     versionstamp that also crosses 10 MB reports 2102/2103/2000, not 2101.
-	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
+	// Size the VALIDATED snapshot `muts` (via approximateCommitSize), not the live buffer:
+	// a Set racing this Commit on another goroutine appends beyond `muts` and is not in this
+	// commit, so GetApproximateSize() could fail a small commit for an unshipped mutation.
+	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(muts) > tx.sizeLimit {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
@@ -1377,6 +1380,31 @@ func (tx *Transaction) GetApproximateSize() int64 {
 	for _, m := range tx.mutations {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
 	}
+	for _, r := range tx.readConflicts {
+		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
+	}
+	for _, r := range tx.writeConflicts {
+		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
+	}
+	return size
+}
+
+// approximateCommitSize sizes the request that WILL be committed: the validated mutation
+// snapshot `muts` (the exact set Commit marshals — NOT the live tx.mutations) plus the current
+// conflict ranges. The commit-time size check (transaction_too_large, 2101) must use this, not
+// GetApproximateSize(): under the concurrent-use contract a Set racing Commit on another
+// goroutine appends to tx.mutations BEYOND `muts`, so GetApproximateSize() (which reads the live
+// buffer) could fail a small commit for a mutation that is never shipped. `muts` is an
+// append-only snapshot (elements never mutated in place) captured by Commit before this runs, so
+// iterating it needs no lock; the conflict buffers are read live under conflictMu (the marshal
+// likewise ships them from a live snapshot, so counting live conflicts matches what is sent).
+func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
+	var size int64
+	for _, m := range muts {
+		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
+	}
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
 	for _, r := range tx.readConflicts {
 		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
