@@ -557,6 +557,18 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        pinning (both A+B SetReadVersion(vSetup), transient→retry, fresh prefix/attempt, bounded) →
        flake-free (5 runs). Teeth: empty key-conflict range → key_exact_r5 diverges. Oversized
        committed-truncation is unobservable (keys > maxKeySize are unwritable).
+     - [x] **[RFC-065] getKey boundary resolution — REAL BUG FIXED.** The existing
+       getKey differentials cover the keyspace INTERIOR + clamp off-prefix results, masking the
+       EDGES. A boundary probe found a real divergence: a BACKWARD selector (lastLess*) at/past
+       maxReadKey (\xff) wrongly returned \xff itself instead of the greatest key < \xff. Root
+       cause: resolveKeySelectorFromCache (ryw_getkey.go) short-circuited EVERY off-end seek to
+       readThroughEnd, ignoring direction; C++ it.skip() clamps to the last segment and only sets
+       readThroughEnd after the walk for offset>1. Fix: direction-aware off-end branch — forward
+       keeps readThroughEnd; backward repositions onto the last segment and resolves backward.
+       Pinned by TestDifferential_GetKeyBoundary (pinned-version differential: lastLess*(maxReadKey)
+       asserted < maxReadKey, empty/large-offset/past-max edges). Teeth: re-introducing the
+       unconditional shortcut reddens LLT/LLE_maxReadKey. Only the RYW path had it; rywDisabled
+       delegates to the server.
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
