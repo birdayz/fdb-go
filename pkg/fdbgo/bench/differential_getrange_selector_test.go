@@ -100,7 +100,13 @@ func TestDifferential_GetRangeSelectorBounds(t *testing.T) {
 					t.Fatalf("%s: error mismatch: go=%v cgo=%v", tc.name, goErr, cErr)
 				}
 				if goErr != nil {
-					return // both errored identically
+					// Both errored — the codes must still agree (codex P3): a both-errored
+					// case with DIFFERING non-retryable codes is a divergence, not a pass.
+					if fdbErrorCode(goErr) != fdbErrorCode(cErr) {
+						t.Fatalf("%s: both errored but codes differ: go=%d (%v) cgo=%d (%v)",
+							tc.name, fdbErrorCode(goErr), goErr, fdbErrorCode(cErr), cErr)
+					}
+					return
 				}
 				gp, cp := normGo(goKVs), normC(cKVs)
 				if len(gp) != len(cp) {
@@ -230,6 +236,11 @@ func TestDifferential_GetRangeSelectorRYW(t *testing.T) {
 						t.Fatalf("%s: error mismatch: go=%v cgo=%v", tc.name, goErr, cErr)
 					}
 					if goErr != nil {
+						// Both errored — codes must agree (codex P3).
+						if fdbErrorCode(goErr) != fdbErrorCode(cErr) {
+							t.Fatalf("%s: both errored but codes differ: go=%d (%v) cgo=%d (%v)",
+								tc.name, fdbErrorCode(goErr), goErr, fdbErrorCode(cErr), cErr)
+						}
 						return false
 					}
 					gp := stripPfx(normGo(goKVs), goPfx)
