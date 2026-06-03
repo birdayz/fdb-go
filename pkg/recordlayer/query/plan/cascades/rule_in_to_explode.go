@@ -1,6 +1,9 @@
 package cascades
 
 import (
+	"bytes"
+	"reflect"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -96,6 +99,16 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// Dedupe the IN-list, mirroring Java's InComparisonToExplodeRule, which
+	// wraps the value comparand in ArrayDistinctValue (the ValueComparison
+	// branch). Without this, `col IN (1, 1, 1)` explodes to three Explode
+	// iterations and the InJoin emits one duplicate row per repeated literal
+	// (`a IN (1,1,1)` on a PK returned three copies of the same row). Done
+	// before the single-element collapse below so `col IN (1, 1, 1)` reduces
+	// to a plain `col = 1` equality. Order-preserving (first occurrence) to
+	// match ArrayDistinctValue's distinct-not-sort semantics.
+	list = distinctInListValues(list)
+
 	innerRef := f.GetInner().GetRangesOver()
 	if innerRef == nil {
 		return
@@ -161,6 +174,47 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		nil, // no predicates — ImplementInJoinRule requires this
 	)
 	call.Yield(selectExpr)
+}
+
+// distinctInListValues returns in with duplicate elements removed,
+// preserving first-occurrence order. Mirrors the runtime semantics of
+// Java's ArrayDistinctValue applied to a constant IN-list. SQL value
+// equality: []byte compares by content; other scalar literals by ==.
+func distinctInListValues(in []any) []any {
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		dup := false
+		for _, seen := range out {
+			if inListValueEqual(seen, v) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// inListValueEqual reports SQL value equality for two IN-list literals.
+// It must never panic: an IN list can carry array / vector literals
+// (`WHERE v IN ([1,0], [0,1])`) that fold to non-comparable slices
+// ([]float64, []any, ...), so a bare `==` would crash planning. []byte
+// (BYTES) and other non-comparable kinds compare structurally; comparable
+// scalars (int64, float64, string, bool) use ==.
+func inListValueEqual(a, b any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if ab, ok := a.([]byte); ok {
+		bb, ok := b.([]byte)
+		return ok && bytes.Equal(ab, bb)
+	}
+	if !reflect.TypeOf(a).Comparable() || !reflect.TypeOf(b).Comparable() {
+		return reflect.DeepEqual(a, b)
+	}
+	return a == b
 }
 
 var _ ExpressionRule = (*InComparisonToExplodeRule)(nil)

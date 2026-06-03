@@ -1575,6 +1575,86 @@ func findLeafDescriptor(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData)
 	return rt.Descriptor
 }
 
+// allLeafDescriptors collects the record-type descriptors of EVERY scan /
+// index leaf reachable from p — both sides of a join. findLeafDescriptor
+// only follows the single GetInner() chain and so misses the other join
+// leg, which left a projected column from that leg (e.g. `o.total` in
+// `SELECT u.name, o.total FROM Users u, Orders o ...`) with no descriptor
+// to resolve its type against → reported as UNKNOWN. Resolving each
+// projected column against all leaves recovers the correct column type.
+func allLeafDescriptors(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []protoreflect.MessageDescriptor {
+	var out []protoreflect.MessageDescriptor
+	seen := make(map[protoreflect.MessageDescriptor]struct{})
+	var walk func(n plans.RecordQueryPlan)
+	walk = func(n plans.RecordQueryPlan) {
+		if n == nil {
+			return
+		}
+		var rts []string
+		switch leaf := n.(type) {
+		case *plans.RecordQueryScanPlan:
+			rts = leaf.GetRecordTypes()
+		case *plans.RecordQueryIndexPlan:
+			rts = leaf.GetRecordTypes()
+		}
+		// RecordQueryAggregateIndexPlan is intentionally omitted: aggregate
+		// results are typed by deriveColumnsFromAggregateIndex, never by the
+		// projection path that calls this. Add a case here if that changes.
+		for _, name := range rts {
+			if rt := md.GetRecordType(name); rt != nil && rt.Descriptor != nil {
+				if _, dup := seen[rt.Descriptor]; !dup {
+					seen[rt.Descriptor] = struct{}{}
+					out = append(out, rt.Descriptor)
+				}
+			}
+		}
+		for _, c := range n.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(p)
+	return out
+}
+
+// descriptorForColumn picks the leaf descriptor that defines the given
+// (possibly qualified) column. A projection over a join can reference
+// same-named columns from different legs, so resolving every column against
+// descs[0] (or first-match) mis-types the far leg. Resolution order:
+//  1. the unique leaf descriptor that has the bare field;
+//  2. among several, the leg whose record-type name matches the column's
+//     qualifier (covers unqualified / table-name-qualified references);
+//  3. otherwise the first match — deterministic. The genuinely ambiguous case
+//     (a SQL *alias* qualifying same-named columns of DIFFERENT types across
+//     legs) can't be resolved here: the physical plan's leaves carry record-
+//     type names, not the query aliases, so the alias→type map is gone.
+//     Correctly typing that case needs the value-level type derivation that
+//     today leaves the FieldValue type UNKNOWN (the same gap that forces this
+//     descriptor lookup in the first place). Returns nil when no leg has it.
+func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) protoreflect.MessageDescriptor {
+	ref := parseColRef(name)
+	bare := protoreflect.Name(ref.bare())
+	var matches []protoreflect.MessageDescriptor
+	for _, d := range descs {
+		if d.Fields().ByName(bare) != nil {
+			matches = append(matches, d)
+		}
+	}
+	if len(matches) <= 1 {
+		if len(matches) == 1 {
+			return matches[0]
+		}
+		return nil
+	}
+	if ref.table != "" {
+		for _, d := range matches {
+			if strings.EqualFold(string(d.Name()), ref.table) {
+				return d
+			}
+		}
+	}
+	return matches[0]
+}
+
 func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	groupCols := aggIdx.GetGroupCols()
 	aggCol := aggIdx.GetAggColumn()
@@ -1624,7 +1704,10 @@ func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan
 }
 
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	desc := findLeafDescriptor(proj.GetInner(), md)
+	// A projection over a join references columns from MULTIPLE record types,
+	// so resolve each column's type against every join leaf, not just the
+	// first one (the single-leaf lookup left the other leg's columns UNKNOWN).
+	descs := allLeafDescriptors(proj.GetInner(), md)
 	aliases := proj.GetAliases()
 	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
 	for i, v := range proj.GetProjections() {
@@ -1644,9 +1727,18 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		} else if _, isField := v.(*values.FieldValue); !isField {
 			label = fmt.Sprintf("_%d", i)
 		}
-		typeName := valueTypeName(v, desc)
-		if typeName == "" && desc != nil {
-			typeName = protoFieldTypeName(desc, name)
+		// Resolve THIS column against the leg that defines it (a join
+		// projects same-named columns from different legs; the qualifier
+		// disambiguates). Falling back to descs[0] for non-FieldValue
+		// expressions keeps the prior aggregate-operand behaviour.
+		colDesc := descriptorForColumn(name, descs)
+		typeDesc := colDesc
+		if typeDesc == nil && len(descs) > 0 {
+			typeDesc = descs[0]
+		}
+		typeName := valueTypeName(v, typeDesc)
+		if typeName == "" && colDesc != nil {
+			typeName = protoFieldTypeName(colDesc, name)
 		}
 		if typeName == "" {
 			typeName = "UNKNOWN"
@@ -1660,8 +1752,8 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			colName = label
 		}
 		nullable := api.ColumnNullable
-		if desc != nil {
-			if fd := desc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
+		if colDesc != nil {
+			if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
 				nullable = api.ColumnNoNulls
 			}
 		}

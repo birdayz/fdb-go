@@ -25,6 +25,8 @@ go_test(
     srcs = [
         "catalog_aware_test.go",
         "go_runner_test.go",
+        "in_list_dedup_regression_test.go",
+        "join_projection_coltype_regression_test.go",
         "plandiff_test.go",
         "runsql_test.go",
     ],

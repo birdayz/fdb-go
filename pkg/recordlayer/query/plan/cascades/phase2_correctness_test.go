@@ -353,6 +353,8 @@ func TestInExplode_DuplicateElements(t *testing.T) {
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
+	// [1, 1, 2] → the IN-list is deduped (RFC-066, mirroring Java's
+	// ArrayDistinctValue), leaving the two distinct values [1, 2].
 	inList := &values.ConstantValue{Value: []any{int64(1), int64(1), int64(2)}, Typ: values.TypeUnknown}
 	inPred := predicates.NewComparisonPredicate(
 		&values.FieldValue{Field: "STATUS", Typ: values.TypeInt},
@@ -375,7 +377,8 @@ func TestInExplode_DuplicateElements(t *testing.T) {
 		t.Fatalf("expected *SelectExpression, got %T", results[0])
 	}
 
-	// Verify the ExplodeExpression carries all 3 elements (no dedup).
+	// Two distinct values remain after dedup, so this is still a multi-element
+	// IN → SelectExpression(Explode([1, 2]), filter).
 	qs := sel.GetQuantifiers()
 	if len(qs) != 2 {
 		t.Fatalf("expected 2 quantifiers, got %d", len(qs))
@@ -394,8 +397,8 @@ func TestInExplode_DuplicateElements(t *testing.T) {
 				if !ok {
 					t.Fatalf("collection value is %T, expected []any", vals)
 				}
-				if len(list) != 3 {
-					t.Fatalf("expected 3 elements in explode list (no dedup), got %d", len(list))
+				if len(list) != 2 {
+					t.Fatalf("expected 2 deduped elements in explode list, got %d (%v)", len(list), list)
 				}
 				return
 			}
