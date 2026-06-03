@@ -387,6 +387,7 @@ go_test(
         "rule_unsorted_sort_elim_test.go",
         "rule_value_predicate_fold_test.go",
         "rule_zero_limit_test.go",
+        "scan_like_cost_unique_test.go",
         "set_plan_helpers_test.go",
         "simplifier_test.go",
         "single_matched_access_test.go",
