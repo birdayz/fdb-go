@@ -119,6 +119,17 @@ func executeMultiIntersection(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
+	// The multi-intersection cursor emits a correct per-child continuation
+	// (buildIntersectionContinuation), but this executor does not yet decode it
+	// to resume each child from its saved position — it would start every child
+	// from nil and silently restart, duplicating rows on a limit/transaction-split
+	// resume (codex review; tracked as TODO P2.3, shared with executeIntersection).
+	// Until that decode is wired, fail LOUDLY on a resume rather than returning
+	// wrong results. Benign for typical aggregates (few groups, one pass, no resume).
+	if len(continuation) > 0 {
+		return nil, fmt.Errorf("multi-aggregate intersection (GROUP BY) does not support continuation-based resumption yet (TODO P2.3); the result must fit in a single scan pass")
+	}
+
 	cursors := make([]recordlayer.RecordCursor[QueryResult], len(children))
 	for i, child := range children {
 		c, err := ExecutePlan(ctx, child, store, evalCtx, nil, props.ClearSkipAndLimit())

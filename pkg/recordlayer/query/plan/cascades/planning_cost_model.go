@@ -243,7 +243,7 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// (the RFC-069 multiway regression: an index-probe order lost to a full-scan order on
 	// fetch count despite being far cheaper). It self-gates to join-wrapper pairs; non-join
 	// comparisons fall straight through (RFC-069).
-	if cmp := compareJoinOrdering(a, b, stats); cmp != 0 {
+	if cmp := compareJoinOrdering(a, b, stats, ctx); cmp != 0 {
 		return cmp
 	}
 
@@ -889,7 +889,7 @@ func intCompare(a, b int) int {
 // order over a far-cheaper index-probe order. Gating on "contains a join" lets the
 // total concrete cost decide those, as it must (RFC-069). Non-join pairs fall
 // through to the established structural + scalar criteria.
-func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties.StatisticsProvider) int {
+func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties.StatisticsProvider, ctx PlanContext) int {
 	pa, oka := a.(physicalPlanExpression)
 	pb, okb := b.(physicalPlanExpression)
 	if !oka || !okb {
@@ -905,8 +905,8 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	if stats == nil {
 		stats = properties.DefaultStatistics{}
 	}
-	costA := concretePlanCost(planA, stats)
-	costB := concretePlanCost(planB, stats)
+	costA := concretePlanCost(planA, stats, ctx)
+	costB := concretePlanCost(planB, stats, ctx)
 	if costA.Less(costB) {
 		return -1
 	}
@@ -921,14 +921,14 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 // plan's actual GetChildren() (phantom-free — see compareJoinOrdering). Cardinality
 // and CPU roll up from children exactly as the wrapper cost does, so a join's total
 // cost reflects each sub-product's real (embedded) plan, not a shared-group winner.
-func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider) properties.Cost {
+func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvider, ctx PlanContext) properties.Cost {
 	if p == nil {
 		return properties.Cost{}
 	}
 	kids := p.GetChildren()
 	child := make([]properties.Cost, len(kids))
 	for i, c := range kids {
-		child[i] = concretePlanCost(c, stats)
+		child[i] = concretePlanCost(c, stats, ctx)
 	}
 	c0 := func() properties.Cost {
 		if len(child) > 0 {
@@ -941,9 +941,12 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 		// Primary-key scan: a full-equality bind on the PK is provably unique → 1 row.
 		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, true)
 	case *plans.RecordQueryIndexPlan:
-		// Secondary index: uniqueness unknown without PlanContext → never assume a
-		// full-equality bind is a single row (it may be a large non-unique bucket).
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, false)
+		// Secondary index: a full-equality bind is a single row only if the index is
+		// UNIQUE. Resolve uniqueness from PlanContext when available (codex review);
+		// a nil/empty ctx falls back to non-unique (conservative bucket estimate) so
+		// a non-unique equality (`status = ?`) is never mispriced as a point probe.
+		_, unique := indexMetadata(pl, ctx)
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, unique)
 	case *plans.RecordQueryFlatMapPlan:
 		if len(child) < 2 {
 			return properties.Cost{}

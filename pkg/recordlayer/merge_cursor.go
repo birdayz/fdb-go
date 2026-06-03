@@ -607,9 +607,11 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			}
 			// Emit a per-child continuation, identical in shape to
 			// intersectionCursor (shared buildIntersectionContinuation). Resuming
-			// from it requires the executor to split per-child bytes — a
-			// pre-existing, codebase-wide gap shared with the regular intersection
-			// (executeIntersection passes nil to all children; tracked in TODO.md).
+			// from it requires the executor to split per-child bytes — a gap shared
+			// with the regular intersection (executeIntersection; tracked in TODO
+			// P2.3). Until that lands, executeMultiIntersection rejects a non-nil
+			// incoming continuation LOUDLY rather than silently restarting (so this
+			// non-nil continuation can never cause duplicate rows on resume).
 			cont, contErr := buildIntersectionContinuation(c.children, c.started)
 			if contErr != nil {
 				return RecordCursorResult[[]T]{}, contErr
