@@ -426,6 +426,29 @@ func newTestDatabaseStub() *Database {
 	return &Database{db: db}
 }
 
+// TestTransactionSizeLimit_DefaultsToKnob pins the C++-faithful default: every
+// transaction's sizeLimit defaults to CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT (10 MB,
+// NativeAPI.actor.cpp:6133), NOT 0/disabled. Without it a >10 MB transaction commits in
+// Go but is rejected client-side by libfdb_c with transaction_too_large (2101) — the
+// divergence the GetRange/error-code differential caught. Revert-proof: with the default
+// left at 0, the first assertion fails (0 != 10_000_000).
+func TestTransactionSizeLimit_DefaultsToKnob(t *testing.T) {
+	t.Parallel()
+	db := newTestDatabaseStub()
+
+	tx := db.CreateTransaction()
+	if tx.sizeLimit != transactionSizeLimit {
+		t.Fatalf("default txn sizeLimit = %d, want %d (CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT)", tx.sizeLimit, transactionSizeLimit)
+	}
+
+	// An explicit DB option lowers it (C++ SIZE_LIMIT option floor is 32, ceiling 10 MB).
+	db.SetTransactionSizeLimit(50000)
+	tx2 := db.CreateTransaction()
+	if tx2.sizeLimit != 50000 {
+		t.Fatalf("after SetTransactionSizeLimit(50000): sizeLimit = %d, want 50000", tx2.sizeLimit)
+	}
+}
+
 func TestParseClusterFile_Errors(t *testing.T) {
 	t.Parallel()
 

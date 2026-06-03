@@ -14,10 +14,11 @@ package client
 //     exactly as C++ clear() does (NativeAPI.actor.cpp:6019-6047) — clear never
 //     throws, it translates an oversized range to an equivalent smaller one.
 const (
-	keySizeLimit       = 10000  // CLIENT_KNOBS->KEY_SIZE_LIMIT
-	systemKeySizeLimit = 30000  // CLIENT_KNOBS->SYSTEM_KEY_SIZE_LIMIT
-	valueSizeLimit     = 100000 // CLIENT_KNOBS->VALUE_SIZE_LIMIT
-	tenantPrefixSize   = 8      // TenantAPI::PREFIX_SIZE (sizeof(int64_t))
+	keySizeLimit         = 10000      // CLIENT_KNOBS->KEY_SIZE_LIMIT
+	systemKeySizeLimit   = 30000      // CLIENT_KNOBS->SYSTEM_KEY_SIZE_LIMIT
+	valueSizeLimit       = 100000     // CLIENT_KNOBS->VALUE_SIZE_LIMIT
+	tenantPrefixSize     = 8          // TenantAPI::PREFIX_SIZE (sizeof(int64_t))
+	transactionSizeLimit = 10_000_000 // CLIENT_KNOBS->TRANSACTION_SIZE_LIMIT (1e7)
 )
 
 // getMaxWriteKeySize mirrors NativeAPI.actor.cpp:11629 getMaxWriteKeySize: system
