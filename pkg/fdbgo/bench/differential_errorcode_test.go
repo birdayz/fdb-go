@@ -95,6 +95,55 @@ func TestDifferential_ErrorCodes(t *testing.T) {
 				return err
 			},
 		},
+		{
+			// VALIDATION ORDER (codex P2 / RFC-067): an oversized key in a >10 MB txn must
+			// report key_too_large(2102), NOT transaction_too_large(2101) — C++ validates
+			// per-mutation before the size check (commitMutations runs after set()'s checks).
+			name:     "oversized_key_precedes_size",
+			wantCode: 2102,
+			goSetup: func(tx gofdb.Transaction) error {
+				for i := 0; i < 110; i++ {
+					tx.Set(gofdb.Key(fmt.Sprintf("%sok_%03d", pfx, i)), make([]byte, 100000))
+				}
+				tx.Set(gofdb.Key(make([]byte, 10001)), []byte{1})
+				return nil
+			},
+			cSetup: func(tx cgofdb.Transaction) error {
+				for i := 0; i < 110; i++ {
+					tx.Set(cgofdb.Key(fmt.Sprintf("%sok_%03d", pfx, i)), make([]byte, 100000))
+				}
+				tx.Set(cgofdb.Key(make([]byte, 10001)), []byte{1})
+				return nil
+			},
+		},
+		{
+			// READ-ONLY fast path (codex P2 / RFC-067): a read-only txn (no mutations, no
+			// write conflicts) with >10 MB of READ-conflict ranges must NOT be rejected for
+			// size — C++ returns at the read-only fast path (NativeAPI:6800) before getSize.
+			// 800×~16 KB disjoint ranges ≈ 12.8 MB of read-conflict bytes.
+			name:     "readonly_large_read_conflicts",
+			wantCode: 0,
+			goSetup: func(tx gofdb.Transaction) error {
+				for i := 0; i < 800; i++ {
+					b := []byte(fmt.Sprintf("%src_%04d_", pfx, i))
+					begin := append(append([]byte{}, b...), make([]byte, 8000)...)
+					end := append(append([]byte{}, b...), make([]byte, 8000)...)
+					end[len(end)-1] = 0xff
+					_ = tx.AddReadConflictRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)})
+				}
+				return nil
+			},
+			cSetup: func(tx cgofdb.Transaction) error {
+				for i := 0; i < 800; i++ {
+					b := []byte(fmt.Sprintf("%src_%04d_", pfx, i))
+					begin := append(append([]byte{}, b...), make([]byte, 8000)...)
+					end := append(append([]byte{}, b...), make([]byte, 8000)...)
+					end[len(end)-1] = 0xff
+					_ = tx.AddReadConflictRange(cgofdb.KeyRange{Begin: cgofdb.Key(begin), End: cgofdb.Key(end)})
+				}
+				return nil
+			},
+		},
 	}
 
 	for _, tc := range cases {

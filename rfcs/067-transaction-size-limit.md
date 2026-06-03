@@ -70,6 +70,29 @@ Java `IndexingThrottle.lessenWorkCodes` 1:1 (`{1004, 1007, 1020, 1031, 2002, 210
 pinned by `TestMayRetryAfterHandlingException` (now asserts the correct set retries AND
 the formerly-bogus `1028/1039/2501` do NOT — revert-proof).
 
+## Commit validation order (codex review)
+
+Making the size check run by default exposed two order divergences (codex P2), now
+matched to C++ `commitMutations` (`NativeAPI.actor.cpp:6797-6836`):
+
+1. **Read-only fast path** (`:6800`): a transaction with no mutations AND no
+   write-conflict ranges returns success *before* the size check — even when it carries
+   >10 MB of READ-conflict ranges (which `getSize` would otherwise count). The Go size
+   check is now gated on `len(mutations) > 0 || writeConflicts > 0`.
+2. **Per-mutation validation precedes size** (`:6818-6836` runs after `set()`'s
+   key/value checks): an oversized key/value that also crosses 10 MB now reports
+   `key_too_large`(2102)/`value_too_large`(2103), not `transaction_too_large`(2101). The
+   Go size check moved to *after* the per-mutation validation loop.
+
+Pinned by two new differential cases: `oversized_key_precedes_size` (go==cgo==2102) and
+`readonly_large_read_conflicts` (go==cgo==0, ~12.8 MB of read-conflict ranges).
+
+codex also flagged (P1) that the cgo `value_too_large`/`key_too_large` `Set` cases might
+`abort()` via libfdb_c `CATCH_AND_DIE`. Not borne out for the Apple Go binding:
+`fdb_transaction_set` buffers, and the size checks fire at *commit* and are returned
+(CATCH_AND_RETURN), not aborted — verified empirically (those cases, and the new
+oversized-key case, run to completion returning 2102/2103).
+
 ## Follow-up (not blocking)
 
 `GetApproximateSize`'s per-mutation overhead constant `48` approximates

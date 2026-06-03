@@ -934,12 +934,6 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return &wire.FDBError{Code: 2006} // invalid_option_value
 	}
 
-	// Enforce size limit if set. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
-	if tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
-		tx.state.Store(int32(txStateErrored))
-		return &wire.FDBError{Code: 2101} // transaction_too_large
-	}
-
 	// Snapshot the mutation/conflict buffers under conflictMu before reading
 	// them. The published contract (fdb/transaction.go) makes Set/Get/Commit
 	// safe for concurrent use: a Get future resolving on another goroutine
@@ -1009,6 +1003,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2103} // value_too_large
 		}
+	}
+
+	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
+	// order (NativeAPI.actor.cpp:6797-6836):
+	//   - The read-only fast path returns BEFORE the size check (:6800): a txn with NO
+	//     mutations AND NO write-conflict ranges is never rejected for size — even one
+	//     carrying >10 MB of READ-conflict ranges (which getSize would otherwise count).
+	//   - The size check runs AFTER per-mutation key/value validation, so an oversized
+	//     key/value that also crosses 10 MB reports 2102/2103 (above), not 2101.
+	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
 	// Validate versionstamp offsets. C++ ReadYourWritesTransaction::atomicOp
