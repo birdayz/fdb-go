@@ -437,10 +437,24 @@ func strength(r NoNextReason) int {
 }
 
 func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
+	return buildIntersectionContinuation(c.children, c.started)
+}
+
+// buildIntersectionContinuation encodes a per-child IntersectionContinuation proto
+// (each child's continuation + started flag). Shared by intersectionCursor and
+// intersectionMultiCursor so the two never drift in continuation encoding.
+//
+// NOTE: producing this continuation is necessary but not sufficient for
+// mid-stream resumption — executeIntersection / executeMultiIntersection still
+// start every child from a nil continuation rather than deserializing this proto
+// and splitting per-child bytes (a pre-existing, codebase-wide limitation
+// documented at executeIntersection; tracked in TODO.md). Both intersection
+// cursors emit the SAME shape so that one executor-side fix covers both.
+func buildIntersectionContinuation[T any](children []*mergeChildState[T], started bool) (RecordCursorContinuation, error) {
 	cont := &gen.IntersectionContinuation{}
-	for i, child := range c.children {
+	for i, child := range children {
 		var contBytes []byte
-		started := child.hasResult || c.started
+		childStarted := child.hasResult || started
 		if child.hasResult || !child.result.GetNoNextReason().IsSourceExhausted() {
 			var err error
 			contBytes, err = child.result.GetContinuation().ToBytes()
@@ -451,14 +465,14 @@ func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, e
 
 		if i == 0 {
 			cont.FirstContinuation = contBytes
-			cont.FirstStarted = proto.Bool(started)
+			cont.FirstStarted = proto.Bool(childStarted)
 		} else if i == 1 {
 			cont.SecondContinuation = contBytes
-			cont.SecondStarted = proto.Bool(started)
+			cont.SecondStarted = proto.Bool(childStarted)
 		} else {
 			cont.OtherChildState = append(cont.OtherChildState, &gen.IntersectionContinuation_CursorState{
 				Continuation: contBytes,
-				Started:      proto.Bool(started),
+				Started:      proto.Bool(childStarted),
 			})
 		}
 	}
@@ -591,11 +605,16 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
 				}
 			}
-			// StartContinuation (non-end): this cursor does not support
-			// mid-stream resumption — the aggregate-index multi-intersection
-			// reads whole streams without per-child continuations. The
-			// invariant only forbids an EndContinuation alongside a value.
-			return NewResultWithValue[[]T](results, &StartContinuation{}), nil
+			// Emit a per-child continuation, identical in shape to
+			// intersectionCursor (shared buildIntersectionContinuation). Resuming
+			// from it requires the executor to split per-child bytes — a
+			// pre-existing, codebase-wide gap shared with the regular intersection
+			// (executeIntersection passes nil to all children; tracked in TODO.md).
+			cont, contErr := buildIntersectionContinuation(c.children, c.started)
+			if contErr != nil {
+				return RecordCursorResult[[]T]{}, contErr
+			}
+			return NewResultWithValue[[]T](results, cont), nil
 		}
 
 		// Advance all non-maximal children toward the max key.

@@ -938,9 +938,12 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryScanPlan:
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats)
+		// Primary-key scan: a full-equality bind on the PK is provably unique → 1 row.
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, true)
 	case *plans.RecordQueryIndexPlan:
-		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats)
+		// Secondary index: uniqueness unknown without PlanContext → never assume a
+		// full-equality bind is a single row (it may be a large non-unique bucket).
+		return scanLikeCost(pl.GetScanComparisons(), pl.GetRecordTypes(), stats, false)
 	case *plans.RecordQueryFlatMapPlan:
 		if len(child) < 2 {
 			return properties.Cost{}
@@ -1007,12 +1010,21 @@ func concretePlanCost(p plans.RecordQueryPlan, stats properties.StatisticsProvid
 }
 
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
-// recursion (full-equality bind → 1 row; else table cardinality × per-comparison
-// selectivity × the physical-wrapper discount). The scan/index WRAPPER HintCost is
-// metadata-aware (unique/covering) for the memo cost framework; the join-ordering
-// cost deliberately uses selectivity-only leaf cost so it is consistent without
-// PlanContext (RFC-069).
-func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider) properties.Cost {
+// recursion (provably-unique full-equality bind → 1 row; else table cardinality ×
+// per-comparison selectivity × the physical-wrapper discount). The scan/index
+// WRAPPER HintCost is metadata-aware (unique/covering) for the memo cost framework;
+// the join-ordering cost deliberately uses selectivity-only leaf cost so it is
+// consistent without PlanContext (RFC-069).
+//
+// fullBindUnique gates the 1-row shortcut: a fully-equality-bound access yields a
+// single row ONLY when the access is provably unique. A primary-key scan with every
+// PK column bound is unique (pass true); a secondary INDEX scan may be non-unique
+// (pass false) — `status = ?` binds the whole index key but selects a large bucket,
+// and costing that as a point probe would let join ordering drive off a big bucket as
+// if it were one row (codex review). Without PlanContext we cannot prove a secondary
+// index unique, so we conservatively fall through to the selectivity estimate; the
+// metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
+func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
 	numBound := 0
 	allEquality := true
 	sel := 1.0
@@ -1028,7 +1040,7 @@ func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, sta
 			sel *= properties.RangeSelectivity
 		}
 	}
-	if numBound > 0 && allEquality && numBound == len(comps) {
+	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}
 	total := 0.0
@@ -1160,6 +1172,14 @@ func walkConcretePlan(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pla
 	case *plans.RecordQueryFilterPlan:
 		// Legacy filter — not counted as a predicates filter (matches the wrapper walk).
 	case *plans.RecordQueryMapPlan:
+		// Map only — NOT RecordQueryProjectionPlan. The map-count criterion (#14)
+		// is a structural tiebreak; a near-ubiquitous top-of-query projection is
+		// not a discriminating operator, and counting it makes #14 fire on almost
+		// every plan pair. (concretePlanCost charges a projection via mapCost for
+		// magnitude, a different purpose — the two walks need not count the same
+		// nodes.) Counting projections here re-ranks ties broadly and selected a
+		// latent-buggy CTE plan that mis-projects an aliased column to NULL —
+		// caught by TestFDB_{CTEChainedColumnAliases,CascadesCTEColumnAliases}.
 		counts.mapCount++
 	case *plans.RecordQueryInJoinPlan:
 		counts.inJoinCount++
