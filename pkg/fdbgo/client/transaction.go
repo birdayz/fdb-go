@@ -1003,24 +1003,20 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2103} // value_too_large
 		}
-	}
-
-	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
-	// order (NativeAPI.actor.cpp:6797-6836):
-	//   - The read-only fast path returns BEFORE the size check (:6800): a txn with NO
-	//     mutations AND NO write-conflict ranges is never rejected for size — even one
-	//     carrying >10 MB of READ-conflict ranges (which getSize would otherwise count).
-	//   - The size check runs AFTER per-mutation key/value validation, so an oversized
-	//     key/value that also crosses 10 MB reports 2102/2103 (above), not 2101.
-	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
-		tx.state.Store(int32(txStateErrored))
-		return &wire.FDBError{Code: 2101} // transaction_too_large
-	}
-
-	// Validate versionstamp offsets. C++ ReadYourWritesTransaction::atomicOp
-	// validates immediately; we defer to commit time since Atomic() is void.
-	// Error: client_invalid_operation (2000).
-	for _, m := range muts {
+		// Versionstamp offset validation -- client_invalid_operation (2000). C++
+		// ReadYourWritesTransaction::atomicOp validates this EAGERLY at the atomicOp()
+		// call; our Atomic() is void so we defer to commit, but it must stay in THIS
+		// per-mutation loop (mutation order = call order) so the eager semantics match
+		// libfdb_c. Two ordering facts pinned by the differential
+		// (TestDifferential_VersionstampValidationOrder):
+		//   - ACROSS mutations the FIRST eagerly-invalid op wins, so a bad versionstamp
+		//     earlier in the buffer out-ranks a later oversized key/value (and
+		//     vice-versa); a fixed loop order in mutation order reproduces "first wins".
+		//   - WITHIN one op the key/value SIZE checks above run BEFORE this offset
+		//     check, so an oversized versionstamp key/value reports 2102/2103, not 2000
+		//     -- hence this sits after the size checks.
+		// It must also precede the transaction-size check below: 2101 is DEFERRED
+		// (commit-time) in libfdb_c and never pre-empts an eager 2000.
 		switch m.Type {
 		case MutSetVersionstampedKey:
 			if err := validateVersionstampOffset(m.Key); err != nil {
@@ -1033,6 +1029,19 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+
+	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
+	// order (NativeAPI.actor.cpp:6797-6836):
+	//   - The read-only fast path returns BEFORE the size check (:6800): a txn with NO
+	//     mutations AND NO write-conflict ranges is never rejected for size — even one
+	//     carrying >10 MB of READ-conflict ranges (which getSize would otherwise count).
+	//   - The size check runs AFTER per-mutation validation (key/value size AND the
+	//     eager versionstamp-offset check above), so an oversized key/value/bad
+	//     versionstamp that also crosses 10 MB reports 2102/2103/2000, not 2101.
+	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
+		tx.state.Store(int32(txStateErrored))
+		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
 	if len(muts) == 0 && nWriteConflicts == 0 {

@@ -351,7 +351,9 @@ func TestDifferential_VersionstampTuplePack(t *testing.T) {
 // suffix, empty body) must be REJECTED with the same error code (2000, client_invalid_operation)
 // by both clients, surfaced at Commit (the client-side guard, before the server's commit-time
 // silent skip). The tight-valid boundary (offset+10 == body) must COMMIT cleanly (code 0). Go
-// defers the check to commit (transaction.go:1014-1030, "Atomic() is void"); libfdb_c rejects at
+// defers the check to commit (the per-mutation validation loop in Transaction.Commit, "Atomic()
+// is void"; ordering vs the size/key/value checks is pinned by
+// TestDifferential_VersionstampValidationOrder); libfdb_c rejects at
 // the atomicOp call — both surface at commit. go==cgo asserted.
 func TestDifferential_VersionstampErrors(t *testing.T) {
 	t.Parallel()

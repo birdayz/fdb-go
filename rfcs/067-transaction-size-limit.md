@@ -87,6 +87,38 @@ matched to C++ `commitMutations` (`NativeAPI.actor.cpp:6797-6836`):
 Pinned by two new differential cases: `oversized_key_precedes_size` (go==cgo==2102) and
 `readonly_large_read_conflicts` (go==cgo==0, ~12.8 MB of read-conflict ranges).
 
+### Versionstamp validation order (codex follow-up review)
+
+A second codex pass flagged that the now-default size check could also pre-empt
+**versionstamp-offset** validation (`client_invalid_operation`, 2000). A fresh probe
+(`TestProbe`-style, then promoted to `TestDifferential_VersionstampValidationOrder`)
+established the full ordering ground truth by differential — **this is the spec, not the
+C++ reading**:
+
+| trigger (call order) | libfdb_c | go (before) | go (after) |
+|---|---|---|---|
+| bad versionstamp + >10 MB valid sets | 2000 | **2101** ✗ | 2000 ✓ |
+| >10 MB valid sets + bad versionstamp | 2000 | **2101** ✗ | 2000 ✓ |
+| bad versionstamp, then oversized value | 2000 | **2103** ✗ | 2000 ✓ |
+| oversized value, then bad versionstamp | 2103 | 2103 ✓ | 2103 ✓ |
+| bad versionstamp, then oversized key | 2000 | **2102** ✗ | 2000 ✓ |
+| oversized key, then bad versionstamp | 2102 | 2102 ✓ | 2102 ✓ |
+| oversized versionstamp key + bad offset (one op) | 2102 | 2102 ✓ | 2102 ✓ |
+| oversized versionstamp value + bad offset (one op) | 2103 | 2103 ✓ | 2103 ✓ |
+
+The model libfdb_c implements: key-size (2102), value-size (2103), and versionstamp-offset
+(2000) are all **eager** (validated at the `Set()`/`atomicOp()` call, in **call order**) —
+the **first eagerly-invalid op wins**; **within** one op the size check precedes the offset
+check; `transaction_too_large` (2101) is **deferred** to commit and never pre-empts an eager
+error. The Go client deferred *all* validation to commit and ran the versionstamp check in a
+**separate loop after** the size check, so a bad versionstamp combined with an oversized txn/
+key/value (versionstamp op first) reported 2101/2102/2103 instead of 2000.
+
+**Fix:** move the versionstamp-offset validation **into the per-mutation validation loop**, in
+mutation order (= call order), **after** the key/value-size checks and **before** the deferred
+transaction-size check. This reproduces "first eagerly-invalid op wins" with a fixed loop
+order and matches all eight differential cases above. The separate post-size loop is deleted.
+
 codex also flagged (P1) that the cgo `value_too_large`/`key_too_large` `Set` cases might
 `abort()` via libfdb_c `CATCH_AND_DIE`. Not borne out for the Apple Go binding:
 `fdb_transaction_set` buffers, and the size checks fire at *commit* and are returned
@@ -117,6 +149,11 @@ transactions in normal operation.
   `transaction_too_large` case was **red** (go=0, cgo=2101) before the fix and **green**
   (both 2101) after — the red→green proof. It also pins value/key/legal-range codes,
   which already matched.
+- `TestDifferential_VersionstampValidationOrder` (`pkg/fdbgo/bench/`) — eight cases pinning
+  the eager-vs-deferred ordering of versionstamp-offset (2000) against key/value-size (2102/
+  2103, eager) and transaction-size (2101, deferred), in both call orders plus the within-op
+  intersections. The four "versionstamp op first" cases were **red** (go=2101/2102/2103,
+  cgo=2000) before the per-mutation-loop fix and **green** (both 2000) after.
 - `TestTransactionSizeLimit_DefaultsToKnob` (`pkg/fdbgo/client/`, no FDB) — a default
   transaction's `sizeLimit` is `TRANSACTION_SIZE_LIMIT`; an explicit DB option lowers it.
   Revert-proof: with the default left at 0, the first assertion fails.

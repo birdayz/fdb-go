@@ -197,30 +197,36 @@ func applyC(tx cgofdb.Transaction, ops []fuzzOp, pfx string) {
 // stripNorm reads all KVs under prefix at the pinned version and returns the
 // (prefix-stripped key, value) pairs — directly comparable across the two clients'
 // different-length prefixes.
-func stripNormGo(t *testing.T, v int64, pfx string) []kvPair {
+func stripNormGo(t *testing.T, v int64, pfx string) ([]kvPair, error) {
 	r, err := gofdb.PrefixRange([]byte(pfx))
 	if err != nil {
 		t.Fatalf("go PrefixRange: %v", err)
 	}
-	kvs := goRangeAt(t, v, r, gofdb.RangeOptions{})
+	kvs, err := goRangeAt(t, v, r, gofdb.RangeOptions{})
+	if err != nil {
+		return nil, err // transient (e.g. 1007 stale pin) — caller re-pins & retries
+	}
 	out := make([]kvPair, len(kvs))
 	for i, kv := range kvs {
 		out[i] = kvPair{append([]byte(nil), kv.Key[len(pfx):]...), append([]byte(nil), kv.Value...)}
 	}
-	return out
+	return out, nil
 }
 
-func stripNormC(t *testing.T, v int64, pfx string) []kvPair {
+func stripNormC(t *testing.T, v int64, pfx string) ([]kvPair, error) {
 	r, err := cgofdb.PrefixRange([]byte(pfx))
 	if err != nil {
 		t.Fatalf("cgo PrefixRange: %v", err)
 	}
-	kvs := cgoRangeAt(t, v, r, cgofdb.RangeOptions{})
+	kvs, err := cgoRangeAt(t, v, r, cgofdb.RangeOptions{})
+	if err != nil {
+		return nil, err
+	}
 	out := make([]kvPair, len(kvs))
 	for i, kv := range kvs {
 		out[i] = kvPair{append([]byte(nil), kv.Key[len(pfx):]...), append([]byte(nil), kv.Value...)}
 	}
-	return out
+	return out, nil
 }
 
 // runDifferentialSequence applies the same op sequence through both clients to their
@@ -252,9 +258,31 @@ func runDifferentialSequence(t *testing.T, label string, txns [][]fuzzOp) {
 		mustCGo(t, func(tx cgofdb.Transaction) { applyC(tx, ops, cPfx) })
 	}
 
-	v := freshSharedVersion(t)
-	goState := stripNormGo(t, v, goPfx)
-	cState := stripNormC(t, v, cPfx)
+	// Read both clients' persisted state at ONE shared version. Under heavy parallel-
+	// container load the pinned version can age past FDB's 5s MVCC window between the GRV
+	// and the read (transaction_too_old, 1007); re-pin a FRESH shared version and re-read
+	// BOTH clients so the snapshot stays identical. Mirrors the getkey-boundary retry loop.
+	var goState, cState []kvPair
+	const maxAttempts = 12
+	for attempt := 0; ; attempt++ {
+		if attempt >= maxAttempts {
+			t.Fatalf("%s: did not clear transient errors in %d attempts", label, maxAttempts)
+		}
+		v := freshSharedVersion(t)
+		gs, gErr := stripNormGo(t, v, goPfx)
+		cs, cErr := stripNormC(t, v, cPfx)
+		if (gErr != nil && isFDBRetryable(gErr)) || (cErr != nil && isFDBRetryable(cErr)) {
+			continue
+		}
+		if gErr != nil {
+			t.Fatalf("%s: go read: %v", label, gErr)
+		}
+		if cErr != nil {
+			t.Fatalf("%s: cgo read: %v", label, cErr)
+		}
+		goState, cState = gs, cs
+		break
+	}
 	if len(goState) != len(cState) {
 		t.Fatalf("%s: persisted KV count differs: go=%d cgo=%d\nseq=%s", label, len(goState), len(cState), fmtTxns(txns))
 	}
