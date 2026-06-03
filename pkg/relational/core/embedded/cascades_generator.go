@@ -1597,6 +1597,9 @@ func allLeafDescriptors(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData)
 		case *plans.RecordQueryIndexPlan:
 			rts = leaf.GetRecordTypes()
 		}
+		// RecordQueryAggregateIndexPlan is intentionally omitted: aggregate
+		// results are typed by deriveColumnsFromAggregateIndex, never by the
+		// projection path that calls this. Add a case here if that changes.
 		for _, name := range rts {
 			if rt := md.GetRecordType(name); rt != nil && rt.Descriptor != nil {
 				if _, dup := seen[rt.Descriptor]; !dup {
@@ -1628,7 +1631,8 @@ func allLeafDescriptors(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData)
 //     today leaves the FieldValue type UNKNOWN (the same gap that forces this
 //     descriptor lookup in the first place). Returns nil when no leg has it.
 func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) protoreflect.MessageDescriptor {
-	bare := protoreflect.Name(parseColRef(name).bare())
+	ref := parseColRef(name)
+	bare := protoreflect.Name(ref.bare())
 	var matches []protoreflect.MessageDescriptor
 	for _, d := range descs {
 		if d.Fields().ByName(bare) != nil {
@@ -1641,9 +1645,9 @@ func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) pr
 		}
 		return nil
 	}
-	if qual := parseColRef(name).table; qual != "" {
+	if ref.table != "" {
 		for _, d := range matches {
-			if strings.EqualFold(string(d.Name()), qual) {
+			if strings.EqualFold(string(d.Name()), ref.table) {
 				return d
 			}
 		}
