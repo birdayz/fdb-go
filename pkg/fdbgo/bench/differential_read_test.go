@@ -94,8 +94,10 @@ func freshSharedVersion(t *testing.T) int64 {
 // goRangeAt/cgoRangeAt read at a PINNED version, RETURNING any error (no Fatalf) so a transient
 // transaction_too_old(1007) — when the pinned version drifts past the 5s MVCC window under heavy
 // parallel-container load — is retried with a fresh version by the caller rather than failing the
-// test. Mirrors goGetKeyAt/cgoGetKeyAt. Callers MUST re-pin a fresh shared version on a retryable
-// error (see readBothAtFreshVersion) so both clients keep observing the IDENTICAL snapshot.
+// test. Mirrors goGetKeyAt/cgoGetKeyAt. Callers MUST re-pin a fresh shared version (via
+// freshSharedVersion) and re-read BOTH clients on a retryable error — see the re-pin-and-retry
+// loops in TestDifferential_RangeRead and runDifferentialSequence — so both clients keep
+// observing the IDENTICAL snapshot.
 func goRangeAt(t *testing.T, v int64, r gofdb.Range, opts gofdb.RangeOptions) ([]gofdb.KeyValue, error) {
 	t.Helper()
 	tr, err := goClient.CreateTransaction()

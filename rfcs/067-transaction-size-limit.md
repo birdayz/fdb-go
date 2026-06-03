@@ -119,6 +119,43 @@ mutation order (= call order), **after** the key/value-size checks and **before*
 transaction-size check. This reproduces "first eagerly-invalid op wins" with a fixed loop
 order and matches all eight differential cases above. The separate post-size loop is deleted.
 
+### metadataVersionKey write contract (codex + FDB-C++ + Torvalds review)
+
+Moving the versionstamp check into the per-mutation loop exposed a related divergence — and
+the move itself regressed one case. The loop short-circuits `metadataVersionKey`
+(`\xff/metadataVersion`) with an early `continue` (the key is exempt from system-key range
+checks). The *old* separate versionstamp loop ran over **all** mutations (no metadataVersionKey
+skip), so `SetVersionstampedValue("\xff/metadataVersion", badOffset)` *was* offset-validated;
+inlining the check behind that `continue` made it unreachable. More broadly, the blanket
+`continue` let the Go client **commit every illegal metadataVersionKey mutation silently**,
+where libfdb_c rejects it. Ground truth (`TestDifferential_MetadataVersionKey` vs libfdb_c):
+
+| op on metadataVersionKey | libfdb_c | go (before) |
+|---|---|---|
+| `SetVersionstampedValue`, operand == required (14 zero bytes) | 0 (legal) | 0 ✓ |
+| `SetVersionstampedValue`, any other operand | 2000 | **0 (committed)** ✗ |
+| `SetVersionstampedValue`, operand < 4 bytes | 2000 | **0** ✗ |
+| plain `Set` | 2000 | **0** ✗ |
+| `Add` (or any other atomic op) | 2000 | **0** ✗ |
+| `SetVersionstampedKey` | 2000 | **0** ✗ |
+| `Clear` / `ClearRange` beginning at metadataVersionKey | 2004 | **0** ✗ |
+
+The C++ contract (`ReadYourWrites.actor.cpp`): `atomicOp` (:2226-2229) and `set` (:2300) accept
+**only** `SetVersionstampedValue` with operand == `metadataVersionRequiredValue`
+(`SystemData.cpp:1387` — 14 zero bytes); anything else → `client_invalid_operation` (2000),
+checked *before* the size/offset checks. `clear`/`clear(range)` (:2357, :2406) have **no**
+metadataVersionKey gate, so a clear hits the normal legal-range check → `key_outside_legal_range`
+(2004) since metadataVersionKey ≥ maxWriteKey.
+
+**Fix:** replace the blanket `continue` with the C++ gate in the per-mutation loop — reject any
+non-`SetVersionstampedValue`, or any `SetVersionstampedValue` whose operand ≠ the required value,
+with 2000; the legal write falls through to the (passing) size + offset checks. The gate is
+scoped to non-`MutClearRange` types (Go models a single-key `Clear` as `MutClearRange`) so a
+clear falls through to the legal-range check (2004), matching C++. The record layer's own
+metadata-version bump (`database.go`: `SetVersionstampedValue` with the 14-zero-byte required
+value) is unaffected — it is exactly the one legal case. Pinned by `TestDifferential_MetadataVersionKey`
+(eight cases vs libfdb_c).
+
 codex also flagged (P1) that the cgo `value_too_large`/`key_too_large` `Set` cases might
 `abort()` via libfdb_c `CATCH_AND_DIE`. Not borne out for the Apple Go binding:
 `fdb_transaction_set` buffers, and the size checks fire at *commit* and are returned
@@ -154,6 +191,11 @@ transactions in normal operation.
   2103, eager) and transaction-size (2101, deferred), in both call orders plus the within-op
   intersections. The four "versionstamp op first" cases were **red** (go=2101/2102/2103,
   cgo=2000) before the per-mutation-loop fix and **green** (both 2000) after.
+- `TestDifferential_MetadataVersionKey` (`pkg/fdbgo/bench/`) — eight cases pinning the
+  metadataVersionKey write contract vs libfdb_c: the one legal `SetVersionstampedValue` (0),
+  five `client_invalid_operation` (2000) rejections (wrong/short operand, plain Set, atomic
+  Add, SetVersionstampedKey), and two `key_outside_legal_range` (2004) clears. All were
+  silently committed (code 0) by the Go client before the fix.
 - `TestTransactionSizeLimit_DefaultsToKnob` (`pkg/fdbgo/client/`, no FDB) — a default
   transaction's `sizeLimit` is `TRANSACTION_SIZE_LIMIT`; an explicit DB option lowers it.
   Revert-proof: with the default left at 0, the first assertion fails.

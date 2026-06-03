@@ -717,6 +717,12 @@ func (tx *Transaction) maxWriteKey() []byte {
 // C++ RYW: `key != metadataVersionKey` in getValue check.
 var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
 
+// metadataVersionRequiredValue is the ONLY operand libfdb_c accepts for a
+// SetVersionstampedValue to metadataVersionKey (SystemData.cpp:1387 — 14 zero bytes: a
+// 10-byte versionstamp placeholder + the 4-byte LE offset suffix 0). C++ RYW::atomicOp
+// (:2226-2229) rejects any other operand — and any non-SVV op — with client_invalid_operation.
+var metadataVersionRequiredValue = []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+
 // conflictBufPool reuses backing buffers for conflict range keys (both read
 // and write). Each transaction needs ~200 conflict keys for a 50-record batch,
 // totaling ~20KB. Without pooling, the buffer grows 4K→8K→16K→32K
@@ -948,15 +954,31 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// C++ RYW write checks (deferred to commit since our Set/Clear are void):
 	// - set(): if key == metadataVersionKey → client_invalid_operation
 	//          if key >= maxWriteKey → key_outside_legal_range
-	// - atomicOp(): if key == metadataVersionKey → allow (only SVV)
+	// - atomicOp(): if key == metadataVersionKey → ONLY SetVersionstampedValue with operand ==
+	//               metadataVersionRequiredValue is allowed; anything else →
+	//               client_invalid_operation. metadataVersionKey skips the legal-range check.
 	//               if key >= maxWriteKey → key_outside_legal_range
 	maxWrite := tx.maxWriteKey()
 	for _, m := range muts {
-		if bytes.Equal(m.Key, metadataVersionKeyBytes) {
-			// metadataVersionKey is exempt — only allowed via SetVersionstampedValue
-			continue
-		}
-		if bytes.Compare(m.Key, maxWrite) >= 0 {
+		if bytes.Equal(m.Key, metadataVersionKeyBytes) && m.Type != MutClearRange {
+			// C++ RYW::atomicOp (:2226-2229) and set() (:2300): the ONLY legal mutation to
+			// metadataVersionKey is SetVersionstampedValue with operand ==
+			// metadataVersionRequiredValue. A plain Set, any other atomic op (Add, SVK, …), or
+			// SVV with a different operand → client_invalid_operation (2000). This gate runs
+			// BEFORE the size/offset checks (it is the metadataVersionKey arm of the same
+			// if/else-if as the legal-range check). The legal write is exempt from the
+			// legal-range check (system key) but still subject to the key/value-size and
+			// versionstamp-offset checks below, which metadataVersionRequiredValue passes.
+			//
+			// clear()/clear(range) (C++ :2357, :2406) have NO metadataVersionKey gate — a clear
+			// whose begin is metadataVersionKey falls to the legal-range check below and reports
+			// key_outside_legal_range (2004), since metadataVersionKey >= maxWriteKey. Hence the
+			// `m.Type != MutClearRange` guard (Go models a single-key Clear as MutClearRange).
+			if m.Type != MutSetVersionstampedValue || !bytes.Equal(m.Value, metadataVersionRequiredValue) {
+				tx.state.Store(int32(txStateErrored))
+				return &wire.FDBError{Code: 2000} // client_invalid_operation
+			}
+		} else if bytes.Compare(m.Key, maxWrite) >= 0 {
 			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2004} // key_outside_legal_range
 		}
