@@ -16,6 +16,11 @@ import (
 // gets all shard locations, sends WaitMetricsRequest to each with min.bytes=0,
 // max.bytes=-1 (reversed range = immediate response), and sums the bytes.
 func (tx *Transaction) GetEstimatedRangeSizeBytes(ctx context.Context, begin, end []byte) (int64, error) {
+	// A cancelled txn returns transaction_cancelled (1025) — C++ races resetPromise at op entry,
+	// before any other check (RFC-068). This path bypasses ensureReadVersion, so gate explicitly.
+	if err := tx.checkCancelled(); err != nil {
+		return 0, err
+	}
 	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
 	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
 	// path). This entry point does not fetch a read version, so it is gated explicitly rather
@@ -133,6 +138,10 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 // GetRangeSplitPoints returns suggested split points for the given key range.
 // Matches C++ Transaction::getRangeSplitPoints in NativeAPI.actor.cpp.
 func (tx *Transaction) GetRangeSplitPoints(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+	// A cancelled txn returns transaction_cancelled (1025) — resetPromise at op entry (RFC-068).
+	if err := tx.checkCancelled(); err != nil {
+		return nil, err
+	}
 	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
 	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
 	// checkValid path) — RFC-059.
