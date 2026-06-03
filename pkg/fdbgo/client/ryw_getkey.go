@@ -283,8 +283,26 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 
 	cur.seek(key)
 	if cur.offEnd() {
-		// key is at/after maxKey — off the end.
-		return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
+		// key is at/after maxKey — off the end of the readable keyspace.
+		if !backward {
+			// Forward selector (offset>0): nothing resolves past the end → readThroughEnd.
+			return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
+		}
+		// Backward selector (offset<=0, lastLess*): C++ it.skip() CLAMPS to the last segment and
+		// resolves backward — NativeAPI never short-circuits readThroughEnd for offset<=0
+		// (ReadYourWrites.actor.cpp:409 sets readThroughEnd only AFTER the walk, for offset>1).
+		// Reposition onto the last segment [prevBoundary(maxKey), maxKey) and resolve backward,
+		// anchoring the FGE-form key at maxKey (the backward server-read window is
+		// [unknownBegin, maxKey)). Without this, lastLess*(maxKey) wrongly returned maxKey itself
+		// instead of the greatest key < maxKey (RFC-065 — a real divergence from libfdb_c).
+		cur.seek(cur.c.prevBoundaryLocked(maxKey, cur.hi, cur.includeWrites))
+		// prevBoundaryLocked floors at allKeysBegin, so this seek can never go
+		// off-begin — cur stays valid here. An empty DB lands cur at
+		// allKeysBegin and resolves through the backward walk below: the server
+		// reverse-read returns nothing → readToBegin → allKeysBegin, matching
+		// C++ read()'s `readToBegin || !result.size() → allKeys.begin`. (No
+		// off-begin guard needed; see RFC-065 review.)
+		key = maxKey
 	}
 
 	// if offset <= 0 && it.beginKey() == key && key != allKeysBegin: --it

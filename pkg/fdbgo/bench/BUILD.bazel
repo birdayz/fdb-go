@@ -7,6 +7,7 @@ go_test(
         "differential_atomic_test.go",
         "differential_conflict_range_test.go",
         "differential_fuzz_test.go",
+        "differential_getkey_boundary_test.go",
         "differential_getkey_conflict_test.go",
         "differential_getkey_ryw_test.go",
         "differential_read_test.go",
