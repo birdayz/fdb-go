@@ -394,6 +394,7 @@ go_test(
         "simplifier_test.go",
         "single_matched_access_test.go",
         "temp_table_test.go",
+        "template_aware_cost_test.go",
         "translation_map_test.go",
         "traversal_test.go",
         "value_equivalence_test.go",
