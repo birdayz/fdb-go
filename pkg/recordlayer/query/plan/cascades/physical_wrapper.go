@@ -1411,7 +1411,18 @@ func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (e
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalProjectionWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+	// Always relink to the extracted inner, including compound joins — do NOT
+	// gate on isLeafReplaceable here. A projection is a transparent unary cap
+	// (like the in-memory sort, RFC-069); MergeProjectionAndFetchRule /
+	// ImplementProjectionFinalRule build it over an InJoin whose plan carries a
+	// placeholder/nil inner (the join tracks its real child in its wrapper
+	// quantifier). WithChildren runs only at extraction, where qs[0] resolves
+	// to the fully-formed winner; without relinking, `SELECT id ... WHERE a IN
+	// (...)` extracts `Project([id], InJoin(<nil>))` (RFC-070). Wrappers that
+	// embed predicate/filter/DML semantics in their own plan (aggregation,
+	// delete/update) keep the leaf gate: their child quantifier need not carry
+	// the filtered inner, so relinking to it would drop the filter.
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
 		newPlan := plans.NewRecordQueryProjectionPlanWithAliases(w.plan.GetProjections(), w.plan.GetAliases(), innerPlan)
 		return &physicalProjectionWrapper{plan: newPlan, innerQuant: qs[0]}, nil
 	}

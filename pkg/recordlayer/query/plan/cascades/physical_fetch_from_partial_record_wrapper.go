@@ -71,7 +71,15 @@ func (w *physicalFetchFromPartialRecordWrapper) WithChildren(qs []expressions.Qu
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalFetchFromPartialRecordWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+	// Always relink to the extracted inner, including compound joins — do NOT
+	// gate on isLeafReplaceable. A fetch is a transparent unary cap (like the
+	// projection and in-memory sort); PushInJoinThroughFetchRule builds
+	// `Fetch(InJoin(...))` with a nil-inner fetch plan (the InJoin lives in the
+	// wrapper quantifier). WithChildren runs only at extraction, where qs[0]
+	// resolves to the fully-formed winner; without relinking, `SELECT id+100
+	// ... WHERE a IN (...)` (where the expression is not pushable, so the fetch
+	// survives) extracts `Fetch(<nil>)` and returns 0 rows (RFC-070).
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
 		newPlan := plans.NewRecordQueryFetchFromPartialRecordPlan(
 			innerPlan,
 			w.plan.GetTranslateValueFunction(),

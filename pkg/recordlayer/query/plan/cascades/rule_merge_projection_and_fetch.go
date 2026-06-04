@@ -103,7 +103,28 @@ func (r *MergeProjectionAndFetchRule) OnMatch(call *ImplementationRuleCall) {
 		call.Yield(NewPhysicalProjectionWrapper(wrapPlan, innerQ))
 		return
 	}
-	call.Yield(fetchInnerExpr)
+
+	// Fallback: the fetch's child is not a directly-coverable index scan
+	// (e.g. it is an InJoin whose own inner is already a covering scan,
+	// produced by PushInJoinThroughFetchRule). The fetch is removable
+	// because all projected values are available in the partial record,
+	// but — unlike Java, where pushValue rewrites the child's result value
+	// to the projected columns — Go's covering plans carry the FULL
+	// partial-record result value. So the projection MUST be retained to
+	// select the queried columns; dropping it (Java's
+	// `yieldPlan(fetchPlan.getChild())`) leaks the full record and the
+	// wrong output schema. The covering-index branch above retains the
+	// projection for exactly this reason.
+	// fetchInnerExpr comes from findPhysicalExpr above, which only returns
+	// physicalPlanExpression members, so !ok is unreachable; the guard is
+	// defensive (avoids a panic if that invariant ever changes).
+	childPhys, ok := fetchInnerExpr.(physicalPlanExpression)
+	if !ok {
+		return
+	}
+	projPlan := plans.NewRecordQueryProjectionPlanWithAliases(
+		projectedValues, projW.plan.GetAliases(), childPhys.GetRecordQueryPlan())
+	call.Yield(NewPhysicalProjectionWrapper(projPlan, expressions.ForEachQuantifier(fetchInnerRef)))
 }
 
 var _ ImplementationRule = (*MergeProjectionAndFetchRule)(nil)
