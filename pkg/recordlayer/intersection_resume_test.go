@@ -158,6 +158,8 @@ func TestIntersectionMultiResume_PagedNoDupNoLoss(t *testing.T) {
 		want []int64
 	}{
 		{"common", [][]int64{{1, 2, 3, 4, 5, 6}, {2, 4, 6, 8}}, []int64{2, 4, 6}},
+		{"all_match", [][]int64{{1, 2, 3}, {1, 2, 3}}, []int64{1, 2, 3}},
+		{"no_common", [][]int64{{1, 3, 5}, {2, 4, 6}}, nil},
 		{"three_children", [][]int64{{1, 2, 3, 4}, {2, 3, 4, 5}, {3, 4, 6}}, []int64{3, 4}},
 		{"asymmetric_exhaustion", [][]int64{{1, 2, 3, 4, 5}, {3}}, []int64{3}},
 	}
@@ -287,6 +289,65 @@ func TestIntersectionResume_LimitBeforeFirstRow_NoLoss(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []int64{2, 4, 6}) {
 		t.Errorf("limit-before-first-row lost matches: got %v, want [2 4 6]", got)
+	}
+}
+
+// TestIntersectionMultiResume_LimitMidStream_NoLoss is the multi-cursor analog
+// of TestIntersectionResume_LimitBeforeFirstRow_NoLoss: it pins that
+// intersectionMultiCursor checkpoints (rather than returning a bare END) when a
+// child hits an out-of-band limit before its first row, so no match is dropped
+// on resume. Without the stopped-child fix the multi cursor silently terminated
+// the intersection on any limit, losing the remaining matches.
+func TestIntersectionMultiResume_LimitMidStream_NoLoss(t *testing.T) {
+	t.Parallel()
+	a := []int64{2, 4, 6}
+	b := []int64{2, 4, 6}
+	bLimitedOnce := false
+	childFrom := func(src []int64, r IntersectionChildResume) RecordCursor[int64] {
+		if r.Started && len(r.Continuation) == 0 {
+			return Empty[int64]()
+		}
+		return newSliceResumeCursor(src, r.Continuation)
+	}
+	var cont []byte
+	var got []int64
+	for iter := 0; iter < 1000; iter++ {
+		resume, err := DecodeIntersectionContinuation(cont, 2)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		cursors := make([]RecordCursor[int64], 2)
+		cursors[0] = childFrom(a, resume[0])
+		if !bLimitedOnce && !resume[1].Started && len(resume[1].Continuation) == 0 {
+			bLimitedOnce = true
+			cursors[1] = &limitOnceCursor{}
+		} else {
+			cursors[1] = childFrom(b, resume[1])
+		}
+		cur := IntersectionMultiResume(cursors, intResumeKey, false, resume)
+		res, err := cur.OnNext(context.Background())
+		if err != nil {
+			t.Fatalf("OnNext: %v", err)
+		}
+		if !res.HasNext() {
+			cur.Close()
+			if res.GetContinuation().IsEnd() {
+				break
+			}
+			bts, _ := res.GetContinuation().ToBytes()
+			cont = bts
+			continue
+		}
+		got = append(got, res.GetValue()[0])
+		bts, _ := res.GetContinuation().ToBytes()
+		cur.Close()
+		cont = bts
+	}
+	if !bLimitedOnce {
+		t.Fatal("test bug: limit branch never fired")
+	}
+	if !reflect.DeepEqual(got, []int64{2, 4, 6}) {
+		t.Errorf("multi-intersection lost matches on limit-stop resume: got %v, want [2 4 6]", got)
 	}
 }
 

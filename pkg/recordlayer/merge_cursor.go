@@ -381,7 +381,7 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		// Check if any child is exhausted
 		for _, child := range c.children {
 			if !child.hasResult {
-				reason := c.weakestNoNextReason()
+				reason := weakestNoNextReason(c.children)
 				if reason.IsSourceExhausted() {
 					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 				}
@@ -459,18 +459,18 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 	}
 }
 
-// weakestNoNextReason returns the weakest reason among exhausted children.
-// Intersection uses weakest because if ANY child is exhausted, the intersection
-// can produce no more results.
 // weakestNoNextReason returns the weakest reason among stopped children.
-// Matches Java's IntersectionCursorBase.mergeNoNextReasons():
+// Intersection uses the weakest because if ANY child is exhausted, the
+// intersection can produce no more results. Shared by intersectionCursor and
+// intersectionMultiCursor (both hold []*mergeChildState[T]). Matches Java's
+// IntersectionCursorBase.mergeNoNextReasons():
 //   - If ANY child is SourceExhausted, return SourceExhausted immediately
 //   - Otherwise, return the weakest non-exhaustion reason
 //   - If no stopped children, return SourceExhausted
-func (c *intersectionCursor[T]) weakestNoNextReason() NoNextReason {
+func weakestNoNextReason[T any](children []*mergeChildState[T]) NoNextReason {
 	found := false
 	weakest := TimeLimitReached // start with strongest, find weakest
-	for _, child := range c.children {
+	for _, child := range children {
 		if !child.hasResult {
 			reason := child.result.GetNoNextReason()
 			if reason == SourceExhausted {
@@ -686,10 +686,23 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[[]T]{}, err
 		}
-		// If any child is exhausted, the intersection can produce no more.
+		// If any child has no result, the intersection can produce no more on
+		// this pass. Distinguish exhaustion (truly done → END) from an
+		// out-of-band limit (Scan/Byte/Time → checkpoint and propagate the
+		// reason so the caller can resume), mirroring intersectionCursor — a
+		// bare END here would silently terminate the intersection on a
+		// limit-page and drop the remaining groups (RFC-071).
 		for _, child := range c.children {
 			if !child.hasResult {
-				return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+				reason := weakestNoNextReason(c.children)
+				if reason.IsSourceExhausted() {
+					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), nil
+				}
+				cont, contErr := buildIntersectionContinuation(c.children)
+				if contErr != nil {
+					return RecordCursorResult[[]T]{}, contErr
+				}
+				return NewResultNoNext[[]T](reason, cont), nil
 			}
 		}
 
