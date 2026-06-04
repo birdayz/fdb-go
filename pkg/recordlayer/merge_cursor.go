@@ -45,6 +45,15 @@ type mergeChildState[T any] struct {
 	// position BEFORE the held value, and resume re-reads it rather than losing
 	// it. buildIntersectionContinuation derives the START/MID/END encoding from
 	// this continuation.
+	//
+	// Consequence (Java-faithful): because the continuation sits at the last
+	// CONSUMED (matched) position, an out-of-band stop resumes a child from
+	// there and re-scans any non-matching rows discarded since the last match
+	// (bounded by the inter-match gap; the prefix-to-first-match for a
+	// never-matched child). This is correct (no dup/no loss) and matches Java
+	// MergeCursorState exactly. Tracking the position just before the currently
+	// held candidate to skip that re-scan would be a Go-only optimization beyond
+	// Java — out of scope for RFC-071; see TODO.
 	continuation RecordCursorContinuation
 }
 
@@ -586,13 +595,22 @@ func DecodeIntersectionContinuation(data []byte, n int) ([]IntersectionChildResu
 	if err := cont.UnmarshalVT(data); err != nil {
 		return nil, fmt.Errorf("decode intersection continuation: %w", err)
 	}
+	// Validate the encoded child count against n on ALL three field groups —
+	// the producer always sets FirstStarted (n>=1), SecondStarted (n>=2), and
+	// exactly n-2 OtherChildState entries. Checking only OtherChildState (always
+	// 0 for n<=2) would silently accept a wrong-count token: a 2-child token
+	// decoded as n=1 would drop child 2, and an n=2 token missing
+	// SecondStarted would silently restart child 2 at START. Mirrors Java
+	// IntersectionCursorContinuation's strict count check (RecordCoreArgumentException).
 	wantOthers := n - 2
 	if wantOthers < 0 {
 		wantOthers = 0
 	}
-	if len(cont.OtherChildState) != wantOthers {
-		return nil, fmt.Errorf("intersection continuation child-count mismatch: got %d other-child states, want %d (n=%d)",
-			len(cont.OtherChildState), wantOthers, n)
+	haveFirst := cont.FirstStarted != nil
+	haveSecond := cont.SecondStarted != nil
+	if haveFirst != (n >= 1) || haveSecond != (n >= 2) || len(cont.OtherChildState) != wantOthers {
+		return nil, fmt.Errorf("intersection continuation child-count mismatch (n=%d): first=%v second=%v others=%d",
+			n, haveFirst, haveSecond, len(cont.OtherChildState))
 	}
 	out[0] = IntersectionChildResume{Continuation: cont.GetFirstContinuation(), Started: cont.GetFirstStarted()}
 	if n >= 2 {

@@ -387,4 +387,24 @@ func TestDecodeIntersectionContinuation_Errors(t *testing.T) {
 	if _, err := DecodeIntersectionContinuation(data, 2); err == nil {
 		t.Error("child-count mismatch (3 encoded, n=2) must be a hard error")
 	}
+
+	// Wrong first/second count — not caught by an OtherChildState-length check
+	// alone (it is 0 for n<=2), so these exercise the presence validation.
+	// 2-child token decoded as n=1 (second present but n=1 → mismatch).
+	two, _ := buildIntersectionContinuation([]*mergeChildState[int64]{
+		{continuation: NewBytesContinuation([]byte{1})},
+		{continuation: NewBytesContinuation([]byte{1})},
+	})
+	d2, _ := two.ToBytes()
+	if _, err := DecodeIntersectionContinuation(d2, 1); err == nil {
+		t.Error("2-child token decoded as n=1 must be a hard error")
+	}
+	// 1-child token decoded as n=2 (second absent but n=2 → mismatch).
+	one, _ := buildIntersectionContinuation([]*mergeChildState[int64]{
+		{continuation: NewBytesContinuation([]byte{1})},
+	})
+	d1, _ := one.ToBytes()
+	if _, err := DecodeIntersectionContinuation(d1, 2); err == nil {
+		t.Error("1-child token decoded as n=2 must be a hard error")
+	}
 }
