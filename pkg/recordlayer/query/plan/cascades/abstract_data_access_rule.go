@@ -347,17 +347,6 @@ func DataAccessForMatchPartition(
 	return resultExprs
 }
 
-// wrapScanPlanWithCoverage converts a RecordQueryPlan into the
-// properly-typed RelationalExpression wrapper with coverage info.
-//
-// When isCovering=true AND the plan is a FetchFromPartialRecordPlan
-// wrapping an IndexPlan, the fetch is eliminated and the index scan
-// is marked as covering. This matches Java's path where
-// CoveringIndexPlan (no Fetch needed) is produced when the index
-// covers all output fields.
-//
-// When isCovering=false, the Fetch wrapper is preserved so push-through
-// rules can optimize it (push filters below, eliminate via PushMap).
 // candidateScanProps returns the unique flag and index column order for a
 // match's candidate, for propagation onto the scan wrapper.
 func candidateScanProps(cand MatchCandidate) (unique bool, columnNames []string) {
@@ -377,9 +366,31 @@ func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) exp
 	return wrapScanPlanWithCoverage(plan, false, nil, unique, columnNames)
 }
 
+// wrapScanPlanWithCoverage wraps a scan plan as the properly-typed physical
+// RelationalExpression.
+//
+// For a Fetch(IndexScan) (what a value/windowed candidate's ToScanPlan always
+// returns) the Fetch wrapper is ALWAYS emitted here and isCovering/coveringColumns
+// are intentionally NOT consulted: covering is decided downstream by
+// MergeProjectionAndFetchRule, which compares the actual projection's columns
+// against the index's covered columns (index columns + PK) and eliminates the
+// fetch when the projection is covered. That is strictly more precise than the
+// coarse isCovering signal here (`!comp.IsFinalNeeded()`), which does not see
+// the projection — eliminating the fetch on isCovering alone was wrong (it
+// dropped fetches that a non-covered projection still needs). TestFDB_CoveringIndexScan
+// pins that the deferral works: a covered projection yields IndexScan(... COVERING)
+// with no Fetch; a non-covered one keeps the Fetch. (Costing nuance: the
+// intermediate Fetch wrapper is costed non-covering during winner selection,
+// before MergeProjectionAndFetch runs — codex P2; it does not change the chosen
+// plan today and is folded into the template-aware costing work, RFC-076 step 3b.)
+//
+// For a bare IndexScan (no Fetch — e.g. a primary scan) isCovering IS applied
+// directly, since there is no fetch to defer to.
 func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string, unique bool, columnNames []string) expressions.RelationalExpression {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
+			// Covering is decided downstream by MergeProjectionAndFetchRule (see
+			// the doc above) — do not consult isCovering/coveringColumns here.
 			_ = coveringColumns
 			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, unique: unique, columnNames: columnNames}
 			idxRef := expressions.InitialOf(idxWrapper)

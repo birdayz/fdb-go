@@ -81,35 +81,25 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 	return flatMapCost(child[0], child[1])
 }
 
-// HintOrdering reports the OUTER quantifier's ordering. A FlatMap (nested loop)
-// iterates the outer and, for each outer row, emits the inner's rows — so the
-// output stream is ordered by the outer's ordering (the inner only sub-orders
-// within each outer group). Propagating it lets a join driven by an ordered
-// outer (e.g. a PK range scan) satisfy a requested ORDER BY on the outer's key
-// and eliminate the sort — and, crucially, keeps the planner from treating an
-// ordered join as unordered and flipping onto a worse join order to "satisfy"
-// the ordering elsewhere (RFC-076: TestFDB_JoinSelPred_Repro). Mirrors the
-// filter wrapper's EstimateOrdering pass over the source ref's members.
+// HintOrdering conservatively reports NO known ordering.
 //
-// NOTE (RFC-076 step 3a, @claude finding 4): this returns the FIRST member with
-// a known ordering, not the cost WINNER's. Today the outer ref carries a single
-// ordering, so first==winner. Once the ordering-constraint pass (3a) is active
-// the outer ref accrues ordered/unordered variants and the first-known member
-// may not be the winner — at which point this must select the winner's ordering
-// (the same first-vs-winner fix already applied to physicalInMemorySortWrapper.
-// WithChildren via findBestPhysicalPlan). Tracked in the RFC v4 retirement seq.
+// A FlatMap (nested loop) IS ordered by its outer (the inner only sub-orders
+// within each outer group), so it is tempting to propagate the outer's ordering
+// to enable ORDER-BY-on-outer-key sort elimination. But scanning the outer
+// Reference's members and returning the first KNOWN ordering is unsound (codex
+// P1 / @claude finding 4): `w.plan` executes a SPECIFIC outer plan captured when
+// the FlatMap was built, which need not be the member whose ordering is reported
+// — so an ORDER BY could be considered satisfied and the sort removed while the
+// emitted rows are not actually ordered. Reporting Unknown is the correct,
+// conservative behavior (it never removes a sort that is actually needed).
+//
+// Correct outer-ordering propagation — derived from w.plan's ACTUAL outer plan,
+// not an arbitrary Reference member — lands with the ordering-constraint pass
+// (RFC-076 step 3a), where requested orderings reach the scan and sort
+// elimination through joins becomes live. Pre-PR behavior was already Unknown;
+// this keeps it so.
 func (w *physicalFlatMapWrapper) HintOrdering() properties.Ordering {
-	ref := w.outerQuant.GetRangesOver()
-	if ref == nil {
-		return properties.Ordering{}
-	}
-	for _, m := range ref.AllMembers() {
-		o := properties.EstimateOrdering(m)
-		if o.IsKnown {
-			return o
-		}
-	}
-	return properties.Ordering{}
+	return properties.Ordering{IsKnown: false}
 }
 
 func (w *physicalFlatMapWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
