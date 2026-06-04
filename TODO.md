@@ -228,6 +228,20 @@ during pull-up so the opaque-merge ambiguity never exists, retiring the rule and
 bare/qualified distinction entirely. Graefe-endorsed; not urgent. Do this with (or before)
 the typed join-result migration that replaces `JoinMergeResultValue` with a schema-bearing
 record constructor à la Java.
+  - **RFC-073 (Deferred) scoped this; the review GATED it on 7.5.** Graefe ACK'd the direction
+    (translator emits `RecordConstructorValue` of `FieldValue(QOV(legAlias), col)`, resolved by the
+    existing `composeFieldOverConstructor`; **end state = pure anchored access**, no runtime
+    qualified-key map) but requires **7.5 (RFC-043 alias-merge interning) FIRST**: the N-ary
+    `JoinMergeAllValue` + `rule_partition_select.go` re-enumeration is the same opaque convention
+    and intern/hash/equality (`semantic_hash.go`/`semantic_equals.go`/`map_field_values.go`/
+    `value_correlation.go`) key on it — anchoring only the binary join is a "split brain."
+    Torvalds NAK'd the as-written scope: `RecordConstructorValue.Evaluate` yields a *nested
+    column-name map*, a different shape from the flat bare+`ALIAS.COL` map every consumer reads,
+    so consumers must move to anchored access (the real work, not a thin equivalence shim); extra
+    direct consumers (`cascades_generator.go:1890`, `executor.go:1434 mergeRows`,
+    `streaming_cursors.go`) must be ported; and the no-live-bug payoff doesn't justify the
+    plan+execution+interning blast radius now. **Sequencing: 7.5 → 7.6** (7.5 itself gated on the
+    ≥5-way enumeration-efficiency work). See `rfcs/073-source-anchored-join-result.md`.
 
 ---
 
