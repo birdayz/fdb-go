@@ -1,5 +1,7 @@
 package values
 
+import "sort"
+
 // SemanticEqualsUnderAliasMap reports whether two Values are equal up to the
 // quantifier-alias correspondence in `aliases` — the bool, alias-map-keyed
 // counterpart of EqualsWithoutChildren+children, for memo interning and
@@ -52,18 +54,54 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 	// discriminator: Evaluate reads PrimaryKey() for KEY and IndexValues() for
 	// VALUE, so KEY[p] and VALUE[p] must NOT compare equal. An alias-only
 	// intercept would drop both and violate the equal⟹same-hash invariant.
-	case *JoinMergeResultValue:
-		bv, ok := b.(*JoinMergeResultValue)
-		return ok &&
-			mapAlias(aliases, av.OuterAlias) == bv.OuterAlias &&
-			mapAlias(aliases, av.InnerAlias) == bv.InnerAlias
 	case *JoinMergeAllValue:
+		// The sole join-merge value (the binary JoinMergeResultValue was retired in
+		// RFC-074). The Seed provenance bit reproduces the retired two-type design
+		// EXACTLY — the two distinct Go types never compared equal, so a translator
+		// seed and a re-enumeration of the same leg-set never interned. Preserved:
+		// Seed is part of equality (and SemanticHashCode folds arity+Seed). Were it
+		// excluded they'd suddenly intern and fire the RFC-037 cross-group merge the
+		// two-type design never did — measured to blow the ≥4-way STAR past budget.
+		// Seed is excluded only from Evaluate (merged-row semantics are identical).
+		//
+		// Leg ORDER is compared per provenance, again matching the retired types:
+		//   - SEED (Seed=true): order-SENSITIVE (positional), as the binary
+		//     JoinMergeResultValue was. A seed's leg order is SEMANTIC —
+		//     joinResultValueIsReversed reads Aliases[0] (SQL column order) and
+		//     composeFieldOverJoinMerge reads Aliases[1] (inner-side rewrite) — so two
+		//     seeds for {A,B} built in opposite orders must NOT intern, else memo
+		//     interning could retain the wrong order for a binary join reached the
+		//     other way (codex).
+		//   - RE-ENUMERATION (Seed=false): order-INsensitive (sorted multiset), so the
+		//     same connected sub-product reached from different bipartitions interns
+		//     regardless of leg order (Graefe condition 1). No order-sensitive consumer
+		//     reads a re-enumeration merge (those gate on Seed=true), and the producers
+		//     canonicalize (sorted) anyway, so this also equals the retired
+		//     positional-on-sorted behavior. The multiset compare is dup-safe.
 		bv, ok := b.(*JoinMergeAllValue)
-		if !ok || len(av.Aliases) != len(bv.Aliases) {
+		if !ok || av.Seed != bv.Seed || len(av.Aliases) != len(bv.Aliases) {
 			return false
 		}
-		for i := range av.Aliases {
-			if mapAlias(aliases, av.Aliases[i]) != bv.Aliases[i] {
+		if av.Seed {
+			for i := range av.Aliases {
+				if mapAlias(aliases, av.Aliases[i]) != bv.Aliases[i] {
+					return false
+				}
+			}
+			return true
+		}
+		am := make([]string, len(av.Aliases))
+		for i, a := range av.Aliases {
+			am[i] = mapAlias(aliases, a).Name()
+		}
+		bm := make([]string, len(bv.Aliases))
+		for i, a := range bv.Aliases {
+			bm[i] = a.Name()
+		}
+		sort.Strings(am)
+		sort.Strings(bm)
+		for i := range am {
+			if am[i] != bm[i] {
 				return false
 			}
 		}

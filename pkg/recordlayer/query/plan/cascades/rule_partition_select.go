@@ -189,20 +189,25 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 		// Determine which lower aliases the result value needs ("live" via the
 		// result). Three cases:
-		//   - The flat seed's translator-built JoinMergeResultValue names only two
-		//     arbitrary aliases and hides the real projection (it lives in the
-		//     Project above). The rule cannot see which columns are needed, so it
-		//     conservatively keeps ALL lower aliases live. This applies only at the
-		//     top of the re-enumeration.
-		//   - A re-enumerated JoinMergeAllValue lists EXACTLY the aliases its parent
-		//     needs (GetCorrelatedToOfValue returns them). Keep only those — flowing
-		//     all would generate far more distinct merge sub-products than needed,
-		//     blowing up the search space.
+		//   - A translator SEED merge (JoinMergeAllValue.Seed) names only its two
+		//     immediate source aliases but HIDES the real projection (which lives in
+		//     the Project above): SelectMergeRule flattens a pre-flatten binary
+		//     sub-join's quantifiers up without rewriting the parent merge, so the
+		//     seed's named set is untrustworthy. Conservatively keep ALL lower
+		//     aliases live.
+		//   - A re-enumeration merge (Seed=false) lists EXACTLY the aliases its
+		//     parent needs (GetCorrelatedToOfValue returns them). Keep only those —
+		//     flowing all would generate far more distinct merge sub-products than
+		//     needed, blowing up the search space.
 		//   - Any other result value (a bare projection) marks live only the lowers
 		//     it actually references.
-		// (RFC-043.)
-		_, resultIsSeedMerge := resultValue.(*values.JoinMergeResultValue)
-		if resultIsSeedMerge {
+		// (RFC-074: one canonical JoinMergeAllValue; the seed-vs-exact split keys off
+		// the provenance Seed flag — the faithful 1:1 encoding of the retired binary
+		// type, which the alias-boundness heuristic was NOT: the translator names
+		// real source aliases, so a flattened seed does not reliably name an unbound
+		// alias, and that heuristic silently dropped buried-table columns in the SQL
+		// path — the 4-way regression the FDB N-way test caught.)
+		if m, isSeed := resultValue.(*values.JoinMergeAllValue); isSeed && m.Seed {
 			for a := range lowerAliases {
 				lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
 			}
@@ -312,10 +317,10 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		noLowersCorrelatedToByUppers := len(lowersCorrelatedToByUppers) == 0
 
 		// The upper select must flow a result value over the aliases it ACTUALLY
-		// binds (the new lower quantifier + the upper tables). Both merge result
-		// values — the flat seed's translator-built JoinMergeResultValue and an
-		// intermediate re-enumerated JoinMergeAllValue — carry "flow all my tables'
-		// columns merged" intent, but they name the ORIGINAL deep aliases. When a
+		// binds (the new lower quantifier + the upper tables). The merge result
+		// value (the sole JoinMergeAllValue — flattened seed or intermediate
+		// re-enumeration) carries "flow all my tables' columns merged" intent, but
+		// names the ORIGINAL deep aliases. When a
 		// partition collapses ≥2 of those tables into one merge quantifier ($m),
 		// those original aliases are NO LONGER bound at the upper level: they live
 		// inside $m's merged row under qualified ALIAS.COL keys. Flowing the original
@@ -326,7 +331,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// So whenever the parent result is a merge value, re-stamp it as a
 		// JoinMergeAllValue over the upper's IMMEDIATE quantifiers. The new lower
 		// quantifier's merged row preserves every collapsed table's qualified keys
-		// verbatim (JoinMergeAllValue/JoinMergeResultValue Evaluate pass dotted keys
+		// verbatim (JoinMergeAllValue.Evaluate passes dotted keys
 		// through), so the re-stamped upper merge accumulates all live columns, and a
 		// projection/predicate above resolves each table's column from the final
 		// merged row by qualified name. This is correct at the top level too: the
@@ -336,9 +341,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// table's original alias) the re-stamp is a no-op in effect — the alias is
 		// still bound — but covering all branches keeps the result value consistent
 		// with the aliases the upper binds. (RFC-043.)
-		_, parentIsAllMerge := resultValue.(*values.JoinMergeAllValue)
-		_, parentIsSeedMerge := resultValue.(*values.JoinMergeResultValue)
-		parentIsMerge := parentIsAllMerge || parentIsSeedMerge
+		_, parentIsMerge := resultValue.(*values.JoinMergeAllValue)
 		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier) values.Value {
 			if !parentIsMerge {
 				return resultValue
@@ -755,7 +758,7 @@ func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.Correlatio
 // The merge quantifier (mergeAlias) flows a JoinMergeAllValue: every live lower
 // table's columns are keyed in its row both bare (COL) and table-qualified
 // (ALIAS.COL); already-qualified keys (a column carried up from a nested merge)
-// pass through verbatim (JoinMergeAllValue / JoinMergeResultValue Evaluate, and
+// pass through verbatim (JoinMergeAllValue.Evaluate, and
 // mergeRows at execution). So a buried table `T`'s column `c` is reachable as
 // mergeRow["T.C"]. A FieldValue{Child: QOV(T), Field: c} that referenced the
 // (now-buried) T directly is rewritten to FieldValue{Child: QOV(mergeAlias),

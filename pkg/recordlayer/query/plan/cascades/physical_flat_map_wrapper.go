@@ -40,13 +40,15 @@ func (w *physicalFlatMapWrapper) GetQuantifiers() []expressions.Quantifier {
 func (w *physicalFlatMapWrapper) CanCorrelate() bool  { return true }
 func (w *physicalFlatMapWrapper) ChildrenAsSet() bool { return false }
 
-// GetCorrelatedToWithoutChildren returns empty for join FlatMaps.
-// JoinMergeResultValue stores OuterAlias/InnerAlias as struct fields
-// (not as QuantifiedObjectValue children), so GetCorrelatedToOfValue
-// finds nothing. This is correct for joins — correlations flow
-// through quantifier children. When correlated subqueries are ported,
-// JoinMergeResultValue.Children() must return QOV nodes so external
-// correlations propagate.
+// GetCorrelatedToWithoutChildren returns empty for join FlatMaps. This is
+// correct for joins — correlations flow through the quantifier children, and a
+// join's result is a merge of those children's bound rows, not an external
+// correlation. GetCorrelatedToOfValue reports nothing for a translator seed
+// merge (the Seed=true gate in value_correlation.go, matching the retired
+// JoinMergeResultValue); a re-enumeration merge would report its aliases, but
+// those name the join's own (bound) legs, not external correlations. When
+// correlated subqueries are ported, the merge value's correlation contribution
+// must propagate genuinely-external aliases.
 func (w *physicalFlatMapWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}
 }

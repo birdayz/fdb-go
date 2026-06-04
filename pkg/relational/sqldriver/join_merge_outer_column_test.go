@@ -11,8 +11,8 @@ import (
 
 // TestFDB_JoinMerge_OuterColumn_NotDropped is the E2E regression sentinel for
 // REVIEW.md #216. composeFieldOverJoinMerge canonicalizes a bare FieldValue over
-// the Go-only JoinMergeResultValue to the merge's INNER quantifier. That is sound
-// only because SelectMergeRule re-flows the merge under the inner alias, so only
+// a binary JoinMergeAllValue to the merge's INNER quantifier (Aliases[1]). That is
+// sound only because SelectMergeRule re-flows the merge under the inner alias, so only
 // inner-side fields are ever composed onto it (outer/third-table columns resolve
 // via their own QOV + the merge's qualified keys). This test pins that structural
 // invariant from the SQL surface: projecting and filtering an OUTER-side column

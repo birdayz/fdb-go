@@ -1887,16 +1887,24 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 
 // joinResultValueIsReversed checks whether the plan's resultValue
 // indicates that the SQL-level column order is opposite to the physical
-// outer/inner assignment. The resultValue (a JoinMergeResultValue)
-// carries the SQL-level aliases and is invariant under commutative swap,
-// so comparing its OuterAlias against the physical outerAlias tells us
-// whether columns need to be emitted in reversed order.
+// outer/inner assignment. The resultValue (a binary JoinMergeAllValue,
+// built [outer, inner] by the translator) carries the SQL-level aliases:
+// although merge equality is order-independent, the Aliases slice preserves
+// insertion order, so Aliases[0] is the SQL-first (outer) leg. Comparing it
+// against the physical outerAlias tells us whether columns need to be emitted
+// in reversed order. Only the binary (2-leg) merge has a meaningful
+// outer/inner; a wider re-enumeration merge is never the result value here.
 func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias string) bool {
-	jmrv, ok := rv.(*values.JoinMergeResultValue)
-	if !ok || jmrv == nil {
+	// Only a translator SEED (Seed=true, always binary [outer, inner]) — the exact
+	// set the retired binary JoinMergeResultValue covered. A re-enumeration merge
+	// (Seed=false) was a JoinMergeAllValue on master and was NOT subject to this
+	// reversal check; matching it here would change column order for re-enumerated
+	// joins.
+	jmav, ok := rv.(*values.JoinMergeAllValue)
+	if !ok || jmav == nil || !jmav.Seed || len(jmav.Aliases) != 2 {
 		return false
 	}
-	sqlFirst := strings.ToUpper(jmrv.OuterAlias.Name())
+	sqlFirst := strings.ToUpper(jmav.Aliases[0].Name())
 	return sqlFirst != "" && sqlFirst == physInnerAlias
 }
 

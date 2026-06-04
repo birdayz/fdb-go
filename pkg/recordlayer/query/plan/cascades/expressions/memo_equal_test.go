@@ -126,7 +126,7 @@ func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
 	mkJoin := func(jt JoinType) *SelectExpression {
 		q1 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T1"), scanT1)
 		q2 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T2"), scanT2)
-		rv := values.NewJoinMergeResultValue(q1.GetAlias(), q2.GetAlias())
+		rv := values.NewJoinMergeAllValue(q1.GetAlias(), q2.GetAlias())
 		return NewSelectExpressionWithJoinType(rv, []Quantifier{q1, q2}, nil, []string{"T1", "T2"}, jt)
 	}
 

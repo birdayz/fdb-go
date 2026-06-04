@@ -219,28 +219,30 @@ func chainEqPred(a, aCol, b, bCol string) predicates.QueryPredicate {
 // TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier is the unit-level
 // regression for the deeply-nested-FlatMap projection bug. The flat 3-way seed
 // SELECT t1.id FROM t3,t2,t1 WHERE t3.t2_id=t2.id AND t2.t1_id=t1.id carries the
-// translator-built JoinMergeResultValue (a TWO-alias merge naming only two of the
-// three tables) as its result value. When PartitionSelectRule collapses ≥2 tables
-// into a single merge quantifier ($m), those original aliases are no longer bound
-// at the upper level — they live inside $m's merged row under qualified ALIAS.COL
-// keys. Flowing the seed JoinMergeResultValue UNCHANGED then looked up correlations
-// the upper never binds, so the top FlatMap's resultValue evaluated to nil and the
-// projected (deeply-nested) T1.ID came back NULL → 200 rows with t1.id != 1.
+// translator-built SEED merge value (RFC-074: the sole canonical JoinMergeAllValue
+// with Seed=true). A seed names only its two immediate source aliases but hides
+// the real projection (in the Project above), so the rule must keep ALL lowers
+// live. When PartitionSelectRule collapses ≥2 tables into a single merge
+// quantifier ($m), those original aliases are no longer bound at the upper level —
+// they live inside $m's merged row under qualified ALIAS.COL keys. Flowing the
+// seed merge UNCHANGED then looked up correlations the upper never binds, so the
+// top FlatMap's resultValue evaluated to nil and the projected (deeply-nested)
+// T1.ID came back NULL → 200 rows with t1.id != 1.
 //
 // The fix re-stamps the upper result as a JoinMergeAllValue over the upper's
-// IMMEDIATE quantifiers (merge alias + upper tables) in the merge case, regardless
-// of whether the parent result was the seed JoinMergeResultValue or an intermediate
-// JoinMergeAllValue. This pins that: a merge-case upper must NEVER carry the stale
-// seed JoinMergeResultValue — it must be a JoinMergeAllValue keyed on bound aliases.
+// IMMEDIATE quantifiers (merge alias + upper tables) in the merge case. This pins
+// that: a merge-case upper must NEVER carry a result value naming an alias it does
+// not bind — it must be a JoinMergeAllValue keyed on bound aliases.
 func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 	t.Parallel()
 
 	t1, t2, t3 := scanQuantifier("T1"), scanQuantifier("T2"), scanQuantifier("T3")
 
-	// Seed result value: the translator's two-alias JoinMergeResultValue (names
-	// T1, T2 — the outermost binary join before flattening), exactly as the real
-	// flat seed carries it. The genuine projection lives in the Project above.
-	seed := values.NewJoinMergeResultValue(
+	// Seed result value: the translator's join seed (Seed=true), naming only two
+	// of the three tables — exactly as the real flat seed carries it. The Seed
+	// flag (provenance), not the named aliases, marks it opaque so the rule keeps
+	// all lowers live; the genuine projection lives in the Project above.
+	seed := values.NewJoinMergeSeedValue(
 		values.NamedCorrelationIdentifier("T1"),
 		values.NamedCorrelationIdentifier("T2"),
 	)
@@ -269,9 +271,10 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 		}
 		rv := upper.GetResultValue()
 
-		// The bug signature: an upper that still carries the seed JoinMergeResultValue
-		// after collapsing a lower into a merge quantifier. Detect a merge-collapsing
-		// partition by a NamedForEach quantifier whose alias is a merge alias ("$m...").
+		// The bug signature: an upper that still carries a result value naming an
+		// unbound alias after collapsing a lower into a merge quantifier. Detect a
+		// merge-collapsing partition by a NamedForEach quantifier whose alias is a
+		// merge alias ("$m...").
 		hasMergeQuant := false
 		for _, q := range upper.GetQuantifiers() {
 			if strings.HasPrefix(q.GetAlias().Name(), "$m") {
@@ -282,10 +285,6 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 
 		if hasMergeQuant {
 			sawMergeCaseUpper = true
-			if _, stale := rv.(*values.JoinMergeResultValue); stale {
-				t.Errorf("yield[%d]: merge-case upper still carries the STALE seed JoinMergeResultValue "+
-					"(the deeply-nested-projection bug); want a re-stamped JoinMergeAllValue", i)
-			}
 			all, ok := rv.(*values.JoinMergeAllValue)
 			if !ok {
 				t.Errorf("yield[%d]: merge-case upper result = %T, want *JoinMergeAllValue", i, rv)

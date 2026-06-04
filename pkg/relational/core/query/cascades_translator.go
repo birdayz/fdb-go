@@ -393,7 +393,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 
 	innerQ := t.namedQuantifier(csq.InnerAlias, innerRef)
 
-	resultValue := values.NewJoinMergeResultValue(
+	resultValue := values.NewJoinMergeSeedValue(
 		outerQ.GetAlias(),
 		innerQ.GetAlias(),
 	)
@@ -654,7 +654,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewJoinMergeResultValue(
+	resultValue := values.NewJoinMergeSeedValue(
 		values.NamedCorrelationIdentifier(leftAlias),
 		values.NamedCorrelationIdentifier(rightAlias),
 	)
@@ -764,7 +764,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewJoinMergeResultValue(
+	resultValue := values.NewJoinMergeSeedValue(
 		values.NamedCorrelationIdentifier(leftAlias),
 		values.NamedCorrelationIdentifier(rightAlias),
 	)
@@ -1006,7 +1006,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		// mechanism that narrowed the recursive body's columns (RFC-042 L1).
 		//
 		// When the recursive body is a join, its output is the merged
-		// JoinMergeResultValue row carrying QUALIFIED keys (B.ID, A.ID, ...). The
+		// JoinMergeAllValue row carrying QUALIFIED keys (B.ID, A.ID, ...). The
 		// load-bearing fix is that we never copy a qualified key into the temp
 		// table: each remap value is FieldValue{Field: <bare col>, Child:
 		// QOV(<qualifier>)} — evaluateCorrelated reads the qualified datum key
