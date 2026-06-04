@@ -35,10 +35,19 @@ type mergeChildState[T any] struct {
 	result        RecordCursorResult[T]
 	comparisonKey tuple.Tuple
 	hasResult     bool
+	// started tracks whether this child has begun producing — the per-child
+	// flag Java's KeyedMergeCursorState carries. It is set the first time the
+	// child is advanced AND seeded from a resume continuation (see
+	// IntersectionResume), so buildIntersectionContinuation can encode the
+	// START/MID/END distinction without depending on the cursor's OnNext
+	// ordering. A resumed mid-stream child therefore can never be re-encoded
+	// as START (which would restart it and duplicate rows).
+	started bool
 }
 
 // advance fetches the next result from this child's cursor.
 func (s *mergeChildState[T]) advance(ctx context.Context) error {
+	s.started = true
 	result, err := s.cursor.OnNext(ctx)
 	if err != nil {
 		return err
@@ -281,20 +290,47 @@ func Intersection[T any](
 	compKeyFunc ComparisonKeyFunc[T],
 	reverse bool,
 ) RecordCursor[T] {
+	return IntersectionResume(cursors, compKeyFunc, reverse, nil)
+}
+
+// IntersectionResume is Intersection with per-child resume seeds. started[i]
+// seeds child i's mergeChildState.started (from decodeIntersectionContinuation),
+// so an already-started child re-encodes as MID/END rather than START on the
+// next checkpoint (RFC-071). started may be nil (all children fresh, == Intersection).
+func IntersectionResume[T any](
+	cursors []RecordCursor[T],
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+	started []bool,
+) RecordCursor[T] {
 	if len(cursors) == 0 {
 		return Empty[T]()
 	}
+	return &intersectionCursor[T]{
+		children: newMergeChildren(cursors, compKeyFunc, started),
+		reverse:  reverse,
+	}
+}
+
+// newMergeChildren wraps cursors in mergeChildState, seeding per-child started
+// from started[i] when provided (nil → all false). Shared by the intersection
+// and multi-intersection resume constructors.
+func newMergeChildren[T any](
+	cursors []RecordCursor[T],
+	compKeyFunc ComparisonKeyFunc[T],
+	started []bool,
+) []*mergeChildState[T] {
 	children := make([]*mergeChildState[T], len(cursors))
 	for i, c := range cursors {
 		children[i] = &mergeChildState[T]{
 			cursor:      c,
 			compKeyFunc: compKeyFunc,
 		}
+		if i < len(started) {
+			children[i].started = started[i]
+		}
 	}
-	return &intersectionCursor[T]{
-		children: children,
-		reverse:  reverse,
-	}
+	return children
 }
 
 func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
@@ -363,14 +399,20 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		if allMatch {
 			// All match! Return from first cursor, advance all.
 			result := c.children[0].result
+			// Capture the continuation BEFORE advancing past the match. Each
+			// matched child's result continuation already points to the row
+			// *after* the matched key, so resuming from it re-reads from there
+			// and finds the next match — without skipping it. Building the
+			// continuation AFTER the advance would instead capture each child
+			// one row further on, losing every other match on resume (RFC-071).
+			cont, contErr := c.buildContinuation()
+			if contErr != nil {
+				return RecordCursorResult[T]{}, contErr
+			}
 			for _, child := range c.children {
 				if err := child.advance(ctx); err != nil {
 					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
 				}
-			}
-			cont, contErr := c.buildContinuation()
-			if contErr != nil {
-				return RecordCursorResult[T]{}, contErr
 			}
 			return NewResultWithValue[T](result.GetValue(), cont), nil
 		}
@@ -437,24 +479,23 @@ func strength(r NoNextReason) int {
 }
 
 func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
-	return buildIntersectionContinuation(c.children, c.started)
+	return buildIntersectionContinuation(c.children)
 }
 
 // buildIntersectionContinuation encodes a per-child IntersectionContinuation proto
-// (each child's continuation + started flag). Shared by intersectionCursor and
-// intersectionMultiCursor so the two never drift in continuation encoding.
+// (each child's continuation + per-child started flag). Shared by intersectionCursor
+// and intersectionMultiCursor so the two never drift in continuation encoding.
 //
-// NOTE: producing this continuation is necessary but not sufficient for
-// mid-stream resumption — executeIntersection / executeMultiIntersection still
-// start every child from a nil continuation rather than deserializing this proto
-// and splitting per-child bytes (a pre-existing, codebase-wide limitation
-// documented at executeIntersection; tracked in TODO.md). Both intersection
-// cursors emit the SAME shape so that one executor-side fix covers both.
-func buildIntersectionContinuation[T any](children []*mergeChildState[T], started bool) (RecordCursorContinuation, error) {
+// decodeIntersectionContinuation is the exact inverse, consumed executor-side by
+// executeIntersection / executeMultiIntersection to resume each child from its
+// saved position (RFC-071). The started flag is read from the per-child
+// mergeChildState (set on advance + seeded on resume) rather than a cursor-level
+// flag, so the START/MID/END distinction survives any OnNext/checkpoint ordering.
+func buildIntersectionContinuation[T any](children []*mergeChildState[T]) (RecordCursorContinuation, error) {
 	cont := &gen.IntersectionContinuation{}
 	for i, child := range children {
 		var contBytes []byte
-		childStarted := child.hasResult || started
+		childStarted := child.started
 		if child.hasResult || !child.result.GetNoNextReason().IsSourceExhausted() {
 			var err error
 			contBytes, err = child.result.GetContinuation().ToBytes()
@@ -481,6 +522,51 @@ func buildIntersectionContinuation[T any](children []*mergeChildState[T], starte
 		return nil, fmt.Errorf("intersection continuation marshal: %w", err)
 	}
 	return &BytesContinuation{bytes: data}, nil
+}
+
+// IntersectionChildResume is one child's decoded resume state, the output of
+// decodeIntersectionContinuation. Started + (empty) Continuation classify the
+// child as START (!Started → begin fresh), MID (Started + bytes → resume from
+// bytes), or END (Started + empty → exhausted).
+type IntersectionChildResume struct {
+	Continuation []byte
+	Started      bool
+}
+
+// DecodeIntersectionContinuation is the exact inverse of
+// buildIntersectionContinuation: it splits a parent IntersectionContinuation
+// proto into n per-child resume states (RFC-071). A nil/empty continuation
+// yields n all-fresh children (START). A proto that fails to parse, or whose
+// child count does not match n, is a hard error (mirroring Java
+// IntersectionCursorContinuation's RecordCoreArgumentException) — never a
+// silent truncate. Consumed executor-side by executeIntersection /
+// executeMultiIntersection.
+func DecodeIntersectionContinuation(data []byte, n int) ([]IntersectionChildResume, error) {
+	out := make([]IntersectionChildResume, n)
+	if len(data) == 0 {
+		return out, nil // all-fresh
+	}
+	var cont gen.IntersectionContinuation
+	if err := cont.UnmarshalVT(data); err != nil {
+		return nil, fmt.Errorf("decode intersection continuation: %w", err)
+	}
+	wantOthers := n - 2
+	if wantOthers < 0 {
+		wantOthers = 0
+	}
+	if len(cont.OtherChildState) != wantOthers {
+		return nil, fmt.Errorf("intersection continuation child-count mismatch: got %d other-child states, want %d (n=%d)",
+			len(cont.OtherChildState), wantOthers, n)
+	}
+	out[0] = IntersectionChildResume{Continuation: cont.GetFirstContinuation(), Started: cont.GetFirstStarted()}
+	if n >= 2 {
+		out[1] = IntersectionChildResume{Continuation: cont.GetSecondContinuation(), Started: cont.GetSecondStarted()}
+	}
+	for i := 2; i < n; i++ {
+		cs := cont.OtherChildState[i-2]
+		out[i] = IntersectionChildResume{Continuation: cs.GetContinuation(), Started: cs.GetStarted()}
+	}
+	return out, nil
 }
 
 func (c *intersectionCursor[T]) Close() error {
@@ -526,18 +612,22 @@ func IntersectionMulti[T any](
 	compKeyFunc ComparisonKeyFunc[T],
 	reverse bool,
 ) RecordCursor[[]T] {
+	return IntersectionMultiResume(cursors, compKeyFunc, reverse, nil)
+}
+
+// IntersectionMultiResume is IntersectionMulti with per-child resume seeds
+// (see IntersectionResume). started may be nil (all children fresh).
+func IntersectionMultiResume[T any](
+	cursors []RecordCursor[T],
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+	started []bool,
+) RecordCursor[[]T] {
 	if len(cursors) == 0 {
 		return Empty[[]T]()
 	}
-	children := make([]*mergeChildState[T], len(cursors))
-	for i, cur := range cursors {
-		children[i] = &mergeChildState[T]{
-			cursor:      cur,
-			compKeyFunc: compKeyFunc,
-		}
-	}
 	return &intersectionMultiCursor[T]{
-		children: children,
+		children: newMergeChildren(cursors, compKeyFunc, started),
 		reverse:  reverse,
 	}
 }
@@ -600,21 +690,21 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 			for i, child := range c.children {
 				results[i] = child.result.GetValue()
 			}
+			// Emit a per-child continuation, identical in shape to
+			// intersectionCursor (shared buildIntersectionContinuation). The
+			// executor decodes it via DecodeIntersectionContinuation +
+			// IntersectionMultiResume to resume each child from its saved
+			// position (RFC-071). Captured BEFORE the post-match advance so the
+			// continuation points to the row after the matched key — building it
+			// after the advance loses every other match on resume.
+			cont, contErr := buildIntersectionContinuation(c.children)
+			if contErr != nil {
+				return RecordCursorResult[[]T]{}, contErr
+			}
 			for _, child := range c.children {
 				if err := child.advance(ctx); err != nil {
 					return NewResultNoNext[[]T](SourceExhausted, &EndContinuation{}), err
 				}
-			}
-			// Emit a per-child continuation, identical in shape to
-			// intersectionCursor (shared buildIntersectionContinuation). Resuming
-			// from it requires the executor to split per-child bytes — a gap shared
-			// with the regular intersection (executeIntersection; tracked in TODO
-			// P2.3). Until that lands, executeMultiIntersection rejects a non-nil
-			// incoming continuation LOUDLY rather than silently restarting (so this
-			// non-nil continuation can never cause duplicate rows on resume).
-			cont, contErr := buildIntersectionContinuation(c.children, c.started)
-			if contErr != nil {
-				return RecordCursorResult[[]T]{}, contErr
 			}
 			return NewResultWithValue[[]T](results, cont), nil
 		}
