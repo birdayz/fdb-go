@@ -93,11 +93,17 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 // emitted rows are not actually ordered. Reporting Unknown is the correct,
 // conservative behavior (it never removes a sort that is actually needed).
 //
-// Correct outer-ordering propagation — derived from w.plan's ACTUAL outer plan,
-// not an arbitrary Reference member — lands with the ordering-constraint pass
-// (RFC-076 step 3a), where requested orderings reach the scan and sort
-// elimination through joins becomes live. Pre-PR behavior was already Unknown;
-// this keeps it so.
+// The ordering-constraint pass (RFC-076 step 3a) makes a requested ordering reach the
+// SCAN through a residual filter, which is enough for single-input sort elimination
+// (TestEndToEnd_SortElimThroughResidualFilter) — no join-ordering propagation needed.
+// Sound outer-ordering propagation THROUGH a join — derived from w.plan's actual outer,
+// not an arbitrary Reference member — is a NET-NEW capability (the retired
+// ImplementIndexScanRule never provided it either, so leaving it off is not a
+// retirement regression). It is deliberately deferred: reporting Unknown is always
+// sound (it only ever leaves a redundant sort, never removes a needed one), whereas a
+// wrong propagated ordering removes a needed sort and silently mis-orders rows. Keeping
+// Unknown is the conservative, correct choice; enabling join-sort-elimination is future
+// work with its own test bar.
 func (w *physicalFlatMapWrapper) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: false}
 }

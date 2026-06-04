@@ -1092,17 +1092,31 @@ func planContainsJoin(p plans.RecordQueryPlan) bool {
 	return found
 }
 
-// planTreeHasNilInnerFetch reports whether a concrete plan tree contains a
-// push-through Fetch template whose inner is still nil (isNilInnerFetch's plan
-// view). Such a shell's GetChildren() is empty, so the buried data access under
-// it is invisible to the concrete walks (concretePlanCounts / concretePlanCost)
-// — they cost/count it as a ~free empty Fetch. When this returns true the cost
-// model must resolve the shell's real inner through the expression's quantifier
-// graph instead (exprConcreteCost / exprConcreteCounts, RFC-076 step 3b).
-func planTreeHasNilInnerFetch(p plans.RecordQueryPlan) bool {
+// planNodeIsStub reports whether a plan node is an UNRESOLVED push-through template:
+// a unary operator (Fetch, PredicatesFilter, Distinct, Map, TypeFilter, …) presented
+// with a nil inner. The data-access path builds chains of these shells
+// (Fetch(<nil>) → PredicatesFilter(<nil>) → … → scan); the real inner lives in the
+// expression's quantifier graph and is filled in at extraction via WithChildren. Every
+// such template implements GetInner() RecordQueryPlan; a genuine data-access LEAF
+// (Scan, IndexPlan, AggregateIndexPlan, VectorIndexPlan, TextIndexPlan, …) does not, so
+// the interface assertion precisely distinguishes a stub from a leaf.
+func planNodeIsStub(p plans.RecordQueryPlan) bool {
+	if g, ok := p.(interface{ GetInner() plans.RecordQueryPlan }); ok {
+		return g.GetInner() == nil
+	}
+	return false
+}
+
+// planTreeHasStub reports whether a concrete plan tree contains any unresolved
+// push-through template stub (planNodeIsStub). Such a stub's GetChildren() is empty, so
+// the buried data access under it is invisible to the concrete walks (concretePlanCounts
+// / concretePlanCost) — they cost/count it as a ~free leaf. When this returns true the
+// cost model must resolve the stub's real inner through the expression's quantifier graph
+// instead (exprConcreteCost / exprConcreteCounts, RFC-076 step 3b).
+func planTreeHasStub(p plans.RecordQueryPlan) bool {
 	found := false
 	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		if f, ok := n.(*plans.RecordQueryFetchFromPartialRecordPlan); ok && f.GetInner() == nil {
+		if planNodeIsStub(n) {
 			found = true
 			return false
 		}
@@ -1147,7 +1161,7 @@ func exprConcreteCostRec(e expressions.RelationalExpression, stats properties.St
 		return properties.Cost{}
 	}
 	// Fast path: no template below this node — exact, phantom-free concrete cost.
-	if !planTreeHasNilInnerFetch(plan) {
+	if !planTreeHasStub(plan) {
 		return concretePlanCost(plan, stats, ctx)
 	}
 	// A template (nil-inner Fetch) is somewhere below. Cost children, preferring the
@@ -1159,7 +1173,7 @@ func exprConcreteCostRec(e expressions.RelationalExpression, stats properties.St
 	childCosts := make([]properties.Cost, 0, len(quants))
 	for i, q := range quants {
 		// Concrete embedded child that is itself template-free → cost it directly.
-		if i < len(planKids) && planKids[i] != nil && !planTreeHasNilInnerFetch(planKids[i]) {
+		if i < len(planKids) && planKids[i] != nil && !planTreeHasStub(planKids[i]) {
 			childCosts = append(childCosts, concretePlanCost(planKids[i], stats, ctx))
 			continue
 		}
@@ -1235,7 +1249,7 @@ func exprConcreteCountsRec(e expressions.RelationalExpression, counts *expressio
 		return
 	}
 	// Fast path: template-free subtree — merge its exact concrete counts.
-	if !planTreeHasNilInnerFetch(plan) {
+	if !planTreeHasStub(plan) {
 		mergeCounts(counts, concretePlanCounts(plan, ctx))
 		return
 	}
@@ -1246,7 +1260,7 @@ func exprConcreteCountsRec(e expressions.RelationalExpression, counts *expressio
 	quants := e.GetQuantifiers()
 	planKids := plan.GetChildren()
 	for i, q := range quants {
-		if i < len(planKids) && planKids[i] != nil && !planTreeHasNilInnerFetch(planKids[i]) {
+		if i < len(planKids) && planKids[i] != nil && !planTreeHasStub(planKids[i]) {
 			mergeCounts(counts, concretePlanCounts(planKids[i], ctx))
 			continue
 		}

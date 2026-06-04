@@ -242,6 +242,13 @@ func (t *TransformImplTask) Run(p *Planner) {
 			Context:     p.ctx,
 			Constraints: p.constraintMap,
 			memo:        p.memo,
+			// Preorder (constraint-push) rules fire in their top-down constraint-only
+			// pass — PushRequestedOrderingThrough{Sort,Filter,Select,...}Rule and
+			// PushReferencedFields*Rule gate on IsConstraintOnly(). Without this the
+			// entire Java-faithful ordering/referenced-fields constraint-propagation
+			// phase is wired but inert, so a requested ordering never reaches the scan
+			// and sort elimination through a residual filter never fires (RFC-076 3a).
+			constraintOnly: isPreOrderRule(t.Rule),
 		}
 		t.Rule.OnMatch(call)
 
