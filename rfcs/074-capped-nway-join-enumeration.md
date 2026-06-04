@@ -1,6 +1,6 @@
 # RFC-074: Collapse the dual join-merge values to one canonical value
 
-**Status:** Accepted (Graefe ACK + ruling (A), re-ruled after measurement; Torvalds impl review pending)
+**Status:** Implemented (Graefe ACK + ruling (A), re-ruled after measurement; Torvalds ACK)
 **Area:** Cascades query planner — join result values + memo interning
 **Reviewers:** Graefe (Cascades alignment — mandatory), Torvalds (code quality), codex, @claude
 

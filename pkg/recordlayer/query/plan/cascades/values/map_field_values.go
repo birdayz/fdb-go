@@ -456,12 +456,23 @@ func EqualsWithoutChildren(a, b Value) bool {
 		bv, ok := b.(*UnmatchedAggregateValue)
 		return ok && av.UnmatchedID == bv.UnmatchedID
 	case *JoinMergeAllValue:
-		// Sole join-merge value (RFC-074). Set-based (order-independent) compare +
-		// the Seed provenance bit, consistent with SemanticEqualsUnderAliasMap and
-		// the arity+Seed hash (a translator seed and a re-enumeration never intern).
+		// Sole join-merge value (RFC-074). Mirrors SemanticEqualsUnderAliasMap: the
+		// Seed provenance bit is compared (a translator seed and a re-enumeration
+		// never intern), and leg order is compared per provenance — SEED is
+		// order-SENSITIVE (positional; a seed's order is semantic for column
+		// derivation), re-enumeration is order-INsensitive (sorted multiset, Graefe
+		// condition 1). Consistent with the arity+Seed hash.
 		bv, ok := b.(*JoinMergeAllValue)
 		if !ok || av.Seed != bv.Seed || len(av.Aliases) != len(bv.Aliases) {
 			return false
+		}
+		if av.Seed {
+			for i := range av.Aliases {
+				if av.Aliases[i] != bv.Aliases[i] {
+					return false
+				}
+			}
+			return true
 		}
 		am := make([]string, len(av.Aliases))
 		for i, a := range av.Aliases {
