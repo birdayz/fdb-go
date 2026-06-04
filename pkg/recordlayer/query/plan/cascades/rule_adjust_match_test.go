@@ -335,3 +335,92 @@ func TestAdjustMatches_CandidateRefMismatch(t *testing.T) {
 		t.Fatalf("expected 1 PartialMatch (ref mismatch prevents adjustment), got %d", len(pms))
 	}
 }
+
+// seedAdjustableCandidate builds a candidate whose traversal is
+// adjustableFilter(scan), seeds a leaf PartialMatch on queryScanRef pointing at
+// the candidate's scan ref, and returns the candidate + the parent (filter) ref
+// that a successful adjustment should produce a match on.
+func seedAdjustableCandidate(name string, queryScanRef *expressions.Reference, queryScan expressions.RelationalExpression) (*testMatchCandidate, *expressions.Reference) {
+	candidateScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanQ := expressions.ForEachQuantifier(candidateScanRef)
+	innerFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		candidateScanQ,
+	)
+	candidateFilter := &adjustableFilterExpression{LogicalFilterExpression: innerFilter}
+	candidateFilterRef := expressions.InitialOf(candidateFilter)
+	mc := &testMatchCandidate{name: name, traversal: NewTraversal(candidateFilterRef)}
+
+	seedMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
+	seedPM := NewPartialMatch(EmptyAliasMap(), mc, queryScanRef, queryScan, candidateScanRef, seedMI)
+	AddPartialMatchForCandidate(queryScanRef, mc, seedPM)
+	return mc, candidateFilterRef
+}
+
+func candHasAdjustedMatch(ref *expressions.Reference, mc MatchCandidate, parentRef *expressions.Reference) bool {
+	for _, pm := range GetPartialMatchesForCandidate(ref, mc) {
+		pmi, ok := pm.(*PartialMatchImpl)
+		if ok && pmi.GetCandidateRef() == parentRef && pmi.GetMatchInfo().IsAdjusted() {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted pins @claude
+// RFC-076-step-1 finding 1: AdjustPartialMatchesForRef must adjust matches that
+// are seeded AFTER an earlier candidate's matches were already adjusted (matches
+// arrive in waves across repeated pushDataAccessTasks calls). The retired coarse
+// `refHasAdjustedMatch` short-circuit skipped the whole ref once ANY match was
+// adjusted, leaving a later candidate's seeds with empty matchedOrderingParts
+// (sort elimination silently degrades). Idempotence is now per-match via the
+// content dedup, so the second wave is still absorbed.
+func TestAdjustPartialMatches_LateSeededCandidateWaveStillAdjusted(t *testing.T) {
+	t.Parallel()
+
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+
+	// Wave 1: candidate A.
+	mcA, parentA := seedAdjustableCandidate("idx_A", queryScanRef, queryScan)
+	AdjustPartialMatchesForRef(queryScanRef)
+	if !candHasAdjustedMatch(queryScanRef, mcA, parentA) {
+		t.Fatal("wave-1 candidate A was not adjusted")
+	}
+
+	// Wave 2: candidate B seeds AFTER A is already adjusted.
+	mcB, parentB := seedAdjustableCandidate("idx_B", queryScanRef, queryScan)
+	AdjustPartialMatchesForRef(queryScanRef)
+	if !candHasAdjustedMatch(queryScanRef, mcB, parentB) {
+		t.Fatal("REGRESSION (finding 1): late-seeded candidate B was NOT adjusted — coarse ref-level idempotence guard skipped it")
+	}
+	// A must remain adjusted (unchanged).
+	if !candHasAdjustedMatch(queryScanRef, mcA, parentA) {
+		t.Fatal("candidate A lost its adjustment after wave 2")
+	}
+}
+
+// TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls pins that
+// repeated AdjustPartialMatchesForRef calls do NOT accumulate duplicate adjusted
+// matches (the reason the coarse guard existed) — the content dedup in
+// AddPartialMatchForCandidate rejects content-equivalent re-adjustments.
+func TestAdjustPartialMatches_NoDuplicateExplosionOnRepeatedCalls(t *testing.T) {
+	t.Parallel()
+
+	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScanRef := expressions.InitialOf(queryScan)
+	mc, _ := seedAdjustableCandidate("idx_X", queryScanRef, queryScan)
+
+	AdjustPartialMatchesForRef(queryScanRef)
+	after1 := len(GetPartialMatchesForCandidate(queryScanRef, mc))
+
+	for i := 0; i < 10; i++ {
+		AdjustPartialMatchesForRef(queryScanRef)
+	}
+	afterN := len(GetPartialMatchesForCandidate(queryScanRef, mc))
+
+	if afterN != after1 {
+		t.Fatalf("duplicate explosion: %d matches after 1 call, %d after 11 calls (content dedup must keep it stable)", after1, afterN)
+	}
+}

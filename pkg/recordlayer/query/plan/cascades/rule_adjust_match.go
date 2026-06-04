@@ -84,16 +84,22 @@ func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions
 // consumption time or their ordering parts (needed to satisfy a
 // requested ordering and eliminate an in-memory sort) are never computed.
 func AdjustPartialMatchesForRef(ref *expressions.Reference) {
-	// Idempotence guard: pushDataAccessTasks fires repeatedly per ref
-	// during PLANNING exploration. AddPartialMatch dedups only by pointer
-	// identity, and each adjust pass mints fresh adjusted PartialMatch
-	// pointers, so re-running the absorption loop accumulates duplicate
-	// matches without bound (a 2-index query exploded to 200+ matches,
-	// blowing past the intersection match cap). Once any adjusted match
-	// exists on this ref, the absorption has already run — skip it.
-	if refHasAdjustedMatch(ref) {
-		return
-	}
+	// Idempotence is handled per-match by AddPartialMatchForCandidate's content
+	// dedup (a match is rejected when an existing match shares its query
+	// expression + candidate ref), NOT by a coarse ref-level short-circuit.
+	// `pushDataAccessTasks` fires repeatedly per ref during PLANNING and matches
+	// arrive in waves (a second candidate can seed its matches AFTER an earlier
+	// candidate's matches were already adjusted). A ref-level "any adjusted match
+	// exists → skip the whole ref" guard would skip those later seeds entirely —
+	// their matchedOrderingParts stay empty, so they can never satisfy an ORDER BY
+	// and sort elimination silently degrades to a full scan + sort (@claude
+	// finding 1). Instead the round loop runs every time: re-adjusting an
+	// already-absorbed match produces a content-equivalent match that the dedup
+	// rejects (adjustPartialMatch returns false → no progress → the loop
+	// converges in one round), while a freshly-seeded match IS absorbed. This
+	// relies on the content dedup actually firing — see the
+	// TestAdjustPartialMatches_* regressions (no duplicate explosion across
+	// repeated calls; late-seeded candidate waves still get adjusted).
 	for round := 0; round < 8; round++ {
 		progress := false
 		for _, candAny := range ref.GetPartialMatchCandidates() {
@@ -109,20 +115,6 @@ func AdjustPartialMatchesForRef(ref *expressions.Reference) {
 			break
 		}
 	}
-}
-
-// refHasAdjustedMatch reports whether any partial match on ref already
-// carries an adjusted MatchInfo (i.e. the absorption loop has run).
-func refHasAdjustedMatch(ref *expressions.Reference) bool {
-	for _, candAny := range ref.GetPartialMatchCandidates() {
-		cand := candAny.(MatchCandidate)
-		for _, pm := range GetPartialMatchesForCandidate(ref, cand) {
-			if mi := pm.GetMatchInfo(); mi != nil && mi.IsAdjusted() {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // adjustPartialMatch implements the core of Java's AdjustMatchRule.

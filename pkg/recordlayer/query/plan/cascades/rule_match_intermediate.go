@@ -610,11 +610,15 @@ func isPassThroughSingleSourceSelect(sel *expressions.SelectExpression) bool {
 }
 
 // valuesMatchColumn checks if two values reference the same column.
-// Uses structural comparison via ValuesStructurallyEqual: for
-// FieldValues this compares field names (case-sensitive, matching the
-// Go convention that column names are normalised to a single canonical
-// casing at SQL identifier resolution time). For complex values
-// (arithmetic, casts, etc.) it recursively compares the value tree.
+// Uses structural comparison via ValuesStructurallyEqual; the cross-alias
+// FieldValue fallback compares field names case-INsensitively (EqualFold) —
+// belt-and-suspenders against any casing drift, even though SQL identifier
+// resolution normalises column names to a single canonical casing. A case-only
+// collision on a DIFFERENT table cannot leak through here: the caller already
+// requires the operand to be correlated to the matched source (the
+// outer-correlation guard), so this only compares columns of the same source
+// against that source's candidate placeholders. For complex values (arithmetic,
+// casts, etc.) it recursively compares the value tree.
 func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false

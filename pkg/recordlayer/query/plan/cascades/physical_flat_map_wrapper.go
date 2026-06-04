@@ -90,6 +90,14 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 // ordered join as unordered and flipping onto a worse join order to "satisfy"
 // the ordering elsewhere (RFC-076: TestFDB_JoinSelPred_Repro). Mirrors the
 // filter wrapper's EstimateOrdering pass over the source ref's members.
+//
+// NOTE (RFC-076 step 3a, @claude finding 4): this returns the FIRST member with
+// a known ordering, not the cost WINNER's. Today the outer ref carries a single
+// ordering, so first==winner. Once the ordering-constraint pass (3a) is active
+// the outer ref accrues ordered/unordered variants and the first-known member
+// may not be the winner — at which point this must select the winner's ordering
+// (the same first-vs-winner fix already applied to physicalInMemorySortWrapper.
+// WithChildren via findBestPhysicalPlan). Tracked in the RFC v4 retirement seq.
 func (w *physicalFlatMapWrapper) HintOrdering() properties.Ordering {
 	ref := w.outerQuant.GetRangesOver()
 	if ref == nil {

@@ -223,7 +223,11 @@ if the requested ordering reaches the scan. It does not, for two reasons that co
 1. Land 3b (template-aware costing) + the defensive guards; verify the full suite stays green
    **with the rule still enabled** (no plan-shape regression from the cost change alone).
 2. Land 3a (activate the constraint pass); verify `TestFDB_JoinSelPred_Repro` + sort-elim both green and
-   nothing else regresses.
+   nothing else regresses. **Also fix `physicalFlatMapWrapper.HintOrdering` to return the cost WINNER's
+   ordering, not the first-known member's** (@claude step-1 finding 4): inert today (single ordering per
+   ref), but once 3a adds ordered/unordered variants the first-known member may not be the winner, so a
+   join could claim to provide an ordering it doesn't — the same first-vs-winner fix already applied to
+   `physicalInMemorySortWrapper.WithChildren`.
 3. Delete `ImplementIndexScanRule` + both registrations (`default_rules.go:191`, `:210`) and its
    residual-skip guard. Re-confirm `TestEndToEnd_SortElimThroughResidualFilter` green via the data-access
    path.

@@ -247,6 +247,7 @@ go_test(
         "intersector_primary_key_test.go",
         "match_candidate_index_test.go",
         "match_info_test.go",
+        "match_max_match_map_test.go",
         "matched_ordering_part_test.go",
         "max_match_map_fuzz_test.go",
         "max_match_map_test.go",
