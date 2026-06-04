@@ -19,8 +19,14 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
-// replyChanPool pools chan Response to reduce allocations.
-// Each PrepareReply/Send allocates one; readLoop returns it after dispatch.
+// replyChanPool pools chan Response to reduce allocations. A channel is
+// returned to the pool only when no send can still race it: by the SUCCESS path
+// (the caller received its reply, then calls ReplyHandle.Release / SendAndWait
+// returns) or by Cancel when it won the delete race against readLoop. A channel
+// whose delivery raced a cancel/timeout is deliberately NOT pooled — it may hold
+// a stale buffered value, and a future request must never read it. readLoop does
+// NOT return the channel (it only delivers); the earlier comment claiming it did
+// was wrong and caused the success-path channel to leak.
 var replyChanPool = sync.Pool{New: func() any { return make(chan Response, 1) }}
 
 // ReplyHandle holds state for a pending reply. Pooled to avoid closure allocation
@@ -43,15 +49,29 @@ func (h *ReplyHandle) Cancel() {
 	}
 	h.conn.pendingMu.Lock()
 	if _, ok := h.conn.pending[h.token]; ok {
+		// Won the race: the token is still pending, so readLoop has not
+		// delivered and never will (we delete it here under the same lock).
+		// The channel is clean — pool it.
 		delete(h.conn.pending, h.token)
 		putReplyChannel(h.ch)
 	}
+	// Else readLoop already delivered (or is mid-delivery): h.ch may hold a
+	// buffered value, so we must NOT pool it — leave it to GC. This rare
+	// race-loser leak is the price of never handing a stale reply to a future
+	// request.
 	h.conn.pendingMu.Unlock()
+	h.ch = nil // mark the channel handled so Release does not re-pool it
 }
 
-// Release returns the handle to the pool. Call after Cancel or after
-// the reply has been successfully received.
+// Release returns the handle to the pool. Call EITHER after a successful receive
+// (no Cancel) OR after Cancel. On the success path h.ch is still set and is
+// pooled here: readLoop deletes the token from the pending map BEFORE delivering,
+// so once the caller has received its reply no further send can race the pool
+// Put. Cancel nils h.ch, so the cancel path never double-pools.
 func (h *ReplyHandle) Release() {
+	if h.ch != nil {
+		putReplyChannel(h.ch)
+	}
 	h.conn = nil
 	h.ch = nil
 	replyHandlePool.Put(h)
@@ -253,6 +273,13 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 // The destToken identifies the remote endpoint (e.g., a StorageServer's getValue endpoint).
 // The replyToken is a fresh token for routing the response back.
 func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan Response, err error) {
+	return c.sendInternal(destToken, body)
+}
+
+// sendInternal is Send returning the bidirectional reply channel so internal
+// callers (SendAndWait) can return it to the pool. Send exposes only the
+// receive-only view.
+func (c *Conn) sendInternal(destToken UID, body []byte) (replyToken UID, replyCh chan Response, err error) {
 	replyToken = NewUID()
 	ch := getReplyChannel()
 	c.pendingMu.Lock()
@@ -268,6 +295,18 @@ func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan 
 	}
 
 	return replyToken, ch, nil
+}
+
+// cancelPending removes a still-pending reply token and returns its channel to
+// the pool iff it won the race against readLoop's delivery — the same discipline
+// as ReplyHandle.Cancel, for the raw token+channel SendAndWait holds.
+func (c *Conn) cancelPending(token UID, ch chan Response) {
+	c.pendingMu.Lock()
+	if _, ok := c.pending[token]; ok {
+		delete(c.pending, token)
+		putReplyChannel(ch)
+	}
+	c.pendingMu.Unlock()
 }
 
 // PrepareReply allocates a reply token and registers it for response routing.
@@ -293,7 +332,12 @@ func getReplyChannel() chan Response {
 }
 
 // putReplyChannel returns a reply channel to the pool after draining it.
-func putReplyChannel(ch chan Response) {
+// It is a var (defaulting to putReplyChannelImpl) so the pool-discipline tests
+// can observe exactly which channels are returned to the pool, on which path,
+// without depending on sync.Pool's non-deterministic reuse.
+var putReplyChannel = putReplyChannelImpl
+
+func putReplyChannelImpl(ch chan Response) {
 	// Drain any buffered value (shouldn't normally happen).
 	select {
 	case <-ch:
@@ -437,17 +481,25 @@ func (c *Conn) writeLoop() {
 
 // SendAndWait sends a request and blocks until the response arrives.
 func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]byte, error) {
-	_, replyCh, err := c.Send(destToken, body)
+	replyToken, replyCh, err := c.sendInternal(destToken, body)
 	if err != nil {
 		return nil, err
 	}
 
 	select {
 	case resp := <-replyCh:
+		// Received: readLoop deleted the token before delivering, so no further
+		// send can race — return the channel to the pool.
+		putReplyChannel(replyCh)
 		return resp.Body, resp.Err
 	case <-ctx.Done():
+		// Timed out: remove the still-pending token; pool the channel only if we
+		// beat readLoop's delivery (cancelPending), else leave it to GC.
+		c.cancelPending(replyToken, replyCh)
 		return nil, ctx.Err()
 	case <-c.ctx.Done():
+		// Connection teardown: failAllPending owns the pending entry and may be
+		// delivering an error to replyCh concurrently — leave the channel to GC.
 		return nil, errConnClosed
 	}
 }
