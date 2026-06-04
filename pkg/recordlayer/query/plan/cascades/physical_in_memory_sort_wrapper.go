@@ -69,7 +69,13 @@ func (w *physicalInMemorySortWrapper) WithChildren(qs []expressions.Quantifier) 
 	// leaf inners would pin the stale first-member placeholder for join inners and
 	// silently sort the wrong (sub-optimal) join order (RFC-069). WithChildren runs
 	// only at extraction, where qs[0] resolves to the fully-formed winner.
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
+	//
+	// Use findBestPhysicalPlan (the cheapest VALID member), not findPhysicalPlan
+	// (first member): with ordering constraints active the inner group accrues
+	// ordered variants and the first-yielded member can be a dominated join order
+	// (drives off the unselective side), so sorting it re-scans catastrophically
+	// (RFC-076 TestFDB_JoinSelPred_Repro).
+	if innerPlan := findBestPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
 		newPlan := plans.NewRecordQueryInMemorySortPlan(innerPlan, w.plan.GetSortKeys())
 		return &physicalInMemorySortWrapper{plan: newPlan, innerQuant: qs[0]}, nil
 	}

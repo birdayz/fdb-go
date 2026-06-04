@@ -254,6 +254,19 @@ once, as in Java. See DIVERGENCES.md "ImplementIndexScanRule is a Go-only second
     red-first, aligned to Java/plandiff; do NOT one-off guess (a `boundCount==0` guard diverged from
     Java and broke a Java-aligned unit test). THEN retire the rule + guard + final-plan validation.
     `ImplementFilterRule` STAYS (faithful Java port). Separate PR from RFC-077.
+  - **RFC-076 v4 (2026-06-04): step 1 DONE (5 correctness fixes, Graefe+Torvalds ACK), full retirement
+    in progress.** The data-access path is now correct for every FDB-tested shape (dual-correlation
+    joins, simple joins, aggregate eq-filter, vector residuals). Full rule retirement needs: (3a)
+    activate the dormant ordering-constraint pass (`constraintOnly` never set true → `PushRequestedOrderingThrough*`
+    inert); (3b) template-aware costing (a nil-inner `Fetch` shell hides its inner from the cost model
+    → join-order flip on `TestFDB_JoinSelPred_Repro`). See RFC-076 "v4 amendment" for the sequenced plan
+    + the ref-resolving (not magic-constant) 3b. `validateNoIndexOnlyResidual` STAYS (now load-bearing
+    via the DistanceRank residual). **Step-2 cleanup TODO (file/do during retirement, by the retirement
+    PR): stop SEEDING `AggregateIndexMatchCandidate` partial matches onto non-GroupBy refs** in the
+    leaf/intermediate match rules, so the agg-skip type-switch — currently duplicated 4× (`planner.go:465`
+    data-access boundary [new], `rule_implement_index_scan.go` [dies with the rule], `rule_streaming_agg_from_index.go`,
+    `rule_aggregate_data_access.go`) — collapses to one. Torvalds flagged the boundary guard as a
+    defensible transition shim, NOT the permanent design; the don't-seed fix is the root cause.
 
 ### 7.6 — MERGED into 7.5+7.6 (RFC-077)
 

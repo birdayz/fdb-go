@@ -50,6 +50,51 @@ func GetCorrelatedToOfPredicate(p QueryPredicate) map[CorrelationIdentifier]stru
 	return out
 }
 
+// AddMergeSeedAliases augments out with the source aliases of every SEED
+// JoinMergeAllValue referenced by p's value trees.
+//
+// values.GetCorrelatedToOfValue (and hence GetCorrelatedToOfPredicate)
+// deliberately HIDES seed-merge aliases — reporting them in the global
+// correlation set inflates exploration order and tips large star joins past
+// the task budget (see the JoinMergeAllValue arm in value_correlation.go).
+// PartitionSelectRule's predicate classification, however, MUST see them: a
+// predicate that reads a buried table's column through a seed merge (e.g.
+// join_merge_all.B_AID) genuinely depends on that table. Missing it
+// misclassifies a predicate spanning both partition halves as lower-only,
+// which pushes it below the merge to a leaf scan where the buried alias is
+// unbound — the 0-row dual-correlation join. Callers that need partition-time
+// (not exploration-time) correlations layer this on top.
+func AddMergeSeedAliases(p QueryPredicate, out map[CorrelationIdentifier]struct{}) {
+	if p == nil || out == nil {
+		return
+	}
+	collect := func(v values.Value) {
+		if v == nil {
+			return
+		}
+		values.WalkValue(v, func(node values.Value) bool {
+			if m, ok := node.(*values.JoinMergeAllValue); ok && m.Seed {
+				for _, a := range m.Aliases {
+					out[a] = struct{}{}
+				}
+			}
+			return true
+		})
+	}
+	WalkPredicate(p, func(node QueryPredicate) bool {
+		switch np := node.(type) {
+		case *ValuePredicate:
+			collect(np.Value)
+		case *ComparisonPredicate:
+			collect(np.Operand)
+			collect(np.Comparison.Operand)
+		case *Placeholder:
+			collect(np.Value)
+		}
+		return true
+	})
+}
+
 // CorrelationIdentifier is re-exported as a type alias so package
 // consumers don't need to import values just for the map key type.
 type CorrelationIdentifier = values.CorrelationIdentifier

@@ -67,6 +67,33 @@ func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions
 	// (e.g., absorbing SelectExpression creates a PM that then absorbs
 	// MatchableSortExpression). Mirrors Java's event-driven
 	// AdjustMatchRule which re-fires on each new PartialMatch.
+	AdjustPartialMatchesForRef(ref)
+}
+
+// AdjustPartialMatchesForRef runs the AdjustMatchRule absorption loop on
+// a single Reference's partial matches until stable. Each round attempts
+// to absorb a candidate-side parent expression (SelectExpression →
+// MatchableSortExpression) onto each existing PartialMatch, producing
+// adjusted matches that carry e.g. matched ordering parts.
+//
+// This is the per-ref unit of Java's event-driven AdjustMatchRule. It is
+// invoked both by the bottom-up AdjustMatches walk (for REWRITING-phase
+// matches) AND by pushDataAccessTasks just before it consumes a ref's
+// matches — PLANNING-phase matches are seeded during exploration, after
+// the phase-start AdjustMatches walk, so they must be adjusted at
+// consumption time or their ordering parts (needed to satisfy a
+// requested ordering and eliminate an in-memory sort) are never computed.
+func AdjustPartialMatchesForRef(ref *expressions.Reference) {
+	// Idempotence guard: pushDataAccessTasks fires repeatedly per ref
+	// during PLANNING exploration. AddPartialMatch dedups only by pointer
+	// identity, and each adjust pass mints fresh adjusted PartialMatch
+	// pointers, so re-running the absorption loop accumulates duplicate
+	// matches without bound (a 2-index query exploded to 200+ matches,
+	// blowing past the intersection match cap). Once any adjusted match
+	// exists on this ref, the absorption has already run — skip it.
+	if refHasAdjustedMatch(ref) {
+		return
+	}
 	for round := 0; round < 8; round++ {
 		progress := false
 		for _, candAny := range ref.GetPartialMatchCandidates() {
@@ -82,6 +109,20 @@ func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions
 			break
 		}
 	}
+}
+
+// refHasAdjustedMatch reports whether any partial match on ref already
+// carries an adjusted MatchInfo (i.e. the absorption loop has run).
+func refHasAdjustedMatch(ref *expressions.Reference) bool {
+	for _, candAny := range ref.GetPartialMatchCandidates() {
+		cand := candAny.(MatchCandidate)
+		for _, pm := range GetPartialMatchesForCandidate(ref, cand) {
+			if mi := pm.GetMatchInfo(); mi != nil && mi.IsAdjusted() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // adjustPartialMatch implements the core of Java's AdjustMatchRule.

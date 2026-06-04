@@ -118,26 +118,39 @@ var _ PartialMatch = (*testPartialMatch)(nil)
 // makeDataAccessTestPartialMatch creates a test PartialMatch with the given
 // number of matched ordering parts (used as a proxy for coverage).
 func makeDataAccessTestPartialMatch(name string, numParts int, plan plans.RecordQueryPlan) *testPartialMatch {
-	alias := values.NamedCorrelationIdentifier(name + "_alias")
-	candidate := &dataAccessTestCandidate{
-		name:            name,
-		sargableAliases: []values.CorrelationIdentifier{alias},
-		columnNames:     []string{name + "_col"},
-		recordTypes:     []string{"TestRecord"},
-		fixedPlan:       plan,
-	}
+	// Build a RESTRICTED match: each part's sargable alias is bound to a
+	// non-empty equality range so hasRestrictedScan(pm) is true. The
+	// data-access path now skips zero-prefix matches (a full index scan
+	// with no selectivity is strictly dominated by the table scan; this
+	// mirrors ImplementIndexScanRule's len(prefix)==0 guard), so a test
+	// match must carry a real bound prefix to exercise the scan path.
+	eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))
+	eqRange := predicates.EmptyComparisonRange().Merge(&eqCmp).Range
 
+	sargAliases := make([]values.CorrelationIdentifier, numParts)
+	columnNames := make([]string, numParts)
 	parts := make([]*MatchedOrderingPart, numParts)
 	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange, numParts)
 	for i := 0; i < numParts; i++ {
 		pid := values.UniqueCorrelationIdentifier()
+		col := name + "_col" + string(rune('a'+i))
+		sargAliases[i] = pid
+		columnNames[i] = col
 		parts[i] = NewMatchedOrderingPart(
 			pid,
-			&values.FieldValue{Field: name, Typ: values.UnknownType},
-			predicates.EmptyComparisonRange(),
+			&values.FieldValue{Field: col, Typ: values.UnknownType},
+			eqRange,
 			MatchedSortOrderAscending,
 		)
-		paramBindings[pid] = predicates.EmptyComparisonRange()
+		paramBindings[pid] = eqRange
+	}
+
+	candidate := &dataAccessTestCandidate{
+		name:            name,
+		sargableAliases: sargAliases,
+		columnNames:     columnNames,
+		recordTypes:     []string{"TestRecord"},
+		fixedPlan:       plan,
 	}
 
 	return &testPartialMatch{

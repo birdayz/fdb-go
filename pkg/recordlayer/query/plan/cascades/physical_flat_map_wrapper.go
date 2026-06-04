@@ -81,8 +81,27 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 	return flatMapCost(child[0], child[1])
 }
 
+// HintOrdering reports the OUTER quantifier's ordering. A FlatMap (nested loop)
+// iterates the outer and, for each outer row, emits the inner's rows — so the
+// output stream is ordered by the outer's ordering (the inner only sub-orders
+// within each outer group). Propagating it lets a join driven by an ordered
+// outer (e.g. a PK range scan) satisfy a requested ORDER BY on the outer's key
+// and eliminate the sort — and, crucially, keeps the planner from treating an
+// ordered join as unordered and flipping onto a worse join order to "satisfy"
+// the ordering elsewhere (RFC-076: TestFDB_JoinSelPred_Repro). Mirrors the
+// filter wrapper's EstimateOrdering pass over the source ref's members.
 func (w *physicalFlatMapWrapper) HintOrdering() properties.Ordering {
-	return properties.Ordering{IsKnown: false}
+	ref := w.outerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.AllMembers() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
 }
 
 func (w *physicalFlatMapWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {

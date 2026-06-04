@@ -48,8 +48,8 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 				intersectionPlan := plans.NewRecordQueryIntersectionPlan(
 					[]plans.RecordQueryPlan{planI, planJ}, pkValues)
 
-				exprI := wrapScanPlanWithCoverage(planI, false, nil)
-				exprJ := wrapScanPlanWithCoverage(planJ, false, nil)
+				exprI := wrapAccessScan(ai, planI)
+				exprJ := wrapAccessScan(aj, planJ)
 				qI := expressions.ForEachQuantifier(expressions.InitialOf(exprI))
 				qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
 
@@ -87,9 +87,9 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 						intersectionPlan := plans.NewRecordQueryIntersectionPlan(
 							[]plans.RecordQueryPlan{planI, planJ, planK}, pkValues)
 
-						exprI := wrapScanPlanWithCoverage(planI, false, nil)
-						exprJ := wrapScanPlanWithCoverage(planJ, false, nil)
-						exprK := wrapScanPlanWithCoverage(planK, false, nil)
+						exprI := wrapAccessScan(ai, planI)
+						exprJ := wrapAccessScan(aj, planJ)
+						exprK := wrapAccessScan(ak, planK)
 						qI := expressions.ForEachQuantifier(expressions.InitialOf(exprI))
 						qJ := expressions.ForEachQuantifier(expressions.InitialOf(exprJ))
 						qK := expressions.ForEachQuantifier(expressions.InitialOf(exprK))

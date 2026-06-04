@@ -1,6 +1,6 @@
 # RFC-076: Retire the Go-only `ImplementIndexScanRule` — make the data-access path the sole scan producer (TODO 7.7)
 
-**Status:** Re-review (v3 — empirical reproduction FALSIFIED v2's premise that the data-access path "emits scans"; it emits ZERO. Re-ACK required from Graefe + Torvalds before impl)
+**Status:** v4 amendment **ACK'd (Graefe + Torvalds, 2026-06-04)** as the plan of record for full retirement. Step 1 (complete the data-access path) DONE: 5 correctness bugs found + fixed, Graefe + Torvalds ACK'd. Step 3 (retire the rule) follows the sequenced plan in the **v4 amendment** below — land template-aware costing (3b, ref-resolving — NOT a magic constant) rule-enabled and plan-neutral, then activate the dormant ordering-constraint pass (3a), then delete the rule (keeping `validateNoIndexOnlyResidual`). The **retirement commit's actual diff still needs its own Graefe + Torvalds ACK** (this ACKs the plan, not unwritten code). v3 history retained below.
 **Area:** Cascades query planner — physical index-scan production
 **Reviewers:** Graefe (Cascades alignment — mandatory), Torvalds (code quality), codex, @claude
 
@@ -129,3 +129,117 @@ every arity before vs after; (c) determinism 10× + stress-1M. If wiring a shape
 too invasive, that shape stays on `ImplementIndexScanRule` until covered (partial retirement) rather
 than risking a silent no-plan — but the empirical finding is that ALL `Filter(Scan)` shapes share the
 one missing-MaxMatchMap root, so a single fix should unlock them together.
+
+---
+
+## v4 amendment — implementation findings + the path to full retirement
+
+Implementing v3 confirmed the MaxMatchMap wiring premise, but **completing the data-access path took
+five distinct correctness fixes**, not one — and **retiring the rule needs two further changes** (an
+ordering-constraint pass + template-aware costing) that v3 did not foresee. All filenames below are
+under `pkg/recordlayer/query/plan/cascades/` unless noted.
+
+### Step 1 — DONE: the data-access path is now correct for every shape (Graefe + Torvalds ACK'd)
+
+Wiring `ComputeMaxMatchMap` into the seed paths activated the data-access path, which then produced
+*wrong* plans for several shapes that `ImplementIndexScanRule` had been silently covering. Each was a
+real latent bug, root-caused against Java and fixed (regression-pinned by the FDB suites listed):
+
+1. **Compensation base-quantifier alias** (`compensation.go`). `ForMatchCompensation.Apply`/`ApplyFinal`
+   created the realized quantifier with a *fresh* alias and a rebase band-aid; Java creates it with the
+   matched query-side ForEach alias (`Quantifier.forEach(ref, matchedForEachAlias)`) and rebases
+   predicates via `realizedAlias → ofAliases(candidateTopAlias, realizedAlias)`. The fresh alias
+   orphaned the access from outer correlations → 0-row dual-correlation joins. Ported the Java
+   `TranslationMapFunc` signature exactly; removed the band-aid. (`TestFDB_JoinMerge_OuterColumn_NotDropped`)
+2. **Seed-merge alias classification** (`predicate_correlation.go` + `rule_partition_select.go`).
+   `AddMergeSeedAliases`: partition-select classification now sees SEED `JoinMergeAllValue` source
+   aliases that `GetCorrelatedToOfValue` deliberately hides (exploration-budget). Without it a predicate
+   reading a buried column through a seed merge was misclassified lower-only and pushed below the merge.
+   (dual-correlation join 0-row)
+3. **`valuesMatchColumn` outer-correlation guard** (`rule_match_intermediate.go`). The candidate-column
+   operand must belong to the matched source, not an outer correlation — `valuesMatchColumn` compares
+   FieldValues by field name only, so `Customer.id = Order.customer_id` (matching ORDER) spuriously bound
+   to Order's same-named PK. (`TestFDB_InnerJoin`, `TestFDB_JoinSameTableTwice`)
+4. **Aggregate-index exclusion** (`planner.go`). `pushDataAccessTasks` drops `AggregateIndexMatchCandidate`
+   — those are consumed by `AggregateDataAccessRule` (matches the GroupBy, reads the pre-aggregated
+   value), never as a regular value-index scan. The regular path was scanning the aggregate index +
+   re-aggregating (COUNT → 1, not 4). (Torvalds note: now the 3rd copy of the agg-skip guard; the deeper
+   fix is to not *seed* aggregate matches onto non-GroupBy refs — tracked as step-2 cleanup.)
+   (`TestFDB_AggregateIndexUsage`)
+5. **Sargable-binding reconciliation** (`rule_match_intermediate.go`). A binding matched to a placeholder
+   but NOT consumable into the scan prefix (`ComputeBoundParameterPrefixMap` — e.g. a vector partition
+   inequality, or a trailing equality with an unbound leading column) becomes a RESIDUAL, not silently
+   dropped. (`TestFDB_VectorSearch_MultiPartition_{Inequality,TrailingEquality}Residual`)
+
+### Step 3 — the two changes retirement requires
+
+Disabling `ImplementIndexScanRule` with step 1 in place leaves the whole FDB suite green and **one**
+plangen unit test red: `TestEndToEnd_SortElimThroughResidualFilter` — `Sort(date, Filter([status='active'
+AND amount>50], Scan))` over an index `(status, date)` must eliminate the sort (the status-equality run
+makes the scan date-ordered; `amount>50` is a residual). The data-access path can satisfy this, but only
+if the requested ordering reaches the scan. It does not, for two reasons that compound:
+
+- **(3a) Activate the dormant ordering-constraint pass.** `PushRequestedOrderingThrough{Sort,Filter,
+  Select,...}Rule` and `PushReferencedFields*Rule` are all `preOrderMarker` rules that gate on
+  `call.IsConstraintOnly()` — but **`constraintOnly` is never set `true` anywhere in production**
+  (`unified_tasks.go` schedules preorder rules via `TransformImplTask` with the default `false`), so the
+  entire Java-faithful top-down constraint-propagation phase is wired yet inert. The fix sets
+  `constraintOnly = isPreOrderRule(t.Rule)` when scheduling a preorder rule, so the ordering reaches the
+  scan through the residual filter and the data-access path emits a date-ordered scan (sort eliminated).
+  This is the Java mechanism (`PushRequestedOrderingThroughSortRule` et al.); Go merely never turned it on.
+
+- **(3b) Template-aware costing (the load-bearing fix).** Activating 3a regresses exactly one join test,
+  `TestFDB_JoinSelPred_Repro` (`… o.customer_id = c.id AND o.id < 10 ORDER BY o.id`): the planner flips
+  off the selective `o.id<10` outer onto a full `Scan(CUSTOMERS)` driving an `idx_customer` inner. Root
+  cause, fully traced: a join inner that is a **nil-inner `Fetch` shell** (a push-through template whose
+  inner is resolved only at extraction — see `isNilInnerFetch`) **hides its inner data access from the
+  cost model**. `concretePlanCost`/`concretePlanCounts` (and criterion #2 max-cardinality via
+  `findExpressionsByType`) walk the `GetRecordQueryPlan()` *plan tree*, where the shell's inner is `nil`
+  → 0 children → costed as ~free. So the Customers-driven join looks nearly free and wins; the worse join
+  order is chosen. (Without 3a this never surfaces because the ordering request that creates the ordered
+  shell variant never reaches the join.)
+
+  **Fix (the honest one — NOT a magic cost constant).** Cost the shell as its *real inner* by resolving
+  it through the inner Reference (the wrapper's quantifier graph), never as `nil` and never as a
+  fabricated `fetchCost(LeafScanCardinality)`-style constant (a constant breaks this one tie by luck but
+  under-/over-costs depending on the real inner's selectivity — rejected). The seam already exists:
+  `findExpressionsByType` (`planning_cost_model.go:458`) branches on `GetRecordQueryPlan() != nil` to
+  choose the flat `concretePlanCounts` walk vs. the ref-descending `walkExpressionTree`
+  (`bestPhysicalChild` → cost winner per child Reference). The fix forces the ref-descending branch when
+  the wrapper's plan tree contains an unresolved nil-inner `Fetch`, so criterion #2 (max-cardinality)
+  sees the real buried data access. The same template-resolution must cover the *total-cost* criterion
+  (`concretePlanCost`, used at `:908`), not just criterion #2 — cost the wrapper via the ref-resolving
+  path there too. A template thus never costs cheaper than the fully-formed plan it stands in for. (The
+  experimental `fetchCost(LeafScanCardinality)` stop-gap has been reverted; it is NOT the landed fix.) The
+  guards added alongside are defensive and independently correct: `stampOrderingWinners` and the
+  NoProperties/ordered winner-lookup paths now skip nil-inner shells (a shell must never be a standalone
+  *winner*), `physicalInMemorySortWrapper.WithChildren` relinks to the inner ref's cost *winner*
+  (`findBestPhysicalPlan`) not the first-yielded member, and `physicalFlatMapWrapper.HintOrdering`
+  propagates the outer ordering (a nested loop's output is ordered by its outer — a latent
+  ordering-propagation gap, the "physical wrappers must propagate ordering" lesson).
+
+### Retirement sequence (only after 3a+3b are green)
+
+1. Land 3b (template-aware costing) + the defensive guards; verify the full suite stays green
+   **with the rule still enabled** (no plan-shape regression from the cost change alone).
+2. Land 3a (activate the constraint pass); verify `TestFDB_JoinSelPred_Repro` + sort-elim both green and
+   nothing else regresses.
+3. Delete `ImplementIndexScanRule` + both registrations (`default_rules.go:191`, `:210`) and its
+   residual-skip guard. Re-confirm `TestEndToEnd_SortElimThroughResidualFilter` green via the data-access
+   path.
+4. **Keep `validateNoIndexOnlyResidual`** (v3 step 4 said "verify before deleting; if anything still
+   feeds an index-only residual, the guard stays"): the data-access reconciliation (fix #5) now *is* the
+   path that surfaces the index-only DistanceRank residual, so the final-plan guard is still load-bearing
+   (`TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` asserts its
+   `UnplannableIndexOnlyResidualError`). Do NOT delete it.
+
+### v4 risk
+
+The cost change (3b) ranks **every** plan — high blast radius. Mitigations: it only alters costing for
+plan trees that contain an *unresolved nil-inner Fetch* (a pre-extraction template); fully-formed plans
+are costed exactly as before. Validation: full `just test` + plandiff byte-identical at every arity for
+queries without templates + determinism 10× + stress-1M before/after (point lookups <5ms, join_10_outer
+ORDERS-driven ~4ms). The constraint-pass activation (3a) is gated behind 3b so the regression it would
+otherwise cause never lands. If 3b proves to destabilize costing broadly, fall back to partial
+retirement (rule retained for the sort-elim-through-residual shape only) rather than shipping a cost
+regression.

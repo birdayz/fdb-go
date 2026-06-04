@@ -933,7 +933,7 @@ func TestForMatchCompensation_Apply_NoCompensation(t *testing.T) {
 		false, NoCompensation, EmptyPredicateCompensationMap(),
 		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
 	)
-	result := c.Apply(scan, nil)
+	result := c.Apply(scan, TranslationMapFunc(nil))
 	if result != scan {
 		t.Fatal("no compensation should return original expression")
 	}
@@ -958,7 +958,7 @@ func TestForMatchCompensation_Apply_WithPredicates(t *testing.T) {
 		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
-	result := c.Apply(scan, nil)
+	result := c.Apply(scan, TranslationMapFunc(nil))
 	filter, ok := result.(*expressions.LogicalFilterExpression)
 	if !ok {
 		t.Fatalf("expected LogicalFilterExpression, got %T", result)

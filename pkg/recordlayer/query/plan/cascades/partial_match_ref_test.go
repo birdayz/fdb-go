@@ -42,14 +42,23 @@ func TestMultipleMatchesSameCandidate(t *testing.T) {
 	candidate := stubMatchCandidate{name: "idx_b"}
 	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	queryRef := expressions.InitialOf(scanExpr)
-	candRef := expressions.InitialOf(
+	// Two DISTINCT candidate refs → two genuinely distinct matches for the
+	// same candidate, both retained. (AddPartialMatchForCandidate content-
+	// dedups by (queryExpression, candidateRef): the matching rules re-fire
+	// repeatedly during PLANNING exploration and would otherwise accumulate
+	// unbounded pointer-distinct copies of the SAME logical match — see the
+	// dedup note there. Matches that differ in candidateRef are kept.)
+	candRef1 := expressions.InitialOf(
+		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+	)
+	candRef2 := expressions.InitialOf(
 		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
 	)
 
 	mi1 := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 	mi2 := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
-	pm1 := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, scanExpr, candRef, mi1)
-	pm2 := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, scanExpr, candRef, mi2)
+	pm1 := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, scanExpr, candRef1, mi1)
+	pm2 := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, scanExpr, candRef2, mi2)
 
 	AddPartialMatchForCandidate(queryRef, candidate, pm1)
 	AddPartialMatchForCandidate(queryRef, candidate, pm2)
@@ -60,6 +69,17 @@ func TestMultipleMatchesSameCandidate(t *testing.T) {
 	}
 	if got[0] != pm1 || got[1] != pm2 {
 		t.Fatal("matches not in expected order")
+	}
+
+	// A content-equivalent re-add (same queryExpression + candidateRef as
+	// pm1) is dropped — this is the accumulation guard.
+	dupMi := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
+	dup := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, scanExpr, candRef1, dupMi)
+	if AddPartialMatchForCandidate(queryRef, candidate, dup) {
+		t.Fatal("content-equivalent match (same queryExpr+candidateRef) should be deduped")
+	}
+	if n := len(GetPartialMatchesForCandidate(queryRef, candidate)); n != 2 {
+		t.Fatalf("after dup re-add: expected 2 matches, got %d", n)
 	}
 }
 

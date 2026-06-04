@@ -281,12 +281,20 @@ func matchIntermediateStructural(
 	// All quantifiers matched — create a composite PartialMatch.
 	boundAliasMap := aliasBuilder.Build()
 
+	// MaxMatchMap between the query's and candidate's result values
+	// (Java's structural subsumedBy path). Mandatory — see
+	// buildMatchMaxMatchMap.
+	mmm := buildMatchMaxMatchMap(
+		queryExpr.GetResultValue(),
+		candidateExpr.GetResultValue(),
+		boundAliasMap,
+	)
 	mi := NewRegularMatchInfo(
 		nil,                    // parameterBindingMap
 		boundAliasMap,          // bindingAliasMap
 		nil,                    // predicateMap
 		nil,                    // matchedOrderingParts
-		nil,                    // maxMatchMap
+		mmm,                    // maxMatchMap
 		EmptyGroupByMappings(), // groupByMappings
 		nil,                    // rollUpToGroupingValues
 		nil,                    // additionalPlanConstraint
@@ -330,6 +338,15 @@ func matchIntermediateStructural(
 // Mirrors the predicate-mapping logic inside Java's
 // SelectExpression.subsumedBy, narrowed to the Filter-vs-Select
 // case that Go encounters alongside SelectMergeRule normalisation.
+// pendingSargable is a candidate placeholder binding collected during matching,
+// finalized as either a sargable scan constraint or a residual filter once the
+// scan prefix is known.
+type pendingSargable struct {
+	ph  *predicates.Placeholder
+	cp  *predicates.ComparisonPredicate
+	rng *predicates.ComparisonRange
+}
+
 func matchSingleSourceAgainstSelect(
 	call *ExpressionRuleCall,
 	queryExpr expressions.RelationalExpression,
@@ -370,6 +387,16 @@ func matchSingleSourceAgainstSelect(
 	paramBindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
 	predicateMapBuilder := NewPredicateMapBuilder()
 	boundCount := 0
+	// Track which query predicates were bound to a placeholder (sargable).
+	// The rest become residual filters (Java: a query predicate with no
+	// candidate match maps to a tautology candidate with an ofPredicate
+	// compensation that re-applies it as a filter — SelectExpression.subsumedBy
+	// → QueryPredicate.findImpliedMappings).
+	matchedQueryPreds := make(map[predicates.QueryPredicate]bool, len(queryPreds))
+
+	// Candidate bindings collected during the placeholder loop, finalized only
+	// after the scan prefix is computed (see the reconciliation after the loop).
+	var pendingSargables []pendingSargable
 
 	for _, candPred := range candidatePreds {
 		ph, ok := candPred.(*predicates.Placeholder)
@@ -386,6 +413,39 @@ func matchSingleSourceAgainstSelect(
 			if !ok {
 				continue
 			}
+			if matchedQueryPreds[queryPred] {
+				continue // already bound to an earlier placeholder
+			}
+
+			// Only sargable comparison types can bind to an index scan
+			// constraint: value-index range types (= and binary inequalities
+			// + STARTS_WITH) OR a vector DISTANCE_RANK bound. IN, IS NULL,
+			// NOT EQUALS, LIKE, etc. cannot be a contiguous FDB range —
+			// ComparisonRange.Merge would mis-classify them as an inequality
+			// range (a bogus [<>] scan returning the wrong rows). They must
+			// stay residual (or, for IN, take the explode→InJoin path).
+			if !isSargableComparisonForMatch(cp.Comparison.Type) {
+				continue
+			}
+
+			// The candidate-column operand must be a column of the source
+			// being matched (queryQs[0]), not an outer correlation. valuesMatchColumn
+			// compares FieldValues by field NAME only (the bound alias map isn't
+			// built until after this step), so a join predicate like
+			// `Customer.id = Order.customer_id`, when matching the ORDER source,
+			// has its OUTER operand (Customer.id) on this side and would spuriously
+			// bind to Order's same-named PK column (id) — seeking Order.id =
+			// Customer.id, which is the wrong column and returns 0 rows
+			// (TestFDB_InnerJoin). The query-side correlation and matchedQ.alias
+			// share the table-alias namespace (7.1), so reject an operand whose
+			// correlations exclude the matched source. Flat FieldValues (no
+			// correlation) are assumed to be over the matched source.
+			opCorr := values.GetCorrelatedToOfValue(cp.Operand)
+			if len(opCorr) > 0 {
+				if _, ofSource := opCorr[queryQs[0].GetAlias()]; !ofSource {
+					continue
+				}
+			}
 
 			// Check if the ComparisonPredicate's operand references
 			// the same column as the Placeholder's value. Comparison
@@ -393,6 +453,16 @@ func matchSingleSourceAgainstSelect(
 			// FieldValue, full expression tree for complex values).
 			if !valuesMatchColumn(cp.Operand, ph.GetValue()) {
 				continue
+			}
+
+			// Don't push a type-incompatible comparison (e.g. a BIGINT
+			// column vs a string literal) into a scan range — it must
+			// surface as a residual so the executor raises the type error,
+			// not silently produce an empty range. Mirrors the rule's guard.
+			if fv, ok := cp.Operand.(*values.FieldValue); ok {
+				if !comparisonTypesCompatible(fv, &cp.Comparison) {
+					continue
+				}
 			}
 
 			// Merge the comparison into a ComparisonRange.
@@ -403,13 +473,11 @@ func matchSingleSourceAgainstSelect(
 
 			paramBindings[ph.GetParameterAlias()] = mr.Range
 			matched = true
-			boundCount++
-
-			// Record the predicate mapping.
-			mapping := RegularMappingBuilder(cp, cp, ph).
-				SetSargable(ph.GetParameterAlias(), mr.Range).
-				Build()
-			predicateMapBuilder.Put(cp, mapping)
+			matchedQueryPreds[queryPred] = true
+			// Defer the sargable mapping until after the scan prefix is known
+			// (see reconciliation below): a binding the candidate cannot consume
+			// into its prefix must become a residual, not a dropped sargable.
+			pendingSargables = append(pendingSargables, pendingSargable{ph: ph, cp: cp, rng: mr.Range})
 			break
 		}
 
@@ -417,6 +485,56 @@ func matchSingleSourceAgainstSelect(
 			// Unbound Placeholder — index column is unconstrained.
 			paramBindings[ph.GetParameterAlias()] = predicates.EmptyComparisonRange()
 		}
+	}
+
+	// Reconcile bindings against the actual scan prefix. A comparison can match a
+	// placeholder (right column, sargable type) yet not be consumable as a scan
+	// constraint: a vector PARTITION inequality (the prefix is equality-leading
+	// only), or a column whose leading prefix column is unbound (a positional
+	// prefix cannot fix column N while column N-1 ranges free). Java's prefix
+	// extraction stops at the same boundary. Such a binding must be re-applied as
+	// a RESIDUAL filter, never silently dropped — dropping it returns wrong rows
+	// (TestFDB_VectorSearch_MultiPartition_InequalityResidual: `region > 'r1'`
+	// excluded the wrong partition) or hides an unplannable index-only composite.
+	// ComputeBoundParameterPrefixMap is the single source of truth for what the
+	// scan can actually constrain; the distance (index-only) binding it always
+	// retains stays sargable.
+	prefix := candidate.ComputeBoundParameterPrefixMap(paramBindings)
+	for _, pb := range pendingSargables {
+		if _, inPrefix := prefix[pb.ph.GetParameterAlias()]; inPrefix {
+			mapping := RegularMappingBuilder(pb.cp, pb.cp, pb.ph).
+				SetSargable(pb.ph.GetParameterAlias(), pb.rng).
+				Build()
+			predicateMapBuilder.Put(pb.cp, mapping)
+			boundCount++
+		} else {
+			// Not consumable into the scan prefix → reclassify as residual.
+			delete(matchedQueryPreds, predicates.QueryPredicate(pb.cp))
+			paramBindings[pb.ph.GetParameterAlias()] = predicates.EmptyComparisonRange()
+		}
+	}
+
+	// Residual predicates: any query predicate not bound to a placeholder
+	// must be re-applied as a filter over the index scan (Java's residual
+	// PredicateMapping with PredicateCompensationFunction.ofPredicate). A
+	// match is produced even if EVERY predicate is residual (Java
+	// SelectExpression.subsumedBy always produces the match; the resulting
+	// full-index-scan is dominated by the table scan via cost/Pareto
+	// pruning). Without this, the residual would be silently dropped →
+	// wrong rows.
+	residualCount := 0
+	for _, queryPred := range queryPreds {
+		if matchedQueryPreds[queryPred] {
+			continue
+		}
+		residualPred := queryPred
+		mapping := RegularMappingBuilder(
+			residualPred,
+			residualPred,
+			predicates.NewConstantPredicate(predicates.TriTrue),
+		).SetPredicateCompensation(reapplyResidualCompensation(residualPred)).Build()
+		predicateMapBuilder.Put(residualPred, mapping)
+		residualCount++
 	}
 
 	// Step 3: Build alias map incorporating child aliases +
@@ -430,7 +548,7 @@ func matchSingleSourceAgainstSelect(
 	// (shouldn't happen in the single-source seed). A nil result
 	// with bound predicates means we hit a mapping conflict — bail.
 	var predMultiMap *PredicateMultiMap
-	if boundCount > 0 {
+	if boundCount > 0 || residualCount > 0 {
 		predMap := predicateMapBuilder.BuildMaybe()
 		if predMap == nil {
 			return
@@ -438,12 +556,20 @@ func matchSingleSourceAgainstSelect(
 		predMultiMap = &predMap.PredicateMultiMap
 	}
 
+	// MaxMatchMap between the query's result value and the candidate
+	// SelectExpression's result value (Java SelectExpression.subsumedBy).
+	// Mandatory — see buildMatchMaxMatchMap.
+	mmm := buildMatchMaxMatchMap(
+		queryExpr.GetResultValue(),
+		candidateSelect.GetResultValue(),
+		boundAliasMap,
+	)
 	mi := NewRegularMatchInfo(
 		paramBindings,          // parameterBindingMap
 		boundAliasMap,          // bindingAliasMap
 		predMultiMap,           // predicateMap
 		nil,                    // matchedOrderingParts
-		nil,                    // maxMatchMap
+		mmm,                    // maxMatchMap
 		EmptyGroupByMappings(), // groupByMappings
 		nil,                    // rollUpToGroupingValues
 		nil,                    // additionalPlanConstraint

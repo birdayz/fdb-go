@@ -27,6 +27,7 @@ go_library(
         "match_candidate_index.go",
         "match_candidate_interfaces.go",
         "match_info.go",
+        "match_max_match_map.go",
         "match_partition.go",
         "matched_ordering_part.go",
         "max_match_map.go",

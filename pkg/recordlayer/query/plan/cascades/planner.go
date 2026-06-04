@@ -184,9 +184,19 @@ func (p *Planner) OptimizeGroup(ref *expressions.Reference, props expressions.Ph
 		return w
 	}
 
-	// No ordering required → just pick cheapest overall.
+	// No ordering required → just pick cheapest overall. A nil-inner Fetch
+	// shell is a push-through template whose inner is resolved at extraction;
+	// costed without it, it ranks artificially cheap and (as a join inner)
+	// makes the enclosing nested loop look free, flipping the join order onto
+	// the wrong side. Prefer a real physical alternative when one exists; fall
+	// back to the shell only when it is the sole option (extraction relinks it).
 	if props.IsEmpty() {
 		best := ref.GetBest(p.costModel)
+		if best != nil && isNilInnerFetch(best) {
+			if alt := findBestValidPhysicalExpr(ref, p.costModel); alt != nil {
+				best = alt
+			}
+		}
 		if best != nil {
 			ref.SetWinner(props, best)
 		}
@@ -426,9 +436,41 @@ func (p *Planner) costModelForPhase(phase PlannerPhase) func(a, b expressions.Re
 // from PartialMatches on the Reference. This is the Go equivalent of
 // Java's TransformMatchPartition tasks.
 func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.RelationalExpression) {
+	// Absorb candidate-side parent expressions (Select → MatchableSort)
+	// onto this ref's matches before consuming them. PLANNING-phase
+	// matches are seeded during exploration, after the phase-start
+	// AdjustMatches walk, so their matched ordering parts (which let an
+	// index scan satisfy a requested ordering and eliminate an in-memory
+	// sort) are only computed here, at consumption time. Java's
+	// AdjustMatchRule is event-driven and fires on each new match; this
+	// is the Go equivalent at the data-access boundary.
+	AdjustPartialMatchesForRef(ref)
+
 	candidates := GetPartialMatchCandidatesTyped(ref)
 	if len(candidates) == 0 {
 		return
+	}
+
+	// Drop aggregate-index candidates: they are consumed by AggregateDataAccessRule
+	// (which matches the GroupByExpression and reads the pre-aggregated value), NOT
+	// by the regular value-index data-access path. An aggregate index stores
+	// aggregated rows, not base records — matching its underlying scan here yields
+	// IndexScan(agg_index, [=]) which a StreamingAgg then re-aggregates, counting
+	// the single group row as 1 (or reading the wrong column for SUM). The match
+	// infra seeds these matches once the regular path is active; they must not be
+	// realized as record scans (TestFDB_AggregateIndexUsage count/sum_with_eq_filter).
+	{
+		filtered := candidates[:0]
+		for _, c := range candidates {
+			if _, isAgg := c.(*AggregateIndexMatchCandidate); isAgg {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			return
+		}
 	}
 
 	var requestedOrderings []*RequestedOrdering
@@ -696,6 +738,15 @@ func (t *OptimizeReferenceTask) Run(p *Planner) {
 // for that ordering's PhysicalProperties key.
 func stampOrderingWinners(ref *expressions.Reference, costModel func(a, b expressions.RelationalExpression) bool) {
 	for _, m := range ref.AllMembers() {
+		// Never stamp a nil-inner Fetch shell as a per-ordering winner: it is a
+		// push-through template whose inner is resolved only at extraction, and
+		// (costed without its inner) it ranks artificially cheap. The stamped-
+		// winner lookup paths return it without re-checking, so a spurious
+		// Fetch(<nil>) wins the ordered slot and a downstream join drives off the
+		// wrong (unordered) side. Mirrors the guard on the scan-fallback paths.
+		if isNilInnerFetch(m) {
+			continue
+		}
 		h, ok := m.(orderingHinter)
 		if !ok {
 			continue

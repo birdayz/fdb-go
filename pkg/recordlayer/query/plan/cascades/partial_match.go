@@ -196,8 +196,22 @@ func (p *PartialMatchImpl) CompensateCompleteMatch(
 	var predCompKeys []predicates.QueryPredicate
 	var predCompVals []PredicateCompensationFunc
 
-	if sel, ok := p.queryExpression.(*expressions.SelectExpression); ok {
-		for _, pred := range sel.GetPredicates() {
+	// Predicate compensation applies to any query expression that carries
+	// predicates — a SelectExpression OR a LogicalFilterExpression. Java
+	// has only SelectExpression (filters ARE Selects); Go's matching path
+	// (matchSingleSourceAgainstSelect) already treats both uniformly, so
+	// compensation must too. Gating on *SelectExpression alone silently
+	// dropped residual filters on a bare LogicalFilter query (wrong rows).
+	if pp, ok := p.queryExpression.(interface {
+		GetPredicates() []predicates.QueryPredicate
+	}); ok {
+		// Flatten conjuncts to match how matchSingleSourceAgainstSelect
+		// built the predicate map (it keys by flattenConjuncts sub-
+		// predicates). Iterating the un-flattened predicates here would
+		// look up an AndPredicate that isn't a map key, silently dropping
+		// the residual compensation for every conjunct (a multi-predicate
+		// WHERE/QUALIFY lost its non-sargable conjunct → wrong rows).
+		for _, pred := range flattenConjuncts(pp.GetPredicates()) {
 			mappings := predicateMap.Get(pred)
 			if len(mappings) == 0 {
 				continue

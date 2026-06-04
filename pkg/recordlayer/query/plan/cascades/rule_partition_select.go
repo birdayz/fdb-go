@@ -224,7 +224,16 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		var deeplyCorrelatedPredicates []predicates.QueryPredicate
 
 		for _, pred := range flattenConjuncts(sel.GetPredicates()) {
+			// Augment the correlation set with SEED JoinMergeAllValue source
+			// aliases (GetCorrelatedToOfPredicate hides them — see
+			// AddMergeSeedAliases). Without this, a predicate reading a buried
+			// table's column through a seed merge (e.g. join_merge_all.B_AID)
+			// reports only its non-merge side, so a predicate spanning both
+			// partition halves is misclassified as lower-only and pushed below
+			// the merge to a leaf scan where the buried alias is unbound — the
+			// 0-row dual-correlation join (TestFDB_JoinMerge_OuterColumn_NotDropped).
 			correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
+			predicates.AddMergeSeedAliases(pred, correlatedTo)
 			correlatedToLower := intersectAliases(lowerAliases, correlatedTo)
 			correlatedToUpper := intersectAliases(upperAliases, correlatedTo)
 

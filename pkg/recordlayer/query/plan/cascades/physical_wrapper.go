@@ -194,6 +194,27 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	return nil
 }
 
+// findBestPhysicalPlan returns the cheapest VALID physical member's plan
+// (excluding nil-inner Fetch shells) — the cost winner — for a push-through
+// WithChildren whose inner must relink to the winner rather than to whichever
+// physical member was yielded first. ref.AllMembers() interleaves exploratory
+// and final members in yield order, so "first physical" can be a dominated
+// alternative; when ordering constraints add ordered variants the first-yielded
+// member flips and the enforcer relinks onto the wrong (worse) join order
+// (RFC-076 TestFDB_JoinSelPred_Repro). Falls back to findPhysicalPlan (any
+// physical member, even a nil-inner shell) so a sole-template ref still relinks.
+func findBestPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
+	if ref == nil {
+		return nil
+	}
+	if best := findBestValidPhysicalExpr(ref, nil); best != nil {
+		if ph, ok := best.(physicalPlanExpression); ok {
+			return ph.GetRecordQueryPlan()
+		}
+	}
+	return findPhysicalPlan(ref)
+}
+
 // findPhysicalExpr scans ref's members for the first physical-plan
 // expression and returns it as a RelationalExpression. Used by
 // implement rules to obtain the existing wrapper (already memoized

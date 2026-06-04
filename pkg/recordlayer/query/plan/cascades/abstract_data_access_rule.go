@@ -69,18 +69,18 @@ func PrepareMatchesAndCompensations(
 		}
 
 		satisfying, scanDir := SatisfiesAnyRequestedOrderings(pm, requestedOrderings)
-		if satisfying == nil && len(requestedOrderings) > 0 {
-			// Requested orderings exist but the match satisfies none.
-			// Java skips all such matches (no in-memory sort fallback).
-			// Go extension: keep the match if it produces a restricted
-			// scan (non-empty bound parameter prefix). These are
-			// selective index lookups that ImplementInMemorySortRule can
-			// wrap, often far cheaper than an ordered full table scan.
-			// Matches with empty prefix (full index scans) are skipped —
-			// they provide neither selectivity nor ordering.
-			if !hasRestrictedScan(pm) {
-				continue
-			}
+		// Skip a zero-prefix match (empty bound parameter prefix → a full
+		// index scan) UNLESS it provides a requested ordering. A full index
+		// scan with neither selectivity nor an ordering benefit is strictly
+		// dominated by the full table scan + residual filter the planner
+		// already has, and producing one per index lets a full scan of an
+		// unrelated index (e.g. IDX_AMOUNT for a WHERE on customer_id) win
+		// over the correct point lookup. ImplementIndexScanRule skips these
+		// the same way (len(prefix) == 0 → continue); the data-access path
+		// must too. (A restricted scan, or a zero-prefix scan that satisfies
+		// the ORDER BY, IS kept — the latter for ordered full-index scans.)
+		if satisfying == nil && !hasRestrictedScan(pm) {
+			continue
 		}
 
 		// Required-for-binding gate (Java AbstractDataAccessRule line 665):
@@ -299,21 +299,37 @@ func DataAccessForMatchPartition(
 
 		// Determine if the index is covering: no result compensation
 		// needed means all output fields are available from the index.
+		cand := pm.GetMatchCandidate()
 		isCovering := !comp.IsFinalNeeded()
 		var coveringCols []string
 		if isCovering {
-			coveringCols = pm.GetMatchCandidate().GetColumnNames()
+			coveringCols = cand.GetColumnNames()
 		}
-		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols)
+		// Propagate the candidate's unique flag + column order onto the
+		// scan wrapper, exactly as OrderedIndexScanRule does. These drive
+		// the cost model (a unique index with all columns equality-bound
+		// has provable max-cardinality 1 → cheapest point lookup) and the
+		// ordering property (sort elimination). Omitting them made the
+		// data-access scan look non-unique/unordered, so a non-unique
+		// index could beat the unique one and sorts weren't eliminated.
+		unique := false
+		if u, ok := cand.(interface{ IsUnique() bool }); ok {
+			unique = u.IsUnique()
+		}
+		var expr expressions.RelationalExpression = wrapScanPlanWithCoverage(plan, isCovering, coveringCols, unique, cand.GetColumnNames())
 
 		if comp.IsNeeded() {
 			if fmc, ok := comp.(*ForMatchCompensation); ok {
-				// Java passes TranslationMap.ofAliases(candidateTopAlias, realizedAlias)
-				// to rebase compensated predicates from the candidate's alias to the
-				// physical plan's alias. With flat FieldValues (no correlation), the
-				// empty map is correct. When C-5 full FieldValue wiring lands, this
-				// needs a real map: candidateTopAlias → quantifier alias of expr.
-				expr = fmc.ApplyAllNeeded(expr, EmptyTranslationMap())
+				// Java AbstractDataAccessRule.applyCompensationForSingleDataAccessMaybe:
+				//   compensation.applyAllNeededCompensations(memoizer, plan,
+				//       realizedAlias -> TranslationMap.ofAliases(candidateTopAlias, realizedAlias))
+				// The function receives the matched query-side ForEach alias (the
+				// realized base-quantifier alias) and rebases compensated predicates
+				// from the candidate's top alias onto it.
+				candidateTopAlias := access.GetCandidateTopAlias()
+				expr = fmc.ApplyAllNeeded(expr, func(realizedAlias values.CorrelationIdentifier) TranslationMap {
+					return TranslationMapOfAliases(candidateTopAlias, realizedAlias)
+				})
 			}
 		}
 		resultExprs = append(resultExprs, expr)
@@ -342,15 +358,30 @@ func DataAccessForMatchPartition(
 //
 // When isCovering=false, the Fetch wrapper is preserved so push-through
 // rules can optimize it (push filters below, eliminate via PushMap).
-func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string) expressions.RelationalExpression {
+// candidateScanProps returns the unique flag and index column order for a
+// match's candidate, for propagation onto the scan wrapper.
+func candidateScanProps(cand MatchCandidate) (unique bool, columnNames []string) {
+	if cand == nil {
+		return false, nil
+	}
+	if u, ok := cand.(interface{ IsUnique() bool }); ok {
+		unique = u.IsUnique()
+	}
+	return unique, cand.GetColumnNames()
+}
+
+// wrapAccessScan wraps a per-access scan plan, propagating the access's
+// candidate unique flag + column order (used by the intersection branches).
+func wrapAccessScan(access *SingleMatchedAccess, plan plans.RecordQueryPlan) expressions.RelationalExpression {
+	unique, columnNames := candidateScanProps(access.GetPartialMatch().GetMatchCandidate())
+	return wrapScanPlanWithCoverage(plan, false, nil, unique, columnNames)
+}
+
+func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, coveringColumns []string, unique bool, columnNames []string) expressions.RelationalExpression {
 	if fetchPlan, ok := plan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
 		if innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan); ok {
-			if isCovering {
-				covered := innerIdx.WithCovering(coveringColumns)
-				return &physicalIndexScanWrapper{plan: covered, covering: true}
-			}
-			// Non-covering: preserve the fetch wrapper.
-			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx}
+			_ = coveringColumns
+			idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, unique: unique, columnNames: columnNames}
 			idxRef := expressions.InitialOf(idxWrapper)
 			fetchQ := expressions.ForEachQuantifier(idxRef)
 			return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
@@ -360,7 +391,7 @@ func wrapScanPlanWithCoverage(plan plans.RecordQueryPlan, isCovering bool, cover
 		if isCovering {
 			idxPlan = idxPlan.WithCovering(coveringColumns)
 		}
-		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering}
+		return &physicalIndexScanWrapper{plan: idxPlan, covering: isCovering, unique: unique, columnNames: columnNames}
 	}
 	if vecPlan, ok := plan.(*plans.RecordQueryVectorIndexPlan); ok {
 		return &physicalVectorIndexScanWrapper{plan: vecPlan}
@@ -443,11 +474,14 @@ func boundPredicateCount(pm PartialMatch) int {
 // provide no selectivity advantage and should not be accepted as
 // unordered alternatives.
 func hasRestrictedScan(pm PartialMatch) bool {
-	pmi, ok := pm.(*PartialMatchImpl)
-	if !ok {
+	// Interface-based (not *PartialMatchImpl) so it also works for test
+	// doubles. The bound parameter prefix map = the regular match info's
+	// parameter binding map, fed through the candidate's prefix computer.
+	rmi := pm.GetRegularMatchInfo()
+	if rmi == nil {
 		return false
 	}
-	bindings := pmi.GetBoundParameterPrefixMap()
+	bindings := rmi.GetParameterBindingMap()
 	prefix := pm.GetMatchCandidate().ComputeBoundParameterPrefixMap(bindings)
 	return len(prefix) > 0
 }
