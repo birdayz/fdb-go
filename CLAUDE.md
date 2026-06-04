@@ -57,6 +57,10 @@ If you can't write the e2e test, the feature isn't done. Period.
 
 **NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
 
+## QUERY-ENGINE CHANGES REQUIRE A GRAEFE ACK — RFC AND IMPL
+
+**Any change to the Cascades query engine (planner, optimizer, cost model, matching/data-access infra, physical wrappers, executor) needs a Graefe ACK on BOTH the RFC and the implementation before merge. Never merge a query-engine change Graefe hasn't reviewed.** Torvalds + @claude + codex are the other gates — don't ship with a NAK from any; re-request after every commit (an ACK only covers the HEAD it reviewed). Holds always-on, not just when a skill is loaded; mechanics in `.claude/skills/query-engine/` (impl) and `.claude/skills/todo-worker/` (RFC). PR #201 shipped a latent 0-row planner bug because it skipped Graefe.
+
 ---
 
 Port `fdb-record-layer-core` from Java to Go with full wire compatibility — Go and Java apps must read/write each other's records and share the same FDB cluster. SQL/relational layer features (UDFs, views, synthetic record types, fdb-relational-*) are out of scope unless a TODO entry calls for them; protobuf round-trips them via unknown-field preservation.
