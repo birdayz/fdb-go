@@ -176,20 +176,31 @@ For correlated scalar subqueries (Go-only extension, Java rejects at grammar lev
 
 NLJ wrapper correlation propagation (walks predicates) is already correct and active.
 
-### 7.5 Structural interning key for re-enumerated join sub-products (RFC-043 follow-up)
+### 7.5 + 7.6 (HOLISTIC — RFC-077): Source-anchored join result + structural interning
 
-`PartitionSelectRule.mergeQuantifierAlias` (RFC-043) synthesizes a **string** quantifier
-alias (`$m_<len>:<name>...`, netstring-injective) so that identical merged join
-sub-products reached from different bipartitions wrap under the same alias and intern to
-one memo Reference. This string-alias-as-interning-key is a workaround for the absence of
-true structural/alias-aware memo equality on the re-enumeration path — and it has already
-produced two bugs (order-dependence, then non-injectivity on `_`-containing names; both
-fixed + pinned). Graefe + Torvalds both flagged it as a non-blocking smell: the right key
-is the memo's structural/hash equality over the live-alias SET (RFC-039/040 `MemoEqual` /
-alias-invariant `HashCodeWithoutChildren`), not a hand-rolled serialization. Replace the
-synthesized stable alias with structural interning when the ≥5-way enumeration-efficiency
-work lands (it ties into RFC-039 broad memo merging). Until then: do NOT expand the string
-scheme further. Scoped to the deferred ≥5-way path; 4-way is unaffected.
+**Bundled per maintainer decision (2026-06-04):** 7.5 (structural interning key) and 7.6
+(source-anchored field pull-up) are two facets of ONE change — retire the opaque, name-keyed
+join-merge apparatus (`JoinMergeResultValue`/`JoinMergeAllValue`, `composeFieldOverJoinMerge`,
+the string `mergeQuantifierAlias`) for **anchored access**: the translator + re-enumeration emit
+`RecordConstructorValue` of `FieldValue(QOV(legAlias), col)`, resolved by the existing
+`composeFieldOverConstructor`. RFC-073 GATED 7.6 on 7.5 (a circular "anchor only the binary join =
+split-brain"); doing them as one migration breaks that deadlock, and **7.5's structural interning
+falls out for free** — the anchored RC is canonical (one type, alias-set-keyed), so it interns
+structurally via RFC-039/040 `MemoEqual`, retiring the synthetic string `mergeQuantifierAlias`
+(measured load-bearing today *because* the merge is opaque; anchoring removes that).
+
+**Design unlock (RFC-077):** Go's `RecordConstructorValue.Evaluate` produces a NAME-keyed map
+(`values.go:2148`), so Go uses **name-based anchored resolution** — NOT Java's full ordinal-substrate
+machinery (`FieldValue.ofOrdinalNumber`). Smaller, cleaner, Go-adapted (the sanctioned
+"diverge when strictly better + clean" path). `composeFieldOverConstructor` simplifies field
+accesses at plan time so the RC rarely survives to runtime; consumers reading the old
+bare+`ALIAS.COL` keys (`cascades_generator.go:1890` column derivation, `executor.go:1434 mergeRows`,
+`streaming_cursors.go`) move to the anchored RC's field keys. This addresses Torvalds' RFC-073
+NAK (the Evaluate-shape change) via the name-keyed-map + compile-time-simplification design.
+
+7.5/7.6 history (the prior split, RFC-073's deferred analysis, the Graefe direction + Torvalds NAK)
+is preserved in `rfcs/073-source-anchored-join-result.md`; RFC-077 supersedes it as the holistic
+plan.
 
 ### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
 
@@ -212,36 +223,21 @@ so there is **no live bug** — but the layering is a smell whose root is the du
 implementation through a single data-access rule backed by `Compensation`, at which point the
 implement-layer guard AND the final-plan validation delete themselves and the property is enforced
 once, as in Java. See DIVERGENCES.md "ImplementIndexScanRule is a Go-only second index-scan path".
-Not urgent.
+  - **RFC-076 written + ACK'd (Graefe + Torvalds), committed `e8740102`.** Root pinned by
+    instrumentation: the real-path gap is NARROW (5 FDB tests, not the ~20 synthetic-candidate unit
+    failures) — `matchLeafWithCandidate` doesn't form a value-index PartialMatch (the query
+    `FullUnorderedScan` doesn't `EqualsWithoutChildren` the candidate's `ExpandValueIndex` leaf), so
+    the data-access path emits no value-index scan and `ImplementIndexScanRule` is the sole producer.
+    `ImplementFilterRule` STAYS (faithful Java port — v1's "Go-only" premise was wrong). Impl:
+    fix value-index leaf matching → 5 tests green with the rule disabled → retire the rule + its
+    guard + the final-plan validation (verify-gated). Separate PR from RFC-077 (different subsystem).
 
-### 7.6 Source-anchored field pull-up — retire `composeFieldOverJoinMerge` (RFC-044 follow-up)
+### 7.6 — MERGED into 7.5+7.6 (RFC-077)
 
-Multi-source pull-up (pullup.go:71-78) produces **bare** `FieldValue`s with no source
-anchoring, where Java produces `FieldAccessValue(QuantifiedObjectValue(alias), field)` to
-disambiguate the owning quantifier. The Go-only `JoinMergeResultValue` +
-`composeFieldOverJoinMerge` band-aid re-derives the anchoring after the fact and, absent
-the side info, hard-codes the inner side. RFC-044 made that sound-by-invariant (the merge
-is re-flowed under the inner alias, so only inner-side bare fields reach the rule) + added
-a qualified-field fail-safe + an E2E sentinel (`TestFDB_JoinMerge_OuterColumn_NotDropped`),
-so there is **no live bug**. The Java-aligned root fix is to anchor fields to their source
-during pull-up so the opaque-merge ambiguity never exists, retiring the rule and the
-bare/qualified distinction entirely. Graefe-endorsed; not urgent. Do this with (or before)
-the typed join-result migration that replaces `JoinMergeResultValue` with a schema-bearing
-record constructor à la Java.
-  - **RFC-073 (Deferred) scoped this; the review GATED it on 7.5.** Graefe ACK'd the direction
-    (translator emits `RecordConstructorValue` of `FieldValue(QOV(legAlias), col)`, resolved by the
-    existing `composeFieldOverConstructor`; **end state = pure anchored access**, no runtime
-    qualified-key map) but requires **7.5 (RFC-043 alias-merge interning) FIRST**: the N-ary
-    `JoinMergeAllValue` + `rule_partition_select.go` re-enumeration is the same opaque convention
-    and intern/hash/equality (`semantic_hash.go`/`semantic_equals.go`/`map_field_values.go`/
-    `value_correlation.go`) key on it — anchoring only the binary join is a "split brain."
-    Torvalds NAK'd the as-written scope: `RecordConstructorValue.Evaluate` yields a *nested
-    column-name map*, a different shape from the flat bare+`ALIAS.COL` map every consumer reads,
-    so consumers must move to anchored access (the real work, not a thin equivalence shim); extra
-    direct consumers (`cascades_generator.go:1890`, `executor.go:1434 mergeRows`,
-    `streaming_cursors.go`) must be ported; and the no-live-bug payoff doesn't justify the
-    plan+execution+interning blast radius now. **Sequencing: 7.5 → 7.6** (7.5 itself gated on the
-    ≥5-way enumeration-efficiency work). See `rfcs/073-source-anchored-join-result.md`.
+7.6 (source-anchored field pull-up / retire `composeFieldOverJoinMerge`) is no longer a separate
+item: it is the same change as 7.5 (anchored RC retires the opaque merge → structural interning
+falls out). See the holistic **7.5 + 7.6 (RFC-077)** entry above. RFC-073's deferred analysis is
+the historical record.
 
 ---
 
