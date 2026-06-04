@@ -187,6 +187,7 @@ go_test(
         "indexing_heartbeat_test.go",
         "indexing_range_set_test.go",
         "indexing_throttle_test.go",
+        "intersection_resume_test.go",
         "key_expr_bug_verify_test.go",
         "key_expression_compiled_test.go",
         "key_expression_proto_test.go",

@@ -119,27 +119,12 @@ func executeMultiIntersection(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	// The multi-intersection cursor emits a correct per-child continuation
-	// (buildIntersectionContinuation), but this executor does not yet decode it
-	// to resume each child from its saved position — it would start every child
-	// from nil and silently restart, duplicating rows on a limit/transaction-split
-	// resume (codex review; tracked as TODO P2.3, shared with executeIntersection).
-	// Until that decode is wired, fail LOUDLY on a resume rather than returning
-	// wrong results. Benign for typical aggregates (few groups, one pass, no resume).
-	if len(continuation) > 0 {
-		return nil, fmt.Errorf("multi-aggregate intersection (GROUP BY) does not support continuation-based resumption yet (TODO P2.3); the result must fit in a single scan pass")
-	}
-
-	cursors := make([]recordlayer.RecordCursor[QueryResult], len(children))
-	for i, child := range children {
-		c, err := ExecutePlan(ctx, child, store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
-			for _, prev := range cursors[:i] {
-				prev.Close()
-			}
-			return nil, err
-		}
-		cursors[i] = c
+	// Decode the per-child IntersectionContinuation and resume each child from
+	// its saved position (RFC-071) — shared with executeIntersection. Replaces
+	// the prior loud-error guard on a non-nil continuation.
+	cursors, resume, err := buildIntersectionChildCursors(ctx, children, store, evalCtx, continuation, props)
+	if err != nil {
+		return nil, err
 	}
 
 	keyVals := p.GetComparisonKey()
@@ -149,7 +134,7 @@ func executeMultiIntersection(
 	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
 	// the regular intersection keeps only the first child, which would drop
 	// every aggregate but the first.
-	innerCursor := recordlayer.IntersectionMulti(cursors, compKeyFunc, false)
+	innerCursor := recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
 
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,

@@ -1252,30 +1252,62 @@ func executeIntersection(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	// Children start from nil continuation. The intersectionCursor builds
-	// per-child IntersectionContinuation protos internally, but resuming
-	// from a parent-level continuation requires deserializing the proto
-	// and splitting per-child bytes — not yet wired. The old hash-based
-	// approach had the same limitation (passed raw continuation to all
-	// children, which was semantically wrong).
-	cursors := make([]recordlayer.RecordCursor[QueryResult], len(inners))
-	for i, inner := range inners {
-		c, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
-			for _, prev := range cursors[:i] {
-				prev.Close()
-			}
-			return nil, err
-		}
-		cursors[i] = c
+	cursors, resume, err := buildIntersectionChildCursors(ctx, inners, store, evalCtx, continuation, props)
+	if err != nil {
+		return nil, err
 	}
 
 	keyVals := p.GetComparisonKeyValues()
 	compKeyFunc := intersectionCompKeyFunc(keyVals)
 	return applySkipLimit(
-		recordlayer.Intersection(cursors, compKeyFunc, false),
+		recordlayer.IntersectionResume(cursors, compKeyFunc, false, resume),
 		props.Skip, props.ReturnedRowLimit,
 	), nil
+}
+
+// buildIntersectionChildCursors decodes a parent IntersectionContinuation into
+// per-child resume states (RFC-071) and creates one cursor per child:
+//   - START (!Started): ExecutePlan with a nil continuation (begin fresh),
+//   - MID (Started + bytes): ExecutePlan resuming from the per-child bytes,
+//   - END (Started + empty): an empty cursor — the child is exhausted, which
+//     ends the intersection immediately (any exhausted child ends it).
+//
+// The returned resume slice seeds each child's mergeChildState continuation
+// (via IntersectionResume) so the next checkpoint re-encodes MID/END/START
+// children correctly. With a nil/empty incoming continuation every child is
+// START (unchanged first-page behavior). Shared by executeIntersection and
+// executeMultiIntersection.
+func buildIntersectionChildCursors(
+	ctx context.Context,
+	inners []plans.RecordQueryPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) ([]recordlayer.RecordCursor[QueryResult], []recordlayer.IntersectionChildResume, error) {
+	resume, err := recordlayer.DecodeIntersectionContinuation(continuation, len(inners))
+	if err != nil {
+		return nil, nil, err
+	}
+	childProps := props.ClearSkipAndLimit()
+	cursors := make([]recordlayer.RecordCursor[QueryResult], len(inners))
+	for i, inner := range inners {
+		if resume[i].Started && len(resume[i].Continuation) == 0 {
+			cursors[i] = recordlayer.Empty[QueryResult]() // END: exhausted child
+			continue
+		}
+		c, cerr := ExecutePlan(ctx, inner, store, evalCtx, resume[i].Continuation, childProps)
+		if cerr != nil {
+			for _, prev := range cursors[:i] {
+				if prev != nil {
+					prev.Close()
+				}
+			}
+			return nil, nil, cerr
+		}
+		cursors[i] = c
+	}
+	return cursors, resume, nil
 }
 
 // intersectionCompKeyFunc builds a ComparisonKeyFunc that extracts a
