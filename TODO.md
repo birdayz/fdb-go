@@ -223,14 +223,37 @@ so there is **no live bug** — but the layering is a smell whose root is the du
 implementation through a single data-access rule backed by `Compensation`, at which point the
 implement-layer guard AND the final-plan validation delete themselves and the property is enforced
 once, as in Java. See DIVERGENCES.md "ImplementIndexScanRule is a Go-only second index-scan path".
-  - **RFC-076 written + ACK'd (Graefe + Torvalds), committed `e8740102`.** Root pinned by
-    instrumentation: the real-path gap is NARROW (5 FDB tests, not the ~20 synthetic-candidate unit
-    failures) — `matchLeafWithCandidate` doesn't form a value-index PartialMatch (the query
-    `FullUnorderedScan` doesn't `EqualsWithoutChildren` the candidate's `ExpandValueIndex` leaf), so
-    the data-access path emits no value-index scan and `ImplementIndexScanRule` is the sole producer.
-    `ImplementFilterRule` STAYS (faithful Java port — v1's "Go-only" premise was wrong). Impl:
-    fix value-index leaf matching → 5 tests green with the rule disabled → retire the rule + its
-    guard + the final-plan validation (verify-gated). Separate PR from RFC-077 (different subsystem).
+  - **RFC-076 v3 ACK'd (Graefe + Torvalds), committed `75bf8d17`. v2's leaf-matching diagnosis was
+    FALSIFIED by empirical reproduction.** Disabling `ImplementIndexScanRule` + tracing shows the
+    match infra fires correctly (leaf scan↔scan `EqualsWithoutChildren=true`; `matchSingleSourceAgainstSelect`
+    binds the predicate to the candidate Placeholder; `pushDataAccessTasks` fires) — the gap is that
+    every seed-match path builds its MatchInfo with `maxMatchMap=nil`, so `PartialMatch.PullUp`
+    (`partial_match.go:117`) returns nil → `CompensateCompleteMatch` → `ImpossibleCompensation` →
+    `DataAccessForMatchPartition` skips → ZERO scans. `ImplementIndexScanRule` is the SOLE producer.
+    `ComputeMaxMatchMap` (`max_match_map.go:167`) exists but is never called by the seeds.
+  - **WIP STASHED (`git stash list` → top of stack on this branch).** Implemented the data-access
+    completion per the Graefe-confirmed Java recipe: wire `ComputeMaxMatchMap` into the seed paths
+    (leaf uses an identity map over the candidate result value; intermediate uses query/candidate
+    result values + `NewAliasMapValueEquivalence`), residual compensation (re-apply unmatched
+    predicates as filters via `OfPredicateCompensation` — Java produces the match even when fully
+    residual), an IN-sargable guard (an IN comparison is NOT a contiguous range — leave it to the
+    explode/InJoin path), and per-ref `AdjustPartialMatchesForRef` in `pushDataAccessTasks` (matches
+    are seeded in PLANNING exploration, after the dead phase-start `AdjustMatches`, so ordering parts
+    are only computed at consume time). **Validated:** full cascades unit suite GREEN with the rule
+    enabled; 12/16 cited shape tests green with the rule disabled.
+  - **REMAINING (multi-shift, per-feature vs Java — bigger than v2 stated):** broad `just test`
+    exposes that the new (Java-correct) matches diverge from the rule's plans: (1) Go cost/Pareto
+    pruning lets a non-unique index beat the unique one + breaks index intersection (`plangen`
+    `UniqueIndexPointLookupPreferred`, `EndToEnd_IndexIntersection`); (2) `wrapScanPlanWithCoverage`
+    (`abstract_data_access_rule.go:345`) doesn't propagate the candidate `unique` flag that
+    `OrderedIndexScanRule` sets; (3) vector index-only-residual: a metric mismatch no longer raises
+    `UnplannableIndexOnlyResidualError` (4 `TestVectorPlan_*`); (4) **DELETE over-deletes** →
+    `TestFDB_DeleteOldAndLowValue` panic (correctness); (5) sort-elim ordering parts now computed but
+    the satisfaction→ordered-scan→`RemoveSort` chain is incomplete (4 `TestSortElim_*`); (6) covering
+    full-index-scan vs table scan (`TestPlanHarness` covering/range). Grind each rule-disabled,
+    red-first, aligned to Java/plandiff; do NOT one-off guess (a `boundCount==0` guard diverged from
+    Java and broke a Java-aligned unit test). THEN retire the rule + guard + final-plan validation.
+    `ImplementFilterRule` STAYS (faithful Java port). Separate PR from RFC-077.
 
 ### 7.6 — MERGED into 7.5+7.6 (RFC-077)
 
