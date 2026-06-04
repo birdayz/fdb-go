@@ -24,9 +24,20 @@ func (c *testMatchCandidate) GetRecordTypes() []string                          
 func (c *testMatchCandidate) IsUnique() bool                                     { return false }
 func (c *testMatchCandidate) GetTraversal() *Traversal                           { return c.traversal }
 func (c *testMatchCandidate) ComputeBoundParameterPrefixMap(
-	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
-	return nil
+	// Value-index-like: every non-empty bound alias is consumable as a scan
+	// prefix constraint. matchSingleSourceAgainstSelect reconciles its sargable
+	// bindings against this map (a binding absent here becomes a residual), so a
+	// faithful stub must surface the bound aliases — returning nil would
+	// reclassify every match as a residual.
+	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+	for k, v := range bindings {
+		if v != nil && !v.IsEmpty() {
+			prefix[k] = v
+		}
+	}
+	return prefix
 }
 
 func (c *testMatchCandidate) ToScanPlan(

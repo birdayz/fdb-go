@@ -8,11 +8,35 @@ import (
 // MatchCandidate on the Reference. Typed wrapper around
 // Reference.AddPartialMatch. Mirrors Java's
 // Reference.addPartialMatchForCandidate.
+//
+// Content dedup: Reference.AddPartialMatch dedups only by pointer
+// identity, but the matching rules (and the AdjustMatch absorption loop)
+// re-fire many times during PLANNING exploration, each minting a fresh
+// PartialMatch pointer for the SAME logical match. For a given
+// (queryExpression, candidateRef) the binding is deterministic — the
+// same predicates bind the same placeholders — so that pair uniquely
+// identifies the match. Without content dedup these duplicates
+// accumulate unbounded (a 2-index query reached 200+ matches), skewing
+// MaximumCoverageMatches and tripping the intersection match cap. Drop a
+// new match whose (queryExpression, candidateRef) already exists.
 func AddPartialMatchForCandidate(
 	ref *expressions.Reference,
 	candidate MatchCandidate,
 	match PartialMatch,
 ) bool {
+	pmi, ok := match.(*PartialMatchImpl)
+	if ok {
+		for _, existing := range GetPartialMatchesForCandidate(ref, candidate) {
+			epm, ok := existing.(*PartialMatchImpl)
+			if !ok {
+				continue
+			}
+			if epm.GetQueryExpression() == pmi.GetQueryExpression() &&
+				epm.GetCandidateRef() == pmi.GetCandidateRef() {
+				return false // content-equivalent match already present
+			}
+		}
+	}
 	return ref.AddPartialMatch(candidate, match)
 }
 

@@ -122,13 +122,27 @@ func matchLeafWithCandidate(
 
 	// Build a RegularMatchInfo with empty bindings — the leaf match
 	// carries no parameter bindings, no predicate mappings, and no
-	// ordering information.
+	// ordering information. The MaxMatchMap, however, is mandatory:
+	// Java's RelationalExpression.exactlySubsumedBy always computes one
+	// (between the leaf's result value and the candidate leaf's result
+	// value). Without it PartialMatch.PullUp returns nil and compensation
+	// is impossible, so the data-access path never produces a scan.
+	// The leaf subsumption above proved EqualsWithoutChildren(query,
+	// candidate): the two leaves flow the identical row. Java relates them
+	// via the leaf translationMap (query scan alias → candidate scan
+	// alias), so translatedQueryResultValue == candidateResultValue — an
+	// identity MaxMatchMap. Go's leaves carry no stable result-value alias
+	// (FullUnorderedScanExpression.GetResultValue mints a fresh QOV each
+	// call), so model the identity directly: use the candidate's result
+	// value for both sides.
+	candResult := candidateExpr.GetResultValue()
+	mmm := buildMatchMaxMatchMap(candResult, candResult, boundAliasMap)
 	mi := NewRegularMatchInfo(
 		nil,                    // parameterBindingMap
 		boundAliasMap,          // bindingAliasMap
 		nil,                    // predicateMap
 		nil,                    // matchedOrderingParts
-		nil,                    // maxMatchMap
+		mmm,                    // maxMatchMap
 		EmptyGroupByMappings(), // groupByMappings
 		nil,                    // rollUpToGroupingValues
 		nil,                    // additionalPlanConstraint

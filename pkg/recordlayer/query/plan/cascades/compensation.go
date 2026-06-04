@@ -8,6 +8,14 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// TranslationMapFunc maps a realized base-quantifier alias to a TranslationMap
+// that rebases compensated predicates/result values from the candidate's top
+// alias to that realized alias. Ports Java's
+// Function<CorrelationIdentifier, TranslationMap> passed to
+// Compensation.apply / applyFinal / applyAllNeededCompensations
+// (AbstractDataAccessRule: realizedAlias -> TranslationMap.ofAliases(candidateTopAlias, realizedAlias)).
+type TranslationMapFunc func(realizedAlias values.CorrelationIdentifier) TranslationMap
+
 // ---------------------------------------------------------------------------
 // Compensation interface
 // ---------------------------------------------------------------------------
@@ -609,21 +617,36 @@ func (c *ForMatchCompensation) String() string {
 // wrapping it with residual predicate filters. Returns the original
 // expression if no compensation is needed.
 //
-// translationMap maps matched correlation identifiers to realized
-// (physical plan) identifiers. Compensated predicates are translated
-// through this map before injection.
+// translationMapFunc, given the realized base-quantifier alias, yields a
+// TranslationMap that rebases compensated predicates from the candidate's
+// top alias to the realized alias. The realized base quantifier is created
+// with the matched query-side ForEach alias (matchedForEachAlias) — exactly
+// as Java does — so the compensation expression flows under the SAME alias
+// the surrounding query graph already correlates to. Allocating a fresh
+// alias here instead orphans the access from outer correlations (the outer
+// join's reference to the matched source no longer resolves), which is how
+// a dual-correlation join collapsed to Fetch(<nil>) and returned 0 rows.
 //
 // Ports Java's Compensation.ForMatch.apply — full implementation
 // including the else-branch (multi-join compensation with unmatched
 // ForEach quantifiers pulled up into a new SelectExpression).
 func (c *ForMatchCompensation) Apply(
 	expr expressions.RelationalExpression,
-	translationMap TranslationMap,
+	translationMapFunc TranslationMapFunc,
 ) expressions.RelationalExpression {
 	if c.childCompensation != nil && c.childCompensation.IsNeededForFiltering() {
 		if child, ok := c.childCompensation.(*ForMatchCompensation); ok {
-			expr = child.Apply(expr, translationMap)
+			expr = child.Apply(expr, translationMapFunc)
 		}
+	}
+
+	// matchedForEachAlias is the matched query-side ForEach alias (Java
+	// getMatchedForEachAlias). Both the rebase translation map and the
+	// realized base quantifier are keyed to it.
+	matchedForEachAlias := c.GetMatchedForEachAlias()
+	var translationMap TranslationMap = EmptyTranslationMap()
+	if translationMapFunc != nil && !matchedForEachAlias.IsZero() {
+		translationMap = translationMapFunc(matchedForEachAlias)
 	}
 
 	compensatedPreds := c.predicateCompensationMap.ApplyCompensations(translationMap)
@@ -667,8 +690,13 @@ func (c *ForMatchCompensation) Apply(
 		return expr
 	}
 
-	// Create the base quantifier over the compensated expression.
-	newBaseQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+	// Create the base quantifier over the compensated expression, reusing
+	// the matched query-side ForEach alias (Java: Quantifier.forEach(ref,
+	// matchedForEachAlias)). The residual predicates already reference this
+	// alias for scan-record columns, and the surrounding graph correlates to
+	// it, so reusing it keeps both linkages intact. Only fall back to a fresh
+	// alias when there is no matched ForEach (degenerate/test cases).
+	newBaseQ := newCompensationBaseQuantifier(matchedForEachAlias, expr)
 
 	if len(toBePulledUp) == 0 {
 		// Then-branch: simple filter, no join needed.
@@ -699,16 +727,24 @@ func (c *ForMatchCompensation) Apply(
 // .buildSelectWithResultValue(resultValue).
 func (c *ForMatchCompensation) ApplyFinal(
 	expr expressions.RelationalExpression,
-	translationMap TranslationMap,
+	translationMapFunc TranslationMapFunc,
 ) expressions.RelationalExpression {
 	if !c.resultCompensationFn.IsNeeded() {
 		return expr
+	}
+	matchedForEachAlias := c.GetMatchedForEachAlias()
+	var translationMap TranslationMap = EmptyTranslationMap()
+	if translationMapFunc != nil && !matchedForEachAlias.IsZero() {
+		translationMap = translationMapFunc(matchedForEachAlias)
 	}
 	resultVal := c.resultCompensationFn.ApplyCompensationForResult(translationMap)
 	if resultVal == nil {
 		return expr
 	}
-	newBaseQ := expressions.ForEachQuantifier(expressions.InitialOf(expr))
+	// Reuse the matched query-side ForEach alias for the realized base
+	// quantifier (Java: Quantifier.forEach(ref, matchedForEachAlias)), so the
+	// translated result value (keyed to that alias) resolves against it.
+	newBaseQ := newCompensationBaseQuantifier(matchedForEachAlias, expr)
 	builder := NewGraphExpansionBuilder()
 	builder.AddQuantifier(newBaseQ)
 	expansion := builder.Build()
@@ -723,15 +759,29 @@ func (c *ForMatchCompensation) ApplyFinal(
 // Ports Java's Compensation.applyAllNeededCompensations.
 func (c *ForMatchCompensation) ApplyAllNeeded(
 	expr expressions.RelationalExpression,
-	translationMap TranslationMap,
+	translationMapFunc TranslationMapFunc,
 ) expressions.RelationalExpression {
 	if c.IsNeededForFiltering() {
-		expr = c.Apply(expr, translationMap)
+		expr = c.Apply(expr, translationMapFunc)
 	}
 	if c.IsFinalNeeded() {
-		expr = c.ApplyFinal(expr, translationMap)
+		expr = c.ApplyFinal(expr, translationMapFunc)
 	}
 	return expr
+}
+
+// newCompensationBaseQuantifier builds the ForEach quantifier that the
+// compensation expression ranges over. When the compensation has a matched
+// query-side ForEach alias, that alias is reused (Java
+// Quantifier.forEach(ref, matchedForEachAlias)) so the compensated predicates
+// and the surrounding query graph keep resolving against the same alias. The
+// degenerate no-matched-ForEach case (test doubles) falls back to a fresh
+// alias.
+func newCompensationBaseQuantifier(matchedForEachAlias values.CorrelationIdentifier, expr expressions.RelationalExpression) expressions.Quantifier {
+	if matchedForEachAlias.IsZero() {
+		return expressions.ForEachQuantifier(expressions.InitialOf(expr))
+	}
+	return expressions.NamedForEachQuantifier(matchedForEachAlias, expressions.InitialOf(expr))
 }
 
 // Intersect combines this compensation with another by keeping only

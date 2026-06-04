@@ -26,6 +26,7 @@ go_test(
         "ambiguous_column_star_test.go",
         "cascades_fdb_test.go",
         "correlated_exists_crossjoin_test.go",
+        "covering_index_test.go",
         "dml_cascades_fdb_test.go",
         "dml_probe_test.go",
         "driver_test.go",

@@ -81,6 +81,23 @@ func (w *physicalFlatMapWrapper) HintCost(child []properties.Cost, _ properties.
 	return flatMapCost(child[0], child[1])
 }
 
+// HintOrdering conservatively reports NO known ordering.
+//
+// A FlatMap (nested loop) IS ordered by its outer (the inner only sub-orders
+// within each outer group), so it is tempting to propagate the outer's ordering
+// to enable ORDER-BY-on-outer-key sort elimination. But scanning the outer
+// Reference's members and returning the first KNOWN ordering is unsound (codex
+// P1 / @claude finding 4): `w.plan` executes a SPECIFIC outer plan captured when
+// the FlatMap was built, which need not be the member whose ordering is reported
+// — so an ORDER BY could be considered satisfied and the sort removed while the
+// emitted rows are not actually ordered. Reporting Unknown is the correct,
+// conservative behavior (it never removes a sort that is actually needed).
+//
+// Correct outer-ordering propagation — derived from w.plan's ACTUAL outer plan,
+// not an arbitrary Reference member — lands with the ordering-constraint pass
+// (RFC-076 step 3a), where requested orderings reach the scan and sort
+// elimination through joins becomes live. Pre-PR behavior was already Unknown;
+// this keeps it so.
 func (w *physicalFlatMapWrapper) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: false}
 }

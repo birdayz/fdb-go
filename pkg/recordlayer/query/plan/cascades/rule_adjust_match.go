@@ -67,6 +67,39 @@ func adjustMatchesRecursive(ref *expressions.Reference, visited map[*expressions
 	// (e.g., absorbing SelectExpression creates a PM that then absorbs
 	// MatchableSortExpression). Mirrors Java's event-driven
 	// AdjustMatchRule which re-fires on each new PartialMatch.
+	AdjustPartialMatchesForRef(ref)
+}
+
+// AdjustPartialMatchesForRef runs the AdjustMatchRule absorption loop on
+// a single Reference's partial matches until stable. Each round attempts
+// to absorb a candidate-side parent expression (SelectExpression →
+// MatchableSortExpression) onto each existing PartialMatch, producing
+// adjusted matches that carry e.g. matched ordering parts.
+//
+// This is the per-ref unit of Java's event-driven AdjustMatchRule. It is
+// invoked both by the bottom-up AdjustMatches walk (for REWRITING-phase
+// matches) AND by pushDataAccessTasks just before it consumes a ref's
+// matches — PLANNING-phase matches are seeded during exploration, after
+// the phase-start AdjustMatches walk, so they must be adjusted at
+// consumption time or their ordering parts (needed to satisfy a
+// requested ordering and eliminate an in-memory sort) are never computed.
+func AdjustPartialMatchesForRef(ref *expressions.Reference) {
+	// Idempotence is handled per-match by AddPartialMatchForCandidate's content
+	// dedup (a match is rejected when an existing match shares its query
+	// expression + candidate ref), NOT by a coarse ref-level short-circuit.
+	// `pushDataAccessTasks` fires repeatedly per ref during PLANNING and matches
+	// arrive in waves (a second candidate can seed its matches AFTER an earlier
+	// candidate's matches were already adjusted). A ref-level "any adjusted match
+	// exists → skip the whole ref" guard would skip those later seeds entirely —
+	// their matchedOrderingParts stay empty, so they can never satisfy an ORDER BY
+	// and sort elimination silently degrades to a full scan + sort (@claude
+	// finding 1). Instead the round loop runs every time: re-adjusting an
+	// already-absorbed match produces a content-equivalent match that the dedup
+	// rejects (adjustPartialMatch returns false → no progress → the loop
+	// converges in one round), while a freshly-seeded match IS absorbed. This
+	// relies on the content dedup actually firing — see the
+	// TestAdjustPartialMatches_* regressions (no duplicate explosion across
+	// repeated calls; late-seeded candidate waves still get adjusted).
 	for round := 0; round < 8; round++ {
 		progress := false
 		for _, candAny := range ref.GetPartialMatchCandidates() {
