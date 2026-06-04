@@ -1252,7 +1252,7 @@ func executeIntersection(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	cursors, started, err := buildIntersectionChildCursors(ctx, inners, store, evalCtx, continuation, props)
+	cursors, resume, err := buildIntersectionChildCursors(ctx, inners, store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
 	}
@@ -1260,7 +1260,7 @@ func executeIntersection(
 	keyVals := p.GetComparisonKeyValues()
 	compKeyFunc := intersectionCompKeyFunc(keyVals)
 	return applySkipLimit(
-		recordlayer.IntersectionResume(cursors, compKeyFunc, false, started),
+		recordlayer.IntersectionResume(cursors, compKeyFunc, false, resume),
 		props.Skip, props.ReturnedRowLimit,
 	), nil
 }
@@ -1272,10 +1272,11 @@ func executeIntersection(
 //   - END (Started + empty): an empty cursor — the child is exhausted, which
 //     ends the intersection immediately (any exhausted child ends it).
 //
-// The returned `started` slice seeds each child's mergeChildState so the next
-// checkpoint re-encodes MID/END children correctly rather than as START. With a
-// nil/empty incoming continuation every child is START (unchanged first-page
-// behavior). Shared by executeIntersection and executeMultiIntersection.
+// The returned resume slice seeds each child's mergeChildState continuation
+// (via IntersectionResume) so the next checkpoint re-encodes MID/END/START
+// children correctly. With a nil/empty incoming continuation every child is
+// START (unchanged first-page behavior). Shared by executeIntersection and
+// executeMultiIntersection.
 func buildIntersectionChildCursors(
 	ctx context.Context,
 	inners []plans.RecordQueryPlan,
@@ -1283,16 +1284,14 @@ func buildIntersectionChildCursors(
 	evalCtx *EvaluationContext,
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
-) ([]recordlayer.RecordCursor[QueryResult], []bool, error) {
+) ([]recordlayer.RecordCursor[QueryResult], []recordlayer.IntersectionChildResume, error) {
 	resume, err := recordlayer.DecodeIntersectionContinuation(continuation, len(inners))
 	if err != nil {
 		return nil, nil, err
 	}
 	childProps := props.ClearSkipAndLimit()
 	cursors := make([]recordlayer.RecordCursor[QueryResult], len(inners))
-	started := make([]bool, len(inners))
 	for i, inner := range inners {
-		started[i] = resume[i].Started
 		if resume[i].Started && len(resume[i].Continuation) == 0 {
 			cursors[i] = recordlayer.Empty[QueryResult]() // END: exhausted child
 			continue
@@ -1308,7 +1307,7 @@ func buildIntersectionChildCursors(
 		}
 		cursors[i] = c
 	}
-	return cursors, started, nil
+	return cursors, resume, nil
 }
 
 // intersectionCompKeyFunc builds a ComparisonKeyFunc that extracts a

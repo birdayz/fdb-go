@@ -55,16 +55,14 @@ func pageIntersection(t *testing.T, srcs [][]int64) []int64 {
 			t.Fatalf("decode: %v", err)
 		}
 		cursors := make([]RecordCursor[int64], len(srcs))
-		started := make([]bool, len(srcs))
 		for i, src := range srcs {
-			started[i] = resume[i].Started
 			if resume[i].Started && len(resume[i].Continuation) == 0 {
 				cursors[i] = Empty[int64]() // END: exhausted child
 			} else {
 				cursors[i] = newSliceResumeCursor(src, resume[i].Continuation)
 			}
 		}
-		cur := IntersectionResume(cursors, intResumeKey, false, started)
+		cur := IntersectionResume(cursors, intResumeKey, false, resume)
 		res, err := cur.OnNext(context.Background())
 		if err != nil {
 			t.Fatalf("OnNext: %v", err)
@@ -97,16 +95,14 @@ func pageMultiIntersection(t *testing.T, srcs [][]int64) []int64 {
 			t.Fatalf("decode: %v", err)
 		}
 		cursors := make([]RecordCursor[int64], len(srcs))
-		started := make([]bool, len(srcs))
 		for i, src := range srcs {
-			started[i] = resume[i].Started
 			if resume[i].Started && len(resume[i].Continuation) == 0 {
 				cursors[i] = Empty[int64]()
 			} else {
 				cursors[i] = newSliceResumeCursor(src, resume[i].Continuation)
 			}
 		}
-		cur := IntersectionMultiResume(cursors, intResumeKey, false, started)
+		cur := IntersectionMultiResume(cursors, intResumeKey, false, resume)
 		res, err := cur.OnNext(context.Background())
 		if err != nil {
 			t.Fatalf("OnNext: %v", err)
@@ -182,13 +178,13 @@ func TestIntersectionMultiResume_PagedNoDupNoLoss(t *testing.T) {
 // (Graefe + Torvalds RFC-071 review).
 func TestDecodeIntersectionContinuation_RoundTrip(t *testing.T) {
 	t.Parallel()
-	// child0: mid-stream (started, has a continuation) → MID.
-	// child1: exhausted (started, source-exhausted) → END (started + empty).
-	// child2: never started → START.
+	// child0: mid-stream cached continuation (non-empty bytes) → MID.
+	// child1: exhausted cached continuation (EndContinuation) → END.
+	// child2: start cached continuation (StartContinuation, empty+not-end) → START.
 	children := []*mergeChildState[int64]{
-		{started: true, hasResult: true, result: NewResultWithValue[int64](7, NewBytesContinuation([]byte{5}))},
-		{started: true, hasResult: false, result: NewResultNoNext[int64](SourceExhausted, &EndContinuation{})},
-		{started: false, hasResult: false},
+		{continuation: NewBytesContinuation([]byte{5})},
+		{continuation: &EndContinuation{}},
+		{continuation: &StartContinuation{}},
 	}
 	cont, err := buildIntersectionContinuation(children)
 	if err != nil {
@@ -219,6 +215,81 @@ func TestDecodeIntersectionContinuation_RoundTrip(t *testing.T) {
 	}
 }
 
+// limitOnceCursor returns a single out-of-band limit stop with a
+// StartContinuation (empty bytes, NOT end) — the shape an index scan produces
+// when it hits a scan/byte limit before emitting its first row. It models the
+// case Graefe's RFC-071 review flagged: such a child must round-trip as START
+// (resume re-reads it), never END (which would Empty() it and silently drop the
+// rest of the intersection).
+type limitOnceCursor struct{ closed bool }
+
+func (c *limitOnceCursor) OnNext(_ context.Context) (RecordCursorResult[int64], error) {
+	return NewResultNoNext[int64](ScanLimitReached, &StartContinuation{}), nil
+}
+func (c *limitOnceCursor) Close() error   { c.closed = true; return nil }
+func (c *limitOnceCursor) IsClosed() bool { return c.closed }
+
+// TestIntersectionResume_LimitBeforeFirstRow_NoLoss is the regression Graefe
+// asked for: child B hits a scan limit before its first row on page 1 (while
+// child A has loaded its first value), the intersection checkpoints, and on
+// resume NO match is lost — in particular the match A had already loaded (2)
+// must survive because its cached continuation was captured BEFORE the held
+// value, not after.
+func TestIntersectionResume_LimitBeforeFirstRow_NoLoss(t *testing.T) {
+	t.Parallel()
+	a := []int64{2, 4, 6}
+	b := []int64{2, 4, 6}
+	bLimitedOnce := false
+	childFrom := func(src []int64, r IntersectionChildResume) RecordCursor[int64] {
+		if r.Started && len(r.Continuation) == 0 {
+			return Empty[int64]()
+		}
+		return newSliceResumeCursor(src, r.Continuation)
+	}
+	var cont []byte
+	var got []int64
+	for iter := 0; iter < 1000; iter++ {
+		resume, err := DecodeIntersectionContinuation(cont, 2)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		cursors := make([]RecordCursor[int64], 2)
+		cursors[0] = childFrom(a, resume[0])
+		// child B hits a scan limit before its first row, exactly once, on the
+		// very first (fresh) page.
+		if !bLimitedOnce && !resume[1].Started && len(resume[1].Continuation) == 0 {
+			bLimitedOnce = true
+			cursors[1] = &limitOnceCursor{}
+		} else {
+			cursors[1] = childFrom(b, resume[1])
+		}
+		cur := IntersectionResume(cursors, intResumeKey, false, resume)
+		res, err := cur.OnNext(context.Background())
+		if err != nil {
+			t.Fatalf("OnNext: %v", err)
+		}
+		if !res.HasNext() {
+			cur.Close()
+			if res.GetContinuation().IsEnd() {
+				break
+			}
+			bts, _ := res.GetContinuation().ToBytes()
+			cont = bts
+			continue
+		}
+		got = append(got, res.GetValue())
+		bts, _ := res.GetContinuation().ToBytes()
+		cur.Close()
+		cont = bts
+	}
+	if !bLimitedOnce {
+		t.Fatal("test bug: limit branch never fired")
+	}
+	if !reflect.DeepEqual(got, []int64{2, 4, 6}) {
+		t.Errorf("limit-before-first-row lost matches: got %v, want [2 4 6]", got)
+	}
+}
+
 func TestDecodeIntersectionContinuation_NilIsAllFresh(t *testing.T) {
 	t.Parallel()
 	got, err := DecodeIntersectionContinuation(nil, 3)
@@ -243,9 +314,9 @@ func TestDecodeIntersectionContinuation_Errors(t *testing.T) {
 	}
 	// Child-count mismatch: a continuation built for 3 children decoded as 2.
 	children := []*mergeChildState[int64]{
-		{started: true, hasResult: true, result: NewResultWithValue[int64](1, NewBytesContinuation([]byte{1}))},
-		{started: true, hasResult: true, result: NewResultWithValue[int64](2, NewBytesContinuation([]byte{1}))},
-		{started: true, hasResult: true, result: NewResultWithValue[int64](3, NewBytesContinuation([]byte{1}))},
+		{continuation: NewBytesContinuation([]byte{1})},
+		{continuation: NewBytesContinuation([]byte{1})},
+		{continuation: NewBytesContinuation([]byte{1})},
 	}
 	cont, err := buildIntersectionContinuation(children)
 	if err != nil {

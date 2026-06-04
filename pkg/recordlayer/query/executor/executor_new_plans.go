@@ -122,7 +122,7 @@ func executeMultiIntersection(
 	// Decode the per-child IntersectionContinuation and resume each child from
 	// its saved position (RFC-071) — shared with executeIntersection. Replaces
 	// the prior loud-error guard on a non-nil continuation.
-	cursors, started, err := buildIntersectionChildCursors(ctx, children, store, evalCtx, continuation, props)
+	cursors, resume, err := buildIntersectionChildCursors(ctx, children, store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func executeMultiIntersection(
 	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
 	// the regular intersection keeps only the first child, which would drop
 	// every aggregate but the first.
-	innerCursor := recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, started)
+	innerCursor := recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
 
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
