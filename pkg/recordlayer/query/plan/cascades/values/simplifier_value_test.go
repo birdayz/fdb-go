@@ -515,18 +515,18 @@ func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 }
 
 // TestSimplifyValue_FieldOverJoinMerge pins composeFieldOverJoinMerge: a
-// FieldValue over the Go-only opaque JoinMergeResultValue canonicalizes to a
-// FieldValue over the merge's INNER quantifier (matching JoinMergeResultValue's
-// Evaluate, where the inner side overwrites the outer for bare keys). Without
-// this, predicates that reference a join's result (e.g. after SelectMergeRule
-// flattens a nested binary join) keep referencing an opaque merge the planner
-// cannot reason about — blocking re-enumerated multi-way joins from embedding
-// their predicates and index-probing (RFC-042).
+// FieldValue over a BINARY JoinMergeAllValue (the sole merge value, RFC-074)
+// canonicalizes to a FieldValue over the merge's INNER quantifier (Aliases[1]),
+// matching the merge's Evaluate (where the inner side overwrites the outer for
+// bare keys). Without this, predicates that reference a join's result (e.g. after
+// SelectMergeRule flattens a nested binary join) keep referencing an opaque merge
+// the planner cannot reason about — blocking re-enumerated multi-way joins from
+// embedding their predicates and index-probing (RFC-042).
 func TestSimplifyValue_FieldOverJoinMerge(t *testing.T) {
 	t.Parallel()
 	outer := NamedCorrelationIdentifier("T1")
 	inner := NamedCorrelationIdentifier("T2")
-	jm := NewJoinMergeResultValue(outer, inner)
+	jm := NewJoinMergeSeedValue(outer, inner)
 
 	got := SimplifyValue(NewFieldValue(jm, "ID", TypeUnknown))
 
@@ -558,7 +558,7 @@ func TestSimplifyValue_FieldOverJoinMerge_QualifiedOuterPreserved(t *testing.T) 
 	t.Parallel()
 	outer := NamedCorrelationIdentifier("T1")
 	inner := NamedCorrelationIdentifier("T2")
-	jm := NewJoinMergeResultValue(outer, inner)
+	jm := NewJoinMergeSeedValue(outer, inner)
 
 	binder := fakeCorrBinder{rows: map[CorrelationIdentifier]any{
 		outer: map[string]any{"OUTER_ONLY": int64(42)}, // column present ONLY on the outer side
@@ -575,7 +575,7 @@ func TestSimplifyValue_FieldOverJoinMerge_QualifiedOuterPreserved(t *testing.T) 
 	if got := simplified.Evaluate(binder); got != int64(42) {
 		t.Fatalf("after simplify = %v, want 42 (guard must preserve outer-only resolution)", got)
 	}
-	if _, stillMerge := simplified.(*FieldValue).Child.(*JoinMergeResultValue); !stillMerge {
+	if _, stillMerge := simplified.(*FieldValue).Child.(*JoinMergeAllValue); !stillMerge {
 		t.Fatalf("qualified outer field must be left over the merge, got child %T", simplified.(*FieldValue).Child)
 	}
 

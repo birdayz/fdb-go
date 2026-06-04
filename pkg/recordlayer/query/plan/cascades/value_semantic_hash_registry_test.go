@@ -34,9 +34,10 @@ func TestValueSemanticHashCode_AllCorrelationBearingTypesAreAliasInvariant(t *te
 		{"IndexEntryObjectValue", func(c values.CorrelationIdentifier) values.Value {
 			return values.NewIndexEntryObjectValue(c, values.TupleSourceKey, []int{0}, ut)
 		}},
-		{"JoinMergeResultValue", func(c values.CorrelationIdentifier) values.Value {
-			// vary BOTH aliases by c so two instances differ only in alias.
-			return values.NewJoinMergeResultValue(c, c)
+		{"JoinMergeAllValue", func(c values.CorrelationIdentifier) values.Value {
+			// vary the aliases by c so two instances differ only in alias; the
+			// merge hash must be alias- (and order-) invariant (RFC-074).
+			return values.NewJoinMergeAllValue(c, c)
 		}},
 	}
 
