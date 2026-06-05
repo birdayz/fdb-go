@@ -49,12 +49,14 @@ carry — the output names are simply the group columns + the canonical aggregat
    explicit **MultiIntersection arm** (report the result value's `RecordConstructorValue` field names
    *verbatim* — byte-identical to the merge cursor's row keys, not relying on the fallback's
    upper-casing; mirrors the MapPlan arm / RFC-078 codex P2).
-3. **Relax the gate to STABLE-NAMED aggregates only**: `unionBranchNormalizable`'s `LogicalAggregate`
-   arm returns `aggregateNamesStableForUnion(o)` (drops the RFC-080 `&& len(o.GroupKeys) == 0`). A bare
-   aggregate branch is normalizable iff every aggregate's output name is **stable** — identical between
-   the logical leg schema (`aggregateOutputColumns`, the raw aggregate text) and the physical row key
-   (StreamingAgg `aggResultName` / AggregateIndex canonical). Stable ⟺ `COUNT(*)` or `FUNC(<bare column>)`.
-   A 0-aggregate (group-only) branch is gated.
+3. **Open the GROUPED gate to STABLE-NAMED aggregates only** — leaving UNGROUPED unchanged.
+   `unionBranchNormalizable`'s `LogicalAggregate` arm: a 0-aggregate (group-only) branch is gated;
+   an **ungrouped** branch stays as RFC-080 (always normalizable — it always plans as StreamingAgg,
+   no aggregate-index candidate; re-gating it would regress previously-working ungrouped union join
+   legs, codex); a **grouped** branch returns `aggregateNamesStableForUnion(o)`. A grouped aggregate
+   is normalizable iff every aggregate's output name is **stable** — identical between the logical leg
+   schema (`aggregateOutputColumns`, the raw aggregate text) and the physical row key
+   (AggregateIndex / MultiIntersection / StreamingAgg). Stable ⟺ `COUNT(*)` or `FUNC(<bare column>)`.
 
 **Why a stable-name gate, not the full open (codex).** The logical and physical names DIVERGE for several
 aggregate forms, and each divergence makes the union position-remap read a missing key → NULL:

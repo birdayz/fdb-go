@@ -302,12 +302,13 @@ func TestTranslateUnion(t *testing.T) {
 	}
 }
 
-// TestUnionBranchNormalizable_AggregateArity pins the RFC-081 gate boundary: a bare
-// LogicalAggregate union branch is normalizable IFF every aggregate's output name is STABLE
-// between the logical leg schema and the physical row key — i.e. COUNT(*) or FUNC(<bare
-// column>). A qualified operand (SUM(T.C)), a constant (COUNT(1)/COUNT(NULL)), an expression,
-// or DISTINCT canonicalizes differently → gated (clean error, never wrong rows). 0-aggregate
-// is also gated. grouped and ungrouped are treated uniformly.
+// TestUnionBranchNormalizable_AggregateArity pins the RFC-081 gate boundary. UNGROUPED bare
+// aggregate branches are unchanged from RFC-080 (always StreamingAgg) — always normalizable,
+// NOT re-gated (no regression — codex). A GROUPED bare aggregate is normalizable IFF every
+// aggregate's output name is STABLE between the logical leg schema and the physical row key —
+// i.e. COUNT(*) or FUNC(<bare column>); a qualified operand (SUM(T.C)), a constant
+// (COUNT(1)/COUNT(NULL)), an expression, or DISTINCT canonicalizes differently → gated (clean
+// error, never wrong rows). 0-aggregate (group-only) is also gated.
 func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{}
@@ -320,12 +321,17 @@ func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	}{
 		{"ungrouped COUNT(*)", logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"X"}, "")},
 		{"ungrouped SUM(V),COUNT(*)", logical.NewAggregate(scan, nil, []string{"SUM(V)", "COUNT(*)"}, []string{"S", "C"}, "")},
+		// Ungrouped is unchanged from RFC-080 (always StreamingAgg) — the stable-name gate applies
+		// only to GROUPED branches, so ungrouped constants/qualified stay normalizable (no
+		// regression of previously-working ungrouped union join legs — codex).
+		{"ungrouped COUNT(1) [not re-gated]", logical.NewAggregate(scan, nil, []string{"COUNT(1)"}, []string{""}, "")},
+		{"ungrouped SUM(T.C) [not re-gated]", logical.NewAggregate(scan, nil, []string{"SUM(T.C)"}, []string{""}, "")},
 		{"grouped COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")},
 		{"grouped SUM(V),COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, "")},
 		{"grouped COUNT(X) bare col", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")},
 	} {
 		if !tr.unionBranchNormalizable(tc.agg) {
-			t.Errorf("%s: must be normalizable (stable name)", tc.name)
+			t.Errorf("%s: must be normalizable", tc.name)
 		}
 	}
 

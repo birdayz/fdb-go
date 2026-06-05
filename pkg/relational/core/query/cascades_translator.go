@@ -421,17 +421,25 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		}
 		return true
 	case *logical.LogicalAggregate:
-		// Bare aggregate branch (no Project). The executor's position-remap normalizes the
-		// branch only if the LOGICAL leg-schema name (aggregateOutputColumns, the raw aggregate
-		// text) equals the PHYSICAL row key the cursor writes (StreamingAgg aggResultName /
-		// AggregateIndex canonical). Those agree ONLY for COUNT(*) and FUNC(<bare column>):
-		//   - a qualified operand (SUM(t.c)) — the physical key strips the table qualifier (SUM(C));
-		//   - a constant (COUNT(1)) — a grouped count-star aggregate index reports COUNT(*);
-		//   - an expression (SUM(a*b)) or DISTINCT — canonicalized differently;
-		// each diverges, so the remap reads a missing key → NULL. Gate those (clean error, never
-		// wrong rows); unifying logical and physical aggregate naming so they work is a follow-up.
-		// (The aggregate TEXT is the reliable signal — AggregateOperands is nil for many shapes,
-		// e.g. SUM(col), depending on the build path; it is canonical planner output, not raw SQL.)
+		// Bare aggregate branch (no Project).
+		if len(o.Aggregates) < 1 {
+			return false // 0-aggregate (group-only) shape — distinct concern, gated.
+		}
+		// UNGROUPED: unchanged from RFC-080. An ungrouped aggregate has no aggregate-index
+		// candidate (groupingCount==0) so it always plans as StreamingAgg; RFC-080 allowed these
+		// union join legs and they work — do NOT re-gate them here (regressing previously-working
+		// ungrouped legs, codex). Any residual ungrouped logical-vs-physical name divergence is a
+		// pre-existing RFC-080 matter for the naming-unification follow-up, not RFC-081's scope.
+		if len(o.GroupKeys) == 0 {
+			return true
+		}
+		// GROUPED (RFC-081): a bare grouped aggregate can plan as AggregateIndex / MultiIntersection,
+		// whose canonical row key can DIVERGE from the logical leg-schema name (aggregateOutputColumns,
+		// the raw aggregate text) — so the executor's position-remap reads a missing key → NULL. The
+		// names agree only for COUNT(*) and FUNC(<bare column>); a qualified operand (SUM(t.c) →
+		// physical SUM(C)), a constant (COUNT(1)/COUNT(NULL) → grouped count-star index COUNT(*)), an
+		// expression, or DISTINCT diverge → gate (clean error, never wrong rows). Unifying logical and
+		// physical aggregate naming so the divergent forms work is a follow-up.
 		return aggregateNamesStableForUnion(o)
 	case *logical.LogicalDistinct:
 		return t.unionBranchNormalizable(o.Input)
