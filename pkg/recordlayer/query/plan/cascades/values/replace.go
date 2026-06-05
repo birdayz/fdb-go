@@ -76,6 +76,46 @@ func ReplaceLeavesMaybe(v Value, replaceFn func(Value) Value) Value {
 	})
 }
 
+// ReplaceLeavesOnceMaybe is Java's TreeLike.replaceLeavesMaybe(op,
+// visitNewLeaves=false): it applies replaceFn to leaf nodes, but does NOT
+// re-apply it to leaves INTRODUCED by a replacement. After a leaf is replaced,
+// every leaf of the replacement subtree is recorded (by pointer identity) and
+// skipped on the subsequent re-descent.
+//
+// This is the correct semantics for SELF-REFERENTIAL substitutions — e.g.
+// TranslationMap substituting alias B with a value that itself references B (the
+// source-anchored join RC anchors its right-leg columns to QOV(B), while the
+// parent quantifier over the join is ALSO aliased B). Plain Replace /
+// ReplaceLeavesMaybe re-descend into the replacement, re-match B, and loop
+// forever. Tracking new leaves breaks the cycle exactly as Java does.
+//
+// Returns nil if replaceFn returns nil for any (original) leaf.
+func ReplaceLeavesOnceMaybe(v Value, replaceFn func(Value) Value) Value {
+	newLeaves := map[Value]struct{}{}
+	return Replace(v, func(node Value) Value {
+		if len(node.Children()) != 0 {
+			return node
+		}
+		if _, isNew := newLeaves[node]; isNew {
+			return node
+		}
+		result := replaceFn(node)
+		if result == nil {
+			return nil
+		}
+		// Record every leaf of the replacement subtree so the re-descent does not
+		// re-apply replaceFn to them (pointer identity, matching Java's
+		// Sets.newIdentityHashSet()).
+		WalkValue(result, func(n Value) bool {
+			if len(n.Children()) == 0 {
+				newLeaves[n] = struct{}{}
+			}
+			return true
+		})
+		return result
+	})
+}
+
 // WithChildren is the exported entry point for reconstructing a Value
 // with new children. Delegates to the unexported withChildren.
 func WithChildren(v Value, newChildren []Value) Value {
@@ -153,7 +193,11 @@ func withChildren(v Value, newChildren []Value) Value {
 		for i, f := range vt.Fields {
 			fields[i] = RecordConstructorField{Name: f.Name, Value: newChildren[i]}
 		}
-		return &RecordConstructorValue{Fields: fields}
+		// Preserve the AnchoredJoin marker (RFC-077 F2) — it must survive the
+		// flatten-time substitution SelectMergeRule does via values.Replace, or
+		// the exploration-time correlation hiding silently lapses after the first
+		// rebase and the ≥4-way STAR blows past the task budget.
+		return &RecordConstructorValue{Fields: fields, AnchoredJoin: vt.AnchoredJoin}
 	case *AggregateValue:
 		if vt.Op == AggCountStar {
 			return v // COUNT(*) has no operand children

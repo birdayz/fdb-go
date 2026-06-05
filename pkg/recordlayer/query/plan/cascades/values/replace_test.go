@@ -596,3 +596,41 @@ func TestReplace_ConditionSelectorValue(t *testing.T) {
 		t.Fatalf("first implication should be true after replacement")
 	}
 }
+
+// TestReplaceLeavesOnceMaybe_SelfReferentialTerminates pins the cycle-break
+// (RFC-077 7.6; Torvalds gap): substituting a leaf with a value that itself
+// contains a same-alias leaf must apply replaceFn EXACTLY ONCE and terminate.
+// Plain ReplaceLeavesMaybe re-descends into the replacement, re-matches the
+// same-alias leaf, and recurses forever (the real failure: the source-anchored
+// join RC anchors right-leg columns to QOV(B) while the parent quantifier over
+// the join is also aliased B, so a B->value-containing-B substitution loops).
+func TestReplaceLeavesOnceMaybe_SelfReferentialTerminates(t *testing.T) {
+	t.Parallel()
+	b := NamedCorrelationIdentifier("B")
+	orig := NewQuantifiedObjectValue(b) // a leaf
+
+	calls := 0
+	replaceFn := func(node Value) Value {
+		qov, ok := node.(*QuantifiedObjectValue)
+		if !ok || qov.Correlation != b {
+			return node
+		}
+		calls++
+		// The replacement CONTAINS a new same-alias (B) leaf — the self-reference.
+		return NewFieldValue(NewQuantifiedObjectValue(b), "col", UnknownType)
+	}
+
+	got := ReplaceLeavesOnceMaybe(orig, replaceFn)
+	// Applied exactly once: the original B leaf is replaced; the NEW B leaf inside
+	// the replacement is recorded and skipped (not re-replaced).
+	if calls != 1 {
+		t.Fatalf("replaceFn applied %d times, want exactly 1 (new-leaf guard must break the self-reference)", calls)
+	}
+	fv, ok := got.(*FieldValue)
+	if !ok {
+		t.Fatalf("result = %T, want *FieldValue (the single replacement)", got)
+	}
+	if _, ok := fv.Child.(*QuantifiedObjectValue); !ok {
+		t.Fatalf("replacement's child = %T, want the un-re-replaced *QuantifiedObjectValue(B)", fv.Child)
+	}
+}

@@ -80,7 +80,8 @@ func MapFieldValues(v Value, transform func(*FieldValue) Value) Value {
 		for i, f := range cv.Fields {
 			fields[i] = RecordConstructorField{Name: f.Name, Value: newChildren[i]}
 		}
-		return &RecordConstructorValue{Fields: fields}
+		// Preserve the AnchoredJoin marker (RFC-077 F2) — see replace.go.
+		return &RecordConstructorValue{Fields: fields, AnchoredJoin: cv.AnchoredJoin}
 	case *LikeOperatorValue:
 		return &LikeOperatorValue{Probe: newChildren[0], Pattern: newChildren[1]}
 	case *InOpValue:
@@ -297,6 +298,14 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *RecordConstructorValue:
 		bv, ok := b.(*RecordConstructorValue)
 		if !ok || len(av.Fields) != len(bv.Fields) {
+			return false
+		}
+		// A source-anchored join RC and a plain projection RC with the same field
+		// names are NOT the same value: the anchored form HIDES its leg QOVs from
+		// GetCorrelatedToOfValue (RFC-077 7.6 F2), the plain form reports them. If
+		// they interned as one memo member, partition-time classification would
+		// drop buried columns from the live set → 0-row joins (@claude/codex catch).
+		if av.AnchoredJoin != bv.AnchoredJoin {
 			return false
 		}
 		for i := range av.Fields {

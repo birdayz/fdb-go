@@ -397,10 +397,15 @@ func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value 
 	if v == nil {
 		return nil
 	}
-	// Replace all correlation-bearing leaf values whose alias is in the
-	// translation map. Ports Java's Value.translateCorrelations which
-	// dispatches per-type.
-	return values.Replace(v, func(val values.Value) values.Value {
+	// Replace all correlation-bearing LEAF values whose alias is in the
+	// translation map. Ports Java's Value.translateCorrelations, which uses
+	// replaceLeavesMaybe(op, visitNewLeaves=false): a leaf replaced with a value
+	// that ITSELF references the same alias must NOT be re-translated (the
+	// self-referential cycle — the source-anchored join RC anchors its right-leg
+	// columns to QOV(B) while the parent quantifier over the join is also aliased
+	// B; re-descending the substituted RC would re-match B forever). Use
+	// ReplaceLeavesOnceMaybe so substituted leaves are skipped on the re-descent.
+	return values.ReplaceLeavesOnceMaybe(v, func(val values.Value) values.Value {
 		var alias values.CorrelationIdentifier
 		switch n := val.(type) {
 		case *values.QuantifiedObjectValue:

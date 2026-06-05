@@ -115,3 +115,77 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 		}
 	}
 }
+
+// TestFDB_NestedJoinUnqualifiedProjection pins codex's P2-3 concern (RFC-077 7.6):
+// a top-level UNQUALIFIED projection of a column UNIQUE to a (nested) join leg must
+// resolve to the right value, not NULL. With the source-anchored join result and
+// the dotted-only legColumns propagation, a buried leg's columns reach the top via
+// their dotted form; this proves an unqualified reference to such a column (t1_id
+// is unique to t2, t2_id unique to t3) still resolves end-to-end across a 3-way
+// join, whichever way the planner nests it.
+func TestFDB_NestedJoinUnqualifiedProjection(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_nestproj")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nestproj")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE nestproj_tmpl "+
+			"CREATE TABLE t1 (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT NOT NULL, t1_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t3 (id BIGINT NOT NULL, t2_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
+			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nestproj/s WITH TEMPLATE nestproj_tmpl")
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_nestproj?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1)")
+	for i := 1; i <= 5; i++ {
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
+	}
+	for i := 1; i <= 30; i++ {
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%5)+1))
+	}
+
+	// t1_id is unique to t2, t2_id unique to t3 — both projected UNQUALIFIED, both
+	// from legs the planner buries in a sub-join. Both must resolve (not NULL).
+	for _, q := range []string{
+		"SELECT t1_id, t2_id FROM t1, t2, t3 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id",
+		"SELECT t1_id, t2_id FROM t3, t2, t1 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id",
+	} {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		n := 0
+		for rows.Next() {
+			var t1id, t2id sql.NullInt64
+			if err := rows.Scan(&t1id, &t2id); err != nil {
+				rows.Close()
+				t.Fatalf("scan %q: %v", q, err)
+			}
+			if !t1id.Valid || t1id.Int64 != 1 {
+				rows.Close()
+				t.Fatalf("query %q: unqualified t1_id (unique to nested leg t2) = %v, want 1 — buried-column projection read NULL/wrong", q, t1id)
+			}
+			if !t2id.Valid || t2id.Int64 < 1 || t2id.Int64 > 5 {
+				rows.Close()
+				t.Fatalf("query %q: unqualified t2_id (unique to nested leg t3) = %v, want 1..5", q, t2id)
+			}
+			n++
+		}
+		rows.Close()
+		if n != 30 {
+			t.Errorf("query %q: got %d rows, want 30", q, n)
+		}
+	}
+}

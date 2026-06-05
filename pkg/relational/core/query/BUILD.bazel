@@ -9,10 +9,13 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/core/functions",
         "//pkg/relational/core/query/logical",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 
@@ -24,6 +27,8 @@ go_test(
     ],
     embed = [":query"],
     deps = [
+        "//gen",
+        "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/query/logical",

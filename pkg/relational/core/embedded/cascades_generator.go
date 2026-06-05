@@ -297,7 +297,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
 	}
 
-	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp)
+	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
@@ -1887,25 +1887,61 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 
 // joinResultValueIsReversed checks whether the plan's resultValue
 // indicates that the SQL-level column order is opposite to the physical
-// outer/inner assignment. The resultValue (a binary JoinMergeAllValue,
-// built [outer, inner] by the translator) carries the SQL-level aliases:
-// although merge equality is order-independent, the Aliases slice preserves
-// insertion order, so Aliases[0] is the SQL-first (outer) leg. Comparing it
-// against the physical outerAlias tells us whether columns need to be emitted
-// in reversed order. Only the binary (2-leg) merge has a meaningful
-// outer/inner; a wider re-enumeration merge is never the result value here.
+// outer/inner assignment. The translator builds the binary join seed in SQL
+// order [outer, inner]; comparing the SQL-first leg against the physical
+// outerAlias tells us whether columns need to be emitted in reversed order.
+//
+// Two result-value shapes carry the SQL-first leg (RFC-077 7.6 transition):
+//   - the source-anchored RecordConstructorValue (AnchoredJoin) — its FIELDS are
+//     declared in SQL column order (outer leg's columns first), so the SQL-first
+//     leg is the correlation of the FIRST field's anchored leg QOV;
+//   - the opaque JoinMergeAllValue SEED (Seed=true, always binary [outer, inner])
+//     — Aliases[0] is the SQL-first leg (the fallback path while some leg shapes
+//     are not yet column-aware).
+//
+// A re-enumeration merge (JoinMergeAllValue Seed=false) is never the binary
+// result value here and is not subject to this reversal check.
 func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias string) bool {
-	// Only a translator SEED (Seed=true, always binary [outer, inner]) — the exact
-	// set the retired binary JoinMergeResultValue covered. A re-enumeration merge
-	// (Seed=false) was a JoinMergeAllValue on master and was NOT subject to this
-	// reversal check; matching it here would change column order for re-enumerated
-	// joins.
+	if first, ok := anchoredJoinFirstLeg(rv); ok {
+		return first != "" && first == physInnerAlias
+	}
 	jmav, ok := rv.(*values.JoinMergeAllValue)
 	if !ok || jmav == nil || !jmav.Seed || len(jmav.Aliases) != 2 {
 		return false
 	}
 	sqlFirst := strings.ToUpper(jmav.Aliases[0].Name())
 	return sqlFirst != "" && sqlFirst == physInnerAlias
+}
+
+// anchoredJoinFirstLeg returns the upper-cased correlation name of the SQL-first
+// (outer) leg of a source-anchored join result value (RFC-077 7.6): the leg QOV
+// the first field is anchored to. Reports false for any other value shape. The
+// first field is FieldValue(QOV(outerLeg), col); a nested-join leg's field value
+// may be a FieldValue whose child is another anchored RC, so descend the leftmost
+// FieldValue chain until a QuantifiedObjectValue is found.
+func anchoredJoinFirstLeg(rv values.Value) (string, bool) {
+	rc, ok := rv.(*values.RecordConstructorValue)
+	if !ok || !rc.AnchoredJoin || len(rc.Fields) == 0 {
+		return "", false
+	}
+	cur := rc.Fields[0].Value
+	for {
+		switch v := cur.(type) {
+		case *values.QuantifiedObjectValue:
+			return strings.ToUpper(v.Correlation.Name()), true
+		case *values.FieldValue:
+			if v.Child == nil {
+				return "", true
+			}
+			cur = v.Child
+		default:
+			// e.g. a nested anchored RC reached directly — recurse into its first leg.
+			if inner, ok := anchoredJoinFirstLeg(cur); ok {
+				return inner, true
+			}
+			return "", true
+		}
+	}
 }
 
 func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAlias, secondAlias string) []executor.ColumnDef {
