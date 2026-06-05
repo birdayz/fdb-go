@@ -138,7 +138,10 @@ func TestRebaseBuriedLowerReferences(t *testing.T) {
 
 	t3 := values.NamedCorrelationIdentifier("T3")
 	t2 := values.NamedCorrelationIdentifier("T2")
-	merge := values.NamedCorrelationIdentifier("$m_2:T3_2:T4")
+	// rebaseBuriedLowerReferences treats the merge alias opaquely (it never parses
+	// the name), so a plain identifier is sufficient — the synthetic "$m_…" string
+	// scheme was retired in RFC-077 7.5 (merge quantifiers now carry a uniqueId).
+	merge := values.UniqueCorrelationIdentifier()
 
 	// Spanning predicate t3.t2_id = t2.id, where T3 is collapsed into the merge
 	// and T2 is an upper table.

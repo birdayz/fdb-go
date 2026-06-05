@@ -7,6 +7,7 @@ import "testing"
 // must resolve to the leg FieldValue (never nil — the simplifier_value.go silent-nil
 // landmine). Unique columns resolve by bare name; cross-leg duplicates by ALIAS.COL.
 func TestNewAnchoredJoinRecord_ComposeResolvesEveryColumn(t *testing.T) {
+	t.Parallel()
 	a := NamedCorrelationIdentifier("A")
 	b := NamedCorrelationIdentifier("B")
 	legs := []AnchoredJoinLeg{
@@ -33,6 +34,11 @@ func TestNewAnchoredJoinRecord_ComposeResolvesEveryColumn(t *testing.T) {
 	// Unique columns resolve by bare name.
 	resolvesToLegField("NAME")
 	resolvesToLegField("AMOUNT")
+	// Unique columns ALSO resolve by their qualified ALIAS.COL name — a qualified
+	// reference (e.g. A.NAME) must compose even when the bare name is unique (codex
+	// P2: the bare-only emission silently read NULL for such references).
+	resolvesToLegField("A.NAME")
+	resolvesToLegField("B.AMOUNT")
 	// The cross-leg duplicate column ID is disambiguated as ALIAS.COL and each resolves.
 	resolvesToLegField("A.ID")
 	resolvesToLegField("B.ID")
@@ -51,6 +57,7 @@ func TestNewAnchoredJoinRecord_ComposeResolvesEveryColumn(t *testing.T) {
 // TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow pins that the anchored RC's Evaluate yields
 // a column-named row (the SELECT */flow-through case where the RC survives to runtime).
 func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
+	t.Parallel()
 	a := NamedCorrelationIdentifier("A")
 	legs := []AnchoredJoinLeg{
 		{Alias: a, Columns: []Field{{Name: "NAME", FieldType: UnknownType}}},

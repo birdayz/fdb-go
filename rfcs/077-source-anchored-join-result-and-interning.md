@@ -293,8 +293,24 @@ alias-identity.
 So the 7.5 fix is **make `Reference.Insert`/`InsertFinal` alias-AWARE for merge re-enumeration selects**:
 add a third dedup tier `MemoEqual(m, e)` (ADD, not substitute — strictly additive, so it can only ever
 dedup MORE than the identity tiers, preserving termination), GATED to expressions that opt in via the
-new `SelectExpression.InternsAliasAware()` property. Then the merge quantifier gets a plain `uniqueId`
-(Java-style) and the synthetic `mergeQuantifierAlias` + `mergeAliasPrefix` are deleted.
+new `SelectExpression.InternsAliasAware()` property. The merge quantifier then no longer needs the
+synthetic stable string; `mergeQuantifierAlias` + `mergeAliasPrefix` are deleted.
+
+**Merge alias = per-Memo DETERMINISTIC ordinal, NOT process-global `uniqueId` (codex P2).** A first cut
+used `values.UniqueCorrelationIdentifier()` (process-global counter). codex flagged — and a probe
+confirmed — that this regresses plan-hash DETERMINISM: the merge quantifier alias flows into
+`RecordQueryNestedLoopJoinPlan.HashCodeWithoutChildren` (which folds raw source aliases) and thus into
+`PlanHash` (plan-log identity, `plan_logging.go`) and the cost-model tiebreak (`deepHashCode`). With a
+process-global counter, the SAME query planned after the counter has advanced (a long-lived process that
+planned other queries) gets a DIFFERENT plan hash even though the plan is only alpha-renamed — master's
+content-stable alias did not. (No correctness/wire/cache impact: the plan cache keys on normalized SQL
+text, and continuation tokens do not use `PlanHash` — but per-process-history plan-identity churn is a
+real regression.) Fix: mint the merge alias from a **per-Memo counter** (`Memo.NextMergeAlias` → `$mN`).
+The Memo is created once per `Plan()`, so the same query mints the same alias sequence in the same
+deterministic exploration order → a stable plan hash across plannings; yet distinct merge OCCURRENCES
+within one plan still get distinct `$mN`, so the alias-aware `Insert` tier (not a stable string) is what
+interns equivalent sub-products. Verified: `PlanHash` identical across two plannings separated by a
+global-counter advance; chain task counts unchanged (8999 / 30593).
 
 **Why GATED, not global (the over-dedup landmine — caught by the FDB suite).** A first cut made the
 `MemoEqual` tier UNCONDITIONAL. That broke two CTE column-alias tests

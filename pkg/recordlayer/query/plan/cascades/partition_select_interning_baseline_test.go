@@ -75,10 +75,11 @@ func planChainTasks(t *testing.T, n int) int {
 
 // TestPartitionSelect_ChainInterningBaseline is the RFC-077 7.5 task-count gate.
 // It pins the join-re-enumeration task count for 3- and 4-table chains so the
-// retirement of the synthetic stable merge alias (now a plain uniqueId interned
-// alias-aware by Reference.Insert/InsertFinal) — and any future memo-interning
-// touch — is held to a tight tolerance. The stable merge alias was load-bearing:
-// a naive uniqueId WITHOUT alias-aware Insert/InsertFinal DOUBLES the 4-chain
+// retirement of the synthetic stable merge alias (now a per-Memo deterministic
+// alias, Memo.NextMergeAlias, interned alias-aware by Reference.Insert/InsertFinal)
+// — and any future memo-interning touch — is held to a tight tolerance. The old
+// content-stable merge alias was load-bearing for interning: an alias that differs
+// per merge occurrence WITHOUT alias-aware Insert/InsertFinal DOUBLES the 4-chain
 // count (29915 → 60044) while plandiff stays byte-identical. These pinned numbers
 // are the only thing that catches such a sub-product-sharing miss; a bare "must
 // not regress" is a vibe.

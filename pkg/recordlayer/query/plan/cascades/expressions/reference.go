@@ -302,6 +302,13 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		panic("Reference.Insert: nil expression")
 	}
 	eHash := e.HashCodeWithoutChildren()
+	// e is invariant across the loop, so resolve the alias-aware opt-in once
+	// (hoisted out of the hot inner loop — avoids a type-switch + virtual call
+	// per member). See the alias-aware tier below.
+	aliasAware := false
+	if interner, ok := e.(aliasAwareInterner); ok {
+		aliasAware = interner.InternsAliasAware()
+	}
 	for _, m := range r.members {
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
@@ -338,7 +345,11 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		// aliases — expressions whose aliases external consumers resolve by identity
 		// keep alias-IDENTITY dedup. Added (not substituted), so it can only ever
 		// dedup MORE, never less, than the alias-identity tiers — termination holds.
-		if interner, ok := e.(aliasAwareInterner); ok && interner.InternsAliasAware() && MemoEqual(m, e) {
+		// Hash pre-filter mirrors tier 2: MemoEqual also hash-guards internally, but
+		// the explicit guard keeps the early-exit symmetric across tiers and cheap if
+		// a future opt-in type's hash is not alias-invariant (today's only opt-in,
+		// the merge select, has an alias-invariant hash per RFC-074).
+		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
 			return false
 		}
 	}
@@ -368,6 +379,11 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		panic("Reference.InsertFinal: nil expression")
 	}
 	eHash := e.HashCodeWithoutChildren()
+	// Resolve the alias-aware opt-in once (hoisted out of the loop) — see Insert.
+	aliasAware := false
+	if interner, ok := e.(aliasAwareInterner); ok {
+		aliasAware = interner.InternsAliasAware()
+	}
 	for _, m := range r.finalMembers {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false
@@ -379,7 +395,7 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		// (RFC-077 7.5); the PLANNING yield path inserts into BOTH member sets, so
 		// both must dedup alias-aware or the merge re-enumeration's physical
 		// alternatives duplicate under fresh merge-quantifier aliases.
-		if interner, ok := e.(aliasAwareInterner); ok && interner.InternsAliasAware() && MemoEqual(m, e) {
+		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
 			return false
 		}
 	}

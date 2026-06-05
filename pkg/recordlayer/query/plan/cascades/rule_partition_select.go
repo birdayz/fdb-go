@@ -436,19 +436,31 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			lowerResult := values.NewJoinMergeAllValue(lowersCorrelatedToByUppers...)
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerResult)
 
-			// A plain fresh quantifier alias (Java-style). Two bipartitions that
-			// produce the SAME merged sub-join still intern to one memo Reference
-			// because Reference.Insert/InsertFinal dedup ALIAS-AWARE (MemoEqual):
-			// upper SelectExpressions equal up to a consistent quantifier-alias
-			// renaming collapse to one member, so the re-enumeration's shared
-			// sub-products (e.g. the (A⋈B) merge reached from many bipartitions) are
-			// NOT re-explored per path. This retires the former synthetic STABLE
+			// A per-plan deterministic merge alias (Memo.NextMergeAlias). Two
+			// bipartitions that produce the SAME merged sub-join get DIFFERENT
+			// aliases but still intern to one memo Reference, because
+			// Reference.Insert/InsertFinal dedup ALIAS-AWARE (MemoEqual): upper
+			// SelectExpressions equal up to a consistent quantifier-alias renaming
+			// collapse to one member, so the re-enumeration's shared sub-products
+			// (e.g. the (A⋈B) merge reached from many bipartitions) are NOT
+			// re-explored per path. This retires the former synthetic STABLE
 			// "$m_<len>:<name>…" alias — a workaround that made the upper selects
-			// byte-identical for the previously alias-SENSITIVE Insert. The merge
-			// value's hash is already alias-invariant (RFC-074), so a uniqueId here
-			// is structurally interned, matching Java's plain-uniqueId merge
-			// quantifier + alias-aware containsInMemo. (RFC-077 7.5.)
-			mergeAlias := values.UniqueCorrelationIdentifier()
+			// byte-identical for the previously alias-SENSITIVE Insert; interning is
+			// now structural (RFC-074 made the merge value's hash alias-invariant).
+			// The alias is per-Memo (per-plan) deterministic, NOT process-global
+			// uniqueId, so the same query mints the same alias sequence across
+			// plannings → a STABLE plan hash (the merge alias flows into the NLJ
+			// source alias and thus PlanHash/plan-log identity + the cost-model
+			// tiebreak; a global uniqueId would churn those across a process's
+			// history — codex P2). On test/utility firing paths the memo is nil; fall
+			// back to a process-unique alias there (no plan-hash stability needed).
+			// (RFC-077 7.5.)
+			var mergeAlias values.CorrelationIdentifier
+			if call.memo != nil {
+				mergeAlias = call.memo.NextMergeAlias()
+			} else {
+				mergeAlias = values.UniqueCorrelationIdentifier()
+			}
 			newLowerQ := expressions.NamedForEachQuantifier(
 				mergeAlias,
 				call.MemoizeExpression(lowerSelectExpr),
