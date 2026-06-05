@@ -1194,7 +1194,13 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 			if rcv, ok := mp.GetResultValue().(*values.RecordConstructorValue); ok && len(rcv.Fields) > 0 {
 				names := make([]string, len(rcv.Fields))
 				for i, f := range rcv.Fields {
-					names[i] = strings.ToUpper(f.Name)
+					// Report the EXACT field name — RecordConstructorValue.Evaluate keys the
+					// output row by f.Name verbatim (values.go), so this is the literal row
+					// key the union remap must read. Upper-casing it would mismatch a
+					// non-uppercase Map field and read a missing key → NULL (codex). Union
+					// branch fields are upper in practice (SQL upper-cases identifiers/aliases),
+					// so this equals the prior upper-case for every real query.
+					names[i] = f.Name
 				}
 				return names
 			}
