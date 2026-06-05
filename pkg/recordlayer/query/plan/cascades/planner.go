@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -480,6 +481,14 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 	}
 
+	// A ref with any correlated match is a JOIN LEG (the surrounding join binds a
+	// parameter into its scan, e.g. `customer_id = ac.id`). Its data-access
+	// compensations are meant to be consumed by the join, not stand alone — realizing
+	// one as a final leg winner severs the join's correlation feed (the filter wins at
+	// the leg but the join no longer drives it) → 0 rows. So never materialize a
+	// compensation on a join-leg ref; only on a standalone single-source ref.
+	refIsJoinLeg := refHasCorrelatedMatch(ref)
+
 	for _, candidate := range candidates {
 		matches := GetPartialMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
@@ -487,7 +496,21 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 		exprs := DataAccessForMatchPartition(requestedOrderings, matches, p.ctx, nil)
 		for _, expr := range exprs {
-			ref.InsertFinal(expr)
+			inserted := ref.InsertFinal(expr)
+			// A compensated data-access result may be a LOGICAL expression — a residual
+			// LogicalFilter over the physical scan (Java Compensation.apply), produced when
+			// an index match leaves a non-sargable residual (e.g. an equality on an indexed
+			// column plus a `>` on a non-indexed one). Inserted as-is it stays non-physical
+			// and loses criterion #1 (physical beats non-physical) to a full scan, so the
+			// index scan is silently dropped. Realize ONLY the unambiguously-safe simple
+			// single-source residual (isSimpleResidualCompensation) on a non-join-leg ref as
+			// a physical filter here; every other compensation (IN, correlated, index-only,
+			// join-leg) is left logical and handled by the existing flow. Guarded on
+			// `inserted` so the convergent fixpoint terminates (pushDataAccessTasks re-yields
+			// equal compensations, which dedup).
+			if inserted && !refIsJoinLeg && !isPhysical(expr) && isSimpleResidualCompensation(expr) {
+				p.implementDataAccessCompensation(ref, expr)
+			}
 		}
 		stampOrderingWinners(ref, p.costModel)
 	}
@@ -540,6 +563,126 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 				}
 			}
 		}
+	}
+}
+
+// refHasCorrelatedMatch reports whether any partial match on the reference binds a scan
+// parameter that is correlated to an outer quantifier — the signature of a JOIN LEG (the
+// surrounding join drives a value into this scan). Such a ref's data-access compensations
+// must be consumed by the join, never materialized as a standalone leg winner.
+func refHasCorrelatedMatch(ref *expressions.Reference) bool {
+	for _, cand := range GetPartialMatchCandidatesTyped(ref) {
+		for _, m := range GetPartialMatchesForCandidate(ref, cand) {
+			if matchBoundPrefixIsCorrelated(m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isSimpleResidualCompensation reports whether a logical compensation is a PLAIN residual
+// filter safe to realize as a standalone physical filter over its (physical) inner scan:
+// a LogicalFilterExpression every predicate of which is a simple non-IN, non-index-only,
+// non-correlated ComparisonPredicate, sitting over an uncorrelated, narrowable
+// (value-index / primary / fetch — NOT vector top-K or aggregate) inner scan. Everything
+// else stays logical and is handled by the existing flow.
+func isSimpleResidualCompensation(expr expressions.RelationalExpression) bool {
+	f, ok := expr.(*expressions.LogicalFilterExpression)
+	if !ok {
+		return false
+	}
+	preds := f.GetPredicates()
+	if len(preds) == 0 {
+		return false
+	}
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
+	// Inner-scan guard: the inner must be NARROWABLE by a post-filter. A vector top-K
+	// scan (`rank<=K`) or an aggregate scan is NOT narrowable — a residual applied AFTER
+	// the top-K / grouping changes the result, so it is semantically invalid and the query
+	// must stay unplannable (the trailing-partition-equality vector case) rather than be
+	// realized as a wrong plan. A value-index / primary / fetch scan returns a superset a
+	// residual can correctly filter. (A correlated inner — a join inner like
+	// `IndexScan(orders, customer_id = ac.id)` — is already excluded at the call site by
+	// the refIsJoinLeg / refHasCorrelatedMatch check, which is constant-safe; we do NOT
+	// re-check the inner ref's raw GetCorrelatedTo() here because it includes
+	// query-parameter ConstantObjectValue aliases, which would wrongly reject a safe
+	// parameterized index residual — see the predicate guard below for the same subtraction.)
+	for _, q := range f.GetQuantifiers() {
+		cref := q.GetRangesOver()
+		if cref == nil {
+			continue
+		}
+		for _, m := range cref.AllMembers() {
+			switch m.(type) {
+			case *physicalVectorIndexScanWrapper, *physicalAggregateIndexWrapper:
+				return false
+			}
+		}
+	}
+	// Predicate guards: every residual predicate must be a simple, non-IN, non-index-only,
+	// non-(row-)correlated comparison. An IN must take the explode→InJoin path; an
+	// index-only value (vector DistanceRank) can only be consumed by the index access; a
+	// predicate row-correlated to an OUTER quantifier (`WHERE t.col = outer.val`) belongs
+	// at the join, not a standalone leg filter. Query-parameter ConstantObjectValue aliases
+	// are subtracted first — they appear in correlation sets but are execution constants,
+	// not row correlations (so `WHERE indexed = $1 AND other > $2` stays materializable).
+	for _, pred := range preds {
+		cp, ok := pred.(*predicates.ComparisonPredicate)
+		if !ok {
+			return false
+		}
+		if cp.Comparison.Type == predicates.ComparisonIn {
+			return false
+		}
+		if predicateContainsUncompensatableValues(pred) {
+			return false
+		}
+		corr := predicates.GetCorrelatedToOfPredicate(pred)
+		deleteConstantObjectAliases(cp, corr)
+		for alias := range corr {
+			if _, isLocal := local[alias]; !isLocal {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// deleteConstantObjectAliases removes ConstantObjectValue (query-parameter) aliases from
+// corr — they appear in a predicate's correlation set but are execution constants bound at
+// run time, not join/row correlations. Mirrors the subtraction comparisonRowCorrelated does.
+func deleteConstantObjectAliases(cp *predicates.ComparisonPredicate, corr map[values.CorrelationIdentifier]struct{}) {
+	for _, v := range []values.Value{cp.Operand, cp.Comparison.Operand} {
+		if v == nil {
+			continue
+		}
+		values.WalkValue(v, func(node values.Value) bool {
+			if cov, ok := node.(*values.ConstantObjectValue); ok {
+				delete(corr, cov.Alias)
+			}
+			return true
+		})
+	}
+}
+
+// implementDataAccessCompensation realizes a logical residual-filter compensation as a
+// physical plan by firing the PLANNING-phase EXPRESSION rules on it via TransformExprTask
+// (which, during PLANNING, yields to FINAL members — so the physical result competes in
+// winner selection). The discarded second return of rulesForPhase is the ImplementationRule
+// set: the rule that realizes the filter, ImplementFilterRule, is an EXPRESSION rule
+// (`var _ ExpressionRule = (*ImplementFilterRule)(nil)`, registered in BatchAExpressionRules),
+// NOT an implementation rule — so it is in exprRules and TransformExprTask fires it. We do
+// NOT push an ExploreExprTask: that would re-enter pushDataAccessTasks on this ref. The
+// inner Reference is already physical (the scan), so the expression rules find a physical
+// winner directly. Only called for isSimpleResidualCompensation exprs on a non-join-leg ref.
+func (p *Planner) implementDataAccessCompensation(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	exprRules, _ := p.rulesForPhase(PhasePlanning)
+	for i := len(exprRules) - 1; i >= 0; i-- {
+		p.push(&TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr, Rule: exprRules[i]})
 	}
 }
 

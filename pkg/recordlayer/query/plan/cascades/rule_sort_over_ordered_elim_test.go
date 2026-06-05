@@ -525,6 +525,43 @@ func TestMakeStrictlySorted_Idempotent(t *testing.T) {
 // End-to-end planner tests for strictlySorted via ImplementSortRule
 // ---------------------------------------------------------------------------
 
+// buildStatusActiveIndexScan builds the physical index-scan expression the data-access
+// path produces for `STATUS = 'active'` against a (STATUS, DATE) candidate — using the
+// candidate's own ToScanPlan, the same primitive the match path uses. Replaces the
+// retired ImplementIndexScanRule in these sort-elimination setups (RFC-076).
+func buildStatusActiveIndexScan(t *testing.T, cand MatchCandidate) expressions.RelationalExpression {
+	t.Helper()
+	aliases := cand.GetSargableAliases()
+	if len(aliases) == 0 {
+		t.Fatal("candidate has no sargable aliases")
+	}
+	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, "active")
+	res := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !res.Ok {
+		t.Fatal("failed to build equality comparison range")
+	}
+	bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{aliases[0]: res.Range}
+	prefix := cand.ComputeBoundParameterPrefixMap(bindings)
+	if len(prefix) == 0 {
+		t.Fatal("candidate produced empty prefix for STATUS equality")
+	}
+	idxPlan := cand.ToScanPlan(prefix, false)
+	if fetchPlan, ok := idxPlan.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+		innerIdx, ok := fetchPlan.GetInner().(*plans.RecordQueryIndexPlan)
+		if !ok {
+			t.Fatalf("expected RecordQueryIndexPlan inside Fetch, got %T", fetchPlan.GetInner())
+		}
+		idxWrapper := &physicalIndexScanWrapper{plan: innerIdx, columnNames: cand.GetColumnNames(), unique: cand.IsUnique()}
+		fetchQ := expressions.ForEachQuantifier(expressions.InitialOf(idxWrapper))
+		return NewPhysicalFetchFromPartialRecordWrapper(fetchPlan, fetchQ)
+	}
+	if ip := extractIndexPlan(idxPlan); ip != nil {
+		return &physicalIndexScanWrapper{plan: ip, columnNames: cand.GetColumnNames(), unique: cand.IsUnique()}
+	}
+	t.Fatalf("candidate ToScanPlan produced unexpected plan %T", idxPlan)
+	return nil
+}
+
 // TestPlanner_StrictlySorted_UniqueIndex verifies that ImplementSortRule
 // marks a plan as strictlySorted when a unique index covers all sort keys.
 //
@@ -550,48 +587,10 @@ func TestPlanner_StrictlySorted_UniqueIndex(t *testing.T) {
 		true, // unique
 		nil,
 	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-
-	// Build: Filter(STATUS = 'active') -> Scan(Order)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
-			),
-		},
-		q,
-	)
-	filterRef := expressions.InitialOf(filter)
-
-	// Run ImplementIndexScanRule to produce the physicalIndexScanWrapper.
-	indexRule := NewImplementIndexScanRule()
-	idxResults := FireExpressionRuleWithMemo(indexRule, filterRef, ctx, nil)
-	if len(idxResults) == 0 {
-		t.Fatal("ImplementIndexScanRule should produce an index scan")
-	}
-
-	// Build a clean inner Reference with the index scan result (now
-	// Fetch(IndexScan)), then compute plan properties (simulating
-	// implementBottomUp).
-	var idxExpr expressions.RelationalExpression
-	for _, r := range idxResults {
-		if _, ok := r.(*physicalIndexScanWrapper); ok {
-			idxExpr = r
-			break
-		}
-		if _, ok := r.(*physicalFetchFromPartialRecordWrapper); ok {
-			idxExpr = r
-			break
-		}
-	}
-	if idxExpr == nil {
-		t.Fatal("no index scan expression in ImplementIndexScanRule results")
-	}
-
+	// Build the index scan the data-access path produces for STATUS='active'
+	// (the retired ImplementIndexScanRule's job, RFC-076), then compute plan
+	// properties on a clean inner Reference (simulating implementBottomUp).
+	idxExpr := buildStatusActiveIndexScan(t, cand)
 	innerRef := expressions.InitialOf(idxExpr)
 	computeRefPlanProperties(innerRef)
 
@@ -642,43 +641,9 @@ func TestPlanner_StrictlySorted_NonUniqueIndex(t *testing.T) {
 		false, // non-unique
 		nil,
 	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{
-			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
-				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
-			),
-		},
-		q,
-	)
-	filterRef := expressions.InitialOf(filter)
-
-	indexRule := NewImplementIndexScanRule()
-	idxResults := FireExpressionRuleWithMemo(indexRule, filterRef, ctx, nil)
-	if len(idxResults) == 0 {
-		t.Fatal("ImplementIndexScanRule should produce an index scan")
-	}
-
-	var idxExpr expressions.RelationalExpression
-	for _, r := range idxResults {
-		if _, ok := r.(*physicalIndexScanWrapper); ok {
-			idxExpr = r
-			break
-		}
-		if _, ok := r.(*physicalFetchFromPartialRecordWrapper); ok {
-			idxExpr = r
-			break
-		}
-	}
-	if idxExpr == nil {
-		t.Fatal("no index scan expression in ImplementIndexScanRule results")
-	}
-
+	// Build the index scan the data-access path produces for STATUS='active'
+	// (the retired ImplementIndexScanRule's job, RFC-076).
+	idxExpr := buildStatusActiveIndexScan(t, cand)
 	innerRef := expressions.InitialOf(idxExpr)
 	computeRefPlanProperties(innerRef)
 

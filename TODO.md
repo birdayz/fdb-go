@@ -204,6 +204,29 @@ plan.
 
 ### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
 
+- [x] **DONE (RFC-076 v5, 2026-06-05).** `ImplementIndexScanRule` + both registrations + its 3 test
+  files deleted; shared helpers extracted to `scan_match_helpers.go`. Sequence: 3b template-aware
+  costing → 3a constraint-pass activation + stub-chain costing → deletion + **data-access compensation
+  materialization** (the v3/v4 premise missed that the data-access path never materialized its residual
+  `Compensation.apply` LOGICAL filter into a physical plan during PLANNING, so the index scan was
+  dropped to a full scan for the indexed-eq + non-indexed-residual shape; `pushDataAccessTasks` now
+  realizes the unambiguously-safe simple residual as a physical filter, guarded against IN / correlated
+  / index-only / vector-or-aggregate-inner / join-leg shapes — see `isSimpleResidualCompensation` +
+  `refHasCorrelatedMatch`). `validateNoIndexOnlyResidual` KEPT (still load-bearing). Full suite green,
+  plandiff byte-identical, determinism 5×. The data-access/`Compensation` path is now the sole scan
+  producer, as in Java. Original analysis retained below.
+- [ ] **Follow-up (Graefe v5 ACK condition): replace the `isSimpleResidualCompensation` allowlist with
+  Java's exploratory-yield re-optimization.** Java yields data-access compensations via
+  `FinalYields.yieldUnknownExpression` — a non-`RecordQueryPlan` lands in the *exploratory* set and is
+  re-optimized by the normal PLANNING loop, so EVERY compensation shape is realized uniformly. Go's
+  `pushDataAccessTasks` only `InsertFinal`s, so `implementDataAccessCompensation` + the
+  `isSimpleResidualCompensation` allowlist stand in for that primitive. The allowlist is correct and
+  each exclusion is pinned today, but it will rot the moment a new compensation shape appears with no
+  allowlist arm (falls through to the dead-final-member path → silent no-plan). The honest fix is a Go
+  `yieldUnknown`/exploratory-insert that re-optimizes all compensations and shrinks the allowlist to
+  nothing — BLOCKED on Go's compensation re-optimization correctly handling IN-explode / correlated /
+  index-only shapes (a naive exploratory-insert re-breaks them today, which is why the allowlist exists).
+
 Go reaches a physical index scan / filter via THREE producers that bypass `Compensation`: the
 data-access/compensation match path (`predicate_multi_map.go`), the Go-only `ImplementIndexScanRule`
 (a fusion of Java's `ImplementPhysicalScanRule` + candidate matching that iterates predicates
