@@ -449,6 +449,22 @@ func extractWinnerPlan(t *testing.T, bestExpr expressions.RelationalExpression) 
 	return ph.GetRecordQueryPlan()
 }
 
+// planHasIndexScan reports whether a RecordQueryIndexPlan appears ANYWHERE in the plan
+// tree. Used by the no-index negative assertions: a root-only check (extractIndexPlan)
+// would miss a nested index scan under a PredicatesFilter/Fetch, letting a regression that
+// wrongly uses the index slip through (codex PR-#257 P3).
+func planHasIndexScan(p plans.RecordQueryPlan) bool {
+	found := false
+	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
+		if _, ok := n.(*plans.RecordQueryIndexPlan); ok {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 // TestPlanChoice_GapInPrefix: a predicate on the SECOND column of a compound index, with
 // the FIRST unbound, must NOT use the index — an FDB key-range prefix is contiguous from
 // position 0, so AMOUNT-only over (STATUS, AMOUNT) yields a full scan + residual filter.
@@ -477,7 +493,7 @@ func TestPlanChoice_GapInPrefix(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 	physicalPlan := extractWinnerPlan(t, bestExpr)
-	if extractIndexPlan(physicalPlan) != nil {
+	if planHasIndexScan(physicalPlan) {
 		t.Fatalf("gap-in-prefix: must NOT use the (STATUS,AMOUNT) index for an AMOUNT-only predicate; got %s", physicalPlan.Explain())
 	}
 }
@@ -567,7 +583,7 @@ func TestPlanChoice_AllPredicatesResidual(t *testing.T) {
 		t.Fatalf("Plan: %v", err)
 	}
 	physicalPlan := extractWinnerPlan(t, bestExpr)
-	if extractIndexPlan(physicalPlan) != nil {
+	if planHasIndexScan(physicalPlan) {
 		t.Fatalf("all-predicates-residual: must NOT use an index for a non-indexed predicate; got %s", physicalPlan.Explain())
 	}
 }
