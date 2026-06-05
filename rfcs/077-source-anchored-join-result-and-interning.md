@@ -300,18 +300,23 @@ new `SelectExpression.InternsAliasAware()` property. Then the merge quantifier g
 `MemoEqual` tier UNCONDITIONAL. That broke two CTE column-alias tests
 (`TestFDB_CTEChainedColumnAliases`, `TestFDB_CascadesCTEColumnAliases`) with a silent-NULL column —
 e.g. `WITH priced(product, cost) AS (SELECT name, price FROM Item) SELECT product FROM priced …` had
-`product` read NULL. Root cause: Go has not yet unified the quantifier/table alias namespaces (TODO
-7.1), so external consumers (cascades_generator column derivation, CTE projections) resolve quantifier
-aliases by IDENTITY. Alias-aware dedup collapses two members that differ only in aliasing and keeps a
-survivor whose aliases the consumer cannot resolve → the column silently reads NULL. The merge
-re-enumeration is DIFFERENT: its merge quantifier is planner-INTERNAL — `PartitionSelectRule` re-stamps
-all column access through the merge value and rebases spanning predicates onto it, so NO external
-consumer resolves the merge alias by name. So alias-aware interning is safe THERE and only there. The
-gate is a property derived from the expression (`InternsAliasAware()` = "result value is a
-`JoinMergeAllValue`", the canonical marker of a merge select — Graefe's "property on the expression, not
-an external heuristic"), and it is the minimal change: it ADDS alias-aware dedup for merge selects and
-leaves every other expression's dedup exactly as master (alias-identity). When 7.1 unifies the
-namespaces the gate can widen; until then it is the honest scope.
+`product` read NULL. Root cause is NOT alias-namespace naming — item **7.1 is already DONE** (quantifier
+and table alias naming was unified). It is the column-RESOLUTION model: Go's column derivation
+(`cascades_generator`, e.g. the `scan.Alias`/`ssq.Alias` paths) resolves some references by
+quantifier-alias IDENTITY, whereas Java resolves by group/ordinal and can therefore dedup members
+alias-aware GLOBALLY (Graefe confirmed Java's `Reference.insert`/`containsInMemo` is alias-aware). An
+alias-aware member collapse keeps a survivor whose quantifier aliases differ from the discarded
+member's; any external structure that captured the discarded member's aliases by identity then
+mis-resolves → the renamed column silently reads NULL. The merge re-enumeration is DIFFERENT: its merge
+quantifier is planner-INTERNAL — `PartitionSelectRule` re-stamps all column access through the merge
+value and rebases spanning predicates onto it, so NO external consumer resolves the merge alias by name.
+So alias-aware interning is safe THERE and only there. The gate is a property derived from the
+expression (`InternsAliasAware()` = "result value is a `JoinMergeAllValue`", the canonical marker of a
+merge select — Graefe's "property on the expression, not an external heuristic"), and it is the minimal
+change: it ADDS alias-aware dedup for merge selects and leaves every other expression's dedup exactly as
+master (alias-identity). Widening the gate is gated on migrating Go's column resolution to Java's
+ordinal/group model (a separate, large effort), NOT on 7.1 — until then the gate is the honest scope and
+the correct architectural boundary (intern alias-aware only where aliases are planner-internal).
 
 **Empirically verified (deterministic cascades harness, no FDB — `partition_select_interning_baseline_test.go`).**
 The harness MUST configure the planner exactly as the SQL pipeline does

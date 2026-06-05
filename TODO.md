@@ -210,7 +210,9 @@ alias-sensitive sites are `Reference.Insert`/`InsertFinal`, which dedup alias-ID
 Go-vs-Java divergence (Java's `containsInMemo` is alias-aware). Fix: a GATED alias-aware `MemoEqual`
 dedup tier in `Insert`/`InsertFinal`, opted into via `SelectExpression.InternsAliasAware()` (merge
 re-enumeration selects only — gating avoids over-deduping CTE column-rename selects, which silently
-read NULL when collapsed because Go has not unified alias namespaces, 7.1). `mergeQuantifierAlias` +
+read NULL when collapsed because Go's column derivation resolves some references by quantifier-alias
+IDENTITY, unlike Java's ordinal/group model; this is the RESOLUTION-model axis, NOT alias-namespace
+naming, which 7.1 already unified). `mergeQuantifierAlias` +
 `mergeAliasPrefix` deleted; the merge quantifier now gets a plain `uniqueId`. Verified by a
 deterministic chain task-count gate (±2%, pinned 3-chain 8999 / 4-chain 30593; naive un-gated uniqueId
 DOUBLES the 4-chain to 60044) + full suite green + 5× determinism. The opaque-type retirement
