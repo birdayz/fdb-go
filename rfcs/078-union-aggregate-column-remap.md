@@ -67,17 +67,28 @@ normalization at all**, unlike the ordered `RecordQueryUnionPlan`/`executeUnionS
    mismatched-alias aggregate branch correctly. Placed before the `innerPlanAccessor`
    descent; the existing top-`ProjectionPlan` case is unchanged.
 
+3. **`planColumnNamesWithMD` reports a `RecordQueryMapPlan`'s OWN result-value column
+   names** instead of descending through it (mirroring `physicalPlanColumnNames`). A branch
+   that `ImplementUnorderedUnionRule` already wrapped in a rename Map then reports its
+   POST-rename names here, so the new `executeUnorderedUnion` remap sees them equal to the
+   first branch and does NOT remap a second time over the already-renamed row (which would
+   read missing keys → NULLs — codex). This makes the executor remap and the plan-level
+   rename Map a single coherent mechanism rather than two that fight.
+
 **Out of scope (follow-ups, per Torvalds review):**
 - **AggregateINDEX branches** (`RecordQueryAggregateIndexPlan`): its cursor writes ONLY the
   canonical `aggFunc(col)` name, never the alias (`rule_aggregate_data_access` drops it),
   so naming it by the alias would not match its row keys. Fixing it needs the index cursor
   to carry the alias first — not handled here; documented in TODO 7.6-union-remap.
-- **A renaming `RecordQueryMapPlan` directly over a StreamingAgg** (e.g.
-  `SELECT COUNT(*)+1 AS x`): `planColumnNamesWithMD` descends through the Map to the
-  StreamingAgg and returns the agg's pre-rename names, not the Map's output alias. The
-  top-`RecordQueryProjectionPlan` case covers the common rename; only the Map variant is
-  unhandled. Not a regression (master returned scan-cols/nil; no-op for symmetric unions);
-  same deferred-shape family as AggregateIndex (Graefe impl-review condition).
+- **An ORDERED union of `Project([expr])`-over-aggregate branches** (e.g.
+  `SELECT COUNT(*)+1 AS x FROM a UNION ALL SELECT COUNT(*)+1 AS y FROM b`, read by name):
+  this plans as the ordered `Union(Project([(COUNT(*)+1)], StreamingAgg), …)` and returns
+  `[NULL, NULL]` — the projection's `AS x` alias is not applied to the output row (the row
+  is keyed by the expression text `(COUNT(*)+1)`), so a by-name read of `x` finds nothing.
+  This is a SEPARATE pre-existing bug (verified `[NULL,NULL]` on master AND at this branch's
+  base, independent of the streaming-agg remap fixed here — different root cause: ordered-union
+  projection-alias application, not the unordered-union column remap). Filed as a follow-up;
+  out of RFC-078 scope.
 - **Re-enabling the union-as-join-leg aggregate case** (relaxing the RFC-077
   `unionBranchNormalizable` gate): unsafe while the index-aggregate path drops the alias,
   because the translator gates on the *logical* `LogicalAggregate`, blind to whether it
