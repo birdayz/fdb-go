@@ -135,3 +135,103 @@ name-miss guard) above. The E2E join suite + outer-column sentinel + Graefe's th
 conditions (SELECT *, ambiguous-duplicate-name, plandiff byte-identical at every arity) are the
 safety net; each consumer is migrated + pinned BEFORE the opaque types are deleted. Done as its own
 focused PR (separate from RFC-076 / 7.7).
+
+---
+
+## v2 amendment — implementation findings (pre-implementation, before any code)
+
+A read-only survey of the apparatus (every `New*JoinMerge*` site + all consumers) surfaced two
+realities the "Fix" steps above underspecified. Neither changes the END STATE (anchored RC, sole
+path) — they refine HOW, and they are the load-bearing risks to validate first.
+
+### F1 — leg columns come from the legs' quantifier result TYPES, not from the construction site
+
+The `Fix` says the translator/`PartitionSelectRule` "emit `RecordConstructorValue` whose columns are
+`FieldValue(QOV(legAlias), col)` (one column per projected/live field)." But at every construction
+site — `pkg/relational/core/query/cascades_translator.go:396/657/767` (the binary seed sites — this
+file DOES exist and these are production callers; the seed-vs-exact gate is read at
+`rule_partition_select.go:210`) and `rule_partition_select.go:370/437` (re-enumeration) — the code
+has ONLY the leg ALIASES — the projected column list is not in hand (the real projection lives in the parent
+`Project`; the seed deliberately "hides" it; the re-enumeration knows only the live alias set). The
+columns ARE available, but indirectly: each leg quantifier ranges over a Reference whose result
+**type** is a `RecordType` carrying the leg's column names/types (exactly Java's source-record
+columns). Resolution: build the anchored RC by enumerating each leg's columns from
+`quantifier.GetRangesOver()`'s result `RecordType` — `FieldValue(QOV(leg), col)` per column, named by
+the column (or `ALIAS.COL` for cross-leg duplicates). Where a leg's result type is `UnknownType`
+(not yet derived), fall back to the current opaque merge for that node and let a later pass anchor it
+— but the seed sites have typed sources, so this is the common path. This keeps the name-miss guard
+(F-(b)) satisfiable: the RC's field names are exactly the union of the legs' columns.
+
+**Torvalds condition — the `UnknownType` fallback is a transient interim, NOT a permanent dual path.**
+Step 4 deletes `JoinMergeAllValue` OUTRIGHT; a fallback that survives the deletion is a split-brain.
+Acceptance gate (assert, don't hope): instrument the builder so a test fails if ANY seed/re-enum
+site takes the `UnknownType` arm across the full suite. If a leg is genuinely untyped at a seed site,
+that is a real type-derivation bug to root-cause, not paper over. After step 4 the fallback is gone,
+so the gate's real purpose is to PROVE it was never needed before the deletion lands.
+
+### F2 — the anchored RC REPORTS its leg correlations; the `Seed` bit's correlation-HIDING must be replicated, not just deleted
+
+The RFC says the `Seed` provenance bit is "subsumed by anchored RC." For interning and the reversal
+signal that holds (leg order + structural identity). But `Seed=true` ALSO does something the bare
+anchored RC does NOT: `GetCorrelatedToOfValue` (`value_correlation.go:34-48`) returns NOTHING for a
+seed, deliberately HIDING the leg aliases — measured load-bearing (reporting them is +~32% planner
+tasks, tipping the ≥4-way STAR past budget; RFC-074). A `RecordConstructorValue` of
+`FieldValue(QOV(leg), …)` naturally reports every leg alias (it IS correlated to them), which
+reintroduces exactly that pressure. Two clean options, to be settled with Graefe:
+  (i) **Anchored-seed correlation suppression** — when the RC is a join SEED (its columns are leg
+  QOVs over the select's OWN immediate quantifiers, i.e. correlations the surrounding select already
+  binds), exclude those self-bound leg aliases from the value's reported correlation set, mirroring
+  the `Seed=true` suppression. The provenance is no longer a stored bit but a structural property
+  (columns anchored to the select's own quantifiers ⇒ not external correlations) — strictly more
+  honest than the bit. `predicate_correlation.go`'s `AddMergeSeedAliases` becomes "read the RC's
+  anchored leg QOVs directly" (the buried-column classification it needs is now explicit in the RC).
+  (ii) keep a thin provenance flag on the construction path only for the exploration-budget gate.
+  (i) is preferred (no bit, structural). Validation: the ≥4-way STAR task count must not regress —
+  add it to the test plan as a hard gate (not just plandiff).
+
+  **Graefe caveat (ACK condition) — the `Seed` bit is DUAL-purpose; replicate BOTH halves.** Beyond
+  exploration-time HIDING (`GetCorrelatedToOfValue` → nothing, for budget), the bit is RE-EXPOSED at
+  partition time by `AddMergeSeedAliases` (`predicate_correlation.go`), which feeds the seed's leg
+  aliases back into a predicate's correlation set so `PartitionSelectRule` does NOT misclassify a
+  predicate reading a buried column as lower-only and push it below the merge to a leaf where the
+  alias is unbound (the 0-row dual-correlation bug, RFC's fix #2). F2-(i)'s "read the RC's anchored
+  leg QOVs directly" must reconstruct **both** halves: (1) the value's reported external-correlation
+  set EXCLUDES self-bound leg QOVs (hiding), AND (2) partition-time predicate classification still
+  SEES the buried leg aliases via the RC's anchored columns (re-exposure). Pin BOTH:
+  `TestFDB_JoinMerge_OuterColumn_NotDropped` + the dual-correlation 0-row regression for re-exposure,
+  the ≥4-way STAR task-count gate for hiding. A `RecordConstructorValue` exposes its leg QOVs in
+  `Children()`/`Fields`, so partition-time re-exposure reads them structurally (no bit) — Graefe's
+  "internally-bound ⇒ omit from getCorrelatedTo() is the CORRECT set, not a hack" confirms the
+  exclusion is principled, not a workaround.
+
+### Revised sequence (consumer-migrate-before-delete, each plandiff-verified)
+
+1. Add the anchored-RC builder (from leg result types, F1) + RC correlation handling (F2-i) +
+   `composeFieldOverConstructor` name-miss guard test — no call-site change yet.
+2. Switch the binary seed sites (`cascades_translator.go`) to the anchored RC; migrate
+   `joinResultValueIsReversed` to read the RC's leg order; verify plandiff byte-identical (2-way) +
+   STAR task count + full suite.
+3. Switch `PartitionSelectRule` re-enumeration to the anchored RC; retire `mergeQuantifierAlias`
+   (interning now structural); verify plandiff at every arity + STAR task count.
+4. Delete `JoinMergeAllValue`, `Seed`, `composeFieldOverJoinMerge`, `AddMergeSeedAliases`'s seed arm.
+5. Full gates + stress-1M.
+
+If F2 cannot be made budget-neutral, fall back to (ii) or pause the deletion (partial: anchored
+binary seed only) rather than ship a task-budget regression.
+
+### STAR task-count gate (Torvalds condition — concrete, not "must not regress")
+
+Record the CURRENT ≥4-way STAR `tasksRun`/`distinctRefs` baseline (master) as a pinned number in the
+test, and assert the post-change count is within **±2%**. A bare "must not regress" is a vibe;
+plandiff is blind to the +32% exploration blowup (byte-identical plans, more tasks). The pinned
+assertion is the only thing that catches an F2 correlation-suppression miss. Capture the baseline
+before step 2 and check it into the regression at step 2 and step 3.
+
+### v2 amendment review status
+
+Graefe ACK (condition: F2-(i) reconstructs BOTH halves of the dual-purpose `Seed` — exploration-time
+hiding AND partition-time re-exposure; pin the dual-correlation 0-row regression + STAR gate — folded
+into F2 above). Torvalds ACK (conditions: precise construction-site coordinates incl. full path —
+fixed in F1; `UnknownType` fallback acceptance gate + outright deletion at step 4 — folded into F1;
+concrete STAR baseline+tolerance — this section). Both conditions are now in the amendment; implement
+per the revised sequence.
