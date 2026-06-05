@@ -335,17 +335,44 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 	return nil
 }
 
-// unionOutputColumns returns a UNION's output column schema. SQL exposes the
-// column NAMES from the FIRST branch; later branches union by POSITION and may use
-// different output aliases — requiring all branches to share names (an earlier cut)
-// wrongly rejected a valid `SELECT id AS x … UNION ALL SELECT v AS y …` (codex P2),
-// which, with the opaque fallback retired, made the join untranslatable. Returns
-// nil when there are no branches or the first branch's columns are not derivable.
+// unionOutputColumns returns a UNION's output column schema for anchoring it as a
+// join leg. SQL exposes the FIRST branch's names and the executor unions later
+// branches by POSITION — but that position-remap (remapUnionColumnsByPosition,
+// keyed on planColumnNamesWithMD) is only reliable for projection-topped branches;
+// an aggregate branch with a DIFFERENT output alias is NOT remapped to the first
+// branch's name (a pre-existing executor gap — verified: `(SELECT COUNT(*) AS x …
+// UNION ALL SELECT COUNT(*) AS y …)` drops the second branch's rows on master too).
+// Anchoring the leg to the first branch's name there would read the second
+// branch's rows as NULL and silently drop join matches.
+//
+// Rather than couple the translator to exactly which branch shapes the executor
+// can normalize, anchor a union leg ONLY when every branch already produces the
+// SAME output names (the unambiguous case the position-remap is a no-op for). A
+// mismatched-alias union join leg returns nil → untranslatable: a clean
+// "unsupported" error, never silently-wrong rows (codex P2). Re-enabling
+// mismatched-alias union legs is gated on the executor reporting aggregate-branch
+// output names (TODO 7.6-union-remap). Returns nil for no branches / an
+// underivable first branch.
 func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []values.Field {
 	if len(u.Inputs) == 0 {
 		return nil
 	}
-	return t.derivedOutputColumns(u.Inputs[0])
+	first := t.derivedOutputColumns(u.Inputs[0])
+	if first == nil {
+		return nil
+	}
+	for _, br := range u.Inputs[1:] {
+		bc := t.derivedOutputColumns(br)
+		if len(bc) != len(first) {
+			return nil
+		}
+		for i := range bc {
+			if bc[i].Name != first[i].Name {
+				return nil
+			}
+		}
+	}
+	return first
 }
 
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:

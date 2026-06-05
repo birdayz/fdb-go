@@ -8,20 +8,19 @@ import (
 	"testing"
 )
 
-// TestFDB_UnionJoinLeg is the codex P2-1/P2-2 regression (RFC-077 7.6): a
-// CTE/derived-table whose body is a UNION, used as a JOIN LEG, must plan AND
-// return correct rows. Retiring the opaque-merge fallback exposed two gaps in the
-// anchored-RC leg-column derivation:
-//   - derivedOutputColumns had no LogicalUnion case → the union-bodied CTE leg
-//     derived nil columns → the join became untranslatable (it planned on master
-//     via the opaque fallback);
-//   - the union schema must take the FIRST branch's column NAMES (SQL standard);
-//     requiring all branches to share names wrongly rejected a valid
-//     `SELECT id AS x … UNION ALL SELECT v AS y …`.
+// TestFDB_UnionJoinLeg is the codex regression (RFC-077 7.6): a CTE/derived-table
+// whose body is a UNION, used as a JOIN LEG, must derive its leg columns (the
+// retired opaque fallback masked this — derivedOutputColumns had no LogicalUnion
+// case, so the leg derived nil → untranslatable). It now anchors to the union's
+// output schema, but ONLY when all branches agree on names — the case the
+// executor's position-remap handles unambiguously.
 //
-// Both are pinned end-to-end against real FDB here (translation alone is not
-// enough — the executor must union later branches by POSITION under the first
-// branch's names, which is exactly what the anchored leg columns assume).
+// The mismatched-alias case is deliberately untranslatable (a clean error), NOT
+// silently-wrong rows: the executor does NOT remap an aggregate branch's
+// differently-aliased column to the first branch's name (a pre-existing gap), so
+// anchoring there would drop rows. This pins, end-to-end against real FDB, that
+// (1) the common same-named union join works, and (2) a mismatched-alias union
+// join errors cleanly rather than returning wrong rows.
 func TestFDB_UnionJoinLeg(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -55,13 +54,16 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 			"SELECT c.w FROM u, c WHERE u.id = c.id",
 		[]int64{100, 200, 300})
 
-	// (2) Different branch aliases: the union exposes the FIRST branch's name `x`;
-	// the second branch (SELECT v AS y) unions by POSITION, so u.x = {1,2,30}.
-	// Join c on u.x = c.id → c.id in {1,2,30} matches {1,2} → w {100,200}.
-	assertInt64Set(t, db, ctx,
-		"WITH u AS (SELECT id AS x FROM a UNION ALL SELECT v AS y FROM b) "+
-			"SELECT c.w FROM u, c WHERE u.x = c.id",
-		[]int64{100, 200})
+	// (2) Mismatched-alias aggregate branches: the executor cannot remap the second
+	// branch's column to the first branch's name, so anchoring would DROP rows.
+	// This must error cleanly (untranslatable), NOT return the wrong [200].
+	// a:2 rows, b:1 row → counts {2,1}; c has id 1,2 → a correct remap would yield
+	// {100 (id 1), 200 (id 2)}, but the un-remappable second branch makes it unsafe.
+	q := "WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) " +
+		"SELECT c.w FROM u, c WHERE u.x = c.id"
+	if _, err := db.QueryContext(ctx, q); err == nil {
+		t.Errorf("mismatched-alias aggregate union join leg must error (untranslatable), not silently drop rows: %q", q)
+	}
 }
 
 // assertInt64Set runs q and asserts the single-column int64 results equal want as
