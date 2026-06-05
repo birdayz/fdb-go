@@ -1214,12 +1214,40 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 		// 7.6-union-remap). The names match the keys aggregateCursor writes (streaming_cursors.go)
 		// and the schema the translator derives (aggregateOutputColumns).
 		//
-		// The aggregate-INDEX plan is deliberately NOT handled here (follow-up RFC-078; not a
-		// regression — returns scan-cols/nil, no-op for symmetric unions): its cursor writes
-		// only the canonical aggResultName, never the alias (rule_aggregate_data_access drops
-		// it), so naming by the alias would not match its row keys.
+		//
+		// INVARIANT (RFC-081, Graefe): every physical realization of a bare aggregate union
+		// branch MUST report its output schema here — the gate (unionBranchNormalizable)
+		// admits a bare LogicalAggregate on the assumption that whatever it plans as is
+		// reportable. The three realizations are StreamingAgg, AggregateIndex, and
+		// MultiIntersection (all handled below). A future aggregate physical plan added
+		// without an arm here would fall through to nil and silently mis-remap a union branch
+		// → wrong rows. Add the arm with the new plan.
 		if agg, ok := p.(*plans.RecordQueryStreamingAggregationPlan); ok {
 			return streamingAggOutputNames(agg)
+		}
+		// A bare AGGREGATE-INDEX plan likewise defines its own output schema (group cols +
+		// the canonical aggregate name). Its GetResultType is UnknownType, so without this it
+		// would fall through to nil and a grouped aggregate-index UNION branch could not be
+		// position-remapped (RFC-081). OutputColumnNames returns exactly the keys the
+		// aggregateIndexCursor writes. A bare aggregate-index branch is always UNALIASED (an
+		// aliased SELECT tops with a Project), so there is no alias to carry here.
+		if aggIdx, ok := p.(*plans.RecordQueryAggregateIndexPlan); ok {
+			return aggIdx.OutputColumnNames()
+		}
+		// A MULTI-aggregate-intersection plan's result value (a RecordConstructorValue) names
+		// its output columns; the merge cursor keys each row by those exact field names
+		// (RecordConstructorValue.Evaluate). Report them VERBATIM — the GetResultType fallback
+		// below would upper-case them, which only matches because the names are upper in
+		// practice; reading f.Name directly is byte-identical to the row keys regardless
+		// (mirrors the MapPlan arm, RFC-078 codex). RFC-081.
+		if mi, ok := p.(*plans.RecordQueryMultiIntersectionOnValuesPlan); ok {
+			if rcv, ok := mi.GetResultValue().(*values.RecordConstructorValue); ok && len(rcv.Fields) > 0 {
+				names := make([]string, len(rcv.Fields))
+				for i, f := range rcv.Fields {
+					names[i] = f.Name
+				}
+				return names
+			}
 		}
 		if ip, ok := p.(innerPlanAccessor); ok {
 			p = ip.GetInner()

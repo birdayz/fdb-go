@@ -34,6 +34,38 @@ func TestAggregateIndexPlan_Construction(t *testing.T) {
 	}
 }
 
+// TestAggregateIndexPlan_OutputColumnNames pins the RFC-081 output-naming: a bare
+// aggregate-index plan reports group columns (verbatim) + the canonical aggregate name —
+// the exact keys aggregateIndexCursor writes (single source so cursor and reporter can't
+// drift). A bare aggregate-index plan is always unaliased, so no alias is involved.
+func TestAggregateIndexPlan_OutputColumnNames(t *testing.T) {
+	t.Parallel()
+
+	// Grouped COUNT(*): [G, COUNT(*)].
+	cnt := NewRecordQueryAggregateIndexPlan(
+		NewRecordQueryIndexPlan("cnt_by_g", nil, []string{"GA"}, values.UnknownType, false),
+		"GA", values.UnknownType, "COUNT",
+	).WithGroupColumns([]string{"G"}, "")
+	if got := cnt.CanonicalAggColumnName(); got != "COUNT(*)" {
+		t.Fatalf("canonical = %q, want COUNT(*)", got)
+	}
+	if got := cnt.OutputColumnNames(); len(got) != 2 || got[0] != "G" || got[1] != "COUNT(*)" {
+		t.Fatalf("output names = %v, want [G COUNT(*)]", got)
+	}
+
+	// Grouped SUM(V): [G, SUM(V)].
+	sum := NewRecordQueryAggregateIndexPlan(
+		NewRecordQueryIndexPlan("sum_by_g", nil, []string{"GA"}, values.UnknownType, false),
+		"GA", values.UnknownType, "SUM",
+	).WithGroupColumns([]string{"G"}, "V")
+	if got := sum.CanonicalAggColumnName(); got != "SUM(V)" {
+		t.Fatalf("canonical = %q, want SUM(V)", got)
+	}
+	if got := sum.OutputColumnNames(); len(got) != 2 || got[0] != "G" || got[1] != "SUM(V)" {
+		t.Fatalf("output names = %v, want [G SUM(V)]", got)
+	}
+}
+
 func TestAggregateIndexPlan_LeafPlan(t *testing.T) {
 	t.Parallel()
 	idx := NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)

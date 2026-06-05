@@ -302,41 +302,73 @@ func TestTranslateUnion(t *testing.T) {
 	}
 }
 
-// TestUnionBranchNormalizable_AggregateArity pins the RFC-080 gate boundary: a bare
-// LogicalAggregate union branch is normalizable IFF it is UNGROUPED with at least one
-// aggregate. An ungrouped aggregate produces no aggregate-index candidate (groupingCount
-// == 0 → nil), so it always plans as StreamingAgg, which flows every aggregate under its
-// alias — normalizable for any arity. A GROUPED bare aggregate can plan as
-// AggregateIndex/MultiIntersection (names not reported by planColumnNamesWithMD), so it
-// stays gated. A 0-aggregate shape is also gated.
+// TestUnionBranchNormalizable_AggregateArity pins the RFC-081 gate boundary. UNGROUPED bare
+// aggregate branches are unchanged from RFC-080 (always StreamingAgg) — always normalizable,
+// NOT re-gated (no regression — codex). A GROUPED bare aggregate is normalizable IFF every
+// aggregate's output name is STABLE between the logical leg schema and the physical row key —
+// i.e. COUNT(*) or FUNC(<bare column>); a qualified operand (SUM(T.C)), a constant
+// (COUNT(1)/COUNT(NULL)), an expression, or DISTINCT canonicalizes differently → gated (clean
+// error, never wrong rows). 0-aggregate (group-only) is also gated.
 func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{}
 	scan := logical.NewScan("A", "")
 
-	one := logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"X"}, "")
-	if !tr.unionBranchNormalizable(one) {
-		t.Error("ungrouped 1-aggregate LogicalAggregate must be normalizable (plans as StreamingAgg)")
+	// Stable forms → normalizable (grouped and ungrouped).
+	for _, tc := range []struct {
+		name string
+		agg  *logical.LogicalAggregate
+	}{
+		{"ungrouped COUNT(*)", logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"X"}, "")},
+		{"ungrouped SUM(V),COUNT(*)", logical.NewAggregate(scan, nil, []string{"SUM(V)", "COUNT(*)"}, []string{"S", "C"}, "")},
+		// Ungrouped is unchanged from RFC-080 (always StreamingAgg) — the stable-name gate applies
+		// only to GROUPED branches, so ungrouped constants/qualified stay normalizable (no
+		// regression of previously-working ungrouped union join legs — codex).
+		{"ungrouped COUNT(1) [not re-gated]", logical.NewAggregate(scan, nil, []string{"COUNT(1)"}, []string{""}, "")},
+		{"ungrouped SUM(T.C) [not re-gated]", logical.NewAggregate(scan, nil, []string{"SUM(T.C)"}, []string{""}, "")},
+		{"grouped COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")},
+		{"grouped SUM(V),COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, "")},
+		{"grouped COUNT(X) bare col", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")},
+	} {
+		if !tr.unionBranchNormalizable(tc.agg) {
+			t.Errorf("%s: must be normalizable", tc.name)
+		}
 	}
 
-	two := logical.NewAggregate(scan, nil, []string{"SUM(V)", "COUNT(*)"}, []string{"S", "C"}, "")
-	if !tr.unionBranchNormalizable(two) {
-		t.Error("ungrouped 2-aggregate LogicalAggregate must be normalizable (also plans as StreamingAgg)")
+	// Divergent forms → gated.
+	qualified := logical.NewAggregate(scan, []string{"G"}, []string{"SUM(T.C)"}, []string{""}, "")
+	if tr.unionBranchNormalizable(qualified) {
+		t.Error("qualified aggregate SUM(T.C) must NOT be normalizable (physical strips qualifier → SUM(C))")
 	}
 
-	grouped := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")
-	if tr.unionBranchNormalizable(grouped) {
-		t.Error("GROUPED bare aggregate must NOT be normalizable (may plan as AggregateIndex — unreported names)")
+	// COUNT(<numeric constant>) — gated by both the text (leading digit) and the ConstantValue operand.
+	constNum := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(1)"}, []string{""}, "")
+	constNum.AggregateOperands = []values.Value{&values.ConstantValue{Value: int64(1)}}
+	if tr.unionBranchNormalizable(constNum) {
+		t.Error("COUNT(1) must NOT be normalizable (count-star name mismatch)")
 	}
 
-	groupOnly := logical.NewAggregate(scan, []string{"G"}, nil, nil, "")
-	if tr.unionBranchNormalizable(groupOnly) {
-		t.Error("0-aggregate group-only LogicalAggregate must NOT be normalizable (left gated)")
+	// COUNT(NULL) — text arg "NULL" LOOKS like an identifier, so only the ConstantValue operand
+	// catches it. This is why the gate combines text + operand (Torvalds/codex class).
+	constNull := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, "")
+	constNull.AggregateOperands = []values.Value{&values.ConstantValue{Value: nil}}
+	if tr.unionBranchNormalizable(constNull) {
+		t.Error("COUNT(NULL) must NOT be normalizable (constant folds to count-star; text alone misses it)")
 	}
 
-	ungroupedZero := logical.NewAggregate(scan, nil, nil, nil, "")
-	if tr.unionBranchNormalizable(ungroupedZero) {
-		t.Error("0-aggregate ungrouped LogicalAggregate must NOT be normalizable (>= 1 guard)")
+	// DISTINCT → gated via the branch flag.
+	distinct := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")
+	distinct.HasDistinctAggregate = true
+	if tr.unionBranchNormalizable(distinct) {
+		t.Error("DISTINCT aggregate must NOT be normalizable")
+	}
+
+	// 0-aggregate (group-only and ungrouped) → gated.
+	if tr.unionBranchNormalizable(logical.NewAggregate(scan, []string{"G"}, nil, nil, "")) {
+		t.Error("0-aggregate group-only must NOT be normalizable")
+	}
+	if tr.unionBranchNormalizable(logical.NewAggregate(scan, nil, nil, nil, "")) {
+		t.Error("0-aggregate ungrouped must NOT be normalizable")
 	}
 }
 

@@ -54,17 +54,19 @@ func executeAggregateIndexScan(
 	return &aggregateIndexCursor{
 		inner:     indexCursor,
 		groupCols: p.GetGroupCols(),
-		aggColumn: p.GetAggColumn(),
-		aggFunc:   p.GetAggregateFunction(),
+		// Single source for the aggregate column key: the plan's
+		// CanonicalAggColumnName is also what planColumnNamesWithMD reports via
+		// OutputColumnNames, so the cursor's row key and the reported name can't
+		// drift (RFC-081).
+		canonicalName: p.CanonicalAggColumnName(),
 	}, nil
 }
 
 type aggregateIndexCursor struct {
-	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	groupCols []string
-	aggColumn string
-	aggFunc   string
-	closed    bool
+	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	groupCols     []string
+	canonicalName string
+	closed        bool
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -86,13 +88,7 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	}
 
 	if len(entry.Value) > 0 {
-		var col string
-		if c.aggColumn == "" {
-			col = c.aggFunc + "(*)"
-		} else {
-			col = c.aggFunc + "(" + c.aggColumn + ")"
-		}
-		datum[col] = entry.Value[0]
+		datum[c.canonicalName] = entry.Value[0]
 	}
 
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
