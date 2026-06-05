@@ -391,7 +391,27 @@ func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []value
 // row-shape-preserving wrappers; an unknown shape is conservatively not normalizable.
 func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator) bool {
 	switch o := op.(type) {
-	case *logical.LogicalProject, *logical.LogicalScan, *logical.LogicalJoin:
+	case *logical.LogicalProject, *logical.LogicalJoin:
+		return true
+	case *logical.LogicalScan:
+		// A scan may be a CTE/derived-table reference (translateScan resolves it from
+		// the CTE body, not a real table). A real-table scan is remappable, but a
+		// CTE-reference scan is only remappable if its BODY is — a CTE whose body is a
+		// bare aggregate is NOT (the executor unwraps it to its input scan's names,
+		// codex). Resolve cteScope and recurse, mirroring legColumns (remove-while-
+		// recursing so a same-named scan inside the body resolves to the real table,
+		// not back to the CTE). A pre-translated (recursive) CTE ref is unverifiable →
+		// conservatively not normalizable.
+		key := strings.ToUpper(o.Table)
+		if _, ok := t.cteExprScope[key]; ok {
+			return false
+		}
+		if body, ok := t.cteScope[key]; ok {
+			delete(t.cteScope, key)
+			n := t.unionBranchNormalizable(body)
+			t.cteScope[key] = body
+			return n
+		}
 		return true
 	case *logical.LogicalAggregate:
 		return false
