@@ -286,6 +286,93 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	return buildSelectShell(op, sq, "")
 }
 
+// buildPostAggregateProjection builds the LogicalProject that sits on top of a
+// LogicalAggregate when the SELECT list mixes aggregate outputs with computed
+// post-aggregate expressions (e.g. COUNT(*)+1 AS x) and/or group columns. It
+// lists ALL visible columns in SELECT-list order: aggregate outputs and group
+// columns as plain column references, computed expressions as expressions to
+// evaluate, and carries each column's output alias.
+//
+// This is the SINGLE source of post-aggregate projection truth shared by both
+// SELECT builders — visitSelectGroupBy (standalone SELECTs) and buildSelectShell
+// (the legacy UNION-branch / derived-table path). Keeping it shared prevents the
+// alias-handling divergence RFC-079 fixed: the legacy path used to build the
+// projection with nil aliases, so a UNION branch's `COUNT(*)+1 AS x` lost its `x`
+// alias and a by-name read of the union output returned NULL.
+//
+// Returns (nil, nil) when no visible column produces a projection. strip removes
+// the caller's column qualifier (derived-table / table-alias prefix); it differs
+// between the two callers, so it is passed in. The returned antlr slice is the
+// per-column post-aggregate expression contexts (nil for plain references), which
+// the caller stores as postAggExprs for Value resolution.
+func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelectCol, strip func(string) string) (*logical.LogicalProject, []antlrgen.IExpressionContext) {
+	var allProj []string
+	var allAliases []string
+	var allAntlr []antlrgen.IExpressionContext
+	hasAlias := false
+	for _, ac := range aggCols {
+		if !ac.visible {
+			continue
+		}
+		alias := ""
+		if ac.outExpr != nil && ac.aggFunc == "" {
+			canonical := canonicalTextOf(ac.outExpr)
+			allProj = append(allProj, canonical)
+			allAntlr = append(allAntlr, ac.outExpr)
+			if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
+				alias = ac.outName
+				hasAlias = true
+			}
+		} else if ac.aggFunc != "" {
+			arg := ac.aggArg
+			if arg == "" && ac.aggExpr != nil {
+				arg = canonicalTextOf(ac.aggExpr)
+			}
+			if arg == "" {
+				arg = "*"
+			}
+			arg = strip(arg)
+			canonical := ac.aggFunc + "(" + arg + ")"
+			allProj = append(allProj, canonical)
+			allAntlr = append(allAntlr, nil)
+			if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
+				alias = ac.outName
+				hasAlias = true
+			}
+		} else if ac.groupCol != "" {
+			allProj = append(allProj, strip(ac.groupCol))
+			allAntlr = append(allAntlr, nil)
+			if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+				alias = ac.outName
+				hasAlias = true
+			}
+		}
+		// allAliases stays parallel to allProj because every VISIBLE aggSelectCol
+		// sets exactly one of outExpr/aggFunc/groupCol (select_parser.go invariant),
+		// so exactly one arm above appended to allProj. If that invariant is ever
+		// broken (a 4th column kind, or a visible col with none set), this append
+		// would desync aliases from projections — keep the arms total over visible cols.
+		allAliases = append(allAliases, alias)
+	}
+	if len(allProj) == 0 {
+		return nil, nil
+	}
+	var aliases []string
+	if hasAlias {
+		aliases = allAliases
+	}
+	proj := logical.NewProject(op, allProj, aliases)
+	// Mark outExpr slots as computed (need Value resolution). Aggregate output
+	// and groupCol slots are column references to the aggregate's output — NOT
+	// computed.
+	computed := make([]bool, len(allProj))
+	for i, e := range allAntlr {
+		computed[i] = e != nil
+	}
+	proj.IsComputed = computed
+	return proj, allAntlr
+}
+
 // buildSelectShell builds the Aggregate/Sort/Limit/Projection/Distinct
 // shell on top of an already-built FROM source. Shared between
 // buildLogicalPlanForSelect (plain tables) and the derived-table path.
@@ -357,43 +444,9 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			}
 		}
 		if hasOutExpr {
-			var allProj []string
-			var allAntlr []antlrgen.IExpressionContext
-			for _, ac := range sq.aggCols {
-				if !ac.visible {
-					continue
-				}
-				if ac.outExpr != nil && ac.aggFunc == "" {
-					allProj = append(allProj, strings.TrimSpace(canonicalTextOf(ac.outExpr)))
-					allAntlr = append(allAntlr, ac.outExpr)
-				} else if ac.aggFunc != "" {
-					arg := ac.aggArg
-					if arg == "" && ac.aggExpr != nil {
-						arg = canonicalTextOf(ac.aggExpr)
-					}
-					if arg == "" {
-						arg = "*"
-					}
-					arg = strip(arg)
-					allProj = append(allProj, ac.aggFunc+"("+arg+")")
-					allAntlr = append(allAntlr, nil)
-				} else if ac.groupCol != "" {
-					allProj = append(allProj, strip(ac.groupCol))
-					allAntlr = append(allAntlr, nil)
-				}
-			}
-			if len(allProj) > 0 {
-				proj := logical.NewProject(op, allProj, nil)
-				// Mark outExpr slots as computed (need Value resolution).
-				// Aggregate output and groupCol slots are column references
-				// to the aggregate's output — NOT computed.
-				computed := make([]bool, len(allProj))
-				for i, e := range allAntlr {
-					computed[i] = e != nil
-				}
-				proj.IsComputed = computed
+			if proj, antlr := buildPostAggregateProjection(op, sq.aggCols, strip); proj != nil {
 				op = proj
-				sq.postAggExprs = allAntlr
+				sq.postAggExprs = antlr
 			}
 		} else if len(keys) > 0 {
 			hasNonVisible := false

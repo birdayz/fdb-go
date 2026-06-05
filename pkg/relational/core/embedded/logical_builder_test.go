@@ -8,6 +8,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
 // parseSelect is a test helper that parses SQL and returns the
@@ -83,6 +84,58 @@ func TestBuildLogicalPlan_CountStar(t *testing.T) {
 	want := "Aggregate(group=[], agg=[COUNT(*)])\n  Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestBuildLogicalPlan_PostAggExprAlias_CarriesAlias is the RFC-079 regression at
+// the logical-plan level: the legacy buildSelectShell builder — the path that builds
+// UNION branches — must build the post-aggregate-EXPRESSION projection WITH its output
+// alias. Before the fix it passed nil aliases (logical.NewProject(op, allProj, nil)),
+// so a UNION branch's `COUNT(*)+1 AS x` lost the `x` alias and a by-name read of the
+// union output returned NULL. Both SELECT builders now share
+// buildPostAggregateProjection — the single source of alias truth.
+func TestBuildLogicalPlan_PostAggExprAlias_CarriesAlias(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT COUNT(*)+1 AS x FROM a")
+	op := buildLogicalPlanForSelect(sq)
+	proj, ok := op.(*logical.LogicalProject)
+	if !ok {
+		t.Fatalf("expected top *logical.LogicalProject, got %T:\n%s", op, op.Explain(""))
+	}
+	found := false
+	for _, a := range proj.Aliases {
+		if strings.EqualFold(a, "X") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("post-aggregate-expression projection must carry the AS alias (RFC-079); got Aliases=%v, plan:\n%s",
+			proj.Aliases, op.Explain(""))
+	}
+	// The expression slot must be marked computed (needs Value resolution), parallel
+	// to Projections.
+	if len(proj.IsComputed) != len(proj.Projections) {
+		t.Fatalf("IsComputed must be parallel to Projections: %d vs %d", len(proj.IsComputed), len(proj.Projections))
+	}
+}
+
+// TestBuildLogicalPlan_PostAggExpr_NoSpuriousAlias pins the other direction: an
+// unaliased post-aggregate expression must NOT be given an alias (hasAlias stays
+// false → nil Aliases), so buildPostAggregateProjection only aliases when the SELECT
+// list actually renamed the column.
+func TestBuildLogicalPlan_PostAggExpr_NoSpuriousAlias(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT COUNT(*)+1 FROM a")
+	op := buildLogicalPlanForSelect(sq)
+	proj, ok := op.(*logical.LogicalProject)
+	if !ok {
+		t.Fatalf("expected top *logical.LogicalProject, got %T:\n%s", op, op.Explain(""))
+	}
+	for _, a := range proj.Aliases {
+		if a != "" {
+			t.Fatalf("unaliased post-aggregate expression must not be aliased; got Aliases=%v, plan:\n%s",
+				proj.Aliases, op.Explain(""))
+		}
 	}
 }
 
