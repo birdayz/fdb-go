@@ -265,6 +265,22 @@ structural memo lookup (the merge value's canonical hash/eq) + a plain `uniqueId
 by the STAR ±2% gate (sharing preserved) + plandiff byte-identical at every arity. 7.6 (anchoring) and
 the opaque-type deletion are explicitly OUT of scope here (blocked on column threading, F3).
 
+**Precise root-cause (investigated, for the implementer).** `memoizeNonLeaf` (`memo.go`) ALREADY
+dedups alias-aware via `MemoEqual` (RFC-039) — BUT it first narrows candidates by
+`expr.HashCodeWithoutChildren()` (`memo.go`: `if member.HashCodeWithoutChildren() != h { continue }`).
+The upper select's result value is `buildUpperResult(mergeAlias)` — a `JoinMergeAllValue` whose
+`Aliases` INCLUDE the merge quantifier alias. With `mergeQuantifierAlias` (stable per live-set) the two
+partitions' upper selects hash-EQUAL → candidate match → `MemoEqual` dedups → one Reference. With a
+`uniqueId` merge quantifier, each partition's `buildUpperResult` carries a DIFFERENT alias → different
+`HashCodeWithoutChildren` → candidates never match → `MemoEqual` never runs → re-explored per path
+(the measured 6× / +32% STAR blowup). So the 7.5 fix is **alias-aware (alias-independent) HASHING for
+the candidate-narrowing path** — make `HashCodeWithoutChildren` of a select (and the `JoinMergeAllValue`
+it carries) invariant under a consistent quantifier-alias renaming, matching `MemoEqual`'s
+alias-awareness, so a `uniqueId` merge quantifier hash-matches and `MemoEqual` dedups. Then the
+synthetic `mergeQuantifierAlias` is removable. This is a focused memo-interning change (RFC-039/040
+extended from alias-aware equality to alias-aware hashing); land it STAR-±2%-gated + plandiff-at-every-
+arity, as its own PR. (Status: root-cause located; implementation is the next step.)
+
 ### Revised sequence (consumer-migrate-before-delete, each plandiff-verified) — SUPERSEDED by F3 resolution
 
 1. Add the anchored-RC builder (from leg result types, F1) + RC correlation handling (F2-i) +
