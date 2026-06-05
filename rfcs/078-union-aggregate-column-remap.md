@@ -72,6 +72,12 @@ normalization at all**, unlike the ordered `RecordQueryUnionPlan`/`executeUnionS
   canonical `aggFunc(col)` name, never the alias (`rule_aggregate_data_access` drops it),
   so naming it by the alias would not match its row keys. Fixing it needs the index cursor
   to carry the alias first — not handled here; documented in TODO 7.6-union-remap.
+- **A renaming `RecordQueryMapPlan` directly over a StreamingAgg** (e.g.
+  `SELECT COUNT(*)+1 AS x`): `planColumnNamesWithMD` descends through the Map to the
+  StreamingAgg and returns the agg's pre-rename names, not the Map's output alias. The
+  top-`RecordQueryProjectionPlan` case covers the common rename; only the Map variant is
+  unhandled. Not a regression (master returned scan-cols/nil; no-op for symmetric unions);
+  same deferred-shape family as AggregateIndex (Graefe impl-review condition).
 - **Re-enabling the union-as-join-leg aggregate case** (relaxing the RFC-077
   `unionBranchNormalizable` gate): unsafe while the index-aggregate path drops the alias,
   because the translator gates on the *logical* `LogicalAggregate`, blind to whether it

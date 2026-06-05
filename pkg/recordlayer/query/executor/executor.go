@@ -1192,10 +1192,17 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 		// the translator derives (aggregateOutputColumns), so remapUnionColumnsByPosition
 		// normalizes the branch correctly.
 		//
-		// The aggregate-INDEX plan is deliberately NOT handled here: its cursor writes
-		// only the canonical aggResultName, never the alias (rule_aggregate_data_access
-		// drops it), so naming it by the alias would not match its row keys — fixing
-		// that needs the index cursor to carry the alias first (follow-up, RFC-078).
+		// Two related shapes are deliberately NOT handled here (deferred-shape family,
+		// follow-up RFC-078; neither is a regression — both returned scan-cols/nil before
+		// and are no-ops for symmetric unions):
+		//   - aggregate-INDEX plans: their cursor writes only the canonical aggResultName,
+		//     never the alias (rule_aggregate_data_access drops it), so naming by the alias
+		//     would not match the row keys — needs the index cursor to carry the alias first;
+		//   - a renaming RecordQueryMapPlan directly over a StreamingAgg (e.g.
+		//     SELECT COUNT(*)+1 AS x): the loop descends THROUGH the Map to the StreamingAgg
+		//     and returns the agg's PRE-rename names, not the Map's output alias. The top
+		//     RecordQueryProjectionPlan case (above) covers the common rename; only the Map
+		//     variant is unhandled.
 		if agg, ok := p.(*plans.RecordQueryStreamingAggregationPlan); ok {
 			return streamingAggOutputNames(agg)
 		}
