@@ -1,6 +1,6 @@
 # RFC-081: Grouped-aggregate union branches resolvable by name (RFC-078 follow-up a)
 
-**Status:** Draft
+**Status:** Implemented
 **Area:** Cascades executor (`planColumnNamesWithMD`) + translator union gate
 **Reviewers:** Graefe (Cascades/executor alignment + the gate decision), Torvalds (code quality), codex, @claude
 
@@ -79,9 +79,10 @@ is additionally re-wired to build its aggregate-column key via the plan's `Canon
 same method `OutputColumnNames` uses) instead of an inline copy, so the cursor's written key and the
 reported name are a genuine single source and cannot drift (Torvalds).
 
-Validated end-to-end before finalizing: the grouped single-agg union join leg plans as `AggregateIndex`
-and returns correct rows; the grouped multi-agg one plans as `StreamingAgg` (cost) and also returns
-correct rows.
+Validated end-to-end: the grouped single-agg union join leg plans as `AggregateIndex` and returns
+correct rows; the grouped multi-agg union join leg plans as `StreamingAgg` when unfiltered, or as
+`MultiIntersection` when filtered on the group key (`WHERE g = …` bounds the index scan) — both
+EXPLAIN-pinned in `TestFDB_UnionGroupedAggregate` — and both return correct rows.
 
 ## Performance
 
