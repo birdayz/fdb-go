@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
 	"testing"
 )
 
@@ -53,7 +52,7 @@ func TestFDB_UnionAggregateColumnRemap(t *testing.T) {
 
 	// (2) ORDER BY the first-branch column over the same union — same correctness, and
 	// the sort key must resolve to a real value on every branch (not NULL).
-	assertInt64SetOrdered(t, db, ctx,
+	assertInt64Ordered(t, db, ctx,
 		"SELECT x FROM (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) u ORDER BY x",
 		[]int64{2, 3})
 
@@ -75,9 +74,10 @@ func TestFDB_UnionAggregateColumnRemap(t *testing.T) {
 		[]int64{2, 3})
 }
 
-// assertInt64SetOrdered asserts the single-column int64 results equal want in the
-// given order (the query has an ORDER BY).
-func assertInt64SetOrdered(t *testing.T, db *sql.DB, ctx context.Context, q string, want []int64) {
+// assertInt64Ordered asserts the single-column int64 results equal want in EXACTLY
+// that order (the query has an ORDER BY). It does NOT sort — the order is part of
+// the assertion.
+func assertInt64Ordered(t *testing.T, db *sql.DB, ctx context.Context, q string, want []int64) {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
@@ -95,9 +95,7 @@ func assertInt64SetOrdered(t *testing.T, db *sql.DB, ctx context.Context, q stri
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows.Err %q: %v", q, err)
 	}
-	w := append([]int64(nil), want...)
-	sort.Slice(w, func(i, j int) bool { return w[i] < w[j] })
-	if fmt.Sprint(got) != fmt.Sprint(w) {
-		t.Fatalf("query %q: got %v, want %v", q, got, w)
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("query %q: got %v, want %v (exact order)", q, got, want)
 	}
 }
