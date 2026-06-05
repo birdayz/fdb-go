@@ -109,16 +109,23 @@ func (t *cascadesTranslator) tableColumns(table string) []values.Field {
 // fall back to a case-insensitive scan when the exact lookup misses. Without this
 // every real-table join seed fell back to the opaque merge — the columns were
 // unreachable (RFC-077 7.6).
+//
+// The fallback picks the lexicographically-smallest matching proto name so the
+// result is DETERMINISTIC even in the (metadata-invalid) case of two record types
+// that differ only by case — map iteration order is not stable. In well-formed
+// metadata proto names are unique, so at most one name matches and the order is moot.
 func (t *cascadesTranslator) resolveRecordType(table string) *recordlayer.RecordType {
 	if rt := t.md.GetRecordType(table); rt != nil {
 		return rt
 	}
+	var bestName string
+	var best *recordlayer.RecordType
 	for name, rt := range t.md.RecordTypes() {
-		if strings.EqualFold(name, table) {
-			return rt
+		if strings.EqualFold(name, table) && (best == nil || name < bestName) {
+			bestName, best = name, rt
 		}
 	}
-	return nil
+	return best
 }
 
 // fieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring

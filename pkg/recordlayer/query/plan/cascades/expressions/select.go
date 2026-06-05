@@ -242,11 +242,13 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 // Go's column resolution to Java's ordinal/group model, not on 7.1.
 func (e *SelectExpression) InternsAliasAware() bool {
 	// RFC-077 7.6: the source-anchored join RESULT value (a RecordConstructorValue
-	// marked AnchoredJoin) is the marker of a merge re-enumeration select — its
-	// merge quantifier is planner-internal with no external consumer, so it must
-	// intern alias-aware; otherwise the re-enumeration's shared sub-products
-	// re-explode per bipartition (the ≥4-way chain/STAR task count blows past
-	// budget). It is the structural successor of the retired opaque-merge marker.
+	// marked AnchoredJoin) is the marker of any join-seed OR merge re-enumeration
+	// select — a translator binary seed, a re-enumeration merge, or a scalar-subquery
+	// join all carry it. Its leg quantifiers are planner-internal with no external
+	// consumer, so it must intern alias-aware; otherwise the re-enumeration's shared
+	// sub-products re-explode per bipartition (the ≥4-way chain/STAR task count blows
+	// past budget). It is the structural successor of the retired opaque-merge marker
+	// (which likewise fired for both the Seed and the re-enumeration JoinMergeAllValue).
 	if rc, ok := e.resultValue.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
 		return true
 	}
