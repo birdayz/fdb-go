@@ -68,8 +68,9 @@ type cascadesTranslator struct {
 	// keyed by upper-cased CTE name (RFC-077 7.6). cteExprScope stores an opaque
 	// RelationalExpression whose column names legColumns cannot recover; this
 	// parallel map records them so a CTE reference used as a JOIN LEG anchors
-	// (FieldValue(QOV(cteAlias), col) per column) instead of falling back to the
-	// opaque merge. nil/absent entry → not column-derivable → opaque fallback.
+	// (FieldValue(QOV(cteAlias), col) per column). nil/absent entry → not
+	// column-derivable → the leg cannot anchor (a join over it is untranslatable;
+	// the opaque-merge fallback was retired in RFC-077 7.6).
 	cteColumnsScope  map[string][]values.Field
 	scalarSubqueries []ScalarSubqueryPlan
 }
@@ -182,9 +183,9 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// table). legColumns mirrors that (RFC-077 7.6):
 		//   - cteExprScope holds a PRE-TRANSLATED body (recursive-CTE reference /
 		//     temp-table self-reference); its output columns are not readable from
-		//     the opaque RelationalExpression, so cteColumnsScope records them
-		//     alongside — return that schema so the recursive-CTE leg anchors
-		//     (nil entry → not derivable → opaque fallback);
+		//     the RelationalExpression, so cteColumnsScope records them alongside —
+		//     return that schema so the recursive-CTE leg anchors (nil entry → not
+		//     derivable → the leg cannot anchor, a join over it is untranslatable);
 		//   - cteScope holds the logical body: derive its output columns so the CTE
 		//     leg anchors. The CTE is REMOVED from scope while deriving the body
 		//     (exactly like translateScan) so a scan inside the body that references
@@ -291,7 +292,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// columns ARE the body's output columns — renamed by ColumnAliases when
 		// present (WITH b(x,y) AS …), exactly as translateCTE wraps the body in a
 		// renaming Project. A recursive CTE leg is not column-derivable here → nil
-		// (opaque fallback).
+		// (the leg cannot anchor; the opaque-merge fallback was retired).
 		if o.Recursive {
 			return nil
 		}
@@ -305,8 +306,9 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		return t.derivedOutputColumns(o.Body)
 	default:
 		// Subquery / Explode / DML and other non-row-producing shapes are not
-		// column-derivable here → nil, so the seed falls back to the opaque
-		// merge. The fallback is always safe (it preserves the pre-7.6 behavior).
+		// column-derivable here → nil. A join seed with a non-derivable leg is
+		// untranslatable (the opaque-merge fallback was retired in RFC-077 7.6);
+		// every production query reaches a derivable leg shape (proven no-fallback).
 		return nil
 	}
 }
@@ -751,26 +753,24 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// The inner is a scalar SUBQUERY exposing exactly ONE value. The projection
 	// reads it as the QUALIFIED name <innerAlias>.<scalarCol> — replaceScalarSubqueryRef
 	// builds that field name (upper(innerAlias)+"."+upper(scalarCol)) — and the inner
-	// quantifier's row carries the scalar under the key scalarCol (the opaque seed
-	// works at runtime because mergeRows PREFIXES every inner key with innerAlias,
-	// dots and all, so <innerAlias>.<scalarCol> resolves iff the inner key == scalarCol;
-	// since the opaque path resolves, it does). NewScalarSubqueryAnchoredRecord anchors
-	// the inner leg with that SINGLE field — named EXACTLY <innerAlias>.<scalarCol> and
-	// valued FieldValue(QOV(innerAlias), scalarCol) — so composeFieldOverConstructor
-	// folds the scalar reference onto the inner leg with no NULL, whether or not
-	// scalarCol is itself dotted (a non-aggregate subquery keeps its table qualifier,
-	// "C.NAME"; the dedicated builder re-qualifies it under innerAlias rather than
-	// propagating it verbatim as NewAnchoredJoinRecord would). The outer leg carries
-	// its derivable columns so the (bare or qualified) outer projections resolve too.
+	// quantifier's row carries the scalar under the key scalarCol (the runtime
+	// mergeRows PREFIXES every inner key with innerAlias, dots and all, so
+	// <innerAlias>.<scalarCol> resolves iff the inner key == scalarCol; it does).
+	// NewScalarSubqueryAnchoredRecord anchors the inner leg with that SINGLE field —
+	// named EXACTLY <innerAlias>.<scalarCol> and valued FieldValue(QOV(innerAlias),
+	// scalarCol) — so composeFieldOverConstructor folds the scalar reference onto the
+	// inner leg with no NULL, whether or not scalarCol is itself dotted (a
+	// non-aggregate subquery keeps its table qualifier, "C.NAME"; the dedicated
+	// builder re-qualifies it under innerAlias rather than propagating it verbatim as
+	// NewAnchoredJoinRecord would). The outer leg carries its derivable columns so the
+	// (bare or qualified) outer projections resolve too.
 	//
-	// Fallback to the opaque seed ONLY when the outer columns are not derivable (a
-	// not-yet-anchored outer shape) — the transitional fallback the no-fallback
-	// assertion proves is never taken for a real-table outer.
+	// Untranslatable when the outer columns are not derivable (only the catalog-free
+	// nil-md path — production always passes md): the opaque-seed fallback was RETIRED
+	// in RFC-077 7.6, so there is no result value to flow.
 	scalarCol := strings.ToUpper(csq.ScalarCol)
 	outerCols := t.legColumns(p.Input)
 	if outerCols == nil || outerAlias == "" || scalarCol == "" {
-		// Outer columns not derivable (only the catalog-free nil-md path); the
-		// opaque seed fallback was RETIRED in RFC-077 7.6. Untranslatable.
 		return nil
 	}
 	resultValue := values.NewScalarSubqueryAnchoredRecord(
@@ -1148,6 +1148,14 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	}
 
 	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
+	if resultValue == nil {
+		// A leg's columns are not derivable (only the catalog-free nil-md path;
+		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
+		// Mirrors translateJoin: the opaque-seed fallback was retired, so a nil
+		// result value must not flow into the SelectExpression (it would nil-deref
+		// downstream, e.g. GetCorrelatedToOfValue).
+		return nil
+	}
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		quantifiers,
@@ -1528,8 +1536,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 
 // fieldsFromColumnNames builds an anchored-RC leg's column schema from a list of
 // output column NAMES (upper-cased), typed UnknownType (only names are
-// load-bearing for name-based field resolution). Returns nil for an empty list so
-// the caller falls back to the opaque seed (RFC-077 7.6).
+// load-bearing for name-based field resolution). Returns nil for an empty list,
+// marking the leg's columns as not derivable (RFC-077 7.6).
 func fieldsFromColumnNames(names []string) []values.Field {
 	if len(names) == 0 {
 		return nil

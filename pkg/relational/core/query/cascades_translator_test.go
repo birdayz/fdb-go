@@ -200,10 +200,10 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 		t.Error("nil leg must derive nil columns")
 	}
 
-	// (5) nil-md translator derives nil for a scan (no typing source) → seed
-	// falls back to the opaque merge.
+	// (5) nil-md translator derives nil for a scan (no typing source) → a join
+	// over it is untranslatable (the opaque-merge fallback was retired, RFC-077 7.6).
 	if (&cascadesTranslator{}).legColumns(logical.NewScan("Order", "O")) != nil {
-		t.Error("nil-md leg columns must be nil (fall back to opaque seed)")
+		t.Error("nil-md leg columns must be nil (no typing source)")
 	}
 }
 
@@ -374,6 +374,29 @@ func TestTranslateJoinNilMd(t *testing.T) {
 	join := logical.NewJoin(logical.NewScan("Order", ""), logical.NewScan("Customer", ""), logical.JoinInner, "")
 	if ref := TranslateToCascades(join); ref != nil {
 		t.Fatalf("expected nil reference for a nil-md join (no derivable leg columns), got %T", ref.Members()[0])
+	}
+}
+
+// TestTranslateJoinWithExists_NilMdUntranslatable is the Torvalds-review regression:
+// translateJoinWithExists must guard a nil result value the SAME as translateJoin.
+// Without md the join's leg columns don't derive, so buildJoinResultValue returns
+// nil (the opaque-seed fallback was retired, RFC-077 7.6). A nil result value must
+// NOT flow into the SelectExpression — downstream GetCorrelatedToOfValue(nil) would
+// nil-deref. The join+EXISTS shape must be untranslatable (nil), not a select with
+// a nil result. (Without the guard this returns a non-nil SelectExpression and the
+// assertion fails — the latent crash this test pins shut.)
+func TestTranslateJoinWithExists_NilMdUntranslatable(t *testing.T) {
+	t.Parallel()
+	tr := &cascadesTranslator{} // nil md — leg columns never derive
+	join := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
+	filter := &logical.LogicalFilter{
+		Input: join,
+		ExistsSubqueries: []logical.ExistsSubquery{
+			{Alias: values.NamedCorrelationIdentifier("E"), Plan: logical.NewScan("TypedRecord", "TR")},
+		},
+	}
+	if got := tr.translateJoinWithExists(join, filter); got != nil {
+		t.Fatalf("nil-md join+EXISTS must be untranslatable (nil), got %T", got)
 	}
 }
 
@@ -839,11 +862,6 @@ func TestSourceAlias(t *testing.T) {
 	})
 }
 
-// TestLegColumns_CTEShadowFallsBackToOpaque pins codex's CTE-shadow catch (RFC-077
-// 7.6): when a CTE name SHADOWS a real table, legColumns must NOT anchor with the
-// real table's metadata columns (translateScan resolves the scan from the CTE
-// body, not the table). It must return nil so the seed falls back to the opaque
-// merge — otherwise a join against the CTE would mis-anchor / mis-name columns.
 // TestLegColumns_CTEScopeResolvesBody pins the RFC-077 7.6 CTE/derived-table
 // anchoring: a cteScope-shadowed scan derives its columns from the CTE BODY (not
 // the real table's metadata, and not nil). The CTE is removed from scope while

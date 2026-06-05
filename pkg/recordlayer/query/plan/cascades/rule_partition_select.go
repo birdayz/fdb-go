@@ -385,18 +385,27 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// RFC-077 7.6 re-enumeration anchoring: when the parent is a source-anchored
 		// RC, build a NEW source-anchored RC over the upper's quantifiers
 		// (NewReEnumerationAnchoredRecord, columns read from the parent by anchoring
-		// quantifier). The retired opaque merge restamp is gone — every
-		// real-table parent reaching here is anchored (proven by the no-fallback
-		// sentinels + the full-suite panic probe), and NewReEnumerationAnchoredRecord
-		// always resolves an anchored parent's columns (every leg's source is a parent
-		// quantifier). Canonical leg order so two bipartitions producing the same upper
-		// merge intern (the anchored RC's structural identity is order-sensitive).
+		// quantifier). The retired opaque merge restamp is gone — every parent
+		// reaching here is anchored (the opaque type can no longer be constructed;
+		// proven across the full SQL surface by a panic probe before deletion), and
+		// NewReEnumerationAnchoredRecord always resolves an anchored parent's columns
+		// (every leg's source is a parent quantifier; the nil branch panics).
+		// Canonical leg order so two bipartitions producing the same upper merge
+		// intern (the anchored RC's structural identity is order-sensitive).
 		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier, newLowerSources []values.CorrelationIdentifier) values.Value {
 			if !parentIsMerge {
 				return resultValue
 			}
 			legs := upperLegs(newLowerAlias, newLowerSources)
-			return values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
+			rc := values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
+			if rc == nil {
+				// Unreachable by construction: every upper leg's source is a parent
+				// quantifier, so an anchored parent always resolves. Fail LOUD if a
+				// future change breaks the invariant, rather than store nil silently
+				// (which surfaces as wrong rows). RFC-077 7.6 retired the opaque fallback.
+				panic("RFC-077 7.6: anchored re-enumeration must resolve an anchored parent's legs (upper)")
+			}
+			return rc
 		}
 
 		// addUpper appends the new lower quantifier, the upper tables, and the
@@ -472,6 +481,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				legs[i] = values.ReEnumerationLeg{Alias: a, Sources: []values.CorrelationIdentifier{a}}
 			}
 			lowerResult := values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
+			if lowerResult == nil {
+				// Unreachable by construction (every live lower is a parent quantifier);
+				// fail LOUD rather than store nil silently → wrong rows. RFC-077 7.6.
+				panic("RFC-077 7.6: anchored re-enumeration must resolve an anchored parent's legs (lower)")
+			}
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerResult)
 
 			// A per-plan deterministic merge alias (Memo.NextMergeAlias). Two

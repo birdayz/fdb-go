@@ -340,11 +340,14 @@ func TestNewReEnumerationAnchoredRecord_PassThroughAndMerge(t *testing.T) {
 	}
 }
 
-// TestNewReEnumerationAnchoredRecord_FallsBackOnMissingColumns pins that the
-// re-enumeration returns nil (caller falls back to the opaque merge) when the
-// parent does not carry a leg's source columns — the transitional fallback for a
-// not-yet-anchored shape (RFC-077 7.6).
-func TestNewReEnumerationAnchoredRecord_FallsBackOnMissingColumns(t *testing.T) {
+// TestNewReEnumerationAnchoredRecord_NilOnMissingColumns pins that the
+// re-enumeration returns nil when the parent does not carry a leg's source
+// columns or is not anchored (RFC-077 7.6). In production this is unreachable
+// (every re-enumeration leg's source is a parent quantifier), and the callers in
+// rule_partition_select.go panic on a nil — fail-loud rather than store a nil
+// result value silently. This unit test exercises the function's nil contract
+// directly (not through the panicking callers).
+func TestNewReEnumerationAnchoredRecord_NilOnMissingColumns(t *testing.T) {
 	t.Parallel()
 	a := NamedCorrelationIdentifier("A")
 	parent := NewAnchoredJoinRecord([]AnchoredJoinLeg{
@@ -355,7 +358,7 @@ func TestNewReEnumerationAnchoredRecord_FallsBackOnMissingColumns(t *testing.T) 
 		{Alias: NamedCorrelationIdentifier("B"), Sources: []CorrelationIdentifier{NamedCorrelationIdentifier("B")}},
 	})
 	if rc != nil {
-		t.Errorf("re-enumeration over an absent source must return nil (opaque fallback), got %v", rc.Fields)
+		t.Errorf("re-enumeration over an absent source must return nil, got %v", rc.Fields)
 	}
 	// Non-anchored parent → nil.
 	if NewReEnumerationAnchoredRecord(&RecordConstructorValue{}, nil) != nil {

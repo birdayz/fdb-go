@@ -251,10 +251,11 @@ type reEnumColumn struct {
 //
 // legs must already be in the rule's canonical (alias-name-sorted) order so two
 // bipartitions producing the same leg-set intern to one Reference (the anchored
-// RC's structural identity is order-sensitive). Returns nil if any source's
-// columns are unavailable in the parent (a not-yet-anchored shape); in practice
-// every real-table parent reaching here is already anchored, so the resolution
-// always succeeds (the retired opaque fallback is gone).
+// RC's structural identity is order-sensitive). Returns nil if the parent is not
+// anchored or a leg's source columns are unavailable; in practice every parent
+// reaching the rule is anchored and every leg's source is a parent quantifier, so
+// resolution always succeeds — the rule's callers panic on a nil (fail-loud on a
+// proven-unreachable invariant rather than store a nil result value silently).
 func NewReEnumerationAnchoredRecord(parent *RecordConstructorValue, legs []ReEnumerationLeg) *RecordConstructorValue {
 	byQ := anchoredColumnsByQuantifier(parent)
 	if byQ == nil {
