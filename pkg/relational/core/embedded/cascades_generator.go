@@ -297,7 +297,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
 	}
 
-	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp)
+	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")

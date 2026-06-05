@@ -392,3 +392,70 @@ into F2 above). Torvalds ACK (conditions: precise construction-site coordinates 
 fixed in F1; `UnknownType` fallback acceptance gate + outright deletion at step 4 — folded into F1;
 concrete STAR baseline+tolerance — this section). Both conditions are now in the amendment; implement
 per the revised sequence.
+
+---
+
+## v3 amendment — 7.5 SHIPPED; 7.6 architecture settled (Graefe Option-B ruling)
+
+**7.5 is DONE & MERGED (PR #258).** Gated alias-aware `Reference.Insert`/`InsertFinal` interning +
+per-Memo collision-proof merge alias (`$m"N`) retired `mergeQuantifierAlias`. All four gates ACK'd.
+
+**7.6 — the F3-A "type the scan" step was NAK'd by Graefe and is RETRACTED.** A first cut typed the
+`FullUnorderedScanExpression` leaf from metadata. Graefe NAK'd it (verified against Java):
+`RelationalExpression.java:133-145` and `ExpansionVisitor.java:105-109` build the scan leaf as
+`Type.AnyRecord(false)` on BOTH the query and the candidate side; the concrete `RecordType` lives on
+the `LogicalTypeFilterExpression` ABOVE the scan. Typing the scan is the divergence — it broke
+index/PK leaf-matching (`matchLeafWithCandidate` requires the query scan to equal the untyped
+candidate leaf), forcing a `leafScansSubsume` wildcard that Graefe rejected. **The scan stays
+`UnknownType` (Go's `AnyRecord` analog); no leaf change.**
+
+**Go vs Java structural divergence (verified):** Go collapsed Java's `Scan(AnyRecord)+TypeFilter(typed)`
+into a bare `Scan([recordTypes], UnknownType)` — Go's production query base has NO `LogicalTypeFilter`
+wrapper, and Go's `LogicalTypeFilterExpression` is type-LESS (carries only record-type NAMES; its own
+doc defers the `resultType`). So Java's "type lives on the TypeFilter" has no Go analog in the query
+base.
+
+**Graefe ruling: OPTION B (build the anchored RC at the seed from metadata).** Rationale: the consumer
+of the anchored RC is `composeFieldOverConstructor` (Java's `ComposeFieldValueOverRecordConstructorRule`),
+which resolves `field(RC, name)` purely by the RC's field NAMES — it never consults a TypeFilter
+result-type. Each leg's column type rides on `FieldValue(QOV(legAlias), col)` directly. So sourcing the
+RC's columns from `md` at the seed (`md → RC`) is sufficient and is one fewer indirection than Java's
+`md → RecordType → TypeFilter.resultType → RC`. **Option A** (un-collapse the query base + give
+`LogicalTypeFilterExpression` a typed `resultType`) is the correct long-term home for index-pushdown
+type-narrowing but buys nothing for 7.6 and is **demoted to its own future RFC**, not folded here.
+
+**The four binding conditions on the Option-B ACK (must hold at impl review):**
+1. **No leaf change** — `translateScan` keeps emitting `FullUnorderedScanExpression([table], UnknownType)`.
+   Do not type the scan or add a TypeFilter typing layer (that is scope-creep back into A).
+2. **Naming parity** — `NewAnchoredJoinRecord` emits the EXACT bare+qualified key set the opaque
+   merge's `Evaluate` produced (qualified `ALIAS.COL` always; bare only when the column name is unique
+   across legs). Pin with a test that diffs resolvable keys old-vs-new on a duplicate-bare-name
+   multi-way join.
+3. **Seed-bit retirement WITH PROOF** — `PartitionSelectRule` relies on the `Seed` flag to keep lower
+   aliases live. The anchored RC names its sources honestly (every field is `FieldValue(QOV(leg), …)`),
+   so `Seed` CAN retire — but only after proving `PartitionSelectRule` reads the RC's correlated-to set
+   correctly (the F2 dual-correlation: exploration-time hiding + partition-time re-exposure). Demonstrate
+   in the impl + pin the dual-correlation 0-row regression. Do not silently drop `Seed`.
+4. **Option A stays a separate, demoted RFC item** (typed-TypeFilter result-type for index-pushdown
+   type-narrowing) — not a 7.6 gate.
+
+**Implementation plan (Option B):**
+1. Thread `md` into the cascades translator (`TranslateToCascadesWithSubqueries(op, md)`; nil-md wrapper
+   for catalog-free callers). `translateScan` UNCHANGED. (Subquery `:338` + DML `:641` callers stay
+   nil-md for now; type their legs when 7.6 reaches them — Torvalds follow-up.)
+2. Add a logical-op output-column derivation `legOutputColumns(op, md)` (scan → md columns; join →
+   union with the anchored RC's qualified naming; filter → inner; project → projected; etc.), producing
+   names CONSISTENT with `NewAnchoredJoinRecord` so nested-join legs compose. (No existing logical-schema
+   helper — `deriveColumnsFrom*` are post-planning/physical.)
+3. At `translateJoin`'s three seed sites, replace `NewJoinMergeSeedValue(leftAlias, rightAlias)` with
+   `NewAnchoredJoinRecord([{leftAlias, legOutputColumns(left)}, {rightAlias, legOutputColumns(right)}])`.
+4. Migrate the plan-time consumers: `joinResultValueIsReversed` → read the anchored RC's leg order;
+   `composeFieldOverJoinMerge` → the existing `composeFieldOverConstructor`. F2: `PartitionSelectRule`
+   correlated-to + `AddMergeSeedAliases` read the RC's anchored leg QOVs (hiding + re-exposure).
+5. Delete `JoinMergeAllValue` / `Seed` / `composeFieldOverJoinMerge` only after every consumer is
+   migrated + pinned. Gates: chain/STAR task-count, plandiff byte-identical at every arity,
+   dual-correlation 0-row, `TestFDB_JoinMerge_OuterColumn_NotDropped`, `SELECT *`/flow-through,
+   ambiguous-duplicate-name E2E.
+
+**Status:** Option B approved by Graefe (consult); implementation starting from a clean branch off the
+merged 7.5. Bring the implementation back for the impl-side Graefe ACK.

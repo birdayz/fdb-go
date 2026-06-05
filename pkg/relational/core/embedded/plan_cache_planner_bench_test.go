@@ -152,7 +152,7 @@ func planParsedForBench(b *testing.B, q antlrgen.IQueryContext, md *recordlayer.
 	if err := validateTablesAndColumns(logicalOp, md); err != nil {
 		b.Fatalf("validate: %v", err)
 	}
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp)
+	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		b.Fatal("Cascades translation failed")
 	}

@@ -4,9 +4,13 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
@@ -27,7 +31,7 @@ type ScalarSubqueryPlan struct {
 // Returns nil if the operator tree contains shapes that can't be
 // translated (unsupported operators fall through to nil).
 func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
-	ref, _ := TranslateToCascadesWithSubqueries(op)
+	ref, _ := TranslateToCascadesWithSubqueries(op, nil)
 	return ref
 }
 
@@ -35,8 +39,16 @@ func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
 // also returns any scalar subquery plans collected during translation.
 // These must be planned independently and pre-evaluated by the
 // executor before running the main plan.
-func TranslateToCascadesWithSubqueries(op logical.LogicalOperator) (*expressions.Reference, []ScalarSubqueryPlan) {
+//
+// md carries the record metadata used to source join-leg columns when building
+// the source-anchored join result value (RFC-077 7.6). Pass nil when metadata
+// isn't in scope (e.g. subquery translation, tests) — the seed then falls back to
+// the opaque JoinMergeSeedValue. The scan leaf is NEVER typed from md (it stays
+// Type.AnyRecord/UnknownType, matching Java — see RFC-077 v3 amendment); md is
+// consulted only to enumerate a leg's columns for the anchored RecordConstructor.
+func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan) {
 	t := &cascadesTranslator{
+		md:           md,
 		cteScope:     make(map[string]logical.LogicalOperator),
 		cteExprScope: make(map[string]expressions.RelationalExpression),
 	}
@@ -45,9 +57,69 @@ func TranslateToCascadesWithSubqueries(op logical.LogicalOperator) (*expressions
 }
 
 type cascadesTranslator struct {
+	md               *recordlayer.RecordMetaData
 	cteScope         map[string]logical.LogicalOperator
 	cteExprScope     map[string]expressions.RelationalExpression
 	scalarSubqueries []ScalarSubqueryPlan
+}
+
+// tableColumns returns a real table's columns (name + proto-derived type) from
+// metadata, or nil when md is absent or the table can't be resolved. Field names
+// are upper-cased to match the rest of the cascades layer's column naming. Used to
+// source join-leg columns for the source-anchored join result value (RFC-077 7.6);
+// it does NOT type the scan leaf.
+func (t *cascadesTranslator) tableColumns(table string) []values.Field {
+	if t.md == nil {
+		return nil
+	}
+	rt := t.md.GetRecordType(table)
+	if rt == nil || rt.Descriptor == nil {
+		return nil
+	}
+	protoFields := rt.Descriptor.Fields()
+	fields := make([]values.Field, 0, protoFields.Len())
+	for i := 0; i < protoFields.Len(); i++ {
+		fd := protoFields.Get(i)
+		fields = append(fields, values.Field{
+			Name:      strings.ToUpper(string(fd.Name())),
+			FieldType: fieldTypeForFD(fd),
+			Ordinal:   i,
+		})
+	}
+	return fields
+}
+
+// fieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring
+// jdbcTypeNameForFD (pkg/relational/core/embedded/select_helpers.go). Repeated/map
+// and non-UUID message fields collapse to values.UnknownType — 7.6 doesn't model
+// nested/array element types for the anchored leg columns. Columns are nullable
+// (the flowed leg row doesn't carry per-column NOT NULL constraints).
+func fieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
+	if fd.IsList() || fd.IsMap() {
+		return values.UnknownType
+	}
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return values.NewPrimitiveType(values.TypeCodeBoolean, true)
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return values.NewPrimitiveType(values.TypeCodeInt, true)
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return values.NewPrimitiveType(values.TypeCodeLong, true)
+	case protoreflect.FloatKind:
+		return values.NewPrimitiveType(values.TypeCodeFloat, true)
+	case protoreflect.DoubleKind:
+		return values.NewPrimitiveType(values.TypeCodeDouble, true)
+	case protoreflect.StringKind:
+		return values.NewPrimitiveType(values.TypeCodeString, true)
+	case protoreflect.BytesKind:
+		return values.NewPrimitiveType(values.TypeCodeBytes, true)
+	case protoreflect.MessageKind:
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
+			return values.NewPrimitiveType(values.TypeCodeUuid, true)
+		}
+		return values.UnknownType
+	}
+	return values.UnknownType
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {

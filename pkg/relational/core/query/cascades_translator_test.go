@@ -3,10 +3,74 @@ package query
 import (
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
+
+// TestTableColumns_FromMetadata pins the md→columns derivation (tableColumns +
+// fieldTypeForFD) that 7.6 uses to source source-anchored join-leg columns. It
+// does NOT type the scan leaf (that was NAK'd — the scan stays AnyRecord; see
+// RFC-077 v3). Columns are upper-cased; proto Kind maps to values.Type; repeated
+// and message (non-UUID) fields collapse to UnknownType.
+func TestTableColumns_FromMetadata(t *testing.T) {
+	t.Parallel()
+
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+
+	tr := &cascadesTranslator{md: md}
+	cols := tr.tableColumns("Order")
+	if cols == nil {
+		t.Fatal("tableColumns(Order) returned nil")
+	}
+
+	byName := make(map[string]values.Type, len(cols))
+	for _, c := range cols {
+		byName[c.Name] = c.FieldType
+	}
+	// Scalar Kind mapping (Order proto: order_id int64, price int32, vector_data bytes).
+	primitive := func(col string, want values.TypeCode) {
+		t.Helper()
+		ft, ok := byName[col]
+		if !ok {
+			t.Fatalf("column %q missing; got columns %v", col, byName)
+		}
+		pt, ok := ft.(*values.PrimitiveType)
+		if !ok {
+			t.Fatalf("column %q: type %T, want *PrimitiveType", col, ft)
+		}
+		if pt.TypeCode != want {
+			t.Errorf("column %q: TypeCode %v, want %v", col, pt.TypeCode, want)
+		}
+	}
+	primitive("ORDER_ID", values.TypeCodeLong)
+	primitive("PRICE", values.TypeCodeInt)
+	primitive("VECTOR_DATA", values.TypeCodeBytes)
+	// Message (non-UUID) field FLOWER and repeated field TAGS collapse to Unknown.
+	if byName["FLOWER"] != values.UnknownType {
+		t.Errorf("FLOWER (message): got %v, want UnknownType", byName["FLOWER"])
+	}
+	if byName["TAGS"] != values.UnknownType {
+		t.Errorf("TAGS (repeated): got %v, want UnknownType", byName["TAGS"])
+	}
+
+	// nil md and unknown table fall back to nil (no typing source).
+	if (&cascadesTranslator{}).tableColumns("Order") != nil {
+		t.Error("nil-md tableColumns must be nil")
+	}
+	if tr.tableColumns("NoSuchTable") != nil {
+		t.Error("unknown-table tableColumns must be nil")
+	}
+}
 
 func TestTranslateScan(t *testing.T) {
 	t.Parallel()
