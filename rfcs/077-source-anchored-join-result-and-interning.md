@@ -204,10 +204,71 @@ reintroduces exactly that pressure. Two clean options, to be settled with Graefe
   "internally-bound ⇒ omit from getCorrelatedTo() is the CORRECT set, not a hack" confirms the
   exclusion is principled, not a workaround.
 
-### Revised sequence (consumer-migrate-before-delete, each plandiff-verified)
+### F3 — leg columns are NOT available at the translator seed sites (blocks translation-time anchoring)
+
+Step-2 implementation surfaced a blocker bigger than F1 assumed. F1 said "leg columns come from the
+leg quantifier's result `RecordType`." They do not, at the translator: `translateScan`
+(`cascades_translator.go:118`) emits `NewFullUnorderedScanExpression([Table], values.UnknownType)` —
+the leg ref's result type is `UnknownType` with NO columns, and the `cascadesTranslator` struct has
+NO catalog/metadata field (only `cteScope`/`cteExprScope`/`scalarSubqueries`). The SQL resolver knew
+each leg's columns, but the logical plan DROPPED them: `LogicalScan` is `{Table, Alias}` only. So at
+`NewJoinMergeSeedValue` (`cascades_translator.go:396/657/767`) there is no column source — neither the
+logical plan nor the cascades ref type nor a catalog the translator can reach. **The anchored RC
+cannot be built at translation time.** Step 1's builder (`NewAnchoredJoinRecord`, committed) is
+correct and reusable; the open question is WHEN/WHERE it is called.
+
+Three candidate approaches (architectural — Graefe to decide):
+  - **(A) Thread columns to the translator.** Have the SQL resolver carry each leg's resolved output
+    columns onto the logical plan (e.g. `LogicalScan.Columns`, populated at resolution), or give the
+    translator a catalog handle so `translateScan` types the scan. Anchored RC built at the seed, per
+    the original plan. Cost: changes the translator's currently catalog-free contract / the logical
+    schema; columns flow earliest.
+  - **(B) Anchor at a later column-aware pass.** Keep the opaque `JoinMergeAllValue` through
+    EXPLORATION (it needs no columns — it merges all at `Evaluate`), and swap merge→anchored-RC in a
+    rewrite once types/columns are derived. PROBLEM: `PartitionSelectRule` reads the merge during
+    PLANNING, so the opaque type survives planning and is only retired at the very end — this does NOT
+    retire it from the exploration/partition path (the 7.6 goal). Likely a non-starter for full
+    retirement.
+  - **(C) Split 7.5 from 7.6.** Do 7.5 (structural interning of the *opaque* merge — give it a
+    content-canonical identity without the synthetic `mergeQuantifierAlias`) now, since it needs no
+    columns; defer 7.6 (anchoring) until the resolver threads columns (A). The RFC bundled them
+    because RFC-073 gated 7.6-on-7.5; F3 shows the reverse independence — 7.5 is doable alone, 7.6 is
+    blocked on column availability. Honest partial: ships the interning win + removes the string-alias
+    smell without the blocked anchoring.
+
+Recommendation pending Graefe: (A) is the true end state (Java threads resolved columns); (C) is the
+shippable increment if (A)'s resolver/logical-schema change is out of scope for this PR. (B) is
+rejected (doesn't retire the opaque type from planning).
+
+**Graefe F3 decision (ACK): (C). Ship 7.5 now; defer 7.6 to a column-threading follow-up; (B)
+rejected.** Rationale: RFC-073 gated 7.6-on-7.5 on a *representation* dependency (anchoring makes the
+merge canonical); F3 is an orthogonal *availability* dependency (7.6 needs columns, 7.5 does not) —
+they compose, so the split is sound. (A) is the true end state but bundling the resolver/logical-schema
+change with the anchoring is two failure surfaces under one plandiff; do (A) as its OWN first step of
+the 7.6 follow-up, plandiff-neutral standalone (threading columns only enriches types), THEN anchor +
+delete the opaque types on top. **Revised top-level sequence: [7.5 interning — THIS PR] → [(A) thread
+resolved columns onto LogicalScan/translator, plandiff-neutral] → [anchor RC + delete JoinMergeAllValue/
+Seed/composeFieldOverJoinMerge].** Condition on the 7.5-alone PR: it MUST keep the STAR ±2% task-count
+gate — `mergeQuantifierAlias` was load-bearing (6× task count) precisely because the merge is opaque;
+structural interning over the opaque value must reproduce that sub-product sharing or exploration
+regresses. Pin the STAR baseline in the 7.5 PR.
+
+### 7.5-alone scope (this PR)
+
+Give the opaque `JoinMergeAllValue` a content-canonical structural identity so re-enumerated
+sub-products SHARE one memo Reference WITHOUT the synthetic `mergeQuantifierAlias` string. The merge
+value already has SET-based `SemanticEqualsUnderAliasMap`/`SemanticHashCode`; the remaining work is
+making the re-enumeration's merge quantifier + its select intern structurally (the string alias is
+currently the ref-sharing key — `rule_partition_select.go` builds the merge quantifier under
+`mergeQuantifierAlias(live)` so identical live-sets reach the SAME Reference). Replace that with a
+structural memo lookup (the merge value's canonical hash/eq) + a plain `uniqueId` quantifier, verified
+by the STAR ±2% gate (sharing preserved) + plandiff byte-identical at every arity. 7.6 (anchoring) and
+the opaque-type deletion are explicitly OUT of scope here (blocked on column threading, F3).
+
+### Revised sequence (consumer-migrate-before-delete, each plandiff-verified) — SUPERSEDED by F3 resolution
 
 1. Add the anchored-RC builder (from leg result types, F1) + RC correlation handling (F2-i) +
-   `composeFieldOverConstructor` name-miss guard test — no call-site change yet.
+   `composeFieldOverConstructor` name-miss guard test — no call-site change yet. **[DONE, committed 7f5c44f1.]**
 2. Switch the binary seed sites (`cascades_translator.go`) to the anchored RC; migrate
    `joinResultValueIsReversed` to read the RC's leg order; verify plandiff byte-identical (2-way) +
    STAR task count + full suite.
