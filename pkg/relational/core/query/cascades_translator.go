@@ -421,7 +421,11 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		}
 		return true
 	case *logical.LogicalAggregate:
-		return false
+		// Bare UNGROUPED aggregate only: groupingCount==0 → no AggregateIndex candidate
+		// (cascades_generator.go) → always StreamingAgg, which carries the alias (RFC-078).
+		// A grouped bare aggregate can plan as AggregateIndex (names unreported) so it stays
+		// gated (clean error); 0-agg too. RFC-080.
+		return len(o.Aggregates) >= 1 && len(o.GroupKeys) == 0
 	case *logical.LogicalDistinct:
 		return t.unionBranchNormalizable(o.Input)
 	case *logical.LogicalSort:

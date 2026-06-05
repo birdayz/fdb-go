@@ -15,12 +15,13 @@ import (
 // output schema, but ONLY when all branches agree on names — the case the
 // executor's position-remap handles unambiguously.
 //
-// The mismatched-alias case is deliberately untranslatable (a clean error), NOT
-// silently-wrong rows: the executor does NOT remap an aggregate branch's
-// differently-aliased column to the first branch's name (a pre-existing gap), so
-// anchoring there would drop rows. This pins, end-to-end against real FDB, that
-// (1) the common same-named union join works, and (2) a mismatched-alias union
-// join errors cleanly rather than returning wrong rows.
+// This pins, end-to-end against real FDB, that (1) the common same-named union join
+// works, (2) a mismatched-alias PROJECTION union join remaps by position, and (3) a
+// mismatched-alias UNGROUPED-AGGREGATE union join now returns correct rows (RFC-080 —
+// the gate allows ungrouped aggregate branches because an ungrouped aggregate never
+// plans as AggregateIndex (groupingCount==0 → no candidate), so it is always
+// StreamingAgg, which flows every aggregate under its alias; grouped aggregate branches
+// stay gated).
 func TestFDB_UnionJoinLeg(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -63,19 +64,20 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 			"SELECT c.w FROM u, c WHERE u.x = c.id",
 		[]int64{100, 200})
 
-	// (3) Mismatched-alias AGGREGATE branches as a JOIN LEG: stays conservatively
-	// untranslatable (clean error, never wrong rows). NOTE: RFC-078 taught the executor
-	// to remap STREAMING-aggregate union branches, so this would now work for a pure
-	// StreamingAgg union — but the translator's unionBranchNormalizable gate keys on the
-	// LOGICAL LogicalAggregate, blind to whether it plans as StreamingAgg (remappable) or
-	// AggregateIndex (whose cursor drops the alias, RFC-078 follow-up (a)); enabling it
-	// now would silently mis-resolve the AggregateIndex case. So the gate stays until the
-	// index cursor carries the alias.
-	q := "WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) " +
-		"SELECT c.w FROM u, c WHERE u.x = c.id"
-	if _, err := db.QueryContext(ctx, q); err == nil {
-		t.Errorf("mismatched-alias AGGREGATE union join leg must error (untranslatable), not silently drop rows: %q", q)
-	}
+	// (3) Mismatched-alias UNGROUPED-AGGREGATE branches as a JOIN LEG now return CORRECT
+	// rows (RFC-080 flipped this from the prior conservative clean-error). The gate
+	// (unionBranchNormalizable) now allows bare UNGROUPED aggregate branches: an ungrouped
+	// aggregate produces no aggregate-index candidate (groupingCount==0 → nil), so it
+	// always plans as StreamingAgg, which flows every aggregate under its alias (RFC-078),
+	// so the executor's position-remap normalizes the mismatched-alias second branch.
+	// (A GROUPED bare aggregate stays gated — it may plan as AggregateIndex; see
+	// TestFDB_UnionScalarAggregateAlias, which pins both the ungrouped-works and the
+	// grouped-stays-gated cases.) count(a)={2}, count(b)={1} → u.x={2,1}; join c on
+	// u.x=c.id → w {200,100}.
+	assertInt64Set(t, db, ctx,
+		"WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) "+
+			"SELECT c.w FROM u, c WHERE u.x = c.id",
+		[]int64{200, 100})
 }
 
 // assertInt64Set runs q and asserts the single-column int64 results equal want as
