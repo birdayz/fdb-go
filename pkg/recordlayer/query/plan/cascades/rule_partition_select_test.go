@@ -273,12 +273,29 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 
 		// The bug signature: an upper that still carries a result value naming an
 		// unbound alias after collapsing a lower into a merge quantifier. Detect a
-		// merge-collapsing partition by a NamedForEach quantifier whose alias is a
-		// merge alias ("$m...").
+		// merge-collapsing partition STRUCTURALLY: it has a quantifier ranging over
+		// a lower SelectExpression whose result value is a *JoinMergeAllValue (the
+		// collapsed ≥2-live merge). The merge quantifier now carries a plain
+		// uniqueId alias (RFC-077 7.5 retired the synthetic "$m…" string), so the
+		// old name-prefix check is gone — the collapsed-merge child is the honest,
+		// rename-stable signal.
 		hasMergeQuant := false
 		for _, q := range upper.GetQuantifiers() {
-			if strings.HasPrefix(q.GetAlias().Name(), "$m") {
-				hasMergeQuant = true
+			childRef := q.GetRangesOver()
+			if childRef == nil {
+				continue
+			}
+			for _, m := range childRef.Members() {
+				lsel, ok := m.(*expressions.SelectExpression)
+				if !ok {
+					continue
+				}
+				if _, ok := lsel.GetResultValue().(*values.JoinMergeAllValue); ok {
+					hasMergeQuant = true
+					break
+				}
+			}
+			if hasMergeQuant {
 				break
 			}
 		}
@@ -312,36 +329,10 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 	}
 }
 
-// TestMergeQuantifierAlias_Injective pins the Codex finding: the merge alias
-// encoding must be injective even when alias names contain the '_' separator.
-// {A, B_C} and {A_B, C} are DISTINCT live sets and must NOT collapse to the same
-// "$m" alias — a collision would let nested re-enumeration build a
-// SelectExpression with duplicate quantifier aliases and merge distinct rows.
-func TestMergeQuantifierAlias_Injective(t *testing.T) {
-	t.Parallel()
-	mk := func(names ...string) values.CorrelationIdentifier {
-		live := make([]values.CorrelationIdentifier, len(names))
-		for i, n := range names {
-			live[i] = values.NamedCorrelationIdentifier(n)
-		}
-		return mergeQuantifierAlias(live)
-	}
-
-	// The collision Codex flagged: underscore-containing names.
-	if a, b := mk("A", "B_C"), mk("A_B", "C"); a == b {
-		t.Errorf("{A,B_C} and {A_B,C} collided to the same alias %q (not injective)", a.Name())
-	}
-
-	// Stable regardless of input order (the set, not the order, is the identity).
-	if a, b := mk("A", "B_C"), mk("B_C", "A"); a != b {
-		t.Errorf("order-dependence: {A,B_C}=%q vs {B_C,A}=%q", a.Name(), b.Name())
-	}
-
-	// Distinct simple sets stay distinct; identical sets stay identical.
-	if a, b := mk("A", "B"), mk("A", "C"); a == b {
-		t.Errorf("{A,B} and {A,C} collided: %q", a.Name())
-	}
-	if a, b := mk("T1", "T2"), mk("T2", "T1"); a != b {
-		t.Errorf("{T1,T2} not stable across order: %q vs %q", a.Name(), b.Name())
-	}
-}
+// TestMergeQuantifierAlias_Injective REMOVED (RFC-077 7.5): the synthetic
+// stable merge-alias encoding (mergeQuantifierAlias) it pinned is gone — merge
+// quantifiers now carry a plain uniqueId and intern STRUCTURALLY via alias-aware
+// Reference.Insert/InsertFinal (MemoEqual). The interning the alias encoding
+// protected is now pinned by the chain task-count gate
+// (TestPartitionSelect_ChainInterningBaseline) instead — a far stronger probe
+// (it measures the actual exploration sharing, not a string-encoding property).

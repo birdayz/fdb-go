@@ -1,6 +1,11 @@
 # RFC-077: Source-anchored join result + structural interning (holistic 7.5 + 7.6)
 
-**Status:** Accepted (Graefe ACK + Torvalds ACK; step 5 corrected per Torvalds — the merge value is read at PLAN time, not by runtime `Evaluate`; Graefe's E2E conditions folded into the test plan)
+**Status:** 7.5 IMPLEMENTED (gated alias-aware `Reference.Insert`/`InsertFinal` interning retires
+`mergeQuantifierAlias`; full suite green, chain task-count gate pinned) — re-review pending on the
+CORRECTED root-cause (see "Precise root-cause — CORRECTED" below; the originally-ACK'd "candidate-narrowing
+hash" mechanism was wrong). 7.6 DEFERRED (F3 column threading) per Graefe split. Earlier: Accepted
+(Graefe ACK + Torvalds ACK; step 5 corrected per Torvalds — merge value read at PLAN time; Graefe's E2E
+conditions folded into the test plan)
 **Area:** Cascades query planner — join result values, field pull-up, memo interning
 **Reviewers:** Graefe (Cascades alignment — mandatory; supersedes the deferred RFC-073), Torvalds (code quality), codex, @claude
 
@@ -265,21 +270,75 @@ structural memo lookup (the merge value's canonical hash/eq) + a plain `uniqueId
 by the STAR ±2% gate (sharing preserved) + plandiff byte-identical at every arity. 7.6 (anchoring) and
 the opaque-type deletion are explicitly OUT of scope here (blocked on column threading, F3).
 
-**Precise root-cause (investigated, for the implementer).** `memoizeNonLeaf` (`memo.go`) ALREADY
-dedups alias-aware via `MemoEqual` (RFC-039) — BUT it first narrows candidates by
-`expr.HashCodeWithoutChildren()` (`memo.go`: `if member.HashCodeWithoutChildren() != h { continue }`).
-The upper select's result value is `buildUpperResult(mergeAlias)` — a `JoinMergeAllValue` whose
-`Aliases` INCLUDE the merge quantifier alias. With `mergeQuantifierAlias` (stable per live-set) the two
-partitions' upper selects hash-EQUAL → candidate match → `MemoEqual` dedups → one Reference. With a
-`uniqueId` merge quantifier, each partition's `buildUpperResult` carries a DIFFERENT alias → different
-`HashCodeWithoutChildren` → candidates never match → `MemoEqual` never runs → re-explored per path
-(the measured 6× / +32% STAR blowup). So the 7.5 fix is **alias-aware (alias-independent) HASHING for
-the candidate-narrowing path** — make `HashCodeWithoutChildren` of a select (and the `JoinMergeAllValue`
-it carries) invariant under a consistent quantifier-alias renaming, matching `MemoEqual`'s
-alias-awareness, so a `uniqueId` merge quantifier hash-matches and `MemoEqual` dedups. Then the
-synthetic `mergeQuantifierAlias` is removable. This is a focused memo-interning change (RFC-039/040
-extended from alias-aware equality to alias-aware hashing); land it STAR-±2%-gated + plandiff-at-every-
-arity, as its own PR. (Status: root-cause located; implementation is the next step.)
+**Precise root-cause — CORRECTED after an implementation spike (the earlier hypothesis was wrong).**
+The original guess (alias-SENSITIVE candidate-narrowing HASH in `memoizeNonLeaf`) does NOT hold against
+the current code: `values.SemanticHashCode` is ALREADY alias-invariant for `JoinMergeAllValue` (RFC-074
+folds only `len(Aliases)`+`Seed`, never the alias names) and `QuantifiedObjectValue` (`"qov"`, no
+alias), and `memoizeNonLeaf` ALREADY uses alias-aware `MemoEqual`. So a `uniqueId` merge quantifier
+does NOT change `HashCodeWithoutChildren`. The hash was a red herring.
+
+The REAL alias-sensitive interning sites are **`Reference.Insert` and `Reference.InsertFinal`**
+(`reference.go`). The upper merge select is not memoized via `memoizeNonLeaf` — it is **yielded** by the
+rule, and the PLANNING yield path inserts it into BOTH member sets via `Reference.Insert` /
+`Reference.InsertFinal`. Both dedup with two alias-IDENTITY tiers only: a fast
+`EqualsWithoutChildren(…, EmptyAliasMap)`+pointer-identity path, then
+`SemanticEquals(…, EmptyAliasMap)` — neither builds a quantifier-alias map, so two upper selects that
+differ ONLY in the merge quantifier alias are treated as DISTINCT members → re-explored per
+bipartition → super-linear blowup. `mergeQuantifierAlias` (stable per live-set) is a WORKAROUND that
+makes those upper selects byte-identical so the alias-IDENTITY tiers dedup them. **This is a Go-vs-Java
+divergence:** Java's `Reference.insert`/`containsInMemo` IS alias-aware (it is the very thing RFC-039's
+`MemoEqual` ports); the Go port made `memoizeNonLeaf` alias-aware but left `Insert`/`InsertFinal`
+alias-identity.
+
+So the 7.5 fix is **make `Reference.Insert`/`InsertFinal` alias-AWARE for merge re-enumeration selects**:
+add a third dedup tier `MemoEqual(m, e)` (ADD, not substitute — strictly additive, so it can only ever
+dedup MORE than the identity tiers, preserving termination), GATED to expressions that opt in via the
+new `SelectExpression.InternsAliasAware()` property. Then the merge quantifier gets a plain `uniqueId`
+(Java-style) and the synthetic `mergeQuantifierAlias` + `mergeAliasPrefix` are deleted.
+
+**Why GATED, not global (the over-dedup landmine — caught by the FDB suite).** A first cut made the
+`MemoEqual` tier UNCONDITIONAL. That broke two CTE column-alias tests
+(`TestFDB_CTEChainedColumnAliases`, `TestFDB_CascadesCTEColumnAliases`) with a silent-NULL column —
+e.g. `WITH priced(product, cost) AS (SELECT name, price FROM Item) SELECT product FROM priced …` had
+`product` read NULL. Root cause: Go has not yet unified the quantifier/table alias namespaces (TODO
+7.1), so external consumers (cascades_generator column derivation, CTE projections) resolve quantifier
+aliases by IDENTITY. Alias-aware dedup collapses two members that differ only in aliasing and keeps a
+survivor whose aliases the consumer cannot resolve → the column silently reads NULL. The merge
+re-enumeration is DIFFERENT: its merge quantifier is planner-INTERNAL — `PartitionSelectRule` re-stamps
+all column access through the merge value and rebases spanning predicates onto it, so NO external
+consumer resolves the merge alias by name. So alias-aware interning is safe THERE and only there. The
+gate is a property derived from the expression (`InternsAliasAware()` = "result value is a
+`JoinMergeAllValue`", the canonical marker of a merge select — Graefe's "property on the expression, not
+an external heuristic"), and it is the minimal change: it ADDS alias-aware dedup for merge selects and
+leaves every other expression's dedup exactly as master (alias-identity). When 7.1 unifies the
+namespaces the gate can widen; until then it is the honest scope.
+
+**Empirically verified (deterministic cascades harness, no FDB — `partition_select_interning_baseline_test.go`).**
+The harness MUST configure the planner exactly as the SQL pipeline does
+(`NewPlanner(DefaultExpressionRules()).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())`)
+— `PartitionSelectRule` is PLANNING-only (`PlanningExplorationRules`, prepended by
+`WithPlanningExpressionRules`), so a bare `NewPlanner(DefaultExpressionRules())` never fires the merge
+re-enumeration. The shape is a **CHAIN**, not a star: a pure star never hits the ≥2-live merge branch
+(all predicates run through the hub, so a connected ≥2-table lower always contains the hub and only the
+hub is upper-referenced → single-live case). The 4-chain task count (~30k–60k) matches RFC-074's
+"chain 64957" ballpark, confirming the harness drives the real path. Task counts (`tasksRun`):
+
+| config | 3-chain | 4-chain |
+|---|---|---|
+| master (`mergeQuantifierAlias`) | 8999 | 29915 |
+| naive `uniqueId`, alias-IDENTITY Insert (the trap) | 10312 | **60044** (≈2×) |
+| `uniqueId` + alias-aware Insert ONLY | — | 43801 (partial) |
+| `uniqueId` + alias-aware Insert AND InsertFinal (the fix) | 8999 (exact) | 30593 (+2.3%) |
+
+The naive `uniqueId` alone DOUBLES the 4-chain count (confirming `mergeQuantifierAlias` was load-bearing
+— the original RFC premise was directionally right even though its mechanism was wrong); the full fix
+reproduces master's sub-product sharing (3-chain exact; 4-chain +2.3% with IDENTICAL merge-branch hit
+count 42 — bounded, NOT super-linear). The blast radius on the cascades package is exactly ONE test
+(`TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier` detected the merge quantifier by the `"$m"`
+name prefix; now detects it STRUCTURALLY — the merge quantifier's child holds a `JoinMergeAllValue`-result
+select). The chain task-count gate (±2%, pinned at 8999/30593) replaces the deleted
+`TestMergeQuantifierAlias_Injective` — a far stronger probe (it measures actual exploration sharing, not
+a string-encoding property). Land it gated + plandiff-byte-identical. (Status: implemented; under review.)
 
 ### Revised sequence (consumer-migrate-before-delete, each plandiff-verified) — SUPERSEDED by F3 resolution
 

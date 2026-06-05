@@ -218,6 +218,28 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 	return true
 }
 
+// InternsAliasAware reports whether this expression should dedup ALIAS-AWARE in
+// Reference.Insert/InsertFinal (RFC-077 7.5). True ONLY for a merge re-enumeration
+// select — one whose result value is a JoinMergeAllValue. Such a select's merge
+// quantifier is a planner-INTERNAL synthetic alias with no external consumer:
+// PartitionSelectRule re-stamps all column access through the merge value and
+// rebases spanning predicates onto it, so two merge selects equal up to a
+// consistent quantifier-alias renaming ARE the same memo member and must intern
+// (otherwise the join re-enumeration's shared sub-products re-explode per path).
+// This replaces the former synthetic STABLE merge alias that made them
+// byte-identical for the alias-IDENTITY dedup.
+//
+// All OTHER expressions return false: their quantifier aliases are resolved by
+// external consumers (cascades_generator column derivation) by IDENTITY — Go has
+// not yet unified the quantifier/table alias namespaces (TODO 7.1) — so collapsing
+// two members that differ only in aliasing would pick a survivor whose aliases the
+// consumer cannot resolve (a CTE column would silently read NULL). They keep the
+// alias-IDENTITY dedup, exactly as before this change.
+func (e *SelectExpression) InternsAliasAware() bool {
+	_, ok := e.resultValue.(*values.JoinMergeAllValue)
+	return ok
+}
+
 // HashCodeWithoutChildren mixes a class-discriminating constant + join type
 // with the ALIAS-INVARIANT semantic hashes of the result value and predicates
 // (RFC-040 040.2), consistent with the alias-aware EqualsWithoutChildren.

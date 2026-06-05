@@ -202,6 +202,21 @@ NAK (the Evaluate-shape change) via the name-keyed-map + compile-time-simplifica
 is preserved in `rfcs/073-source-anchored-join-result.md`; RFC-077 supersedes it as the holistic
 plan.
 
+**Status update (2026-06-05):** F3 split the bundle (Graefe ruling: 7.5 now, 7.6 deferred on column
+threading). 7.5 IMPLEMENTED — and the documented root-cause was CORRECTED by an implementation spike:
+the interning was NOT defeated by an alias-sensitive candidate-narrowing hash (the hash is already
+alias-invariant, RFC-074; `memoizeNonLeaf` already uses alias-aware `MemoEqual`). The real
+alias-sensitive sites are `Reference.Insert`/`InsertFinal`, which dedup alias-IDENTITY only — a
+Go-vs-Java divergence (Java's `containsInMemo` is alias-aware). Fix: a GATED alias-aware `MemoEqual`
+dedup tier in `Insert`/`InsertFinal`, opted into via `SelectExpression.InternsAliasAware()` (merge
+re-enumeration selects only — gating avoids over-deduping CTE column-rename selects, which silently
+read NULL when collapsed because Go has not unified alias namespaces, 7.1). `mergeQuantifierAlias` +
+`mergeAliasPrefix` deleted; the merge quantifier now gets a plain `uniqueId`. Verified by a
+deterministic chain task-count gate (±2%, pinned 3-chain 8999 / 4-chain 30593; naive un-gated uniqueId
+DOUBLES the 4-chain to 60044) + full suite green + 5× determinism. The opaque-type retirement
+(JoinMergeAllValue/Seed/composeFieldOverJoinMerge) and anchored RC remain 7.6, deferred on column
+threading (F3). See RFC-077 "Precise root-cause — CORRECTED".
+
 ### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
 
 - [x] **DONE (RFC-076 v5, 2026-06-05).** `ImplementIndexScanRule` + both registrations + its 3 test
