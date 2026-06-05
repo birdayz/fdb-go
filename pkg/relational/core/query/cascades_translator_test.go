@@ -72,6 +72,125 @@ func TestTableColumns_FromMetadata(t *testing.T) {
 	}
 }
 
+// demoMetaData builds the record_layer_demo metadata used by the leg-column
+// derivation tests (Order, Customer — both carry a PRICE column, a duplicate bare
+// name across legs).
+func demoMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+	return md
+}
+
+// TestLegColumns_NamingConsistentWithAnchoredRecord pins, IN ISOLATION (RFC-077
+// 7.6 step 1), that legColumns produces names CONSISTENT with NewAnchoredJoinRecord
+// for every supported leg shape, so a parent join's anchored RC composes its legs:
+//
+//   - scan → the table's bare metadata columns;
+//   - filter / limit → the inner's columns (row-shape-preserving);
+//   - join → EXACTLY the anchored RC's field names over its legs (qualified
+//     ALIAS.COL + bare-unique, dotted-propagated), so a 3-way join's outer leg
+//     (itself a join) contributes already-qualified names the parent propagates
+//     verbatim;
+//   - unsupported shape (aggregate, distinct, …) → nil.
+func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
+	t.Parallel()
+	md := demoMetaData(t)
+	tr := &cascadesTranslator{md: md}
+
+	names := func(fs []values.Field) map[string]bool {
+		m := map[string]bool{}
+		for _, f := range fs {
+			m[f.Name] = true
+		}
+		return m
+	}
+
+	// (1) Scan → bare metadata columns (upper-cased).
+	scanCols := names(tr.legColumns(logical.NewScan("Order", "O")))
+	for _, c := range []string{"ORDER_ID", "PRICE", "QUANTITY"} {
+		if !scanCols[c] {
+			t.Errorf("scan leg missing bare column %q; got %v", c, scanCols)
+		}
+	}
+
+	// (2) Filter / limit preserve the inner scan's columns.
+	filterCols := names(tr.legColumns(logical.NewFilter(logical.NewScan("Order", "O"), "price > 1")))
+	if len(filterCols) != len(scanCols) {
+		t.Errorf("filter leg columns %v != scan leg columns %v (filter must preserve shape)", filterCols, scanCols)
+	}
+	limitCols := names(tr.legColumns(logical.NewLimit(logical.NewScan("Order", "O"), 10, 0)))
+	if len(limitCols) != len(scanCols) {
+		t.Errorf("limit leg columns %v != scan leg columns %v (limit must preserve shape)", limitCols, scanCols)
+	}
+
+	// (3) Join → identical to NewAnchoredJoinRecord over its legs. Build a 2-way
+	// O ⋈ C and compare legColumns(join) field names to the RC's field names.
+	join := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
+	joinLegCols := tr.legColumns(join)
+	wantRC := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: values.NamedCorrelationIdentifier("O"), Columns: tr.legColumns(logical.NewScan("Order", "O"))},
+		{Alias: values.NamedCorrelationIdentifier("C"), Columns: tr.legColumns(logical.NewScan("Customer", "C"))},
+	})
+	gotNames := names(joinLegCols)
+	wantNames := map[string]bool{}
+	for _, f := range wantRC.Fields {
+		wantNames[f.Name] = true
+	}
+	for k := range wantNames {
+		if !gotNames[k] {
+			t.Errorf("join legColumns missing RC field %q; got %v", k, gotNames)
+		}
+	}
+	for k := range gotNames {
+		if !wantNames[k] {
+			t.Errorf("join legColumns has %q not in the RC; got %v want %v", k, gotNames, wantNames)
+		}
+	}
+	// The shared duplicate bare name PRICE is exposed BOTH qualified (O.PRICE,
+	// C.PRICE) AND bare (last-leg-wins = C's), matching NewAnchoredJoinRecord and
+	// the opaque merge's Evaluate key set (the bare-dup key is load-bearing: a
+	// quantifier over a join reuses the right-leg alias, so a qualified predicate
+	// reads the merged row by the bare key).
+	if !gotNames["PRICE"] {
+		t.Errorf("join legColumns must expose bare PRICE (last-leg-wins, parity with the merge); got %v", gotNames)
+	}
+	if !gotNames["O.PRICE"] || !gotNames["C.PRICE"] {
+		t.Errorf("join legColumns must expose qualified O.PRICE and C.PRICE; got %v", gotNames)
+	}
+
+	// (3b) NESTED join — the outer leg is itself a join, so its already-qualified
+	// (dotted) names propagate VERBATIM into the parent's leg columns.
+	nested := logical.NewJoin(join, logical.NewScan("TypedRecord", "TR"), logical.JoinInner, "")
+	nestedCols := names(tr.legColumns(nested))
+	if !nestedCols["O.PRICE"] || !nestedCols["C.PRICE"] {
+		t.Errorf("nested join must propagate the inner join's qualified O.PRICE/C.PRICE verbatim; got %v", nestedCols)
+	}
+	if nestedCols["TR.O.PRICE"] {
+		t.Error("nested join must NOT re-qualify a dotted column to TR.O.PRICE")
+	}
+
+	// (4) Unsupported shapes → nil.
+	if tr.legColumns(logical.NewDistinct(logical.NewScan("Order", "O"))) != nil {
+		t.Error("distinct leg must derive nil columns (unsupported shape)")
+	}
+	if tr.legColumns(nil) != nil {
+		t.Error("nil leg must derive nil columns")
+	}
+
+	// (5) nil-md translator derives nil for a scan (no typing source) → seed
+	// falls back to the opaque merge.
+	if (&cascadesTranslator{}).legColumns(logical.NewScan("Order", "O")) != nil {
+		t.Error("nil-md leg columns must be nil (fall back to opaque seed)")
+	}
+}
+
 func TestTranslateScan(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")

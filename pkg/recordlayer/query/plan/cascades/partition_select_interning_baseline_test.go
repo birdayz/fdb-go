@@ -41,6 +41,35 @@ func buildChainSelect(n int) *expressions.SelectExpression {
 	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
 }
 
+// buildChainSelectAnchored is buildChainSelect but the result value is the
+// SOURCE-ANCHORED join RESULT value (RFC-077 7.6) over the first two tables,
+// instead of the opaque JoinMergeSeedValue. It exercises the F2 exploration-time
+// HIDING path: GetCorrelatedToOfValue must NOT descend into the anchored RC (its
+// leg QOVs are self-bound by the select's own quantifiers), and PartitionSelectRule
+// must treat the anchored RC as a seed (keep all lowers live). If the hiding lapses
+// the leg aliases inflate the correlation order and the ≥4-way task count blows up.
+func buildChainSelectAnchored(n int) *expressions.SelectExpression {
+	var quants []expressions.Quantifier
+	var aliases []string
+	var preds []predicates.QueryPredicate
+	for i := 1; i <= n; i++ {
+		quants = append(quants, scanQuantifier(tName(i)))
+		aliases = append(aliases, tName(i))
+	}
+	for i := 1; i < n; i++ {
+		preds = append(preds, chainEqPred(tName(i), "NEXT_ID", tName(i+1), "ID"))
+	}
+	seed := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: values.NamedCorrelationIdentifier(tName(1)), Columns: []values.Field{
+			{Name: "ID"}, {Name: "NEXT_ID"},
+		}},
+		{Alias: values.NamedCorrelationIdentifier(tName(2)), Columns: []values.Field{
+			{Name: "ID"}, {Name: "NEXT_ID"},
+		}},
+	})
+	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
+}
+
 func tName(i int) string {
 	if i < 10 {
 		return "T" + string(rune('0'+i))
@@ -212,6 +241,42 @@ func TestPartitionSelect_MergeAliasPlanHashStable(t *testing.T) {
 	if h1 != h2 {
 		t.Errorf("plan hash NOT stable across plannings (merge alias leaked process-global "+
 			"counter state): h1=%d h2=%d", h1, h2)
+	}
+}
+
+// planChainTasksAnchored plans an n-table chain whose seed is the source-anchored
+// join RESULT value (RFC-077 7.6) and returns the deterministic task count.
+func planChainTasksAnchored(t *testing.T, n int) int {
+	t.Helper()
+	ref := expressions.InitialOf(buildChainSelectAnchored(n))
+	_, tasks, err := fullChainPlanner().Plan(ref)
+	if err != nil {
+		t.Fatalf("%d-table anchored chain Plan: %v (tasks=%d)", n, err, tasks)
+	}
+	return tasks
+}
+
+// TestPartitionSelect_AnchoredSeedExplorationBudget is the RFC-077 7.6 F2-HIDING
+// gate. It confirms the source-anchored join RESULT value keeps the ≥4-way
+// chain/STAR exploration within budget — i.e. GetCorrelatedToOfValue's "do not
+// descend into an anchored-join RC" suppression actually fires, so the buried leg
+// QOVs do NOT inflate the correlation order. The anchored-seed task count must be
+// within ±5% of the opaque-seed baseline at every arity (the anchored RC is the
+// structural successor of the Seed bit, so the budget must hold). If the hiding
+// lapses (e.g. the AnchoredJoin marker is lost across a rebase, or
+// GetCorrelatedToOfValue descends), the leg aliases surface and the 4-chain count
+// jumps — the +~32% blowup the Seed bit's suppression was measured to prevent.
+func TestPartitionSelect_AnchoredSeedExplorationBudget(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{3, 4} {
+		opaque := planChainTasks(t, n)
+		anchored := planChainTasksAnchored(t, n)
+		tol := opaque/20 + 1 // ±5%
+		if anchored < opaque-tol || anchored > opaque+tol {
+			t.Errorf("%d-chain anchored-seed tasksRun=%d, opaque-seed baseline=%d ±5%% ([%d,%d]) — "+
+				"F2 exploration-time hiding lapsed (the anchored RC's leg QOVs leaked into the correlation order)",
+				n, anchored, opaque, opaque-tol, opaque+tol)
+		}
 	}
 }
 

@@ -2086,6 +2086,31 @@ type RecordConstructorField struct {
 // Mirrors Java's `RecordConstructorValue`.
 type RecordConstructorValue struct {
 	Fields []RecordConstructorField
+
+	// AnchoredJoin marks a source-anchored join RESULT value (RFC-077 7.6):
+	// the RecordConstructorValue NewAnchoredJoinRecord builds, whose fields are
+	// each FieldValue(QuantifiedObjectValue(leg), col) over the enclosing
+	// select's OWN immediate join quantifiers. It is the structural successor of
+	// the opaque JoinMergeAllValue's Seed provenance bit, carrying the SAME
+	// dual-purpose semantics (RFC-077 F2):
+	//   - exploration-time HIDING: GetCorrelatedToOfValue does NOT descend into an
+	//     anchored-join RC, so its self-bound leg QOVs are excluded from the
+	//     value's reported external correlation set (mirroring Seed=true's
+	//     "report nothing"). Reporting them inflates every enclosing select's
+	//     correlation order and tips the ≥4-way STAR past the task budget.
+	//   - partition-time RE-EXPOSURE: PartitionSelectRule keeps ALL lower aliases
+	//     live for an anchored-join result (the seed never names the real
+	//     projection), and AddMergeSeedAliases re-collects the buried leg QOVs by
+	//     walking INTO the RC's fields — so a predicate reading a buried column is
+	//     classified as spanning, not pushed below the merge (the 0-row bug).
+	//
+	// An ORDINARY RecordConstructorValue (a SELECT projection) leaves this false:
+	// its correlations are real and must be reported. The flag is the honest
+	// structural marker that "this RC is a join result, not a user projection",
+	// NOT a downstream-observable heuristic — and it is PRESERVED through every
+	// Value reconstruction (WithChildren, Replace, RebaseValue) so the hiding
+	// survives SelectMergeRule's flatten-time substitution of nested join legs.
+	AnchoredJoin bool
 }
 
 // NewRecordConstructorValue constructs a RecordConstructorValue.

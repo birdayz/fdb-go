@@ -122,6 +122,106 @@ func fieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
 	return values.UnknownType
 }
 
+// legColumns derives the OUTPUT columns of a logical sub-plan as the field set a
+// source-anchored join result value would carry for that leg (RFC-077 7.6 Option
+// B). The names it returns are EXACTLY the field names NewAnchoredJoinRecord
+// emits, so a parent join's anchored RC composes its legs consistently — a leg
+// that is itself a join exposes already-qualified (dotted) names that the parent
+// propagates verbatim (the nested-join case NewAnchoredJoinRecord handles).
+//
+// Per-shape derivation (mirrors Option B's legOutputColumns):
+//   - LogicalScan      → the table's bare columns from metadata (tableColumns).
+//   - LogicalFilter    → its inner's columns (a filter is row-shape-preserving).
+//   - LogicalLimit     → its inner's columns (limit is row-shape-preserving).
+//   - LogicalJoin      → the field set of the join's anchored RC over its two
+//     legs (qualified ALIAS.COL + bare-unique, dotted-propagated).
+//   - LogicalProject   → the projected column names (the SELECT list).
+//   - anything else (aggregate / distinct / union / cte / subquery) → nil.
+//
+// Returns nil whenever any required source is unavailable (no md, an unresolvable
+// table, an unsupported shape) — the seed site then falls back to the opaque
+// JoinMergeSeedValue. The Field types are best-effort (UnknownType for derived
+// shapes); only the NAMES are load-bearing for name-based resolution.
+func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Field {
+	switch o := op.(type) {
+	case *logical.LogicalScan:
+		// A CTE/derived-table scan resolves to its body, not a real table;
+		// tableColumns only knows real tables, so a CTE name returns nil here
+		// and the seed falls back to the opaque merge (correct: the CTE's
+		// columns live in its translated body, not metadata).
+		return t.tableColumns(o.Table)
+	case *logical.LogicalFilter:
+		return t.legColumns(o.Input)
+	case *logical.LogicalLimit:
+		return t.legColumns(o.Input)
+	case *logical.LogicalJoin:
+		left, right := o.Left, o.Right
+		if o.Kind == logical.JoinRight {
+			left, right = right, left
+		}
+		leftCols := t.legColumns(left)
+		rightCols := t.legColumns(right)
+		if leftCols == nil || rightCols == nil {
+			return nil
+		}
+		leftAlias := values.NamedCorrelationIdentifier(sourceAlias(left))
+		rightAlias := values.NamedCorrelationIdentifier(sourceAlias(right))
+		rc := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+			{Alias: leftAlias, Columns: leftCols},
+			{Alias: rightAlias, Columns: rightCols},
+		})
+		fields := make([]values.Field, len(rc.Fields))
+		for i, f := range rc.Fields {
+			fields[i] = values.Field{Name: f.Name, FieldType: values.UnknownType, Ordinal: i}
+		}
+		return fields
+	case *logical.LogicalProject:
+		if len(o.Projections) == 0 {
+			return nil
+		}
+		fields := make([]values.Field, len(o.Projections))
+		for i := range o.Projections {
+			name := o.Projections[i]
+			if i < len(o.Aliases) && o.Aliases[i] != "" {
+				name = o.Aliases[i]
+			}
+			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+		}
+		return fields
+	default:
+		return nil
+	}
+}
+
+// buildJoinResultValue builds the result value for a binary join seed (RFC-077
+// 7.6 Option B). When BOTH legs' output columns are derivable (legColumns
+// non-nil), it emits the source-anchored RecordConstructorValue —
+// FieldValue(QOV(leg), col) per column, named by NewAnchoredJoinRecord — so
+// field pull-up resolves through composeFieldOverConstructor by name, anchored to
+// the source quantifier. Otherwise it FALLS BACK to the opaque
+// JoinMergeSeedValue (TRANSITIONAL — kept until every leg shape is column-aware;
+// e.g. a CTE/derived-table or aggregate leg has no metadata columns yet). left/
+// right are the POST-swap operands (RIGHT-join normalization happens at the call
+// site), so the leg order matches the seed's [outer, inner] ordering the column
+// derivation + reversal signal read.
+func (t *cascadesTranslator) buildJoinResultValue(left, right logical.LogicalOperator, leftAlias, rightAlias string) values.Value {
+	leftCols := t.legColumns(left)
+	rightCols := t.legColumns(right)
+	// Both legs must have a non-empty alias (the anchored RC keys columns by
+	// QOV(alias); a zero alias would panic NewQuantifiedObjectValue) AND derivable
+	// columns. Otherwise fall back to the opaque seed.
+	if leftAlias != "" && rightAlias != "" && leftCols != nil && rightCols != nil {
+		return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+			{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
+			{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
+		})
+	}
+	return values.NewJoinMergeSeedValue(
+		values.NamedCorrelationIdentifier(leftAlias),
+		values.NamedCorrelationIdentifier(rightAlias),
+	)
+}
+
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
 	expr := t.translateOp(op)
 	if expr == nil {
@@ -465,10 +565,12 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 
 	innerQ := t.namedQuantifier(csq.InnerAlias, innerRef)
 
-	resultValue := values.NewJoinMergeSeedValue(
-		outerQ.GetAlias(),
-		innerQ.GetAlias(),
-	)
+	// Correlated-scalar-subquery join seed. The inner is a scalar subquery, not a
+	// table row, so its leg columns rarely derive — buildJoinResultValue then
+	// falls back to the opaque JoinMergeSeedValue (TRANSITIONAL). The leg aliases
+	// must be the quantifiers' own aliases (outerQ / innerQ), which equal
+	// outerAlias / csq.InnerAlias by construction.
+	resultValue := t.buildJoinResultValue(p.Input, innerPlan, outerAlias, csq.InnerAlias)
 
 	joinSelect := expressions.NewSelectExpressionWithJoinType(
 		resultValue,
@@ -726,10 +828,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewJoinMergeSeedValue(
-		values.NamedCorrelationIdentifier(leftAlias),
-		values.NamedCorrelationIdentifier(rightAlias),
-	)
+	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
@@ -836,10 +935,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := values.NewJoinMergeSeedValue(
-		values.NamedCorrelationIdentifier(leftAlias),
-		values.NamedCorrelationIdentifier(rightAlias),
-	)
+	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		quantifiers,

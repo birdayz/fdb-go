@@ -206,7 +206,15 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// real source aliases, so a flattened seed does not reliably name an unbound
 		// alias, and that heuristic silently dropped buried-table columns in the SQL
 		// path — the 4-way regression the FDB N-way test caught.)
-		if m, isSeed := resultValue.(*values.JoinMergeAllValue); isSeed && m.Seed {
+		// A source-anchored join RESULT value (RFC-077 7.6) is the structural
+		// successor of the seed bit: like Seed=true it HIDES the real projection
+		// (its fields name only the two immediate source legs; the Project lives
+		// above), so the rule cannot trust its named set and must keep ALL lower
+		// aliases live. GetCorrelatedToOfValue deliberately hides the RC's leg
+		// QOVs (exploration-time budget), so the else-branch would see an empty
+		// set and drop every buried column — this branch re-exposes them.
+		_, anchoredSeed := isAnchoredJoinResult(resultValue)
+		if m, isSeed := resultValue.(*values.JoinMergeAllValue); (isSeed && m.Seed) || anchoredSeed {
 			for a := range lowerAliases {
 				lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
 			}
@@ -349,7 +357,19 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// table's original alias) the re-stamp is a no-op in effect — the alias is
 		// still bound — but covering all branches keeps the result value consistent
 		// with the aliases the upper binds. (RFC-043.)
-		_, parentIsMerge := resultValue.(*values.JoinMergeAllValue)
+		// The parent result is a "merge intent" when it is the opaque
+		// JoinMergeAllValue OR the source-anchored join RESULT value (RFC-077 7.6):
+		// both mean "flow all my tables' columns merged, named by the original deep
+		// aliases." When a partition collapses ≥2 of those tables into one merge
+		// quantifier, those aliases are no longer bound at the upper level, so the
+		// parent value must be RE-STAMPED as a re-enumeration JoinMergeAllValue over
+		// the upper's IMMEDIATE quantifiers (the re-enumeration path stays on the
+		// opaque type — column threading there is a later RFC-077 step). The
+		// anchored RC reaches here only via SelectMergeRule flattening a binary join
+		// seed up; the rule re-stamps it exactly as it always re-stamped a merge.
+		_, parentIsOpaqueMerge := resultValue.(*values.JoinMergeAllValue)
+		_, parentIsAnchored := isAnchoredJoinResult(resultValue)
+		parentIsMerge := parentIsOpaqueMerge || parentIsAnchored
 		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier) values.Value {
 			if !parentIsMerge {
 				return resultValue
@@ -786,6 +806,20 @@ func rebaseBuriedLowerReferences(
 		}
 		return values.NewFieldValue(mergeQOV, field, fv.Typ)
 	})
+}
+
+// isAnchoredJoinResult reports whether v is a source-anchored join RESULT value
+// (RFC-077 7.6) — the RecordConstructorValue NewAnchoredJoinRecord builds, marked
+// AnchoredJoin. It is the structural successor of the JoinMergeAllValue Seed bit:
+// PartitionSelectRule treats it the same way (keep all lower aliases live; re-stamp
+// to a re-enumeration merge when collapsing). Returns the RC for callers that need
+// it.
+func isAnchoredJoinResult(v values.Value) (*values.RecordConstructorValue, bool) {
+	rc, ok := v.(*values.RecordConstructorValue)
+	if !ok || !rc.AnchoredJoin {
+		return nil, false
+	}
+	return rc, true
 }
 
 var _ ExpressionRule = (*PartitionSelectRule)(nil)
