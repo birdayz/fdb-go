@@ -60,6 +60,30 @@ func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string { return p.group
 // GetAggColumn returns the aggregate column name.
 func (p *RecordQueryAggregateIndexPlan) GetAggColumn() string { return p.aggColumn }
 
+// CanonicalAggColumnName returns the canonical column name the executor's
+// aggregateIndexCursor writes the aggregate value under: "FUNC(*)" for an
+// empty aggColumn (e.g. COUNT(*)), else "FUNC(col)". Single source of that
+// name so the cursor and planColumnNamesWithMD stay byte-identical.
+func (p *RecordQueryAggregateIndexPlan) CanonicalAggColumnName() string {
+	if p.aggColumn == "" {
+		return p.aggregateFunction + "(*)"
+	}
+	return p.aggregateFunction + "(" + p.aggColumn + ")"
+}
+
+// OutputColumnNames returns the column names this plan's rows are keyed by —
+// the grouping columns (verbatim, as the cursor writes them) followed by the
+// canonical aggregate name. A bare aggregate-index plan is always UNALIASED
+// (an aliased SELECT tops with a Project that owns the rename), so there is no
+// alias to carry; these are exactly the keys aggregateIndexCursor writes. Used
+// by planColumnNamesWithMD so a UNION position-remap can normalize a grouped
+// aggregate-index branch (RFC-081).
+func (p *RecordQueryAggregateIndexPlan) OutputColumnNames() []string {
+	names := make([]string, 0, len(p.groupCols)+1)
+	names = append(names, p.groupCols...)
+	return append(names, p.CanonicalAggColumnName())
+}
+
 // GetIndexPlan returns the underlying index plan.
 func (p *RecordQueryAggregateIndexPlan) GetIndexPlan() *RecordQueryIndexPlan { return p.indexPlan }
 

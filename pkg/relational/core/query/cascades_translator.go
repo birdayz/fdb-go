@@ -421,11 +421,29 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		}
 		return true
 	case *logical.LogicalAggregate:
-		// Bare UNGROUPED aggregate only: groupingCount==0 → no AggregateIndex candidate
-		// (cascades_generator.go) → always StreamingAgg, which carries the alias (RFC-078).
-		// A grouped bare aggregate can plan as AggregateIndex (names unreported) so it stays
-		// gated (clean error); 0-agg too. RFC-080.
-		return len(o.Aggregates) >= 1 && len(o.GroupKeys) == 0
+		// Bare aggregate branch (no Project). Every physical realization reports its output
+		// schema to planColumnNamesWithMD — StreamingAgg (RFC-078), AggregateIndex and
+		// MultiIntersection (RFC-081) — so the executor position-remap can normalize the branch
+		// regardless of grouping. 0-aggregate (group-only) is a distinct shape, still gated.
+		if len(o.Aggregates) < 1 {
+			return false
+		}
+		// EXCEPTION (codex): a GROUPED COUNT(<constant>) (e.g. COUNT(1)) matches a count-star
+		// aggregate index, whose AggregateIndex realization reports the canonical "COUNT(*)" —
+		// but the logical schema (aggregateOutputColumns) keeps "COUNT(1)". That logical/physical
+		// name mismatch makes the union position-remap read a missing key → NULL. Conservatively
+		// gate a grouped branch with a constant aggregate operand (clean error, never wrong rows)
+		// until the AggregateIndex plan carries the logical output name (RFC-081 follow-up).
+		// Ungrouped is safe: no aggregate-index candidate (groupingCount==0) → StreamingAgg, which
+		// names COUNT(<constant>) consistently with the logical schema.
+		if len(o.GroupKeys) > 0 {
+			for _, operand := range o.AggregateOperands {
+				if cv, ok := operand.(*values.ConstantValue); ok && cv.Value != nil {
+					return false
+				}
+			}
+		}
+		return true
 	case *logical.LogicalDistinct:
 		return t.unionBranchNormalizable(o.Input)
 	case *logical.LogicalSort:

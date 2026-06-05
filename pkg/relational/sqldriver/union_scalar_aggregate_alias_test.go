@@ -86,19 +86,17 @@ func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 		[]int64{1, 2})
 }
 
-// TestFDB_UnionGroupedAggregateStillGated is the RFC-080 safety boundary (Graefe): a
-// UNION of bare GROUPED aggregate branches used as a JOIN LEG stays UNTRANSLATABLE (clean
-// error, never wrong rows) — even though it plans as AggregateIndex. The gate
-// (unionBranchNormalizable, exercised by the join-leg column-anchoring path) is
-// `>= 1 aggregate AND 0 group keys`, so a grouped bare aggregate is rejected: a grouped
-// aggregate CAN plan as AggregateIndex, whose cursor names outputs canonically and which
-// planColumnNamesWithMD does NOT report — so the position-remap could not normalize a
-// grouped branch in the join-leg anchoring. (The real RFC-078 follow-up (a): teach the
-// AggregateIndex/MultiIntersection path to carry + report the output names, then open it.)
+// TestFDB_UnionGroupedAggregate is the RFC-081 regression: a UNION of bare GROUPED
+// aggregate branches with mismatched group-key names, used as a JOIN LEG, now returns
+// CORRECT rows (RFC-080 left this gated as a clean error; RFC-081 opens it). The gate
+// (unionBranchNormalizable, exercised by the join-leg column-anchoring path) now allows
+// grouped aggregate branches because planColumnNamesWithMD reports the AggregateIndex /
+// MultiIntersection output schema, so the executor's position-remap normalizes the
+// mismatched-name second branch.
 //
 // NB: the gate is hit by the union-as-JOIN-LEG / CTE-body-in-join path, NOT a standalone
 // derived table in FROM (which the executor handles directly). So this uses the join form.
-func TestFDB_UnionGroupedAggregateStillGated(t *testing.T) {
+func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -106,6 +104,62 @@ func TestFDB_UnionGroupedAggregateStillGated(t *testing.T) {
 	ctx := context.Background()
 
 	db := setupPlanShapeDB(t, "ugag",
+		"CREATE TABLE ga (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g "+
+			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
+			"CREATE TABLE gb (id BIGINT NOT NULL, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h "+
+			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h "+
+			"CREATE TABLE c (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
+
+	// The single-aggregate grouped branch DOES plan as AggregateIndex — the realization
+	// RFC-081 teaches planColumnNamesWithMD to report (the gate-open premise).
+	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(*) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("grouped bare aggregate must plan as AggregateIndex (RFC-081 premise), got: %s", plan)
+	}
+
+	// (1) Grouped SINGLE-aggregate union as a JOIN LEG, mismatched group-key names (g vs h),
+	// joined with c on the group key. ga groups g={100,200}; gb groups h={100,300}; the second
+	// branch's h is remapped to the first branch's g → u.g={100,200,100,300}. Join c on
+	// u.g=c.id → w {1,2,1,3}. (Branches plan as AggregateIndex.)
+	assertInt64Set(t, db, ctx,
+		"WITH u AS (SELECT g, COUNT(*) FROM ga GROUP BY g UNION ALL SELECT h, COUNT(*) FROM gb GROUP BY h) "+
+			"SELECT c.w FROM u, c WHERE u.g = c.id",
+		[]int64{1, 2, 1, 3})
+
+	// (2) Grouped MULTI-aggregate union as a JOIN LEG, FILTERED on the group key so each branch
+	// plans as MultiIntersection (the WHERE-equality bounds the aggregate-index scan, beating
+	// the full-scan+sort StreamingAgg) — this exercises the MultiIntersection reporting arm.
+	// EXPLAIN-pin that realization, then assert correct rows: both branches group=100 →
+	// u.g={100,100}; join c on u.g=c.id=100 → w {1,1}.
+	miQuery := "WITH u AS (SELECT g, COUNT(*), SUM(v) FROM ga WHERE g = 100 GROUP BY g " +
+		"UNION ALL SELECT h, COUNT(*), SUM(v) FROM gb WHERE h = 100 GROUP BY h) " +
+		"SELECT c.w FROM u, c WHERE u.g = c.id"
+	if plan := planExplainVia(t, ctx, db, miQuery); !strings.Contains(plan, "MultiIntersection") {
+		t.Fatalf("filtered grouped multi-aggregate branch must plan as MultiIntersection (exercises the MI arm), got: %s", plan)
+	}
+	assertInt64Set(t, db, ctx, miQuery, []int64{1, 1})
+}
+
+// TestFDB_UnionGroupedCountConstantGated pins the RFC-081 codex P2 boundary: a GROUPED
+// COUNT(<constant>) (e.g. COUNT(1)) union branch stays UNTRANSLATABLE (clean error, never
+// wrong rows). COUNT(1) matches a count-star aggregate index, so its AggregateIndex
+// realization reports the canonical "COUNT(*)" while the logical schema keeps "COUNT(1)";
+// that name mismatch would make the union remap read a missing key → NULL count. The gate
+// conservatively rejects a grouped branch with a constant aggregate operand until the
+// AggregateIndex plan carries the logical output name (follow-up). COUNT(*) and COUNT(col)
+// grouped branches (no name divergence) remain normalizable.
+func TestFDB_UnionGroupedCountConstantGated(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "ugcc",
 		"CREATE TABLE ga (id BIGINT NOT NULL, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g "+
 			"CREATE TABLE gb (id BIGINT NOT NULL, h BIGINT, PRIMARY KEY (id)) "+
@@ -115,18 +169,20 @@ func TestFDB_UnionGroupedAggregateStillGated(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100), (20, 300)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
 
-	// A bare (unaliased, all-visible) grouped aggregate that DOES plan as AggregateIndex
-	// — the realization the gate must keep out of the join-leg union normalizer.
-	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(*) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
-		t.Fatalf("grouped bare aggregate must plan as AggregateIndex (gate-boundary premise), got: %s", plan)
+	// COUNT(1) matches the count-star index — confirm the realization, then assert the
+	// grouped COUNT(1) union JOIN LEG stays untranslatable (would otherwise NULL the count).
+	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(1) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("grouped COUNT(1) must match the count-star AggregateIndex (premise), got: %s", plan)
+	}
+	cc := "WITH u AS (SELECT g, COUNT(1) FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) FROM gb GROUP BY h) " +
+		"SELECT u.* FROM u, c WHERE u.g = c.id"
+	if _, err := db.QueryContext(ctx, cc); err == nil {
+		t.Errorf("grouped COUNT(1) union JOIN LEG must stay gated (clean error), not NULL the count: %q", cc)
 	}
 
-	// Grouped bare aggregate UNION as a JOIN LEG (joined with c on the group key): hits the
-	// column-anchoring gate, which excludes grouped → untranslatable. Must NOT silently
-	// mis-resolve via an unreportable AggregateIndex branch.
-	q := "WITH u AS (SELECT g, COUNT(*) FROM ga GROUP BY g UNION ALL SELECT h, COUNT(*) FROM gb GROUP BY h) " +
-		"SELECT c.w FROM u, c WHERE u.g = c.id"
-	if _, err := db.QueryContext(ctx, q); err == nil {
-		t.Errorf("GROUPED aggregate union JOIN LEG must stay untranslatable (gate excludes grouped), not run: %q", q)
-	}
+	// COUNT(*) grouped union JOIN LEG (no name divergence) remains normalizable → correct rows.
+	assertInt64Set(t, db, ctx,
+		"WITH u AS (SELECT g, COUNT(*) FROM ga GROUP BY g UNION ALL SELECT h, COUNT(*) FROM gb GROUP BY h) "+
+			"SELECT c.w FROM u, c WHERE u.g = c.id",
+		[]int64{1, 2, 1, 3})
 }
