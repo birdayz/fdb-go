@@ -1,11 +1,13 @@
 package cascades
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // buildChainSelect builds an n-table CHAIN join T1—T2—…—Tn, each link an
@@ -139,6 +141,77 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 	)
 	if projSel.InternsAliasAware() {
 		t.Error("a non-merge projection select must NOT intern alias-aware (reopens the CTE silent-NULL regression)")
+	}
+}
+
+// TestMemo_NextMergeAlias pins two codex-P2 properties of the merge alias
+// (RFC-077 7.5). (1) Collision-PROOF: the alias contains a double-quote, the one
+// character no parsed SQL identifier can contain (lexer DOUBLE_QUOTE_ID:
+// '"' ~'"'+ '"'), so no user alias — quoted or not — can ever equal a merge
+// quantifier alias (a `AS "$m1"` collision would corrupt alias-keyed binding in a
+// multi-way join). (2) Deterministic + per-occurrence-unique: two fresh Memos mint
+// the SAME sequence (so the same query has a stable plan hash), and each call
+// returns a DISTINCT alias (so equivalent sub-products differ and are interned by
+// the alias-aware Reference.Insert tier, not a stable string).
+func TestMemo_NextMergeAlias(t *testing.T) {
+	t.Parallel()
+
+	m1 := NewMemo(nil)
+	a, b := m1.NextMergeAlias(), m1.NextMergeAlias()
+	if !strings.Contains(a.Name(), `"`) {
+		t.Errorf("merge alias %q must contain a double-quote to be uncollidable with any SQL identifier", a.Name())
+	}
+	if a == b {
+		t.Errorf("consecutive merge aliases must differ, got %q twice", a.Name())
+	}
+
+	// A second fresh Memo mints the identical sequence (per-plan determinism).
+	m2 := NewMemo(nil)
+	if c := m2.NextMergeAlias(); c != a {
+		t.Errorf("merge alias not deterministic across fresh Memos: %q vs %q", c.Name(), a.Name())
+	}
+}
+
+// TestPartitionSelect_MergeAliasPlanHashStable pins the codex P2-1 fix: the merge
+// quantifier alias must NOT make the plan hash depend on process history. The
+// alias flows into RecordQueryNestedLoopJoinPlan.HashCodeWithoutChildren (raw
+// source aliases) → plans.PlanHash (plan-log identity) + the cost-model tiebreak.
+// A process-global UniqueCorrelationIdentifier made the SAME query hash
+// differently once the global counter had advanced (a long-lived process that
+// planned other queries first); the per-Memo deterministic Memo.NextMergeAlias
+// makes the same query mint the same alias sequence regardless of global-counter
+// state. This test plans the same chain twice with the global counter advanced in
+// between and asserts the plan hash is identical — it FAILS with a process-global
+// merge alias and PASSES with the per-Memo counter.
+func TestPartitionSelect_MergeAliasPlanHashStable(t *testing.T) {
+	t.Parallel()
+
+	type planGetter interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	planOnce := func() plans.RecordQueryPlan {
+		e, _, err := fullChainPlanner().Plan(expressions.InitialOf(buildChainSelect(3)))
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
+		pg, ok := e.(planGetter)
+		if !ok {
+			t.Fatalf("planned expr %T is not a plan getter", e)
+		}
+		return pg.GetRecordQueryPlan()
+	}
+
+	h1 := plans.PlanHash(planOnce())
+	// Advance the process-global correlation counter, simulating a long-lived
+	// process that planned other queries between the two plannings of this one.
+	for i := 0; i < 41; i++ {
+		_ = values.UniqueCorrelationIdentifier()
+	}
+	h2 := plans.PlanHash(planOnce())
+
+	if h1 != h2 {
+		t.Errorf("plan hash NOT stable across plannings (merge alias leaked process-global "+
+			"counter state): h1=%d h2=%d", h1, h2)
 	}
 }
 

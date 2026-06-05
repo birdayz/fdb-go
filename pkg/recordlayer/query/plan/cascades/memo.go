@@ -115,16 +115,28 @@ func (m *Memo) track(ref *expressions.Reference) {
 // (RFC-037). Used by tests to assert the merge optimization fires.
 func (m *Memo) MergeCount() int { return m.mergeCount }
 
-// NextMergeAlias returns a per-plan deterministic, collision-free quantifier
-// alias for a PartitionSelectRule merge sub-join (RFC-077 7.5). The "$m" prefix
-// cannot collide with a SQL identifier (none starts with "$"); the per-Memo
-// ordinal makes the alias deterministic across plannings of the same query (for a
-// stable plan hash) while still differing per merge occurrence (so equivalent
-// sub-products intern via the alias-aware Reference.Insert tier, not via a stable
-// string). See the mergeAliasCounter field.
+// NextMergeAlias returns a per-plan deterministic, collision-PROOF quantifier
+// alias for a PartitionSelectRule merge sub-join (RFC-077 7.5).
+//
+// The alias embeds a double-quote ("). That is the one character no parsed SQL
+// identifier can ever contain: the lexer's delimited-identifier rule is
+// DOUBLE_QUOTE_ID: '"' ~'"'+ '"' (RelationalLexer.g4) — a quoted identifier is
+// any run of NON-quote characters between quotes, so the quotes are stripped and
+// the resulting name can never include a ". A bare "$m"-prefix is NOT safe on its
+// own: a user could write a quoted alias `AS "$m1"`, which parses to the name
+// "$m1" and would collide with this merge quantifier, corrupting alias-keyed
+// binding/rebasing in a multi-way join (codex P2). (This collision class also
+// affects UniqueCorrelationIdentifier's "q$N" — `AS "q$1"` — a pre-existing,
+// separate hardening item; here we make the merge alias uncollidable outright.)
+//
+// The per-Memo ordinal makes the alias deterministic across plannings of the same
+// query (for a stable plan hash) while still differing per merge occurrence, so
+// equivalent sub-products intern via the alias-aware Reference.Insert tier, not via
+// a stable string. The alias is internal — never re-lexed as SQL; it only appears
+// as a correlation key (rebasing, NLJ source alias, Explain). See mergeAliasCounter.
 func (m *Memo) NextMergeAlias() values.CorrelationIdentifier {
 	m.mergeAliasCounter++
-	return values.NamedCorrelationIdentifier("$m" + strconv.FormatUint(m.mergeAliasCounter, 10))
+	return values.NamedCorrelationIdentifier(`$m"` + strconv.FormatUint(m.mergeAliasCounter, 10))
 }
 
 // Root returns the root Reference of the Memo.
