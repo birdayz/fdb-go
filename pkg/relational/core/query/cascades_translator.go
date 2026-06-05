@@ -421,29 +421,18 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		}
 		return true
 	case *logical.LogicalAggregate:
-		// Bare aggregate branch (no Project). Every physical realization reports its output
-		// schema to planColumnNamesWithMD — StreamingAgg (RFC-078), AggregateIndex and
-		// MultiIntersection (RFC-081) — so the executor position-remap can normalize the branch
-		// regardless of grouping. 0-aggregate (group-only) is a distinct shape, still gated.
-		if len(o.Aggregates) < 1 {
-			return false
-		}
-		// EXCEPTION (codex): a GROUPED COUNT(<constant>) (e.g. COUNT(1)) matches a count-star
-		// aggregate index, whose AggregateIndex realization reports the canonical "COUNT(*)" —
-		// but the logical schema (aggregateOutputColumns) keeps "COUNT(1)". That logical/physical
-		// name mismatch makes the union position-remap read a missing key → NULL. Conservatively
-		// gate a grouped branch with a constant aggregate operand (clean error, never wrong rows)
-		// until the AggregateIndex plan carries the logical output name (RFC-081 follow-up).
-		// Ungrouped is safe: no aggregate-index candidate (groupingCount==0) → StreamingAgg, which
-		// names COUNT(<constant>) consistently with the logical schema.
-		if len(o.GroupKeys) > 0 {
-			for _, operand := range o.AggregateOperands {
-				if cv, ok := operand.(*values.ConstantValue); ok && cv.Value != nil {
-					return false
-				}
-			}
-		}
-		return true
+		// Bare aggregate branch (no Project). The executor's position-remap normalizes the
+		// branch only if the LOGICAL leg-schema name (aggregateOutputColumns, the raw aggregate
+		// text) equals the PHYSICAL row key the cursor writes (StreamingAgg aggResultName /
+		// AggregateIndex canonical). Those agree ONLY for COUNT(*) and FUNC(<bare column>):
+		//   - a qualified operand (SUM(t.c)) — the physical key strips the table qualifier (SUM(C));
+		//   - a constant (COUNT(1)) — a grouped count-star aggregate index reports COUNT(*);
+		//   - an expression (SUM(a*b)) or DISTINCT — canonicalized differently;
+		// each diverges, so the remap reads a missing key → NULL. Gate those (clean error, never
+		// wrong rows); unifying logical and physical aggregate naming so they work is a follow-up.
+		// (The aggregate TEXT is the reliable signal — AggregateOperands is nil for many shapes,
+		// e.g. SUM(col), depending on the build path; it is canonical planner output, not raw SQL.)
+		return aggregateNamesStableForUnion(o)
 	case *logical.LogicalDistinct:
 		return t.unionBranchNormalizable(o.Input)
 	case *logical.LogicalSort:
@@ -466,6 +455,80 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		return t.unionBranchNormalizable(o.Body)
 	}
 	return false
+}
+
+// aggregateNamesStableForUnion reports whether every aggregate in a bare aggregate union
+// branch has a STABLE output name — i.e. the logical leg-schema name (aggregateOutputColumns,
+// the raw aggregate text) equals the physical row key the executor writes (StreamingAgg
+// aggResultName / AggregateIndex canonical). Stable iff each aggregate is COUNT(*) or
+// FUNC(<bare column identifier>); a qualified operand (SUM(t.c)), a constant (COUNT(1)), an
+// expression (SUM(a*b)), or DISTINCT canonicalizes differently between the two, so the union
+// position-remap would read a missing key → NULL (RFC-081). False for a 0-aggregate branch.
+//
+// The aggregate TEXT is the reliable signal: AggregateOperands is nil for many shapes (e.g.
+// SUM(col)) depending on the build path, and a.Aggregates is canonical planner output (not raw
+// SQL), so inspecting it is sound here.
+func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
+	if len(a.Aggregates) == 0 || a.HasDistinctAggregate {
+		return false
+	}
+	for i, text := range a.Aggregates {
+		// A constant operand — COUNT(1), COUNT(NULL), COUNT(TRUE) — folds into count-star,
+		// so a grouped aggregate index reports COUNT(*) ≠ the logical text. The resolved
+		// operand reliably distinguishes a literal (ConstantValue) from a column, which the
+		// text cannot (COUNT(NULL)'s arg "NULL" looks like an identifier). Literals resolve
+		// even where a column operand is left nil, so this catch is sound.
+		if i < len(a.AggregateOperands) {
+			if _, isConst := a.AggregateOperands[i].(*values.ConstantValue); isConst {
+				return false
+			}
+		}
+		arg, ok := aggregateArgText(text)
+		if !ok {
+			return false
+		}
+		if arg == "*" {
+			continue // COUNT(*)
+		}
+		if !isBareColumnIdentifier(arg) {
+			return false // qualified / expression / numeric-literal operand → name diverges
+		}
+	}
+	return true
+}
+
+// aggregateArgText returns the argument of a canonical aggregate text "FUNC(arg)" — the
+// content between the first '(' and the last ')'. ok=false when not in that shape.
+func aggregateArgText(text string) (string, bool) {
+	openIdx := strings.IndexByte(text, '(')
+	closeIdx := strings.LastIndexByte(text, ')')
+	if openIdx < 0 || closeIdx <= openIdx {
+		return "", false
+	}
+	return text[openIdx+1 : closeIdx], true
+}
+
+// isBareColumnIdentifier reports whether s is a single unqualified SQL identifier
+// ([A-Za-z_][A-Za-z0-9_]*): no qualifier dot, whitespace (DISTINCT), operator (expression),
+// '*', or leading digit (numeric literal). Exactly the operands whose FUNC(s) name is identical
+// in the logical schema and the physical row key.
+func isBareColumnIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '_':
+		case c >= '0' && c <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:

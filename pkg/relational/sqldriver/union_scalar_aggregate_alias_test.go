@@ -186,3 +186,40 @@ func TestFDB_UnionGroupedCountConstantGated(t *testing.T) {
 			"SELECT c.w FROM u, c WHERE u.g = c.id",
 		[]int64{1, 2, 1, 3})
 }
+
+// TestFDB_UnionQualifiedAggregateGated pins the RFC-081 codex finding: a bare aggregate union
+// branch whose aggregate name DIVERGES between the logical leg schema (aggregateOutputColumns,
+// raw text e.g. SUM(GA.V)) and the physical row key (StreamingAgg/AggregateIndex canonical, e.g.
+// SUM(V)) stays UNTRANSLATABLE (clean error, never wrong rows). A QUALIFIED operand is the case
+// the constant-only gate missed and codex flagged. An UNQUALIFIED operand (SUM(v)) is stable and
+// remains normalizable. The gate decides at translation, so a join on the group key suffices to
+// exercise it (no SELECT u.* needed — star expansion over aggregate unions is a separate issue).
+func TestFDB_UnionQualifiedAggregateGated(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	db := setupPlanShapeDB(t, "uqag",
+		"CREATE TABLE ga (id BIGINT NOT NULL, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE gb (id BIGINT NOT NULL, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))")
+	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
+
+	// QUALIFIED SUM(ga.v): logical "SUM(GA.V)" vs physical "SUM(V)" → gated (clean error).
+	qual := "WITH u AS (SELECT g, SUM(ga.v) FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) FROM gb GROUP BY h) " +
+		"SELECT c.w FROM u, c WHERE u.g = c.id"
+	if _, err := db.QueryContext(ctx, qual); err == nil {
+		t.Errorf("qualified-operand aggregate union join leg must be gated (name divergence), not run: %q", qual)
+	}
+
+	// UNQUALIFIED SUM(v): logical "SUM(V)" == physical "SUM(V)" → normalizable → correct rows.
+	// u.g = {100,200} ∪ {100,300} = {100,200,100,300}; join c on u.g=c.id → w {1,2,1,3}.
+	assertInt64Set(t, db, ctx,
+		"WITH u AS (SELECT g, SUM(v) FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) FROM gb GROUP BY h) "+
+			"SELECT c.w FROM u, c WHERE u.g = c.id",
+		[]int64{1, 2, 1, 3})
+}

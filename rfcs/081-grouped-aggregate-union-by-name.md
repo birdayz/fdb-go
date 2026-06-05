@@ -49,20 +49,27 @@ carry — the output names are simply the group columns + the canonical aggregat
    explicit **MultiIntersection arm** (report the result value's `RecordConstructorValue` field names
    *verbatim* — byte-identical to the merge cursor's row keys, not relying on the fallback's
    upper-casing; mirrors the MapPlan arm / RFC-078 codex P2).
-3. **Relax the gate**: `unionBranchNormalizable`'s `LogicalAggregate` arm returns `len(o.Aggregates) >= 1`
-   (drops the RFC-080 `&& len(o.GroupKeys) == 0`), with ONE exception (below). Now every physical
-   realization of a bare aggregate branch (StreamingAgg / AggregateIndex / MultiIntersection) reports
-   its output schema, so the remap normalizes it regardless of grouping. A 0-aggregate (group-only)
-   shape stays gated.
+3. **Relax the gate to STABLE-NAMED aggregates only**: `unionBranchNormalizable`'s `LogicalAggregate`
+   arm returns `aggregateNamesStableForUnion(o)` (drops the RFC-080 `&& len(o.GroupKeys) == 0`). A bare
+   aggregate branch is normalizable iff every aggregate's output name is **stable** — identical between
+   the logical leg schema (`aggregateOutputColumns`, the raw aggregate text) and the physical row key
+   (StreamingAgg `aggResultName` / AggregateIndex canonical). Stable ⟺ `COUNT(*)` or `FUNC(<bare column>)`.
+   A 0-aggregate (group-only) branch is gated.
 
-**Exception — grouped `COUNT(<constant>)` (codex).** `COUNT(1)` matches a count-star aggregate index
-(`MatchesGroupBy` treats a constant operand as count-star), so its AggregateIndex realization reports
-the canonical `COUNT(*)`, while the logical schema (`aggregateOutputColumns`) keeps `COUNT(1)`. That
-logical-vs-physical name divergence would make the union position-remap read a missing key → NULL count.
-So the gate conservatively rejects a GROUPED branch with a constant aggregate operand (detected via
-`AggregateOperands` being a non-nil `ConstantValue` — no text-matching): clean error, never wrong rows.
-Ungrouped `COUNT(<constant>)` is safe (no aggregate-index candidate → StreamingAgg names it `COUNT(1)`
-consistently). Closing this needs the AggregateIndex plan to carry the logical output name — a follow-up.
+**Why a stable-name gate, not the full open (codex).** The logical and physical names DIVERGE for several
+aggregate forms, and each divergence makes the union position-remap read a missing key → NULL:
+- **qualified operand** `SUM(t.c)` — physical strips the qualifier (`SUM(C)`) vs logical `SUM(T.C)`;
+- **constant** `COUNT(1)`/`COUNT(NULL)` — a grouped count-star index reports `COUNT(*)`;
+- **expression** `SUM(a*b)` / **DISTINCT** — canonicalized differently.
+
+codex's first pass flagged the constant case; a deeper look found qualified operands diverge too (in the
+StreamingAgg realization), so a constant-only gate was insufficient. The gate now whitelists only the
+provably-stable forms. Detection uses the canonical aggregate **text** (`a.Aggregates[i]` — planner
+output, not raw SQL) for qualified/expression/numeric forms, plus the resolved `*ConstantValue` operand
+for literal forms like `COUNT(NULL)` whose text (`"NULL"`) is identifier-shaped. (`AggregateOperands` is
+nil for many column operands depending on build path, so text is the reliable primary signal.) Clean
+error, never wrong rows. Unifying logical and physical aggregate naming so the divergent forms work is a
+follow-up.
 
 No *behavioral* cursor change: the AggregateIndex and MultiIntersection cursors already write rows keyed
 by the output names; this RFC teaches the planner-name reporter to report them. The `aggregateIndexCursor`

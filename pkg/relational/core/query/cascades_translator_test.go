@@ -303,59 +303,66 @@ func TestTranslateUnion(t *testing.T) {
 }
 
 // TestUnionBranchNormalizable_AggregateArity pins the RFC-081 gate boundary: a bare
-// LogicalAggregate union branch is normalizable IFF it has at least one aggregate —
-// grouped OR ungrouped. Every physical realization now reports its output schema to
-// planColumnNamesWithMD: StreamingAgg (RFC-078), AggregateIndex and MultiIntersection
-// (RFC-081). A 0-aggregate (group-only) shape is a distinct shape, still gated.
+// LogicalAggregate union branch is normalizable IFF every aggregate's output name is STABLE
+// between the logical leg schema and the physical row key — i.e. COUNT(*) or FUNC(<bare
+// column>). A qualified operand (SUM(T.C)), a constant (COUNT(1)/COUNT(NULL)), an expression,
+// or DISTINCT canonicalizes differently → gated (clean error, never wrong rows). 0-aggregate
+// is also gated. grouped and ungrouped are treated uniformly.
 func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{}
 	scan := logical.NewScan("A", "")
 
-	one := logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"X"}, "")
-	if !tr.unionBranchNormalizable(one) {
-		t.Error("ungrouped 1-aggregate LogicalAggregate must be normalizable")
+	// Stable forms → normalizable (grouped and ungrouped).
+	for _, tc := range []struct {
+		name string
+		agg  *logical.LogicalAggregate
+	}{
+		{"ungrouped COUNT(*)", logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"X"}, "")},
+		{"ungrouped SUM(V),COUNT(*)", logical.NewAggregate(scan, nil, []string{"SUM(V)", "COUNT(*)"}, []string{"S", "C"}, "")},
+		{"grouped COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")},
+		{"grouped SUM(V),COUNT(*)", logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, "")},
+		{"grouped COUNT(X) bare col", logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")},
+	} {
+		if !tr.unionBranchNormalizable(tc.agg) {
+			t.Errorf("%s: must be normalizable (stable name)", tc.name)
+		}
 	}
 
-	two := logical.NewAggregate(scan, nil, []string{"SUM(V)", "COUNT(*)"}, []string{"S", "C"}, "")
-	if !tr.unionBranchNormalizable(two) {
-		t.Error("ungrouped 2-aggregate LogicalAggregate must be normalizable")
+	// Divergent forms → gated.
+	qualified := logical.NewAggregate(scan, []string{"G"}, []string{"SUM(T.C)"}, []string{""}, "")
+	if tr.unionBranchNormalizable(qualified) {
+		t.Error("qualified aggregate SUM(T.C) must NOT be normalizable (physical strips qualifier → SUM(C))")
 	}
 
-	grouped := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")
-	if !tr.unionBranchNormalizable(grouped) {
-		t.Error("GROUPED 1-aggregate LogicalAggregate must now be normalizable (RFC-081: AggregateIndex names reported)")
+	// COUNT(<numeric constant>) — gated by both the text (leading digit) and the ConstantValue operand.
+	constNum := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(1)"}, []string{""}, "")
+	constNum.AggregateOperands = []values.Value{&values.ConstantValue{Value: int64(1)}}
+	if tr.unionBranchNormalizable(constNum) {
+		t.Error("COUNT(1) must NOT be normalizable (count-star name mismatch)")
 	}
 
-	groupedMulti := logical.NewAggregate(scan, []string{"G"}, []string{"SUM(V)", "COUNT(*)"}, []string{"", ""}, "")
-	if !tr.unionBranchNormalizable(groupedMulti) {
-		t.Error("GROUPED 2-aggregate LogicalAggregate must now be normalizable (RFC-081: MultiIntersection names reported)")
+	// COUNT(NULL) — text arg "NULL" LOOKS like an identifier, so only the ConstantValue operand
+	// catches it. This is why the gate combines text + operand (Torvalds/codex class).
+	constNull := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(NULL)"}, []string{""}, "")
+	constNull.AggregateOperands = []values.Value{&values.ConstantValue{Value: nil}}
+	if tr.unionBranchNormalizable(constNull) {
+		t.Error("COUNT(NULL) must NOT be normalizable (constant folds to count-star; text alone misses it)")
 	}
 
-	// GROUPED COUNT(<constant>) (operand is a non-nil ConstantValue) stays gated: it matches a
-	// count-star index → AggregateIndex reports "COUNT(*)" ≠ logical "COUNT(1)" → name mismatch
-	// (codex P2). Detected via the constant operand, not text. Ungrouped is unaffected.
-	groupedConst := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(1)"}, []string{""}, "")
-	groupedConst.AggregateOperands = []values.Value{&values.ConstantValue{Value: int64(1)}}
-	if tr.unionBranchNormalizable(groupedConst) {
-		t.Error("GROUPED COUNT(<constant>) must NOT be normalizable (count-star name mismatch — codex P2)")
+	// DISTINCT → gated via the branch flag.
+	distinct := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")
+	distinct.HasDistinctAggregate = true
+	if tr.unionBranchNormalizable(distinct) {
+		t.Error("DISTINCT aggregate must NOT be normalizable")
 	}
 
-	// A grouped COUNT(col) (FieldValue operand) is NOT a constant → remains normalizable.
-	groupedCol := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(X)"}, []string{""}, "")
-	groupedCol.AggregateOperands = []values.Value{&values.FieldValue{Field: "X"}}
-	if !tr.unionBranchNormalizable(groupedCol) {
-		t.Error("GROUPED COUNT(col) must remain normalizable (no name divergence)")
+	// 0-aggregate (group-only and ungrouped) → gated.
+	if tr.unionBranchNormalizable(logical.NewAggregate(scan, []string{"G"}, nil, nil, "")) {
+		t.Error("0-aggregate group-only must NOT be normalizable")
 	}
-
-	groupOnly := logical.NewAggregate(scan, []string{"G"}, nil, nil, "")
-	if tr.unionBranchNormalizable(groupOnly) {
-		t.Error("0-aggregate group-only LogicalAggregate must NOT be normalizable (left gated)")
-	}
-
-	ungroupedZero := logical.NewAggregate(scan, nil, nil, nil, "")
-	if tr.unionBranchNormalizable(ungroupedZero) {
-		t.Error("0-aggregate ungrouped LogicalAggregate must NOT be normalizable (>= 1 guard)")
+	if tr.unionBranchNormalizable(logical.NewAggregate(scan, nil, nil, nil, "")) {
+		t.Error("0-aggregate ungrouped must NOT be normalizable")
 	}
 }
 
