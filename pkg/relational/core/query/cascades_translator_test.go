@@ -181,18 +181,29 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 		t.Error("nested join must NOT re-qualify a dotted column to TR.O.PRICE")
 	}
 
-	// (4) Unsupported shapes → nil.
-	if tr.legColumns(logical.NewDistinct(logical.NewScan("Order", "O"))) != nil {
-		t.Error("distinct leg must derive nil columns (unsupported shape)")
+	// (4) Row-shape-preserving shapes (sort / distinct) now ANCHOR via their inner
+	// (RFC-077 7.6 step 2), preserving the inner scan's column set.
+	distinctCols := names(tr.legColumns(logical.NewDistinct(logical.NewScan("Order", "O"))))
+	if len(distinctCols) != len(scanCols) {
+		t.Errorf("distinct leg columns %v != inner scan columns %v (distinct is row-shape-preserving)", distinctCols, scanCols)
+	}
+	sortCols := names(tr.legColumns(logical.NewSort(logical.NewScan("Order", "O"), nil)))
+	if len(sortCols) != len(scanCols) {
+		t.Errorf("sort leg columns %v != inner scan columns %v (sort is row-shape-preserving)", sortCols, scanCols)
+	}
+
+	// (5) Genuinely-unsupported shapes (DML / nil) → nil.
+	if tr.legColumns(logical.NewInsert("Order", nil, nil)) != nil {
+		t.Error("insert leg must derive nil columns (not a row-producing join leg)")
 	}
 	if tr.legColumns(nil) != nil {
 		t.Error("nil leg must derive nil columns")
 	}
 
-	// (5) nil-md translator derives nil for a scan (no typing source) → seed
-	// falls back to the opaque merge.
+	// (5) nil-md translator derives nil for a scan (no typing source) → a join
+	// over it is untranslatable (the opaque-merge fallback was retired, RFC-077 7.6).
 	if (&cascadesTranslator{}).legColumns(logical.NewScan("Order", "O")) != nil {
-		t.Error("nil-md leg columns must be nil (fall back to opaque seed)")
+		t.Error("nil-md leg columns must be nil (no typing source)")
 	}
 }
 
@@ -333,15 +344,59 @@ func TestTranslateProject(t *testing.T) {
 
 func TestTranslateJoin(t *testing.T) {
 	t.Parallel()
-	left := logical.NewScan("orders", "")
-	right := logical.NewScan("items", "")
-	join := logical.NewJoin(left, right, logical.JoinInner, "orders.id = items.order_id")
-	ref := TranslateToCascades(join)
+	// md is REQUIRED to translate a join: the seed result value is the
+	// source-anchored RecordConstructorValue, whose leg columns come from
+	// metadata (RFC-077 7.6). The opaque-seed fallback for the catalog-free path
+	// was retired, so a nil-md join is untranslatable (TestTranslateJoinNilMd).
+	left := logical.NewScan("Order", "")
+	right := logical.NewScan("Customer", "")
+	join := logical.NewJoin(left, right, logical.JoinInner, "")
+	ref, _ := TranslateToCascadesWithSubqueries(join, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
-	if _, ok := ref.Members()[0].(*expressions.SelectExpression); !ok {
+	sel, ok := ref.Members()[0].(*expressions.SelectExpression)
+	if !ok {
 		t.Fatalf("expected SelectExpression for join, got %T", ref.Members()[0])
+	}
+	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || !rc.AnchoredJoin {
+		t.Fatalf("expected source-anchored RecordConstructorValue result, got %T (anchored=%v)", sel.GetResultValue(), ok && rc.AnchoredJoin)
+	}
+}
+
+// TestTranslateJoinNilMd pins the RFC-077 7.6 contract: without metadata a join's
+// leg columns are not derivable, so the join is untranslatable (the opaque-seed
+// fallback was retired). Production always passes md; only the catalog-free
+// TranslateToCascades wrapper (tests) can hit this.
+func TestTranslateJoinNilMd(t *testing.T) {
+	t.Parallel()
+	join := logical.NewJoin(logical.NewScan("Order", ""), logical.NewScan("Customer", ""), logical.JoinInner, "")
+	if ref := TranslateToCascades(join); ref != nil {
+		t.Fatalf("expected nil reference for a nil-md join (no derivable leg columns), got %T", ref.Members()[0])
+	}
+}
+
+// TestTranslateJoinWithExists_NilMdUntranslatable is the Torvalds-review regression:
+// translateJoinWithExists must guard a nil result value the SAME as translateJoin.
+// Without md the join's leg columns don't derive, so buildJoinResultValue returns
+// nil (the opaque-seed fallback was retired, RFC-077 7.6). A nil result value must
+// NOT flow into the SelectExpression — downstream GetCorrelatedToOfValue(nil) would
+// nil-deref. The join+EXISTS shape must be untranslatable (nil), not a select with
+// a nil result. (Without the guard this returns a non-nil SelectExpression and the
+// assertion fails — the latent crash this test pins shut.)
+func TestTranslateJoinWithExists_NilMdUntranslatable(t *testing.T) {
+	t.Parallel()
+	tr := &cascadesTranslator{} // nil md — leg columns never derive
+	join := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
+	filter := &logical.LogicalFilter{
+		Input: join,
+		ExistsSubqueries: []logical.ExistsSubquery{
+			{Alias: values.NamedCorrelationIdentifier("E"), Plan: logical.NewScan("TypedRecord", "TR")},
+		},
+	}
+	if got := tr.translateJoinWithExists(join, filter); got != nil {
+		t.Fatalf("nil-md join+EXISTS must be untranslatable (nil), got %T", got)
 	}
 }
 
@@ -547,14 +602,16 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 
 func TestTranslateCTEMultipleReferences(t *testing.T) {
 	t.Parallel()
-	// CTE referenced twice in the main query (via join).
-	body := logical.NewScan("Product", "")
+	// CTE referenced twice in the main query (via join). md is REQUIRED so the
+	// join's CTE-reference legs anchor (the leg columns derive from the CTE body's
+	// real table — RFC-077 7.6); the opaque-seed fallback was retired.
+	body := logical.NewScan("Order", "")
 	left := logical.NewScan("p", "")
 	right := logical.NewScan("p", "")
 	join := logical.NewJoin(left, right, logical.JoinInner, "")
 	cte := logical.NewCTE("p", body, join, false)
 
-	ref := TranslateToCascades(cte)
+	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference for CTE with double reference")
 	}
@@ -805,36 +862,54 @@ func TestSourceAlias(t *testing.T) {
 	})
 }
 
-// TestLegColumns_CTEShadowFallsBackToOpaque pins codex's CTE-shadow catch (RFC-077
-// 7.6): when a CTE name SHADOWS a real table, legColumns must NOT anchor with the
-// real table's metadata columns (translateScan resolves the scan from the CTE
-// body, not the table). It must return nil so the seed falls back to the opaque
-// merge — otherwise a join against the CTE would mis-anchor / mis-name columns.
-func TestLegColumns_CTEShadowFallsBackToOpaque(t *testing.T) {
+// TestLegColumns_CTEScopeResolvesBody pins the RFC-077 7.6 CTE/derived-table
+// anchoring: a cteScope-shadowed scan derives its columns from the CTE BODY (not
+// the real table's metadata, and not nil). The CTE is removed from scope while
+// resolving the body, so a same-named scan inside the body resolves to the REAL
+// table — and legColumns does NOT recurse forever (the CTE-shadow stack-overflow
+// regression). A pre-translated recursive-CTE reference (cteExprScope) still falls
+// back to nil (its body output columns are not readable from the logical tree).
+func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	t.Parallel()
 	md := demoMetaData(t) // has a real "Order" table
 
 	// Without a shadow, "Order" anchors from metadata (non-nil).
 	plain := &cascadesTranslator{md: md, cteScope: map[string]logical.LogicalOperator{}}
-	if plain.legColumns(logical.NewScan("Order", "")) == nil {
+	realCols := plain.legColumns(logical.NewScan("Order", ""))
+	if realCols == nil {
 		t.Fatal("setup: a real table must derive columns from metadata")
 	}
 
-	// A CTE named "order" (case-insensitive) shadows the real table → nil.
+	// A CTE named "order" whose body is a projection over the real table resolves
+	// to the BODY's output columns (here renamed), NOT the real table's columns.
+	body := logical.NewProject(logical.NewScan("Order", ""), []string{"ORDER_ID"}, []string{"OID"})
 	shadowed := &cascadesTranslator{
 		md:       md,
-		cteScope: map[string]logical.LogicalOperator{"ORDER": logical.NewScan("Order", "")},
+		cteScope: map[string]logical.LogicalOperator{"ORDER": body},
 	}
-	if cols := shadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
-		t.Errorf("CTE-shadowed name must NOT anchor with the real table's columns; got %v", cols)
+	cols := shadowed.legColumns(logical.NewScan("Order", ""))
+	if len(cols) != 1 || cols[0].Name != "OID" {
+		t.Errorf("CTE-shadowed leg must derive the BODY's output columns [OID]; got %v", cols)
 	}
 
-	// cteExprScope (a pre-translated recursive-CTE reference) shadows too.
+	// A CTE whose body is a bare same-named scan: the body's scan resolves to the
+	// REAL table (CTE removed from scope while resolving) — and no infinite
+	// recursion. The leg derives the real table's columns via the body.
+	selfBody := logical.NewScan("Order", "")
+	selfShadowed := &cascadesTranslator{
+		md:       md,
+		cteScope: map[string]logical.LogicalOperator{"ORDER": selfBody},
+	}
+	if got := selfShadowed.legColumns(logical.NewScan("Order", "")); len(got) != len(realCols) {
+		t.Errorf("self-referential CTE body must resolve to the real table's columns (no recursion); got %v want %d cols", got, len(realCols))
+	}
+
+	// cteExprScope (a pre-translated recursive-CTE reference) still falls back to nil.
 	exprShadowed := &cascadesTranslator{
 		md:           md,
 		cteExprScope: map[string]expressions.RelationalExpression{"ORDER": nil},
 	}
 	if cols := exprShadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
-		t.Errorf("cteExprScope-shadowed name must NOT anchor with the real table's columns; got %v", cols)
+		t.Errorf("cteExprScope-shadowed name must NOT anchor (recursive-CTE body unreadable); got %v", cols)
 	}
 }

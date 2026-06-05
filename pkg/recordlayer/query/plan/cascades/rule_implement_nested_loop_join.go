@@ -1056,7 +1056,8 @@ func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 	// than the outer quantifier itself (a 3-way chain's top join (T1⋈T2)⋈T3 has
 	// predicate T3.t2_id = T2.id, where T2 is inside the (T1⋈T2) outer). The
 	// outer's merged row exposes that column under its bare name
-	// (JoinMergeAllValue: last table wins the bare key), and the caller
+	// (the anchored join RC's last-leg-wins bare key, RFC-077 7.6; mergeRows
+	// writes the same bare key at execution), and the caller
 	// rebuilds the probe value as QOV(outerAlias).<bareCol> — which resolves
 	// correctly per outer row. Accept when the INNER side is the index column
 	// and the other side is any aliased (non-inner) field. This is what turns a

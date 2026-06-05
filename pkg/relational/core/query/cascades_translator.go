@@ -50,18 +50,28 @@ func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
 // RecordConstructor.
 func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan) {
 	t := &cascadesTranslator{
-		md:           md,
-		cteScope:     make(map[string]logical.LogicalOperator),
-		cteExprScope: make(map[string]expressions.RelationalExpression),
+		md:              md,
+		cteScope:        make(map[string]logical.LogicalOperator),
+		cteExprScope:    make(map[string]expressions.RelationalExpression),
+		cteColumnsScope: make(map[string][]values.Field),
 	}
 	ref := t.translateRef(op)
 	return ref, t.scalarSubqueries
 }
 
 type cascadesTranslator struct {
-	md               *recordlayer.RecordMetaData
-	cteScope         map[string]logical.LogicalOperator
-	cteExprScope     map[string]expressions.RelationalExpression
+	md           *recordlayer.RecordMetaData
+	cteScope     map[string]logical.LogicalOperator
+	cteExprScope map[string]expressions.RelationalExpression
+	// cteColumnsScope holds the OUTPUT column schema of each pre-translated CTE
+	// (recursive CTE / temp-table self-reference) registered in cteExprScope,
+	// keyed by upper-cased CTE name (RFC-077 7.6). cteExprScope stores an opaque
+	// RelationalExpression whose column names legColumns cannot recover; this
+	// parallel map records them so a CTE reference used as a JOIN LEG anchors
+	// (FieldValue(QOV(cteAlias), col) per column). nil/absent entry → not
+	// column-derivable → the leg cannot anchor (a join over it is untranslatable;
+	// the opaque-merge fallback was retired in RFC-077 7.6).
+	cteColumnsScope  map[string][]values.Field
 	scalarSubqueries []ScalarSubqueryPlan
 }
 
@@ -74,7 +84,7 @@ func (t *cascadesTranslator) tableColumns(table string) []values.Field {
 	if t.md == nil {
 		return nil
 	}
-	rt := t.md.GetRecordType(table)
+	rt := t.resolveRecordType(table)
 	if rt == nil || rt.Descriptor == nil {
 		return nil
 	}
@@ -89,6 +99,33 @@ func (t *cascadesTranslator) tableColumns(table string) []values.Field {
 		})
 	}
 	return fields
+}
+
+// resolveRecordType resolves a table name to its record type CASE-INSENSITIVELY.
+// The SQL path upper-cases table names in the logical plan (Scan(ORDER)), but the
+// metadata keys record types under their proto names (mixed case, e.g. "Order"),
+// so a direct GetRecordType("ORDER") misses. The relational layer is
+// case-insensitive (Java's SemanticAnalyzer resolves identifiers case-folded), so
+// fall back to a case-insensitive scan when the exact lookup misses. Without this
+// every real-table join seed fell back to the opaque merge — the columns were
+// unreachable (RFC-077 7.6).
+//
+// The fallback picks the lexicographically-smallest matching proto name so the
+// result is DETERMINISTIC even in the (metadata-invalid) case of two record types
+// that differ only by case — map iteration order is not stable. In well-formed
+// metadata proto names are unique, so at most one name matches and the order is moot.
+func (t *cascadesTranslator) resolveRecordType(table string) *recordlayer.RecordType {
+	if rt := t.md.GetRecordType(table); rt != nil {
+		return rt
+	}
+	var bestName string
+	var best *recordlayer.RecordType
+	for name, rt := range t.md.RecordTypes() {
+		if strings.EqualFold(name, table) && (best == nil || name < bestName) {
+			bestName, best = name, rt
+		}
+	}
+	return best
 }
 
 // fieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring
@@ -141,24 +178,35 @@ func fieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
 //   - anything else (aggregate / distinct / union / cte / subquery) → nil.
 //
 // Returns nil whenever any required source is unavailable (no md, an unresolvable
-// table, an unsupported shape) — the seed site then falls back to the opaque
-// JoinMergeSeedValue. The Field types are best-effort (UnknownType for derived
-// shapes); only the NAMES are load-bearing for name-based resolution.
+// table, an unsupported shape) — the seed site (buildJoinResultValue) then treats
+// the join as untranslatable (the retired opaque seed fallback is gone). The Field
+// types are best-effort (UnknownType for derived shapes); only the NAMES are
+// load-bearing for name-based resolution.
 func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
 	case *logical.LogicalScan:
 		// A CTE/derived-table scan resolves to its BODY, not a real table —
 		// translateScan honors cteScope/cteExprScope (a CTE name SHADOWS a real
-		// table). legColumns must too: if the name is a CTE, return nil (fall back
-		// to the opaque seed) rather than mis-anchoring with a same-named real
-		// table's metadata columns (codex CTE-shadow catch). The CTE's columns live
-		// in its translated body, not metadata.
+		// table). legColumns mirrors that (RFC-077 7.6):
+		//   - cteExprScope holds a PRE-TRANSLATED body (recursive-CTE reference /
+		//     temp-table self-reference); its output columns are not readable from
+		//     the RelationalExpression, so cteColumnsScope records them alongside —
+		//     return that schema so the recursive-CTE leg anchors (nil entry → not
+		//     derivable → the leg cannot anchor, a join over it is untranslatable);
+		//   - cteScope holds the logical body: derive its output columns so the CTE
+		//     leg anchors. The CTE is REMOVED from scope while deriving the body
+		//     (exactly like translateScan) so a scan inside the body that references
+		//     the same name resolves to the REAL table, not back to the CTE —
+		//     otherwise legColumns recurses forever (the CTE-shadow stack overflow).
 		key := strings.ToUpper(o.Table)
 		if _, ok := t.cteExprScope[key]; ok {
-			return nil
+			return t.cteColumnsScope[key]
 		}
-		if _, ok := t.cteScope[key]; ok {
-			return nil
+		if body, ok := t.cteScope[key]; ok {
+			delete(t.cteScope, key)
+			cols := t.derivedOutputColumns(body)
+			t.cteScope[key] = body
+			return cols
 		}
 		return t.tableColumns(o.Table)
 	case *logical.LogicalFilter:
@@ -211,43 +259,243 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
 		}
 		return fields
+	case *logical.LogicalSort:
+		// Row-shape-preserving: the sort's output columns are its inner's.
+		return t.legColumns(o.Input)
+	case *logical.LogicalDistinct:
+		// Row-shape-preserving: DISTINCT does not change the column set.
+		return t.legColumns(o.Input)
+	case *logical.LogicalUnion:
+		return t.unionOutputColumns(o)
+	case *logical.LogicalAggregate:
+		// Output columns = the GROUP BY keys followed by the aggregate output
+		// column names (alias when present, else the aggregate text), mirroring
+		// extractOutputColumns / buildAggColumns.
+		return aggregateOutputColumns(o)
+	case *logical.LogicalCTE:
+		// A CTE-wrapped derived table used as a JOIN LEG (e.g. FROM a,
+		// (SELECT …) b): translateCTE registers the body under the CTE name and
+		// translates Main (a pass-through Scan of the name), so the leg's output
+		// columns ARE the body's output columns — renamed by ColumnAliases when
+		// present (WITH b(x,y) AS …), exactly as translateCTE wraps the body in a
+		// renaming Project. A recursive CTE leg is not column-derivable here → nil
+		// (the leg cannot anchor; the opaque-merge fallback was retired).
+		if o.Recursive {
+			return nil
+		}
+		if len(o.ColumnAliases) > 0 {
+			fields := make([]values.Field, len(o.ColumnAliases))
+			for i, name := range o.ColumnAliases {
+				fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+			}
+			return fields
+		}
+		return t.derivedOutputColumns(o.Body)
 	default:
-		// Sort / Distinct (row-shape-preserving) and Aggregate / Union / CTE /
-		// derived-table / subquery legs are NOT column-derivable here yet → nil, so
-		// the seed falls back to the opaque merge. Anchoring these shapes (and thus
-		// retiring the opaque types) is the RFC-077 7.6 retirement follow-up; the
-		// fallback is always safe (it preserves the pre-7.6 behavior for them).
+		// Subquery / Explode / DML and other non-row-producing shapes are not
+		// column-derivable here → nil. A join seed with a non-derivable leg is
+		// untranslatable (the opaque-merge fallback was retired in RFC-077 7.6);
+		// every production query reaches a derivable leg shape (proven no-fallback).
 		return nil
 	}
 }
 
+// derivedOutputColumns derives a logical sub-plan's OUTPUT columns as a
+// values.Field list (RFC-077 7.6) for shapes that define a column SCHEMA but
+// are not themselves a join leg's quantifier source — used for CTE/derived-table
+// bodies. It mirrors legColumns for the row-shape-preserving / project / aggregate
+// shapes but, for a Project, returns the projected column NAMES (the body's
+// output schema) so the CTE leg's columns match what the body flows. Returns nil
+// for an underivable shape.
+func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []values.Field {
+	switch o := op.(type) {
+	case *logical.LogicalProject:
+		if len(o.Projections) == 0 {
+			return nil
+		}
+		fields := make([]values.Field, len(o.Projections))
+		for i := range o.Projections {
+			name := o.Projections[i]
+			if i < len(o.Aliases) && o.Aliases[i] != "" {
+				name = o.Aliases[i]
+			}
+			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+		}
+		return fields
+	case *logical.LogicalAggregate:
+		return aggregateOutputColumns(o)
+	case *logical.LogicalDistinct:
+		return t.derivedOutputColumns(o.Input)
+	case *logical.LogicalSort:
+		return t.derivedOutputColumns(o.Input)
+	case *logical.LogicalLimit:
+		return t.derivedOutputColumns(o.Input)
+	case *logical.LogicalFilter:
+		return t.derivedOutputColumns(o.Input)
+	case *logical.LogicalUnion:
+		return t.unionOutputColumns(o)
+	case *logical.LogicalScan:
+		return t.legColumns(o)
+	case *logical.LogicalJoin:
+		return t.legColumns(o)
+	}
+	return nil
+}
+
+// unionOutputColumns returns a UNION's output column schema for anchoring it as a
+// join leg. SQL exposes the FIRST branch's names; the executor unions later
+// branches by POSITION (remapUnionColumnsByPosition, keyed on planColumnNamesWithMD).
+// That position-remap is reliable for PROJECTION/scan-schema'd branches — verified
+// e2e: `(SELECT id AS x … UNION ALL SELECT v AS y …)` joins correctly — so anchoring
+// a leg with mismatched branch aliases to the first branch's names is sound there.
+//
+// It is NOT reliable for an AGGREGATE-schema'd branch: planColumnNamesWithMD unwraps
+// the aggregate to its input scan's column names, so a differently-aliased aggregate
+// branch is not remapped to the first branch's name and its rows read as NULL —
+// silently dropping join matches (a pre-existing executor gap, verified wrong on
+// master too; tracked as TODO 7.6-union-remap). So when branch names DIFFER, anchor
+// only if every branch's schema-defining node is normalizable (projection/scan); an
+// aggregate-schema'd mismatched-alias union leg returns nil → untranslatable, a clean
+// "unsupported" error rather than silently-wrong rows (codex). When branch names
+// AGREE the remap is a no-op, so any shape is safe. Returns nil for no branches / an
+// underivable first branch.
+func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []values.Field {
+	if len(u.Inputs) == 0 {
+		return nil
+	}
+	first := t.derivedOutputColumns(u.Inputs[0])
+	if first == nil {
+		return nil
+	}
+	allAgree := true
+	allNormalizable := true
+	for _, br := range u.Inputs {
+		bc := t.derivedOutputColumns(br)
+		if len(bc) != len(first) {
+			return nil
+		}
+		for i := range bc {
+			if bc[i].Name != first[i].Name {
+				allAgree = false
+			}
+		}
+		if !t.unionBranchNormalizable(br) {
+			allNormalizable = false
+		}
+	}
+	if allAgree || allNormalizable {
+		return first
+	}
+	return nil
+}
+
+// unionBranchNormalizable reports whether the executor's union position-remap can
+// remap this branch's columns to the first branch's names — i.e. whether the
+// branch's SCHEMA-defining node is a projection or scan (planColumnNamesWithMD
+// reports those branches' true output names). An AGGREGATE-schema'd branch is NOT
+// normalizable (the executor unwraps it to its input scan's names — TODO
+// 7.6-union-remap). Mirrors derivedOutputColumns's recursion through the
+// row-shape-preserving wrappers; an unknown shape is conservatively not normalizable.
+func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalProject, *logical.LogicalJoin:
+		return true
+	case *logical.LogicalScan:
+		// A scan may be a CTE/derived-table reference (translateScan resolves it from
+		// the CTE body, not a real table). A real-table scan is remappable, but a
+		// CTE-reference scan is only remappable if its BODY is — a CTE whose body is a
+		// bare aggregate is NOT (the executor unwraps it to its input scan's names,
+		// codex). Resolve cteScope and recurse, mirroring legColumns (remove-while-
+		// recursing so a same-named scan inside the body resolves to the real table,
+		// not back to the CTE). A pre-translated (recursive) CTE ref is unverifiable →
+		// conservatively not normalizable.
+		key := strings.ToUpper(o.Table)
+		if _, ok := t.cteExprScope[key]; ok {
+			return false
+		}
+		if body, ok := t.cteScope[key]; ok {
+			delete(t.cteScope, key)
+			n := t.unionBranchNormalizable(body)
+			t.cteScope[key] = body
+			return n
+		}
+		return true
+	case *logical.LogicalAggregate:
+		return false
+	case *logical.LogicalDistinct:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalSort:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalLimit:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalFilter:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalUnion:
+		if len(o.Inputs) == 0 {
+			return false
+		}
+		for _, br := range o.Inputs {
+			if !t.unionBranchNormalizable(br) {
+				return false
+			}
+		}
+		return true
+	case *logical.LogicalCTE:
+		return t.unionBranchNormalizable(o.Body)
+	}
+	return false
+}
+
+// aggregateOutputColumns returns a LogicalAggregate's output column schema:
+// the GROUP BY keys (bare column names, upper-cased) followed by each
+// aggregate's output name (alias when present, else the aggregate text).
+// Mirrors extractOutputColumns(LogicalAggregate). Types are UnknownType
+// (only names are load-bearing for name-based resolution). Returns nil if
+// the aggregate has no output columns.
+func aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
+	var fields []values.Field
+	for _, k := range a.GroupKeys {
+		fields = append(fields, values.Field{Name: strings.ToUpper(k), FieldType: values.UnknownType, Ordinal: len(fields)})
+	}
+	for i, agg := range a.Aggregates {
+		name := agg
+		if i < len(a.Aliases) && a.Aliases[i] != "" {
+			name = a.Aliases[i]
+		}
+		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: len(fields)})
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
+}
+
 // buildJoinResultValue builds the result value for a binary join seed (RFC-077
-// 7.6 Option B). When BOTH legs' output columns are derivable (legColumns
-// non-nil), it emits the source-anchored RecordConstructorValue —
-// FieldValue(QOV(leg), col) per column, named by NewAnchoredJoinRecord — so
-// field pull-up resolves through composeFieldOverConstructor by name, anchored to
-// the source quantifier. Otherwise it FALLS BACK to the opaque
-// JoinMergeSeedValue (TRANSITIONAL — kept until every leg shape is column-aware;
-// e.g. a CTE/derived-table or aggregate leg has no metadata columns yet). left/
-// right are the POST-swap operands (RIGHT-join normalization happens at the call
-// site), so the leg order matches the seed's [outer, inner] ordering the column
-// derivation + reversal signal read.
+// 7.6 Option B): the source-anchored RecordConstructorValue —
+// FieldValue(QOV(leg), col) per column, named by NewAnchoredJoinRecord — so field
+// pull-up resolves through composeFieldOverConstructor by name, anchored to the
+// source quantifier. left/right are the POST-swap operands (RIGHT-join
+// normalization happens at the call site), so the leg order matches the [outer,
+// inner] ordering the column derivation + reversal signal read.
+//
+// Returns nil when a leg's output columns are not derivable (legColumns nil) or a
+// leg alias is empty — the retired opaque merge seed fallback was removed in
+// RFC-077 7.6 (proven unreachable for every md-bearing production query; only the
+// catalog-free nil-md TranslateToCascades path, used by unit tests, can't derive a
+// leg's columns). The caller treats nil as an untranslatable join.
 func (t *cascadesTranslator) buildJoinResultValue(left, right logical.LogicalOperator, leftAlias, rightAlias string) values.Value {
 	leftCols := t.legColumns(left)
 	rightCols := t.legColumns(right)
 	// Both legs must have a non-empty alias (the anchored RC keys columns by
 	// QOV(alias); a zero alias would panic NewQuantifiedObjectValue) AND derivable
-	// columns. Otherwise fall back to the opaque seed.
-	if leftAlias != "" && rightAlias != "" && leftCols != nil && rightCols != nil {
-		return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-			{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
-			{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
-		})
+	// columns.
+	if leftAlias == "" || rightAlias == "" || leftCols == nil || rightCols == nil {
+		return nil
 	}
-	return values.NewJoinMergeSeedValue(
-		values.NamedCorrelationIdentifier(leftAlias),
-		values.NamedCorrelationIdentifier(rightAlias),
-	)
+	return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
+		{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
+	})
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
@@ -593,12 +841,36 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 
 	innerQ := t.namedQuantifier(csq.InnerAlias, innerRef)
 
-	// Correlated-scalar-subquery join seed. The inner is a scalar subquery, not a
-	// table row, so its leg columns rarely derive — buildJoinResultValue then
-	// falls back to the opaque JoinMergeSeedValue (TRANSITIONAL). The leg aliases
-	// must be the quantifiers' own aliases (outerQ / innerQ), which equal
-	// outerAlias / csq.InnerAlias by construction.
-	resultValue := t.buildJoinResultValue(p.Input, innerPlan, outerAlias, csq.InnerAlias)
+	// Source-anchored correlated-scalar-subquery join seed (RFC-077 7.6).
+	//
+	// The inner is a scalar SUBQUERY exposing exactly ONE value. The projection
+	// reads it as the QUALIFIED name <innerAlias>.<scalarCol> — replaceScalarSubqueryRef
+	// builds that field name (upper(innerAlias)+"."+upper(scalarCol)) — and the inner
+	// quantifier's row carries the scalar under the key scalarCol (the runtime
+	// mergeRows PREFIXES every inner key with innerAlias, dots and all, so
+	// <innerAlias>.<scalarCol> resolves iff the inner key == scalarCol; it does).
+	// NewScalarSubqueryAnchoredRecord anchors the inner leg with that SINGLE field —
+	// named EXACTLY <innerAlias>.<scalarCol> and valued FieldValue(QOV(innerAlias),
+	// scalarCol) — so composeFieldOverConstructor folds the scalar reference onto the
+	// inner leg with no NULL, whether or not scalarCol is itself dotted (a
+	// non-aggregate subquery keeps its table qualifier, "C.NAME"; the dedicated
+	// builder re-qualifies it under innerAlias rather than propagating it verbatim as
+	// NewAnchoredJoinRecord would). The outer leg carries its derivable columns so the
+	// (bare or qualified) outer projections resolve too.
+	//
+	// Untranslatable when the outer columns are not derivable (only the catalog-free
+	// nil-md path — production always passes md): the opaque-seed fallback was RETIRED
+	// in RFC-077 7.6, so there is no result value to flow.
+	scalarCol := strings.ToUpper(csq.ScalarCol)
+	outerCols := t.legColumns(p.Input)
+	if outerCols == nil || outerAlias == "" || scalarCol == "" {
+		return nil
+	}
+	resultValue := values.NewScalarSubqueryAnchoredRecord(
+		values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
+		values.NamedCorrelationIdentifier(csq.InnerAlias),
+		scalarCol,
+	)
 
 	joinSelect := expressions.NewSelectExpressionWithJoinType(
 		resultValue,
@@ -857,6 +1129,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	}
 
 	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
+	if resultValue == nil {
+		// A leg's columns are not derivable (only the catalog-free nil-md path;
+		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
+		return nil
+	}
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
@@ -964,6 +1241,14 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	}
 
 	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
+	if resultValue == nil {
+		// A leg's columns are not derivable (only the catalog-free nil-md path;
+		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
+		// Mirrors translateJoin: the opaque-seed fallback was retired, so a nil
+		// result value must not flow into the SelectExpression (it would nil-deref
+		// downstream, e.g. GetCorrelatedToOfValue).
+		return nil
+	}
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		quantifiers,
@@ -1165,8 +1450,12 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		expressions.ForEachQuantifier(seedRef), insertAlias, false)
 
 	// Translate the recursive leg with the CTE self-reference resolving
-	// to a TempTableScanExpression(scanAlias).
+	// to a TempTableScanExpression(scanAlias). The self-reference temp table
+	// carries the seed's ORIGINAL column names (see the normalization note
+	// below), so a join leg referencing the CTE inside the recursive branch
+	// (e.g. FROM descendants AS a, t AS b) anchors on those columns (RFC-077 7.6).
 	t.cteExprScope[cteName] = expressions.NewTempTableScanExpression(scanAlias)
+	t.cteColumnsScope[cteName] = fieldsFromColumnNames(extractOuterProjectionColumns(seedBranches[0]))
 	var recursiveExpr expressions.RelationalExpression
 	if len(recursiveBranches) == 1 {
 		recursiveExpr = t.translateOp(recursiveBranches[0])
@@ -1174,6 +1463,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		recursiveExpr = t.translateUnion(&logical.LogicalUnion{Inputs: recursiveBranches, Distinct: false})
 	}
 	delete(t.cteExprScope, cteName)
+	delete(t.cteColumnsScope, cteName)
 	if recursiveExpr == nil {
 		return nil
 	}
@@ -1202,7 +1492,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		// mechanism that narrowed the recursive body's columns (RFC-042 L1).
 		//
 		// When the recursive body is a join, its output is the merged
-		// JoinMergeAllValue row carrying QUALIFIED keys (B.ID, A.ID, ...). The
+		// source-anchored join RC row carrying QUALIFIED keys (B.ID, A.ID, ...). The
 		// load-bearing fix is that we never copy a qualified key into the temp
 		// table: each remap value is FieldValue{Field: <bare col>, Child:
 		// QOV(<qualifier>)} — evaluateCorrelated reads the qualified datum key
@@ -1321,11 +1611,35 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	}
 
 	// Register the (possibly-renamed) result so that the Main query's
-	// scan of the CTE name resolves to it.
+	// scan of the CTE name resolves to it. The OUTWARD column schema (the names
+	// the Main query references) is the CTE column aliases when present, else the
+	// seed's columns — so a CTE reference used as a JOIN LEG in the Main query
+	// anchors instead of falling back to the opaque merge (RFC-077 7.6).
 	t.cteExprScope[cteName] = cteResult
+	outwardCols := extractOuterProjectionColumns(seedBranches[0])
+	if len(c.ColumnAliases) > 0 {
+		outwardCols = c.ColumnAliases
+	}
+	t.cteColumnsScope[cteName] = fieldsFromColumnNames(outwardCols)
 	result := t.translateOp(c.Main)
 	delete(t.cteExprScope, cteName)
+	delete(t.cteColumnsScope, cteName)
 	return result
+}
+
+// fieldsFromColumnNames builds an anchored-RC leg's column schema from a list of
+// output column NAMES (upper-cased), typed UnknownType (only names are
+// load-bearing for name-based field resolution). Returns nil for an empty list,
+// marking the leg's columns as not derivable (RFC-077 7.6).
+func fieldsFromColumnNames(names []string) []values.Field {
+	if len(names) == 0 {
+		return nil
+	}
+	fields := make([]values.Field, len(names))
+	for i, n := range names {
+		fields[i] = values.Field{Name: strings.ToUpper(n), FieldType: values.UnknownType, Ordinal: i}
+	}
+	return fields
 }
 
 // extractOuterProjectionColumns returns the column names from the

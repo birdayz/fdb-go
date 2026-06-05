@@ -43,9 +43,9 @@ func (w *physicalFlatMapWrapper) ChildrenAsSet() bool { return false }
 // GetCorrelatedToWithoutChildren returns empty for join FlatMaps. This is
 // correct for joins — correlations flow through the quantifier children, and a
 // join's result is a merge of those children's bound rows, not an external
-// correlation. GetCorrelatedToOfValue reports nothing for a translator seed
-// merge (the Seed=true gate in value_correlation.go, matching the retired
-// JoinMergeResultValue); a re-enumeration merge would report its aliases, but
+// correlation. GetCorrelatedToOfValue reports nothing for a source-anchored join
+// result value (the AnchoredJoin gate in value_correlation.go, RFC-077 7.6,
+// successor of the retired opaque merge); a re-enumeration merge would report its aliases, but
 // those name the join's own (bound) legs, not external correlations. When
 // correlated subqueries are ported, the merge value's correlation contribution
 // must propagate genuinely-external aliases.

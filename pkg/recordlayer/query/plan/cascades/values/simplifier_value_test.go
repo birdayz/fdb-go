@@ -514,75 +514,11 @@ func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 	}
 }
 
-// TestSimplifyValue_FieldOverJoinMerge pins composeFieldOverJoinMerge: a
-// FieldValue over a BINARY JoinMergeAllValue (the sole merge value, RFC-074)
-// canonicalizes to a FieldValue over the merge's INNER quantifier (Aliases[1]),
-// matching the merge's Evaluate (where the inner side overwrites the outer for
-// bare keys). Without this, predicates that reference a join's result (e.g. after
-// SelectMergeRule flattens a nested binary join) keep referencing an opaque merge
-// the planner cannot reason about — blocking re-enumerated multi-way joins from
-// embedding their predicates and index-probing (RFC-042).
-func TestSimplifyValue_FieldOverJoinMerge(t *testing.T) {
-	t.Parallel()
-	outer := NamedCorrelationIdentifier("T1")
-	inner := NamedCorrelationIdentifier("T2")
-	jm := NewJoinMergeSeedValue(outer, inner)
-
-	got := SimplifyValue(NewFieldValue(jm, "ID", TypeUnknown))
-
-	fv, ok := got.(*FieldValue)
-	if !ok {
-		t.Fatalf("expected *FieldValue, got %T", got)
-	}
-	if fv.Field != "ID" {
-		t.Errorf("field = %q, want %q", fv.Field, "ID")
-	}
-	qov, ok := fv.Child.(*QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("expected child *QuantifiedObjectValue (inner), got %T", fv.Child)
-	}
-	if qov.Correlation != inner {
-		t.Errorf("resolved to %v, want inner %v", qov.Correlation, inner)
-	}
-}
-
-// TestSimplifyValue_FieldOverJoinMerge_QualifiedOuterPreserved is the REVIEW.md
-// #216 regression. composeFieldOverJoinMerge used to rewrite EVERY field over a
-// join_merge to the inner quantifier — unsound for a field that lives on the
-// OUTER side, which the inner QOV resolves to nil. The fix only rewrites BARE
-// fields (which the SelectMergeRule re-flow invariant guarantees are inner-side)
-// and refuses QUALIFIED fields (not provably inner). This pins, via Evaluate,
-// that a qualified outer-only reference survives simplification with its value
-// intact — and demonstrates the nil the old blind rewrite would have produced.
-func TestSimplifyValue_FieldOverJoinMerge_QualifiedOuterPreserved(t *testing.T) {
-	t.Parallel()
-	outer := NamedCorrelationIdentifier("T1")
-	inner := NamedCorrelationIdentifier("T2")
-	jm := NewJoinMergeSeedValue(outer, inner)
-
-	binder := fakeCorrBinder{rows: map[CorrelationIdentifier]any{
-		outer: map[string]any{"OUTER_ONLY": int64(42)}, // column present ONLY on the outer side
-		inner: map[string]any{"BID": int64(7)},
-	}}
-
-	qualified := NewFieldValue(jm, "T1.OUTER_ONLY", TypeUnknown)
-	// Precondition: before simplification the merge resolves the qualified key.
-	if got := qualified.Evaluate(binder); got != int64(42) {
-		t.Fatalf("precondition: field(join_merge,\"T1.OUTER_ONLY\") = %v, want 42", got)
-	}
-	// The guard must NOT rewrite a qualified field — value must be preserved.
-	simplified := SimplifyValue(qualified)
-	if got := simplified.Evaluate(binder); got != int64(42) {
-		t.Fatalf("after simplify = %v, want 42 (guard must preserve outer-only resolution)", got)
-	}
-	if _, stillMerge := simplified.(*FieldValue).Child.(*JoinMergeAllValue); !stillMerge {
-		t.Fatalf("qualified outer field must be left over the merge, got child %T", simplified.(*FieldValue).Child)
-	}
-
-	// The landmine the guard defuses: the OLD blind rewrite to inner resolves the
-	// outer column to nil. This is what every field-over-merge used to become.
-	blindInner := NewFieldValue(NewQuantifiedObjectValue(inner), "T1.OUTER_ONLY", TypeUnknown)
-	if got := blindInner.Evaluate(binder); got != nil {
-		t.Fatalf("sanity: blind inner rewrite should resolve the outer column to nil, got %v", got)
-	}
-}
+// Field-over-join-merge canonicalization (the retired opaque merge's field
+// simplifier) and its
+// REVIEW.md #216 qualified-outer regression were RETIRED with the opaque merge
+// (RFC-077 7.6): the source-anchored RecordConstructorValue anchors every field to
+// its source quantifier at construction, so field pull-up resolves through
+// composeFieldOverConstructor (TestSimplifyValue_FieldOverRecordConstructor*) with
+// no opaque-merge ambiguity to canonicalize. The two tests that pinned the retired
+// rule were deleted.

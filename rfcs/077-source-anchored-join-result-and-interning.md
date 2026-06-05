@@ -459,3 +459,42 @@ type-narrowing but buys nothing for 7.6 and is **demoted to its own future RFC**
 
 **Status:** Option B approved by Graefe (consult); implementation starting from a clean branch off the
 merged 7.5. Bring the implementation back for the impl-side Graefe ACK.
+
+---
+
+## v4 amendment — 7.6 IMPLEMENTED (anchoring complete + opaque types deleted)
+
+**7.6 is DONE.** Two commits on top of the merged 7.6 core (#259):
+
+1. **Anchor every reachable join-leg shape.** The 7.6 core (#259) anchored real-table binary
+   seeds + re-enumeration but several leg shapes still fell back to the opaque merge. This commit
+   closes all of them:
+   - **Decisive root-cause:** the core's `tableColumns` used a case-SENSITIVE `GetRecordType`, but
+     the SQL path upper-cases table names (`Scan(ORDER)`) while metadata keys mixed-case proto names
+     (`Order`) — so EVERY real-table seed silently fell back to opaque (the core's anchoring was
+     **dormant**). `resolveRecordType` now falls back to a case-insensitive scan (Java's
+     `SemanticAnalyzer` is case-folded). This contradicts the core review's claim that casing was a
+     non-issue; a panic-probe with case-sensitive resolution produced 339 opaque constructions.
+   - **Correlated scalar subqueries** (`NewScalarSubqueryAnchoredRecord`): the inner leg's single
+     value is anchored as `<innerAlias>.<scalarCol>` — re-qualifying even a DOTTED `scalarCol`
+     (`"C.NAME"`, which a non-aggregate subquery keeps), which `NewAnchoredJoinRecord` cannot.
+   - **Derived tables / subqueries-in-FROM / aggregate subqueries as join legs** (LogicalCTE-wrapped):
+     `legColumns` derives the CTE body's output columns; `Sort`/`Distinct`/`Union`/`Aggregate` legs
+     too.
+   - **Recursive-CTE references as join legs** (outer query AND the recursive branch's temp-table
+     self-reference): a new `cteColumnsScope` records each pre-translated CTE's output schema.
+   - **Proof:** two no-fallback sentinels + a panic-probe run (opaque constructors made to panic)
+     over the ENTIRE SQL production surface (all of sqldriver, yamsql conformance, embedded) — green.
+
+2. **Delete the opaque types (step 5).** `JoinMergeAllValue` / `JoinMergeSeedValue` + the `Seed`
+   bit + `composeFieldOverJoinMerge` are gone; consumers migrated to the source-anchored
+   `RecordConstructorValue` (`AnchoredJoin`). The translator/re-enumeration have NO opaque fallback —
+   a leg whose columns are not derivable (only the catalog-free nil-md path, used by unit tests) is
+   untranslatable. The no-fallback property is now compile-time-guaranteed (the type cannot be
+   constructed), so the sentinel counter was removed.
+
+**Gates met:** bazel build + nogo clean; full FDB suite + plandiff byte-identical at every arity +
+yamsql conformance green; chain budget gate UNCHANGED (3-chain 8999, 4-chain 30593 — the anchored
+re-enumeration interns identically to the retired opaque merge, so F2 exploration-time hiding +
+alias-aware interning both hold). The four binding Option-B conditions (no leaf change, naming parity,
+Seed-bit retirement with the F2 dual-correlation proof, Option A stays a separate RFC) all hold.

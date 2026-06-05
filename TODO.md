@@ -64,6 +64,7 @@ so the index-probe variant is both cheaper AND resolvable.
   - [ ] **Follow-up (RFC-070): `pushValue`-into-covering-result-value modeling gap.** Java's `MergeProjectionAndFetchRule` yields a bare `fetchPlan.getChild()` because `RecordQueryFetchFromPartialRecordPlan.pushValue` rewrites the projected value into the covering plan's own result value. Go's `WithCovering` only sets a flag (the scan still flows the full partial record), so Go compensates with a thin outer `Project`. Pushing the value into the covering result value would let both rule branches collapse to a bare child yield, matching Java. Cosmetic/architectural — current behaviour is correct.
   - [ ] **Follow-up (RFC-070): other transparent unary wrappers over joins.** `Map`, `Distinct`, `Limit`, `TypeFilter`, `FirstOrDefault`, `DefaultOnEmpty` still gate `WithChildren` on `isLeafReplaceable` and could exhibit the same nil-inner-over-join bug if a rule ever builds them with a placeholder inner over a join. Not currently reachable via SQL (projections route through `LogicalProjectionExpression`, not `Map`); the **blanket** gate removal is unsafe — it regressed `TestFDB_AggregateIndexUsage` by dropping the eq-filter on aggregation/DML wrappers (which embed filter semantics in their own plan). Each wrapper needs individual analysis if/when reachable.
 - [x] **DML does not execute through Cascades (parallel pipeline).** Fixed as **P0.4** — all DML now executes through Cascades (`planDML`); the naive `execStatement` DML path is deleted. See P0.4.
+- [ ] **🚩 TODO 7.6-union-remap — aggregate UNION branch with a mismatched output alias drops rows (pre-existing executor gap).** `WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) … WHERE u.x = …` reads the second branch's rows as NULL and silently drops them. Root cause is in the executor, NOT the join path: `remapUnionColumnsByPosition` (executor.go) keys on `planColumnNamesWithMD`, which for an aggregate-topped branch unwraps to the input SCAN's column names instead of the aggregate's output alias, so the position-remap to the first branch's name misfires. **Verified wrong on master too** (`[200]` instead of the full set) — independent of RFC-077 7.6. Surfaced during the 7.6 review (codex): when the opaque merge was retired, `unionOutputColumns` anchors a mismatched-alias union JOIN LEG only when every branch's schema-defining node is normalizable (projection/scan — the executor DOES remap those by position, so `SELECT id AS x … UNION ALL SELECT v AS y` joins correctly); an AGGREGATE-schema'd mismatched-alias branch is untranslatable (a clean "unsupported" error) rather than silently-wrong rows (`TestFDB_UnionJoinLeg` pins both). Closing this = teach `planColumnNamesWithMD` to report an aggregate plan's output column names, then drop the aggregate restriction in `unionBranchNormalizable` (cascades_translator.go). Executor-scoped; out of the join-merge-retirement scope.
 
 ### Beyond Java (Go-only improvements)
 
@@ -218,6 +219,20 @@ deterministic chain task-count gate (±2%, pinned 3-chain 8999 / 4-chain 30593; 
 DOUBLES the 4-chain to 60044) + full suite green + 5× determinism. The opaque-type retirement
 (JoinMergeAllValue/Seed/composeFieldOverJoinMerge) and anchored RC remain 7.6, deferred on column
 threading (F3). See RFC-077 "Precise root-cause — CORRECTED".
+
+**7.6 DONE (2026-06-05, RFC-077 v4):** column threading landed in the 7.6 core (#259); this follow-up
+(a) anchors EVERY reachable join-leg shape — correlated scalar subqueries (incl. dotted scalarCol),
+derived tables / aggregate subqueries / CTE references as join legs, recursive-CTE legs (outer +
+recursive-branch self-reference), Sort/Distinct/Union/Aggregate legs — and (b) DELETES the opaque
+`JoinMergeAllValue`/`JoinMergeSeedValue`/`Seed`/`composeFieldOverJoinMerge`, migrating all consumers
+to the source-anchored `RecordConstructorValue`. Decisive root-cause: the core's `tableColumns` was
+case-SENSITIVE while the SQL path upper-cases table names, so the core's anchoring was DORMANT
+(`resolveRecordType` now case-insensitive). Proven no-fallback by a panic-probe over the entire SQL
+production surface; chain budget gate unchanged (anchored interns identically); plandiff
+byte-identical. See RFC-077 v4.
+
+- [x] **7.5 + 7.6 (RFC-077) — DONE.** 7.5 merged (#258), 7.6 core merged (#259), 7.6 retirement
+  (anchor-all + delete opaque types) on `feat/7.6b-retire-opaque-merge`.
 
 ### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
 

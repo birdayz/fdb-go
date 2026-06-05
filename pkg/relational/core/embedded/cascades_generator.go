@@ -335,7 +335,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// Plan scalar subqueries independently through the Cascades pipeline.
 	var scalarSubs []scalarSubqueryBinding
 	for _, ssq := range scalarSubqueryPlans {
-		subRef := query.TranslateToCascades(ssq.Plan)
+		// Pass md so the scalar subquery's own join legs can anchor (RFC-077 7.6);
+		// nested scalar subqueries are not collected here, so any they contain are
+		// dropped — matching the previous behavior (TranslateToCascades discards
+		// them too).
+		subRef, _ := query.TranslateToCascadesWithSubqueries(ssq.Plan, md)
 		if subRef == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Cascades planner could not plan scalar subquery")
@@ -638,7 +642,8 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			"Unsupported operator "+fn)
 	}
 
-	ref := query.TranslateToCascades(logicalOp)
+	// Pass md so DML join legs (e.g. UPDATE … FROM a JOIN b) anchor (RFC-077 7.6).
+	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}
@@ -1891,26 +1896,16 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 // order [outer, inner]; comparing the SQL-first leg against the physical
 // outerAlias tells us whether columns need to be emitted in reversed order.
 //
-// Two result-value shapes carry the SQL-first leg (RFC-077 7.6 transition):
-//   - the source-anchored RecordConstructorValue (AnchoredJoin) — its FIELDS are
-//     declared in SQL column order (outer leg's columns first), so the SQL-first
-//     leg is the correlation of the FIRST field's anchored leg QOV;
-//   - the opaque JoinMergeAllValue SEED (Seed=true, always binary [outer, inner])
-//     — Aliases[0] is the SQL-first leg (the fallback path while some leg shapes
-//     are not yet column-aware).
-//
-// A re-enumeration merge (JoinMergeAllValue Seed=false) is never the binary
-// result value here and is not subject to this reversal check.
+// The SQL-first leg is carried by the source-anchored RecordConstructorValue
+// (AnchoredJoin) — its FIELDS are declared in SQL column order (outer leg's
+// columns first), so the SQL-first leg is the correlation of the FIRST field's
+// anchored leg QOV. (The retired opaque merge seed it replaced was removed in
+// RFC-077 7.6.)
 func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias string) bool {
 	if first, ok := anchoredJoinFirstLeg(rv); ok {
 		return first != "" && first == physInnerAlias
 	}
-	jmav, ok := rv.(*values.JoinMergeAllValue)
-	if !ok || jmav == nil || !jmav.Seed || len(jmav.Aliases) != 2 {
-		return false
-	}
-	sqlFirst := strings.ToUpper(jmav.Aliases[0].Name())
-	return sqlFirst != "" && sqlFirst == physInnerAlias
+	return false
 }
 
 // anchoredJoinFirstLeg returns the upper-cased correlation name of the SQL-first

@@ -220,7 +220,7 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 
 // InternsAliasAware reports whether this expression should dedup ALIAS-AWARE in
 // Reference.Insert/InsertFinal (RFC-077 7.5). True ONLY for a merge re-enumeration
-// select — one whose result value is a JoinMergeAllValue. Such a select's merge
+// select — one whose result value is a source-anchored join RC (AnchoredJoin). Such a select's merge
 // quantifier is a planner-INTERNAL synthetic alias with no external consumer:
 // PartitionSelectRule re-stamps all column access through the merge value and
 // rebases spanning predicates onto it, so two merge selects equal up to a
@@ -241,8 +241,18 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 // dedup, exactly as before this change. Widening this gate is gated on migrating
 // Go's column resolution to Java's ordinal/group model, not on 7.1.
 func (e *SelectExpression) InternsAliasAware() bool {
-	_, ok := e.resultValue.(*values.JoinMergeAllValue)
-	return ok
+	// RFC-077 7.6: the source-anchored join RESULT value (a RecordConstructorValue
+	// marked AnchoredJoin) is the marker of any join-seed OR merge re-enumeration
+	// select — a translator binary seed, a re-enumeration merge, or a scalar-subquery
+	// join all carry it. Its leg quantifiers are planner-internal with no external
+	// consumer, so it must intern alias-aware; otherwise the re-enumeration's shared
+	// sub-products re-explode per bipartition (the ≥4-way chain/STAR task count blows
+	// past budget). It is the structural successor of the retired opaque-merge marker
+	// (which likewise fired for both the Seed and the re-enumeration JoinMergeAllValue).
+	if rc, ok := e.resultValue.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
+		return true
+	}
+	return false
 }
 
 // HashCodeWithoutChildren mixes a class-discriminating constant + join type

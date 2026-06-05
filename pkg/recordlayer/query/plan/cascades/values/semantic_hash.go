@@ -58,14 +58,6 @@ func writeSemanticHash(h io.Writer, v Value) {
 		// tuples — do not collide in the memo, matching Java's planHash which
 		// folds (ordinalPath, source).
 		_, _ = fmt.Fprintf(h, "indexentryobj:%d:%v", t.Source, t.OrdinalPath)
-	case *JoinMergeAllValue:
-		// The sole join-merge value (RFC-074). Alias- AND order-invariant; folds
-		// arity + the Seed provenance bit (both of which equality discriminates),
-		// so equal merges (same leg-set + same provenance, any leg order) share a
-		// hash — satisfying equal⟹same-hash. Seed is folded because equality
-		// compares it (a translator seed and a re-enumeration never intern, exactly
-		// as the two retired types behaved).
-		_, _ = fmt.Fprintf(h, "joinmergeall:%d:%t", len(t.Aliases), t.Seed)
 	// Structural types whose EqualsWithoutChildren compares a non-alias
 	// discriminator (op / target type / name) the bare Name() default would
 	// drop — fold it so the hash matches equality's resolution (RFC-040

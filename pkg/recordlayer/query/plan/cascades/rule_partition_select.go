@@ -188,33 +188,29 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 		// Determine which lower aliases the result value needs ("live" via the
 		// result). Three cases:
-		//   - A translator SEED merge (JoinMergeAllValue.Seed) names only its two
-		//     immediate source aliases but HIDES the real projection (which lives in
-		//     the Project above): SelectMergeRule flattens a pre-flatten binary
-		//     sub-join's quantifiers up without rewriting the parent merge, so the
-		//     seed's named set is untrustworthy. Conservatively keep ALL lower
-		//     aliases live.
-		//   - A re-enumeration merge (Seed=false) lists EXACTLY the aliases its
+		//   - A translator SEED merge (an anchored join RC, isAnchoredJoinResult)
+		//     names only its two immediate source legs but HIDES the real projection
+		//     (which lives in the Project above): SelectMergeRule flattens a
+		//     pre-flatten binary sub-join's quantifiers up without rewriting the
+		//     parent merge, so the anchored RC's named set is untrustworthy.
+		//     Conservatively keep ALL lower aliases live.
+		//   - A re-enumeration merge lists EXACTLY the aliases its
 		//     parent needs (GetCorrelatedToOfValue returns them). Keep only those —
 		//     flowing all would generate far more distinct merge sub-products than
 		//     needed, blowing up the search space.
 		//   - Any other result value (a bare projection) marks live only the lowers
 		//     it actually references.
-		// (RFC-074: one canonical JoinMergeAllValue; the seed-vs-exact split keys off
-		// the provenance Seed flag — the faithful 1:1 encoding of the retired binary
-		// type, which the alias-boundness heuristic was NOT: the translator names
-		// real source aliases, so a flattened seed does not reliably name an unbound
-		// alias, and that heuristic silently dropped buried-table columns in the SQL
-		// path — the 4-way regression the FDB N-way test caught.)
-		// A source-anchored join RESULT value (RFC-077 7.6) is the structural
-		// successor of the seed bit: like Seed=true it HIDES the real projection
-		// (its fields name only the two immediate source legs; the Project lives
-		// above), so the rule cannot trust its named set and must keep ALL lower
-		// aliases live. GetCorrelatedToOfValue deliberately hides the RC's leg
-		// QOVs (exploration-time budget), so the else-branch would see an empty
-		// set and drop every buried column — this branch re-exposes them.
+		// A source-anchored join RESULT value (RFC-077 7.6) HIDES the real
+		// projection: its fields name only the immediate source legs (the Project
+		// lives above), so the rule cannot trust its named set and must keep ALL
+		// lower aliases live. GetCorrelatedToOfValue deliberately hides the RC's leg
+		// QOVs (exploration-time budget), so the else-branch would see an empty set
+		// and drop every buried column — this branch re-exposes them. (This is the
+		// structural successor of the retired opaque-seed provenance bit, whose
+		// alias-boundness heuristic silently dropped buried-table columns — the
+		// 4-way regression the FDB N-way test caught.)
 		_, anchoredSeed := isAnchoredJoinResult(resultValue)
-		if m, isSeed := resultValue.(*values.JoinMergeAllValue); (isSeed && m.Seed) || anchoredSeed {
+		if anchoredSeed {
 			for a := range lowerAliases {
 				lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
 			}
@@ -231,10 +227,10 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		var deeplyCorrelatedPredicates []predicates.QueryPredicate
 
 		for _, pred := range flattenConjuncts(sel.GetPredicates()) {
-			// Augment the correlation set with SEED JoinMergeAllValue source
+			// Augment the correlation set with the anchored join RC's source leg
 			// aliases (GetCorrelatedToOfPredicate hides them — see
 			// AddMergeSeedAliases). Without this, a predicate reading a buried
-			// table's column through a seed merge (e.g. join_merge_all.B_AID)
+			// table's column through a seed merge (e.g. FieldValue(QOV($m), "B.AID"))
 			// reports only its non-merge side, so a predicate spanning both
 			// partition halves is misclassified as lower-only and pushed below
 			// the merge to a leaf scan where the buried alias is unbound — the
@@ -252,7 +248,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 					// the lower's flowed columns. Fold the lower aliases it touches
 					// into lowersCorrelatedToByUppers (the live set) so the lower
 					// flows exactly those columns. With ≥2 live lower aliases the
-					// lower flows a JoinMergeAllValue (qualified ALIAS.COL keys for
+					// lower flows a source-anchored join RC (qualified ALIAS.COL keys for
 					// every live table); the upper predicate then resolves the
 					// lower's column through the merged row by table-qualified name,
 					// no translation needed. (Go's flat-seed quantifiers carry no
@@ -277,7 +273,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 		// Dedup the lower aliases the upper correlates to (the live set — the same
 		// alias can be added by both the result value and a spanning predicate).
-		// Without this a lower flowing a JoinMergeAllValue would list duplicate
+		// Without this a lower flowing a source-anchored join RC would list duplicate
 		// aliases.
 		lowersCorrelatedToByUppers = dedupAliases(lowersCorrelatedToByUppers)
 
@@ -334,7 +330,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 		// The upper select must flow a result value over the aliases it ACTUALLY
 		// binds (the new lower quantifier + the upper tables). The merge result
-		// value (the sole JoinMergeAllValue — flattened seed or intermediate
+		// value (the sole source-anchored join RC — flattened seed or intermediate
 		// re-enumeration) carries "flow all my tables' columns merged" intent, but
 		// names the ORIGINAL deep aliases. When a
 		// partition collapses ≥2 of those tables into one merge quantifier ($m),
@@ -345,48 +341,71 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// NULL for a deeply-nested projected column — the root-cause bug).
 		//
 		// So whenever the parent result is a merge value, re-stamp it as a
-		// JoinMergeAllValue over the upper's IMMEDIATE quantifiers. The new lower
+		// source-anchored join RC (NewReEnumerationAnchoredRecord) over the upper's
+		// IMMEDIATE quantifiers. The new lower
 		// quantifier's merged row preserves every collapsed table's qualified keys
-		// verbatim (JoinMergeAllValue.Evaluate passes dotted keys
+		// verbatim (the executor's mergeRows passes dotted keys
 		// through), so the re-stamped upper merge accumulates all live columns, and a
 		// projection/predicate above resolves each table's column from the final
 		// merged row by qualified name. This is correct at the top level too: the
-		// re-stamped JoinMergeAllValue is the output the Project consumes, and the
+		// re-stamped anchored RC is the output the Project consumes, and the
 		// Project's FieldValues resolve the qualified keys the merge flows. In the
 		// non-collapsing branches (case 1 / case 2 the new lower keeps its single
 		// table's original alias) the re-stamp is a no-op in effect — the alias is
 		// still bound — but covering all branches keeps the result value consistent
 		// with the aliases the upper binds. (RFC-043.)
-		// The parent result is a "merge intent" when it is the opaque
-		// JoinMergeAllValue OR the source-anchored join RESULT value (RFC-077 7.6):
-		// both mean "flow all my tables' columns merged, named by the original deep
-		// aliases." When a partition collapses ≥2 of those tables into one merge
-		// quantifier, those aliases are no longer bound at the upper level, so the
-		// parent value must be RE-STAMPED as a re-enumeration JoinMergeAllValue over
-		// the upper's IMMEDIATE quantifiers (the re-enumeration path stays on the
-		// opaque type — column threading there is a later RFC-077 step). The
-		// anchored RC reaches here only via SelectMergeRule flattening a binary join
-		// seed up; the rule re-stamps it exactly as it always re-stamped a merge.
-		_, parentIsOpaqueMerge := resultValue.(*values.JoinMergeAllValue)
-		_, parentIsAnchored := isAnchoredJoinResult(resultValue)
-		parentIsMerge := parentIsOpaqueMerge || parentIsAnchored
-		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier) values.Value {
+		// The parent result is a "merge intent" when it is the source-anchored join
+		// RESULT value (RFC-077 7.6): it means "flow all my tables' columns merged,
+		// named by the original deep aliases." When a partition collapses ≥2 of those
+		// tables into one merge quantifier, those aliases are no longer bound at the
+		// upper level, so the parent value must be RE-STAMPED as a re-enumeration
+		// source-anchored join RC over the upper's IMMEDIATE quantifiers
+		// (NewReEnumerationAnchoredRecord re-anchors the parent's columns to the new
+		// legs). Every real-table parent reaching here is already anchored — the
+		// retired opaque restamp is gone.
+		parentAnchored, parentIsMerge := isAnchoredJoinResult(resultValue)
+		// upperLegs returns the canonical (alias-name-sorted) leg order for a
+		// re-enumeration result over [newLowerAlias] + the upper tables.
+		upperLegs := func(newLowerAlias values.CorrelationIdentifier, newLowerSources []values.CorrelationIdentifier) []values.ReEnumerationLeg {
+			legs := make([]values.ReEnumerationLeg, 0, len(upperAliases)+1)
+			legs = append(legs, values.ReEnumerationLeg{Alias: newLowerAlias, Sources: newLowerSources})
+			for _, a := range allAliases {
+				if _, inUpper := upperAliases[a]; inUpper {
+					legs = append(legs, values.ReEnumerationLeg{Alias: a, Sources: []values.CorrelationIdentifier{a}})
+				}
+			}
+			sort.Slice(legs, func(i, j int) bool { return legs[i].Alias.Name() < legs[j].Alias.Name() })
+			return legs
+		}
+		// buildUpperResult re-stamps the parent merge over the upper's immediate
+		// quantifiers. newLowerSources is the set of parent quantifiers the new lower
+		// quantifier's row carries (empty for a cross-product literal-1 lower,
+		// {newLowerAlias} for a single table, the collapsed set for a merge $m).
+		//
+		// RFC-077 7.6 re-enumeration anchoring: when the parent is a source-anchored
+		// RC, build a NEW source-anchored RC over the upper's quantifiers
+		// (NewReEnumerationAnchoredRecord, columns read from the parent by anchoring
+		// quantifier). The retired opaque merge restamp is gone — every parent
+		// reaching here is anchored (the opaque type can no longer be constructed;
+		// proven across the full SQL surface by a panic probe before deletion), and
+		// NewReEnumerationAnchoredRecord always resolves an anchored parent's columns
+		// (every leg's source is a parent quantifier; the nil branch panics).
+		// Canonical leg order so two bipartitions producing the same upper merge
+		// intern (the anchored RC's structural identity is order-sensitive).
+		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier, newLowerSources []values.CorrelationIdentifier) values.Value {
 			if !parentIsMerge {
 				return resultValue
 			}
-			merged := make([]values.CorrelationIdentifier, 0, len(upperAliases)+1)
-			merged = append(merged, newLowerAlias)
-			for _, a := range allAliases {
-				if _, inUpper := upperAliases[a]; inUpper {
-					merged = append(merged, a)
-				}
+			legs := upperLegs(newLowerAlias, newLowerSources)
+			rc := values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
+			if rc == nil {
+				// Unreachable by construction: every upper leg's source is a parent
+				// quantifier, so an anchored parent always resolves. Fail LOUD if a
+				// future change breaks the invariant, rather than store nil silently
+				// (which surfaces as wrong rows). RFC-077 7.6 retired the opaque fallback.
+				panic("RFC-077 7.6: anchored re-enumeration must resolve an anchored parent's legs (upper)")
 			}
-			// Canonical order: JoinMergeAllValue equality compares the alias slice
-			// positionally, so two bipartitions producing the same upper merge with
-			// different alias orders must intern. allAliases iterates in quantifier
-			// order, not sorted. (RFC-043; @claude review.)
-			sort.Slice(merged, func(i, j int) bool { return merged[i].Name() < merged[j].Name() })
-			return values.NewJoinMergeAllValue(merged...)
+			return rc
 		}
 
 		// addUpper appends the new lower quantifier, the upper tables, and the
@@ -402,7 +421,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// into a half that cannot resolve the alias → silent NULL → wrong rows
 		// (the root-cause bug). So each such reference is REBASED to read the
 		// column through the merge quantifier by qualified name, exactly as the
-		// merge result value flows it (JoinMergeAllValue keys every live table as
+		// merge result value flows it (the source-anchored join RC keys every live table as
 		// ALIAS.COL). After rebasing the predicate's correlation set names the
 		// merge alias, which the upper binds — valid AND re-partition-classifiable.
 		//
@@ -441,11 +460,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// No upper-to-lower correlation here, so no spanning predicate
 			// references a buried lower — nothing to rebase.
 			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases))
+				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases, nil))
 
 		} else if len(lowersCorrelatedToByUppers) >= 2 {
 			// Merge case: ≥2 live lower tables (referenced by an upper predicate or
-			// the result value). The lower flows a JoinMergeAllValue carrying
+			// the result value). The lower flows a source-anchored join RC carrying
 			// qualified ALIAS.COL keys for every live table; the upper predicates
 			// and result value resolve those columns through the merged row by
 			// table-qualified name — no translation. A chain of such merges
@@ -453,7 +472,20 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// already-qualified keys). Reaching here implies
 			// lowersCorrelatedToByUpperAliases == 0 (the validation above skips a
 			// quantifier-level upper-dep with >1 live lower). (RFC-043.)
-			lowerResult := values.NewJoinMergeAllValue(lowersCorrelatedToByUppers...)
+			// RFC-077 7.6: the lower merges the live lower quantifiers' rows. Anchor it
+			// over those quantifiers (each a leg whose columns the parent RC supplies).
+			// The retired opaque merge is gone — the parent is always anchored
+			// here (proven), so NewReEnumerationAnchoredRecord resolves every leg.
+			legs := make([]values.ReEnumerationLeg, len(lowersCorrelatedToByUppers))
+			for i, a := range lowersCorrelatedToByUppers {
+				legs[i] = values.ReEnumerationLeg{Alias: a, Sources: []values.CorrelationIdentifier{a}}
+			}
+			lowerResult := values.NewReEnumerationAnchoredRecord(parentAnchored, legs)
+			if lowerResult == nil {
+				// Unreachable by construction (every live lower is a parent quantifier);
+				// fail LOUD rather than store nil silently → wrong rows. RFC-077 7.6.
+				panic("RFC-077 7.6: anchored re-enumeration must resolve an anchored parent's legs (lower)")
+			}
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerResult)
 
 			// A per-plan deterministic merge alias (Memo.NextMergeAlias). Two
@@ -495,7 +527,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				collapsed[a] = struct{}{}
 			}
 			upperSelectExpression = addUpper(newLowerQ, collapsed).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(mergeAlias))
+				BuildSelectWithResultValue(buildUpperResult(mergeAlias, lowersCorrelatedToByUppers))
 
 		} else {
 			// Case 2: Exactly one live lower alias. Lower's result value is that
@@ -521,7 +553,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// set, so with exactly one live lower the only lower alias an upper
 			// predicate can name is this one.)
 			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(lowerAlias))
+				BuildSelectWithResultValue(buildUpperResult(lowerAlias, []values.CorrelationIdentifier{lowerAlias}))
 		}
 
 		call.Yield(upperSelectExpression)
@@ -762,16 +794,16 @@ func aliasesIntersect(
 // reference to a lower table COLLAPSED INTO THE MERGE QUANTIFIER reads its column
 // THROUGH the merge quantifier by qualified name.
 //
-// The merge quantifier (mergeAlias) flows a JoinMergeAllValue: every live lower
+// The merge quantifier (mergeAlias) flows a source-anchored join RC: every live lower
 // table's columns are keyed in its row both bare (COL) and table-qualified
 // (ALIAS.COL); already-qualified keys (a column carried up from a nested merge)
-// pass through verbatim (JoinMergeAllValue.Evaluate, and
+// pass through verbatim (the anchored RC's field naming, and the executor's
 // mergeRows at execution). So a buried table `T`'s column `c` is reachable as
 // mergeRow["T.C"]. A FieldValue{Child: QOV(T), Field: c} that referenced the
 // (now-buried) T directly is rewritten to FieldValue{Child: QOV(mergeAlias),
 // Field: "T.C"} (uppercased to match the qualified-key form). A Field already
 // qualified (contains a '.', i.e. T is itself a nested merge carrying
-// already-qualified keys) is kept as-is — JoinMergeAllValue propagates dotted
+// already-qualified keys) is kept as-is — the source-anchored join RC propagates dotted
 // keys verbatim, so re-qualifying would invent a key the merge never wrote.
 //
 // buriedAliases is the set of lower QUANTIFIER aliases collapsed into the merge
@@ -810,7 +842,7 @@ func rebaseBuriedLowerReferences(
 
 // isAnchoredJoinResult reports whether v is a source-anchored join RESULT value
 // (RFC-077 7.6) — the RecordConstructorValue NewAnchoredJoinRecord builds, marked
-// AnchoredJoin. It is the structural successor of the JoinMergeAllValue Seed bit:
+// AnchoredJoin. It is the structural successor of the retired opaque merge's Seed bit:
 // PartitionSelectRule treats it the same way (keep all lower aliases live; re-stamp
 // to a re-enumeration merge when collapsing). Returns the RC for callers that need
 // it.
@@ -827,9 +859,9 @@ var _ ExpressionRule = (*PartitionSelectRule)(nil)
 // dedupAliases returns aliases with duplicates removed, sorted by name into a
 // CANONICAL order. The live set (lowersCorrelatedToByUppers) is collected from
 // map iteration (non-deterministic order), so it must be canonicalized for two
-// reasons: (1) determinism — the JoinMergeAllValue built from it would otherwise
+// reasons: (1) determinism — the source-anchored join RC built from it would otherwise
 // vary across runs, producing non-deterministic plans; (2) memoization — two
-// partitions yielding the same live set must intern to the SAME JoinMergeAllValue
+// partitions yielding the same live set must intern to the SAME source-anchored join RC
 // (hence the same Reference, RFC-039), or the re-enumeration's search space
 // explodes with alias-permuted duplicates of identical sub-joins. (RFC-043.)
 func dedupAliases(aliases []values.CorrelationIdentifier) []values.CorrelationIdentifier {

@@ -76,35 +76,25 @@ func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
 	}
 }
 
-// TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge pins Graefe's binding
+// TestNewAnchoredJoinRecord_BareAndQualifiedKeySet pins Graefe's binding
 // condition 2 (RFC-077 v3): on a duplicate-bare-name multi-way join, the anchored
-// RC's key set is EXACTLY the opaque JoinMergeAllValue's Evaluate key set — every
-// bare key (last-leg-wins on a shared name) AND every qualified ALIAS.COL. The
-// bare-dup key is NOT excluded: a quantifier OVER an inner join reuses the inner
-// right leg's alias (sourceAlias(join) = right-leg alias), so a qualified predicate
-// reads the join's merged row by the BARE key — which the opaque merge wrote and
-// the RC must too, or 3+-way joins return 0 rows. Emitting bare-only-when-unique
-// (an earlier cut) dropped exactly these keys; this is the swap-safety proof that
-// every key the old merge produced still resolves over the anchored RC.
-func TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge(t *testing.T) {
+// RC's key set is EXACTLY the bare+qualified set the retired opaque merge's
+// Evaluate produced — every bare key (last-leg-wins on a shared name) AND every
+// qualified ALIAS.COL. The bare-dup key is NOT excluded: a quantifier OVER an
+// inner join reuses the inner right leg's alias (sourceAlias(join) = right-leg
+// alias), so a qualified predicate reads the join's merged row by the BARE key —
+// or 3+-way joins return 0 rows. Emitting bare-only-when-unique (an earlier cut)
+// dropped exactly these keys; this proves every key the old merge produced still
+// resolves over the anchored RC. (The opaque merge it matched was deleted; the
+// expected set is now spelled out explicitly.)
+func TestNewAnchoredJoinRecord_BareAndQualifiedKeySet(t *testing.T) {
 	t.Parallel()
 	a := NamedCorrelationIdentifier("A")
 	b := NamedCorrelationIdentifier("B")
-	// A and B both carry a PRICE column (duplicate bare name) plus a unique key.
-	aRow := map[string]any{"ID": int64(1), "PRICE": int64(10)}
-	bRow := map[string]any{"CUSTOMER_ID": int64(2), "PRICE": int64(20)}
-
-	// Opaque merge Evaluate key set (the behavior the anchored RC must match).
-	mergeRow := NewJoinMergeAllValue(a, b).Evaluate(fakeCorrBinder{rows: map[CorrelationIdentifier]any{
-		a: aRow, b: bRow,
-	}}).(map[string]any)
-	mergeKeys := map[string]bool{}
-	for k := range mergeRow {
-		mergeKeys[strings.ToUpper(k)] = true
-	}
 
 	// The anchored RC's key set: every field name (each must compose to a non-nil
-	// leg FieldValue — the silent-nil landmine).
+	// leg FieldValue — the silent-nil landmine). A and B both carry a PRICE column
+	// (duplicate bare name) plus a unique key.
 	legs := []AnchoredJoinLeg{
 		{Alias: a, Columns: []Field{{Name: "ID"}, {Name: "PRICE"}}},
 		{Alias: b, Columns: []Field{{Name: "CUSTOMER_ID"}, {Name: "PRICE"}}},
@@ -118,19 +108,9 @@ func TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge(t *testing.T) {
 		rcKeys[strings.ToUpper(f.Name)] = true
 	}
 
-	// The two key sets must be IDENTICAL (exact parity).
-	for k := range mergeKeys {
-		if !rcKeys[k] {
-			t.Errorf("merge produces key %q but the anchored RC does not (a consumer read would silently break)", k)
-		}
-	}
-	for k := range rcKeys {
-		if !mergeKeys[k] {
-			t.Errorf("anchored RC has key %q the merge never produced (spurious key)", k)
-		}
-	}
-	// Sanity: the expected exact set, spelled out — qualified ALIAS.COL always,
-	// bare always (PRICE = last-leg-wins = B's).
+	// The expected exact set, spelled out — qualified ALIAS.COL always, bare always
+	// (PRICE = last-leg-wins = B's). This is what the retired opaque merge's
+	// Evaluate produced for {A:{ID,PRICE}, B:{CUSTOMER_ID,PRICE}}.
 	want := map[string]bool{
 		"A.ID": true, "ID": true,
 		"A.PRICE": true, "B.PRICE": true, "PRICE": true, // dup bare PRICE present, last-wins
@@ -157,7 +137,7 @@ func TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge(t *testing.T) {
 // naming rule (RFC-077): an already-qualified (dotted) leg column propagates
 // VERBATIM — the field name stays "A.ID", NOT re-qualified to "PARENT.A.ID", and
 // the value reads it off the parent leg by that dotted key. This mirrors
-// JoinMergeAllValue.Evaluate's "preserve already-qualified keys verbatim".
+// the executor's mergeRows "preserve already-qualified keys verbatim".
 func TestNewAnchoredJoinRecord_DottedColumnPropagatesVerbatim(t *testing.T) {
 	t.Parallel()
 	parent := NamedCorrelationIdentifier("M") // a merge-quantifier parent leg
@@ -259,5 +239,172 @@ func TestAnchoredJoinRecord_NotEqualToPlainRC(t *testing.T) {
 	}
 	if SemanticHashCode(anchored) != SemanticHashCode(anchored2) {
 		t.Error("two equal anchored RCs must hash the same (equal⟹same-hash)")
+	}
+}
+
+// fieldAnchor returns the leg alias name a RecordConstructorField's value is
+// anchored to (its leftmost QOV), or "" if none.
+func fieldAnchor(v Value) string {
+	if c, ok := leftmostQOV(v); ok {
+		return c.Name()
+	}
+	return ""
+}
+
+// TestNewReEnumerationAnchoredRecord_PassThroughAndMerge pins the RFC-077 7.6
+// re-enumeration anchoring (the PartitionSelectRule re-stamp). Given a parent
+// anchored RC over original tables A, B, C (each anchored to its own QOV), a
+// re-enumeration that collapses {A,B} into a merge quantifier $m and keeps C as a
+// pass-through leg must:
+//   - expose A and B's columns under their DOTTED source-table names anchored to
+//     QOV($m), reading $m's merged-row dotted keys (A.ID = FieldValue(QOV($m), "A.ID"));
+//   - expose C's columns qualified C.COL anchored to QOV(C) reading C's bare key;
+//   - expose every column's BARE form (last-leg-wins) so an UNQUALIFIED projection
+//     of a unique buried column resolves (the buried-column bare-projection 0-row
+//     regression guard);
+//   - never produce the retired opaque merge.
+func TestNewReEnumerationAnchoredRecord_PassThroughAndMerge(t *testing.T) {
+	t.Parallel()
+	a := NamedCorrelationIdentifier("A")
+	b := NamedCorrelationIdentifier("B")
+	c := NamedCorrelationIdentifier("C")
+	m := NamedCorrelationIdentifier(`$m"1`)
+	// Parent: flat select over A, B, C — each table anchored to its OWN QOV.
+	parent := NewAnchoredJoinRecord([]AnchoredJoinLeg{
+		{Alias: a, Columns: []Field{{Name: "ID", FieldType: UnknownType}, {Name: "AX", FieldType: UnknownType}}},
+		{Alias: b, Columns: []Field{{Name: "ID", FieldType: UnknownType}, {Name: "BX", FieldType: UnknownType}}},
+		{Alias: c, Columns: []Field{{Name: "ID", FieldType: UnknownType}, {Name: "CX", FieldType: UnknownType}}},
+	})
+	// Re-enumeration: $m collapses {A,B}; C is a pass-through leg.
+	rc := NewReEnumerationAnchoredRecord(parent, []ReEnumerationLeg{
+		{Alias: m, Sources: []CorrelationIdentifier{a, b}},
+		{Alias: c, Sources: []CorrelationIdentifier{c}},
+	})
+	if rc == nil {
+		t.Fatal("re-enumeration must anchor (parent has every table's columns), got nil")
+	}
+	if !rc.AnchoredJoin {
+		t.Error("re-enumeration result must be marked AnchoredJoin")
+	}
+
+	field := func(name string) (RecordConstructorField, bool) {
+		for _, f := range rc.Fields {
+			if f.Name == name {
+				return f, true
+			}
+		}
+		return RecordConstructorField{}, false
+	}
+
+	// A's and B's columns: dotted SRC.COL anchored to QOV($m), reading $m's dotted key.
+	for _, tc := range []struct{ name, key string }{
+		{"A.ID", "A.ID"}, {"A.AX", "A.AX"}, {"B.ID", "B.ID"}, {"B.BX", "B.BX"},
+	} {
+		f, ok := field(tc.name)
+		if !ok {
+			t.Fatalf("missing qualified field %q", tc.name)
+		}
+		if fieldAnchor(f.Value) != `$m"1` {
+			t.Errorf("field %q must anchor to $m (the merge quantifier), got %q", tc.name, fieldAnchor(f.Value))
+		}
+		fv := f.Value.(*FieldValue)
+		if fv.Field != tc.key {
+			t.Errorf("field %q must read $m's row key %q, got %q", tc.name, tc.key, fv.Field)
+		}
+	}
+	// C pass-through: C.ID/C.CX anchored to QOV(C) reading bare keys.
+	for _, tc := range []struct{ name, key string }{{"C.ID", "ID"}, {"C.CX", "CX"}} {
+		f, ok := field(tc.name)
+		if !ok {
+			t.Fatalf("missing qualified field %q", tc.name)
+		}
+		if fieldAnchor(f.Value) != "C" {
+			t.Errorf("field %q must anchor to C, got %q", tc.name, fieldAnchor(f.Value))
+		}
+		if fv := f.Value.(*FieldValue); fv.Field != tc.key {
+			t.Errorf("field %q must read C's bare key %q, got %q", tc.name, tc.key, fv.Field)
+		}
+	}
+	// BARE forms for unique columns (AX, BX, CX) — the buried-column bare-projection
+	// guard. ID is duplicated across A,B,C → bare ID is last-leg-wins (C).
+	for _, name := range []string{"AX", "BX", "CX", "ID"} {
+		if _, ok := field(name); !ok {
+			t.Errorf("missing bare field %q (unqualified projection would read NULL)", name)
+		}
+	}
+	// bare AX reads $m's bare key "AX" (mergeRows wrote it from A's row).
+	if f, ok := field("AX"); ok {
+		if fieldAnchor(f.Value) != `$m"1` || f.Value.(*FieldValue).Field != "AX" {
+			t.Errorf("bare AX must be FieldValue(QOV($m), \"AX\"), got anchor=%q key=%q", fieldAnchor(f.Value), f.Value.(*FieldValue).Field)
+		}
+	}
+}
+
+// TestNewReEnumerationAnchoredRecord_NoSpuriousDupBareKey is the codex P2-3
+// regression: when a SINGLE re-enumeration leg is a merge quantifier collapsing
+// ≥2 tables that share a bare column name (A.ID + B.ID), and no LATER leg carries
+// that bare name, the bare field must be emitted exactly ONCE — not once per
+// duplicate within the leg. The earlier code keyed last-leg-wins on the leg INDEX
+// only, so both A.ID and B.ID fired the bare-emit, producing two "ID" fields that
+// NewRecordConstructorValue renamed to ID + ID_2 — a spurious key the retired
+// opaque merge never produced. Here C has NO ID, so the merge leg is the last (and
+// only) leg with ID; without the fix this yields an "ID_2" field.
+func TestNewReEnumerationAnchoredRecord_NoSpuriousDupBareKey(t *testing.T) {
+	t.Parallel()
+	a := NamedCorrelationIdentifier("A")
+	b := NamedCorrelationIdentifier("B")
+	c := NamedCorrelationIdentifier("C")
+	m := NamedCorrelationIdentifier(`$m"1`)
+	// Parent: A and B share bare "ID"; C does NOT carry ID (only CX).
+	parent := NewAnchoredJoinRecord([]AnchoredJoinLeg{
+		{Alias: a, Columns: []Field{{Name: "ID", FieldType: UnknownType}, {Name: "AX", FieldType: UnknownType}}},
+		{Alias: b, Columns: []Field{{Name: "ID", FieldType: UnknownType}, {Name: "BX", FieldType: UnknownType}}},
+		{Alias: c, Columns: []Field{{Name: "CX", FieldType: UnknownType}}},
+	})
+	// $m collapses {A,B} (both ID); C is a pass-through with no ID.
+	rc := NewReEnumerationAnchoredRecord(parent, []ReEnumerationLeg{
+		{Alias: m, Sources: []CorrelationIdentifier{a, b}},
+		{Alias: c, Sources: []CorrelationIdentifier{c}},
+	})
+	if rc == nil {
+		t.Fatal("re-enumeration must anchor, got nil")
+	}
+	bareID := 0
+	for _, f := range rc.Fields {
+		if strings.HasSuffix(f.Name, "_2") || strings.HasSuffix(f.Name, "_3") {
+			t.Errorf("spurious dedup-suffixed key %q — a duplicate bare column was emitted twice within one merge leg", f.Name)
+		}
+		if f.Name == "ID" {
+			bareID++
+		}
+	}
+	if bareID != 1 {
+		t.Errorf("bare ID must be emitted exactly once (last-occurrence-wins), got %d", bareID)
+	}
+}
+
+// TestNewReEnumerationAnchoredRecord_NilOnMissingColumns pins that the
+// re-enumeration returns nil when the parent does not carry a leg's source
+// columns or is not anchored (RFC-077 7.6). In production this is unreachable
+// (every re-enumeration leg's source is a parent quantifier), and the callers in
+// rule_partition_select.go panic on a nil — fail-loud rather than store a nil
+// result value silently. This unit test exercises the function's nil contract
+// directly (not through the panicking callers).
+func TestNewReEnumerationAnchoredRecord_NilOnMissingColumns(t *testing.T) {
+	t.Parallel()
+	a := NamedCorrelationIdentifier("A")
+	parent := NewAnchoredJoinRecord([]AnchoredJoinLeg{
+		{Alias: a, Columns: []Field{{Name: "ID", FieldType: UnknownType}}},
+	})
+	// Leg sources an alias B the parent never anchored → nil.
+	rc := NewReEnumerationAnchoredRecord(parent, []ReEnumerationLeg{
+		{Alias: NamedCorrelationIdentifier("B"), Sources: []CorrelationIdentifier{NamedCorrelationIdentifier("B")}},
+	})
+	if rc != nil {
+		t.Errorf("re-enumeration over an absent source must return nil, got %v", rc.Fields)
+	}
+	// Non-anchored parent → nil.
+	if NewReEnumerationAnchoredRecord(&RecordConstructorValue{}, nil) != nil {
+		t.Error("non-anchored parent must return nil")
 	}
 }
