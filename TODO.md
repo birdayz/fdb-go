@@ -215,6 +215,17 @@ plan.
   `refHasCorrelatedMatch`). `validateNoIndexOnlyResidual` KEPT (still load-bearing). Full suite green,
   plandiff byte-identical, determinism 5×. The data-access/`Compensation` path is now the sole scan
   producer, as in Java. Original analysis retained below.
+- [ ] **Follow-up (Graefe v5 ACK condition): replace the `isSimpleResidualCompensation` allowlist with
+  Java's exploratory-yield re-optimization.** Java yields data-access compensations via
+  `FinalYields.yieldUnknownExpression` — a non-`RecordQueryPlan` lands in the *exploratory* set and is
+  re-optimized by the normal PLANNING loop, so EVERY compensation shape is realized uniformly. Go's
+  `pushDataAccessTasks` only `InsertFinal`s, so `implementDataAccessCompensation` + the
+  `isSimpleResidualCompensation` allowlist stand in for that primitive. The allowlist is correct and
+  each exclusion is pinned today, but it will rot the moment a new compensation shape appears with no
+  allowlist arm (falls through to the dead-final-member path → silent no-plan). The honest fix is a Go
+  `yieldUnknown`/exploratory-insert that re-optimizes all compensations and shrinks the allowlist to
+  nothing — BLOCKED on Go's compensation re-optimization correctly handling IN-explode / correlated /
+  index-only shapes (a naive exploratory-insert re-breaks them today, which is why the allowlist exists).
 
 Go reaches a physical index scan / filter via THREE producers that bypass `Compensation`: the
 data-access/compensation match path (`predicate_multi_map.go`), the Go-only `ImplementIndexScanRule`

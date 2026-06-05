@@ -600,25 +600,21 @@ func isSimpleResidualCompensation(expr expressions.RelationalExpression) bool {
 	for _, q := range f.GetQuantifiers() {
 		local[q.GetAlias()] = struct{}{}
 	}
-	// The inner scan must NOT be correlated to an outer quantifier, and must be
-	// NARROWABLE by a post-filter. A correlated scan (e.g. a join inner
-	// `IndexScan(orders, customer_id = ac.id)`) is bound by the surrounding join;
-	// realizing the residual filter standalone over it severs that binding (the filter
-	// wins at the leg ref but the join no longer feeds it the correlated row) → 0 rows.
-	// A vector top-K scan (`rank<=K`) or an aggregate scan is NOT narrowable: a residual
-	// applied AFTER the top-K / grouping changes the result, so such a residual is
-	// semantically invalid and the query must stay unplannable (the trailing-partition-
-	// equality vector case) rather than be realized as a wrong plan. A value-index /
-	// primary / fetch scan returns a superset the residual can correctly filter.
+	// Inner-scan guard: the inner must be NARROWABLE by a post-filter. A vector top-K
+	// scan (`rank<=K`) or an aggregate scan is NOT narrowable — a residual applied AFTER
+	// the top-K / grouping changes the result, so it is semantically invalid and the query
+	// must stay unplannable (the trailing-partition-equality vector case) rather than be
+	// realized as a wrong plan. A value-index / primary / fetch scan returns a superset a
+	// residual can correctly filter. (A correlated inner — a join inner like
+	// `IndexScan(orders, customer_id = ac.id)` — is already excluded at the call site by
+	// the refIsJoinLeg / refHasCorrelatedMatch check, which is constant-safe; we do NOT
+	// re-check the inner ref's raw GetCorrelatedTo() here because it includes
+	// query-parameter ConstantObjectValue aliases, which would wrongly reject a safe
+	// parameterized index residual — see the predicate guard below for the same subtraction.)
 	for _, q := range f.GetQuantifiers() {
 		cref := q.GetRangesOver()
 		if cref == nil {
 			continue
-		}
-		for alias := range cref.GetCorrelatedTo() {
-			if _, isLocal := local[alias]; !isLocal {
-				return false
-			}
 		}
 		for _, m := range cref.AllMembers() {
 			switch m.(type) {
@@ -627,6 +623,13 @@ func isSimpleResidualCompensation(expr expressions.RelationalExpression) bool {
 			}
 		}
 	}
+	// Predicate guards: every residual predicate must be a simple, non-IN, non-index-only,
+	// non-(row-)correlated comparison. An IN must take the explode→InJoin path; an
+	// index-only value (vector DistanceRank) can only be consumed by the index access; a
+	// predicate row-correlated to an OUTER quantifier (`WHERE t.col = outer.val`) belongs
+	// at the join, not a standalone leg filter. Query-parameter ConstantObjectValue aliases
+	// are subtracted first — they appear in correlation sets but are execution constants,
+	// not row correlations (so `WHERE indexed = $1 AND other > $2` stays materializable).
 	for _, pred := range preds {
 		cp, ok := pred.(*predicates.ComparisonPredicate)
 		if !ok {
@@ -638,7 +641,9 @@ func isSimpleResidualCompensation(expr expressions.RelationalExpression) bool {
 		if predicateContainsUncompensatableValues(pred) {
 			return false
 		}
-		for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
+		corr := predicates.GetCorrelatedToOfPredicate(pred)
+		deleteConstantObjectAliases(cp, corr)
+		for alias := range corr {
 			if _, isLocal := local[alias]; !isLocal {
 				return false
 			}
@@ -647,6 +652,33 @@ func isSimpleResidualCompensation(expr expressions.RelationalExpression) bool {
 	return true
 }
 
+// deleteConstantObjectAliases removes ConstantObjectValue (query-parameter) aliases from
+// corr — they appear in a predicate's correlation set but are execution constants bound at
+// run time, not join/row correlations. Mirrors the subtraction comparisonRowCorrelated does.
+func deleteConstantObjectAliases(cp *predicates.ComparisonPredicate, corr map[values.CorrelationIdentifier]struct{}) {
+	for _, v := range []values.Value{cp.Operand, cp.Comparison.Operand} {
+		if v == nil {
+			continue
+		}
+		values.WalkValue(v, func(node values.Value) bool {
+			if cov, ok := node.(*values.ConstantObjectValue); ok {
+				delete(corr, cov.Alias)
+			}
+			return true
+		})
+	}
+}
+
+// implementDataAccessCompensation realizes a logical residual-filter compensation as a
+// physical plan by firing the PLANNING-phase EXPRESSION rules on it via TransformExprTask
+// (which, during PLANNING, yields to FINAL members — so the physical result competes in
+// winner selection). The discarded second return of rulesForPhase is the ImplementationRule
+// set: the rule that realizes the filter, ImplementFilterRule, is an EXPRESSION rule
+// (`var _ ExpressionRule = (*ImplementFilterRule)(nil)`, registered in BatchAExpressionRules),
+// NOT an implementation rule — so it is in exprRules and TransformExprTask fires it. We do
+// NOT push an ExploreExprTask: that would re-enter pushDataAccessTasks on this ref. The
+// inner Reference is already physical (the scan), so the expression rules find a physical
+// winner directly. Only called for isSimpleResidualCompensation exprs on a non-join-leg ref.
 func (p *Planner) implementDataAccessCompensation(ref *expressions.Reference, expr expressions.RelationalExpression) {
 	exprRules, _ := p.rulesForPhase(PhasePlanning)
 	for i := len(exprRules) - 1; i >= 0; i-- {

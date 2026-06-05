@@ -288,5 +288,21 @@ by `TestPlanHarness_MultiplePredicates` and `TestEndToEnd_SortElimThroughResidua
 **Result:** `ImplementIndexScanRule` + both registrations + its 3 test files deleted; shared helpers
 (`extractIndexPlan`, `findFullScan`, `recordTypesOverlap`, …) extracted to `scan_match_helpers.go`;
 `validateNoIndexOnlyResidual` KEPT (still load-bearing). Full `just test` green (48/48), plandiff
-byte-identical, determinism 5×. The data-access/`Compensation` match path is now the SOLE scan producer
-— Java's single path.
+byte-identical, determinism 5×, stress-1M green (point lookups 1.6ms, idx eq 2.5ms, join_10_outer
+ORDERS-driven). The data-access/`Compensation` match path is now the SOLE scan producer — Java's single
+path.
+
+### v5 review addenda (PR #257 gates)
+
+- **codex P2 — query parameters are not correlations.** A `ConstantObjectValue` (`$N`) alias appears in a
+  predicate's correlation set but is an execution constant, not a row correlation. The compensation gate
+  now subtracts constant-object aliases (`deleteConstantObjectAliases`, mirroring `comparisonRowCorrelated`)
+  before classifying a residual as correlated — so `WHERE indexed = $1 AND other > $2` still materializes
+  the index scan instead of falling back to a full scan. The redundant inner-scan `GetCorrelatedTo()`
+  check (which would also misread `$N`) was removed; correlated inners are already excluded by the
+  constant-safe `refHasCorrelatedMatch` join-leg guard. Pinned by `TestPlanChoice_ParameterizedResidualKeepsIndex`.
+- **Torvalds — prefix-edge-case coverage re-pinned.** The deleted rule-mechanic tests' dimensions are now
+  pinned end-to-end through the data-access path: `TestPlanChoice_{GapInPrefix,InequalityStopsPrefix,AllPredicatesResidual}`.
+- **Graefe — exploratory-yield follow-up filed** (TODO 7.7): the `isSimpleResidualCompensation` allowlist is
+  the correct interim but should eventually be replaced by Java's `yieldUnknownExpression` exploratory
+  re-optimization so it cannot rot — blocked on Go's compensation re-optimization handling IN/correlated/index-only.

@@ -277,9 +277,10 @@ func TestInExplode_DuplicateElements(t *testing.T) {
 // TestIndexScan_ThreeColumnPrefix tests a 3-column index with all
 // three columns having equalities — should produce a single index
 // scan with 3-position prefix.
-// Prefix-binding edge cases (gap-in-prefix, inequality-stops-prefix,
-// all-residual, multi-column full prefix) that the retired ImplementIndexScanRule
-// pinned at the rule level are now covered end-to-end through the data-access path
-// by plan_choice_multicolumn_test.go (TestPlanChoice_NoIndexForNonMatchingColumn,
-// _EqualityPlusInequality, _InequalityRangeScan, _MultiColumnIndexPrefix), which
-// drive the full planner and assert the winning plan's scan comparisons (RFC-076).
+// Prefix-binding edge cases (gap-in-prefix, inequality-stops-prefix, all-residual,
+// multi-column full prefix) that the retired ImplementIndexScanRule pinned at the rule
+// level are now pinned end-to-end through the data-access path by the planner-level tests
+// in plan_choice_multicolumn_test.go: TestPlanChoice_GapInPrefix,
+// _InequalityStopsPrefix, _AllPredicatesResidual (added with the rule's retirement),
+// plus the pre-existing _MultiColumnIndexPrefix / _NoIndexForNonMatchingColumn. Each
+// drives the full planner and asserts the winning plan's scan comparisons (RFC-076).

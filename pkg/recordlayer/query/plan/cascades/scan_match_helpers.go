@@ -9,12 +9,10 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
-// Scan/index match helpers shared by the data-access match path and the
-// ordered-scan / streaming-aggregate / aggregate-data-access rules. These were
-// extracted from the retired Go-only ImplementIndexScanRule (RFC-076): the rule
-// is gone — scans are produced solely by the data-access/Compensation match path
-// — but these pure helpers remain in use by the surviving scan-producing rules
-// and the match infrastructure.
+// Scan/index match helpers shared by the data-access match path and the ordered-scan,
+// streaming-aggregate, and aggregate-data-access rules. They are pure (no rule state) and
+// have several live callers, which is why they live in their own file rather than inside
+// any one rule.
 
 // extractIndexPlan extracts a *RecordQueryIndexPlan from a plan that may be either
 // an IndexPlan directly or a FetchFromPartialRecordPlan wrapping one.

@@ -1186,7 +1186,11 @@ func exprConcreteCostRec(e expressions.RelationalExpression, stats properties.St
 				continue
 			}
 		}
-		// Last resort (ref unresolvable / already visited): cost the concrete child as-is.
+		// Last resort (ref unresolvable / already visited via a cycle break): cost the
+		// concrete child as-is. For a genuine nil-inner Fetch (0 plan children, 1 quantifier)
+		// this branch is only reached on a memo cycle — unreachable in a valid DAG, where a
+		// nil-inner Fetch's inner ref resolves down to a physical scan that never points back
+		// up — and contributes the (free) shell cost for that one child rather than looping.
 		if i < len(planKids) {
 			childCosts = append(childCosts, concretePlanCost(planKids[i], stats, ctx))
 		}
