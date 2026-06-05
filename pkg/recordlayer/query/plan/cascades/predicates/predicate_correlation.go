@@ -50,20 +50,20 @@ func GetCorrelatedToOfPredicate(p QueryPredicate) map[CorrelationIdentifier]stru
 	return out
 }
 
-// AddMergeSeedAliases augments out with the source aliases of every SEED
-// JoinMergeAllValue referenced by p's value trees.
+// AddMergeSeedAliases augments out with the source (leg) aliases of every
+// source-anchored join RESULT value referenced by p's value trees (RFC-077 F2,
+// partition-time RE-EXPOSURE).
 //
 // values.GetCorrelatedToOfValue (and hence GetCorrelatedToOfPredicate)
-// deliberately HIDES seed-merge aliases — reporting them in the global
-// correlation set inflates exploration order and tips large star joins past
-// the task budget (see the JoinMergeAllValue arm in value_correlation.go).
+// deliberately HIDES an anchored join RC's leg QOVs — reporting them in the
+// global correlation set inflates exploration order and tips large star joins
+// past the task budget (see the anchored-RC arm in value_correlation.go).
 // PartitionSelectRule's predicate classification, however, MUST see them: a
-// predicate that reads a buried table's column through a seed merge (e.g.
-// join_merge_all.B_AID) genuinely depends on that table. Missing it
-// misclassifies a predicate spanning both partition halves as lower-only,
-// which pushes it below the merge to a leaf scan where the buried alias is
-// unbound — the 0-row dual-correlation join. Callers that need partition-time
-// (not exploration-time) correlations layer this on top.
+// predicate that reads a buried table's column through the merge genuinely
+// depends on that table. Missing it misclassifies a predicate spanning both
+// partition halves as lower-only, which pushes it below the merge to a leaf scan
+// where the buried alias is unbound — the 0-row dual-correlation join. Callers
+// that need partition-time (not exploration-time) correlations layer this on top.
 func AddMergeSeedAliases(p QueryPredicate, out map[CorrelationIdentifier]struct{}) {
 	if p == nil || out == nil {
 		return
@@ -73,22 +73,16 @@ func AddMergeSeedAliases(p QueryPredicate, out map[CorrelationIdentifier]struct{
 			return
 		}
 		values.WalkValue(v, func(node values.Value) bool {
-			if m, ok := node.(*values.JoinMergeAllValue); ok && m.Seed {
-				for _, a := range m.Aliases {
-					out[a] = struct{}{}
-				}
-			}
 			// Source-anchored join RESULT value (RFC-077 F2, partition-time
-			// RE-EXPOSURE — the other half of the dual purpose the Seed bit
-			// carried). GetCorrelatedToOfValue HIDES this RC's leg QOVs (so the
+			// RE-EXPOSURE). GetCorrelatedToOfValue HIDES this RC's leg QOVs (so the
 			// global exploration order stays bounded). But PartitionSelectRule's
-			// predicate classification MUST see the buried leg aliases: a
-			// predicate reading a buried table's column through the anchored RC
-			// genuinely depends on that table. Re-collect them by walking INTO the
-			// RC's fields (its FieldValue(QOV(leg), col) children). Without this a
-			// spanning predicate is misclassified as lower-only and pushed below
-			// the merge to a leaf where the buried alias is unbound — the 0-row
-			// dual-correlation join (TestFDB_JoinMerge_OuterColumn_NotDropped).
+			// predicate classification MUST see the buried leg aliases: a predicate
+			// reading a buried table's column through the anchored RC genuinely
+			// depends on that table. Re-collect them by walking INTO the RC's fields
+			// (its FieldValue(QOV(leg), col) children). Without this a spanning
+			// predicate is misclassified as lower-only and pushed below the merge to
+			// a leaf where the buried alias is unbound — the 0-row dual-correlation
+			// join (TestFDB_JoinMerge_OuterColumn_NotDropped).
 			if rc, ok := node.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
 				for a := range values.GetCorrelatedToOfAnchoredJoinLegs(rc) {
 					out[a] = struct{}{}

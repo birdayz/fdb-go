@@ -2,7 +2,6 @@ package values
 
 import (
 	"fmt"
-	"sort"
 )
 
 // MapFieldValues recursively walks a Value tree and applies transform to
@@ -464,41 +463,6 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *UnmatchedAggregateValue:
 		bv, ok := b.(*UnmatchedAggregateValue)
 		return ok && av.UnmatchedID == bv.UnmatchedID
-	case *JoinMergeAllValue:
-		// Sole join-merge value (RFC-074). Mirrors SemanticEqualsUnderAliasMap: the
-		// Seed provenance bit is compared (a translator seed and a re-enumeration
-		// never intern), and leg order is compared per provenance — SEED is
-		// order-SENSITIVE (positional; a seed's order is semantic for column
-		// derivation), re-enumeration is order-INsensitive (sorted multiset, Graefe
-		// condition 1). Consistent with the arity+Seed hash.
-		bv, ok := b.(*JoinMergeAllValue)
-		if !ok || av.Seed != bv.Seed || len(av.Aliases) != len(bv.Aliases) {
-			return false
-		}
-		if av.Seed {
-			for i := range av.Aliases {
-				if av.Aliases[i] != bv.Aliases[i] {
-					return false
-				}
-			}
-			return true
-		}
-		am := make([]string, len(av.Aliases))
-		for i, a := range av.Aliases {
-			am[i] = a.Name()
-		}
-		bm := make([]string, len(bv.Aliases))
-		for i, a := range bv.Aliases {
-			bm[i] = a.Name()
-		}
-		sort.Strings(am)
-		sort.Strings(bm)
-		for i := range am {
-			if am[i] != bm[i] {
-				return false
-			}
-		}
-		return true
 	default:
 		panic(fmt.Sprintf("EqualsWithoutChildren: unhandled Value type %T", a))
 	}

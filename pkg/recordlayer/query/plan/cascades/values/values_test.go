@@ -1418,8 +1418,8 @@ func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
 // TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField pins the RFC-069
 // merged-Datum resolution fix. A re-enumerated N-way join collapses a buried
 // table (T3) into a merge quantifier ($m) whose row flows that table's columns
-// under their OWN qualified keys (T3.T2_ID), preserved verbatim by
-// JoinMergeAllValue / mergeRows — NOT re-prefixed with the merge alias. A
+// under their OWN qualified keys (T3.T2_ID), preserved verbatim by the
+// source-anchored join RC / the executor's mergeRows — NOT re-prefixed with the merge alias. A
 // FieldValue{Child: QOV($m), Field: "T3.T2_ID"} accessed against the merged
 // Datum (map / RowEvalContext.Datum) must resolve "T3.T2_ID" directly; the naive
 // qualKey = $m + "." + Field would invent the never-written key "$M.T3.T2_ID"

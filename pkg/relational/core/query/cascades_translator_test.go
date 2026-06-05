@@ -344,15 +344,36 @@ func TestTranslateProject(t *testing.T) {
 
 func TestTranslateJoin(t *testing.T) {
 	t.Parallel()
-	left := logical.NewScan("orders", "")
-	right := logical.NewScan("items", "")
-	join := logical.NewJoin(left, right, logical.JoinInner, "orders.id = items.order_id")
-	ref := TranslateToCascades(join)
+	// md is REQUIRED to translate a join: the seed result value is the
+	// source-anchored RecordConstructorValue, whose leg columns come from
+	// metadata (RFC-077 7.6). The opaque-seed fallback for the catalog-free path
+	// was retired, so a nil-md join is untranslatable (TestTranslateJoinNilMd).
+	left := logical.NewScan("Order", "")
+	right := logical.NewScan("Customer", "")
+	join := logical.NewJoin(left, right, logical.JoinInner, "")
+	ref, _ := TranslateToCascadesWithSubqueries(join, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
-	if _, ok := ref.Members()[0].(*expressions.SelectExpression); !ok {
+	sel, ok := ref.Members()[0].(*expressions.SelectExpression)
+	if !ok {
 		t.Fatalf("expected SelectExpression for join, got %T", ref.Members()[0])
+	}
+	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || !rc.AnchoredJoin {
+		t.Fatalf("expected source-anchored RecordConstructorValue result, got %T (anchored=%v)", sel.GetResultValue(), ok && rc.AnchoredJoin)
+	}
+}
+
+// TestTranslateJoinNilMd pins the RFC-077 7.6 contract: without metadata a join's
+// leg columns are not derivable, so the join is untranslatable (the opaque-seed
+// fallback was retired). Production always passes md; only the catalog-free
+// TranslateToCascades wrapper (tests) can hit this.
+func TestTranslateJoinNilMd(t *testing.T) {
+	t.Parallel()
+	join := logical.NewJoin(logical.NewScan("Order", ""), logical.NewScan("Customer", ""), logical.JoinInner, "")
+	if ref := TranslateToCascades(join); ref != nil {
+		t.Fatalf("expected nil reference for a nil-md join (no derivable leg columns), got %T", ref.Members()[0])
 	}
 }
 
@@ -558,14 +579,16 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 
 func TestTranslateCTEMultipleReferences(t *testing.T) {
 	t.Parallel()
-	// CTE referenced twice in the main query (via join).
-	body := logical.NewScan("Product", "")
+	// CTE referenced twice in the main query (via join). md is REQUIRED so the
+	// join's CTE-reference legs anchor (the leg columns derive from the CTE body's
+	// real table — RFC-077 7.6); the opaque-seed fallback was retired.
+	body := logical.NewScan("Order", "")
 	left := logical.NewScan("p", "")
 	right := logical.NewScan("p", "")
 	join := logical.NewJoin(left, right, logical.JoinInner, "")
 	cte := logical.NewCTE("p", body, join, false)
 
-	ref := TranslateToCascades(cte)
+	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
 	if ref == nil {
 		t.Fatal("expected non-nil reference for CTE with double reference")
 	}

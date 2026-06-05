@@ -170,9 +170,10 @@ func fieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
 //   - anything else (aggregate / distinct / union / cte / subquery) → nil.
 //
 // Returns nil whenever any required source is unavailable (no md, an unresolvable
-// table, an unsupported shape) — the seed site then falls back to the opaque
-// JoinMergeSeedValue. The Field types are best-effort (UnknownType for derived
-// shapes); only the NAMES are load-bearing for name-based resolution.
+// table, an unsupported shape) — the seed site (buildJoinResultValue) then treats
+// the join as untranslatable (the retired opaque seed fallback is gone). The Field
+// types are best-effort (UnknownType for derived shapes); only the NAMES are
+// load-bearing for name-based resolution.
 func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
 	case *logical.LogicalScan:
@@ -375,32 +376,31 @@ func aggregateOutputColumns(a *logical.LogicalAggregate) []values.Field {
 }
 
 // buildJoinResultValue builds the result value for a binary join seed (RFC-077
-// 7.6 Option B). When BOTH legs' output columns are derivable (legColumns
-// non-nil), it emits the source-anchored RecordConstructorValue —
-// FieldValue(QOV(leg), col) per column, named by NewAnchoredJoinRecord — so
-// field pull-up resolves through composeFieldOverConstructor by name, anchored to
-// the source quantifier. Otherwise it FALLS BACK to the opaque
-// JoinMergeSeedValue (TRANSITIONAL — kept until every leg shape is column-aware;
-// e.g. a CTE/derived-table or aggregate leg has no metadata columns yet). left/
-// right are the POST-swap operands (RIGHT-join normalization happens at the call
-// site), so the leg order matches the seed's [outer, inner] ordering the column
-// derivation + reversal signal read.
+// 7.6 Option B): the source-anchored RecordConstructorValue —
+// FieldValue(QOV(leg), col) per column, named by NewAnchoredJoinRecord — so field
+// pull-up resolves through composeFieldOverConstructor by name, anchored to the
+// source quantifier. left/right are the POST-swap operands (RIGHT-join
+// normalization happens at the call site), so the leg order matches the [outer,
+// inner] ordering the column derivation + reversal signal read.
+//
+// Returns nil when a leg's output columns are not derivable (legColumns nil) or a
+// leg alias is empty — the retired opaque merge seed fallback was removed in
+// RFC-077 7.6 (proven unreachable for every md-bearing production query; only the
+// catalog-free nil-md TranslateToCascades path, used by unit tests, can't derive a
+// leg's columns). The caller treats nil as an untranslatable join.
 func (t *cascadesTranslator) buildJoinResultValue(left, right logical.LogicalOperator, leftAlias, rightAlias string) values.Value {
 	leftCols := t.legColumns(left)
 	rightCols := t.legColumns(right)
 	// Both legs must have a non-empty alias (the anchored RC keys columns by
 	// QOV(alias); a zero alias would panic NewQuantifiedObjectValue) AND derivable
-	// columns. Otherwise fall back to the opaque seed.
-	if leftAlias != "" && rightAlias != "" && leftCols != nil && rightCols != nil {
-		return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-			{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
-			{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
-		})
+	// columns.
+	if leftAlias == "" || rightAlias == "" || leftCols == nil || rightCols == nil {
+		return nil
 	}
-	return values.NewJoinMergeSeedValue(
-		values.NamedCorrelationIdentifier(leftAlias),
-		values.NamedCorrelationIdentifier(rightAlias),
-	)
+	return values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: values.NamedCorrelationIdentifier(leftAlias), Columns: leftCols},
+		{Alias: values.NamedCorrelationIdentifier(rightAlias), Columns: rightCols},
+	})
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
@@ -768,20 +768,16 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	// assertion proves is never taken for a real-table outer.
 	scalarCol := strings.ToUpper(csq.ScalarCol)
 	outerCols := t.legColumns(p.Input)
-	var resultValue values.Value
-	if outerCols != nil && outerAlias != "" && scalarCol != "" {
-		resultValue = values.NewScalarSubqueryAnchoredRecord(
-			values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
-			values.NamedCorrelationIdentifier(csq.InnerAlias),
-			scalarCol,
-		)
+	if outerCols == nil || outerAlias == "" || scalarCol == "" {
+		// Outer columns not derivable (only the catalog-free nil-md path); the
+		// opaque seed fallback was RETIRED in RFC-077 7.6. Untranslatable.
+		return nil
 	}
-	if resultValue == nil {
-		resultValue = values.NewJoinMergeSeedValue(
-			values.NamedCorrelationIdentifier(outerAlias),
-			values.NamedCorrelationIdentifier(csq.InnerAlias),
-		)
-	}
+	resultValue := values.NewScalarSubqueryAnchoredRecord(
+		values.AnchoredJoinLeg{Alias: values.NamedCorrelationIdentifier(outerAlias), Columns: outerCols},
+		values.NamedCorrelationIdentifier(csq.InnerAlias),
+		scalarCol,
+	)
 
 	joinSelect := expressions.NewSelectExpressionWithJoinType(
 		resultValue,
@@ -1040,6 +1036,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	}
 
 	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
+	if resultValue == nil {
+		// A leg's columns are not derivable (only the catalog-free nil-md path;
+		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
+		return nil
+	}
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		[]expressions.Quantifier{leftQ, rightQ},
@@ -1390,7 +1391,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		// mechanism that narrowed the recursive body's columns (RFC-042 L1).
 		//
 		// When the recursive body is a join, its output is the merged
-		// JoinMergeAllValue row carrying QUALIFIED keys (B.ID, A.ID, ...). The
+		// source-anchored join RC row carrying QUALIFIED keys (B.ID, A.ID, ...). The
 		// load-bearing fix is that we never copy a qualified key into the temp
 		// table: each remap value is FieldValue{Field: <bare col>, Child:
 		// QOV(<qualifier>)} — evaluateCorrelated reads the qualified datum key

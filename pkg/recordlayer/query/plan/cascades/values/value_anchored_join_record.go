@@ -14,20 +14,20 @@ type AnchoredJoinLeg struct {
 
 // NewAnchoredJoinRecord builds the source-anchored join result value (RFC-077): a
 // RecordConstructorValue whose fields are FieldValue(QuantifiedObjectValue(legAlias), col)
-// — one per column of each leg. This replaces the opaque, name-keyed JoinMergeAllValue and
-// its after-the-fact composeFieldOverJoinMerge re-anchoring: every projected field names its
+// — one per column of each leg. This replaces the retired opaque, name-keyed merge and
+// its after-the-fact field re-anchoring: every projected field names its
 // source quantifier directly, exactly as Java's RecordConstructorValue of
 // FieldValue(QOV(leg), col) does.
 //
-// Naming preserves the opaque merge's bare+qualified key set so name-based resolution
+// Naming preserves the retired opaque merge's bare+qualified key set so name-based resolution
 // (composeFieldOverConstructor: field(RC, name) → the leg FieldValue) keeps working for
-// EVERY reference the SARG/derivation can pull up — exactly the keys the merge's Evaluate
-// emits (value_join_merge_all.go writes both the bare and the ALIAS.COL form):
+// EVERY reference the SARG/derivation can pull up — exactly the keys the executor still
+// builds physically (the cursor's mergeRows writes both the bare and the ALIAS.COL form):
 //   - EVERY column gets a qualified ALIAS.COL field (upper-cased, matching the merge's ToUpper
 //     qualification), so a qualified reference (e.g. A.NAME) ALWAYS resolves — including to a
 //     column whose bare name happens to be unique;
 //   - EVERY column also gets a bare field, LAST-LEG-WINS on a cross-leg collision — exactly the
-//     opaque merge's Evaluate, which writes every leg's keys bare (later legs overwrite earlier
+//     retired opaque merge's runtime, which wrote every leg's keys bare (later legs overwrite earlier
 //     ones for a shared name). A RecordConstructorValue cannot hold two fields of the same name,
 //     so for a duplicated bare name only the LAST leg's column gets the bare field (the earlier
 //     legs are still reachable by their qualified ALIAS.COL). Emitting bare-only-when-unique
@@ -46,8 +46,8 @@ type AnchoredJoinLeg struct {
 // A.ID, B.ID, etc. When such a DOTTED name is a column of a parent leg, it
 // propagates VERBATIM — the field name stays "A.ID" (NOT re-qualified to
 // "PARENTLEG.A.ID") and the value is FieldValue(QOV(parentLeg), "A.ID"). This
-// mirrors JoinMergeAllValue.Evaluate's "preserve already-qualified keys
-// verbatim, never re-prefix": each table contributes a DISTINCT prefix, so a
+// mirrors the executor's "preserve already-qualified keys
+// verbatim, never re-prefix" (mergeRows): each table contributes a DISTINCT prefix, so a
 // dotted key never collides across legs and reaches the right source via the
 // parent leg's merged row. A dotted column gets NO extra bare/qualified form
 // (it is already the resolvable key), matching the merge.
@@ -84,7 +84,7 @@ func NewAnchoredJoinRecord(legs []AnchoredJoinLeg) *RecordConstructorValue {
 				Value: NewFieldValue(qov, c.Name, c.FieldType),
 			})
 			// Bare field — emitted at the LAST leg carrying this bare name
-			// (last-leg-wins), exactly mirroring the opaque merge's Evaluate.
+			// (last-leg-wins), exactly mirroring the executor's mergeRows.
 			if lastLeg[strings.ToUpper(c.Name)] == li {
 				fields = append(fields, RecordConstructorField{
 					Name:  strings.ToUpper(c.Name),
@@ -99,8 +99,8 @@ func NewAnchoredJoinRecord(legs []AnchoredJoinLeg) *RecordConstructorValue {
 }
 
 // NewScalarSubqueryAnchoredRecord builds the source-anchored result value for a
-// correlated-scalar-subquery join seed (RFC-077 7.6), replacing the opaque
-// NewJoinMergeSeedValue(outerAlias, innerAlias). The outer leg is anchored exactly
+// correlated-scalar-subquery join seed (RFC-077 7.6), replacing the retired opaque
+// merge seed. The outer leg is anchored exactly
 // as a binary join leg (bare + qualified + dotted-verbatim, via NewAnchoredJoinRecord),
 // so the outer projections resolve both bare and qualified. The inner leg is the
 // scalar subquery's SINGLE exposed value, anchored with one field:
@@ -115,7 +115,7 @@ func NewAnchoredJoinRecord(legs []AnchoredJoinLeg) *RecordConstructorValue {
 // DOTTED (a non-aggregate subquery keeps its source qualifier, e.g. "C.NAME"),
 // which NewAnchoredJoinRecord cannot do (it propagates dotted leg columns verbatim).
 // The inner field has NO bare form: the projection always reads the scalar via the
-// qualified name, and the opaque seed's runtime mergeRows likewise only ever exposes
+// qualified name, and the executor's runtime mergeRows likewise only ever exposes
 // the inner scalar prefixed under innerAlias — so a bare inner field would have no
 // consumer and could spuriously shadow an outer column of the same bare name.
 func NewScalarSubqueryAnchoredRecord(outer AnchoredJoinLeg, innerAlias CorrelationIdentifier, scalarColKey string) *RecordConstructorValue {
@@ -147,8 +147,8 @@ func NewScalarSubqueryAnchoredRecord(outer AnchoredJoinLeg, innerAlias Correlati
 // TranslationMap), so the raw value is field(innerRC, "O.X"), NOT a bare
 // FieldValue(QOV(O), …). composeFieldOverConstructor folds field(innerRC, "O.X")
 // → FieldValue(QOV(O), "X"), exposing the real per-quantifier anchor — without
-// this, every buried table groups under nothing and the re-enumeration falls
-// back to the opaque merge. Only DOTTED parent fields are collected (the
+// this, every buried table groups under nothing and the re-enumeration cannot
+// resolve the leg's columns (NewReEnumerationAnchoredRecord returns nil). Only DOTTED parent fields are collected (the
 // source-accurate forms); BARE fields are the last-leg-wins resolution-convenience
 // duplicates NewAnchoredJoinRecord re-derives. Returns nil for a non-anchored
 // input.
@@ -231,10 +231,10 @@ type reEnumColumn struct {
 }
 
 // NewReEnumerationAnchoredRecord builds the source-anchored result value for a
-// PartitionSelectRule re-enumeration level (RFC-077 7.6), replacing the opaque
-// NewJoinMergeAllValue(aliases…). Each leg's columns are read from the parent
+// PartitionSelectRule re-enumeration level (RFC-077 7.6), replacing the retired
+// opaque merge. Each leg's columns are read from the parent
 // anchored RC (grouped by anchoring quantifier) and re-anchored to the leg's
-// quantifier. It emits EXACTLY the opaque merge's bare+qualified key set so name
+// quantifier. It emits EXACTLY the retired opaque merge's bare+qualified key set so name
 // resolution is preserved (Graefe condition 2):
 //
 //   - a SOURCE-TABLE-qualified field SRC.COL for EVERY column, anchored to
@@ -246,14 +246,15 @@ type reEnumColumn struct {
 //   - a BARE field COL, LAST-LEG-WINS on a cross-leg collision, anchored to
 //     QOV(legAlias) reading the BARE key — both a leaf table row and a merge row
 //     carry bare keys (mergeRows writes them), so an UNQUALIFIED projection of a
-//     buried column resolves, exactly as the opaque merge's Evaluate wrote bare
+//     buried column resolves, exactly as the executor's mergeRows still writes bare
 //     keys (the buried-column-bare-projection 0-row regression otherwise).
 //
 // legs must already be in the rule's canonical (alias-name-sorted) order so two
 // bipartitions producing the same leg-set intern to one Reference (the anchored
 // RC's structural identity is order-sensitive). Returns nil if any source's
-// columns are unavailable in the parent (a not-yet-anchored shape) — the caller
-// then falls back to the opaque NewJoinMergeAllValue for that node.
+// columns are unavailable in the parent (a not-yet-anchored shape); in practice
+// every real-table parent reaching here is already anchored, so the resolution
+// always succeeds (the retired opaque fallback is gone).
 func NewReEnumerationAnchoredRecord(parent *RecordConstructorValue, legs []ReEnumerationLeg) *RecordConstructorValue {
 	byQ := anchoredColumnsByQuantifier(parent)
 	if byQ == nil {

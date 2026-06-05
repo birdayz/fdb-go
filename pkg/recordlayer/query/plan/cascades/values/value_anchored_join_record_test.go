@@ -76,35 +76,25 @@ func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
 	}
 }
 
-// TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge pins Graefe's binding
+// TestNewAnchoredJoinRecord_BareAndQualifiedKeySet pins Graefe's binding
 // condition 2 (RFC-077 v3): on a duplicate-bare-name multi-way join, the anchored
-// RC's key set is EXACTLY the opaque JoinMergeAllValue's Evaluate key set — every
-// bare key (last-leg-wins on a shared name) AND every qualified ALIAS.COL. The
-// bare-dup key is NOT excluded: a quantifier OVER an inner join reuses the inner
-// right leg's alias (sourceAlias(join) = right-leg alias), so a qualified predicate
-// reads the join's merged row by the BARE key — which the opaque merge wrote and
-// the RC must too, or 3+-way joins return 0 rows. Emitting bare-only-when-unique
-// (an earlier cut) dropped exactly these keys; this is the swap-safety proof that
-// every key the old merge produced still resolves over the anchored RC.
-func TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge(t *testing.T) {
+// RC's key set is EXACTLY the bare+qualified set the retired opaque merge's
+// Evaluate produced — every bare key (last-leg-wins on a shared name) AND every
+// qualified ALIAS.COL. The bare-dup key is NOT excluded: a quantifier OVER an
+// inner join reuses the inner right leg's alias (sourceAlias(join) = right-leg
+// alias), so a qualified predicate reads the join's merged row by the BARE key —
+// or 3+-way joins return 0 rows. Emitting bare-only-when-unique (an earlier cut)
+// dropped exactly these keys; this proves every key the old merge produced still
+// resolves over the anchored RC. (The opaque merge it matched was deleted; the
+// expected set is now spelled out explicitly.)
+func TestNewAnchoredJoinRecord_BareAndQualifiedKeySet(t *testing.T) {
 	t.Parallel()
 	a := NamedCorrelationIdentifier("A")
 	b := NamedCorrelationIdentifier("B")
-	// A and B both carry a PRICE column (duplicate bare name) plus a unique key.
-	aRow := map[string]any{"ID": int64(1), "PRICE": int64(10)}
-	bRow := map[string]any{"CUSTOMER_ID": int64(2), "PRICE": int64(20)}
-
-	// Opaque merge Evaluate key set (the behavior the anchored RC must match).
-	mergeRow := NewJoinMergeAllValue(a, b).Evaluate(fakeCorrBinder{rows: map[CorrelationIdentifier]any{
-		a: aRow, b: bRow,
-	}}).(map[string]any)
-	mergeKeys := map[string]bool{}
-	for k := range mergeRow {
-		mergeKeys[strings.ToUpper(k)] = true
-	}
 
 	// The anchored RC's key set: every field name (each must compose to a non-nil
-	// leg FieldValue — the silent-nil landmine).
+	// leg FieldValue — the silent-nil landmine). A and B both carry a PRICE column
+	// (duplicate bare name) plus a unique key.
 	legs := []AnchoredJoinLeg{
 		{Alias: a, Columns: []Field{{Name: "ID"}, {Name: "PRICE"}}},
 		{Alias: b, Columns: []Field{{Name: "CUSTOMER_ID"}, {Name: "PRICE"}}},
@@ -118,19 +108,9 @@ func TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge(t *testing.T) {
 		rcKeys[strings.ToUpper(f.Name)] = true
 	}
 
-	// The two key sets must be IDENTICAL (exact parity).
-	for k := range mergeKeys {
-		if !rcKeys[k] {
-			t.Errorf("merge produces key %q but the anchored RC does not (a consumer read would silently break)", k)
-		}
-	}
-	for k := range rcKeys {
-		if !mergeKeys[k] {
-			t.Errorf("anchored RC has key %q the merge never produced (spurious key)", k)
-		}
-	}
-	// Sanity: the expected exact set, spelled out — qualified ALIAS.COL always,
-	// bare always (PRICE = last-leg-wins = B's).
+	// The expected exact set, spelled out — qualified ALIAS.COL always, bare always
+	// (PRICE = last-leg-wins = B's). This is what the retired opaque merge's
+	// Evaluate produced for {A:{ID,PRICE}, B:{CUSTOMER_ID,PRICE}}.
 	want := map[string]bool{
 		"A.ID": true, "ID": true,
 		"A.PRICE": true, "B.PRICE": true, "PRICE": true, // dup bare PRICE present, last-wins
@@ -157,7 +137,7 @@ func TestNewAnchoredJoinRecord_NamingParityWithOpaqueMerge(t *testing.T) {
 // naming rule (RFC-077): an already-qualified (dotted) leg column propagates
 // VERBATIM — the field name stays "A.ID", NOT re-qualified to "PARENT.A.ID", and
 // the value reads it off the parent leg by that dotted key. This mirrors
-// JoinMergeAllValue.Evaluate's "preserve already-qualified keys verbatim".
+// the executor's mergeRows "preserve already-qualified keys verbatim".
 func TestNewAnchoredJoinRecord_DottedColumnPropagatesVerbatim(t *testing.T) {
 	t.Parallel()
 	parent := NamedCorrelationIdentifier("M") // a merge-quantifier parent leg
@@ -282,7 +262,7 @@ func fieldAnchor(v Value) string {
 //   - expose every column's BARE form (last-leg-wins) so an UNQUALIFIED projection
 //     of a unique buried column resolves (the buried-column bare-projection 0-row
 //     regression guard);
-//   - never produce the opaque JoinMergeAllValue.
+//   - never produce the retired opaque merge.
 func TestNewReEnumerationAnchoredRecord_PassThroughAndMerge(t *testing.T) {
 	t.Parallel()
 	a := NamedCorrelationIdentifier("A")

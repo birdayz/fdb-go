@@ -259,8 +259,8 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			// Already-qualified field (e.g. "T3.ID") accessed through a merge
 			// quantifier: a re-enumerated N-way join collapses a buried table
 			// into a merge quantifier whose row flows that table's columns under
-			// their own qualified ALIAS.COL keys (JoinMergeAllValue / mergeRows
-			// preserve dotted keys verbatim — they are NOT re-prefixed with the
+			// their own qualified ALIAS.COL keys (the executor's mergeRows
+			// preserves dotted keys verbatim — they are NOT re-prefixed with the
 			// merge alias). Prepending the merge alias above would invent a key
 			// (e.g. "$M.T3.ID") that was never written. Mirror the binding path
 			// (bm[f.Field]) by resolving the qualified field directly. (RFC-043.)
@@ -2091,11 +2091,11 @@ type RecordConstructorValue struct {
 	// the RecordConstructorValue NewAnchoredJoinRecord builds, whose fields are
 	// each FieldValue(QuantifiedObjectValue(leg), col) over the enclosing
 	// select's OWN immediate join quantifiers. It is the structural successor of
-	// the opaque JoinMergeAllValue's Seed provenance bit, carrying the SAME
+	// the retired opaque merge's Seed provenance bit, carrying the SAME
 	// dual-purpose semantics (RFC-077 F2):
 	//   - exploration-time HIDING: GetCorrelatedToOfValue does NOT descend into an
 	//     anchored-join RC, so its self-bound leg QOVs are excluded from the
-	//     value's reported external correlation set (mirroring Seed=true's
+	//     value's reported external correlation set (mirroring the retired seed bit's
 	//     "report nothing"). Reporting them inflates every enclosing select's
 	//     correlation order and tips the ≥4-way STAR past the task budget.
 	//   - partition-time RE-EXPOSURE: PartitionSelectRule keeps ALL lower aliases

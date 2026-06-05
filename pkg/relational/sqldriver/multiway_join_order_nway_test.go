@@ -12,7 +12,7 @@ import (
 // N-way join execution. RFC-042 made 3-way joins FROM-order-independent and
 // cost-optimal but scoped re-enumeration to n==3 (≥4-way failed to plan loudly).
 // RFC-043 lifts that — re-enumerated joins of any arity now flow a merged row
-// (JoinMergeAllValue, qualified ALIAS.COL keys for every live table) so every
+// (the source-anchored join RC, qualified ALIAS.COL keys for every live table) so every
 // buried table's columns survive up the join spine.
 //
 // The 4-way cases below all FAILED to plan before RFC-043. They now:

@@ -171,7 +171,7 @@ func TestRebaseBuriedLowerReferences(t *testing.T) {
 	}
 
 	// The collapsed side must read the buried column through the merge by the
-	// qualified key T3.T2_ID (matching JoinMergeAllValue's ALIAS.COL keys).
+	// qualified key T3.T2_ID (matching the source-anchored join RC's ALIAS.COL keys).
 	cp := got.(*predicates.ComparisonPredicate)
 	lhs := cp.Operand.(*values.FieldValue)
 	lhsQOV, ok := lhs.Child.(*values.QuantifiedObjectValue)
@@ -222,8 +222,8 @@ func chainEqPred(a, aCol, b, bCol string) predicates.QueryPredicate {
 // TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier is the unit-level
 // regression for the deeply-nested-FlatMap projection bug. The flat 3-way seed
 // SELECT t1.id FROM t3,t2,t1 WHERE t3.t2_id=t2.id AND t2.t1_id=t1.id carries the
-// translator-built SEED merge value (RFC-074: the sole canonical JoinMergeAllValue
-// with Seed=true). A seed names only its two immediate source aliases but hides
+// translator-built SEED merge value (RFC-074: the sole canonical merge value, now
+// the source-anchored join RC). A seed names only its two immediate source aliases but hides
 // the real projection (in the Project above), so the rule must keep ALL lowers
 // live. When PartitionSelectRule collapses ≥2 tables into a single merge
 // quantifier ($m), those original aliases are no longer bound at the upper level —
@@ -232,23 +232,25 @@ func chainEqPred(a, aCol, b, bCol string) predicates.QueryPredicate {
 // top FlatMap's resultValue evaluated to nil and the projected (deeply-nested)
 // T1.ID came back NULL → 200 rows with t1.id != 1.
 //
-// The fix re-stamps the upper result as a JoinMergeAllValue over the upper's
+// The fix re-stamps the upper result as a source-anchored join RC over the upper's
 // IMMEDIATE quantifiers (merge alias + upper tables) in the merge case. This pins
 // that: a merge-case upper must NEVER carry a result value naming an alias it does
-// not bind — it must be a JoinMergeAllValue keyed on bound aliases.
+// not bind — it must be a source-anchored join RC keyed on bound aliases.
 func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 	t.Parallel()
 
 	t1, t2, t3 := scanQuantifier("T1"), scanQuantifier("T2"), scanQuantifier("T3")
 
-	// Seed result value: the translator's join seed (Seed=true), naming only two
-	// of the three tables — exactly as the real flat seed carries it. The Seed
-	// flag (provenance), not the named aliases, marks it opaque so the rule keeps
-	// all lowers live; the genuine projection lives in the Project above.
-	seed := values.NewJoinMergeSeedValue(
-		values.NamedCorrelationIdentifier("T1"),
-		values.NamedCorrelationIdentifier("T2"),
-	)
+	// Seed result value: the source-anchored join RESULT value over all three
+	// tables — the structure the real flat N-quantifier select carries once
+	// SelectMergeRule flattens the binary seeds (RFC-077 7.6). isAnchoredJoinResult
+	// marks it so the rule keeps ALL lowers live (the genuine projection lives in
+	// the Project above); the leg QOVs are re-exposed at partition time.
+	seed := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: values.NamedCorrelationIdentifier("T1"), Columns: []values.Field{{Name: "ID"}, {Name: "T1_ID"}, {Name: "T2_ID"}}},
+		{Alias: values.NamedCorrelationIdentifier("T2"), Columns: []values.Field{{Name: "ID"}, {Name: "T1_ID"}, {Name: "T2_ID"}}},
+		{Alias: values.NamedCorrelationIdentifier("T3"), Columns: []values.Field{{Name: "ID"}, {Name: "T1_ID"}, {Name: "T2_ID"}}},
+	})
 	sel := expressions.NewSelectExpressionWithAliases(
 		seed,
 		[]expressions.Quantifier{t3, t2, t1},
@@ -277,8 +279,8 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 		// The bug signature: an upper that still carries a result value naming an
 		// unbound alias after collapsing a lower into a merge quantifier. Detect a
 		// merge-collapsing partition STRUCTURALLY: it has a quantifier ranging over
-		// a lower SelectExpression whose result value is a *JoinMergeAllValue (the
-		// collapsed ≥2-live merge). The merge quantifier now carries a plain
+		// a lower SelectExpression whose result value is a source-anchored join RC
+		// (RecordConstructorValue with AnchoredJoin, the collapsed ≥2-live merge). The merge quantifier now carries a plain
 		// uniqueId alias (RFC-077 7.5 retired the synthetic "$m…" string), so the
 		// old name-prefix check is gone — the collapsed-merge child is the honest,
 		// rename-stable signal.
@@ -293,7 +295,7 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 				if !ok {
 					continue
 				}
-				if _, ok := lsel.GetResultValue().(*values.JoinMergeAllValue); ok {
+				if rc, ok := lsel.GetResultValue().(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
 					hasMergeQuant = true
 					break
 				}
@@ -305,21 +307,22 @@ func TestPartitionSelect_SeedMergeRestampedOverMergeQuantifier(t *testing.T) {
 
 		if hasMergeQuant {
 			sawMergeCaseUpper = true
-			all, ok := rv.(*values.JoinMergeAllValue)
-			if !ok {
-				t.Errorf("yield[%d]: merge-case upper result = %T, want *JoinMergeAllValue", i, rv)
+			rc, ok := rv.(*values.RecordConstructorValue)
+			if !ok || !rc.AnchoredJoin {
+				t.Errorf("yield[%d]: merge-case upper result = %T (anchored=%v), want source-anchored *RecordConstructorValue", i, rv, ok && rc.AnchoredJoin)
 				continue
 			}
-			// The re-stamped merge must name exactly the upper's bound aliases: the
-			// merge quantifier plus the single upper table. Every named alias must be
-			// one the upper select actually binds (no dangling original alias).
+			// The re-stamped anchored RC must anchor exactly to the upper's bound
+			// aliases: the merge quantifier plus the single upper table. Every leg QOV
+			// correlation must be one the upper select actually binds (no dangling
+			// original alias).
 			bound := make(map[values.CorrelationIdentifier]struct{})
 			for _, q := range upper.GetQuantifiers() {
 				bound[q.GetAlias()] = struct{}{}
 			}
-			for _, a := range all.Aliases {
+			for a := range values.GetCorrelatedToOfAnchoredJoinLegs(rc) {
 				if _, ok := bound[a]; !ok {
-					t.Errorf("yield[%d]: re-stamped JoinMergeAllValue names alias %q the upper does not bind: bound=%v",
+					t.Errorf("yield[%d]: re-stamped anchored RC anchors to alias %q the upper does not bind: bound=%v",
 						i, a.Name(), bound)
 				}
 			}

@@ -10,15 +10,15 @@ import (
 )
 
 // TestFDB_JoinMerge_OuterColumn_NotDropped is the E2E regression sentinel for
-// REVIEW.md #216. composeFieldOverJoinMerge canonicalizes a bare FieldValue over
-// a binary JoinMergeAllValue to the merge's INNER quantifier (Aliases[1]). That is
-// sound only because SelectMergeRule re-flows the merge under the inner alias, so only
-// inner-side fields are ever composed onto it (outer/third-table columns resolve
-// via their own QOV + the merge's qualified keys). This test pins that structural
+// REVIEW.md #216. The source-anchored join RC (RFC-077 7.6) anchors every field to
+// its source quantifier at construction, so field pull-up resolves through
+// composeFieldOverConstructor by name — an outer-side field reads off its OWN leg
+// QOV, never blindly rewritten to the inner side (the failure mode of the retired
+// opaque merge's INNER-quantifier canonicalization). This test pins that structural
 // invariant from the SQL surface: projecting and filtering an OUTER-side column
-// across a multi-way join must return the correct values, never NULL. If the
-// merge's alias convention ever drifts so an outer-only column gets composed onto
-// the merge and blindly rewritten to the inner side, these rows go NULL and this
+// across a multi-way join must return the correct values, never NULL. If field
+// resolution ever drifts so an outer-only column gets mis-anchored to the inner
+// side, these rows go NULL and this
 // test fails — converting a latent landmine into a caught regression.
 //
 // Shapes covered (the axis the prior suite missed — every existing join test
@@ -37,7 +37,7 @@ func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jm_outer_tmpl "+
 			// a <- b <- c chain. apay/cpay are OUTER-only payload columns (not join
-			// keys), the exact shape composeFieldOverJoinMerge must not mis-resolve.
+			// keys), the exact shape field pull-up (composeFieldOverConstructor) must not mis-resolve.
 			"CREATE TABLE a (aid BIGINT NOT NULL, apay STRING, PRIMARY KEY (aid)) "+
 			"CREATE TABLE b (bid BIGINT NOT NULL, b_aid BIGINT, PRIMARY KEY (bid)) "+
 			"CREATE TABLE c (cid BIGINT NOT NULL, c_bid BIGINT, c_aid BIGINT, cpay STRING, PRIMARY KEY (cid)) "+
