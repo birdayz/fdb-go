@@ -54,15 +54,23 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 			"SELECT c.w FROM u, c WHERE u.id = c.id",
 		[]int64{100, 200, 300})
 
-	// (2) Mismatched-alias aggregate branches: the executor cannot remap the second
-	// branch's column to the first branch's name, so anchoring would DROP rows.
-	// This must error cleanly (untranslatable), NOT return the wrong [200].
-	// a:2 rows, b:1 row → counts {2,1}; c has id 1,2 → a correct remap would yield
-	// {100 (id 1), 200 (id 2)}, but the un-remappable second branch makes it unsafe.
+	// (2) Mismatched-alias PROJECTION branches: the union exposes the FIRST branch's
+	// name `x`; the executor remaps the projection-topped second branch (SELECT v AS y)
+	// to it by POSITION, so u.x = {1,2,30}. Join c on u.x = c.id → matches {1,2} →
+	// w {100,200}. (Projection branches ARE remappable, so this must work, not error.)
+	assertInt64Set(t, db, ctx,
+		"WITH u AS (SELECT id AS x FROM a UNION ALL SELECT v AS y FROM b) "+
+			"SELECT c.w FROM u, c WHERE u.x = c.id",
+		[]int64{100, 200})
+
+	// (3) Mismatched-alias AGGREGATE branches: the executor canNOT remap the second
+	// branch's column to the first branch's name (it unwraps the aggregate to its
+	// input scan names), so anchoring would DROP rows. This must error cleanly
+	// (untranslatable), NOT return wrong rows.
 	q := "WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) " +
 		"SELECT c.w FROM u, c WHERE u.x = c.id"
 	if _, err := db.QueryContext(ctx, q); err == nil {
-		t.Errorf("mismatched-alias aggregate union join leg must error (untranslatable), not silently drop rows: %q", q)
+		t.Errorf("mismatched-alias AGGREGATE union join leg must error (untranslatable), not silently drop rows: %q", q)
 	}
 }
 

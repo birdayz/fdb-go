@@ -336,22 +336,21 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 }
 
 // unionOutputColumns returns a UNION's output column schema for anchoring it as a
-// join leg. SQL exposes the FIRST branch's names and the executor unions later
-// branches by POSITION — but that position-remap (remapUnionColumnsByPosition,
-// keyed on planColumnNamesWithMD) is only reliable for projection-topped branches;
-// an aggregate branch with a DIFFERENT output alias is NOT remapped to the first
-// branch's name (a pre-existing executor gap — verified: `(SELECT COUNT(*) AS x …
-// UNION ALL SELECT COUNT(*) AS y …)` drops the second branch's rows on master too).
-// Anchoring the leg to the first branch's name there would read the second
-// branch's rows as NULL and silently drop join matches.
+// join leg. SQL exposes the FIRST branch's names; the executor unions later
+// branches by POSITION (remapUnionColumnsByPosition, keyed on planColumnNamesWithMD).
+// That position-remap is reliable for PROJECTION/scan-schema'd branches — verified
+// e2e: `(SELECT id AS x … UNION ALL SELECT v AS y …)` joins correctly — so anchoring
+// a leg with mismatched branch aliases to the first branch's names is sound there.
 //
-// Rather than couple the translator to exactly which branch shapes the executor
-// can normalize, anchor a union leg ONLY when every branch already produces the
-// SAME output names (the unambiguous case the position-remap is a no-op for). A
-// mismatched-alias union join leg returns nil → untranslatable: a clean
-// "unsupported" error, never silently-wrong rows (codex P2). Re-enabling
-// mismatched-alias union legs is gated on the executor reporting aggregate-branch
-// output names (TODO 7.6-union-remap). Returns nil for no branches / an
+// It is NOT reliable for an AGGREGATE-schema'd branch: planColumnNamesWithMD unwraps
+// the aggregate to its input scan's column names, so a differently-aliased aggregate
+// branch is not remapped to the first branch's name and its rows read as NULL —
+// silently dropping join matches (a pre-existing executor gap, verified wrong on
+// master too; tracked as TODO 7.6-union-remap). So when branch names DIFFER, anchor
+// only if every branch's schema-defining node is normalizable (projection/scan); an
+// aggregate-schema'd mismatched-alias union leg returns nil → untranslatable, a clean
+// "unsupported" error rather than silently-wrong rows (codex). When branch names
+// AGREE the remap is a no-op, so any shape is safe. Returns nil for no branches / an
 // underivable first branch.
 func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []values.Field {
 	if len(u.Inputs) == 0 {
@@ -361,18 +360,63 @@ func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []value
 	if first == nil {
 		return nil
 	}
-	for _, br := range u.Inputs[1:] {
+	allAgree := true
+	allNormalizable := true
+	for _, br := range u.Inputs {
 		bc := t.derivedOutputColumns(br)
 		if len(bc) != len(first) {
 			return nil
 		}
 		for i := range bc {
 			if bc[i].Name != first[i].Name {
-				return nil
+				allAgree = false
 			}
 		}
+		if !t.unionBranchNormalizable(br) {
+			allNormalizable = false
+		}
 	}
-	return first
+	if allAgree || allNormalizable {
+		return first
+	}
+	return nil
+}
+
+// unionBranchNormalizable reports whether the executor's union position-remap can
+// remap this branch's columns to the first branch's names — i.e. whether the
+// branch's SCHEMA-defining node is a projection or scan (planColumnNamesWithMD
+// reports those branches' true output names). An AGGREGATE-schema'd branch is NOT
+// normalizable (the executor unwraps it to its input scan's names — TODO
+// 7.6-union-remap). Mirrors derivedOutputColumns's recursion through the
+// row-shape-preserving wrappers; an unknown shape is conservatively not normalizable.
+func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalProject, *logical.LogicalScan, *logical.LogicalJoin:
+		return true
+	case *logical.LogicalAggregate:
+		return false
+	case *logical.LogicalDistinct:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalSort:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalLimit:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalFilter:
+		return t.unionBranchNormalizable(o.Input)
+	case *logical.LogicalUnion:
+		if len(o.Inputs) == 0 {
+			return false
+		}
+		for _, br := range o.Inputs {
+			if !t.unionBranchNormalizable(br) {
+				return false
+			}
+		}
+		return true
+	case *logical.LogicalCTE:
+		return t.unionBranchNormalizable(o.Body)
+	}
+	return false
 }
 
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:
