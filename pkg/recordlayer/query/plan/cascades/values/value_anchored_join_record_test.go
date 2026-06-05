@@ -220,3 +220,44 @@ func (s staticBinder) GetCorrelationBinding(id CorrelationIdentifier) (any, bool
 	v, ok := s[id]
 	return v, ok
 }
+
+// TestAnchoredJoinRecord_NotEqualToPlainRC pins the @claude/codex memo-interning
+// catch (RFC-077 7.6): an anchored-join RC and a plain projection RC with the SAME
+// field set must NOT be equal (they differ in correlation hiding — the anchored
+// form hides its leg QOVs from GetCorrelatedToOfValue), and their SemanticHashCode
+// must differ, so they never intern as one memo member (which would drop buried
+// columns from the live set → 0-row joins).
+func TestAnchoredJoinRecord_NotEqualToPlainRC(t *testing.T) {
+	t.Parallel()
+	a := NamedCorrelationIdentifier("A")
+	b := NamedCorrelationIdentifier("B")
+	legs := []AnchoredJoinLeg{
+		{Alias: a, Columns: []Field{{Name: "ID"}, {Name: "NAME"}}},
+		{Alias: b, Columns: []Field{{Name: "ID"}, {Name: "AMOUNT"}}},
+	}
+	anchored := NewAnchoredJoinRecord(legs)
+	if !anchored.AnchoredJoin {
+		t.Fatal("setup: NewAnchoredJoinRecord must set AnchoredJoin")
+	}
+	// A plain RC with the IDENTICAL field list (same names + values), but not a
+	// join result.
+	plain := NewRecordConstructorValue(anchored.Fields...)
+	if plain.AnchoredJoin {
+		t.Fatal("setup: a plain RecordConstructorValue must NOT be AnchoredJoin")
+	}
+
+	if EqualsWithoutChildren(anchored, plain) {
+		t.Error("anchored RC and plain RC with the same fields must NOT be EqualsWithoutChildren (correlation hiding differs)")
+	}
+	if SemanticHashCode(anchored) == SemanticHashCode(plain) {
+		t.Error("anchored RC and plain RC must hash differently (else they share a memo bucket and may intern)")
+	}
+	// Sanity: two anchored RCs over the same legs ARE equal + same hash.
+	anchored2 := NewAnchoredJoinRecord(legs)
+	if !EqualsWithoutChildren(anchored, anchored2) {
+		t.Error("two anchored RCs over the same legs must be equal")
+	}
+	if SemanticHashCode(anchored) != SemanticHashCode(anchored2) {
+		t.Error("two equal anchored RCs must hash the same (equal⟹same-hash)")
+	}
+}

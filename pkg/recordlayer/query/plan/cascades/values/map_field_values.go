@@ -300,6 +300,14 @@ func EqualsWithoutChildren(a, b Value) bool {
 		if !ok || len(av.Fields) != len(bv.Fields) {
 			return false
 		}
+		// A source-anchored join RC and a plain projection RC with the same field
+		// names are NOT the same value: the anchored form HIDES its leg QOVs from
+		// GetCorrelatedToOfValue (RFC-077 7.6 F2), the plain form reports them. If
+		// they interned as one memo member, partition-time classification would
+		// drop buried columns from the live set → 0-row joins (@claude/codex catch).
+		if av.AnchoredJoin != bv.AnchoredJoin {
+			return false
+		}
 		for i := range av.Fields {
 			if av.Fields[i].Name != bv.Fields[i].Name {
 				return false

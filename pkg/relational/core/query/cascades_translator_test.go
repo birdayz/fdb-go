@@ -804,3 +804,37 @@ func TestSourceAlias(t *testing.T) {
 		}
 	})
 }
+
+// TestLegColumns_CTEShadowFallsBackToOpaque pins codex's CTE-shadow catch (RFC-077
+// 7.6): when a CTE name SHADOWS a real table, legColumns must NOT anchor with the
+// real table's metadata columns (translateScan resolves the scan from the CTE
+// body, not the table). It must return nil so the seed falls back to the opaque
+// merge — otherwise a join against the CTE would mis-anchor / mis-name columns.
+func TestLegColumns_CTEShadowFallsBackToOpaque(t *testing.T) {
+	t.Parallel()
+	md := demoMetaData(t) // has a real "Order" table
+
+	// Without a shadow, "Order" anchors from metadata (non-nil).
+	plain := &cascadesTranslator{md: md, cteScope: map[string]logical.LogicalOperator{}}
+	if plain.legColumns(logical.NewScan("Order", "")) == nil {
+		t.Fatal("setup: a real table must derive columns from metadata")
+	}
+
+	// A CTE named "order" (case-insensitive) shadows the real table → nil.
+	shadowed := &cascadesTranslator{
+		md:       md,
+		cteScope: map[string]logical.LogicalOperator{"ORDER": logical.NewScan("Order", "")},
+	}
+	if cols := shadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
+		t.Errorf("CTE-shadowed name must NOT anchor with the real table's columns; got %v", cols)
+	}
+
+	// cteExprScope (a pre-translated recursive-CTE reference) shadows too.
+	exprShadowed := &cascadesTranslator{
+		md:           md,
+		cteExprScope: map[string]expressions.RelationalExpression{"ORDER": nil},
+	}
+	if cols := exprShadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
+		t.Errorf("cteExprScope-shadowed name must NOT anchor with the real table's columns; got %v", cols)
+	}
+}

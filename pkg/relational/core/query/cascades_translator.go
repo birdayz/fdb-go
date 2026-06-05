@@ -41,11 +41,13 @@ func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
 // executor before running the main plan.
 //
 // md carries the record metadata used to source join-leg columns when building
-// the source-anchored join result value (RFC-077 7.6). Pass nil when metadata
-// isn't in scope (e.g. subquery translation, tests) — the seed then falls back to
-// the opaque JoinMergeSeedValue. The scan leaf is NEVER typed from md (it stays
-// Type.AnyRecord/UnknownType, matching Java — see RFC-077 v3 amendment); md is
-// consulted only to enumerate a leg's columns for the anchored RecordConstructor.
+// the source-anchored join result value (RFC-077 7.6). Pass nil to keep the legacy
+// opaque-seed behavior — the no-md callers today are TranslateToCascades (used for
+// scalar-subquery translation, which has no md in scope) and DML translation.
+// (Tests pass real md where they exercise anchoring.) The scan leaf is NEVER typed
+// from md (it stays Type.AnyRecord/UnknownType, matching Java — see RFC-077 v3
+// amendment); md is consulted only to enumerate a leg's columns for the anchored
+// RecordConstructor.
 func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan) {
 	t := &cascadesTranslator{
 		md:           md,
@@ -145,10 +147,19 @@ func fieldTypeForFD(fd protoreflect.FieldDescriptor) values.Type {
 func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
 	case *logical.LogicalScan:
-		// A CTE/derived-table scan resolves to its body, not a real table;
-		// tableColumns only knows real tables, so a CTE name returns nil here
-		// and the seed falls back to the opaque merge (correct: the CTE's
-		// columns live in its translated body, not metadata).
+		// A CTE/derived-table scan resolves to its BODY, not a real table —
+		// translateScan honors cteScope/cteExprScope (a CTE name SHADOWS a real
+		// table). legColumns must too: if the name is a CTE, return nil (fall back
+		// to the opaque seed) rather than mis-anchoring with a same-named real
+		// table's metadata columns (codex CTE-shadow catch). The CTE's columns live
+		// in its translated body, not metadata.
+		key := strings.ToUpper(o.Table)
+		if _, ok := t.cteExprScope[key]; ok {
+			return nil
+		}
+		if _, ok := t.cteScope[key]; ok {
+			return nil
+		}
 		return t.tableColumns(o.Table)
 	case *logical.LogicalFilter:
 		return t.legColumns(o.Input)
@@ -172,15 +183,14 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		})
 		// A join leg exposes ONLY its already-qualified (DOTTED) columns to a parent
 		// — the SOURCE-ACCURATE per-table forms (O.ID, C.PRICE, …). The anchored RC
-		// ALSO carries bare-last-wins names (its OWN resolution convenience at this
-		// level, for a predicate that reads this join's result row directly), but
-		// those must NOT propagate: a parent would re-qualify a bare name under
-		// sourceAlias(join)=right-leg, colliding with the verbatim dotted key
-		// (NewRecordConstructorValue would suffix it "_2" — a spurious key the
-		// opaque merge never produces, since its Evaluate accumulates into a map
-		// that dedups same-name keys). A buried column is referenced via its dotted
-		// form after PartitionSelectRule rebasing, never bare, so dropping the bare
-		// forms here loses nothing. (RFC-077 7.6; Torvalds nested-parity catch.)
+		// ALSO carries bare names (its OWN resolution convenience at this level), but
+		// those must NOT propagate: a parent re-qualifies a propagated bare under
+		// sourceAlias(join)=right-leg, and a name from the right leg then collides
+		// with its verbatim dotted key (NewRecordConstructorValue would suffix it
+		// "_2" — a spurious key the opaque merge never produces). A buried column is
+		// referenced via its dotted form after PartitionSelectRule rebasing, never
+		// bare. (RFC-077 7.6; Torvalds nested-parity catch — codex's unique-bare
+		// concern is pinned by TestFDB_NestedJoinUnqualifiedProjection.)
 		var fields []values.Field
 		for _, f := range rc.Fields {
 			if strings.Contains(f.Name, ".") {
@@ -202,6 +212,11 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		}
 		return fields
 	default:
+		// Sort / Distinct (row-shape-preserving) and Aggregate / Union / CTE /
+		// derived-table / subquery legs are NOT column-derivable here yet → nil, so
+		// the seed falls back to the opaque merge. Anchoring these shapes (and thus
+		// retiring the opaque types) is the RFC-077 7.6 retirement follow-up; the
+		// fallback is always safe (it preserves the pre-7.6 behavior for them).
 		return nil
 	}
 }

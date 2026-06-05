@@ -88,6 +88,14 @@ func writeSemanticHash(h io.Writer, v Value) {
 		_, _ = fmt.Fprintf(h, "throws:%v", t.ResultType)
 	case *RecordConstructorValue:
 		_, _ = io.WriteString(h, "record:")
+		// Fold the AnchoredJoin marker (RFC-077 7.6): EqualsWithoutChildren now
+		// distinguishes an anchored-join RC from a plain projection RC of the same
+		// shape (they differ in correlation hiding), so the hash must too — keeps
+		// the equal⟹same-hash invariant tight and stops the two from sharing a memo
+		// hash bucket. A bool is alias-free, so SemanticHashCode stays alias-invariant.
+		if t.AnchoredJoin {
+			_, _ = io.WriteString(h, "anchored:")
+		}
 		for _, f := range t.Fields {
 			_, _ = io.WriteString(h, f.Name+",")
 		}
