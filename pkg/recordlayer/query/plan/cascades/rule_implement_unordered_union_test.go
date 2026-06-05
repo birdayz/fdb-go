@@ -27,6 +27,30 @@ func TestImplementUnorderedUnionRule_MatchesLogicalUnionExpression(t *testing.T)
 	}
 }
 
+// TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped pins the RFC-080 / codex fix:
+// physicalPlanColumnNames must NOT unwrap a RecordQueryStreamingAggregationPlan through
+// GetInner() to its pre-aggregation input column names. Those input names are NOT the
+// aggregate's output names, so a union-branch rename Map built from them would read
+// columns absent from the aggregate row → NULLs. It returns nil instead, deferring the
+// branch's column normalization to the executor's position-remap (which DOES report a
+// StreamingAgg's output schema, RFC-078).
+func TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped(t *testing.T) {
+	t.Parallel()
+	// StreamingAgg over a Project whose output column is [P] — the pre-aggregation
+	// input name that must NOT leak out as the aggregate branch's column name.
+	scan := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+	innerProj := plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{&values.FieldValue{Field: "V"}}, []string{"P"}, scan,
+	)
+	agg := plans.NewRecordQueryStreamingAggregationPlan(
+		innerProj, nil,
+		[]expressions.AggregateSpec{{Function: expressions.AggSum, Alias: "X"}},
+	)
+	if got := physicalPlanColumnNames(agg); got != nil {
+		t.Fatalf("physicalPlanColumnNames(StreamingAgg) must NOT unwrap to inner names; got %v, want nil", got)
+	}
+}
+
 func TestImplementUnorderedUnionRule_SkipsNonMatching(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementUnorderedUnionRule()

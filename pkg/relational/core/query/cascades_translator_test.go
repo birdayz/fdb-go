@@ -302,6 +302,44 @@ func TestTranslateUnion(t *testing.T) {
 	}
 }
 
+// TestUnionBranchNormalizable_AggregateArity pins the RFC-080 gate boundary: a bare
+// LogicalAggregate union branch is normalizable IFF it is UNGROUPED with at least one
+// aggregate. An ungrouped aggregate produces no aggregate-index candidate (groupingCount
+// == 0 → nil), so it always plans as StreamingAgg, which flows every aggregate under its
+// alias — normalizable for any arity. A GROUPED bare aggregate can plan as
+// AggregateIndex/MultiIntersection (names not reported by planColumnNamesWithMD), so it
+// stays gated. A 0-aggregate shape is also gated.
+func TestUnionBranchNormalizable_AggregateArity(t *testing.T) {
+	t.Parallel()
+	tr := &cascadesTranslator{}
+	scan := logical.NewScan("A", "")
+
+	one := logical.NewAggregate(scan, nil, []string{"COUNT(*)"}, []string{"X"}, "")
+	if !tr.unionBranchNormalizable(one) {
+		t.Error("ungrouped 1-aggregate LogicalAggregate must be normalizable (plans as StreamingAgg)")
+	}
+
+	two := logical.NewAggregate(scan, nil, []string{"SUM(V)", "COUNT(*)"}, []string{"S", "C"}, "")
+	if !tr.unionBranchNormalizable(two) {
+		t.Error("ungrouped 2-aggregate LogicalAggregate must be normalizable (also plans as StreamingAgg)")
+	}
+
+	grouped := logical.NewAggregate(scan, []string{"G"}, []string{"COUNT(*)"}, []string{""}, "")
+	if tr.unionBranchNormalizable(grouped) {
+		t.Error("GROUPED bare aggregate must NOT be normalizable (may plan as AggregateIndex — unreported names)")
+	}
+
+	groupOnly := logical.NewAggregate(scan, []string{"G"}, nil, nil, "")
+	if tr.unionBranchNormalizable(groupOnly) {
+		t.Error("0-aggregate group-only LogicalAggregate must NOT be normalizable (left gated)")
+	}
+
+	ungroupedZero := logical.NewAggregate(scan, nil, nil, nil, "")
+	if tr.unionBranchNormalizable(ungroupedZero) {
+		t.Error("0-aggregate ungrouped LogicalAggregate must NOT be normalizable (>= 1 guard)")
+	}
+}
+
 func TestTranslateDistinctUnion(t *testing.T) {
 	t.Parallel()
 	scanA := logical.NewScan("A", "")
