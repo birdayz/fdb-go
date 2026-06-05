@@ -188,7 +188,6 @@ func PlanningDataAccessRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
 		NewImplementValuesRule(),
-		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
 		NewOrderedPrimaryScanRule(),
 		NewImplementExplodeRule(),
@@ -207,7 +206,6 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementValuesRule(),
 		NewImplementProjectionRule(),
 		NewImplementFilterRule(),
-		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
 		NewOrderedPrimaryScanRule(),
 		NewImplementTypeFilterRule(),

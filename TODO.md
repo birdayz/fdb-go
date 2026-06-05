@@ -204,6 +204,18 @@ plan.
 
 ### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
 
+- [x] **DONE (RFC-076 v5, 2026-06-05).** `ImplementIndexScanRule` + both registrations + its 3 test
+  files deleted; shared helpers extracted to `scan_match_helpers.go`. Sequence: 3b template-aware
+  costing → 3a constraint-pass activation + stub-chain costing → deletion + **data-access compensation
+  materialization** (the v3/v4 premise missed that the data-access path never materialized its residual
+  `Compensation.apply` LOGICAL filter into a physical plan during PLANNING, so the index scan was
+  dropped to a full scan for the indexed-eq + non-indexed-residual shape; `pushDataAccessTasks` now
+  realizes the unambiguously-safe simple residual as a physical filter, guarded against IN / correlated
+  / index-only / vector-or-aggregate-inner / join-leg shapes — see `isSimpleResidualCompensation` +
+  `refHasCorrelatedMatch`). `validateNoIndexOnlyResidual` KEPT (still load-bearing). Full suite green,
+  plandiff byte-identical, determinism 5×. The data-access/`Compensation` path is now the sole scan
+  producer, as in Java. Original analysis retained below.
+
 Go reaches a physical index scan / filter via THREE producers that bypass `Compensation`: the
 data-access/compensation match path (`predicate_multi_map.go`), the Go-only `ImplementIndexScanRule`
 (a fusion of Java's `ImplementPhysicalScanRule` + candidate matching that iterates predicates

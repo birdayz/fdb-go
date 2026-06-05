@@ -8,12 +8,12 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// FuzzIndexScanRule_NoPanic exercises the ImplementIndexScanRule with
-// random predicate/column combinations to ensure no panics. Unlike
-// the BatchA fuzz target which passes nil PlanContext, this one
-// provides actual MatchCandidates so the rule's inner matching logic
-// (column mapping, merge, prefix computation) is exercised.
-func FuzzIndexScanRule_NoPanic(f *testing.F) {
+// FuzzDataAccessScan_NoPanic exercises the data-access scan path (the sole scan
+// producer after RFC-076 retired ImplementIndexScanRule) with random
+// predicate/column combinations to ensure no panics. It provides actual
+// MatchCandidates so the candidate matching logic (column mapping, merge, prefix
+// computation) is exercised through the planner.
+func FuzzDataAccessScan_NoPanic(f *testing.F) {
 	f.Add(byte(0), byte(0), byte(0), byte(0))
 	f.Add(byte(1), byte(2), byte(3), byte(4))
 	f.Add(byte(255), byte(255), byte(255), byte(255))
@@ -67,8 +67,14 @@ func FuzzIndexScanRule_NoPanic(f *testing.F) {
 		filter := expressions.NewLogicalFilterExpression(preds, q)
 		filterRef := expressions.InitialOf(filter)
 
-		rule := NewImplementIndexScanRule()
-		FireExpressionRuleWithMemo(rule, filterRef, ctx, nil)
+		// Drive the full planner (data-access path) for panics on random shapes —
+		// exercises the same candidate matching the retired rule did, now via the
+		// match infrastructure. Result/error are irrelevant; we only assert no panic.
+		rules := DefaultExpressionRules()
+		p := NewPlanner(rules, ctx).
+			WithPlanningExpressionRules(BatchAExpressionRules()).
+			WithImplementationRules(DefaultImplementationRules())
+		_, _, _ = p.Plan(filterRef)
 	})
 }
 

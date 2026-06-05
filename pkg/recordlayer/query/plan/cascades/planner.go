@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -480,6 +481,14 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 	}
 
+	// A ref with any correlated match is a JOIN LEG (the surrounding join binds a
+	// parameter into its scan, e.g. `customer_id = ac.id`). Its data-access
+	// compensations are meant to be consumed by the join, not stand alone — realizing
+	// one as a final leg winner severs the join's correlation feed (the filter wins at
+	// the leg but the join no longer drives it) → 0 rows. So never materialize a
+	// compensation on a join-leg ref; only on a standalone single-source ref.
+	refIsJoinLeg := refHasCorrelatedMatch(ref)
+
 	for _, candidate := range candidates {
 		matches := GetPartialMatchesForCandidate(ref, candidate)
 		if len(matches) == 0 {
@@ -487,7 +496,21 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 		exprs := DataAccessForMatchPartition(requestedOrderings, matches, p.ctx, nil)
 		for _, expr := range exprs {
-			ref.InsertFinal(expr)
+			inserted := ref.InsertFinal(expr)
+			// A compensated data-access result may be a LOGICAL expression — a residual
+			// LogicalFilter over the physical scan (Java Compensation.apply), produced when
+			// an index match leaves a non-sargable residual (e.g. an equality on an indexed
+			// column plus a `>` on a non-indexed one). Inserted as-is it stays non-physical
+			// and loses criterion #1 (physical beats non-physical) to a full scan, so the
+			// index scan is silently dropped. Realize ONLY the unambiguously-safe simple
+			// single-source residual (isSimpleResidualCompensation) on a non-join-leg ref as
+			// a physical filter here; every other compensation (IN, correlated, index-only,
+			// join-leg) is left logical and handled by the existing flow. Guarded on
+			// `inserted` so the convergent fixpoint terminates (pushDataAccessTasks re-yields
+			// equal compensations, which dedup).
+			if inserted && !refIsJoinLeg && !isPhysical(expr) && isSimpleResidualCompensation(expr) {
+				p.implementDataAccessCompensation(ref, expr)
+			}
 		}
 		stampOrderingWinners(ref, p.costModel)
 	}
@@ -540,6 +563,94 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 				}
 			}
 		}
+	}
+}
+
+// refHasCorrelatedMatch reports whether any partial match on the reference binds a scan
+// parameter that is correlated to an outer quantifier — the signature of a JOIN LEG (the
+// surrounding join drives a value into this scan). Such a ref's data-access compensations
+// must be consumed by the join, never materialized as a standalone leg winner.
+func refHasCorrelatedMatch(ref *expressions.Reference) bool {
+	for _, cand := range GetPartialMatchCandidatesTyped(ref) {
+		for _, m := range GetPartialMatchesForCandidate(ref, cand) {
+			if matchBoundPrefixIsCorrelated(m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isSimpleResidualCompensation reports whether a logical compensation is a PLAIN residual
+// filter safe to realize as a standalone physical filter over its (physical) inner scan:
+// a LogicalFilterExpression every predicate of which is a simple non-IN, non-index-only,
+// non-correlated ComparisonPredicate, sitting over an uncorrelated, narrowable
+// (value-index / primary / fetch — NOT vector top-K or aggregate) inner scan. Everything
+// else stays logical and is handled by the existing flow.
+func isSimpleResidualCompensation(expr expressions.RelationalExpression) bool {
+	f, ok := expr.(*expressions.LogicalFilterExpression)
+	if !ok {
+		return false
+	}
+	preds := f.GetPredicates()
+	if len(preds) == 0 {
+		return false
+	}
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
+	// The inner scan must NOT be correlated to an outer quantifier, and must be
+	// NARROWABLE by a post-filter. A correlated scan (e.g. a join inner
+	// `IndexScan(orders, customer_id = ac.id)`) is bound by the surrounding join;
+	// realizing the residual filter standalone over it severs that binding (the filter
+	// wins at the leg ref but the join no longer feeds it the correlated row) → 0 rows.
+	// A vector top-K scan (`rank<=K`) or an aggregate scan is NOT narrowable: a residual
+	// applied AFTER the top-K / grouping changes the result, so such a residual is
+	// semantically invalid and the query must stay unplannable (the trailing-partition-
+	// equality vector case) rather than be realized as a wrong plan. A value-index /
+	// primary / fetch scan returns a superset the residual can correctly filter.
+	for _, q := range f.GetQuantifiers() {
+		cref := q.GetRangesOver()
+		if cref == nil {
+			continue
+		}
+		for alias := range cref.GetCorrelatedTo() {
+			if _, isLocal := local[alias]; !isLocal {
+				return false
+			}
+		}
+		for _, m := range cref.AllMembers() {
+			switch m.(type) {
+			case *physicalVectorIndexScanWrapper, *physicalAggregateIndexWrapper:
+				return false
+			}
+		}
+	}
+	for _, pred := range preds {
+		cp, ok := pred.(*predicates.ComparisonPredicate)
+		if !ok {
+			return false
+		}
+		if cp.Comparison.Type == predicates.ComparisonIn {
+			return false
+		}
+		if predicateContainsUncompensatableValues(pred) {
+			return false
+		}
+		for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
+			if _, isLocal := local[alias]; !isLocal {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (p *Planner) implementDataAccessCompensation(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	exprRules, _ := p.rulesForPhase(PhasePlanning)
+	for i := len(exprRules) - 1; i >= 0; i-- {
+		p.push(&TransformExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr, Rule: exprRules[i]})
 	}
 }
 

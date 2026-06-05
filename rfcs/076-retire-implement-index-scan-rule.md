@@ -1,6 +1,6 @@
 # RFC-076: Retire the Go-only `ImplementIndexScanRule` — make the data-access path the sole scan producer (TODO 7.7)
 
-**Status:** v4 amendment **ACK'd (Graefe + Torvalds, 2026-06-04)** as the plan of record for full retirement. Step 1 (complete the data-access path) DONE: 5 correctness bugs found + fixed, Graefe + Torvalds ACK'd. Step 3 (retire the rule) follows the sequenced plan in the **v4 amendment** below — land template-aware costing (3b, ref-resolving — NOT a magic constant) rule-enabled and plan-neutral, then activate the dormant ordering-constraint pass (3a), then delete the rule (keeping `validateNoIndexOnlyResidual`). The **retirement commit's actual diff still needs its own Graefe + Torvalds ACK** (this ACKs the plan, not unwritten code). v3 history retained below.
+**Status:** **IMPLEMENTED** (v5, 2026-06-05) — `ImplementIndexScanRule` retired; the data-access/`Compensation` match path is the sole scan producer. Sequence: 3b template-aware costing (committed), 3a constraint-pass activation + stub-chain costing (committed), then deletion + data-access compensation materialization (this change). Full suite green (48/48), plandiff byte-identical, determinism 5×, `validateNoIndexOnlyResidual` kept. The retirement diff still needs its own Graefe + Torvalds + codex + @claude ACK before merge. v5 amendment (the data-access compensation-materialization finding + fix) at the bottom; v3/v4 history retained below.
 **Area:** Cascades query planner — physical index-scan production
 **Reviewers:** Graefe (Cascades alignment — mandatory), Torvalds (code quality), codex, @claude
 
@@ -247,3 +247,46 @@ ORDERS-driven ~4ms). The constraint-pass activation (3a) is gated behind 3b so t
 otherwise cause never lands. If 3b proves to destabilize costing broadly, fall back to partial
 retirement (rule retained for the sort-elim-through-residual shape only) rather than shipping a cost
 regression.
+
+---
+
+## v5 amendment — DONE: rule retired (3b + 3a + deletion + data-access compensation materialization)
+
+Implementing the deletion surfaced one more gap the v3/v4 "step 1 made the data-access path correct"
+premise missed: **the data-access path never MATERIALIZED its residual compensation into a physical
+plan during PLANNING.** `Compensation.apply` (compensation.go) produces a LOGICAL
+`LogicalFilterExpression` over the physical scan (Java-faithful — Java yields it via
+`FinalYields.yieldUnknownExpression`, where a non-`RecordQueryPlan` is an *exploratory* member that
+re-optimizes). But Go's `pushDataAccessTasks` inserted every result via `InsertFinal`, so a logical
+compensation sat as a non-physical final member and lost criterion #1 (physical beats non-physical) to a
+full scan — the index scan was silently dropped for the common **indexed-equality + non-indexed
+residual** shape (`WHERE status='active' AND amount>50`, status indexed, amount not) and for
+sort-elim-through-residual. The retired rule had been masking this (it emitted `Filter(IndexScan)`
+directly).
+
+**Fix (planner.go):** when the data-access path yields a logical residual compensation, realize it as a
+physical filter by firing the PLANNING expression rules on it (`implementDataAccessCompensation`) —
+but ONLY for the unambiguously-safe shape, gated by `isSimpleResidualCompensation` + a join-leg guard
+(`refHasCorrelatedMatch`). A compensation is materialized only when it is a `LogicalFilterExpression`
+whose predicates are simple, non-IN, non-index-only, non-correlated comparisons, sitting over an
+**uncorrelated, narrowable** (value-index / primary / fetch — NOT vector top-K or aggregate) inner
+scan, on a ref that is **not a join leg**. Every other compensation stays logical and is handled by the
+existing flow, because materializing it standalone is wrong:
+- **IN** residual → must take the explode→InJoin path, not a standalone equality filter.
+- **correlated** residual (or a residual over a correlated scan) → applied at the join; standalone it
+  severs the join's correlation feed → 0 rows.
+- **index-only** residual (vector DistanceRank) → must stay unplannable (validateNoIndexOnlyResidual).
+- **vector top-K / aggregate** inner → a residual post-filter changes the result; not narrowable.
+- **join-leg** ref (has a correlated match) → its compensations are consumed by the join, never a
+  standalone leg winner.
+
+Each exclusion is pinned by an existing FDB test that now exercises the data-access path with the rule
+gone: `TestFDB_JoinWithInPredicate` (IN), `cte_with_join_filter` (correlated/join-leg),
+`TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` (index-only/vector); the positive case
+by `TestPlanHarness_MultiplePredicates` and `TestEndToEnd_SortElimThroughResidualFilter`.
+
+**Result:** `ImplementIndexScanRule` + both registrations + its 3 test files deleted; shared helpers
+(`extractIndexPlan`, `findFullScan`, `recordTypesOverlap`, …) extracted to `scan_match_helpers.go`;
+`validateNoIndexOnlyResidual` KEPT (still load-bearing). Full `just test` green (48/48), plandiff
+byte-identical, determinism 5×. The data-access/`Compensation` match path is now the SOLE scan producer
+— Java's single path.
