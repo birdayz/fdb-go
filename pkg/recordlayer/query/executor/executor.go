@@ -1182,6 +1182,23 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 			}
 			return names
 		}
+		// A STREAMING-AGGREGATE plan defines its OWN output column schema (group keys +
+		// aggregate outputs) — stop here and report it, do NOT descend to the input
+		// scan (RFC-078). StreamingAgg implements innerPlanAccessor, so without this
+		// the loop would walk past it to the Scan and return the scan's columns,
+		// mis-naming the branch for the UNION position-remap and silently dropping a
+		// mismatched-alias aggregate branch's rows (TODO 7.6-union-remap). The names
+		// match the keys aggregateCursor writes (streaming_cursors.go) and the schema
+		// the translator derives (aggregateOutputColumns), so remapUnionColumnsByPosition
+		// normalizes the branch correctly.
+		//
+		// The aggregate-INDEX plan is deliberately NOT handled here: its cursor writes
+		// only the canonical aggResultName, never the alias (rule_aggregate_data_access
+		// drops it), so naming it by the alias would not match its row keys — fixing
+		// that needs the index cursor to carry the alias first (follow-up, RFC-078).
+		if agg, ok := p.(*plans.RecordQueryStreamingAggregationPlan); ok {
+			return streamingAggOutputNames(agg)
+		}
 		if _, ok := p.(*plans.RecordQueryMapPlan); ok {
 			sawMap = true
 		}
@@ -1655,6 +1672,34 @@ func aggKeyName(k values.Value) string {
 		return strings.ToUpper(fv.Field)
 	}
 	return strings.ToUpper(values.ExplainValue(k))
+}
+
+// streamingAggOutputNames returns the OUTPUT column names a streaming-aggregate
+// plan's rows are keyed by — the grouping keys (aggKeyName) followed by each
+// aggregate's SQL-visible name: its Alias when present (upper-cased at
+// construction), else the canonical aggResultName. Exactly one name per output
+// column, matching the keys aggregateCursor.finalizeGroup writes and the schema
+// the translator derives (aggregateOutputColumns). Used by planColumnNamesWithMD
+// so the UNION position-remap (remapUnionColumnsByPosition) can normalize a
+// mismatched-alias aggregate branch to the first branch's names (RFC-078).
+func streamingAggOutputNames(p *plans.RecordQueryStreamingAggregationPlan) []string {
+	keys := p.GetGroupingKeys()
+	aggs := p.GetAggregates()
+	names := make([]string, 0, len(keys)+len(aggs))
+	for _, k := range keys {
+		names = append(names, aggKeyName(k))
+	}
+	for _, agg := range aggs {
+		if agg.Alias != "" {
+			names = append(names, strings.ToUpper(agg.Alias))
+		} else {
+			names = append(names, aggResultName(agg))
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 func isNumeric(v any) bool {

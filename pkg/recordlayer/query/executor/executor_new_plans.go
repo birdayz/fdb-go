@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -248,15 +249,37 @@ func executeUnorderedUnion(
 	if len(inners) == 0 {
 		return recordlayer.Empty[QueryResult](), nil
 	}
+	var md *recordlayer.RecordMetaData
+	if store != nil {
+		md = store.GetRecordMetaData()
+	}
+	// SQL exposes a UNION's column names from the FIRST branch; later branches union
+	// by POSITION. RecordQueryUnionPlan normalizes this (executeUnionStreaming), but
+	// the unordered concat did NOT — so a branch whose output columns are named
+	// differently from the first branch (e.g. mismatched aggregate aliases X vs Y)
+	// flowed its rows under its OWN keys, and a downstream by-name read of the union's
+	// (first-branch) column dropped them (TODO 7.6-union-remap / RFC-078). Remap each
+	// later branch's keys to the first branch's, position-wise, exactly as the ordered
+	// union does. A no-op when names already agree (the common case).
+	firstBranchKeys := planColumnNamesWithMD(inners[0], md)
 	childProps := props.ClearSkipAndLimit()
 	cursors := make([]recordlayer.RecordCursor[QueryResult], 0, len(inners))
-	for _, inner := range inners {
+	for i, inner := range inners {
 		c, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, childProps)
 		if err != nil {
 			for _, prev := range cursors {
 				_ = prev.Close()
 			}
 			return nil, err
+		}
+		if i > 0 && firstBranchKeys != nil {
+			srcKeys := planColumnNamesWithMD(inner, md)
+			if srcKeys != nil && !slices.Equal(srcKeys, firstBranchKeys) {
+				target := firstBranchKeys
+				c = recordlayer.MapCursor(c, func(qr QueryResult) QueryResult {
+					return remapUnionColumnsByPosition(qr, srcKeys, target)
+				})
+			}
 		}
 		cursors = append(cursors, c)
 	}
