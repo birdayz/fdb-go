@@ -219,6 +219,20 @@ DOUBLES the 4-chain to 60044) + full suite green + 5× determinism. The opaque-t
 (JoinMergeAllValue/Seed/composeFieldOverJoinMerge) and anchored RC remain 7.6, deferred on column
 threading (F3). See RFC-077 "Precise root-cause — CORRECTED".
 
+**7.6 DONE (2026-06-05, RFC-077 v4):** column threading landed in the 7.6 core (#259); this follow-up
+(a) anchors EVERY reachable join-leg shape — correlated scalar subqueries (incl. dotted scalarCol),
+derived tables / aggregate subqueries / CTE references as join legs, recursive-CTE legs (outer +
+recursive-branch self-reference), Sort/Distinct/Union/Aggregate legs — and (b) DELETES the opaque
+`JoinMergeAllValue`/`JoinMergeSeedValue`/`Seed`/`composeFieldOverJoinMerge`, migrating all consumers
+to the source-anchored `RecordConstructorValue`. Decisive root-cause: the core's `tableColumns` was
+case-SENSITIVE while the SQL path upper-cases table names, so the core's anchoring was DORMANT
+(`resolveRecordType` now case-insensitive). Proven no-fallback by a panic-probe over the entire SQL
+production surface; chain budget gate unchanged (anchored interns identically); plandiff
+byte-identical. See RFC-077 v4.
+
+- [x] **7.5 + 7.6 (RFC-077) — DONE.** 7.5 merged (#258), 7.6 core merged (#259), 7.6 retirement
+  (anchor-all + delete opaque types) on `feat/7.6b-retire-opaque-merge`.
+
 ### 7.7 Retire `ImplementIndexScanRule` — unify on the data-access/`Compensation` path (RFC-045 follow-up)
 
 - [x] **DONE (RFC-076 v5, 2026-06-05).** `ImplementIndexScanRule` + both registrations + its 3 test
