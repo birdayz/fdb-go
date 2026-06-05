@@ -259,27 +259,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// Row-shape-preserving: DISTINCT does not change the column set.
 		return t.legColumns(o.Input)
 	case *logical.LogicalUnion:
-		// A union's output columns are its branches' columns; all branches must
-		// agree (same count + names) for the leg to anchor consistently.
-		if len(o.Inputs) == 0 {
-			return nil
-		}
-		first := t.legColumns(o.Inputs[0])
-		if first == nil {
-			return nil
-		}
-		for _, br := range o.Inputs[1:] {
-			bc := t.legColumns(br)
-			if len(bc) != len(first) {
-				return nil
-			}
-			for i := range bc {
-				if bc[i].Name != first[i].Name {
-					return nil
-				}
-			}
-		}
-		return first
+		return t.unionOutputColumns(o)
 	case *logical.LogicalAggregate:
 		// Output columns = the GROUP BY keys followed by the aggregate output
 		// column names (alias when present, else the aggregate text), mirroring
@@ -345,12 +325,27 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		return t.derivedOutputColumns(o.Input)
 	case *logical.LogicalFilter:
 		return t.derivedOutputColumns(o.Input)
+	case *logical.LogicalUnion:
+		return t.unionOutputColumns(o)
 	case *logical.LogicalScan:
 		return t.legColumns(o)
 	case *logical.LogicalJoin:
 		return t.legColumns(o)
 	}
 	return nil
+}
+
+// unionOutputColumns returns a UNION's output column schema. SQL exposes the
+// column NAMES from the FIRST branch; later branches union by POSITION and may use
+// different output aliases — requiring all branches to share names (an earlier cut)
+// wrongly rejected a valid `SELECT id AS x … UNION ALL SELECT v AS y …` (codex P2),
+// which, with the opaque fallback retired, made the join untranslatable. Returns
+// nil when there are no branches or the first branch's columns are not derivable.
+func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []values.Field {
+	if len(u.Inputs) == 0 {
+		return nil
+	}
+	return t.derivedOutputColumns(u.Inputs[0])
 }
 
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:

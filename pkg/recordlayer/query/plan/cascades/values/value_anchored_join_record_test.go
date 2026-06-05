@@ -340,6 +340,49 @@ func TestNewReEnumerationAnchoredRecord_PassThroughAndMerge(t *testing.T) {
 	}
 }
 
+// TestNewReEnumerationAnchoredRecord_NoSpuriousDupBareKey is the codex P2-3
+// regression: when a SINGLE re-enumeration leg is a merge quantifier collapsing
+// ≥2 tables that share a bare column name (A.ID + B.ID), and no LATER leg carries
+// that bare name, the bare field must be emitted exactly ONCE — not once per
+// duplicate within the leg. The earlier code keyed last-leg-wins on the leg INDEX
+// only, so both A.ID and B.ID fired the bare-emit, producing two "ID" fields that
+// NewRecordConstructorValue renamed to ID + ID_2 — a spurious key the retired
+// opaque merge never produced. Here C has NO ID, so the merge leg is the last (and
+// only) leg with ID; without the fix this yields an "ID_2" field.
+func TestNewReEnumerationAnchoredRecord_NoSpuriousDupBareKey(t *testing.T) {
+	t.Parallel()
+	a := NamedCorrelationIdentifier("A")
+	b := NamedCorrelationIdentifier("B")
+	c := NamedCorrelationIdentifier("C")
+	m := NamedCorrelationIdentifier(`$m"1`)
+	// Parent: A and B share bare "ID"; C does NOT carry ID (only CX).
+	parent := NewAnchoredJoinRecord([]AnchoredJoinLeg{
+		{Alias: a, Columns: []Field{{Name: "ID", FieldType: UnknownType}, {Name: "AX", FieldType: UnknownType}}},
+		{Alias: b, Columns: []Field{{Name: "ID", FieldType: UnknownType}, {Name: "BX", FieldType: UnknownType}}},
+		{Alias: c, Columns: []Field{{Name: "CX", FieldType: UnknownType}}},
+	})
+	// $m collapses {A,B} (both ID); C is a pass-through with no ID.
+	rc := NewReEnumerationAnchoredRecord(parent, []ReEnumerationLeg{
+		{Alias: m, Sources: []CorrelationIdentifier{a, b}},
+		{Alias: c, Sources: []CorrelationIdentifier{c}},
+	})
+	if rc == nil {
+		t.Fatal("re-enumeration must anchor, got nil")
+	}
+	bareID := 0
+	for _, f := range rc.Fields {
+		if strings.HasSuffix(f.Name, "_2") || strings.HasSuffix(f.Name, "_3") {
+			t.Errorf("spurious dedup-suffixed key %q — a duplicate bare column was emitted twice within one merge leg", f.Name)
+		}
+		if f.Name == "ID" {
+			bareID++
+		}
+	}
+	if bareID != 1 {
+		t.Errorf("bare ID must be emitted exactly once (last-occurrence-wins), got %d", bareID)
+	}
+}
+
 // TestNewReEnumerationAnchoredRecord_NilOnMissingColumns pins that the
 // re-enumeration returns nil when the parent does not carry a leg's source
 // columns or is not anchored (RFC-077 7.6). In production this is unreachable

@@ -267,8 +267,6 @@ func NewReEnumerationAnchoredRecord(parent *RecordConstructorValue, legs []ReEnu
 		cols  []reEnumColumn
 	}
 	resolved := make([]legCols, 0, len(legs))
-	// lastBareLeg: the LAST leg index carrying each bare column name (last-leg-wins).
-	lastBareLeg := make(map[string]int)
 	for _, leg := range legs {
 		passThroughTable := len(leg.Sources) == 1 && leg.Sources[0] == leg.Alias &&
 			allPrefixedBy(byQ[leg.Alias], leg.Alias.Name())
@@ -297,24 +295,37 @@ func NewReEnumerationAnchoredRecord(parent *RecordConstructorValue, legs []ReEnu
 				cols = append(cols, reEnumColumn{srcTable: srcTable, bareCol: bareCol, rowKey: rowKey, fieldType: c.FieldType})
 			}
 		}
-		li := len(resolved)
-		for _, c := range cols {
-			lastBareLeg[strings.ToUpper(c.bareCol)] = li
-		}
 		resolved = append(resolved, legCols{alias: leg.Alias, cols: cols})
+	}
+
+	// Last OCCURRENCE (leg index, column index within the leg) of each bare column
+	// name across ALL legs. The bare field is emitted exactly once, at that
+	// occurrence — last-occurrence-wins, matching the retired merge's last-table-wins
+	// Evaluate. Keying on the leg index alone (an earlier cut) emitted the bare field
+	// once PER duplicate within a single merge leg: a merge quantifier collapsing two
+	// tables that share a bare name (A.ID + B.ID) produced two "ID" fields, which
+	// NewRecordConstructorValue renamed to ID + ID_2 — a spurious key the merge never
+	// produced.
+	type bareOcc struct{ li, ci int }
+	lastBareOcc := make(map[string]bareOcc)
+	for li, lc := range resolved {
+		for ci, c := range lc.cols {
+			lastBareOcc[strings.ToUpper(c.bareCol)] = bareOcc{li, ci}
+		}
 	}
 
 	var fields []RecordConstructorField
 	for li, lc := range resolved {
 		qov := NewQuantifiedObjectValue(lc.alias)
-		for _, c := range lc.cols {
+		for ci, c := range lc.cols {
 			// Source-table-qualified field — always present, always unambiguous.
 			fields = append(fields, RecordConstructorField{
 				Name:  strings.ToUpper(c.srcTable) + "." + strings.ToUpper(c.bareCol),
 				Value: NewFieldValue(qov, c.rowKey, c.fieldType),
 			})
-			// Bare field — last-leg-wins, reading the leg row's BARE key.
-			if lastBareLeg[strings.ToUpper(c.bareCol)] == li {
+			// Bare field — emitted exactly once, at the LAST occurrence of this bare
+			// name across all legs (last-occurrence-wins), reading the leg row's BARE key.
+			if o := lastBareOcc[strings.ToUpper(c.bareCol)]; o.li == li && o.ci == ci {
 				fields = append(fields, RecordConstructorField{
 					Name:  strings.ToUpper(c.bareCol),
 					Value: NewFieldValue(qov, c.bareCol, c.fieldType),
