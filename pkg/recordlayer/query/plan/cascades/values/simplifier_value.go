@@ -442,7 +442,10 @@ func simplifyChildrenWithContext(v Value, ctx ValueSimplifyContext) Value {
 		if !anyChanged {
 			return v
 		}
-		return &RecordConstructorValue{Fields: newFields}
+		// Preserve the AnchoredJoin marker (RFC-077 7.6) — a simplified anchored
+		// join result is still a join result; dropping it would un-hide the leg
+		// QOVs from GetCorrelatedToOfValue.
+		return &RecordConstructorValue{Fields: newFields, AnchoredJoin: x.AnchoredJoin}
 	}
 	return v
 }
@@ -528,7 +531,11 @@ func liftConstructor(v Value) Value {
 			lifted = append(lifted, f)
 		}
 	}
-	return &RecordConstructorValue{Fields: lifted}
+	// Preserve the AnchoredJoin marker (RFC-077 7.6). liftConstructor only fires
+	// on an RC with nested-RC fields, which an anchored join result never has (its
+	// fields are FieldValues), so this is defensive — but it keeps the "preserved
+	// through every reconstruction" invariant honest.
+	return &RecordConstructorValue{Fields: lifted, AnchoredJoin: outer.AnchoredJoin}
 }
 
 func containsAll(set map[CorrelationIdentifier]struct{}, subset map[CorrelationIdentifier]struct{}) bool {

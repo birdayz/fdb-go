@@ -2108,7 +2108,8 @@ type RecordConstructorValue struct {
 	// its correlations are real and must be reported. The flag is the honest
 	// structural marker that "this RC is a join result, not a user projection",
 	// NOT a downstream-observable heuristic — and it is PRESERVED through every
-	// Value reconstruction (WithChildren, Replace, RebaseValue) so the hiding
+	// Value reconstruction (WithChildren, Replace, RebaseValue, and the value
+	// simplifier's RecordConstructor/liftConstructor rebuilds) so the hiding
 	// survives SelectMergeRule's flatten-time substitution of nested join legs.
 	AnchoredJoin bool
 }

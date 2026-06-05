@@ -29,10 +29,11 @@ type AnchoredJoinLeg struct {
 //     so for a duplicated bare name only the LAST leg's column gets the bare field (the earlier
 //     legs are still reachable by their qualified ALIAS.COL). Emitting bare-only-when-unique
 //     instead (an earlier cut) dropped the bare key for duplicated columns, which broke 3+-way
-//     joins with 0 rows: a quantifier OVER an inner join reuses the inner right leg's alias
-//     (sourceAlias(join) = right-leg alias), so a qualified predicate FieldValue(QOV(rightLeg),
-//     COL) reads the join's merged row by the bare COL key — present here, last-leg-wins = the
-//     right leg, which is exactly the source the predicate means.
+//     joins with 0 rows: by INVARIANT (sourceAlias(LogicalJoin)=sourceAlias(o.Right),
+//     cascades_translator.go), a quantifier OVER an inner join is aliased to its right leg, so a
+//     qualified predicate FieldValue(QOV(rightLeg), COL) reads the join's merged row by the bare
+//     COL key. last-leg-wins = the right leg = QOV(rightLeg)'s alias, so the bare key resolves to
+//     exactly the source the predicate means — by construction, not coincidence.
 //
 // The field VALUE always carries the original (non-upper-cased) column name so the leg's
 // QuantifiedObjectValue field access matches the source row's key.

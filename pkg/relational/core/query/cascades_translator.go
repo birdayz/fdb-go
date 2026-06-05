@@ -170,9 +170,22 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			{Alias: leftAlias, Columns: leftCols},
 			{Alias: rightAlias, Columns: rightCols},
 		})
-		fields := make([]values.Field, len(rc.Fields))
-		for i, f := range rc.Fields {
-			fields[i] = values.Field{Name: f.Name, FieldType: values.UnknownType, Ordinal: i}
+		// A join leg exposes ONLY its already-qualified (DOTTED) columns to a parent
+		// — the SOURCE-ACCURATE per-table forms (O.ID, C.PRICE, …). The anchored RC
+		// ALSO carries bare-last-wins names (its OWN resolution convenience at this
+		// level, for a predicate that reads this join's result row directly), but
+		// those must NOT propagate: a parent would re-qualify a bare name under
+		// sourceAlias(join)=right-leg, colliding with the verbatim dotted key
+		// (NewRecordConstructorValue would suffix it "_2" — a spurious key the
+		// opaque merge never produces, since its Evaluate accumulates into a map
+		// that dedups same-name keys). A buried column is referenced via its dotted
+		// form after PartitionSelectRule rebasing, never bare, so dropping the bare
+		// forms here loses nothing. (RFC-077 7.6; Torvalds nested-parity catch.)
+		var fields []values.Field
+		for _, f := range rc.Fields {
+			if strings.Contains(f.Name, ".") {
+				fields = append(fields, values.Field{Name: f.Name, FieldType: values.UnknownType, Ordinal: len(fields)})
+			}
 		}
 		return fields
 	case *logical.LogicalProject:

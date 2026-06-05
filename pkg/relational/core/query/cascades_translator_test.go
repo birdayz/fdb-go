@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -130,8 +131,11 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 		t.Errorf("limit leg columns %v != scan leg columns %v (limit must preserve shape)", limitCols, scanCols)
 	}
 
-	// (3) Join → identical to NewAnchoredJoinRecord over its legs. Build a 2-way
-	// O ⋈ C and compare legColumns(join) field names to the RC's field names.
+	// (3) Join → the DOTTED (source-accurate) subset of NewAnchoredJoinRecord's
+	// fields. A join leg propagates ONLY its already-qualified per-table columns
+	// (O.ID, C.PRICE, …) to a parent — NOT the bare-last-wins names (those are the
+	// join's own result-value resolution convenience; propagating them would make a
+	// parent re-qualify them into spurious "_2" keys, Torvalds' nested-parity catch).
 	join := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
 	joinLegCols := tr.legColumns(join)
 	wantRC := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
@@ -139,27 +143,28 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 		{Alias: values.NamedCorrelationIdentifier("C"), Columns: tr.legColumns(logical.NewScan("Customer", "C"))},
 	})
 	gotNames := names(joinLegCols)
-	wantNames := map[string]bool{}
+	// Expected = exactly the DOTTED fields of the RC.
+	wantDotted := map[string]bool{}
 	for _, f := range wantRC.Fields {
-		wantNames[f.Name] = true
+		if strings.Contains(f.Name, ".") {
+			wantDotted[f.Name] = true
+		}
 	}
-	for k := range wantNames {
+	for k := range wantDotted {
 		if !gotNames[k] {
-			t.Errorf("join legColumns missing RC field %q; got %v", k, gotNames)
+			t.Errorf("join legColumns missing dotted RC field %q; got %v", k, gotNames)
 		}
 	}
 	for k := range gotNames {
-		if !wantNames[k] {
-			t.Errorf("join legColumns has %q not in the RC; got %v want %v", k, gotNames, wantNames)
+		if !wantDotted[k] {
+			t.Errorf("join legColumns has %q which is not a dotted RC field; got %v want %v", k, gotNames, wantDotted)
 		}
 	}
-	// The shared duplicate bare name PRICE is exposed BOTH qualified (O.PRICE,
-	// C.PRICE) AND bare (last-leg-wins = C's), matching NewAnchoredJoinRecord and
-	// the opaque merge's Evaluate key set (the bare-dup key is load-bearing: a
-	// quantifier over a join reuses the right-leg alias, so a qualified predicate
-	// reads the merged row by the bare key).
-	if !gotNames["PRICE"] {
-		t.Errorf("join legColumns must expose bare PRICE (last-leg-wins, parity with the merge); got %v", gotNames)
+	// The shared duplicate PRICE is exposed ONLY qualified (O.PRICE, C.PRICE) — NO
+	// bare PRICE propagates (the bare-last-wins lives in the join's own result value,
+	// not in what it exposes to a parent).
+	if gotNames["PRICE"] {
+		t.Errorf("join legColumns must NOT propagate bare PRICE (dotted-only); got %v", gotNames)
 	}
 	if !gotNames["O.PRICE"] || !gotNames["C.PRICE"] {
 		t.Errorf("join legColumns must expose qualified O.PRICE and C.PRICE; got %v", gotNames)
@@ -188,6 +193,44 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 	// falls back to the opaque merge.
 	if (&cascadesTranslator{}).legColumns(logical.NewScan("Order", "O")) != nil {
 		t.Error("nil-md leg columns must be nil (fall back to opaque seed)")
+	}
+}
+
+// TestBuildJoinResultValue_NestedNoSpuriousKeys pins Torvalds' nested-parity catch
+// (RFC-077 7.6): a 3-way nested-join seed's anchored RC must carry only
+// SOURCE-ACCURATE keys and NO dedup-suffixed "_2" garbage. Before the
+// dotted-only legColumns fix, a sub-join leg's bare columns were re-qualified
+// under sourceAlias(inner)=right-leg, colliding with the inner's verbatim dotted
+// keys, so NewRecordConstructorValue suffixed "C.PRICE_2" etc. — spurious keys the
+// opaque merge never produces.
+func TestBuildJoinResultValue_NestedNoSpuriousKeys(t *testing.T) {
+	t.Parallel()
+	tr := &cascadesTranslator{md: demoMetaData(t)}
+
+	// 3-way: (Order O ⋈ Customer C) ⋈ TypedRecord TR. O and C share PRICE.
+	inner := logical.NewJoin(logical.NewScan("Order", "O"), logical.NewScan("Customer", "C"), logical.JoinInner, "")
+	outer := logical.NewJoin(inner, logical.NewScan("TypedRecord", "TR"), logical.JoinInner, "")
+
+	rv := tr.buildJoinResultValue(outer.Left, outer.Right, sourceAlias(outer.Left), sourceAlias(outer.Right))
+	rc, ok := rv.(*values.RecordConstructorValue)
+	if !ok {
+		t.Fatalf("3-way seed result value = %T, want anchored *RecordConstructorValue", rv)
+	}
+
+	for _, f := range rc.Fields {
+		if strings.Contains(f.Name, "_2") || strings.HasSuffix(f.Name, "_3") {
+			t.Errorf("spurious dedup-suffixed key %q (nested-parity bug — a bare leg name was re-qualified into an existing dotted key)", f.Name)
+		}
+	}
+	// The inner join's source-accurate dotted keys propagate verbatim.
+	got := map[string]bool{}
+	for _, f := range rc.Fields {
+		got[f.Name] = true
+	}
+	for _, want := range []string{"O.PRICE", "C.PRICE", "O.ORDER_ID", "C.CUSTOMER_ID"} {
+		if !got[want] {
+			t.Errorf("3-way seed missing source-accurate dotted key %q; got %v", want, got)
+		}
 	}
 }
 
