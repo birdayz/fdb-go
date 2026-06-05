@@ -974,62 +974,9 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		}
 	}
 	if hasOutExpr {
-		var allProj []string
-		var allAliases []string
-		var allAntlr []antlrgen.IExpressionContext
-		hasAlias := false
-		for _, ac := range cls.aggCols {
-			if !ac.visible {
-				continue
-			}
-			alias := ""
-			if ac.outExpr != nil && ac.aggFunc == "" {
-				canonical := canonicalTextOf(ac.outExpr)
-				allProj = append(allProj, canonical)
-				allAntlr = append(allAntlr, ac.outExpr)
-				if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
-					alias = ac.outName
-					hasAlias = true
-				}
-			} else if ac.aggFunc != "" {
-				arg := ac.aggArg
-				if arg == "" && ac.aggExpr != nil {
-					arg = canonicalTextOf(ac.aggExpr)
-				}
-				if arg == "" {
-					arg = "*"
-				}
-				arg = strip(arg)
-				canonical := ac.aggFunc + "(" + arg + ")"
-				allProj = append(allProj, canonical)
-				allAntlr = append(allAntlr, nil)
-				if ac.outName != "" && !strings.EqualFold(ac.outName, canonical) {
-					alias = ac.outName
-					hasAlias = true
-				}
-			} else if ac.groupCol != "" {
-				allProj = append(allProj, strip(ac.groupCol))
-				allAntlr = append(allAntlr, nil)
-				if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
-					alias = ac.outName
-					hasAlias = true
-				}
-			}
-			allAliases = append(allAliases, alias)
-		}
-		if len(allProj) > 0 {
-			var aliases []string
-			if hasAlias {
-				aliases = allAliases
-			}
-			proj := logical.NewProject(op, allProj, aliases)
-			computed := make([]bool, len(allProj))
-			for i, e := range allAntlr {
-				computed[i] = e != nil
-			}
-			proj.IsComputed = computed
+		if proj, antlr := buildPostAggregateProjection(op, cls.aggCols, strip); proj != nil {
 			op = proj
-			cls.postAggExprs = allAntlr
+			cls.postAggExprs = antlr
 		}
 	} else if len(keys) > 0 {
 		hasNonVisible := false
