@@ -1196,6 +1196,14 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
 
+		// EXISTS is lowered to a conjunctive semi-join; under an OR that loses
+		// the disjunction and silently returns empty. Reject rather than
+		// return wrong rows (RFC-082; inline-EXISTS-under-OR is future work).
+		if existsUnderDisjunction(pred) {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"EXISTS within an OR (disjunction) is not supported")
+		}
+
 		// Semi-join optimization: when the filter sits on a cross-join
 		// and a correlated EXISTS references the same table as the
 		// join's right side with the same equi-join column pair, the
@@ -1698,6 +1706,37 @@ func stripNonExistsPredicates(p predicates.QueryPredicate) predicates.QueryPredi
 		}
 	}
 	return nil
+}
+
+// existsUnderDisjunction reports whether an EXISTS / NOT EXISTS predicate is
+// reachable through an OR in the predicate tree. Go lowers EXISTS predicates to
+// conjunctive semi-joins (FlatMap), which is only correct under AND. Under an
+// OR the EXISTS must instead be evaluated as an inline boolean (P OR EXISTS(Q)
+// is true when P is true OR Q matches) — not yet supported. Callers reject with
+// a clear error rather than returning wrong rows: the split helpers
+// (stripNonExistsPredicates / splitNonExistsPredicatesFromWalked) only recurse
+// through AND, so an EXISTS under OR is silently mis-extracted into an
+// unconditional semi-join and the disjunction is lost (returns empty).
+func existsUnderDisjunction(p predicates.QueryPredicate) bool {
+	return existsReachableUnderOr(p, false)
+}
+
+func existsReachableUnderOr(p predicates.QueryPredicate, underOr bool) bool {
+	if p == nil {
+		return false
+	}
+	if _, ok := p.(*predicates.ExistsPredicate); ok {
+		return underOr
+	}
+	if _, ok := p.(*predicates.OrPredicate); ok {
+		underOr = true
+	}
+	for _, ch := range p.Children() {
+		if existsReachableUnderOr(ch, underOr) {
+			return true
+		}
+	}
+	return false
 }
 
 func upgradeFirstFilterExistsSubqueries(op logical.LogicalOperator, subqueries []logical.ExistsSubquery) bool {

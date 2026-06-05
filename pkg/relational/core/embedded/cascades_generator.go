@@ -928,7 +928,7 @@ func (r *paginatingRows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf((*string)(nil)).Elem()
 	case "BOOLEAN":
 		return reflect.TypeOf((*bool)(nil)).Elem()
-	case "BYTES":
+	case "BYTES", "BINARY":
 		return reflect.TypeOf((*[]byte)(nil)).Elem()
 	case "DATE", "TIMESTAMP":
 		return reflect.TypeOf((*time.Time)(nil)).Elem()
@@ -946,7 +946,7 @@ func (r *paginatingRows) ColumnTypeNullable(index int) (nullable, ok bool) {
 
 func (r *paginatingRows) ColumnTypeLength(index int) (length int64, ok bool) {
 	switch r.ColumnTypeDatabaseTypeName(index) {
-	case "STRING", "BYTES":
+	case "STRING", "BYTES", "BINARY":
 		return math.MaxInt64, true
 	case "DATE":
 		return 10, true
@@ -1805,6 +1805,23 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if label != "" {
 			colName = label
 		}
+		// Display label — what ResultSetMetaData.getColumnLabel returns and
+		// what database/sql Rows.Columns() surfaces to the caller. For an
+		// unaliased field reference this is the UNQUALIFIED field name,
+		// matching Java: `SELECT u.name` over a join yields column NAME, not
+		// U.NAME. The datum key (colName/Name) stays qualified — a join
+		// projects same-named columns from different legs and the qualifier
+		// disambiguates the lookup — but the qualifier must never leak into
+		// the user-visible metadata.
+		displayLabel := label
+		if label == "" {
+			if fv, isField := v.(*values.FieldValue); isField && fv.Field != "" {
+				// fv.Field is qualified ("U.NAME") for a join projection but
+				// bare ("NAME") for a single source; the user-visible label is
+				// always the bare column, matching Java.
+				displayLabel = strings.ToUpper(parseColRef(fv.Field).bare())
+			}
+		}
 		nullable := api.ColumnNullable
 		if colDesc != nil {
 			if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
@@ -1813,7 +1830,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		}
 		cols[i] = executor.ColumnDef{
 			Name:     colName,
-			Label:    label,
+			Label:    displayLabel,
 			TypeName: typeName,
 			Nullable: nullable,
 		}
@@ -1944,6 +1961,14 @@ func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAli
 	for _, c := range firstCols {
 		qual := c
 		if firstAlias != "" && !parseColRef(c.Name).isQualified() {
+			// Name carries the FROM-alias qualifier so same-named columns
+			// across legs stay distinct as datum-map keys; the display Label
+			// stays the UNQUALIFIED column name to match Java — `SELECT *`
+			// over a join yields bare column names (with duplicates), never
+			// U.NAME (verified against fdb-relational 4.11.1.0).
+			if qual.Label == "" {
+				qual.Label = strings.ToUpper(c.Name)
+			}
 			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
@@ -1951,6 +1976,9 @@ func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAli
 	for _, c := range secondCols {
 		qual := c
 		if secondAlias != "" && !parseColRef(c.Name).isQualified() {
+			if qual.Label == "" {
+				qual.Label = strings.ToUpper(c.Name)
+			}
 			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
 		}
 		cols = append(cols, qual)
@@ -2046,6 +2074,15 @@ func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageD
 // string-parsing the ExplainValue output. For plain field references,
 // it falls through and returns "".
 func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
+	// Arithmetic result type is the numeric promotion of its operand types.
+	// The operand FieldValues aren't type-bound at projection time, so resolve
+	// them against the record descriptor here rather than via Value.Type()
+	// (which defaults to BIGINT for unbound operands).
+	if arith, ok := v.(*values.ArithmeticValue); ok {
+		if n := arithTypeNameViaDesc(arith, desc); n != "" {
+			return n
+		}
+	}
 	if av, ok := v.(*values.AggregateValue); ok {
 		switch av.Op {
 		case values.AggCount, values.AggCountStar:
@@ -2087,10 +2124,74 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 	return ""
 }
 
+// arithTypeNameViaDesc resolves an arithmetic value's result type NAME by
+// numeric promotion (DOUBLE > FLOAT > BIGINT > INTEGER) of its operand type
+// names, resolving FieldValue operands against the record descriptor. Returns
+// "" when no operand type can be resolved (caller falls back).
+func arithTypeNameViaDesc(a *values.ArithmeticValue, desc protoreflect.MessageDescriptor) string {
+	return widerNumericTypeName(
+		operandTypeNameViaDesc(a.Left, desc),
+		operandTypeNameViaDesc(a.Right, desc),
+	)
+}
+
+func operandTypeNameViaDesc(v values.Value, desc protoreflect.MessageDescriptor) string {
+	switch t := v.(type) {
+	case *values.FieldValue:
+		if desc != nil {
+			if n := protoFieldTypeName(desc, t.Field); n != "UNKNOWN" {
+				return n
+			}
+		}
+		// The operand may belong to a different join leg than `desc` (the
+		// caller only threads the first leaf descriptor). Fall back to the
+		// value's own semantic type rather than dropping it from the
+		// numeric promotion (codex P2).
+		return valueTypeName(v, desc)
+	case *values.ArithmeticValue:
+		return arithTypeNameViaDesc(t, desc)
+	default:
+		return valueTypeName(v, desc)
+	}
+}
+
+// widerNumericTypeName returns the wider of two numeric SQL type names, or ""
+// when neither is a recognised numeric type.
+func widerNumericTypeName(a, b string) string {
+	rank := func(s string) int {
+		switch s {
+		case "DOUBLE":
+			return 4
+		case "FLOAT":
+			return 3
+		case "BIGINT":
+			return 2
+		case "INTEGER":
+			return 1
+		}
+		return 0
+	}
+	ra, rb := rank(a), rank(b)
+	if ra == 0 && rb == 0 {
+		return ""
+	}
+	if ra >= rb {
+		return a
+	}
+	return b
+}
+
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
 	fields := desc.Fields()
 	fd := fields.ByName(protoreflect.Name(parseColRef(name).bare()))
 	if fd != nil {
+		// UUID columns are stored as the tuple_fields.UUID message and reported
+		// as JDBC's catch-all OTHER type name (matches Java's java.sql.Types.OTHER).
+		if fd.Kind() == protoreflect.MessageKind {
+			if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
+				return "OTHER"
+			}
+		}
 		return protoKindToTypeName(fd.Kind())
 	}
 	return "UNKNOWN"
@@ -2111,7 +2212,9 @@ func protoKindToTypeName(k protoreflect.Kind) string {
 	case protoreflect.StringKind:
 		return "STRING"
 	case protoreflect.BytesKind:
-		return "BYTES"
+		// JDBC type name for SQL binary columns is BINARY (matches Java
+		// fdb-relational). The DDL keyword stays "BYTES".
+		return "BINARY"
 	default:
 		return "UNKNOWN"
 	}
@@ -2163,7 +2266,7 @@ func (r *cascadesRows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf((*string)(nil)).Elem()
 	case "BOOLEAN":
 		return reflect.TypeOf((*bool)(nil)).Elem()
-	case "BYTES":
+	case "BYTES", "BINARY":
 		return reflect.TypeOf((*[]byte)(nil)).Elem()
 	case "DATE", "TIMESTAMP":
 		return reflect.TypeOf((*time.Time)(nil)).Elem()
@@ -2184,7 +2287,7 @@ func (r *cascadesRows) ColumnTypeNullable(index int) (nullable, ok bool) {
 func (r *cascadesRows) ColumnTypeLength(index int) (length int64, ok bool) {
 	typeName := r.ColumnTypeDatabaseTypeName(index)
 	switch typeName {
-	case "STRING", "BYTES":
+	case "STRING", "BYTES", "BINARY":
 		return math.MaxInt64, true
 	case "DATE":
 		return 10, true // "2006-01-02"

@@ -254,6 +254,10 @@ var _ = Describe("RunSql Harness", func() {
 		// expected behaviour Go must match. No per-entry expected-text
 		// annotation — drift on either side surfaces immediately.
 		corpus := plandiff.SeedRunCorpus()
+		// Apply RFC-082 cross-engine divergence annotations (Go-only extensions,
+		// tracked Go capability gaps, and both-reject message-drift) so the
+		// harness asserts Go's documented behaviour without pinning Java's.
+		plandiff.ApplyRFC082Divergences(corpus)
 		for _, rq := range corpus {
 			rq := rq
 			By(rq.Name, func() {
@@ -377,8 +381,15 @@ var _ = Describe("RunSql Harness", func() {
 				// Java succeeded → Go must succeed with byte-equal rows.
 				Expect(goResult.Err).NotTo(HaveOccurred(),
 					"corpus entry %q: Java succeeded but Go errored", rq.Name)
-				Expect(goResult.Rows.Columns).To(Equal(javaResult.Rows.Columns),
-					"corpus entry %q: column metadata diverged between Java and Go", rq.Name)
+				// Column metadata must conform: arity + per-column TYPE match
+				// exactly; column NAME matches except where Java assigned a
+				// synthetic anonymous label (_0, _1, ...), where Go's
+				// descriptive label is an allowed read-side improvement
+				// (plandiff.ConformColumns). Never suppresses a type or
+				// named-column mismatch — see RFC-082.
+				if detail, ok := plandiff.ConformColumns(goResult.Rows.Columns, javaResult.Rows.Columns); !ok {
+					Fail(fmt.Sprintf("corpus entry %q: column metadata diverged between Java and Go: %s", rq.Name, detail))
+				}
 				Expect(goResult.Rows.Rows).To(Equal(javaResult.Rows.Rows),
 					"corpus entry %q: row data diverged between Java and Go", rq.Name)
 			})

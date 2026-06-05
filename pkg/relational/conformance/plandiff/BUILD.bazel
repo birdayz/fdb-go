@@ -3,7 +3,9 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "plandiff",
     srcs = [
+        "column_conform.go",
         "corpus.go",
+        "corpus_rfc082_divergences.go",
         "divergence.go",
         "go_runner.go",
         "httpclient.go",
@@ -24,6 +26,7 @@ go_test(
     name = "plandiff_test",
     srcs = [
         "catalog_aware_test.go",
+        "column_conform_test.go",
         "go_runner_test.go",
         "in_list_dedup_regression_test.go",
         "join_projection_coltype_regression_test.go",

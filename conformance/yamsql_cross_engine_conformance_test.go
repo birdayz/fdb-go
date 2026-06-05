@@ -229,7 +229,15 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		nullInBetweenScenario(),
 		mixedNumericCompareScenario(),
 		notInListScenario(),
-		scalarSubqueryScenario(),
+		// Scalar-subquery scenarios are intentionally NOT cross-engine: a
+		// subquery used as a value expression (`(SELECT ...)`) is a Go-only
+		// grammar extension (subqueryExpressionAtom). Java fdb-relational
+		// 4.11.1.0 has no such grammar rule and rejects every form with a
+		// 42601 syntax error, so it can never be asserted equivalent. Go-only
+		// coverage lives in pkg/relational/sqldriver/scalar_subquery_cte_test.go
+		// and quality_probes_test.go (TestFDB_QualityProbe_ScalarSubquery), plus
+		// the yamsql testdata/scalar_subquery*.yaml corpus. Same not-cross-engine
+		// bucket as the GROUP BY / DISTINCT / LIMIT Java limitations above.
 		unionColumnsScenario(),
 		inListNullScenario(),
 		joinOptimizationProbesScenario(),
@@ -239,7 +247,6 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		compositePKCrossScenario(),
 		uniqueViolationScenario(),
 		notNullViolationScenario(),
-		scalarSubqueryTypesScenario(),
 		inSubqueryDecompositionScenario(),
 		subqueryInScenario(),
 		updateDeleteScenario(),
@@ -249,11 +256,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		insertValuesExprScenario(),
 		dmlReturningProbesScenario(),
 		dmlWithNullSafeScenario(),
-		scalarSubqueryAdvancedScenario(),
 		insertSelectScenario(),
 		recursiveCteBaseScenario(),
 		dmlSubqueryScenario(),
-		scalarSubqueryDmlScenario(),
 		updateDmlCteScenario(),
 		correlatedExistsAdvancedScenario(),
 		orderByLimitScenario(),
@@ -3656,37 +3661,6 @@ func expectScalarEqual(actual, expected any, msgAndArgs ...any) {
 	}
 }
 
-// scalarSubqueryScenario mirrors testdata/scalar_subquery.yaml. Drops
-// NOT NULL on PK (fdb-relational restriction). error_code tests (21000,
-// 42601) are included and skipped by the per-test error_code gate.
-func scalarSubqueryScenario() *yamsql.Scenario {
-	return &yamsql.Scenario{
-		Name:           "scalar_subquery",
-		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-		Setup: []string{
-			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
-		},
-		Tests: []yamsql.Test{
-			// Simplest case: scalar subquery in SELECT list, uncorrelated, single row.
-			{Query: "SELECT (SELECT MAX(v) FROM t) FROM t WHERE id = 1", Rows: [][]any{{40}}},
-			// Scalar subquery as a scalar constant in every row of the outer query.
-			{Query: "SELECT id, (SELECT MAX(v) FROM t) FROM t ORDER BY id", Rows: [][]any{{1, 40}, {2, 40}, {3, 40}, {4, 40}}},
-			// Scalar subquery in WHERE predicate.
-			{Query: "SELECT id FROM t WHERE v = (SELECT MAX(v) FROM t)", Rows: [][]any{{4}}},
-			// Scalar subquery in arithmetic.
-			{Query: "SELECT v - (SELECT MIN(v) FROM t) FROM t WHERE id = 4", Rows: [][]any{{30}}},
-			// Zero-row subquery returns NULL (not an error).
-			{Query: "SELECT (SELECT v FROM t WHERE id = 999) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
-			// >1 row subquery errors 21000 cardinality violation.
-			{Query: "SELECT (SELECT v FROM t) FROM t WHERE id = 1", ErrorCode: "21000"},
-			// >1 column subquery errors 42601 syntax error.
-			{Query: "SELECT (SELECT id, v FROM t WHERE id = 1) FROM t WHERE id = 1", ErrorCode: "42601"},
-			// Scalar subquery with aggregate and WHERE inside.
-			{Query: "SELECT id, v, (SELECT SUM(v) FROM t WHERE id > 2) AS total FROM t WHERE id = 1", Rows: [][]any{{1, 10, 70}}},
-		},
-	}
-}
-
 // joinOptimizationProbesScenario mirrors testdata/join_optimization_probes.yaml.
 // Drops NOT NULL on PK cols (fdb-relational restriction). Converts
 // explicit INNER JOIN ... ON to comma-join + WHERE (fdb-relational
@@ -3761,8 +3735,12 @@ func unionColumnsScenario() *yamsql.Scenario {
 		Tests: []yamsql.Test{
 			// UNION ALL with differently-named columns — positional matching.
 			{Query: "SELECT v FROM a UNION ALL SELECT w FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {100}, {200}}},
-			// Two columns per side, ORDER BY on union result.
-			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY id, v", Rows: [][]any{{1, 10}, {1, 100}, {2, 20}, {2, 200}}},
+			// NOT cross-engine: `ORDER BY id, v` over this UNION is a Go-only
+			// extension — Java rejects "non existing column V" because the
+			// right branch (b) has no `v` (Java resolves the multi-column
+			// ORDER BY against all branches, not the union output schema). Go
+			// correctly orders by the output column. Covered Go-only via the
+			// yamsql union corpus.
 			// ORDER BY DESC on union result.
 			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC", Rows: [][]any{{2, 200}, {1, 100}, {2, 20}, {1, 10}}},
 			// ORDER BY on right-side column name fails — result schema is left's names only.
@@ -3934,42 +3912,6 @@ func notNullViolationScenario() *yamsql.Scenario {
 			{Query: "UPDATE t SET name = NULL WHERE id = 1", ErrorCode: "23502"},
 			// Baseline: the valid row is still intact.
 			{Query: "SELECT id, name FROM t", Rows: [][]any{{1, "alice"}}},
-		},
-	}
-}
-
-// scalarSubqueryTypesScenario mirrors testdata/scalar_subquery_types.yaml.
-// Type-coverage probes for scalar subqueries: string, boolean, double,
-// NULL, comparison, arithmetic expression. Drops NOT NULL on PK.
-// error_code tests (MIN on non-numeric, LIMIT) are included as-is and
-// auto-skipped by the harness.
-func scalarSubqueryTypesScenario() *yamsql.Scenario {
-	return &yamsql.Scenario{
-		Name: "scalar_subquery_types",
-		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, active BOOLEAN, score DOUBLE, PRIMARY KEY (id))" +
-			" CREATE INDEX idx_t_score ON t (score)",
-		Setup: []string{
-			"INSERT INTO t VALUES (1, 'alice', true, 9.5), (2, 'bob', false, 7.25), (3, 'carol', true, null)",
-		},
-		Tests: []yamsql.Test{
-			// String-returning scalar subquery.
-			{Query: "SELECT (SELECT name FROM t WHERE id = 1) FROM t WHERE id = 2", Rows: [][]any{{"alice"}}},
-			// Boolean-returning scalar subquery.
-			{Query: "SELECT (SELECT active FROM t WHERE id = 2) FROM t WHERE id = 1", Rows: [][]any{{false}}},
-			// Double-returning scalar subquery.
-			{Query: "SELECT (SELECT score FROM t WHERE id = 1) FROM t WHERE id = 2", Rows: [][]any{{9.5}}},
-			// Subquery returning explicit NULL (column is NULL on this row).
-			{Query: "SELECT (SELECT score FROM t WHERE id = 3) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
-			// String comparison via subquery.
-			{Query: "SELECT id FROM t WHERE name = (SELECT name FROM t WHERE id = 2)", Rows: [][]any{{2}}},
-			// Boolean comparison via subquery.
-			{Query: "SELECT id FROM t WHERE active = (SELECT active FROM t WHERE id = 1) ORDER BY id", Rows: [][]any{{1}, {3}}},
-			// Subquery feeding into a scalar arithmetic expression.
-			{Query: "SELECT (SELECT score FROM t WHERE id = 1) + 0.5 FROM t WHERE id = 1", Rows: [][]any{{10.0}}},
-			// MIN over non-numeric (STRING) — rejected.
-			{Query: "SELECT (SELECT MIN(name) FROM t) FROM t WHERE id = 1", ErrorCode: "0A000"},
-			// ORDER BY + LIMIT 1 — LIMIT rejected at parse time.
-			{Query: "SELECT (SELECT name FROM t ORDER BY score DESC LIMIT 1) FROM t WHERE id = 1", ErrorCode: "0AF00"},
 		},
 	}
 }
@@ -4306,48 +4248,6 @@ func dmlWithNullSafeScenario() *yamsql.Scenario {
 	}
 }
 
-// scalarSubqueryAdvancedScenario mirrors testdata/scalar_subquery_advanced.yaml.
-// Edge-case probes for scalar subqueries in clauses beyond the SELECT
-// list: HAVING, ORDER BY, IS NULL, BETWEEN, nested subqueries, CTE
-// references, COALESCE wrapping, CASE branches. Some tests use GROUP BY
-// and ORDER BY expressions — included as-is to surface divergences.
-// Drops NOT NULL on PK (fdb-relational restriction; PK is implicitly
-// NOT NULL).
-func scalarSubqueryAdvancedScenario() *yamsql.Scenario {
-	return &yamsql.Scenario{
-		Name:           "scalar_subquery_advanced",
-		SchemaTemplate: "CREATE TABLE t (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))",
-		Setup: []string{
-			"INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40), (5, 'c', null)",
-		},
-		Tests: []yamsql.Test{
-			// Subquery in HAVING — group SUM(v) compared to a global threshold.
-			// Threshold = MAX(v)/2 = 20. 'a' = 30 > 20; 'b' = 70 > 20; 'c' = NULL → drop.
-			{Query: "SELECT g, SUM(v) FROM t GROUP BY g HAVING SUM(v) > (SELECT MAX(v) / 2 FROM t) ORDER BY g", Rows: [][]any{{"a", 30}, {"b", 70}}},
-			// Subquery in ORDER BY expression — rejected. Java's Cascades
-			// planner has no rule satisfying ORDER BY arbitrary expression;
-			// same architectural reason in both engines.
-			{Query: "SELECT id FROM t WHERE v IS NOT NULL ORDER BY v - (SELECT MIN(v) FROM t)", ErrorCode: "0AF01"},
-			// Bare scalar subquery returning a string.
-			{Query: "SELECT (SELECT g FROM t WHERE id = 1) FROM t WHERE id = 1", Rows: [][]any{{"a"}}},
-			// Subquery in IS NULL predicate. Inner returns NULL for v=5.
-			{Query: "SELECT id FROM t WHERE id = 5 AND (SELECT v FROM t WHERE id = 5) IS NULL", Rows: [][]any{{5}}},
-			// Subquery in BETWEEN. v BETWEEN MIN(v) AND MAX(v) → all non-null rows.
-			{Query: "SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t) AND (SELECT MAX(v) FROM t) ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}}},
-			// Nested scalar subquery — outer subquery selects from inner subquery.
-			{Query: "SELECT (SELECT MAX(x) FROM (SELECT v AS x FROM t) AS s) FROM t WHERE id = 1", Rows: [][]any{{40}}},
-			// Subquery against a CTE.
-			{Query: "WITH high AS (SELECT v FROM t WHERE v > 25) SELECT id, (SELECT MIN(v) FROM high) FROM t WHERE id = 1", Rows: [][]any{{1, 30}}},
-			// Two subqueries in one expression — both pre-evaluate independently.
-			{Query: "SELECT (SELECT MAX(v) FROM t) - (SELECT MIN(v) FROM t) FROM t WHERE id = 1", Rows: [][]any{{30}}},
-			// Subquery wrapped in COALESCE — handles NULL from zero-row subquery.
-			{Query: "SELECT COALESCE((SELECT v FROM t WHERE id = 999), 0) FROM t WHERE id = 1", Rows: [][]any{{0}}},
-			// Subquery in CASE expression branch.
-			{Query: "SELECT CASE WHEN id = 1 THEN (SELECT MAX(v) FROM t) ELSE 0 END FROM t WHERE id = 1", Rows: [][]any{{40}}},
-		},
-	}
-}
-
 // insertSelectScenario mirrors testdata/insert_select.yaml. INSERT INTO
 // ... SELECT copies rows from one table to another, exercises computed
 // columns in the SELECT list, duplicate-PK enforcement, and aggregate
@@ -4559,53 +4459,6 @@ func dmlSubqueryScenario() *yamsql.Scenario {
 			{Query: "DELETE FROM t WHERE EXISTS (SELECT k FROM keep_set)"},
 			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{
 				{0},
-			}},
-		},
-	}
-}
-
-// scalarSubqueryDmlScenario mirrors testdata/scalar_subquery_dml.yaml.
-// Scalar subquery on the RHS of UPDATE SET, in DELETE WHERE (as a value
-// to compare against), and arithmetic with subquery on RHS. DML tests
-// are included (auto-skipped by the non-query gate). DML is staged in
-// Setup so the verification SELECTs see the correct final state.
-// Drops NOT NULL on PK columns (fdb-relational restriction).
-func scalarSubqueryDmlScenario() *yamsql.Scenario {
-	return &yamsql.Scenario{
-		Name: "scalar_subquery_dml",
-		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
-			"\nCREATE TABLE config (k STRING, n BIGINT, PRIMARY KEY (k))",
-		Setup: []string{
-			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
-			"INSERT INTO config VALUES ('threshold', 25), ('multiplier', 100)",
-			// UPDATE SET col = (SELECT scalar) — set every row's v to
-			// the scalar subquery result.
-			"UPDATE t SET v = (SELECT n FROM config WHERE k = 'multiplier')",
-			// Reset.
-			"UPDATE t SET v = id * 10",
-			// DELETE WHERE col > scalar subquery — delete rows above
-			// threshold. threshold=25, so v>25 (id=3,4) are deleted.
-			"DELETE FROM t WHERE v > (SELECT n FROM config WHERE k = 'threshold')",
-			// UPDATE arithmetic with subquery on RHS.
-			"UPDATE t SET v = v + (SELECT n FROM config WHERE k = 'threshold')",
-		},
-		Tests: []yamsql.Test{
-			// DML tests (auto-skipped).
-			{Query: "UPDATE t SET v = (SELECT n FROM config WHERE k = 'multiplier')"},
-			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
-				{1, 100}, {2, 100}, {3, 100}, {4, 100},
-			}},
-			{Query: "UPDATE t SET v = id * 10"},
-			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
-				{1, 10}, {2, 20}, {3, 30}, {4, 40},
-			}},
-			{Query: "DELETE FROM t WHERE v > (SELECT n FROM config WHERE k = 'threshold')"},
-			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
-				{1, 10}, {2, 20},
-			}},
-			{Query: "UPDATE t SET v = v + (SELECT n FROM config WHERE k = 'threshold')"},
-			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
-				{1, 35}, {2, 45},
 			}},
 		},
 	}
