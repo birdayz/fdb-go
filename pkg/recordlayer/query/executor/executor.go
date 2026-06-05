@@ -1182,8 +1182,44 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 			}
 			return names
 		}
-		if _, ok := p.(*plans.RecordQueryMapPlan); ok {
+		// A RecordQueryMapPlan reports its OWN output column names from its result value
+		// — do NOT descend through it to the pre-rename names. Mirrors
+		// physicalPlanColumnNames (rule_implement_unordered_union.go) so a branch that
+		// ImplementUnorderedUnionRule already wrapped in a rename Map reports the SAME
+		// (post-rename) names here. Without this, the union position-remap would see the
+		// pre-rename names, differ from the first branch, and remap a SECOND time over the
+		// already-renamed row → reads missing keys → NULLs (codex). Falls through to the
+		// descend/scan path when the Map has no RecordConstructorValue result.
+		if mp, ok := p.(*plans.RecordQueryMapPlan); ok {
+			if rcv, ok := mp.GetResultValue().(*values.RecordConstructorValue); ok && len(rcv.Fields) > 0 {
+				names := make([]string, len(rcv.Fields))
+				for i, f := range rcv.Fields {
+					// Report the EXACT field name — RecordConstructorValue.Evaluate keys the
+					// output row by f.Name verbatim (values.go), so this is the literal row
+					// key the union remap must read. Upper-casing it would mismatch a
+					// non-uppercase Map field and read a missing key → NULL (codex). Union
+					// branch fields are upper in practice (SQL upper-cases identifiers/aliases),
+					// so this equals the prior upper-case for every real query.
+					names[i] = f.Name
+				}
+				return names
+			}
 			sawMap = true
+		}
+		// A bare STREAMING-AGGREGATE plan defines its OWN output schema (group keys +
+		// aggregate outputs) — report it, do NOT descend to the input scan. StreamingAgg
+		// implements innerPlanAccessor, so without this the loop walks past it to the Scan
+		// and returns the scan's columns, mis-naming the branch for the UNION position-remap
+		// and silently dropping a mismatched-alias aggregate branch's rows (RFC-078, TODO
+		// 7.6-union-remap). The names match the keys aggregateCursor writes (streaming_cursors.go)
+		// and the schema the translator derives (aggregateOutputColumns).
+		//
+		// The aggregate-INDEX plan is deliberately NOT handled here (follow-up RFC-078; not a
+		// regression — returns scan-cols/nil, no-op for symmetric unions): its cursor writes
+		// only the canonical aggResultName, never the alias (rule_aggregate_data_access drops
+		// it), so naming by the alias would not match its row keys.
+		if agg, ok := p.(*plans.RecordQueryStreamingAggregationPlan); ok {
+			return streamingAggOutputNames(agg)
 		}
 		if ip, ok := p.(innerPlanAccessor); ok {
 			p = ip.GetInner()
@@ -1655,6 +1691,34 @@ func aggKeyName(k values.Value) string {
 		return strings.ToUpper(fv.Field)
 	}
 	return strings.ToUpper(values.ExplainValue(k))
+}
+
+// streamingAggOutputNames returns the OUTPUT column names a streaming-aggregate
+// plan's rows are keyed by — the grouping keys (aggKeyName) followed by each
+// aggregate's SQL-visible name: its Alias when present (upper-cased at
+// construction), else the canonical aggResultName. Exactly one name per output
+// column, matching the keys aggregateCursor.finalizeGroup writes and the schema
+// the translator derives (aggregateOutputColumns). Used by planColumnNamesWithMD
+// so the UNION position-remap (remapUnionColumnsByPosition) can normalize a
+// mismatched-alias aggregate branch to the first branch's names (RFC-078).
+func streamingAggOutputNames(p *plans.RecordQueryStreamingAggregationPlan) []string {
+	keys := p.GetGroupingKeys()
+	aggs := p.GetAggregates()
+	names := make([]string, 0, len(keys)+len(aggs))
+	for _, k := range keys {
+		names = append(names, aggKeyName(k))
+	}
+	for _, agg := range aggs {
+		if agg.Alias != "" {
+			names = append(names, strings.ToUpper(agg.Alias))
+		} else {
+			names = append(names, aggResultName(agg))
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 func isNumeric(v any) bool {

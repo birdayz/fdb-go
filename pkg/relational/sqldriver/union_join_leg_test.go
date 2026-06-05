@@ -63,10 +63,14 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 			"SELECT c.w FROM u, c WHERE u.x = c.id",
 		[]int64{100, 200})
 
-	// (3) Mismatched-alias AGGREGATE branches: the executor canNOT remap the second
-	// branch's column to the first branch's name (it unwraps the aggregate to its
-	// input scan names), so anchoring would DROP rows. This must error cleanly
-	// (untranslatable), NOT return wrong rows.
+	// (3) Mismatched-alias AGGREGATE branches as a JOIN LEG: stays conservatively
+	// untranslatable (clean error, never wrong rows). NOTE: RFC-078 taught the executor
+	// to remap STREAMING-aggregate union branches, so this would now work for a pure
+	// StreamingAgg union — but the translator's unionBranchNormalizable gate keys on the
+	// LOGICAL LogicalAggregate, blind to whether it plans as StreamingAgg (remappable) or
+	// AggregateIndex (whose cursor drops the alias, RFC-078 follow-up (a)); enabling it
+	// now would silently mis-resolve the AggregateIndex case. So the gate stays until the
+	// index cursor carries the alias.
 	q := "WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) " +
 		"SELECT c.w FROM u, c WHERE u.x = c.id"
 	if _, err := db.QueryContext(ctx, q); err == nil {
