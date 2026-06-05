@@ -1,7 +1,10 @@
 package cascades
 
 import (
+	"strconv"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Memo is the central memoization structure for the Cascades planner.
@@ -56,6 +59,18 @@ type Memo struct {
 	// via MergeCount for tests that assert the optimization fires.
 	mergeCount int
 
+	// mergeAliasCounter hands out per-plan deterministic merge-quantifier
+	// aliases for PartitionSelectRule's N-way join re-enumeration (RFC-077
+	// 7.5). It is per-Memo (one Memo per Plan call), so the SAME query planned
+	// twice mints the SAME alias sequence in the SAME deterministic exploration
+	// order → a STABLE plan hash across plannings (the process-global
+	// UniqueCorrelationIdentifier counter would leak its absolute value into the
+	// NLJ source alias and the plan hash, churning plan-log identity + the
+	// cost-model tiebreak across a process's history). Distinct merge occurrences
+	// within one plan still get DISTINCT aliases, so equivalent sub-products are
+	// interned by the alias-aware Reference.Insert tier (not by a stable string).
+	mergeAliasCounter uint64
+
 	// pendingReintegrate is the worklist for the paper's recursive
 	// bottom-up merge: after merging two groups, their parents may have
 	// become duplicates. Drained at the top of Integrate.
@@ -99,6 +114,30 @@ func (m *Memo) track(ref *expressions.Reference) {
 // MergeCount returns the number of cross-group merges performed so far
 // (RFC-037). Used by tests to assert the merge optimization fires.
 func (m *Memo) MergeCount() int { return m.mergeCount }
+
+// NextMergeAlias returns a per-plan deterministic, collision-PROOF quantifier
+// alias for a PartitionSelectRule merge sub-join (RFC-077 7.5).
+//
+// The alias embeds a double-quote ("). That is the one character no parsed SQL
+// identifier can ever contain: the lexer's delimited-identifier rule is
+// DOUBLE_QUOTE_ID: '"' ~'"'+ '"' (RelationalLexer.g4) — a quoted identifier is
+// any run of NON-quote characters between quotes, so the quotes are stripped and
+// the resulting name can never include a ". A bare "$m"-prefix is NOT safe on its
+// own: a user could write a quoted alias `AS "$m1"`, which parses to the name
+// "$m1" and would collide with this merge quantifier, corrupting alias-keyed
+// binding/rebasing in a multi-way join (codex P2). (This collision class also
+// affects UniqueCorrelationIdentifier's "q$N" — `AS "q$1"` — a pre-existing,
+// separate hardening item; here we make the merge alias uncollidable outright.)
+//
+// The per-Memo ordinal makes the alias deterministic across plannings of the same
+// query (for a stable plan hash) while still differing per merge occurrence, so
+// equivalent sub-products intern via the alias-aware Reference.Insert tier, not via
+// a stable string. The alias is internal — never re-lexed as SQL; it only appears
+// as a correlation key (rebasing, NLJ source alias, Explain). See mergeAliasCounter.
+func (m *Memo) NextMergeAlias() values.CorrelationIdentifier {
+	m.mergeAliasCounter++
+	return values.NamedCorrelationIdentifier(`$m"` + strconv.FormatUint(m.mergeAliasCounter, 10))
+}
 
 // Root returns the root Reference of the Memo.
 func (m *Memo) Root() *expressions.Reference {

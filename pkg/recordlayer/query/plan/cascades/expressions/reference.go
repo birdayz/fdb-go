@@ -262,22 +262,28 @@ func (r *Reference) HasWinnersOrMatches() bool {
 // matches. Returns true if the member was inserted, false if a duplicate
 // was found.
 //
-// Dedup contract — two-tier:
+// Dedup contract — three-tier:
 //
 //  1. Fast path: EqualsWithoutChildren on the local node + pointer-
 //     identity on every Quantifier's child Reference. Hits when a
 //     rule yields output that reuses the input's existing Quantifiers
 //     (the pattern most seed rules follow). O(1) check.
-//  2. Fallback: full SemanticEquals walk (recursive structural match
-//     with alias-aware child comparison). Catches the case where a
-//     rule yields output wrapping a FRESH Reference whose held
-//     expression is structurally equivalent to an existing member's
-//     child Reference. Without this, rules like
+//  2. SemanticEquals walk (recursive structural match with alias-aware
+//     child comparison, under the EmptyAliasMap = alias-IDENTITY at the
+//     top level). Catches the case where a rule yields output wrapping a
+//     FRESH Reference whose held expression is structurally equivalent to
+//     an existing member's child Reference. Without this, rules like
 //     PushFilterThroughDistinctRule would non-terminate. Gated on
 //     hash equality (HashCodeWithoutChildren) for early-exit on
 //     non-matching shapes — the HashConsistency invariant
 //     (FuzzSemanticEquals_Properties) guarantees SemanticEquals can
 //     only return true when local hashes agree.
+//  3. MemoEqual (alias-AWARE): members equal up to a consistent
+//     quantifier-alias renaming are one member (RFC-039/077). Tiers 1–2
+//     are alias-identity, so a rule yielding an alternative that differs
+//     only in a fresh quantifier alias would slip past them; this tier
+//     interns it, matching memoizeNonLeaf's child interning and Java's
+//     containsInMemo. Strictly additive — never dedups less than 1–2.
 //
 // Soundness of the fallback: SemanticEquals's recursion compares
 // child-Reference contents structurally with alias-aware AliasMap
@@ -296,6 +302,13 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		panic("Reference.Insert: nil expression")
 	}
 	eHash := e.HashCodeWithoutChildren()
+	// e is invariant across the loop, so resolve the alias-aware opt-in once
+	// (hoisted out of the hot inner loop — avoids a type-switch + virtual call
+	// per member). See the alias-aware tier below.
+	aliasAware := false
+	if interner, ok := e.(aliasAwareInterner); ok {
+		aliasAware = interner.InternsAliasAware()
+	}
 	for _, m := range r.members {
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
@@ -318,11 +331,38 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
 			return false
 		}
+		// Alias-aware tier (RFC-077 7.5), GATED to expressions that opt in via
+		// InternsAliasAware (merge re-enumeration selects only — see
+		// SelectExpression.InternsAliasAware). Two such members equal up to a
+		// CONSISTENT quantifier-alias renaming are the same memo member: MemoEqual
+		// builds the node's own quantifier-alias map (RFC-039) and compares under
+		// it, exactly as memoizeNonLeaf already does for child interning and as
+		// Java's Reference.containsInMemo does for insert. The two tiers above are
+		// alias-IDENTITY only (EmptyAliasMap), so a re-enumeration that wraps a
+		// shared merge sub-product under a fresh uniqueId merge quantifier would
+		// otherwise add a duplicate member and re-explore it per path (super-linear
+		// blowup with join arity). The gate confines this to planner-internal merge
+		// aliases — expressions whose aliases external consumers resolve by identity
+		// keep alias-IDENTITY dedup. Added (not substituted), so it can only ever
+		// dedup MORE, never less, than the alias-identity tiers — termination holds.
+		// Hash pre-filter mirrors tier 2: MemoEqual also hash-guards internally, but
+		// the explicit guard keeps the early-exit symmetric across tiers and cheap if
+		// a future opt-in type's hash is not alias-invariant (today's only opt-in,
+		// the merge select, has an alias-invariant hash per RFC-074).
+		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
+			return false
+		}
 	}
 	r.members = append(r.members, e)
 	r.correlatedToCache = nil
 	return true
 }
+
+// aliasAwareInterner is implemented by expressions whose quantifier aliases are
+// planner-internal (no external consumer resolves them by identity), so they
+// intern ALIAS-AWARE in Insert/InsertFinal. See SelectExpression.InternsAliasAware
+// (RFC-077 7.5). Only merge re-enumeration selects opt in today.
+type aliasAwareInterner interface{ InternsAliasAware() bool }
 
 // FinalMembers returns PLANNING-phase physical plans. Empty until
 // implementation rules or data access generation populate it.
@@ -339,11 +379,23 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		panic("Reference.InsertFinal: nil expression")
 	}
 	eHash := e.HashCodeWithoutChildren()
+	// Resolve the alias-aware opt-in once (hoisted out of the loop) — see Insert.
+	aliasAware := false
+	if interner, ok := e.(aliasAwareInterner); ok {
+		aliasAware = interner.InternsAliasAware()
+	}
 	for _, m := range r.finalMembers {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false
 		}
 		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
+			return false
+		}
+		// Alias-aware tier (GATED) — see Insert. finalMembers intern the same way
+		// (RFC-077 7.5); the PLANNING yield path inserts into BOTH member sets, so
+		// both must dedup alias-aware or the merge re-enumeration's physical
+		// alternatives duplicate under fresh merge-quantifier aliases.
+		if aliasAware && m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
 			return false
 		}
 	}

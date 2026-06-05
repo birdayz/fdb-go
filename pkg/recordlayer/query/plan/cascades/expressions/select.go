@@ -218,6 +218,33 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 	return true
 }
 
+// InternsAliasAware reports whether this expression should dedup ALIAS-AWARE in
+// Reference.Insert/InsertFinal (RFC-077 7.5). True ONLY for a merge re-enumeration
+// select — one whose result value is a JoinMergeAllValue. Such a select's merge
+// quantifier is a planner-INTERNAL synthetic alias with no external consumer:
+// PartitionSelectRule re-stamps all column access through the merge value and
+// rebases spanning predicates onto it, so two merge selects equal up to a
+// consistent quantifier-alias renaming ARE the same memo member and must intern
+// (otherwise the join re-enumeration's shared sub-products re-explode per path).
+// This replaces the former synthetic STABLE merge alias that made them
+// byte-identical for the alias-IDENTITY dedup.
+//
+// All OTHER expressions return false. The reason is NOT alias-namespace naming
+// (item 7.1 already unified quantifier and table alias naming) — it is the column
+// RESOLUTION model: Go's column derivation (cascades_generator) resolves some
+// references by quantifier-alias IDENTITY, whereas Java resolves by group/ordinal
+// and so can dedup members alias-aware globally. An alias-aware member collapse
+// keeps a survivor whose quantifier aliases differ from the discarded member's;
+// any external structure that captured the discarded member's aliases by identity
+// then mis-resolves — empirically, a CTE column-rename select collapsed this way
+// reads its renamed column as NULL. So non-merge selects keep the alias-IDENTITY
+// dedup, exactly as before this change. Widening this gate is gated on migrating
+// Go's column resolution to Java's ordinal/group model, not on 7.1.
+func (e *SelectExpression) InternsAliasAware() bool {
+	_, ok := e.resultValue.(*values.JoinMergeAllValue)
+	return ok
+}
+
 // HashCodeWithoutChildren mixes a class-discriminating constant + join type
 // with the ALIAS-INVARIANT semantic hashes of the result value and predicates
 // (RFC-040 040.2), consistent with the alias-aware EqualsWithoutChildren.

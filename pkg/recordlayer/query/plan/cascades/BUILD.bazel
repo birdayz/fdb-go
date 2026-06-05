@@ -259,6 +259,7 @@ go_test(
         "memo_test.go",
         "partial_match_ref_test.go",
         "partial_match_test.go",
+        "partition_select_interning_baseline_test.go",
         "phase2_correctness_test.go",
         "phase2_fuzz_test.go",
         "phase3_correctness_new_test.go",

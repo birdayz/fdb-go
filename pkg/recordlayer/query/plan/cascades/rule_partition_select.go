@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -437,16 +436,31 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			lowerResult := values.NewJoinMergeAllValue(lowersCorrelatedToByUppers...)
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerResult)
 
-			// Use a STABLE alias derived from the (sorted) live set rather than a
-			// fresh UniqueCorrelationIdentifier. Two partitions that produce the
-			// same merged sub-join must wrap it under the same quantifier alias so
-			// the upper SelectExpressions intern to the SAME memo Reference —
-			// otherwise the re-enumeration's shared sub-products (e.g. the (A⋈B)
-			// merge reached from many bipartitions) are re-explored per path and
-			// the task count explodes super-linearly with arity. The alias is also
-			// carried into buildUpperResult's JoinMergeAllValue, so a per-yield
-			// unique alias there would equally defeat interning. (RFC-043.)
-			mergeAlias := mergeQuantifierAlias(lowersCorrelatedToByUppers)
+			// A per-plan deterministic merge alias (Memo.NextMergeAlias). Two
+			// bipartitions that produce the SAME merged sub-join get DIFFERENT
+			// aliases but still intern to one memo Reference, because
+			// Reference.Insert/InsertFinal dedup ALIAS-AWARE (MemoEqual): upper
+			// SelectExpressions equal up to a consistent quantifier-alias renaming
+			// collapse to one member, so the re-enumeration's shared sub-products
+			// (e.g. the (A⋈B) merge reached from many bipartitions) are NOT
+			// re-explored per path. This retires the former synthetic STABLE
+			// "$m_<len>:<name>…" alias — a workaround that made the upper selects
+			// byte-identical for the previously alias-SENSITIVE Insert; interning is
+			// now structural (RFC-074 made the merge value's hash alias-invariant).
+			// The alias is per-Memo (per-plan) deterministic, NOT process-global
+			// uniqueId, so the same query mints the same alias sequence across
+			// plannings → a STABLE plan hash (the merge alias flows into the NLJ
+			// source alias and thus PlanHash/plan-log identity + the cost-model
+			// tiebreak; a global uniqueId would churn those across a process's
+			// history — codex P2). On test/utility firing paths the memo is nil; fall
+			// back to a process-unique alias there (no plan-hash stability needed).
+			// (RFC-077 7.5.)
+			var mergeAlias values.CorrelationIdentifier
+			if call.memo != nil {
+				mergeAlias = call.memo.NextMergeAlias()
+			} else {
+				mergeAlias = values.UniqueCorrelationIdentifier()
+			}
 			newLowerQ := expressions.NamedForEachQuantifier(
 				mergeAlias,
 				call.MemoizeExpression(lowerSelectExpr),
@@ -722,42 +736,6 @@ func aliasesIntersect(
 		}
 	}
 	return false
-}
-
-// mergeAliasPrefix marks a quantifier alias minted by this rule's re-enumeration
-// for a merged lower sub-join (see mergeQuantifierAlias). No SQL identifier can
-// start with "$", so it never collides with a table/quantifier alias.
-const mergeAliasPrefix = "$m"
-
-// mergeQuantifierAlias returns a STABLE, collision-free quantifier alias for the
-// merged lower over the given live aliases. Deterministic in the live SET, so
-// identical merged sub-joins reached from different bipartitions wrap under the
-// same alias and intern to one memo Reference. The "$m" prefix cannot collide
-// with a table/quantifier alias (no SQL identifier starts with "$"). (RFC-043.)
-func mergeQuantifierAlias(live []values.CorrelationIdentifier) values.CorrelationIdentifier {
-	// Sort internally so the alias is stable regardless of the caller's order —
-	// the identity is a function of the live SET, not its iteration order.
-	names := make([]string, len(live))
-	for i, a := range live {
-		names[i] = a.Name()
-	}
-	sort.Strings(names)
-	var b strings.Builder
-	b.WriteString(mergeAliasPrefix)
-	for _, n := range names {
-		// LENGTH-PREFIX each name (`_<len>:<name>`) so the encoding is INJECTIVE
-		// even when a name itself contains the '_' separator: {A, B_C} and
-		// {A_B, C} must NOT collapse to the same alias (Codex review). A plain
-		// '_'-join is ambiguous; with the length prefix, distinct live sets map to
-		// distinct aliases, preserving the "this alias identifies this live set"
-		// invariant that nested re-enumeration relies on (a collision could build a
-		// SelectExpression with duplicate quantifier aliases and merge distinct rows).
-		b.WriteByte('_')
-		b.WriteString(strconv.Itoa(len(n)))
-		b.WriteByte(':')
-		b.WriteString(n)
-	}
-	return values.NamedCorrelationIdentifier(b.String())
 }
 
 // rebaseBuriedLowerReferences rewrites a spanning upper predicate so that every
