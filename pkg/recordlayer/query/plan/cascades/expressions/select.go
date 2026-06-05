@@ -241,8 +241,19 @@ func (e *SelectExpression) EqualsWithoutChildren(other RelationalExpression, ali
 // dedup, exactly as before this change. Widening this gate is gated on migrating
 // Go's column resolution to Java's ordinal/group model, not on 7.1.
 func (e *SelectExpression) InternsAliasAware() bool {
-	_, ok := e.resultValue.(*values.JoinMergeAllValue)
-	return ok
+	if _, ok := e.resultValue.(*values.JoinMergeAllValue); ok {
+		return true
+	}
+	// RFC-077 7.6: the source-anchored join RESULT value (a RecordConstructorValue
+	// marked AnchoredJoin) is the structural successor of the opaque merge. A
+	// re-enumeration select carrying it has the SAME planner-internal merge
+	// quantifier with no external consumer, so it must intern alias-aware too —
+	// otherwise the re-enumeration's shared sub-products re-explode per bipartition
+	// (the ≥4-way chain/STAR task count blows past budget, the F2-hiding sentinel).
+	if rc, ok := e.resultValue.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
+		return true
+	}
+	return false
 }
 
 // HashCodeWithoutChildren mixes a class-discriminating constant + join type

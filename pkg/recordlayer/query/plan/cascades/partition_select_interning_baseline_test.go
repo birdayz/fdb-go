@@ -42,31 +42,38 @@ func buildChainSelect(n int) *expressions.SelectExpression {
 }
 
 // buildChainSelectAnchored is buildChainSelect but the result value is the
-// SOURCE-ANCHORED join RESULT value (RFC-077 7.6) over the first two tables,
-// instead of the opaque JoinMergeSeedValue. It exercises the F2 exploration-time
-// HIDING path: GetCorrelatedToOfValue must NOT descend into the anchored RC (its
-// leg QOVs are self-bound by the select's own quantifiers), and PartitionSelectRule
-// must treat the anchored RC as a seed (keep all lowers live). If the hiding lapses
-// the leg aliases inflate the correlation order and the ≥4-way task count blows up.
+// SOURCE-ANCHORED join RESULT value (RFC-077 7.6), instead of the opaque
+// JoinMergeSeedValue. The seed anchors EACH chain table to its OWN quantifier
+// (T1→QOV(T1), …, Tn→QOV(Tn)) — the structure the real flat N-quantifier select
+// has once composeFieldOverConstructor folds the SelectMergeRule-substituted
+// inner anchored RCs (anchoredColumnsByQuantifier simplifies each field value to
+// expose this per-quantifier anchor). Modeling that is what lets the
+// re-enumeration fully ANCHOR: NewReEnumerationAnchoredRecord reads each live
+// table's columns from this parent by quantifier, so the merge re-enumeration
+// NEVER falls back to the opaque JoinMergeAllValue — exactly the real-path
+// behavior the no-fallback assertion proves.
+//
+// It exercises BOTH F2 exploration-time HIDING (GetCorrelatedToOfValue must NOT
+// descend into the anchored RC — its leg QOVs are self-bound) AND the anchored
+// re-enumeration's interning (the ≥4-way chain must stay within budget). If
+// either lapses, the task count blows up.
 func buildChainSelectAnchored(n int) *expressions.SelectExpression {
 	var quants []expressions.Quantifier
 	var aliases []string
 	var preds []predicates.QueryPredicate
+	var legs []values.AnchoredJoinLeg
 	for i := 1; i <= n; i++ {
 		quants = append(quants, scanQuantifier(tName(i)))
 		aliases = append(aliases, tName(i))
+		legs = append(legs, values.AnchoredJoinLeg{
+			Alias:   values.NamedCorrelationIdentifier(tName(i)),
+			Columns: []values.Field{{Name: "ID"}, {Name: "NEXT_ID"}},
+		})
 	}
 	for i := 1; i < n; i++ {
 		preds = append(preds, chainEqPred(tName(i), "NEXT_ID", tName(i+1), "ID"))
 	}
-	seed := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
-		{Alias: values.NamedCorrelationIdentifier(tName(1)), Columns: []values.Field{
-			{Name: "ID"}, {Name: "NEXT_ID"},
-		}},
-		{Alias: values.NamedCorrelationIdentifier(tName(2)), Columns: []values.Field{
-			{Name: "ID"}, {Name: "NEXT_ID"},
-		}},
-	})
+	seed := values.NewAnchoredJoinRecord(legs)
 	return expressions.NewSelectExpressionWithAliases(seed, quants, preds, aliases)
 }
 

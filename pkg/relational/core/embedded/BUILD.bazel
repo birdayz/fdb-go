@@ -87,6 +87,8 @@ go_library(
 go_test(
     name = "embedded_test",
     srcs = [
+        "anchored_join_no_fallback_test.go",
+        "anchored_join_pipeline_nofallback_test.go",
         "ast_util_test.go",
         "bench_test.go",
         "dedupe_test.go",

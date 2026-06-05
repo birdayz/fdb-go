@@ -368,24 +368,50 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// anchored RC reaches here only via SelectMergeRule flattening a binary join
 		// seed up; the rule re-stamps it exactly as it always re-stamped a merge.
 		_, parentIsOpaqueMerge := resultValue.(*values.JoinMergeAllValue)
-		_, parentIsAnchored := isAnchoredJoinResult(resultValue)
+		parentAnchored, parentIsAnchored := isAnchoredJoinResult(resultValue)
 		parentIsMerge := parentIsOpaqueMerge || parentIsAnchored
-		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier) values.Value {
+		// upperLegs returns the canonical (alias-name-sorted) leg order for a
+		// re-enumeration result over [newLowerAlias] + the upper tables.
+		upperLegs := func(newLowerAlias values.CorrelationIdentifier, newLowerSources []values.CorrelationIdentifier) []values.ReEnumerationLeg {
+			legs := make([]values.ReEnumerationLeg, 0, len(upperAliases)+1)
+			legs = append(legs, values.ReEnumerationLeg{Alias: newLowerAlias, Sources: newLowerSources})
+			for _, a := range allAliases {
+				if _, inUpper := upperAliases[a]; inUpper {
+					legs = append(legs, values.ReEnumerationLeg{Alias: a, Sources: []values.CorrelationIdentifier{a}})
+				}
+			}
+			sort.Slice(legs, func(i, j int) bool { return legs[i].Alias.Name() < legs[j].Alias.Name() })
+			return legs
+		}
+		// buildUpperResult re-stamps the parent merge over the upper's immediate
+		// quantifiers. newLowerSources is the set of parent quantifiers the new lower
+		// quantifier's row carries (empty for a cross-product literal-1 lower,
+		// {newLowerAlias} for a single table, the collapsed set for a merge $m).
+		//
+		// RFC-077 7.6 re-enumeration anchoring: when the parent is a source-anchored
+		// RC, build a NEW source-anchored RC over the upper's quantifiers
+		// (NewReEnumerationAnchoredRecord, columns read from the parent by anchoring
+		// quantifier) so the re-enumeration NEVER produces the opaque JoinMergeAllValue.
+		// The opaque arm survives ONLY for a not-yet-anchored parent (an opaque
+		// JoinMergeAllValue, or an anchored RC missing a leg's columns) — the
+		// transitional fallback the no-fallback assertion proves is never taken for a
+		// real-table join (Graefe condition 3). Canonical leg order so two bipartitions
+		// producing the same upper merge intern (both the anchored RC's structural
+		// identity and the opaque value's positional equality are order-sensitive).
+		buildUpperResult := func(newLowerAlias values.CorrelationIdentifier, newLowerSources []values.CorrelationIdentifier) values.Value {
 			if !parentIsMerge {
 				return resultValue
 			}
-			merged := make([]values.CorrelationIdentifier, 0, len(upperAliases)+1)
-			merged = append(merged, newLowerAlias)
-			for _, a := range allAliases {
-				if _, inUpper := upperAliases[a]; inUpper {
-					merged = append(merged, a)
+			legs := upperLegs(newLowerAlias, newLowerSources)
+			if parentIsAnchored {
+				if rc := values.NewReEnumerationAnchoredRecord(parentAnchored, legs); rc != nil {
+					return rc
 				}
 			}
-			// Canonical order: JoinMergeAllValue equality compares the alias slice
-			// positionally, so two bipartitions producing the same upper merge with
-			// different alias orders must intern. allAliases iterates in quantifier
-			// order, not sorted. (RFC-043; @claude review.)
-			sort.Slice(merged, func(i, j int) bool { return merged[i].Name() < merged[j].Name() })
+			merged := make([]values.CorrelationIdentifier, 0, len(legs))
+			for _, l := range legs {
+				merged = append(merged, l.Alias)
+			}
 			return values.NewJoinMergeAllValue(merged...)
 		}
 
@@ -441,7 +467,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// No upper-to-lower correlation here, so no spanning predicate
 			// references a buried lower — nothing to rebase.
 			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases))
+				BuildSelectWithResultValue(buildUpperResult(lowerAliasCorrelatedToByUpperAliases, nil))
 
 		} else if len(lowersCorrelatedToByUppers) >= 2 {
 			// Merge case: ≥2 live lower tables (referenced by an upper predicate or
@@ -453,7 +479,22 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// already-qualified keys). Reaching here implies
 			// lowersCorrelatedToByUpperAliases == 0 (the validation above skips a
 			// quantifier-level upper-dep with >1 live lower). (RFC-043.)
-			lowerResult := values.NewJoinMergeAllValue(lowersCorrelatedToByUppers...)
+			// RFC-077 7.6: the lower merges the live lower quantifiers' rows. Anchor it
+			// over those quantifiers (each a leg whose columns the parent RC supplies);
+			// fall back to the opaque merge only for a not-yet-anchored parent.
+			var lowerResult values.Value
+			if parentIsAnchored {
+				legs := make([]values.ReEnumerationLeg, len(lowersCorrelatedToByUppers))
+				for i, a := range lowersCorrelatedToByUppers {
+					legs[i] = values.ReEnumerationLeg{Alias: a, Sources: []values.CorrelationIdentifier{a}}
+				}
+				if rc := values.NewReEnumerationAnchoredRecord(parentAnchored, legs); rc != nil {
+					lowerResult = rc
+				}
+			}
+			if lowerResult == nil {
+				lowerResult = values.NewJoinMergeAllValue(lowersCorrelatedToByUppers...)
+			}
 			lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerResult)
 
 			// A per-plan deterministic merge alias (Memo.NextMergeAlias). Two
@@ -495,7 +536,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 				collapsed[a] = struct{}{}
 			}
 			upperSelectExpression = addUpper(newLowerQ, collapsed).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(mergeAlias))
+				BuildSelectWithResultValue(buildUpperResult(mergeAlias, lowersCorrelatedToByUppers))
 
 		} else {
 			// Case 2: Exactly one live lower alias. Lower's result value is that
@@ -521,7 +562,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			// set, so with exactly one live lower the only lower alias an upper
 			// predicate can name is this one.)
 			upperSelectExpression = addUpper(newLowerQ, nil).Build().Seal().
-				BuildSelectWithResultValue(buildUpperResult(lowerAlias))
+				BuildSelectWithResultValue(buildUpperResult(lowerAlias, []values.CorrelationIdentifier{lowerAlias}))
 		}
 
 		call.Yield(upperSelectExpression)

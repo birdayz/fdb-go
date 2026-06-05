@@ -335,7 +335,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// Plan scalar subqueries independently through the Cascades pipeline.
 	var scalarSubs []scalarSubqueryBinding
 	for _, ssq := range scalarSubqueryPlans {
-		subRef := query.TranslateToCascades(ssq.Plan)
+		// Pass md so the scalar subquery's own join legs can anchor (RFC-077 7.6);
+		// nested scalar subqueries are not collected here, so any they contain are
+		// dropped — matching the previous behavior (TranslateToCascades discards
+		// them too).
+		subRef, _ := query.TranslateToCascadesWithSubqueries(ssq.Plan, md)
 		if subRef == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"Cascades planner could not plan scalar subquery")
@@ -638,7 +642,8 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			"Unsupported operator "+fn)
 	}
 
-	ref := query.TranslateToCascades(logicalOp)
+	// Pass md so DML join legs (e.g. UPDATE … FROM a JOIN b) anchor (RFC-077 7.6).
+	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}

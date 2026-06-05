@@ -181,9 +181,20 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 		t.Error("nested join must NOT re-qualify a dotted column to TR.O.PRICE")
 	}
 
-	// (4) Unsupported shapes → nil.
-	if tr.legColumns(logical.NewDistinct(logical.NewScan("Order", "O"))) != nil {
-		t.Error("distinct leg must derive nil columns (unsupported shape)")
+	// (4) Row-shape-preserving shapes (sort / distinct) now ANCHOR via their inner
+	// (RFC-077 7.6 step 2), preserving the inner scan's column set.
+	distinctCols := names(tr.legColumns(logical.NewDistinct(logical.NewScan("Order", "O"))))
+	if len(distinctCols) != len(scanCols) {
+		t.Errorf("distinct leg columns %v != inner scan columns %v (distinct is row-shape-preserving)", distinctCols, scanCols)
+	}
+	sortCols := names(tr.legColumns(logical.NewSort(logical.NewScan("Order", "O"), nil)))
+	if len(sortCols) != len(scanCols) {
+		t.Errorf("sort leg columns %v != inner scan columns %v (sort is row-shape-preserving)", sortCols, scanCols)
+	}
+
+	// (5) Genuinely-unsupported shapes (DML / nil) → nil.
+	if tr.legColumns(logical.NewInsert("Order", nil, nil)) != nil {
+		t.Error("insert leg must derive nil columns (not a row-producing join leg)")
 	}
 	if tr.legColumns(nil) != nil {
 		t.Error("nil leg must derive nil columns")
@@ -810,31 +821,54 @@ func TestSourceAlias(t *testing.T) {
 // real table's metadata columns (translateScan resolves the scan from the CTE
 // body, not the table). It must return nil so the seed falls back to the opaque
 // merge — otherwise a join against the CTE would mis-anchor / mis-name columns.
-func TestLegColumns_CTEShadowFallsBackToOpaque(t *testing.T) {
+// TestLegColumns_CTEScopeResolvesBody pins the RFC-077 7.6 CTE/derived-table
+// anchoring: a cteScope-shadowed scan derives its columns from the CTE BODY (not
+// the real table's metadata, and not nil). The CTE is removed from scope while
+// resolving the body, so a same-named scan inside the body resolves to the REAL
+// table — and legColumns does NOT recurse forever (the CTE-shadow stack-overflow
+// regression). A pre-translated recursive-CTE reference (cteExprScope) still falls
+// back to nil (its body output columns are not readable from the logical tree).
+func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	t.Parallel()
 	md := demoMetaData(t) // has a real "Order" table
 
 	// Without a shadow, "Order" anchors from metadata (non-nil).
 	plain := &cascadesTranslator{md: md, cteScope: map[string]logical.LogicalOperator{}}
-	if plain.legColumns(logical.NewScan("Order", "")) == nil {
+	realCols := plain.legColumns(logical.NewScan("Order", ""))
+	if realCols == nil {
 		t.Fatal("setup: a real table must derive columns from metadata")
 	}
 
-	// A CTE named "order" (case-insensitive) shadows the real table → nil.
+	// A CTE named "order" whose body is a projection over the real table resolves
+	// to the BODY's output columns (here renamed), NOT the real table's columns.
+	body := logical.NewProject(logical.NewScan("Order", ""), []string{"ORDER_ID"}, []string{"OID"})
 	shadowed := &cascadesTranslator{
 		md:       md,
-		cteScope: map[string]logical.LogicalOperator{"ORDER": logical.NewScan("Order", "")},
+		cteScope: map[string]logical.LogicalOperator{"ORDER": body},
 	}
-	if cols := shadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
-		t.Errorf("CTE-shadowed name must NOT anchor with the real table's columns; got %v", cols)
+	cols := shadowed.legColumns(logical.NewScan("Order", ""))
+	if len(cols) != 1 || cols[0].Name != "OID" {
+		t.Errorf("CTE-shadowed leg must derive the BODY's output columns [OID]; got %v", cols)
 	}
 
-	// cteExprScope (a pre-translated recursive-CTE reference) shadows too.
+	// A CTE whose body is a bare same-named scan: the body's scan resolves to the
+	// REAL table (CTE removed from scope while resolving) — and no infinite
+	// recursion. The leg derives the real table's columns via the body.
+	selfBody := logical.NewScan("Order", "")
+	selfShadowed := &cascadesTranslator{
+		md:       md,
+		cteScope: map[string]logical.LogicalOperator{"ORDER": selfBody},
+	}
+	if got := selfShadowed.legColumns(logical.NewScan("Order", "")); len(got) != len(realCols) {
+		t.Errorf("self-referential CTE body must resolve to the real table's columns (no recursion); got %v want %d cols", got, len(realCols))
+	}
+
+	// cteExprScope (a pre-translated recursive-CTE reference) still falls back to nil.
 	exprShadowed := &cascadesTranslator{
 		md:           md,
 		cteExprScope: map[string]expressions.RelationalExpression{"ORDER": nil},
 	}
 	if cols := exprShadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
-		t.Errorf("cteExprScope-shadowed name must NOT anchor with the real table's columns; got %v", cols)
+		t.Errorf("cteExprScope-shadowed name must NOT anchor (recursive-CTE body unreadable); got %v", cols)
 	}
 }

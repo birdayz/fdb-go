@@ -1,6 +1,24 @@
 package values
 
-import "strings"
+import (
+	"strings"
+	"sync/atomic"
+)
+
+// opaqueMergeConstructions counts how many opaque JoinMergeAllValue / SeedValue
+// instances have been constructed (RFC-077 7.6 no-fallback sentinel). The opaque
+// merge is the TRANSITIONAL fallback the source-anchored RC replaces; a test plans
+// the full join/plandiff corpus and asserts this counter stays at the baseline for
+// every real-table join, proving no real-table site takes the opaque arm before
+// the opaque type is retired. It is process-global + atomic (the constructors are
+// hot and must not allocate/lock); a test reads it via OpaqueMergeConstructions()
+// after a SERIAL planning run (no t.Parallel) so the count is attributable.
+var opaqueMergeConstructions atomic.Int64
+
+// OpaqueMergeConstructions returns the running count of opaque JoinMergeAllValue /
+// SeedValue constructions (RFC-077 7.6 no-fallback sentinel). See
+// opaqueMergeConstructions.
+func OpaqueMergeConstructions() int64 { return opaqueMergeConstructions.Load() }
 
 // JoinMergeAllValue is the SOLE join-merge result value: it merges the bindings
 // of N listed quantifier aliases into one map with qualified `ALIAS.COL` keys.
@@ -65,6 +83,7 @@ type JoinMergeAllValue struct {
 // NewJoinMergeAllValue builds a re-enumeration merge (Seed=false) — names exactly
 // the live aliases.
 func NewJoinMergeAllValue(aliases ...CorrelationIdentifier) *JoinMergeAllValue {
+	opaqueMergeConstructions.Add(1)
 	return &JoinMergeAllValue{Aliases: aliases}
 }
 
@@ -72,6 +91,7 @@ func NewJoinMergeAllValue(aliases ...CorrelationIdentifier) *JoinMergeAllValue {
 // immediate source aliases but hides the real projection, so PartitionSelectRule
 // keeps all lower aliases live when it partitions a select carrying this result.
 func NewJoinMergeSeedValue(aliases ...CorrelationIdentifier) *JoinMergeAllValue {
+	opaqueMergeConstructions.Add(1)
 	return &JoinMergeAllValue{Aliases: aliases, Seed: true}
 }
 
