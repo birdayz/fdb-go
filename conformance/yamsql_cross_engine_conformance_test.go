@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"time"
 
@@ -178,6 +179,9 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 	AfterAll(func() {
 		if pool != nil {
 			pool.Shutdown()
+		}
+		if clusterFilePath != "" {
+			_ = os.Remove(clusterFilePath)
 		}
 	})
 
