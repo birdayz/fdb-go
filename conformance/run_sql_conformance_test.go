@@ -30,7 +30,10 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
@@ -38,6 +41,36 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// seedCorpusParallelism is the number of (fresh Java server + Go runner) workers
+// the SeedRunCorpus loop fans out across. Each worker drives a disjoint subset
+// of the ~1620 corpus entries on its OWN pre-spawned Java server (so there is no
+// concurrent spawning while queries run, and per-server load is LOWER than the
+// single-server serial baseline that is already green). Speeds the loop ~Nx at
+// the cost of N live JVMs for its duration. Override with
+// CONFORMANCE_SEED_PARALLELISM; default 8.
+func seedCorpusParallelism() int {
+	if v := os.Getenv("CONFORMANCE_SEED_PARALLELISM"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 8
+}
+
+// maxConflictRetries bounds the backoff-retry below.
+const maxConflictRetries = 16
+
+// isTxConflict reports whether err is an FDB transaction-conflict (1020).
+// Running the corpus in parallel makes many workers create their ephemeral
+// schema at once, and those CREATEs contend on the shared relational catalog
+// keyspace → 1020. A 1020 is transient and retryable BY DESIGN (the embedded Go
+// engine retries internally, which is why only the Java side surfaces it); the
+// fix is to re-run the conflicting side until its schema CREATE truly commits,
+// after which the cross-engine result matches a serial run.
+func isTxConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not committed due to conflict")
+}
 
 // entryConforms reports whether Go's result conforms to Java's for a
 // non-annotated corpus entry: a matching server-side root error message when
@@ -369,76 +402,113 @@ var _ = Describe("RunSql Harness", func() {
 		// Setup, Query[, ExpectErrorContains]} to SeedRunCorpus().
 		// No baseline RowSet to capture, no conformance-test wiring.
 		//
-		// ISOLATION (nightshift-61): negative entries (those with
-		// `ExpectErrorContains` set) get their own freshly-spawned
-		// Java conformance server, torn down immediately after. This
-		// matches the user's explicit "each test case should be
-		// isolated" requirement: fdb-relational 4.11.1.0's error-path
-		// state cumulates within a single Java JVM (parser caches,
-		// semantic analyser intermediate state, type-resolver
-		// negative-result cache), and the same query that returns a
-		// clean error in <120ms on a fresh server can hit the 30s
-		// HTTP timeout after a handful of prior errors. Per-entry
-		// isolation eliminates cross-entry pollution at the cost of
-		// ~5s extra Java startup per negative entry. Positive entries
-		// share the outer-It isolated server because they exercise the
-		// success path which doesn't accumulate state. The shared
-		// server itself is freshly spawned (not the suite-shared one)
-		// to avoid pollution from prior conformance specs.
-		isoJava, err := NewIsolatedJavaInvoker()
-		Expect(err).NotTo(HaveOccurred(), "failed to spawn isolated Java conformance server")
-		defer func() { _ = isoJava.Close() }()
-		javaR := plandiff.NewJavaRunnerHTTP(javaBaseURL(isoJava), env.ClusterFile).(plandiff.SetupRunner)
-		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
-		defer os.Remove(clusterFilePath)
-		goR := plandiff.NewGoSQLSetupRunner(clusterFilePath)
-
-		// Java is the spec. Per entry, ask Java first; whatever it does
-		// (success with rows / failure with a message) becomes the
-		// expected behaviour Go must match. No per-entry expected-text
-		// annotation — drift on either side surfaces immediately.
+		// The corpus is driven in PARALLEL across a small pool of freshly-spawned
+		// Java servers + Go runners (see the fan-out below) — fresh servers, not
+		// the suite-shared one, to avoid pollution from prior conformance specs.
 		corpus := plandiff.SeedRunCorpus()
 		// Apply RFC-082 cross-engine divergence annotations (Go-only extensions,
 		// tracked Go capability gaps, and both-reject message-drift) so the
 		// harness asserts Go's documented behaviour without pinning Java's.
 		plandiff.ApplyRFC082Divergences(corpus)
-		// RFC-082 regression LOCK: non-annotated entries that diverge but are
-		// NOT in rfc082KnownRed are regressions; known-red entries that now pass
-		// must be removed from the lock (it only shrinks). Asserted after the
-		// loop so one run reports the full delta.
-		var regressions, fixedNowGreen, staleAnnotations []string
-		for _, rq := range corpus {
-			rq := rq
-			By(rq.Name, func() {
-				javaResult := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
-				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 
-				// Divergence path: when an entry carries a Divergence
-				// annotation, assert Go's behaviour against the embedded
-				// expectation but do NOT pin Java's actual behaviour.
-				// Lets us keep documented Java upstream bugs (NPEs,
-				// dedup failures, etc.) inside the corpus while still
-				// catching Go-side regressions.
-				if rq.Divergence != nil {
-					if ok, detail := divergenceHolds(rq.Divergence, javaResult, goResult); !ok {
-						staleAnnotations = append(staleAnnotations, fmt.Sprintf("%s: %s", rq.Name, detail))
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+
+		// Fan the corpus out across N workers, each driving a disjoint subset on
+		// its OWN pre-spawned Java server + Go runner against the one shared FDB
+		// cluster. Every entry runs in its own uuid-isolated ephemeral schema, so
+		// workers never collide; pre-spawning all servers up front preserves the
+		// no-spawn-during-query rule; and per-server load is 1/N of the
+		// single-server serial baseline that is already green (so error-path
+		// state accumulation, if any, is strictly lower). Java is the spec: per
+		// entry, whatever Java does becomes the behaviour Go must match — drift on
+		// either side surfaces. Workers only COMPUTE the (java, go) result pair;
+		// Gomega's Expect is not goroutine-safe, so every assertion runs serially
+		// after the join.
+		n := seedCorpusParallelism()
+		if n > len(corpus) {
+			n = len(corpus)
+		}
+		type corpusRunner struct {
+			java plandiff.SetupRunner
+			gor  plandiff.SetupRunner
+			srv  *JavaInvoker
+		}
+		runners := make([]corpusRunner, n)
+		for i := range runners {
+			srv, err := NewIsolatedJavaInvoker()
+			Expect(err).NotTo(HaveOccurred(), "failed to spawn Java conformance server %d/%d", i+1, n)
+			runners[i] = corpusRunner{
+				java: plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner),
+				gor:  plandiff.NewGoSQLSetupRunner(clusterFilePath),
+				srv:  srv,
+			}
+		}
+		defer func() {
+			for _, r := range runners {
+				_ = r.srv.Close()
+			}
+		}()
+
+		type enginePair struct{ java, golang plandiff.RunResult }
+		results := make([]enginePair, len(corpus))
+		idxCh := make(chan int)
+		var wg sync.WaitGroup
+		for w := 0; w < n; w++ {
+			wg.Add(1)
+			go func(r corpusRunner, wid int) {
+				defer wg.Done()
+				for idx := range idxCh {
+					rq := corpus[idx]
+					jr := r.java.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+					gr := r.gor.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+					// Re-run whichever side hit a transient catalog conflict
+					// (FDB 1020) until its CREATE commits — see isTxConflict.
+					// Each RunWithSetup uses a fresh uuid schema, so a retry is a
+					// clean re-attempt. Backoff is rising + per-worker-staggered
+					// (wid*11ms) so two workers that collide on the same attempt
+					// don't retry in lockstep and re-collide (thundering herd).
+					for attempt := 1; attempt <= maxConflictRetries && (isTxConflict(jr.Err) || isTxConflict(gr.Err)); attempt++ {
+						time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
+						if isTxConflict(jr.Err) {
+							jr = r.java.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+						}
+						if isTxConflict(gr.Err) {
+							gr = r.gor.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+						}
 					}
-					return
+					results[idx] = enginePair{java: jr, golang: gr}
 				}
+			}(runners[w], w)
+		}
+		for i := range corpus {
+			idxCh <- i
+		}
+		close(idxCh)
+		wg.Wait()
 
-				// Non-annotated entries are subject to the RFC-082 regression
-				// LOCK rather than asserted green directly: record whether Go
-				// conforms (matching error when Java errors, or conforming
-				// columns + equal rows when Java succeeds), then reconcile
-				// against rfc082KnownRed after the loop.
-				ok, detail := entryConforms(javaResult, goResult)
-				known := plandiff.IsKnownRed(rq.Name)
-				if !ok && !known {
-					regressions = append(regressions, fmt.Sprintf("%s: %s", rq.Name, detail))
-				} else if ok && known {
-					fixedNowGreen = append(fixedNowGreen, rq.Name)
+		// RFC-082 regression LOCK, asserted serially over the computed results so
+		// one run reports the full delta: non-annotated entries that diverge but
+		// are NOT in rfc082KnownRed are regressions; known-red entries that now
+		// pass must be removed from the lock (it only shrinks). Annotated entries
+		// assert Go's pinned behaviour without pinning Java's.
+		var regressions, fixedNowGreen, staleAnnotations []string
+		for idx := range corpus {
+			rq := corpus[idx]
+			javaResult, goResult := results[idx].java, results[idx].golang
+			if rq.Divergence != nil {
+				if ok, detail := divergenceHolds(rq.Divergence, javaResult, goResult); !ok {
+					staleAnnotations = append(staleAnnotations, fmt.Sprintf("%s: %s", rq.Name, detail))
 				}
-			})
+				continue
+			}
+			ok, detail := entryConforms(javaResult, goResult)
+			known := plandiff.IsKnownRed(rq.Name)
+			if !ok && !known {
+				regressions = append(regressions, fmt.Sprintf("%s: %s", rq.Name, detail))
+			} else if ok && known {
+				fixedNowGreen = append(fixedNowGreen, rq.Name)
+			}
 		}
 		Expect(staleAnnotations).To(BeEmpty(),
 			"STALE RFC-082 annotation(s) — Go's behaviour no longer matches the pinned divergence; update/remove rfc082Divergences:\n  %s",
