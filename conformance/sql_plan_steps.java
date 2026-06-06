@@ -19,7 +19,6 @@ import com.apple.foundationdb.relational.recordlayer.RecordLayerEngine;
 import com.apple.foundationdb.relational.recordlayer.RelationalKeyspaceProvider;
 import com.apple.foundationdb.relational.recordlayer.catalog.StoreCatalogProvider;
 import com.apple.foundationdb.relational.recordlayer.ddl.RecordLayerMetadataOperationsFactory;
-import com.apple.foundationdb.relational.recordlayer.query.cache.RelationalPlanCache;
 import com.codahale.metrics.MetricRegistry;
 
 import com.google.gson.JsonArray;
@@ -97,7 +96,12 @@ class SqlPlanSteps {
                 // already inited with some other API version — fine.
             }
 
-            File tempFile = new File("/tmp/fdb_sql_plan_steps.cluster");
+            // Unique per server PROCESS — NOT a fixed /tmp path. The A3 harness
+            // runs a POOL of conformance servers spawned concurrently; a shared
+            // cluster-file path would let one process read another's half-written
+            // file. createTempFile gives each server its own path.
+            File tempFile = File.createTempFile("fdb_sql_plan_steps_", ".cluster");
+            tempFile.deleteOnExit();
             try (FileWriter writer = new FileWriter(tempFile)) {
                 writer.write(clusterFileContent);
             }
@@ -123,6 +127,17 @@ class SqlPlanSteps {
                 .setRlConfig(config)
                 .setStoreCatalog(storeCatalog)
                 .build();
+            // Plan cache DISABLED (null) on purpose. The engine is built once and
+            // shared across every conformance request; a live RelationalPlanCache is
+            // the one piece of cross-query MUTABLE state in that shared engine. Its
+            // entries are evicted on a wall-clock TTL, so whether query N hits or
+            // misses the cache depends on timing — which makes Java's observable
+            // behaviour (and, on a re-plan miss, error-path state) differ run-to-run
+            // and machine-to-machine. makeEngine's planCache param is @Nullable and
+            // AbstractEmbeddedStatement wraps it in Optional.ofNullable, so null is the
+            // canonical "cache disabled" path: PlanGenerator sees Optional.empty() and
+            // plans every query fresh + statelessly. Determinism > the cache's speed
+            // win here — this is a conformance oracle, not a production server.
             EmbeddedRelationalEngine engine = RecordLayerEngine.makeEngine(
                 config,
                 Collections.singletonList(database),
@@ -130,7 +145,7 @@ class SqlPlanSteps {
                 storeCatalog,
                 new MetricRegistry(),
                 ddlFactory,
-                RelationalPlanCache.buildWithDefaults());
+                /* planCache = */ null);
 
             DriverManager.registerDriver(new EmbeddedRelationalDriver(engine));
             setupClusterContent = clusterFileContent;

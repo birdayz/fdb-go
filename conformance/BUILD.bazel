@@ -83,6 +83,7 @@ go_test(
         "index_state_conformance_test.go",
         "isolation_conformance_test.go",
         "java_invoker_test.go",
+        "java_planner_warmth_proof_test.go",
         "max_ever_version_index_conformance_test.go",
         "metadata_proto_conformance_test.go",
         "metadata_store_conformance_test.go",

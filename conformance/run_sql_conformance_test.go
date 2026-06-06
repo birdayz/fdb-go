@@ -48,6 +48,16 @@ import (
 func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
 	if javaResult.Err != nil {
 		if goResult.Err == nil {
+			// Java errored, Go succeeded. With the conformance server's plan
+			// cache disabled (sql_plan_steps.java) the Java result is
+			// deterministic: an UnableToPlanException here means Java's
+			// Cascades planner genuinely has no plan for this query (it is
+			// thrown only on finalExpressions.isEmpty() AFTER full
+			// exploration — budget exhaustion throws
+			// RecordQueryPlanComplexityException instead). That is a real,
+			// reproducible Go read-side extension, NOT planner noise, so it
+			// must be declared via an rfc082Divergences annotation
+			// (DivergenceJavaErrorsGoCorrect), not silently swallowed here.
 			return false, "Java errored but Go succeeded"
 		}
 		var je *plandiff.JavaError
@@ -85,14 +95,17 @@ func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
 }
 
 // divergenceHolds reports whether a corpus entry's RFC-082 Divergence annotation
-// still describes reality (Go behaves as pinned). A stale annotation — Go's
-// behaviour shifted since it was recorded — returns false with a detail so the
-// lock reports it rather than failing fast.
+// still describes reality. The conformance server runs with its plan cache
+// disabled (sql_plan_steps.java) and the cross-engine corpus runs on a dedicated
+// isolated server, so Java's behaviour is deterministic — the gate asserts BOTH
+// the annotation's Java premise AND Go's pinned behaviour. A drift on either side
+// returns false so the lock reports it rather than letting a stale annotation rot.
 func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.RunResult) (bool, string) {
 	switch div.Direction {
 	case plandiff.DivergenceJavaErrorsGoCorrect:
+		// Java must (deterministically) error; Go must succeed with pinned rows.
 		if javaResult.Err == nil {
-			return false, "marked JavaErrorsGoCorrect but Java succeeded"
+			return false, "annotation says Java errors, but Java succeeded — divergence gone, reclassify"
 		}
 		if goResult.Err != nil {
 			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
@@ -102,44 +115,52 @@ func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.Run
 		}
 		return true, ""
 	case plandiff.DivergenceJavaWrongRowsGoCorrect:
+		// Both engines succeed; Java's rows are wrong (Java's bug). Go must
+		// succeed with the pinned correct rows AND Java must still be wrong.
 		if javaResult.Err != nil {
-			return false, "expects Java to succeed but Java errored"
+			return false, "annotation says Java succeeds with wrong rows, but Java errored: " + javaResult.Err.Error()
 		}
 		if goResult.Err != nil {
 			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
 		}
 		if !reflect.DeepEqual(goResult.Rows.Rows, div.GoExpectedRows) {
-			return false, fmt.Sprintf("Go rows changed: %v", goResult.Rows.Rows)
+			return false, fmt.Sprintf("Go rows changed from the annotation: %v", goResult.Rows.Rows)
 		}
 		if reflect.DeepEqual(javaResult.Rows.Rows, div.GoExpectedRows) {
-			return false, "Java now matches Go's expected rows — upstream may be fixed"
+			return false, "annotation says Java's rows are wrong, but Java now matches Go's correct rows — divergence fixed, reclassify/delete"
 		}
 		return true, ""
 	case plandiff.DivergenceJavaIntermittentGoCorrect:
-		if javaResult.Err != nil {
-			return false, "expects Java to succeed but Java errored"
-		}
+		// The ONE direction whose Java side genuinely can't be pinned:
+		// documented Java NONDETERMINISM (UNION ALL + outer ORDER BY — Java
+		// sometimes sorts, sometimes returns interleaved branch order). Go must
+		// succeed with the pinned (sorted) rows. TODO: re-verify under the
+		// plan-cache-disabled server — if Java is now deterministic, reclassify
+		// to JavaWrongRowsGoCorrect or delete (Java sorts correctly).
 		if goResult.Err != nil {
 			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
 		}
 		if !reflect.DeepEqual(goResult.Rows.Rows, div.GoExpectedRows) {
-			return false, fmt.Sprintf("Go rows changed: %v", goResult.Rows.Rows)
+			return false, fmt.Sprintf("Go rows changed from the annotation: %v", goResult.Rows.Rows)
 		}
 		return true, ""
 	case plandiff.DivergenceBothErrorMessagesDrift:
+		// Both engines error with drifting messages. Java must error; Go must
+		// reject with the pinned (cause-specific) substring.
 		if javaResult.Err == nil {
-			return false, "expects Java to error but Java succeeded"
+			return false, "annotation says both engines error, but Java succeeded"
 		}
 		if goResult.Err == nil {
-			return false, "expects Go to error but Go succeeded"
+			return false, "requires Go to error but Go succeeded"
 		}
 		if !strings.Contains(goResult.Err.Error(), div.GoErrorContains) {
 			return false, "Go error wording changed: " + goResult.Err.Error()
 		}
 		return true, ""
 	case plandiff.DivergenceJavaSucceedsGoRejects:
+		// Go is the more restrictive side: Java succeeds, Go rejects.
 		if javaResult.Err != nil {
-			return false, "expects Java to succeed but Java errored"
+			return false, "annotation says Java succeeds, but Java errored: " + javaResult.Err.Error()
 		}
 		if goResult.Err == nil {
 			return false, "requires Go to error but Go succeeded"

@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -41,25 +40,32 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
 )
 
-var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
+// Ordered is required for the suite-level BeforeAll (pool spawn / cluster-file
+// write). ContinueOnFailure is then MANDATORY: without it, Ginkgo's Ordered
+// semantics skip every scenario after the first failing one, so a single broken
+// scenario masks all the others and which one is reported depends on the
+// randomized run order — making the gate look nondeterministic when it is not.
+// With ContinueOnFailure every scenario runs regardless of earlier failures, so
+// one run surfaces the COMPLETE set of failures and that set is order-independent.
+//
+// Caveat: ContinueOnFailure decorates only the OUTERMOST Ordered container, so it
+// un-skips across SCENARIOS but not WITHIN one — the inner per-scenario Ordered
+// still skips a scenario's remaining tests after its first failure. So a broken
+// scenario reports only its first failing test; every broken scenario still
+// surfaces. (Do not delete the decorator or this note — it stops the
+// order-dependent masking bug from creeping back.)
+var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFailure, func() {
 	var (
 		ctx             context.Context
-		java            *JavaInvoker
 		clusterFile     string
 		clusterFilePath string
+		pool            *JavaServerPool
 	)
 
-	// BeforeAll: write the cluster file once for the entire Describe.
-	// Per-spec BeforeEach previously created 360+ distinct temp paths,
-	// each becoming a separate cache key in the fdbsql driver's
-	// per-cluster-file cache (driver.go:fdbDBCache) → 360 live FDB
-	// connections by suite end. Sharing one path keeps the cache to
-	// one entry. Cluster-file CONTENTS don't change across specs
-	// (sharedContainer is a process-singleton), so reusing the path
-	// is safe. Requires the `Ordered` decorator on the parent
-	// Describe — Ginkgo v2 only allows BeforeAll inside Ordered
-	// containers because non-deterministic spec order would otherwise
-	// run BeforeAll per shuffled batch.
+	// BeforeAll: write the cluster file once (a per-spec path would create
+	// 360+ cache keys in the fdbsql driver's per-cluster-file cache; one shared
+	// path keeps it to one entry) and start the per-scenario Java-server pool.
+	// `Ordered` on the parent Describe is required for BeforeAll.
 	BeforeAll(func() {
 		ctx = context.Background()
 		var err error
@@ -69,35 +75,63 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
 		// driver opens it directly); the Java runner takes the
 		// contents (sent over HTTP, opened server-side).
 		clusterFilePath = writeClusterFileToTemp(clusterFile)
+		pool = NewJavaServerPool(a3PoolSize())
 	})
 
-	BeforeEach(func() {
-		java = NewJavaInvoker()
+	AfterAll(func() {
+		if pool != nil {
+			pool.Shutdown()
+		}
 	})
 
-	// No AfterEach / AfterAll cleanup of clusterFilePath — the file
-	// is harmless if it survives (testcontainers-go cleans up the FDB
-	// container; the cluster-file path becomes meaningless once the
-	// container's gone).
-
+	// DETERMINISM MODEL — per-scenario fresh JVM, pooled.
+	//
+	// fdb-relational 4.11.1.0 carries cross-query state in process-global
+	// (JVM-static) caches — chiefly the ANTLR parser's static prediction state
+	// (`_decisionToDFA` + the shared PredictionContextCache on the generated
+	// RelationalParser) — that WARM as queries are parsed on a JVM. The same
+	// SQL then parses into a subtly different tree depending on what ran before
+	// it, and that propagates downstream: the SAME query can be rejected by the
+	// semantic analyzer ("order by is not supported in subquery"), rejected by
+	// the Cascades planner (UnableToPlanException), or accepted — flipping
+	// purely with execution order, in BOTH directions (some queries fail cold /
+	// pass warm, others the reverse). Every per-connection and per-query object
+	// is freshly constructed (BaseVisitor, SemanticAnalyzer, RecordLayerDatabase
+	// + its metadata cache; the plan cache is disabled in sql_plan_steps.java) —
+	// verified against the fdb-relational source — so the leak is in those JVM
+	// statics, which nothing short of a fresh JVM resets. (Confirmed:
+	// --ginkgo.randomize-all with different seeds flips which queries Java
+	// accepts; on one shared server, editing the scenario list reshuffles the
+	// warming and flips UNRELATED scenarios — whack-a-mole.)
+	//
+	// Fix: each scenario borrows a FRESH, never-yet-used server from the pool.
+	// A scenario's result is then a function of that scenario alone —
+	// independent of every other scenario and of execution order — so the gate
+	// cannot flake run-to-run and editing the list cannot cascade. The pool
+	// (JavaServerPool, size = CONFORMANCE_A3_POOL_SIZE) pre-spawns servers in
+	// the background so the per-scenario JVM-boot cost is overlapped with
+	// scenario execution, keeping this close to single-shared-server speed.
+	// Bazel caches the test result, so it only re-runs when an input changes.
+	//
+	// A Java error below is therefore a real, reproducible signal — a genuine
+	// Go-only extension (Java cannot plan it; exclude it from
+	// crossEngineScenarios with a note) or a regression. Fail loudly.
 	for _, s := range crossEngineScenarios() {
 		s := s
-		Describe("scenario "+s.Name, func() {
+		Describe("scenario "+s.Name, Ordered, func() {
+			var scenarioJava *JavaInvoker
+			BeforeAll(func() {
+				var err error
+				scenarioJava, err = pool.Borrow()
+				Expect(err).NotTo(HaveOccurred(),
+					"failed to obtain a fresh Java server for scenario %q", s.Name)
+			})
+			AfterAll(func() {
+				pool.Retire(scenarioJava)
+			})
 			for i, t := range s.Tests {
 				i, t := i, t
 				It(t.Query, func() {
-					// The A3 cross-engine harness shares one fdb-relational JVM
-					// across ~125 scenarios, and that JVM accumulates error-path
-					// state (parser/type-resolver caches) — an innocent query can
-					// flake after a few error-path scenarios. That makes A3
-					// unsuitable for the merge GATE (it would red PRs at random),
-					// so the gated `just test` / CI run skips it via
-					// CONFORMANCE_GATE_SKIP_A3=1; it still runs in nightly. The
-					// deterministic SeedRunCorpus regression lock is what gates
-					// the comprehensive cross-engine surface (RFC-082).
-					if os.Getenv("CONFORMANCE_GATE_SKIP_A3") == "1" {
-						Skip("A3 cross-engine excluded from the merge gate (fdb-relational JVM error-state flakiness); runs nightly")
-					}
 					if t.ErrorCode != "" {
 						// SQLState wiring is in place
 						// (`*plandiff.JavaError.SQLState` +
@@ -113,7 +147,7 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
 						Skip("non-query (DML) cross-engine tests need a different harness — runWithSetup expects exactly one query")
 					}
 					prefix := fmt.Sprintf("scenario %q test #%d query %q", s.Name, i, t.Query)
-					javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), clusterFile).(plandiff.SetupRunner)
+					javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(scenarioJava), clusterFile).(plandiff.SetupRunner)
 					goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 
 					javaRes := javaRunner.RunWithSetup(ctx, s.SchemaTemplate, s.Setup, t.Query)
@@ -123,17 +157,14 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
 					Expect(goRes.Err).NotTo(HaveOccurred(), "%s: Go executor errored", prefix)
 					assertRowsMatch(goRes.Rows.Rows, t.Rows, t.Unordered, prefix+" [Go vs expected]")
 
-					// Java's Cascades planner is nondeterministic on some shapes
-					// (intermittent UnableToPlanException on join + ORDER BY over
-					// an unindexed column, etc.) and accumulates error-path state
-					// across queries on the shared JVM. When Java can't
-					// plan/execute a query, treat it as Java-unsupported (Go has
-					// the read-side reach Java lacks) and skip the Java-side and
-					// cross-engine checks rather than flaking the gate. Go stays
-					// pinned above, so this never hides a Go regression.
-					if javaRes.Err != nil {
-						return
-					}
+					// STRICT cross-engine, no tolerance — each scenario runs on
+					// its OWN fresh JVM (see the determinism model above), so a
+					// Java error is a genuine Go-only extension (exclude it) or a
+					// regression, never warming noise.
+					Expect(javaRes.Err).NotTo(HaveOccurred(),
+						"%s: Java errored on its dedicated fresh server — if this query "+
+							"is a genuine Go-only extension (Java cannot plan it) exclude it "+
+							"from crossEngineScenarios with a note; otherwise it's a regression", prefix)
 					// (a) Java vs scenario-declared expected.
 					assertRowsMatch(javaRes.Rows.Rows, t.Rows, t.Unordered, prefix+" [Java vs expected]")
 					// (b) Java vs Go directly (numerics coerced to float64 on
@@ -269,7 +300,22 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// a tracked Go bug, not an RFC-082 column/conformance issue, and a
 		// non-deterministic spec must not gate. Tracked under RFC-042; the
 		// builder stays for the Go-only determinism follow-up.
-		recursiveCteAdvancedScenario(),
+		// recursiveCteAdvancedScenario is NOT cross-engine: BOTH its tests hit
+		// genuine fdb-relational 4.11.1.0 limitations, each confirmed
+		// deterministic when the scenario runs in isolation (no prior query to
+		// prime shared engine-state):
+		//   (1) column-RENAMING recursive CTE referenced through an alias
+		//       (`anc(node, up) ... anc AS a ... a.up`) → SemanticAnalyzer
+		//       rejects "Attempting to query non existing column A.UP".
+		//   (2) recursive CTE + outer ORDER BY (`... SELECT label FROM desc_tree
+		//       ORDER BY id`) → "order by is not supported in subquery" (the CTE
+		//       is treated as a subquery). This is the SAME limitation
+		//       SeedRunCorpus pins as JavaErrorsGoCorrect for recursive_cte_basic
+		//       / cte_basic_with_aggregate.
+		// Both are Go-only read-side extensions; a query Java can't plan has no
+		// cross-engine equivalence to assert. Covered Go-only via the
+		// recursive_cte_advanced yamsql corpus + SeedRunCorpus's annotated
+		// CTE-ORDER-BY entries. (Builder kept for that Go-only coverage.)
 		orderByNullsScenario(),
 		orderByDupeColScenario(),
 		compositePKCrossScenario(),
@@ -283,12 +329,64 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		insertArityScenario(),
 		insertValuesExprScenario(),
 		dmlReturningProbesScenario(),
-		dmlWithNullSafeScenario(),
+		// dmlWithNullSafeScenario is NOT cross-engine: it is STATEFUL — its
+		// SELECT tests assert the table state AFTER prior DELETE/UPDATE tests in
+		// the same scenario (NULL-safe `IS [NOT] DISTINCT FROM` DML). The A3
+		// harness runs each test INDEPENDENTLY (schema + Setup + one query), so a
+		// SELECT only ever observes the Setup, never a prior test's mutation —
+		// e.g. `SELECT id,n FROM t ORDER BY id` returns all 4 seeded rows, not the
+		// 2 rows that survive the preceding `DELETE … IS NOT DISTINCT FROM null`.
+		// Unlike unique_violation (a single end-state that we could seed in
+		// Setup), this scenario has several different post-DML states, so it
+		// cannot be made stateless. The NULL-safe DML semantics are covered
+		// Go-only via the dml_with_null_safe yamsql corpus (which runs statefully).
 		insertSelectScenario(),
-		recursiveCteBaseScenario(),
-		dmlSubqueryScenario(),
+		// recursiveCteBaseScenario is NOT cross-engine: it is a showcase of
+		// Go-only recursive-CTE EXTENSIONS that fdb-relational 4.11.1.0 cannot
+		// plan, so there is no cross-engine equivalence to assert (these are
+		// welcome Go-beyond-Java read-side capabilities, not divergences):
+		//   - the `TRAVERSAL ORDER pre_order|post_order|level_order` clause —
+		//     Java's grammar has no such production at all;
+		//   - an outer `ORDER BY` over a recursive CTE (`… SELECT id FROM
+		//     ancestors ORDER BY id DESC`) — Java deterministically rejects with
+		//     "order by is not supported in subquery" (the WITH body is treated
+		//     as a subquery), the same limitation noted on
+		//     recursiveCteAdvancedScenario;
+		//   - column-list renaming on a recursive CTE referenced via alias.
+		// The cross-engine-valid recursive-CTE basics (anchor + recursive UNION,
+		// COUNT, empty seed) are asserted by recursiveCteCountScenario. The full
+		// Go-only surface is covered by the recursive_cte yamsql corpus. (Builder
+		// kept for that Go-only coverage.)
+		//
+		// dmlSubqueryScenario is NOT cross-engine: it is STATEFUL in the same way
+		// as dmlWithNullSafeScenario. Its Setup runs a full MUTATING DML chain
+		// (DELETE … WHERE EXISTS → re-INSERT → UPDATE → DELETE … WHERE NOT EXISTS)
+		// that ends at t = {2, 4}, but the verification SELECTs assert the
+		// INTERMEDIATE states between steps (e.g. `SELECT id FROM t ORDER BY id`
+		// expects {1,3,5}, the state after only the first DELETE). The A3 harness
+		// runs each test as schema+full-Setup+one-query, so every SELECT observes
+		// the single FINAL state — Go deterministically returns {2,4} (verified
+		// 10/10 in isolation), correctly, but it cannot match the per-step
+		// expectations. Unlike insert_select (additive INSERT-only, so the final
+		// state is a superset that point-WHERE SELECTs can still probe), a
+		// mutating chain collapses every SELECT to the same end state, so the
+		// scenario cannot be made stateless. The correlated EXISTS / NOT EXISTS
+		// DML semantics are covered Go-only via the dml_subquery yamsql corpus and
+		// dml_cascades_fdb_test.go. (Builder kept for that Go-only coverage.)
 		updateDmlCteScenario(),
-		correlatedExistsAdvancedScenario(),
+		// correlatedExistsAdvancedScenario is NOT cross-engine: BOTH its tests
+		// are Go-only EXTENSIONS that fdb-relational 4.11.1.0 cannot plan
+		// (UnableToPlanException: "Cascades planner could not plan query"),
+		// confirmed deterministic per-scenario:
+		//   - `SELECT DISTINCT e.name FROM emp e, task t WHERE … AND EXISTS(…)
+		//     ORDER BY e.name` — DISTINCT + comma-join + correlated EXISTS +
+		//     outer ORDER BY together exceed Java's planner;
+		//   - `SELECT name FROM emp WHERE NOT EXISTS(…) ORDER BY name` —
+		//     correlated NOT EXISTS + outer ORDER BY.
+		// Go plans and returns the correct rows; Java cannot, so there is no
+		// cross-engine equivalence to assert. Covered Go-only by the
+		// correlated_exists_advanced yamsql corpus + correlated_subquery_probes.
+		// (Builder kept for that Go-only coverage.)
 		orderByLimitScenario(),
 	}
 }
@@ -3727,6 +3825,11 @@ func joinOptimizationProbesScenario() *yamsql.Scenario {
 // recursiveCteAdvancedScenario mirrors testdata/recursive_cte_advanced.yaml.
 // Drops NOT NULL on PK (fdb-relational restriction). Tests column alias
 // rename resolution and descendant traversal patterns in WITH RECURSIVE.
+//
+// NOT in crossEngineScenarios() — see the exclusion note at the call site:
+// both queries hit genuine fdb-relational 4.11.1.0 limitations (renamed-
+// column recursion + recursive-CTE-with-outer-ORDER-BY). Builder retained as
+// faithful documentation of the Go-only yamsql twin.
 func recursiveCteAdvancedScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "recursive_cte_advanced",
@@ -3828,23 +3931,37 @@ func orderByNullsScenario() *yamsql.Scenario {
 			"INSERT INTO t VALUES (1, 10), (2, NULL), (3, 5), (4, NULL), (5, 20)",
 		},
 		Tests: []yamsql.Test{
-			// ASC default: NULLS FIRST.
+			// ASC default: NULLS FIRST. Java-supported (no explicit NULLS clause).
 			{Query: "SELECT v FROM t ORDER BY v ASC", Rows: [][]any{{nil}, {nil}, {5}, {10}, {20}}},
-			// DESC default: NULLS LAST.
+			// DESC default: NULLS LAST. Java-supported.
 			{Query: "SELECT v FROM t ORDER BY v DESC", Rows: [][]any{{20}, {10}, {5}, {nil}, {nil}}},
-			// Explicit NULLS LAST on ASC — Go extension: in-memory sort.
-			{Query: "SELECT v FROM t ORDER BY v ASC NULLS LAST", Rows: [][]any{{5}, {10}, {20}, {nil}, {nil}}},
-			// Explicit NULLS FIRST on DESC — Go extension: in-memory sort.
-			{Query: "SELECT v FROM t ORDER BY v DESC NULLS FIRST", Rows: [][]any{{nil}, {nil}, {20}, {10}, {5}}},
+			// NOT cross-engine: explicit `NULLS LAST` / `NULLS FIRST` is a
+			// Go-only extension (in-memory sort). fdb-relational 4.11.1.0's
+			// grammar has no NULLS FIRST/LAST clause — it rejects these with a
+			// syntax error / UnableToPlanException (confirmed deterministically
+			// on a fresh isolated JVM). A query Java can't parse has no cross-
+			// engine equivalence to assert. Covered Go-only via the
+			// order_by_nulls yamsql corpus.
+			//   - "SELECT v FROM t ORDER BY v ASC NULLS LAST"   → {5,10,20,NULL,NULL}
+			//   - "SELECT v FROM t ORDER BY v DESC NULLS FIRST" → {NULL,NULL,20,10,5}
 		},
 	}
 }
 
 // orderByDupeColScenario mirrors testdata/order_by_dupe_col.yaml.
 // Duplicate column in ORDER BY (e.g. ORDER BY b, b) errors 42701 in
-// Java. Multi-column ORDER BY (e.g. ORDER BY b, id) is a Go extension
-// (in-memory sort) — included for cross-engine probing. Drops NOT NULL
-// on PK.
+// Java. Drops NOT NULL on PK.
+//
+// The multi-column ORDER BY tests (`ORDER BY b, id` / `ORDER BY b+1, b+1`)
+// are NOT cross-engine: multi-column ORDER BY without a covering composite
+// index is a Go-only extension (in-memory sort). fdb-relational's Cascades
+// planner is UNRELIABLE on it — it throws UnableToPlanException ("could not
+// plan query"), and (unlike the parser-warming cases) this is genuine planner
+// nondeterminism: the same query on a FRESH JVM is sometimes planned, sometimes
+// not, because the Cascades exploration order is identity-hash-dependent. There
+// is no stable cross-engine equivalence to assert, so these stay Go-only
+// (covered by the order_by_dupe_col yamsql corpus). This matches the
+// "multi-col ORDER BY gotcha" already avoided by the other A3 scenarios.
 func orderByDupeColScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "order_by_dupe_col",
@@ -3855,13 +3972,10 @@ func orderByDupeColScenario() *yamsql.Scenario {
 		Tests: []yamsql.Test{
 			// Duplicate column → 42701.
 			{Query: "SELECT b FROM t ORDER BY b, b", ErrorCode: "42701"},
-			// Multi-column ORDER BY — Go extension: in-memory sort.
-			{Query: "SELECT id, b FROM t ORDER BY b, id", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}}},
 			// Duplicate via positional + name mix (ORDER BY 1, b on
 			// SELECT b → both resolve to column b).
 			{Query: "SELECT b FROM t ORDER BY 1, b", ErrorCode: "42701"},
-			// Multi-column ORDER BY with expression — Go extension: in-memory sort.
-			{Query: "SELECT b FROM t ORDER BY b + 1, b + 1", Rows: [][]any{{10}, {20}, {30}}},
+			// (multi-column ORDER BY tests are Go-only — see the note above)
 		},
 	}
 }
@@ -3896,24 +4010,43 @@ func compositePKCrossScenario() *yamsql.Scenario {
 // PRIMARY KEY conflict and explicit UNIQUE index conflict. Drops NOT
 // NULL on PK column (fdb-relational restriction). Keeps NOT NULL on
 // non-PK columns where the YAML has them.
+//
+// STATELESS ADAPTATION: the yamsql twin is STATEFUL — its tests run as
+// a sequence on one store, so its `SELECT COUNT(*) → 3` follows a prior
+// successful `INSERT ... (3, ...)`. The A3 cross-engine harness runs
+// each test INDEPENDENTLY (runWithSetup = schema + Setup + ONE query),
+// so a test can only observe the Setup, never a prior test's mutation.
+// We therefore seed all THREE rows in Setup and keep every test
+// self-contained: COUNT(*) counts the seeded rows; the conflict tests
+// use FRESH primary keys (4, 5) so "duplicate email on a fresh PK"
+// still exercises the unique INDEX, not the PK. Intent is preserved;
+// no test depends on another's side effect.
 func uniqueViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "unique_violation",
-		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING NOT NULL, email STRING, PRIMARY KEY (id))" +
+		// NOT NULL dropped from `name`: fdb-relational 4.11.1.0 allows NOT NULL
+		// only on ARRAY columns ("NOT NULL is only allowed for ARRAY column
+		// type") — scalar NOT NULL is a Go-only extension Java cannot CREATE, so
+		// keeping it makes the schema un-creatable in Java (fails deterministically
+		// on a fresh per-scenario server). The unique-constraint behaviour under
+		// test (PK + UNIQUE INDEX on email) is unaffected; the data is non-null.
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))" +
 			" CREATE UNIQUE INDEX t_email ON t (email)",
 		Setup: []string{
-			"INSERT INTO t VALUES (1, 'alice', 'a@x.com'), (2, 'bob', 'b@x.com')",
+			"INSERT INTO t VALUES (1, 'alice', 'a@x.com'), (2, 'bob', 'b@x.com'), (3, 'carol', 'c@x.com')",
 		},
 		Tests: []yamsql.Test{
-			// Duplicate PRIMARY KEY — raises 23505.
-			{Query: "INSERT INTO t VALUES (1, 'carol', 'c@x.com')", ErrorCode: "23505"},
-			// Duplicate unique-indexed column on fresh PK — raises 23505.
-			{Query: "INSERT INTO t VALUES (3, 'carol', 'a@x.com')", ErrorCode: "23505"},
-			// Non-conflicting insert succeeds; table now has 3 rows.
-			{Query: "INSERT INTO t VALUES (3, 'carol', 'c@x.com')"},
+			// Duplicate PRIMARY KEY (PK=1 already seeded) — raises 23505.
+			{Query: "INSERT INTO t VALUES (1, 'dave', 'd@x.com')", ErrorCode: "23505"},
+			// Duplicate unique-indexed email on a FRESH PK (4) — exercises the
+			// UNIQUE INDEX, not the PK — raises 23505.
+			{Query: "INSERT INTO t VALUES (4, 'dave', 'a@x.com')", ErrorCode: "23505"},
+			// Non-conflicting insert (fresh PK + fresh email) succeeds.
+			{Query: "INSERT INTO t VALUES (5, 'dave', 'd@x.com')"},
+			// Three rows were seeded; COUNT observes them statelessly.
 			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
-			// Original rows are untouched — prove the prior failed INSERT
-			// did not overwrite PK=1.
+			// Original rows are untouched — the failed conflict INSERTs above
+			// (each run in its own ephemeral schema) never overwrote PK=1.
 			{Query: "SELECT name, email FROM t WHERE id = 1", Rows: [][]any{{"alice", "a@x.com"}}},
 			// UPDATE setting a unique-indexed column to a value another row
 			// already holds raises 23505.
@@ -3928,8 +4061,13 @@ func uniqueViolationScenario() *yamsql.Scenario {
 // NULL on non-PK column 'name' where the YAML has it.
 func notNullViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
-		Name:           "not_null_violation",
-		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING NOT NULL, PRIMARY KEY (id))",
+		Name: "not_null_violation",
+		// NOT NULL dropped: fdb-relational 4.11.1.0 allows NOT NULL only on ARRAY
+		// columns, so scalar NOT NULL is a Go-only extension Java cannot CREATE.
+		// The 23502 NOT-NULL-violation tests are error_code (skipped cross-engine,
+		// covered Go-only via the yamsql twin); the cross-engine SELECT below is
+		// unaffected by the dropped constraint (its row is non-null).
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))",
 		Setup: []string{
 			"INSERT INTO t VALUES (1, 'alice')",
 		},
@@ -4276,68 +4414,82 @@ func dmlWithNullSafeScenario() *yamsql.Scenario {
 	}
 }
 
-// insertSelectScenario mirrors testdata/insert_select.yaml. INSERT INTO
-// ... SELECT copies rows from one table to another, exercises computed
-// columns in the SELECT list, duplicate-PK enforcement, and aggregate
-// output coercion. DML and error_code tests are included (auto-skipped
-// by per-test logic). Drops NOT NULL on PK columns (fdb-relational
-// restriction; PK is implicitly NOT NULL).
+// insertSelectScenario mirrors the bigint→bigint portion of
+// testdata/insert_select.yaml: INSERT INTO … SELECT copies rows between
+// tables and exercises computed columns (arithmetic, constants) in the
+// SELECT list. DML steps are included as tests and auto-skipped by the
+// non-query gate; the SELECTs assert dst's final state cross-engine.
+//
+// The aggregate-into-BIGINT steps from the yaml (INSERT … SELECT SUM(v) /
+// AVG(v) into a BIGINT column) are DELIBERATELY EXCLUDED: they expose a
+// real Go-vs-Java divergence rather than an equivalence the harness can
+// assert. Java types AVG(BIGINT) → DOUBLE and rejects the DOUBLE → BIGINT
+// assignment at plan time with SemanticException ("A value cannot be
+// assigned to a variable … cannot be promoted …", SQLSTATE 22000); it
+// accepts SUM(BIGINT) → BIGINT. Go's AggregateValue.Type() derives
+// SUM/AVG from the operand (so AVG(BIGINT) is typed BIGINT, not DOUBLE)
+// while the executor's accumulator yields float64 — so Go neither rejects
+// AVG → BIGINT at plan time (Java does) nor returns an integer SUM at the
+// type level. Closing that gap is an RFC-gated Cascades type-derivation
+// change (AVG → DOUBLE; SUM accumulator → int64), tracked in TODO.md; it
+// must not be papered over by a downstream coerce-on-write. Until then
+// the aggregate-into-BIGINT shapes have no cross-engine equivalence to
+// assert. They remain covered Go-only via the insert_select yamsql corpus.
 func insertSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "insert_select",
+		// NOT NULL dropped from dst.v: fdb-relational 4.11.1.0 allows NOT NULL
+		// only on ARRAY columns (scalar NOT NULL is a Go-only extension Java
+		// cannot CREATE). The INSERT…SELECT under test copies non-null values, so
+		// the constraint is immaterial to the cross-engine result.
 		SchemaTemplate: "CREATE TABLE src (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
-			"\nCREATE TABLE dst (id BIGINT, v BIGINT NOT NULL, PRIMARY KEY (id))",
+			"\nCREATE TABLE dst (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		Setup: []string{
 			"INSERT INTO src VALUES (1, 10), (2, 20), (3, 30)",
-			// Perform the DML chain in setup so verification SELECTs see
-			// the final state. The individual DML steps are also included
-			// as tests (auto-skipped by the non-query gate).
+			// The full additive (INSERT-only) DML chain runs in setup so the
+			// verification SELECTs observe a single deterministic final state.
+			// The individual DML steps are also included as tests (auto-skipped
+			// by the non-query gate). All projections are BIGINT → BIGINT, which
+			// both engines accept identically.
 			"INSERT INTO dst SELECT id, v FROM src",
 			"INSERT INTO dst SELECT id + 100, v * 2 FROM src",
 			"INSERT INTO dst SELECT 1000, 42 FROM src WHERE id = 1",
 			"INSERT INTO dst SELECT id + 2000, v FROM src WHERE id = 2",
-			"INSERT INTO dst SELECT 9001, SUM(v) FROM src",
-			"INSERT INTO dst SELECT 9002, AVG(v) FROM src",
-			"INSERT INTO src VALUES (10, 5)",
 		},
+		// dst after Setup (additive — no DELETE/UPDATE, so the end state is
+		// well-defined and both engines produce it identically):
+		//   (1,10)(2,20)(3,30)(101,20)(102,40)(103,60)(1000,42)(2002,20)
 		Tests: []yamsql.Test{
-			// DML tests (auto-skipped).
+			// DML tests (auto-skipped by the non-query gate).
 			{Query: "INSERT INTO dst SELECT id, v FROM src"},
 			{Query: "SELECT id, v FROM dst ORDER BY id", Rows: [][]any{
-				{1, 10}, {2, 20}, {3, 30},
+				{1, 10},
+				{2, 20},
+				{3, 30},
+				{101, 20},
+				{102, 40},
+				{103, 60},
+				{1000, 42},
+				{2002, 20},
 			}},
-			// Duplicate PK on re-copy.
+			// Duplicate PK on re-copy (DML, auto-skipped).
 			{Query: "INSERT INTO dst SELECT id, v FROM src", ErrorCode: "23505"},
-			// After failed bulk copy, dst still has exactly the original rows.
-			{Query: "SELECT COUNT(*) FROM dst", Rows: [][]any{{9}}},
-			// INSERT...SELECT with expression projections.
+			{Query: "SELECT COUNT(*) FROM dst", Rows: [][]any{{8}}},
+			// INSERT...SELECT with expression projections (DML, auto-skipped).
 			{Query: "INSERT INTO dst SELECT id + 100, v * 2 FROM src"},
 			{Query: "SELECT id, v FROM dst WHERE id > 100 ORDER BY id", Rows: [][]any{
-				{101, 20}, {102, 40}, {103, 60},
+				{101, 20}, {102, 40}, {103, 60}, {1000, 42}, {2002, 20},
 			}},
-			// INSERT...SELECT with constant expression.
+			// INSERT...SELECT with constant expression (DML, auto-skipped).
 			{Query: "INSERT INTO dst SELECT 1000, 42 FROM src WHERE id = 1"},
 			{Query: "SELECT id, v FROM dst WHERE id = 1000", Rows: [][]any{
 				{1000, 42},
 			}},
-			// INSERT with explicit column list + SELECT expression.
+			// INSERT with explicit column list + SELECT expression (DML, auto-skipped).
 			{Query: "INSERT INTO dst SELECT id + 2000, v FROM src WHERE id = 2"},
 			{Query: "SELECT id, v FROM dst WHERE id >= 2000 ORDER BY id", Rows: [][]any{
 				{2002, 20},
 			}},
-			// INSERT with aggregate output into a BIGINT column.
-			{Query: "INSERT INTO dst SELECT 9001, SUM(v) FROM src"},
-			{Query: "SELECT id, v FROM dst WHERE id = 9001", Rows: [][]any{
-				{9001, 60},
-			}},
-			// AVG that happens to be a whole number.
-			{Query: "INSERT INTO dst SELECT 9002, AVG(v) FROM src"},
-			{Query: "SELECT id, v FROM dst WHERE id = 9002", Rows: [][]any{
-				{9002, 20},
-			}},
-			// Non-integer float AVG errors cleanly.
-			{Query: "INSERT INTO src VALUES (10, 5)"},
-			{Query: "INSERT INTO dst SELECT 9003, AVG(v) FROM src WHERE id IN (1, 10)", ErrorCode: "22000"},
 		},
 	}
 }
@@ -4572,10 +4724,13 @@ func orderByLimitScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 3", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 100", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 0", ErrorCode: "0AF00"},
-			// Positional ORDER BY: ORDER BY 2 DESC refers to second SELECT column (v).
-			{Query: "SELECT id, v FROM t ORDER BY 2 DESC", Rows: [][]any{{3, 4}, {1, 3}, {5, 2}, {4, 1}, {2, 1}}},
-			// Positional ORDER BY 1 on two-column SELECT picks out id.
-			{Query: "SELECT id, grp FROM t ORDER BY 1", Rows: [][]any{{1, "a"}, {2, "a"}, {3, "b"}, {4, "b"}, {5, "a"}}},
+			// Positional ORDER BY (`ORDER BY 2 DESC`, `ORDER BY 1`) is a Go-only
+			// EXTENSION: fdb-relational 4.11.1.0 cannot plan it
+			// (UnableToPlanException), even for `ORDER BY 1` over the PK that
+			// `ORDER BY id` by name plans fine — so the positional reference, not
+			// the sort, is what its planner rejects. Go plans both and returns the
+			// correct rows; with no Java equivalence to assert they are not
+			// cross-engine. Covered Go-only by the order_by_limit yamsql corpus.
 			// ORDER BY on aggregate with GROUP BY — rejected by Java (no GROUP BY rule).
 			{Query: "SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC", ErrorCode: "0AF00"},
 			// Out-of-range positional ORDER BY (22023).
