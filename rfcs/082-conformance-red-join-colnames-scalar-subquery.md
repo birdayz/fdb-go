@@ -363,6 +363,13 @@ Server model + supporting fixes:
    annotation; `divergenceHolds` re-asserts BOTH the annotation's Java premise and
    Go's pinned behaviour (incl. the `JavaIntermittentGoCorrect` arm now requiring
    Java success — codex); A3's `if javaRes.Err != nil { return }` removed.
+8. **Perf benchmark gated out of the merge run.** The `Label("benchmark")`
+   "Performance Comparison: Go vs Java" spec measures bulk-insert throughput
+   against a 2-minute wall-clock budget — inherently load-sensitive, and it timed
+   out under the concurrent `bazelisk test //...` job load on a CI runner once the
+   suite stopped masking it behind the old 900s whole-test timeout. It now `Skip`s
+   unless `CONFORMANCE_RUN_BENCHMARK=1` (set by `just bench-compare`); a benchmark
+   has no place in a correctness gate. A3 itself had zero failures.
 
 Bazel caches the conformance test result, so the per-scenario cost is paid only
 when an input actually changes — unchanged commits hit the cache.
