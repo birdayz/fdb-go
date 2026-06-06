@@ -249,3 +249,22 @@ suite was ungated). The cross-engine SeedRunCorpus went from 459 raw divergences
 to 28 tracked-and-locked. The lock fails on any new divergence (a regression) or
 any locked entry that starts passing (forcing the list to shrink). When
 `rfc082KnownRed` reaches empty, the gate is plain all-green.
+
+## Tracked follow-ups (reviewer-requested, non-blocking)
+
+- **A3 per-scenario JVM isolation** (Torvalds): the A3 cross-engine harness is
+  excluded from the merge gate (`CONFORMANCE_GATE_SKIP_A3`) because fdb-relational's
+  shared JVM accumulates error-path state and flakes innocent queries. Give each
+  A3 scenario a fresh isolated server (as negative entries already get) so A3
+  folds back into the gate instead of living in nightly exile.
+- **Typed-NULL CASE typing** (Graefe): `commonBranchType` skips every
+  `*values.NullValue`, including typed ones (`CAST(NULL AS BIGINT)`), so a CASE
+  whose only type carriers are typed NULLs reports UNKNOWN where Java honors the
+  cast type. Pre-existing gap (no worse than before); skip only untyped NULL.
+- **Go-too-lenient fix-or-accept** (Graefe + Torvalds): `agg_in_where`
+  (`WHERE COUNT(*)>0`), `type_mismatch_boolean_eq_int` (`bool = int`), and
+  `cast_bigint_to_boolean` — decide reject (match Java) vs accept (extension),
+  then un-lock.
+- **Result-set type/name tail**: derived-table aggregate column types,
+  integer-literal INTEGER typing, alias-on-aggregate threading — fix to shrink
+  the lock toward empty.
