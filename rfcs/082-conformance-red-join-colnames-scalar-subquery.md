@@ -305,17 +305,27 @@ Reporting artifact (failures were deterministic; the REPORT looked random):
 
 Server model + supporting fixes:
 
-3. **Pooled, RE-USED Java servers (default: one shared server, no recycle).**
-   Since there is no cross-query pollution, A3 servers are re-used across
-   scenarios exactly like SeedRunCorpus's single shared server. `JavaServerPool`
-   defaults to size 1 + `maxInvocations` 0 (never recycle), so the whole A3 suite
-   runs on ONE JVM spawned once at startup — ~2× faster than fresh-per-scenario
-   (~256s vs ~520s for A3) and far lighter on memory (one JVM, not a 16-deep
-   buffer; the 16-JVM buffer was what pushed a constrained CI runner into GC
-   thrash and a 900s test-timeout). `CONFORMANCE_A3_POOL_SIZE` and
-   `CONFORMANCE_A3_MAX_INVOCATIONS` remain as knobs (parallelism; a recycle safety
-   valve for a hypothetical future leak). Determinism proven: single-JVM,
-   all-scenarios, no-recycle, 3×, byte-identical.
+3. **Parallelized via pre-spawned pooled servers (no cross-query pollution to
+   work around).** The suite was ~470s, dominated by two serial cross-engine
+   query loops — SeedRunCorpus (~157s) and A3 (~78s). Both are now run in
+   parallel across `CONFORMANCE_A3_POOL_SIZE`/`CONFORMANCE_SEED_PARALLELISM`
+   pre-spawned Java servers (default 8), each handling a disjoint slice against
+   the one shared FDB cluster (every query uses a uuid-isolated ephemeral schema,
+   so workers never collide; pre-spawning preserves the no-spawn-during-query
+   rule). A3 precomputes all results in its `BeforeAll`, then the per-scenario
+   `It`s look them up and assert serially (Gomega's `Expect` isn't goroutine-safe;
+   keeping the `It`s preserves the `ContinueOnFailure` failure reporting). The one
+   wrinkle: concurrent ephemeral-schema CREATEs contend on the shared relational
+   catalog → transient FDB 1020 conflicts (the embedded Go engine retries
+   internally; the Java server surfaces them), cleared by a bounded
+   per-worker-staggered conflict-retry. **Full suite ~470s → ~120s (~3.9×):
+   SeedRunCorpus 157→38s, A3 78→21s.** Deterministic: 4/4 sequential full-suite
+   runs green (1205 Passed | 0 Failed); CI also dropped 8m0s → 5m46s. (A `Ginkgo
+   --procs` process-parallel approach was tried and rejected: each worker spawns
+   its OWN FDB container → resource exhaustion + it runs outside `bazel test`,
+   losing result caching. The remaining ~50s of small non-loop spec families are
+   left serial — parallelizing them too would be a whole-suite rewrite for little
+   gain, so ~4× is the in-process ceiling, not 8×.)
 4. **Plan cache disabled** in the conformance server (`makeEngine(planCache = null)`
    — the canonical `Optional.empty()` "cache disabled" path), removing the one
    TTL-evicted, wall-clock-timing-dependent engine cache. Corpus queries are mostly

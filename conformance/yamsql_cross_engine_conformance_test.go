@@ -31,6 +31,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -39,6 +41,19 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
 )
+
+// a3Key identifies a single cross-engine test (scenario name + its index in the
+// scenario's Tests). crossEngineResult is the (Java, Go) result pair the A3
+// precompute produces for that test and the per-scenario It later asserts.
+type a3Key struct {
+	scenario string
+	idx      int
+}
+
+type crossEngineResult struct {
+	java   plandiff.RunResult
+	golang plandiff.RunResult
+}
 
 // Ordered is required for the suite-level BeforeAll (pool spawn / cluster-file
 // write). ContinueOnFailure is then MANDATORY: without it, Ginkgo's Ordered
@@ -60,22 +75,104 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 		clusterFile     string
 		clusterFilePath string
 		pool            *JavaServerPool
+		// precomputed holds every query test's (Java, Go) result pair, computed
+		// in PARALLEL by the BeforeAll below; the per-scenario Its look them up
+		// and assert serially (Gomega's Expect is not goroutine-safe).
+		precomputed map[a3Key]crossEngineResult
 	)
 
-	// BeforeAll: write the cluster file once (a per-spec path would create
-	// 360+ cache keys in the fdbsql driver's per-cluster-file cache; one shared
-	// path keeps it to one entry) and start the per-scenario Java-server pool.
-	// `Ordered` on the parent Describe is required for BeforeAll.
+	// BeforeAll writes the cluster file once, spawns the pooled Java servers, and
+	// PRECOMPUTES every query test's cross-engine result in parallel (see the
+	// determinism note below). `Ordered` on the parent Describe is required for
+	// BeforeAll.
 	BeforeAll(func() {
 		ctx = context.Background()
 		var err error
 		clusterFile, err = sharedContainer.ClusterFile(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		// The Go runner takes a cluster-file path on disk (the fdbsql
-		// driver opens it directly); the Java runner takes the
-		// contents (sent over HTTP, opened server-side).
+		// The Go runner takes a cluster-file path on disk (the fdbsql driver opens
+		// it directly); the Java runner takes the contents (sent over HTTP).
 		clusterFilePath = writeClusterFileToTemp(clusterFile)
 		pool = NewJavaServerPool(a3PoolSize(), a3MaxInvocations())
+
+		// Build the query work items — same gating as the Its (skip DML +
+		// error_code), so only cross-engine-asserted queries are precomputed.
+		type a3Work struct {
+			key    a3Key
+			schema string
+			setup  []string
+			query  string
+		}
+		var items []a3Work
+		for _, s := range crossEngineScenarios() {
+			for i, t := range s.Tests {
+				if t.ErrorCode != "" || !yamsql.IsQuery(t.Query) {
+					continue
+				}
+				items = append(items, a3Work{a3Key{s.Name, i}, s.SchemaTemplate, s.Setup, t.Query})
+			}
+		}
+
+		// Run every item's Java+Go pair across N pooled servers. Pre-spawned ⇒ no
+		// spawn-during-query; concurrent ephemeral-schema CREATEs contend on the
+		// shared catalog → transient FDB 1020, cleared by the same conflict-retry
+		// as SeedRunCorpus. Workers only COMPUTE; the per-scenario Its assert.
+		results := make([]crossEngineResult, len(items))
+		if n := a3PoolSize(); len(items) > 0 {
+			if n > len(items) {
+				n = len(items)
+			}
+			type a3Runner struct {
+				java plandiff.SetupRunner
+				gor  plandiff.SetupRunner
+				srv  *JavaInvoker
+			}
+			runners := make([]a3Runner, n)
+			for i := range runners {
+				srv, berr := pool.Borrow()
+				Expect(berr).NotTo(HaveOccurred(), "A3 precompute: borrow server %d/%d", i+1, n)
+				runners[i] = a3Runner{
+					java: plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), clusterFile).(plandiff.SetupRunner),
+					gor:  plandiff.NewGoSQLSetupRunner(clusterFilePath),
+					srv:  srv,
+				}
+			}
+			idxCh := make(chan int)
+			var wg sync.WaitGroup
+			for w := 0; w < n; w++ {
+				wg.Add(1)
+				go func(r a3Runner, wid int) {
+					defer wg.Done()
+					for idx := range idxCh {
+						it := items[idx]
+						jr := r.java.RunWithSetup(ctx, it.schema, it.setup, it.query)
+						gr := r.gor.RunWithSetup(ctx, it.schema, it.setup, it.query)
+						for attempt := 1; attempt <= maxConflictRetries && (isTxConflict(jr.Err) || isTxConflict(gr.Err)); attempt++ {
+							time.Sleep(time.Duration(attempt)*40*time.Millisecond + time.Duration(wid)*11*time.Millisecond)
+							if isTxConflict(jr.Err) {
+								jr = r.java.RunWithSetup(ctx, it.schema, it.setup, it.query)
+							}
+							if isTxConflict(gr.Err) {
+								gr = r.gor.RunWithSetup(ctx, it.schema, it.setup, it.query)
+							}
+						}
+						results[idx] = crossEngineResult{java: jr, golang: gr}
+					}
+				}(runners[w], w)
+			}
+			for i := range items {
+				idxCh <- i
+			}
+			close(idxCh)
+			wg.Wait()
+			for _, r := range runners {
+				pool.Return(r.srv)
+			}
+		}
+		precomputed = make(map[a3Key]crossEngineResult, len(items))
+		for i, it := range items {
+			precomputed[it.key] = results[i]
+		}
 	})
 
 	AfterAll(func() {
@@ -84,13 +181,13 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 		}
 	})
 
-	// DETERMINISM MODEL — pooled, re-used Java servers (recycled by invocation).
+	// DETERMINISM MODEL — parallel precompute, serial assert.
 	//
 	// The "A3 is nondeterministic" symptom (a different scenario failing each
 	// run) was NOT cross-query JVM-state pollution. That theory was never pinned
-	// — and SeedRunCorpus refutes it: it drives ~1620 queries through ONE shared
-	// Java server, deterministically, every run. (The once-suspected mechanism,
-	// the ANTLR parser's static `_decisionToDFA`/PredictionContextCache, is a
+	// — and SeedRunCorpus refutes it: it drives ~1620 queries through shared Java
+	// servers, deterministically, every run. (The once-suspected mechanism, the
+	// ANTLR parser's static `_decisionToDFA`/PredictionContextCache, is a
 	// performance cache that yields identical parse trees cold or warm; it does
 	// not change results.) The actual causes were two, both fixed:
 	//   1. Ginkgo's Ordered skip-after-failure + randomized run order: the first
@@ -99,21 +196,22 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 	//      ContinueOnFailure (see the outer Describe) — the full set now surfaces
 	//      order-independently, which is what let the genuine Go-only-extension /
 	//      stateful scenarios below be identified and excluded.
-	//   2. GRV lag from CONCURRENT server spawning against the shared FDB
+	//   2. GRV lag from CONCURRENT server SPAWNING against the shared FDB
 	//      container (a query's txn taking a read version before its own
 	//      ephemeral-schema CREATE committed → spurious UnableToPlanException).
-	//      The pool never spawns while a query runs (see JavaServerPool).
+	//      The pool pre-spawns all servers up front (see JavaServerPool), so no
+	//      server is ever spawned while a query runs.
 	//
-	// Model: scenarios borrow RE-USED servers from a pool. Defaults are pool size
-	// 1 + maxInvocations 0 — ONE shared server for the whole A3 suite, never
-	// recycled, exactly like SeedRunCorpus. Recycling (maxInvocations > 0) is a
-	// safety belt only — NOT for determinism (SeedRunCorpus + a single-JVM/no-
-	// recycle 3× proof show shared re-use is clean) — to bound any hypothetical
-	// accumulated state and per-JVM memory. Re-use is what keeps this fast and
-	// light: one JVM spawned once instead of ~119 fresh ones, which also keeps a
-	// constrained CI runner off the GC-thrash cliff. Knobs:
-	// CONFORMANCE_A3_POOL_SIZE, CONFORMANCE_A3_MAX_INVOCATIONS. Bazel caches the
-	// test result, so it only re-runs when an input changes.
+	// Model: the BeforeAll PRECOMPUTES every query test's (Java, Go) result pair
+	// in parallel across CONFORMANCE_A3_POOL_SIZE pooled servers; the per-scenario
+	// Its below just look the pair up and assert. Each result is computed exactly
+	// once, so the assertions are deterministic regardless of execution order.
+	// Concurrent ephemeral-schema CREATEs contend on the shared relational catalog
+	// → transient FDB 1020 conflicts, cleared by the SeedRunCorpus conflict-retry
+	// (isTxConflict). Parallel precompute (vs the earlier one-server-per-scenario
+	// re-use) is what makes A3 fast; the Its stay per-scenario so ContinueOnFailure
+	// still reports the complete failure set. Bazel caches the test result, so it
+	// only re-runs when an input changes.
 	//
 	// A Java error below is therefore a real, reproducible signal — a genuine
 	// Go-only extension (Java cannot plan it; exclude it from
@@ -121,16 +219,6 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 	for _, s := range crossEngineScenarios() {
 		s := s
 		Describe("scenario "+s.Name, Ordered, func() {
-			var scenarioJava *JavaInvoker
-			BeforeAll(func() {
-				var err error
-				scenarioJava, err = pool.Borrow()
-				Expect(err).NotTo(HaveOccurred(),
-					"failed to obtain a pooled Java server for scenario %q", s.Name)
-			})
-			AfterAll(func() {
-				pool.Return(scenarioJava)
-			})
 			for i, t := range s.Tests {
 				i, t := i, t
 				It(t.Query, func() {
@@ -149,11 +237,11 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 						Skip("non-query (DML) cross-engine tests need a different harness — runWithSetup expects exactly one query")
 					}
 					prefix := fmt.Sprintf("scenario %q test #%d query %q", s.Name, i, t.Query)
-					javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(scenarioJava), clusterFile).(plandiff.SetupRunner)
-					goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
-
-					javaRes := javaRunner.RunWithSetup(ctx, s.SchemaTemplate, s.Setup, t.Query)
-					goRes := goRunner.RunWithSetup(ctx, s.SchemaTemplate, s.Setup, t.Query)
+					// Result computed in parallel by the BeforeAll precompute;
+					// every query item is present (built from the same gating).
+					res, ok := precomputed[a3Key{s.Name, i}]
+					Expect(ok).To(BeTrue(), "%s: precomputed result missing (harness bug)", prefix)
+					javaRes, goRes := res.java, res.golang
 
 					// Go is ALWAYS pinned to the scenario-declared expected rows.
 					Expect(goRes.Err).NotTo(HaveOccurred(), "%s: Go executor errored", prefix)

@@ -117,23 +117,18 @@ func NewIsolatedJavaInvoker() (*JavaInvoker, error) {
 	return startJavaServer()
 }
 
-// defaultA3PoolSize is the number of Java servers the pool keeps alive and
-// rotates scenarios across. A3 runs serially (one scenario at a time), so ONE
-// shared server suffices — exactly like SeedRunCorpus, which drives ~1620
-// queries through a single server deterministically. This is the default: it
-// spawns a single JVM (not ~119 fresh ones, not a 16-deep buffer), which is both
-// the fastest and the lightest on memory — the 16-JVM buffer was what pressured
-// a constrained CI runner into GC thrash. Raise it (CONFORMANCE_A3_POOL_SIZE)
-// only to parallelize A3 in the future; each extra live JVM is ~250-400MB.
-const defaultA3PoolSize = 1
+// defaultA3PoolSize is the number of Java servers the A3 parallel precompute
+// runs across — i.e. its degree of parallelism. The precompute fans every query
+// test out over this many pooled servers (each handling a disjoint slice), so
+// more servers = faster, at ~250-400MB per live JVM. 8 balances speed against a
+// constrained CI runner's memory (well under the old 16-deep buffer). Lower it
+// with CONFORMANCE_A3_POOL_SIZE on memory-tight hosts; 1 ⇒ serial precompute.
+const defaultA3PoolSize = 8
 
-// defaultA3MaxInvocations is how many scenarios a single pooled server handles
-// before the pool recycles it (0 = never recycle = pure shared re-use, the
-// default). Recycling is NOT needed for determinism: a single JVM serving all
-// ~119 A3 scenarios (and SeedRunCorpus's ~1620 queries) is deterministic across
-// runs — proven, no cross-query state pollution exists. The knob remains as a
-// cheap safety valve: set CONFORMANCE_A3_MAX_INVOCATIONS > 0 to bound per-JVM
-// memory or hedge a future fdb-relational version that does leak.
+// defaultA3MaxInvocations is the per-server recycle bound (0 = never recycle).
+// The precompute holds each server for its whole slice and closes it after, so
+// recycling is not used by default; the knob (CONFORMANCE_A3_MAX_INVOCATIONS)
+// remains a cheap safety valve to bound per-JVM memory on a very long run.
 const defaultA3MaxInvocations = 0
 
 // a3PoolSize returns the configured A3 server-pool size (CONFORMANCE_A3_POOL_SIZE,
