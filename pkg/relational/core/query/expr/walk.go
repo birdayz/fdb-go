@@ -405,7 +405,60 @@ func (r *Resolver) walkCaseFunctionCall(ctx *antlrgen.CaseFunctionCallContext) (
 	}
 
 	selector := values.NewConditionSelectorValue(implications)
-	return values.NewPickValue(selector, alternatives, values.UnknownType), nil
+	return values.NewPickValue(selector, alternatives, caseResultType(alternatives)), nil
+}
+
+// caseResultType computes a CASE expression's result type as the common
+// supertype (Java's Type.maximumType) of its THEN/ELSE branch values, made
+// nullable (a CASE with no matching branch and no ELSE yields NULL). Falls
+// back to UnknownType when any branch type is itself unknown or the branches
+// cannot be unified — preserving the prior conservative behaviour rather than
+// guessing. Without this the result-set column metadata reports UNKNOWN for
+// every CASE (Java reports the branch type).
+func caseResultType(alternatives []values.Value) values.Type {
+	return commonBranchType(alternatives)
+}
+
+// commonBranchType computes the common supertype (Java's Type.maximumType) of a
+// set of branch/argument values, made nullable. NULL and UNKNOWN branches carry
+// no type constraint and are skipped — a `CASE WHEN ... THEN NULL ELSE v END`
+// is typed by v, matching Java. Returns UnknownType only when no branch has a
+// concrete type or the concrete branches cannot be unified (preserving the
+// prior conservative behaviour rather than guessing).
+func commonBranchType(branches []values.Value) values.Type {
+	types := make([]values.Type, 0, len(branches))
+	for _, b := range branches {
+		if b == nil {
+			continue
+		}
+		// A literal NULL carries no type constraint — skip it so the concrete
+		// branches type the result (`CASE WHEN c THEN NULL ELSE v END` is v's
+		// type). NULL is built as NewNullValue(TypeUnknown), so its type code
+		// is TypeCodeUnknown — it must be detected by value KIND, not type
+		// code, or it gets confused with a genuine unknown (Graefe).
+		if _, isNull := b.(*values.NullValue); isNull {
+			continue
+		}
+		t := b.Type()
+		if t == nil || t.Code() == values.TypeCodeNull {
+			continue
+		}
+		if t.Code() == values.TypeCodeUnknown {
+			// A non-NULL branch of genuinely unknown type (scalar subquery,
+			// parameter) could yield any type, so we cannot let the concrete
+			// branches dictate the result — keep it unknown (codex P2).
+			return values.UnknownType
+		}
+		types = append(types, t)
+	}
+	if len(types) == 0 {
+		return values.UnknownType
+	}
+	mt := values.MaximumTypeOfMany(types...)
+	if mt == nil {
+		return values.UnknownType
+	}
+	return values.WithNullability(mt, true)
 }
 
 // walkSimpleCaseFunctionCall handles simple CASE expressions:
@@ -483,7 +536,7 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 	}
 
 	selector := values.NewConditionSelectorValue(implications)
-	return values.NewPickValue(selector, alternatives, values.UnknownType), nil
+	return values.NewPickValue(selector, alternatives, caseResultType(alternatives)), nil
 }
 
 // walkCaseCondition resolves a CASE WHEN condition expression. The
@@ -592,7 +645,54 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
 	}
+	// Polymorphic value-preserving functions (COALESCE, GREATEST, LEAST, ...)
+	// carry UnknownType by name; infer the concrete result type from the
+	// argument types so result-set metadata reports the real type (Java does).
+	if typ == nil || typ.Code() == values.TypeCodeUnknown {
+		if inferred := polymorphicResultType(name, args); inferred != nil {
+			typ = inferred
+		}
+	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
+}
+
+// polymorphicResultType infers the result type of a value-preserving
+// polymorphic scalar function from its argument types, mirroring Java. Returns
+// nil (keep UnknownType) when the type can't be determined from concrete args.
+func polymorphicResultType(name string, args []values.Value) values.Type {
+	concrete := func(t values.Type) values.Type {
+		if t == nil || t.Code() == values.TypeCodeUnknown {
+			return nil
+		}
+		return t
+	}
+	switch name {
+	case "COALESCE", "IFNULL", "GREATEST", "LEAST":
+		// Result is the common supertype of all branches.
+		return concrete(commonBranchType(args))
+	case "IF", "IIF":
+		// IF(cond, then, else): common supertype of the value branches.
+		if len(args) >= 2 {
+			return concrete(commonBranchType(args[1:]))
+		}
+	case "NULLIF":
+		// NULLIF(a, b) is a (possibly NULL) so it has a's type.
+		if len(args) >= 1 && args[0] != nil {
+			if t := concrete(args[0].Type()); t != nil {
+				return values.WithNullability(t, true)
+			}
+		}
+	case "MOD":
+		// MOD(a, b) promotes both operands (MOD(id, 2.5) yields a DOUBLE at
+		// runtime), same as arithmetic — codex P2.
+		return concrete(commonBranchType(args))
+	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND", "SIGN":
+		// Numeric, type-preserving in the first operand.
+		if len(args) >= 1 && args[0] != nil {
+			return concrete(args[0].Type())
+		}
+	}
+	return nil
 }
 
 // distanceOperatorForFunc maps a SQL distance-function name to its

@@ -51,6 +51,8 @@ inner range over the index-scan wrapper so `maxDataAccessCardinality` reflects t
 probe), and making re-enumerated sub-products flow a flat `JoinMergeResultValue`
 so the index-probe variant is both cheaper AND resolvable.
 
+- [ ] **Re-verify `joinOptimizationProbesScenario` (RFC-082 cross-engine exclusion) against RFC-042 (@claude flag).** The A3 builder is excluded from `crossEngineScenarios` with the note "Go's join enumeration is still non-deterministic on some arithmetic-predicate shapes — a 3-way / arithmetic-join can return a different ROW COUNT across runs." That row-count *nondeterminism* (a correctness flake) is NOT the item tracked above — line 11-40 is the now-FIXED FROM-order-dependent (but per-order deterministic) bug, and line 42 is cost-optimality (correct results, just slower). So either the exclusion note is stale (the row-count flake was the fixed PartitionSelectRule bug → the scenario may be re-enableable cross-engine now) or there is a genuinely-still-nondeterministic join-enum shape that needs its own root-cause. Verify with a focused multi-run of the probe shapes; if still nondeterministic, the Go-only yamsql coverage for `join_optimization_probes` is itself flaky (same code path) and must be pinned, not just excluded cross-engine. Out of scope for RFC-082 (conformance determinism); tracked here for the RFC-042 follow-up.
+
 ### vs Java (correctness/feature parity)
 
 - [x] **Correlated filter without index.** Fixed in 56874f23 — ImplementFilterRule sets innerAlias on RecordQueryPredicatesFilterPlan. All correlated paths (scalar subquery, EXISTS, JOIN) work without indexes. 14+ integration tests verify.
@@ -64,6 +66,16 @@ so the index-probe variant is both cheaper AND resolvable.
   - [ ] **Follow-up (RFC-070): `pushValue`-into-covering-result-value modeling gap.** Java's `MergeProjectionAndFetchRule` yields a bare `fetchPlan.getChild()` because `RecordQueryFetchFromPartialRecordPlan.pushValue` rewrites the projected value into the covering plan's own result value. Go's `WithCovering` only sets a flag (the scan still flows the full partial record), so Go compensates with a thin outer `Project`. Pushing the value into the covering result value would let both rule branches collapse to a bare child yield, matching Java. Cosmetic/architectural — current behaviour is correct.
   - [ ] **Follow-up (RFC-070): other transparent unary wrappers over joins.** `Map`, `Distinct`, `Limit`, `TypeFilter`, `FirstOrDefault`, `DefaultOnEmpty` still gate `WithChildren` on `isLeafReplaceable` and could exhibit the same nil-inner-over-join bug if a rule ever builds them with a placeholder inner over a join. Not currently reachable via SQL (projections route through `LogicalProjectionExpression`, not `Map`); the **blanket** gate removal is unsafe — it regressed `TestFDB_AggregateIndexUsage` by dropping the eq-filter on aggregation/DML wrappers (which embed filter semantics in their own plan). Each wrapper needs individual analysis if/when reachable.
 - [x] **DML does not execute through Cascades (parallel pipeline).** Fixed as **P0.4** — all DML now executes through Cascades (`planDML`); the naive `execStatement` DML path is deleted. See P0.4.
+- [ ] **🚩 Aggregate result-type derivation diverges from Java: `AVG(x)→DOUBLE`. [RFC-gated, Graefe ACK'd diagnosis + this direction]** Surfaced by the A3 cross-engine `insert_select` scenario. Java types `AVG(BIGINT)→DOUBLE` and `SUM(BIGINT)→BIGINT`, then enforces assignability at PLAN time: `INSERT INTO dst(v BIGINT) SELECT AVG(v) FROM src` is **rejected** with `SemanticException` ("A value cannot be assigned to a variable … cannot be promoted …", SQLSTATE **22000**), while `INSERT … SELECT SUM(v)` is **accepted**. Go's `AggregateValue.Type()` (`pkg/recordlayer/query/plan/cascades/values/values.go:2446`) bundles `AggSum/AggMin/AggMax/AggAvg` into one arm returning `WithNullability(operand.Type(), true)`, so `AVG(BIGINT)` is mistyped LONG (never DOUBLE) and the plan-time assignability check that rejects in Java never fires (it sees LONG→LONG instead of DOUBLE→LONG). **Correct fix (do NOT paper over with a downstream coerce in `goToProtoValue`/`ConvertToProtoValue` — principle 10; a coerce-on-write band-aid was tried and REVERTED):** change **only** the `AggAvg` arm of `AggregateValue.Type()` to return `NullableDouble`. Then the EXISTING, already-verbatim-Java assignability check (`proto_value.go:183`, backed by `IsPromotable`/`promotionMap` in `type.go` whose up-only INT→LONG→FLOAT→DOUBLE lattice has no DOUBLE→LONG edge) rejects `AVG→BIGINT` emergently with ZERO new code. Cascades-aligned (type derived at the node → emergent rejection), not a downstream check.
+
+  **Graefe review (ACK'd) — corrections + conditions for the follow-up RFC/impl:**
+  - The "SUM accumulator yields float64" half of the original framing is **WRONG at HEAD**: `streaming_cursors.go:266-273,315-322` already maintains an int64 SUM accumulator (`sumsI`+`allInt`, overflow-checked) and the SUM index path is native int64 (`GetIndexTypeName→"SUM"`). Only AVG returns `sums/count` as float64 (`:327-332`). So SUM needs **no** accumulator change — the fix collapses to the single AVG `Type()` arm. Grep before re-plumbing SUM.
+  - **Leave `SUM/MIN/MAX` operand-derived** (matches Java's per-operator `resultTypeCode`: `SUM_L→LONG`, `AVG_*→DOUBLE`, `MIN/MAX_*→operand`). Change ONLY the AVG arm.
+  - **Ripple to guard:** AVG has no aggregate index (`GetIndexTypeName→""`, matches Java) and is computed from a SUM/COUNT pair. This branch's `ArithmeticValue.Type()` now does integer-preserving `LONG/LONG→LONG`; if AVG's decomposition is ever expressed as `Sum(LONG) OpDiv Count(LONG)` via an `ArithmeticValue`, the division re-introduces this bug one level down (SQL AVG is true/real division). The RFC must keep AVG a DOUBLE-typed node in its own right and force DOUBLE division in any SUM/COUNT lowering. **Pin the index-backed AVG path, not just streaming.**
+  - Adjacent latent items worth their own TODO line (out of scope here): `GetIndexTypeName` hardcodes `MIN_EVER_LONG`/`MAX_EVER_LONG` — MIN/MAX over a non-long operand needs `MIN_EVER_TUPLE` (separate index-type bug). Mixed-type SUM is a non-issue (single operand, resolved in child before encapsulation).
+  - The RFC + impl still need Graefe's ACK at that point. Verify `avgScenario`, aggregate-index EXPLAIN pins, and 1M stress before/after.
+
+  Until done, A3 `insert_select` covers only the BIGINT→BIGINT INSERT…SELECT shapes both engines agree on; the aggregate-into-BIGINT shapes stay Go-only (insert_select yamsql corpus). The pre-existing `proto_value.go` whole-valued-float→int64 coercion on the INSERT…VALUES path is part of the same divergence and should be removed by this fix.
 - [x] **🚩 TODO 7.6-union-remap — aggregate UNION branch with a mismatched output alias drops rows (pre-existing executor gap).** Fixed for STREAMING aggregates in **RFC-078**: (1) `executeUnorderedUnion` (executor_new_plans.go) now remaps later branches' columns to the first branch's names by position — it previously concatenated branch cursors with NO normalization at all (unlike the ordered `RecordQueryUnionPlan`/`executeUnionStreaming`); (2) `planColumnNamesWithMD` (executor.go) reports a `RecordQueryStreamingAggregationPlan`'s output names (group keys + alias-or-canonical) instead of descending through `GetInner()` to the input scan. `SELECT u.x FROM (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) u` now returns both counts (was `[2, NULL]`). Pinned by `TestFDB_UnionAggregateColumnRemap`. Graefe + Torvalds ACK.
   - [x] **Follow-up (RFC-078) c — FIXED in RFC-080: re-enable the union-as-join-leg / derived-table aggregate case for UNGROUPED aggregates.** The gate's `LogicalAggregate` case is hit only by a *bare* aggregate branch (no Project). Graefe's review caught that a bare aggregate can be GROUPED (an unaliased, all-visible `SELECT g, COUNT(*) FROM t GROUP BY g` skips `buildSelectShell`'s stripping Project). Only the UNGROUPED sub-shape is safe to normalize: an ungrouped aggregate produces **no** aggregate-index candidate (`tryAggregateIndexCandidate` returns nil when `groupingCount == 0`, `cascades_generator.go`), so it always plans as StreamingAgg, which flows every aggregate under its alias (RFC-078). So `unionBranchNormalizable`'s `LogicalAggregate` arm relaxed from `false` to `len(Aggregates) >= 1 && len(GroupKeys) == 0`. `TestFDB_UnionJoinLeg` case (3) flipped clean-error→correct-rows. Pinned by `TestFDB_UnionScalarAggregateAlias` (single + multi ungrouped unions read by name + no-AggregateIndex invariant), `TestFDB_UnionGroupedAggregateStillGated` (grouped union, which DOES plan as AggregateIndex, stays gated), `TestUnionBranchNormalizable_AggregateArity`. plandiff byte-identical. Graefe + Torvalds ACK.
     - [x] **Follow-up (a) — GROUPED bare aggregate union by name — FIXED in RFC-081.** A bare GROUPED aggregate union branch (`SELECT g, COUNT(*) FROM a GROUP BY g UNION ALL …` read by name) plans as `AggregateIndex` (single agg) or `MultiIntersection`/`StreamingAgg` (multi agg). The fix was *reporting*, not cursor changes: the AggregateIndex and MultiIntersection cursors already write rows keyed by their output names (group cols + canonical aggregate name; a bare aggregate is always unaliased, so no alias to carry). Added `RecordQueryAggregateIndexPlan.OutputColumnNames()` + `planColumnNamesWithMD` arms for AggregateIndex (group cols + `CanonicalAggColumnName`) and MultiIntersection (result-value field names, verbatim), then dropped the `len(GroupKeys) == 0` clause → gate is now `len(Aggregates) >= 1`. `TestFDB_UnionGroupedAggregate` (single + multi grouped union join legs, mismatched group-key names → correct rows; EXPLAIN-pins AggregateIndex), `TestPlanColumnNames_{AggregateIndexReportsOutputSchema,MultiIntersectionReportsResultValueNames}`, `TestAggregateIndexPlan_OutputColumnNames`, gate unit test grouped→true. plandiff byte-identical. Graefe + Torvalds ACK.
@@ -726,3 +738,59 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
       `GetKeyValues` frame mid-scan; assert no dup/drop, correct `more`; forward + reverse).
     - **`future_version` (1009) / `process_behind` (1037) read-path QueueModel backoff wiring**
       (assert `failedUntil` advances and the address is deprioritized).
+
+---
+
+## Test infra (low priority)
+
+- [ ] **Parallelize the whole `//conformance` suite via stdlib `t.Parallel` (drop Ginkgo). [LOW PRIO — RFC-082 follow-up]**
+
+  **Goal.** Cut the Go↔Java conformance suite wall time (~122s today) by running *every* cross-engine
+  check concurrently, uniformly — no bespoke fan-out. Today only the two SQL loops are parallel
+  (each via its own hand-rolled goroutine pool); the ~40 FDB conformance families run serially.
+
+  **Hard constraint: bazel-only.** CI is `bazelisk test //...`, which runs each `go_test` binary
+  **once, directly** (serial invocation). So the only available parallelism is **in-process**.
+  Ginkgo cannot parallelize in-process — its only parallel mode is the `ginkgo --procs=N` CLI, which
+  spawns N worker *processes* (each would spin its own FDB container → the 290-failure resource
+  exhaustion already observed) and runs **outside** `bazel test` (loses result caching + the Java
+  server's bazel runfiles). Therefore the suite must move **off Ginkgo onto stdlib `testing` +
+  `t.Parallel()`**, run with `-test.parallel=N` (bazel `go_test` honors this in-process, cached,
+  runfiles intact). This also finally aligns the suite with the house rule ("All tests MUST call
+  `t.Parallel()`") — it's the lone serial holdout.
+
+  **Measured profile (121.6s wall, 112s in specs; `ginkgo-report.json` from a `--nocache_test_results`
+  run):** container+DB startup ~10s (serial floor); `RunSql Harness` (SeedRunCorpus, ~1620 entries)
+  36s — **already** 8-Java-server parallel; `yamsql A3` (859 specs) 20s — **already** 8-server
+  parallel; **~40 FDB conformance families ≈ 56s — SERIAL, on the single global Java server.**
+
+  **The load-bearing finding — the ceiling is JVM count, not Go concurrency.** The suite is
+  Java-JVM-throughput-bound and JVM count is **memory-capped on CI** (16 JVMs is exactly what caused
+  the earlier conformance CI timeout; 8 is the safe ceiling). The SQL work already runs 8-way — that
+  56s combined is `total_java_work / 8_servers`; unifying the two pools into one does **not** speed it
+  up (same work, same servers). So the **SQL floor is ~56s @ 8 JVMs**, and the rewrite's real win is
+  folding the **56s serial FDB tail** (currently on *one* server, sequential) **into** that parallel
+  window → **~122s → ~70-75s (~1.7x) @ 8 JVMs**. Beating ~70s needs **more JVMs** (memory), not more
+  parallelism. "Everything is parallelizable" is true mechanically, but does not buy 8x here.
+
+  **Approach (incremental, safe).** stdlib `Test*` funcs coexist with Ginkgo's `TestConformance` in
+  one package (they share globals; Go runs the sequential Ginkgo blob first, then the `t.Parallel`
+  batch together) — so migrate **family-by-family** with a green + spec/assertion-**count-parity**
+  gate after each (silent coverage drops are the exact CLAUDE.md failure mode). Steps: (1) move
+  container + Go DB + a pool of N Java servers into `TestMain` (all servers spawned before any test →
+  preserves the "no JVM spawn during a query" GRV-lag discipline); Gomega assertions stay verbatim via
+  `g := NewWithT(t)`; `BeforeEach` → a setup helper; nested `Describe` → flat test names / `t.Run`
+  subtests. (2) Convert each FDB family (already UUID-tenant-isolated → inherently parallel-safe).
+  (3) Convert A3 + SeedRunCorpus to `t.Run(..., t.Parallel())` subtests and **delete** the hand-rolled
+  worker pools + `precomputed` map + `results[]` — this is the "stop special-casing A3" cleanup.
+  (4) `-test.parallel=N` via the `go_test` `args`. Keep the FDB-1020 conflict-retry (shared catalog).
+  Benchmark stays gated (`CONFORMANCE_RUN_BENCHMARK`). Query-engine-adjacent → needs Graefe +
+  Torvalds + @claude + codex.
+
+  **Cheaper alternative (no rewrite, ~zero risk, ~1.3x):** just raise the existing SQL pool 8→12
+  (`CONFORMANCE_A3_POOL_SIZE` / `CONFORMANCE_SEED_PARALLELISM`) if the CI runner's memory allows —
+  shaves the SQL floor without touching the green, reviewed suite. The FDB tail stays serial.
+
+  **Why low prio.** The suite is green and freshly reviewed; ~1.7x for a ~32k-line mechanical rewrite
+  of wire-compat-critical tests is a weak risk/reward, and the real speed lever (JVM count) is
+  memory-bound regardless. Do the cheap JVM-count bump first if speed is ever urgent.

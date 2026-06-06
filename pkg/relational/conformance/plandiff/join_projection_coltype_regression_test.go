@@ -44,10 +44,12 @@ func TestGoSQLRunner_JoinProjectionColumnTypes(t *testing.T) {
 	}
 	// Column 0: u.name (Users.name) → STRING. Column 1: o.total (Orders.total)
 	// → BIGINT. The Orders column is the one that regressed to UNKNOWN when
-	// only the inner (Users) leaf descriptor was consulted.
+	// only the inner (Users) leaf descriptor was consulted. Labels are
+	// unqualified (RFC-082: the FROM-alias qualifier must not leak into
+	// result-set metadata — Java returns NAME/TOTAL, not U.NAME/O.TOTAL).
 	want := []struct{ name, typ string }{
-		{"U.NAME", "STRING"},
-		{"O.TOTAL", "BIGINT"},
+		{"NAME", "STRING"},
+		{"TOTAL", "BIGINT"},
 	}
 	for i, w := range want {
 		if got.Rows.Columns[i].Name != w.name {

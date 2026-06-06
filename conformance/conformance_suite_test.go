@@ -45,9 +45,14 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
-	// Shut down Java conformance server before terminating FDB container,
-	// so it can perform graceful shutdown while FDB is still available.
+	// Shut down Java conformance servers before terminating FDB container,
+	// so they can perform graceful shutdown while FDB is still available.
+	// CloseJavaInvoker handles the global singleton; CloseAllJavaServers is the
+	// backstop that force-kills (process-group SIGKILL + reap) ANY server still
+	// registered — e.g. an A3 pool server whose scenario panicked before
+	// Retire, or an in-flight pool spawn — so no JVM outlives the suite.
 	CloseJavaInvoker()
+	CloseAllJavaServers()
 
 	if sharedContainer != nil {
 		GinkgoWriter.Println("🧹 Terminating shared FDB container...")

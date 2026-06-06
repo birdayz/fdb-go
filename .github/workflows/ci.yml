@@ -38,7 +38,7 @@ jobs:
           fi
 
       - name: Build, lint & test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_tag_filters=-conformance_java,-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
       - name: Generate test report
         if: always()

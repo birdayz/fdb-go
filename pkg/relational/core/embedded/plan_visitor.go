@@ -707,6 +707,13 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	hasSubqueries := len(existsPlanner.subqueries) > 0 || len(existsPlanner.scalarSubqueries) > 0
 	if hasSubqueries && preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
+		// EXISTS is lowered to a conjunctive semi-join; under an OR that loses
+		// the disjunction and silently returns empty. Reject rather than
+		// return wrong rows (RFC-082; inline-EXISTS-under-OR is future work).
+		if existsUnderDisjunction(pred) {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"EXISTS within an OR (disjunction) is not supported")
+		}
 		if len(sq.joins) > 0 && len(existsPlanner.subqueries) == 1 {
 			esq := existsPlanner.subqueries[0]
 			if esq.JoinPredicate != nil {

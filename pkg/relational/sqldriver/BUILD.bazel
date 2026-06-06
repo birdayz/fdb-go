@@ -25,6 +25,7 @@ go_test(
     srcs = [
         "ambiguous_column_star_test.go",
         "cascades_fdb_test.go",
+        "case_null_branch_type_test.go",
         "correlated_exists_crossjoin_test.go",
         "covering_index_test.go",
         "dml_cascades_fdb_test.go",
@@ -35,6 +36,7 @@ go_test(
         "full_outer_join_fdb_test.go",
         "group_by_derived_probe_test.go",
         "having_probe_test.go",
+        "join_column_labels_test.go",
         "join_merge_outer_column_test.go",
         "multiway_join_index_probe_test.go",
         "multiway_join_order_nway_test.go",

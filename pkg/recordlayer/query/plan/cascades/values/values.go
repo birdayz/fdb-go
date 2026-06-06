@@ -1640,10 +1640,32 @@ type ArithmeticValue struct {
 func (a *ArithmeticValue) Children() []Value { return []Value{a.Left, a.Right} }
 func (a *ArithmeticValue) Name() string      { return "arith" }
 
-// Type returns the arithmetic result Type. Int-only arithmetic in
-// the seed; NULL propagates through Evaluate, so the result is
-// nullable. Conservative: assume NullableLong.
-func (a *ArithmeticValue) Type() Type { return NullableLong }
+// Type returns the arithmetic result Type by numeric promotion of the
+// operand types: DOUBLE if either operand is DOUBLE, else FLOAT if either is
+// FLOAT, else LONG (the conservative integer default, also used when an
+// operand type is unknown). Mirrors Java's ArithmeticValue result typing and
+// the float promotion Evaluate already performs. NULL propagates through
+// Evaluate, so the result is nullable.
+func (a *ArithmeticValue) Type() Type {
+	lc, rc := arithOperandCode(a.Left), arithOperandCode(a.Right)
+	if lc == TypeCodeDouble || rc == TypeCodeDouble {
+		return NullableDouble
+	}
+	if lc == TypeCodeFloat || rc == TypeCodeFloat {
+		return NullableFloat
+	}
+	return NullableLong
+}
+
+func arithOperandCode(v Value) TypeCode {
+	if v == nil {
+		return TypeCodeUnknown
+	}
+	if t := v.Type(); t != nil {
+		return t.Code()
+	}
+	return TypeCodeUnknown
+}
 
 func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	l := a.Left.Evaluate(evalCtx)
@@ -1724,14 +1746,11 @@ func (a *ArithmeticValue) evalFloat(l, r any) any {
 	case OpMul:
 		return lf * rf
 	case OpDiv:
-		if rf == 0 {
-			panic(&ArithmeticDivisionByZeroError{})
-		}
+		// IEEE-754 floating division: x/0.0 -> ±Inf, 0.0/0.0 -> NaN.
+		// Java (and SQL for approximate-numeric types) returns these
+		// rather than raising; only INTEGER division by zero errors.
 		return lf / rf
 	case OpMod:
-		if rf == 0 {
-			panic(&ArithmeticDivisionByZeroError{})
-		}
 		return math.Mod(lf, rf)
 	}
 	return nil

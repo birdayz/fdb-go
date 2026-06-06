@@ -62,9 +62,10 @@ generate-parser:
 build:
     bazelisk build //...
 
-# Test all targets (excludes Java conformance server tests and stress tests).
+# Test all targets (includes Go↔Java conformance via the RFC-082 regression
+# lock; excludes only the heavy 1M stress tier).
 test:
-    bazelisk test //... --test_tag_filters=-conformance_java,-stress
+    bazelisk test //... --test_tag_filters=-stress
 
 # Run stress tests (10K/100K rows — exercises FDB transaction limits).
 stress:
@@ -276,7 +277,9 @@ bench-compare:
     set -euo pipefail
     bazelisk build //conformance:conformance_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
-    timeout 600 "$BAZEL_BIN/conformance/conformance_test_/conformance_test" \
+    # CONFORMANCE_RUN_BENCHMARK=1 un-skips the benchmark (it is Skip'd in the
+    # normal merge gate — load-sensitive, doesn't belong there).
+    CONFORMANCE_RUN_BENCHMARK=1 timeout 600 "$BAZEL_BIN/conformance/conformance_test_/conformance_test" \
         --ginkgo.focus='Performance Comparison' --ginkgo.v
 
 # Regenerate Go wire types from FDB C++ headers (v5 composable-primitives generator).

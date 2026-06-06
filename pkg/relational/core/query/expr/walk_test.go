@@ -1408,17 +1408,19 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 		typ  values.Type
 		args int
 	}{
-		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", values.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.TypeUnknown, 2},
+		// RFC-082: polymorphic value-preserving functions now infer their
+		// result type from the operand (id is LONG) instead of UNKNOWN.
+		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.NullableLong, 1},
+		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.NullableLong, 2},
 		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", values.TypeFloat, 1},
 		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", values.TypeFloat, 2},
 		{"SELECT * FROM users WHERE POW(id, 2)", "POW", values.TypeFloat, 2},
-		{"SELECT * FROM users WHERE COALESCE(name, 'default')", "COALESCE", values.TypeUnknown, 2},
-		{"SELECT * FROM users WHERE NULLIF(name, 'admin')", "NULLIF", values.TypeUnknown, 2},
+		{"SELECT * FROM users WHERE COALESCE(name, 'default')", "COALESCE", values.TypeString, 2},
+		{"SELECT * FROM users WHERE NULLIF(name, 'admin')", "NULLIF", values.TypeString, 2},
 		{"SELECT * FROM users WHERE TRIM(name)", "TRIM", values.TypeString, 1},
 		{"SELECT * FROM users WHERE LTRIM(name)", "LTRIM", values.TypeString, 1},
 		{"SELECT * FROM users WHERE RTRIM(name)", "RTRIM", values.TypeString, 1},

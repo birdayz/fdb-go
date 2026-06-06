@@ -165,6 +165,33 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT u.name, o.total FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY o.oid",
 		},
 		{
+			// SELECT * over a join: Java emits BARE column names (with the
+			// duplicate uid kept) — [UID, NAME, OID, UID, TOTAL] — never the
+			// FROM-alias-qualified U.UID/O.UID. Pins the qualifyAndMergeColumns
+			// label path, a sibling of the inner_join projection path.
+			Name: "star_join",
+			SchemaTemplate: "CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid)) " +
+				"CREATE TABLE Orders (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))",
+			SetupSqls: []string{
+				"INSERT INTO Users VALUES (1, 'alice')",
+				"INSERT INTO Orders VALUES (10, 1, 100)",
+				"INSERT INTO Orders VALUES (11, 1, 200)",
+			},
+			Query: "SELECT * FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY o.oid",
+		},
+		{
+			// SELECT u.* over a join: only the named leg's columns, bare.
+			Name: "qualified_star_join",
+			SchemaTemplate: "CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid)) " +
+				"CREATE TABLE Orders (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))",
+			SetupSqls: []string{
+				"INSERT INTO Users VALUES (1, 'alice')",
+				"INSERT INTO Orders VALUES (10, 1, 100)",
+				"INSERT INTO Orders VALUES (11, 1, 200)",
+			},
+			Query: "SELECT u.* FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY o.oid",
+		},
+		{
 			Name:           "count_aggregate",
 			SchemaTemplate: "CREATE TABLE T12 (id BIGINT, region STRING, PRIMARY KEY (id))",
 			SetupSqls: []string{

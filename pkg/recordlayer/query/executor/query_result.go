@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"encoding/binary"
+	"fmt"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -10,6 +12,12 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
+
+// uuidProtoMessageName is the fully-qualified tuple_fields.UUID message that
+// fdb-relational stores UUID column values in. (Canonical copy lives in
+// pkg/relational/core/functions/proto_value.go; duplicated here because the
+// record-layer executor cannot depend on the relational layer.)
+const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 
 // QueryResult is the row type flowing through plan execution cursors.
 // Wraps a datum (the computed/flowed row), an optional stored record
@@ -80,7 +88,35 @@ func protoFieldToGo(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
 	if fd.IsMap() {
 		return v.Interface()
 	}
+	// UUID columns are stored as the tuple_fields.UUID message; the SQL layer
+	// surfaces them as the canonical 36-char string (matches Java's
+	// getString(uuidColumn)), not the raw proto message.
+	if fd.Kind() == protoreflect.MessageKind {
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
+			return uuidMessageToString(v.Message())
+		}
+	}
 	return scalarProtoToGo(fd.Kind(), v)
+}
+
+// uuidMessageToString renders a tuple_fields.UUID message (most/least
+// _significant_bits) as the canonical 36-char lower-case UUID string.
+func uuidMessageToString(msg protoreflect.Message) string {
+	fields := msg.Descriptor().Fields()
+	mostFD := fields.ByName("most_significant_bits")
+	leastFD := fields.ByName("least_significant_bits")
+	if mostFD == nil || leastFD == nil {
+		return ""
+	}
+	var b [16]byte
+	binary.BigEndian.PutUint64(b[0:8], uint64(msg.Get(mostFD).Int()))   //nolint:gosec
+	binary.BigEndian.PutUint64(b[8:16], uint64(msg.Get(leastFD).Int())) //nolint:gosec
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(b[0:4]),
+		binary.BigEndian.Uint16(b[4:6]),
+		binary.BigEndian.Uint16(b[6:8]),
+		binary.BigEndian.Uint16(b[8:10]),
+		b[10:16])
 }
 
 func scalarProtoToGo(kind protoreflect.Kind, v protoreflect.Value) any {
