@@ -24,6 +24,7 @@ go_test(
     name = "sqldriver_test",
     srcs = [
         "ambiguous_column_star_test.go",
+        "avg_double_insert_fdb_test.go",
         "cascades_fdb_test.go",
         "case_null_branch_type_test.go",
         "correlated_exists_crossjoin_test.go",

@@ -1831,6 +1831,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				}
 			}
 		}
+		aggSlots := make([]bool, len(proj.Projections))
 		for i, e := range sq.postAggExprs {
 			if i >= len(vals) || e == nil {
 				continue
@@ -1853,10 +1854,12 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				}
 				continue
 			}
+			aggSlots[i] = containsAggregate(v) // pre-rewrite: aggregate nodes still present
 			v = rewriteAggregateValuesInTree(v)
 			vals[i] = v
 		}
 		proj.ProjectedValues = vals
+		proj.AggregateSlots = aggSlots
 		return nil
 	}
 
@@ -1877,6 +1880,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	}
 	vals := make([]values.Value, len(proj.Projections))
 	copy(vals, proj.ProjectedValues)
+	aggSlots := make([]bool, len(proj.Projections))
 	for i, e := range exprs {
 		if i >= len(vals) {
 			break
@@ -1899,10 +1903,12 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		if !isCascadesSafeValue(v) {
 			continue
 		}
+		aggSlots[i] = containsAggregate(v) // pre-rewrite: aggregate nodes still present
 		v = rewriteAggregateValuesInTree(v)
 		vals[i] = v
 	}
 	proj.ProjectedValues = vals
+	proj.AggregateSlots = aggSlots
 	return nil
 }
 
@@ -2051,6 +2057,25 @@ func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.
 	return pred
 }
 
+// containsAggregate reports whether v's value tree contains any
+// *values.AggregateValue. Called PRE-rewrite (before
+// rewriteAggregateValuesInTree replaces aggregates with typed FieldValue
+// references) so the INSERT…SELECT promotion guard can mark which projection
+// slots are aggregate-derived. Tree-walk, not a top-level type assert:
+// `AVG(x)+1` is a top-level ArithmeticValue that still resolves to DOUBLE and
+// must be guarded.
+func containsAggregate(v values.Value) bool {
+	found := false
+	values.WalkValue(v, func(n values.Value) bool {
+		if _, ok := n.(*values.AggregateValue); ok {
+			found = true
+			return false // stop descending
+		}
+		return !found
+	})
+	return found
+}
+
 func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	if v == nil {
 		return nil
@@ -2130,9 +2155,13 @@ func rewriteAggregateValue(v values.Value) values.Value {
 	if !ok {
 		return v
 	}
+	// Preserve the aggregate's result type on the reference — a reference must
+	// report the type of its referent. (Previously discarded as UnknownType,
+	// which left every downstream type query on a rewritten projection blind;
+	// the INSERT…SELECT promotion guard relies on this carrying e.g. AVG→DOUBLE.)
 	return &values.FieldValue{
 		Field: canonicalAggName(av.Op.Symbol(), av.Operand),
-		Typ:   values.UnknownType,
+		Typ:   av.Type(),
 	}
 }
 
@@ -2545,6 +2574,132 @@ func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.R
 	for i := 0; i < len(proj.Projections) && i < len(targetCols); i++ {
 		proj.Aliases[i] = targetCols[i]
 	}
+}
+
+// protoKindToValueType maps a proto field kind to the cascades values.Type used
+// for INSERT promotion checks. Nullability is irrelevant to IsPromotable, so the
+// nullable singletons are returned. Returns nil for kinds outside the numeric
+// promotion core; the caller skips those (the runtime converter handles them).
+func protoKindToValueType(k protoreflect.Kind) values.Type {
+	switch k {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return values.NullableInt
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return values.NullableLong
+	case protoreflect.FloatKind:
+		return values.NullableFloat
+	case protoreflect.DoubleKind:
+		return values.NullableDouble
+	}
+	return nil
+}
+
+// checkInsertSelectPromotable rejects an INSERT … SELECT whose projected
+// AGGREGATE-result column cannot be promoted to its target column type — the
+// plan-time, lattice-driven analogue of Java's PromoteValue assignability check.
+// AVG(BIGINT) types DOUBLE (AggregateValue.Type()); DOUBLE→BIGINT has no edge in
+// the promotion lattice, so the INSERT is rejected with SQLSTATE 22000 exactly
+// like Java — and, because the verdict is purely IsPromotable over the
+// structurally-derived type, independent of whether the source produces any rows
+// (the empty-source axis).
+//
+// A projected aggregate appears in one of two shapes:
+//   - a COMPUTED expression that CONTAINS an aggregate (e.g. AVG(v)+1) —
+//     flagged by LogicalProject.AggregateSlots (provenance, captured pre-rewrite)
+//     and reliably typed via the value's Type() (the aggregate reference carries
+//     its result type, B′; ArithmeticValue propagates it). Provenance, NOT
+//     type-presence: plain columns are concrete-typed too (ResolveIdentifier).
+//   - a BARE aggregate (e.g. SELECT AVG(v)) — the projection slot carries a nil
+//     ProjectedValue (the executor resolves it from the aggregate's output by
+//     name), so its type comes from the producing LogicalAggregate, looked up by
+//     the slot's canonical name.
+//
+// Plain-column narrowing (LONG→INT, DOUBLE-col→INT) is NOT checked here — it
+// stays deferred to the runtime converter, pending the Java end-state
+// (PromoteValue projection nodes) that dissolves this guard. INSERT … SELECT
+// with an explicit column list is rejected upstream, so the projection maps
+// positionally onto the target record's fields.
+//
+// Scope: covers sources with a LogicalProject (scalar aggregates, expressions
+// over aggregates, plain projections). A bare GROUP BY whose Source is a
+// LogicalAggregate DIRECTLY (no Project, e.g. INSERT … SELECT g, AVG(v) … GROUP
+// BY g) has no projection to read column order from, so it is deferred to the
+// PromoteValue follow-up (tracked in TODO.md) — its runtime converter still
+// rejects the non-empty case.
+func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlayer.RecordMetaData) error {
+	proj := findProjection(insertOp.Source)
+	if proj == nil {
+		return nil
+	}
+	rt := md.GetRecordType(bareTableName(insertOp.Table))
+	if rt == nil {
+		return nil
+	}
+	// Canonical aggregate output name → reliable result type, for the bare-
+	// aggregate case (nil ProjectedValue). Names match the projection text
+	// verbatim (both produced by the same canonicaliser, e.g. "AVG(V)").
+	aggTypes := map[string]values.Type{}
+	if agg := findAggregate(insertOp.Source); agg != nil {
+		for j, name := range agg.Aggregates {
+			var operand values.Value
+			if j < len(agg.AggregateOperands) {
+				operand = agg.AggregateOperands[j]
+			}
+			if t := aggResultTypeFromName(name, operand); t != nil {
+				aggTypes[strings.ToUpper(name)] = t
+			}
+		}
+	}
+	fields := rt.Descriptor.Fields()
+	for i := 0; i < len(proj.Projections) && i < fields.Len(); i++ {
+		var srcType values.Type
+		if i < len(proj.AggregateSlots) && proj.AggregateSlots[i] &&
+			i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
+			srcType = proj.ProjectedValues[i].Type()
+		} else if t, ok := aggTypes[strings.ToUpper(proj.Projections[i])]; ok {
+			srcType = t
+		}
+		if srcType == nil || srcType.Code() == values.TypeCodeUnknown {
+			continue
+		}
+		targetType := protoKindToValueType(fields.Get(i).Kind())
+		if targetType == nil {
+			continue
+		}
+		if !values.IsPromotable(srcType, targetType) {
+			return api.NewErrorf(api.ErrCodeCannotConvertType,
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+		}
+	}
+	return nil
+}
+
+// aggResultTypeFromName derives an aggregate's result type from its canonical
+// output name (e.g. "AVG(V)", "SUM(PRICE)") and its resolved operand — the
+// single source for the bare-aggregate projection case, where no ProjectedValue
+// is present. AVG→DOUBLE and COUNT→LONG are function-determined; SUM/MIN/MAX
+// inherit the operand type. The function prefix is read off the *internal*
+// canonical name (the contract the executor's aggResultName also relies on), not
+// user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode.
+func aggResultTypeFromName(name string, operand values.Value) values.Type {
+	sym := name
+	if idx := strings.IndexByte(name, '('); idx >= 0 {
+		sym = name[:idx]
+	}
+	switch strings.ToUpper(strings.TrimSpace(sym)) {
+	case "AVG":
+		return values.NullableDouble
+	case "COUNT":
+		return values.NotNullLong
+	case "SUM", "MIN", "MAX":
+		if operand != nil {
+			if t := operand.Type(); t != nil && t.Code() != values.TypeCodeUnknown {
+				return t
+			}
+		}
+		return values.NullableLong
+	}
+	return nil
 }
 
 // buildLogicalPlanForQueryWithCTECatalog is like

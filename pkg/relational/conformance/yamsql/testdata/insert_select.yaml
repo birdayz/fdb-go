@@ -52,33 +52,20 @@ tests:
   - query: SELECT id, v FROM dst WHERE id >= 2000 ORDER BY id
     rows:
       - [2002, 20]
-  # INSERT with an aggregate output into a BIGINT column. SUM/AVG
-  # accumulators produce float64 values (even for integer inputs)
-  # because the accumulator state is float64. convertToProtoValue's
-  # Int64Kind branch used to reject non-int64 inputs with 22023
-  # "cannot convert float64 to proto field kind int64"; now whole-
-  # valued float64 is coerced back to int64, matching Postgres/MySQL
-  # where `INSERT INTO t(n) SELECT SUM(v)` is well-defined.
+  # INSERT with an aggregate output into a BIGINT column.
+  # SUM(BIGINT) types BIGINT (Java SUM_L→LONG), so SUM→BIGINT is accepted —
+  # the streaming accumulator yields int64 for all-integer inputs.
   - query: INSERT INTO dst SELECT 9001, SUM(v) FROM src
   - query: SELECT id, v FROM dst WHERE id = 9001
     rows:
       - [9001, 60]
-  # AVG that happens to be a whole number — same path.
+  # AVG(BIGINT) types DOUBLE (Java AVG_*→DOUBLE), and DOUBLE→BIGINT has no edge
+  # in the promotion lattice, so AVG→BIGINT is REJECTED at plan time with 22000 —
+  # exactly like Java's PromoteValue. (RFC-083: this used to be silently coerced
+  # back to int64 — a divergence; the whole-float coercion band-aid was removed.)
+  # The rejection is value-independent (whole or fractional AVG alike).
   - query: INSERT INTO dst SELECT 9002, AVG(v) FROM src
-  - query: SELECT id, v FROM dst WHERE id = 9002
-    rows:
-      - [9002, 20]
-  # Non-integer float (AVG with non-divisible sum) still errors
-  # cleanly rather than silently truncating to the floor. With src =
-  # (id=1,v=10), (id=2,v=20), (id=3,v=30), AVG(v) = 20 (whole) but
-  # AVG(v+1) = 21 (still whole), so we need a divisor that doesn't
-  # evenly divide. src has 3 rows; AVG of 4 constants across 3 rows
-  # is not an integer: SUM(4)/3 = 4/3 for single-value, but we need
-  # a cleaner pathological. Use a 2-row source and an odd sum.
-  #
-  # dayshift-40: SQLSTATE tightened from 22023 (INVALID_PARAMETER) to
-  # 22000 (CANNOT_CONVERT_TYPE) to match Java's case-when.yamsql
-  # treatment of fractional float → integer assignment.
+    error_code: "22000"
   - query: INSERT INTO src VALUES (10, 5)
   - query: INSERT INTO dst SELECT 9003, AVG(v) FROM src WHERE id IN (1, 10)
     error_code: "22000"

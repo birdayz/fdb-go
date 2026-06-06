@@ -29,6 +29,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 type innerPlanAccessor interface{ GetInner() plans.RecordQueryPlan }
@@ -2102,11 +2103,24 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 			return protoreflect.ValueOfFloat32(float32(n)), nil
 		case float32:
 			return protoreflect.ValueOfFloat32(n), nil
+		// INT/LONG→FLOAT are promotable in Java's lattice; widen rather than
+		// falling through to the 22000 reject (e.g. SUM(BIGINT) into a FLOAT
+		// column). Matches ConvertToProtoValue's VALUES path.
+		case int64:
+			return protoreflect.ValueOfFloat32(float32(n)), nil
+		case int:
+			return protoreflect.ValueOfFloat32(float32(n)), nil
 		}
 	case protoreflect.DoubleKind:
 		switch n := v.(type) {
 		case float64:
 			return protoreflect.ValueOfFloat64(n), nil
+		// INT/LONG→DOUBLE are promotable; a SUM(BIGINT)/COUNT into a DOUBLE
+		// column must widen (this path previously fell through and errored).
+		case int64:
+			return protoreflect.ValueOfFloat64(float64(n)), nil
+		case int:
+			return protoreflect.ValueOfFloat64(float64(n)), nil
 		}
 	case protoreflect.StringKind:
 		switch s := v.(type) {
@@ -2124,7 +2138,13 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
 		}
 	}
-	return protoreflect.Value{}, fmt.Errorf("cannot convert %T to proto field kind %v", v, fd.Kind())
+	// All promotable conversions are handled above, so anything reaching here is
+	// a genuinely incompatible assignment (e.g. a float64/DOUBLE into an integer
+	// column — DOUBLE→LONG has no edge in Java's promotion lattice). Emit the
+	// verbatim 22000 SemanticException, matching Java's PromoteValue rejection and
+	// the sibling ConvertToProtoValue fallthrough — not a generic Go error.
+	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+		"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 }
 
 func executeTempTableScan(
