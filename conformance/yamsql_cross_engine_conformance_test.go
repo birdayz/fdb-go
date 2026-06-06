@@ -104,13 +104,14 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 	//      ephemeral-schema CREATE committed → spurious UnableToPlanException).
 	//      The pool never spawns while a query runs (see JavaServerPool).
 	//
-	// Model: scenarios borrow from a small pool of RE-USED servers (default size
-	// 4), each recycled after maxInvocations borrows (default 50) as a safety
-	// belt — NOT for determinism (SeedRunCorpus shows shared re-use is clean) but
-	// to bound any hypothetical accumulated state and per-JVM memory. Re-use is
-	// what keeps this fast and light: ~few JVM spawns for the whole suite instead
-	// of one per scenario, and a handful of live JVMs instead of ~119 — which
-	// also keeps a constrained CI runner off the GC-thrash cliff. Knobs:
+	// Model: scenarios borrow RE-USED servers from a pool. Defaults are pool size
+	// 1 + maxInvocations 0 — ONE shared server for the whole A3 suite, never
+	// recycled, exactly like SeedRunCorpus. Recycling (maxInvocations > 0) is a
+	// safety belt only — NOT for determinism (SeedRunCorpus + a single-JVM/no-
+	// recycle 3× proof show shared re-use is clean) — to bound any hypothetical
+	// accumulated state and per-JVM memory. Re-use is what keeps this fast and
+	// light: one JVM spawned once instead of ~119 fresh ones, which also keeps a
+	// constrained CI runner off the GC-thrash cliff. Knobs:
 	// CONFORMANCE_A3_POOL_SIZE, CONFORMANCE_A3_MAX_INVOCATIONS. Bazel caches the
 	// test result, so it only re-runs when an input changes.
 	//
