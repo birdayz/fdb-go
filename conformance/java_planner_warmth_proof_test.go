@@ -46,16 +46,20 @@ func classifyRun(res plandiff.RunResult) string {
 // distribution so a regression to >1 distinct cold outcome would show, and
 // asserts the warm distribution is a single outcome as a sanity check.)
 //
-// So the flakiness the un-gated A3 gate exhibited came NOT from the planner but
-// from two harness-level effects, both now fixed in production (see RFC-082
-// "Java conformance-server determinism"):
+// So the flakiness the un-gated A3 gate exhibited came NOT from the planner, and
+// NOT from cross-query JVM-state pollution either — that theory was never pinned
+// and is refuted: a SINGLE shared server runs all ~119 A3 scenarios (and
+// SeedRunCorpus's ~1620 queries) byte-identically across runs. The real causes
+// were two harness-level effects, both fixed in production (see RFC-082 "Java
+// conformance-server determinism"):
 //
-//  1. Cross-query state pollution on a long-lived / shared server → fixed by
-//     giving each A3 scenario a fresh JVM.
+//  1. Ginkgo's Ordered skip-after-failure + randomized run order reported a
+//     different one of a DETERMINISTIC set of failures each run → fixed by
+//     ContinueOnFailure (the full set now surfaces, order-independent).
 //
 //  2. Read-version (GRV) lag when servers are spawned CONCURRENTLY against the
-//     shared FDB container → fixed by the pool never spawning while a query runs
-//     (A3 runs serially; the pool pre-spawns up front).
+//     shared FDB container → fixed by re-using a pooled server (one by default)
+//     so the suite barely spawns, and never while a query runs.
 //
 // Reproduce:
 //

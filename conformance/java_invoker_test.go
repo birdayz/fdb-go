@@ -29,6 +29,10 @@ type JavaInvoker struct {
 	httpClient *http.Client
 	mu         sync.Mutex
 	closed     bool
+	// borrows counts how many times this server has been handed out by a
+	// JavaServerPool. The pool recycles a server once it reaches the pool's
+	// maxInvocations bound. Guarded by mu.
+	borrows int
 }
 
 var (
@@ -113,18 +117,27 @@ func NewIsolatedJavaInvoker() (*JavaInvoker, error) {
 	return startJavaServer()
 }
 
-// defaultA3PoolSize is the number of fresh Java servers pre-spawned at suite
-// startup as a warm buffer. It is purely a SPEED/RAM knob (more buffer = fewer
-// on-demand spawns during the run = faster, at the cost of more live JVMs at
-// startup); determinism does NOT depend on it (see JavaServerPool). Override
-// with CONFORMANCE_A3_POOL_SIZE.
-const defaultA3PoolSize = 16
+// defaultA3PoolSize is the number of Java servers the pool keeps alive and
+// rotates scenarios across. A3 runs serially (one scenario at a time), so ONE
+// shared server suffices — exactly like SeedRunCorpus, which drives ~1620
+// queries through a single server deterministically. This is the default: it
+// spawns a single JVM (not ~119 fresh ones, not a 16-deep buffer), which is both
+// the fastest and the lightest on memory — the 16-JVM buffer was what pressured
+// a constrained CI runner into GC thrash. Raise it (CONFORMANCE_A3_POOL_SIZE)
+// only to parallelize A3 in the future; each extra live JVM is ~250-400MB.
+const defaultA3PoolSize = 1
 
-// a3PoolSize returns the configured A3 server-pool buffer size
-// (CONFORMANCE_A3_POOL_SIZE, else defaultA3PoolSize). Lower it on
-// memory-constrained machines (each buffered server is a live JVM ~250-400MB);
-// raise it on big hosts to pre-spawn more servers up front and cut the
-// on-demand-spawn tail.
+// defaultA3MaxInvocations is how many scenarios a single pooled server handles
+// before the pool recycles it (0 = never recycle = pure shared re-use, the
+// default). Recycling is NOT needed for determinism: a single JVM serving all
+// ~119 A3 scenarios (and SeedRunCorpus's ~1620 queries) is deterministic across
+// runs — proven, no cross-query state pollution exists. The knob remains as a
+// cheap safety valve: set CONFORMANCE_A3_MAX_INVOCATIONS > 0 to bound per-JVM
+// memory or hedge a future fdb-relational version that does leak.
+const defaultA3MaxInvocations = 0
+
+// a3PoolSize returns the configured A3 server-pool size (CONFORMANCE_A3_POOL_SIZE,
+// else defaultA3PoolSize). Lower it on memory-constrained machines.
 func a3PoolSize() int {
 	if v := os.Getenv("CONFORMANCE_A3_POOL_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -134,48 +147,65 @@ func a3PoolSize() int {
 	return defaultA3PoolSize
 }
 
+// a3MaxInvocations returns the per-server recycle bound
+// (CONFORMANCE_A3_MAX_INVOCATIONS, else defaultA3MaxInvocations; 0 = never).
+func a3MaxInvocations() int {
+	if v := os.Getenv("CONFORMANCE_A3_MAX_INVOCATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return defaultA3MaxInvocations
+}
+
 // serverOrErr carries either a freshly-spawned server or the spawn error.
 type serverOrErr struct {
 	inv *JavaInvoker
 	err error
 }
 
-// JavaServerPool hands each A3 scenario a FRESH, never-yet-used Java server so a
-// scenario's result is a function of that scenario alone — fdb-relational
-// 4.11.1.0 pollutes cross-query state on a long-lived server (see the
-// determinism note in yamsql_cross_engine_conformance_test.go), so only a fresh
-// process is clean.
+// JavaServerPool hands A3 scenarios pooled Java servers that are RE-USED across
+// scenarios and recycled after `maxInvocations` borrows. The earlier
+// fresh-JVM-per-scenario model was an over-correction: SeedRunCorpus drives
+// ~1620 queries through ONE shared server deterministically, so cross-query
+// state pollution is not observable at scale — what actually made A3 look
+// nondeterministic was (a) Ginkgo's Ordered skip-after-failure + randomized
+// order masking a deterministic failure set (fixed with ContinueOnFailure) and
+// (b) GRV lag from CONCURRENT server spawning, below. Re-use makes the suite
+// fast and light (a pool of `size` servers, not ~119 fresh JVMs ⇒ far fewer
+// spawns and far less memory pressure on a constrained CI runner); the
+// maxInvocations recycle is a safety belt that bounds any hypothetical
+// accumulated state and caps per-JVM memory growth.
 //
-// CRITICAL determinism rule: a server's QUERIES must never run while ANOTHER
-// server is SPAWNING. All servers share the single FDB testcontainer; concurrent
-// spawning + querying causes read-version (GRV) lag — a query's transaction can
-// get a read version from BEFORE its own ephemeral-schema CREATE committed, so it
-// sees no table and the Cascades planner throws a SPURIOUS UnableToPlanException.
-// (Proven: a query that is 12/12 OK when servers spawn sequentially intermittently
-// fails when servers spawn concurrently.) A naive background-refill pool violates
-// this — replacements spawn while the next scenario queries — which is exactly
-// what made A3 flaky run-to-run.
-//
-// So this pool spawns ONLY at two safe moments:
+// CRITICAL determinism rule (still in force): a server's QUERIES must never run
+// while ANOTHER server is SPAWNING. All servers share the single FDB
+// testcontainer; concurrent spawning + querying causes read-version (GRV) lag —
+// a query's transaction can get a read version from BEFORE its own
+// ephemeral-schema CREATE committed, see no table, and the Cascades planner
+// throws a SPURIOUS UnableToPlanException. (Proven: a query that is 12/12 OK when
+// servers spawn sequentially intermittently fails when servers spawn
+// concurrently.) A naive background-refill pool violates this. So this pool
+// spawns ONLY at safe moments — never while a query runs:
 //  1. a startup buffer of `size` servers, spawned concurrently in
-//     NewJavaServerPool and fully awaited BEFORE any scenario runs a query
-//     (startup has no in-flight queries, so concurrent spawning is harmless); and
-//  2. on demand, SYNCHRONOUSLY, inside Borrow — i.e. in a scenario's BeforeAll,
-//     before that scenario's query, and (Ginkgo runs specs sequentially) while no
-//     other scenario is querying.
+//     NewJavaServerPool and fully awaited BEFORE any scenario queries; and
+//  2. on demand, SYNCHRONOUSLY inside Borrow (a scenario's BeforeAll, before that
+//     scenario's query; Ginkgo runs specs sequentially so no other scenario is
+//     querying) — which also covers the post-recycle re-spawn, since Return
+//     closes a maxed-out server and the next Borrow finds the pool short.
 //
-// There is NO background refill. Buffered-but-idle servers generate no FDB load,
-// so they never induce GRV lag for the active query. The result is fully
-// order-independent and deterministic at ANY `size`.
+// There is NO background refill. Re-use keeps the pool populated; recycling only
+// drops a server between scenarios, and the next Borrow re-spawns synchronously.
 type JavaServerPool struct {
-	ready chan *JavaInvoker
+	ready          chan *JavaInvoker
+	maxInvocations int // 0 = never recycle (pure shared re-use)
 }
 
 // NewJavaServerPool spawns `size` servers concurrently and BLOCKS until every one
-// is ready, so the buffer is full before any scenario queries. Concurrent
-// spawning here is safe precisely because no scenario is querying yet.
-func NewJavaServerPool(size int) *JavaServerPool {
-	p := &JavaServerPool{ready: make(chan *JavaInvoker, size)}
+// is ready, so the pool is full before any scenario queries. Concurrent spawning
+// here is safe precisely because no scenario is querying yet. Servers are re-used
+// across scenarios and recycled after `maxInvocations` borrows (0 = never).
+func NewJavaServerPool(size, maxInvocations int) *JavaServerPool {
+	p := &JavaServerPool{ready: make(chan *JavaInvoker, size), maxInvocations: maxInvocations}
 	results := make([]serverOrErr, size)
 	var wg sync.WaitGroup
 	for i := 0; i < size; i++ {
@@ -192,14 +222,14 @@ func NewJavaServerPool(size int) *JavaServerPool {
 			p.ready <- r.inv
 		}
 		// A startup spawn error is dropped here; Borrow re-spawns synchronously
-		// (and surfaces any persistent error) when the buffer runs short.
+		// (and surfaces any persistent error) when the pool runs short.
 	}
 	return p
 }
 
-// Borrow returns a FRESH server: a pre-spawned buffered one if available, else a
-// synchronously-spawned one. The synchronous spawn blocks the caller (a scenario
-// BeforeAll) and therefore never overlaps another scenario's query.
+// Borrow returns a pooled server — a re-used idle one if available, else a
+// synchronously-spawned fresh one. The synchronous spawn blocks the caller (a
+// scenario BeforeAll) and therefore never overlaps another scenario's query.
 func (p *JavaServerPool) Borrow() (*JavaInvoker, error) {
 	select {
 	case inv := <-p.ready:
@@ -209,14 +239,30 @@ func (p *JavaServerPool) Borrow() (*JavaInvoker, error) {
 	}
 }
 
-// Retire closes a borrowed (single-use) server.
-func (p *JavaServerPool) Retire(inv *JavaInvoker) {
-	if inv != nil {
+// Return hands a borrowed server back to the pool for re-use, unless it has
+// reached the recycle bound (maxInvocations > 0 && borrows >= max), in which case
+// it is closed — the pool then runs short and the next Borrow spawns a fresh one
+// (synchronously, between scenarios, so the no-spawn-during-query rule holds).
+func (p *JavaServerPool) Return(inv *JavaInvoker) {
+	if inv == nil {
+		return
+	}
+	inv.mu.Lock()
+	inv.borrows++
+	recycle := p.maxInvocations > 0 && inv.borrows >= p.maxInvocations
+	inv.mu.Unlock()
+	if recycle {
 		_ = inv.Close()
+		return
+	}
+	select {
+	case p.ready <- inv: // back into the pool for re-use
+	default:
+		_ = inv.Close() // pool already full (can't happen in serial use) — don't leak
 	}
 }
 
-// Shutdown closes every still-buffered server.
+// Shutdown closes every server still in the pool.
 func (p *JavaServerPool) Shutdown() {
 	close(p.ready)
 	for inv := range p.ready {

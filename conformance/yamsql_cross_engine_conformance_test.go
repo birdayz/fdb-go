@@ -75,7 +75,7 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 		// driver opens it directly); the Java runner takes the
 		// contents (sent over HTTP, opened server-side).
 		clusterFilePath = writeClusterFileToTemp(clusterFile)
-		pool = NewJavaServerPool(a3PoolSize())
+		pool = NewJavaServerPool(a3PoolSize(), a3MaxInvocations())
 	})
 
 	AfterAll(func() {
@@ -84,34 +84,35 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 		}
 	})
 
-	// DETERMINISM MODEL — per-scenario fresh JVM, pooled.
+	// DETERMINISM MODEL — pooled, re-used Java servers (recycled by invocation).
 	//
-	// fdb-relational 4.11.1.0 carries cross-query state in process-global
-	// (JVM-static) caches — chiefly the ANTLR parser's static prediction state
-	// (`_decisionToDFA` + the shared PredictionContextCache on the generated
-	// RelationalParser) — that WARM as queries are parsed on a JVM. The same
-	// SQL then parses into a subtly different tree depending on what ran before
-	// it, and that propagates downstream: the SAME query can be rejected by the
-	// semantic analyzer ("order by is not supported in subquery"), rejected by
-	// the Cascades planner (UnableToPlanException), or accepted — flipping
-	// purely with execution order, in BOTH directions (some queries fail cold /
-	// pass warm, others the reverse). Every per-connection and per-query object
-	// is freshly constructed (BaseVisitor, SemanticAnalyzer, RecordLayerDatabase
-	// + its metadata cache; the plan cache is disabled in sql_plan_steps.java) —
-	// verified against the fdb-relational source — so the leak is in those JVM
-	// statics, which nothing short of a fresh JVM resets. (Confirmed:
-	// --ginkgo.randomize-all with different seeds flips which queries Java
-	// accepts; on one shared server, editing the scenario list reshuffles the
-	// warming and flips UNRELATED scenarios — whack-a-mole.)
+	// The "A3 is nondeterministic" symptom (a different scenario failing each
+	// run) was NOT cross-query JVM-state pollution. That theory was never pinned
+	// — and SeedRunCorpus refutes it: it drives ~1620 queries through ONE shared
+	// Java server, deterministically, every run. (The once-suspected mechanism,
+	// the ANTLR parser's static `_decisionToDFA`/PredictionContextCache, is a
+	// performance cache that yields identical parse trees cold or warm; it does
+	// not change results.) The actual causes were two, both fixed:
+	//   1. Ginkgo's Ordered skip-after-failure + randomized run order: the first
+	//      failing scenario skipped all the rest, so each run reported a
+	//      different sole failure out of a DETERMINISTIC failure set. Fixed by
+	//      ContinueOnFailure (see the outer Describe) — the full set now surfaces
+	//      order-independently, which is what let the genuine Go-only-extension /
+	//      stateful scenarios below be identified and excluded.
+	//   2. GRV lag from CONCURRENT server spawning against the shared FDB
+	//      container (a query's txn taking a read version before its own
+	//      ephemeral-schema CREATE committed → spurious UnableToPlanException).
+	//      The pool never spawns while a query runs (see JavaServerPool).
 	//
-	// Fix: each scenario borrows a FRESH, never-yet-used server from the pool.
-	// A scenario's result is then a function of that scenario alone —
-	// independent of every other scenario and of execution order — so the gate
-	// cannot flake run-to-run and editing the list cannot cascade. The pool
-	// (JavaServerPool, size = CONFORMANCE_A3_POOL_SIZE) pre-spawns servers in
-	// the background so the per-scenario JVM-boot cost is overlapped with
-	// scenario execution, keeping this close to single-shared-server speed.
-	// Bazel caches the test result, so it only re-runs when an input changes.
+	// Model: scenarios borrow from a small pool of RE-USED servers (default size
+	// 4), each recycled after maxInvocations borrows (default 50) as a safety
+	// belt — NOT for determinism (SeedRunCorpus shows shared re-use is clean) but
+	// to bound any hypothetical accumulated state and per-JVM memory. Re-use is
+	// what keeps this fast and light: ~few JVM spawns for the whole suite instead
+	// of one per scenario, and a handful of live JVMs instead of ~119 — which
+	// also keeps a constrained CI runner off the GC-thrash cliff. Knobs:
+	// CONFORMANCE_A3_POOL_SIZE, CONFORMANCE_A3_MAX_INVOCATIONS. Bazel caches the
+	// test result, so it only re-runs when an input changes.
 	//
 	// A Java error below is therefore a real, reproducible signal — a genuine
 	// Go-only extension (Java cannot plan it; exclude it from
@@ -124,10 +125,10 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 				var err error
 				scenarioJava, err = pool.Borrow()
 				Expect(err).NotTo(HaveOccurred(),
-					"failed to obtain a fresh Java server for scenario %q", s.Name)
+					"failed to obtain a pooled Java server for scenario %q", s.Name)
 			})
 			AfterAll(func() {
-				pool.Retire(scenarioJava)
+				pool.Return(scenarioJava)
 			})
 			for i, t := range s.Tests {
 				i, t := i, t
@@ -157,12 +158,12 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, ContinueOnFail
 					Expect(goRes.Err).NotTo(HaveOccurred(), "%s: Go executor errored", prefix)
 					assertRowsMatch(goRes.Rows.Rows, t.Rows, t.Unordered, prefix+" [Go vs expected]")
 
-					// STRICT cross-engine, no tolerance — each scenario runs on
-					// its OWN fresh JVM (see the determinism model above), so a
-					// Java error is a genuine Go-only extension (exclude it) or a
-					// regression, never warming noise.
+					// STRICT cross-engine, no tolerance: results are deterministic
+					// (see the determinism model above), so a Java error is a
+					// genuine Go-only extension (exclude it) or a regression — never
+					// run-to-run noise.
 					Expect(javaRes.Err).NotTo(HaveOccurred(),
-						"%s: Java errored on its dedicated fresh server — if this query "+
+						"%s: Java errored on its pooled server — if this query "+
 							"is a genuine Go-only extension (Java cannot plan it) exclude it "+
 							"from crossEngineScenarios with a note; otherwise it's a regression", prefix)
 					// (a) Java vs scenario-declared expected.

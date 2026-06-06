@@ -53,6 +53,12 @@ java_binary(
 
 go_test(
     name = "conformance_test",
+    # size="large" ⇒ 900s (long) bazel timeout. The un-gated A3 harness uses ONE
+    # shared, re-used Java server (not a fresh JVM per scenario), so the suite
+    # runs in ~8min locally and stays well under 900s even on CI's slower runner;
+    # the earlier "eternal" bump was masking the fresh-JVM-per-scenario cost +
+    # 16-JVM memory pressure, both now removed. Bazel caches the result, so it
+    # only re-runs when a conformance input actually changes.
     size = "large",
     srcs = [
         "aggregate_conformance_test.go",

@@ -265,68 +265,69 @@ exploration; task-budget exhaustion throws `RecordQueryPlanComplexityException`)
 The earlier "tolerate Java planner nondeterminism" code was a misdiagnosis and is
 removed.
 
-The "different scenario each run" symptom had **two genuinely distinct kinds of
-cause**: real run-to-run flakiness (sources 1–2 below), and — once those were
-fixed — a *reporting artifact* that made a set of DETERMINISTIC failures look
-nondeterministic (source 3). All three are fixed.
+Crucially, **there is NO cross-query JVM-state pollution** — the theory an earlier
+pass reached for, and never pinned. It is directly refuted: a SINGLE shared Java
+server runs all ~119 A3 scenarios (and SeedRunCorpus's ~1620 queries) with
+byte-identical results across 3 independent runs each. If process-global state
+poisoned later queries, a single JVM over hundreds of queries would be the first
+casualty; it isn't. (The once-suspected mechanism — the ANTLR parser's static
+`_decisionToDFA`/`PredictionContextCache` — is a performance cache that yields
+identical parse trees cold or warm; it does not change results.) So the
+"different scenario each run" symptom had exactly two real contributors plus a
+reporting artifact — none of them "warming":
 
-Real flakiness (a query's pass/fail genuinely changed run-to-run):
-
-1. **Cross-query state pollution on a long-lived (shared) server.** Every
-   per-connection / per-query object is freshly constructed — `BaseVisitor`,
-   `SemanticAnalyzer`, the recursive-CTE memoizer, `RecordLayerDatabase` + its
-   `CachedMetaDataStore` (`loadDatabase` returns `new` per connection), verified
-   in-source — yet process-global state still accumulates, so one query's
-   processing can change a later query's outcome on the same JVM. **Fix: a FRESH
-   JVM per scenario** (`JavaServerPool`) — each scenario's result is a function of
-   that scenario alone: order-independent, no cascade, no whack-a-mole.
-
-2. **Read-version (GRV) lag under CONCURRENT server spawning.** All servers share
-   the one FDB testcontainer. A pool that spawns replacement servers in the
-   background — while a borrowed server runs a scenario's query — makes that
-   query's transaction race the spawns for the cluster: it can take a read version
-   from BEFORE its own ephemeral-schema `CREATE` committed, see no table, and throw
-   a SPURIOUS `UnableToPlanException`. (Proven: a query that is 12/12 OK with
-   sequential spawning intermittently fails under concurrent spawning.) This — not
-   "warming" — is what flipped a different scenario each run. **Fix: the pool never
-   spawns while a query runs.** It spawns only (a) a startup buffer, fully awaited
-   before any scenario queries, and (b) on demand SYNCHRONOUSLY inside `Borrow`
-   (in a scenario's `BeforeAll`, before its query; Ginkgo runs specs sequentially,
-   so no other scenario is querying). No background refill. Deterministic at ANY
-   pool size; `CONFORMANCE_A3_POOL_SIZE` is purely a speed/RAM knob.
+1. **Read-version (GRV) lag under CONCURRENT server spawning.** All servers share
+   the one FDB testcontainer. Spawning a server *while another runs a query* makes
+   that query's transaction race the spawn for the cluster: it can take a read
+   version from BEFORE its own ephemeral-schema `CREATE` committed, see no table,
+   and throw a SPURIOUS `UnableToPlanException`. (Proven: a query 12/12 OK with
+   sequential spawning intermittently fails under concurrent spawning.) **Fix: the
+   pool never spawns while a query runs** — and with the shared-reuse model below
+   it barely spawns at all (one JVM for the whole suite by default).
 
 Reporting artifact (failures were deterministic; the REPORT looked random):
 
-3. **Ginkgo `Ordered` skip-after-failure masked a deterministic failure set.**
+2. **Ginkgo `Ordered` skip-after-failure masked a deterministic failure set.**
    All A3 scenarios are nested in one outer `Ordered` container (required to host
    the run-once pool `BeforeAll`). Ginkgo's default for `Ordered` is to SKIP every
    subsequent spec once one fails; combined with Ginkgo's randomized run order,
    this meant the *first* broken scenario in that run's order failed and **all
    other broken scenarios were skipped** — so each run reported exactly one
    failure, a different one each time, even though every one of those failures was
-   individually deterministic (verified: each fails 10/10 in isolation). This
-   masqueraded as nondeterminism long after sources 1–2 were fixed and sent the
-   investigation chasing a planner ghost. **Fix: `ContinueOnFailure` on the outer
-   container** (Torvalds-reviewed; the idiomatic Ginkgo decorator for "shared
-   setup + independent specs"). Every scenario now runs regardless of earlier
-   failures, so a single run surfaces the COMPLETE, order-independent failure set
-   — which is what let the genuine Go-only-extension / stateful scenarios below be
-   found and excluded in one pass instead of one-per-run whack-a-mole.
+   individually deterministic (verified: each fails 10/10 in isolation). This was
+   the dominant "looks nondeterministic" effect and sent the investigation chasing
+   a planner ghost. **Fix: `ContinueOnFailure` on the outer container**
+   (Torvalds-reviewed; the idiomatic Ginkgo decorator for "shared setup +
+   independent specs"). Every scenario now runs regardless of earlier failures, so
+   a single run surfaces the COMPLETE, order-independent failure set — which is
+   what let the genuine Go-only-extension / stateful scenarios below be found and
+   excluded in one pass instead of one-per-run whack-a-mole.
 
-Supporting fixes:
+Server model + supporting fixes:
 
-3. **Plan cache disabled** in the conformance server (`makeEngine(planCache = null)`
+3. **Pooled, RE-USED Java servers (default: one shared server, no recycle).**
+   Since there is no cross-query pollution, A3 servers are re-used across
+   scenarios exactly like SeedRunCorpus's single shared server. `JavaServerPool`
+   defaults to size 1 + `maxInvocations` 0 (never recycle), so the whole A3 suite
+   runs on ONE JVM spawned once at startup — ~2× faster than fresh-per-scenario
+   (~256s vs ~520s for A3) and far lighter on memory (one JVM, not a 16-deep
+   buffer; the 16-JVM buffer was what pushed a constrained CI runner into GC
+   thrash and a 900s test-timeout). `CONFORMANCE_A3_POOL_SIZE` and
+   `CONFORMANCE_A3_MAX_INVOCATIONS` remain as knobs (parallelism; a recycle safety
+   valve for a hypothetical future leak). Determinism proven: single-JVM,
+   all-scenarios, no-recycle, 3×, byte-identical.
+4. **Plan cache disabled** in the conformance server (`makeEngine(planCache = null)`
    — the canonical `Optional.empty()` "cache disabled" path), removing the one
    TTL-evicted, wall-clock-timing-dependent engine cache. Corpus queries are mostly
    distinct, so the lost cache hits cost ~nothing.
-4. **JVM lifecycle.** Each server is spawned in its own process group (`Setpgid`);
+5. **JVM lifecycle.** Each server is spawned in its own process group (`Setpgid`);
    `Close()` kills the whole group + reaps (`Wait`) — the Bazel `java_binary`
    launcher is a wrapper script that forks the JVM as a child, so killing only the
    wrapper orphaned the JVM. A registry + an `AfterSuite` sweep guarantee no server
    outlives the suite; each server writes a unique temp cluster-file (not a shared
-   `/tmp` path) so concurrent startup spawns can't race. Verified: bounded live-JVM
-   count mid-run, zero zombies, zero orphans after.
-5. **Genuine Java-incompatibilities excluded/fixed** — deterministic, confirmed in
+   `/tmp` path) so concurrent startup spawns can't race. Verified: zero zombies,
+   zero orphans after.
+6. **Genuine Java-incompatibilities excluded/fixed** — deterministic, confirmed in
    isolation, and (per "extensions where Go works but Java can't are good, not
    divergences") covered Go-only via the yamsql corpus:
    - `NOT NULL` on scalar columns (fdb-relational allows it only on ARRAY) dropped
@@ -357,10 +358,11 @@ Supporting fixes:
      SUM accumulator→int64) — RFC-gated, **Graefe**-reviewed — tracked in TODO.md,
      NOT masked by a coerce-on-write band-aid (an earlier such band-aid was
      reverted as it diverged Go further from Java).
-6. **Tolerance removed.** `isJavaPlannerNondeterminism` deleted; `entryConforms`
+7. **Tolerance removed.** `isJavaPlannerNondeterminism` deleted; `entryConforms`
    again treats "Java errors, Go succeeds" as a divergence requiring an explicit
    annotation; `divergenceHolds` re-asserts BOTH the annotation's Java premise and
-   Go's pinned behaviour; A3's `if javaRes.Err != nil { return }` removed.
+   Go's pinned behaviour (incl. the `JavaIntermittentGoCorrect` arm now requiring
+   Java success — codex); A3's `if javaRes.Err != nil { return }` removed.
 
 Bazel caches the conformance test result, so the per-scenario cost is paid only
 when an input actually changes — unchanged commits hit the cache.
