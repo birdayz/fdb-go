@@ -131,12 +131,19 @@ func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.Run
 		}
 		return true, ""
 	case plandiff.DivergenceJavaIntermittentGoCorrect:
-		// The ONE direction whose Java side genuinely can't be pinned:
+		// The ONE direction whose Java side can't be pinned to exact rows:
 		// documented Java NONDETERMINISM (UNION ALL + outer ORDER BY — Java
-		// sometimes sorts, sometimes returns interleaved branch order). Go must
-		// succeed with the pinned (sorted) rows. TODO: re-verify under the
-		// plan-cache-disabled server — if Java is now deterministic, reclassify
-		// to JavaWrongRowsGoCorrect or delete (Java sorts correctly).
+		// sometimes sorts, sometimes returns interleaved branch order). Only the
+		// ROW ORDER is intermittent — Java still SUCCEEDS every time — so we
+		// still assert Java does not error (a deterministic Java throw here is a
+		// NEW, worse divergence that must not be masked just because Go's rows
+		// match), and that Go succeeds with the pinned (sorted) rows. We do not
+		// pin Java's exact rows/order. TODO: re-verify under the plan-cache-
+		// disabled server — if Java is now order-deterministic, reclassify to
+		// JavaWrongRowsGoCorrect or delete (Java sorts correctly).
+		if javaResult.Err != nil {
+			return false, "annotation says Java succeeds (only its row order is intermittent), but Java errored: " + javaResult.Err.Error()
+		}
 		if goResult.Err != nil {
 			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
 		}

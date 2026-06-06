@@ -74,6 +74,7 @@ go_test(
         "delete_all_conformance_test.go",
         "delete_conformance_test.go",
         "delete_records_where_conformance_test.go",
+        "divergence_holds_test.go",
         "error_conformance_test.go",
         "existence_check_conformance_test.go",
         "fanout_index_conformance_test.go",
