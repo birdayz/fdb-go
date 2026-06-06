@@ -738,3 +738,59 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
       `GetKeyValues` frame mid-scan; assert no dup/drop, correct `more`; forward + reverse).
     - **`future_version` (1009) / `process_behind` (1037) read-path QueueModel backoff wiring**
       (assert `failedUntil` advances and the address is deprioritized).
+
+---
+
+## Test infra (low priority)
+
+- [ ] **Parallelize the whole `//conformance` suite via stdlib `t.Parallel` (drop Ginkgo). [LOW PRIO — RFC-082 follow-up]**
+
+  **Goal.** Cut the Go↔Java conformance suite wall time (~122s today) by running *every* cross-engine
+  check concurrently, uniformly — no bespoke fan-out. Today only the two SQL loops are parallel
+  (each via its own hand-rolled goroutine pool); the ~40 FDB conformance families run serially.
+
+  **Hard constraint: bazel-only.** CI is `bazelisk test //...`, which runs each `go_test` binary
+  **once, directly** (serial invocation). So the only available parallelism is **in-process**.
+  Ginkgo cannot parallelize in-process — its only parallel mode is the `ginkgo --procs=N` CLI, which
+  spawns N worker *processes* (each would spin its own FDB container → the 290-failure resource
+  exhaustion already observed) and runs **outside** `bazel test` (loses result caching + the Java
+  server's bazel runfiles). Therefore the suite must move **off Ginkgo onto stdlib `testing` +
+  `t.Parallel()`**, run with `-test.parallel=N` (bazel `go_test` honors this in-process, cached,
+  runfiles intact). This also finally aligns the suite with the house rule ("All tests MUST call
+  `t.Parallel()`") — it's the lone serial holdout.
+
+  **Measured profile (121.6s wall, 112s in specs; `ginkgo-report.json` from a `--nocache_test_results`
+  run):** container+DB startup ~10s (serial floor); `RunSql Harness` (SeedRunCorpus, ~1620 entries)
+  36s — **already** 8-Java-server parallel; `yamsql A3` (859 specs) 20s — **already** 8-server
+  parallel; **~40 FDB conformance families ≈ 56s — SERIAL, on the single global Java server.**
+
+  **The load-bearing finding — the ceiling is JVM count, not Go concurrency.** The suite is
+  Java-JVM-throughput-bound and JVM count is **memory-capped on CI** (16 JVMs is exactly what caused
+  the earlier conformance CI timeout; 8 is the safe ceiling). The SQL work already runs 8-way — that
+  56s combined is `total_java_work / 8_servers`; unifying the two pools into one does **not** speed it
+  up (same work, same servers). So the **SQL floor is ~56s @ 8 JVMs**, and the rewrite's real win is
+  folding the **56s serial FDB tail** (currently on *one* server, sequential) **into** that parallel
+  window → **~122s → ~70-75s (~1.7x) @ 8 JVMs**. Beating ~70s needs **more JVMs** (memory), not more
+  parallelism. "Everything is parallelizable" is true mechanically, but does not buy 8x here.
+
+  **Approach (incremental, safe).** stdlib `Test*` funcs coexist with Ginkgo's `TestConformance` in
+  one package (they share globals; Go runs the sequential Ginkgo blob first, then the `t.Parallel`
+  batch together) — so migrate **family-by-family** with a green + spec/assertion-**count-parity**
+  gate after each (silent coverage drops are the exact CLAUDE.md failure mode). Steps: (1) move
+  container + Go DB + a pool of N Java servers into `TestMain` (all servers spawned before any test →
+  preserves the "no JVM spawn during a query" GRV-lag discipline); Gomega assertions stay verbatim via
+  `g := NewWithT(t)`; `BeforeEach` → a setup helper; nested `Describe` → flat test names / `t.Run`
+  subtests. (2) Convert each FDB family (already UUID-tenant-isolated → inherently parallel-safe).
+  (3) Convert A3 + SeedRunCorpus to `t.Run(..., t.Parallel())` subtests and **delete** the hand-rolled
+  worker pools + `precomputed` map + `results[]` — this is the "stop special-casing A3" cleanup.
+  (4) `-test.parallel=N` via the `go_test` `args`. Keep the FDB-1020 conflict-retry (shared catalog).
+  Benchmark stays gated (`CONFORMANCE_RUN_BENCHMARK`). Query-engine-adjacent → needs Graefe +
+  Torvalds + @claude + codex.
+
+  **Cheaper alternative (no rewrite, ~zero risk, ~1.3x):** just raise the existing SQL pool 8→12
+  (`CONFORMANCE_A3_POOL_SIZE` / `CONFORMANCE_SEED_PARALLELISM`) if the CI runner's memory allows —
+  shaves the SQL floor without touching the green, reviewed suite. The FDB tail stays serial.
+
+  **Why low prio.** The suite is green and freshly reviewed; ~1.7x for a ~32k-line mechanical rewrite
+  of wire-compat-critical tests is a weak risk/reward, and the real speed lever (JVM count) is
+  memory-bound regardless. Do the cheap JVM-count bump first if speed is ever urgent.
