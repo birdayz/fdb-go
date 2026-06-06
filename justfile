@@ -62,9 +62,12 @@ generate-parser:
 build:
     bazelisk build //...
 
-# Test all targets (excludes Java conformance server tests and stress tests).
+# Test all targets (includes Go↔Java conformance via the RFC-082 regression
+# lock; excludes only the heavy 1M stress tier). The flaky A3 cross-engine
+# harness (shared-JVM error-state) is skipped at the gate via the env and runs
+# nightly instead.
 test:
-    bazelisk test //... --test_tag_filters=-conformance_java,-stress
+    bazelisk test //... --test_tag_filters=-stress --test_env=CONFORMANCE_GATE_SKIP_A3=1
 
 # Run stress tests (10K/100K rows — exercises FDB transaction limits).
 stress:

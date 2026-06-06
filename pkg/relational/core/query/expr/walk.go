@@ -431,13 +431,21 @@ func commonBranchType(branches []values.Value) values.Type {
 		if b == nil {
 			continue
 		}
+		// A literal NULL carries no type constraint — skip it so the concrete
+		// branches type the result (`CASE WHEN c THEN NULL ELSE v END` is v's
+		// type). NULL is built as NewNullValue(TypeUnknown), so its type code
+		// is TypeCodeUnknown — it must be detected by value KIND, not type
+		// code, or it gets confused with a genuine unknown (Graefe).
+		if _, isNull := b.(*values.NullValue); isNull {
+			continue
+		}
 		t := b.Type()
 		if t == nil || t.Code() == values.TypeCodeNull {
-			continue // a literal NULL branch carries no type constraint
+			continue
 		}
 		if t.Code() == values.TypeCodeUnknown {
-			// A non-NULL branch of unknown type (scalar subquery, parameter,
-			// ...) could yield any type, so we cannot let the concrete
+			// A non-NULL branch of genuinely unknown type (scalar subquery,
+			// parameter) could yield any type, so we cannot let the concrete
 			// branches dictate the result — keep it unknown (codex P2).
 			return values.UnknownType
 		}
@@ -674,7 +682,11 @@ func polymorphicResultType(name string, args []values.Value) values.Type {
 				return values.WithNullability(t, true)
 			}
 		}
-	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND", "SIGN", "MOD":
+	case "MOD":
+		// MOD(a, b) promotes both operands (MOD(id, 2.5) yields a DOUBLE at
+		// runtime), same as arithmetic — codex P2.
+		return concrete(commonBranchType(args))
+	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND", "SIGN":
 		// Numeric, type-preserving in the first operand.
 		if len(args) >= 1 && args[0] != nil {
 			return concrete(args[0].Type())

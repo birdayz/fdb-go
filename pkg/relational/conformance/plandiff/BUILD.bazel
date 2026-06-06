@@ -6,6 +6,7 @@ go_library(
         "column_conform.go",
         "corpus.go",
         "corpus_rfc082_divergences.go",
+        "corpus_rfc082_knownred.go",
         "divergence.go",
         "go_runner.go",
         "httpclient.go",

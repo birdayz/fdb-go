@@ -29,6 +29,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
@@ -36,6 +38,120 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// entryConforms reports whether Go's result conforms to Java's for a
+// non-annotated corpus entry: a matching server-side root error message when
+// Java errors, or conforming column metadata (plandiff.ConformColumns) plus
+// byte-equal rows when Java succeeds. Returns a human-readable detail on
+// non-conformance. This is the predicate the RFC-082 regression lock reconciles
+// against rfc082KnownRed.
+func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
+	if javaResult.Err != nil {
+		if goResult.Err == nil {
+			return false, "Java errored but Go succeeded"
+		}
+		var je *plandiff.JavaError
+		if !errors.As(javaResult.Err, &je) {
+			return false, fmt.Sprintf("Java error is %T (not *plandiff.JavaError)", javaResult.Err)
+		}
+		var ge *api.Error
+		if !errors.As(goResult.Err, &ge) {
+			return false, fmt.Sprintf("Go error is %T (not *api.Error)", goResult.Err)
+		}
+		goRootMsg := ge.Message
+		for cause := ge.Unwrap(); cause != nil; {
+			var inner *api.Error
+			if !errors.As(cause, &inner) {
+				break
+			}
+			goRootMsg = inner.Message
+			cause = inner.Unwrap()
+		}
+		if goRootMsg != je.Message {
+			return false, fmt.Sprintf("error messages diverge: java=%q go=%q", je.Message, goRootMsg)
+		}
+		return true, ""
+	}
+	if goResult.Err != nil {
+		return false, "Java succeeded but Go errored: " + goResult.Err.Error()
+	}
+	if detail, ok := plandiff.ConformColumns(goResult.Rows.Columns, javaResult.Rows.Columns); !ok {
+		return false, "column metadata: " + detail
+	}
+	if !reflect.DeepEqual(goResult.Rows.Rows, javaResult.Rows.Rows) {
+		return false, "row data diverges"
+	}
+	return true, ""
+}
+
+// divergenceHolds reports whether a corpus entry's RFC-082 Divergence annotation
+// still describes reality (Go behaves as pinned). A stale annotation — Go's
+// behaviour shifted since it was recorded — returns false with a detail so the
+// lock reports it rather than failing fast.
+func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.RunResult) (bool, string) {
+	switch div.Direction {
+	case plandiff.DivergenceJavaErrorsGoCorrect:
+		if javaResult.Err == nil {
+			return false, "marked JavaErrorsGoCorrect but Java succeeded"
+		}
+		if goResult.Err != nil {
+			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
+		}
+		if !reflect.DeepEqual(goResult.Rows.Rows, div.GoExpectedRows) {
+			return false, fmt.Sprintf("Go rows changed from the annotation: %v", goResult.Rows.Rows)
+		}
+		return true, ""
+	case plandiff.DivergenceJavaWrongRowsGoCorrect:
+		if javaResult.Err != nil {
+			return false, "expects Java to succeed but Java errored"
+		}
+		if goResult.Err != nil {
+			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
+		}
+		if !reflect.DeepEqual(goResult.Rows.Rows, div.GoExpectedRows) {
+			return false, fmt.Sprintf("Go rows changed: %v", goResult.Rows.Rows)
+		}
+		if reflect.DeepEqual(javaResult.Rows.Rows, div.GoExpectedRows) {
+			return false, "Java now matches Go's expected rows — upstream may be fixed"
+		}
+		return true, ""
+	case plandiff.DivergenceJavaIntermittentGoCorrect:
+		if javaResult.Err != nil {
+			return false, "expects Java to succeed but Java errored"
+		}
+		if goResult.Err != nil {
+			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
+		}
+		if !reflect.DeepEqual(goResult.Rows.Rows, div.GoExpectedRows) {
+			return false, fmt.Sprintf("Go rows changed: %v", goResult.Rows.Rows)
+		}
+		return true, ""
+	case plandiff.DivergenceBothErrorMessagesDrift:
+		if javaResult.Err == nil {
+			return false, "expects Java to error but Java succeeded"
+		}
+		if goResult.Err == nil {
+			return false, "expects Go to error but Go succeeded"
+		}
+		if !strings.Contains(goResult.Err.Error(), div.GoErrorContains) {
+			return false, "Go error wording changed: " + goResult.Err.Error()
+		}
+		return true, ""
+	case plandiff.DivergenceJavaSucceedsGoRejects:
+		if javaResult.Err != nil {
+			return false, "expects Java to succeed but Java errored"
+		}
+		if goResult.Err == nil {
+			return false, "requires Go to error but Go succeeded"
+		}
+		if !strings.Contains(goResult.Err.Error(), div.GoErrorContains) {
+			return false, "Go error wording changed: " + goResult.Err.Error()
+		}
+		return true, ""
+	default:
+		return false, "unknown divergence direction " + string(div.Direction)
+	}
+}
 
 // writeClusterFileToTemp materialises the cluster file string contents
 // (env.ClusterFile) to a temp file on disk and returns its path. The
@@ -258,6 +374,11 @@ var _ = Describe("RunSql Harness", func() {
 		// tracked Go capability gaps, and both-reject message-drift) so the
 		// harness asserts Go's documented behaviour without pinning Java's.
 		plandiff.ApplyRFC082Divergences(corpus)
+		// RFC-082 regression LOCK: non-annotated entries that diverge but are
+		// NOT in rfc082KnownRed are regressions; known-red entries that now pass
+		// must be removed from the lock (it only shrinks). Asserted after the
+		// loop so one run reports the full delta.
+		var regressions, fixedNowGreen, staleAnnotations []string
 		for _, rq := range corpus {
 			rq := rq
 			By(rq.Name, func() {
@@ -271,129 +392,35 @@ var _ = Describe("RunSql Harness", func() {
 				// dedup failures, etc.) inside the corpus while still
 				// catching Go-side regressions.
 				if rq.Divergence != nil {
-					div := rq.Divergence
-					switch div.Direction {
-					case plandiff.DivergenceJavaErrorsGoCorrect:
-						Expect(javaResult.Err).To(HaveOccurred(),
-							"corpus entry %q: marked %s but Java succeeded — upstream may be fixed; revisit annotation\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Err).NotTo(HaveOccurred(),
-							"corpus entry %q: %s requires Go to succeed\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
-							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-					case plandiff.DivergenceJavaWrongRowsGoCorrect:
-						Expect(javaResult.Err).NotTo(HaveOccurred(),
-							"corpus entry %q: %s expects Java to succeed (with wrong rows)\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Err).NotTo(HaveOccurred(),
-							"corpus entry %q: %s requires Go to succeed\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
-							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						// Stale-annotation guard: if Java has silently
-						// started returning the same rows as Go, the
-						// upstream bug may be fixed and the annotation
-						// should be re-audited / removed. Symmetric with
-						// the JavaErrorsGoCorrect "Java succeeded" guard.
-						// For intermittent Java bugs use
-						// DivergenceJavaIntermittentGoCorrect, which
-						// skips this guard.
-						Expect(javaResult.Rows.Rows).NotTo(Equal(div.GoExpectedRows),
-							"corpus entry %q: marked %s but Java now matches Go's expected rows — upstream may be fixed; revisit annotation\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-					case plandiff.DivergenceJavaIntermittentGoCorrect:
-						Expect(javaResult.Err).NotTo(HaveOccurred(),
-							"corpus entry %q: %s expects Java to succeed\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Err).NotTo(HaveOccurred(),
-							"corpus entry %q: %s requires Go to succeed\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
-							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-					case plandiff.DivergenceBothErrorMessagesDrift:
-						Expect(javaResult.Err).To(HaveOccurred(),
-							"corpus entry %q: %s expects Java to error\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Err).To(HaveOccurred(),
-							"corpus entry %q: %s expects Go to error\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Err.Error()).To(ContainSubstring(div.GoErrorContains),
-							"corpus entry %q: Go error wording regressed under %s\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-					case plandiff.DivergenceJavaSucceedsGoRejects:
-						Expect(javaResult.Err).NotTo(HaveOccurred(),
-							"corpus entry %q: %s expects Java to succeed\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Err).To(HaveOccurred(),
-							"corpus entry %q: %s requires Go to error\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-						Expect(goResult.Err.Error()).To(ContainSubstring(div.GoErrorContains),
-							"corpus entry %q: Go error wording regressed under %s\n  Reason: %s",
-							rq.Name, div.Direction, div.Reason)
-					default:
-						Fail(fmt.Sprintf("corpus entry %q: unknown divergence direction %q", rq.Name, div.Direction))
+					if ok, detail := divergenceHolds(rq.Divergence, javaResult, goResult); !ok {
+						staleAnnotations = append(staleAnnotations, fmt.Sprintf("%s: %s", rq.Name, detail))
 					}
 					return
 				}
 
-				if javaResult.Err != nil {
-					// Java errored → Go must error with a byte-equal
-					// core message. Both engines unwrap to a typed
-					// error carrying just the server-side root-cause
-					// text (no wrapper prefixes). Java's conformance
-					// server traverses the exception cause chain to the
-					// root and emits root.getMessage(); Go's wrap layer
-					// (api.WrapErrorf in CTE / nested visit sites)
-					// adds outer context but preserves the inner via
-					// Unwrap, so we walk to the deepest *api.Error and
-					// compare its Message — symmetric with Java.
-					Expect(goResult.Err).To(HaveOccurred(),
-						"corpus entry %q: Java errored but Go succeeded\n  Java: %s",
-						rq.Name, javaResult.Err.Error())
-					var je *plandiff.JavaError
-					Expect(errors.As(javaResult.Err, &je)).To(BeTrue(),
-						"corpus entry %q: Java error is %T (not *plandiff.JavaError); harness can't extract verbatim message",
-						rq.Name, javaResult.Err)
-					var ge *api.Error
-					Expect(errors.As(goResult.Err, &ge)).To(BeTrue(),
-						"corpus entry %q: Go error is %T (not *api.Error); harness can't extract verbatim message",
-						rq.Name, goResult.Err)
-					// Walk the cause chain to find the deepest *api.Error.
-					goRootMsg := ge.Message
-					for cause := ge.Unwrap(); cause != nil; {
-						var inner *api.Error
-						if !errors.As(cause, &inner) {
-							break
-						}
-						goRootMsg = inner.Message
-						cause = inner.Unwrap()
-					}
-					Expect(goRootMsg).To(Equal(je.Message),
-						"corpus entry %q: error messages diverge\n  Java: %q\n  Go:   %q",
-						rq.Name, je.Message, goRootMsg)
-					return
+				// Non-annotated entries are subject to the RFC-082 regression
+				// LOCK rather than asserted green directly: record whether Go
+				// conforms (matching error when Java errors, or conforming
+				// columns + equal rows when Java succeeds), then reconcile
+				// against rfc082KnownRed after the loop.
+				ok, detail := entryConforms(javaResult, goResult)
+				known := plandiff.IsKnownRed(rq.Name)
+				if !ok && !known {
+					regressions = append(regressions, fmt.Sprintf("%s: %s", rq.Name, detail))
+				} else if ok && known {
+					fixedNowGreen = append(fixedNowGreen, rq.Name)
 				}
-
-				// Java succeeded → Go must succeed with byte-equal rows.
-				Expect(goResult.Err).NotTo(HaveOccurred(),
-					"corpus entry %q: Java succeeded but Go errored", rq.Name)
-				// Column metadata must conform: arity + per-column TYPE match
-				// exactly; column NAME matches except where Java assigned a
-				// synthetic anonymous label (_0, _1, ...), where Go's
-				// descriptive label is an allowed read-side improvement
-				// (plandiff.ConformColumns). Never suppresses a type or
-				// named-column mismatch — see RFC-082.
-				if detail, ok := plandiff.ConformColumns(goResult.Rows.Columns, javaResult.Rows.Columns); !ok {
-					Fail(fmt.Sprintf("corpus entry %q: column metadata diverged between Java and Go: %s", rq.Name, detail))
-				}
-				Expect(goResult.Rows.Rows).To(Equal(javaResult.Rows.Rows),
-					"corpus entry %q: row data diverged between Java and Go", rq.Name)
 			})
 		}
+		Expect(staleAnnotations).To(BeEmpty(),
+			"STALE RFC-082 annotation(s) — Go's behaviour no longer matches the pinned divergence; update/remove rfc082Divergences:\n  %s",
+			strings.Join(staleAnnotations, "\n  "))
+		Expect(regressions).To(BeEmpty(),
+			"NEW cross-engine divergence(s) — a regression vs the locked known-red set (RFC-082); fix Go or, if intended, annotate:\n  %s",
+			strings.Join(regressions, "\n  "))
+		Expect(fixedNowGreen).To(BeEmpty(),
+			"known-red corpus entries now PASS — remove them from rfc082KnownRed so the lock shrinks (RFC-082):\n  %s",
+			strings.Join(fixedNowGreen, "\n  "))
 	})
 
 	It("returns an empty result set for SELECT with no matching rows", func() {

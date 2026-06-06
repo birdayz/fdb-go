@@ -97,11 +97,32 @@ var rfc082Divergences = map[string]Divergence{
 	"where_paren_top_level_rejected":             {Direction: DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: expected BooleanValue but got RecordConstructorValue", GoExpectedRows: [][]any{{float64(1)}}},
 }
 
+// rfc082ClearStale lists corpus entries whose PRE-EXISTING inline Divergence
+// annotation went stale while conformance ran ungated (Go's behaviour drifted
+// from the pinned divergence). They are cleared back to no-annotation so the
+// RFC-082 regression lock re-classifies them (conform, or known-red) — the
+// honest outcome rather than a silently-wrong pinned annotation.
+var rfc082ClearStale = map[string]bool{
+	"scalar_subq_in_having":                        true,
+	"scalar_subq_after_update_with_subq_rhs":       true,
+	"scalar_subq_after_delete_with_subq_threshold": true,
+	"scalar_subq_with_secondary_index_max":         true,
+	"group_by_null_bucket":                         true,
+	"groupby_null_key_bigint":                      true,
+	"distinct_count":                               true,
+}
+
 // ApplyRFC082Divergences sets the RFC-082 divergence annotation on any corpus
-// entry that carries one and is not already annotated inline. Called by the
-// cross-engine RunSql harness after building the corpus.
+// entry that carries one and is not already annotated inline, and clears stale
+// pre-existing annotations (rfc082ClearStale) so the regression lock
+// re-classifies them. Called by the cross-engine RunSql harness after building
+// the corpus.
 func ApplyRFC082Divergences(corpus []RunQuery) {
 	for i := range corpus {
+		if rfc082ClearStale[corpus[i].Name] {
+			corpus[i].Divergence = nil
+			continue
+		}
 		if corpus[i].Divergence != nil {
 			continue
 		}

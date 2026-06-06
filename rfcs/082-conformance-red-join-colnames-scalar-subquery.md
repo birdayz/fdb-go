@@ -218,3 +218,34 @@ Cross-engine SeedRunCorpus failures cut from **459 → a small tracked tail**:
 - **A3 `union_columns_extended`**: Java deterministically rejects `... UNION ALL ... ORDER BY id, v` ("non existing column V"); needs the A3 harness to treat it as Java-unsupported.
 
 The CI gate (`justfile` + `ci.yml`) flips to include `conformance_java` as the **final** step, only once the tail closes and the suite is fully green.
+
+## Regression lock (the actual un-gate)
+
+You can't flip a green gate while the tail is red, and you must NOT annotate real
+Go gaps as xfail-green (laundering). The third option (Torvalds): a regression
+**lock**. `conformance_java` runs in CI; the SeedRunCorpus harness asserts the
+diverging set is EXACTLY `rfc082KnownRed`:
+
+- a non-annotated entry that diverges but is **not** locked → fails the suite (a
+  regression caught at the merge gate — the disease this PR cures);
+- a locked entry that silently starts **passing** → fails the suite, forcing its
+  removal (the lock only shrinks).
+
+`entryConforms` is the per-entry predicate (matching root error, or conforming
+columns + equal rows); annotated entries keep their pinned assertions. This lets
+the gate flip (`-stress` only) with the tail still red — without faking green and
+without leaving new breakage unwatched. When `rfc082KnownRed` reaches empty it
+becomes a plain all-green gate.
+
+## Final state
+
+`conformance_java` now runs in `just test` and PR CI (`-stress` only excluded).
+The SeedRunCorpus regression lock is GREEN with **28 known-red entries** in
+`rfc082KnownRed` (the withheld Go-too-lenient cases, the result-set type/name
+derivation tail — derived-table types, integer-literal INTEGER, alias-on-
+aggregate — plus pre-existing CAST/recursive-CTE/`SELECT *`-mixed-types
+divergences and seven inline annotations that had silently drifted while the
+suite was ungated). The cross-engine SeedRunCorpus went from 459 raw divergences
+to 28 tracked-and-locked. The lock fails on any new divergence (a regression) or
+any locked entry that starts passing (forcing the list to shrink). When
+`rfc082KnownRed` reaches empty, the gate is plain all-green.
