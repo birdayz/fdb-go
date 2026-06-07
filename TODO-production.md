@@ -27,12 +27,14 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
 
 ## P0 — Blockers (before any production use)
 
-### [ ] P0.1 — Add a LICENSE (legal blocker) · S
-**Why:** No LICENSE file exists (`git ls-files | grep -i licen` → empty), yet README:281
-links `[LICENSE]`. Unlicensed = "all rights reserved" — cannot legally deploy. Derivative
-of Apache-2.0 `fdb-record-layer`, so it must be Apache-2.0-compatible.
-**Do:** add `LICENSE` (Apache-2.0) + `NOTICE` (Apple/FoundationDB + Apache protos).
-**Done when:** both tracked; README link resolves; legal sign-off.
+### [x] P0.1 — Add a LICENSE (legal blocker) · S — DONE
+**Why:** No LICENSE file existed, yet README:281 links `[LICENSE]`. Unlicensed = "all rights
+reserved" — cannot legally deploy. Derivative of Apache-2.0 `fdb-record-layer`.
+**Done:** added `LICENSE` (verbatim Apache-2.0, "Copyright 2025 The fdb-record-layer-go
+Authors") + `NOTICE` attributing the FoundationDB Record Layer port (Apache-2.0, tag
+4.11.1.0), the `proto/apple/` protos, and the FoundationDB wire protocol. README link now
+resolves. **Remaining (owner's call):** confirm the copyright holder name (currently "The
+fdb-record-layer-go Authors") + obtain internal legal sign-off — the file is in place.
 
 ### [ ] P0.2 — Boundary recover + network-goroutine teardown (the hours-not-weeks crash fix) · S
 **Do FIRST, before the P0.3 sweep** (Torvalds): don't run a multi-tenant process that
