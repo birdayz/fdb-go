@@ -12,7 +12,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -299,11 +299,16 @@ func defaultSlowQueryThresholdMicros() int64 {
 	return 0
 }
 
-// seriousLogf reports unexpected, must-not-be-silent events (recovered panics)
-// to stderr. It is a var so P1.2's pluggable logger can route it and tests can
-// capture it; a recovered panic is always a bug and must never be swallowed
-// silently.
-var seriousLogf = log.Printf
+// seriousLogf reports unexpected, must-not-be-silent events (recovered panics) at
+// ERROR level through log/slog. Routing through slog (rather than the bare stderr
+// logger) makes the library's diagnostics pluggable via the standard Go mechanism:
+// applications call slog.SetDefault with their own handler (JSON, level routing,
+// shipping to a collector) and these events flow there with no record-layer-specific
+// API to learn. It stays a var so tests can capture it; a recovered panic is always
+// a bug and must never be swallowed silently.
+var seriousLogf = func(format string, args ...any) {
+	slog.Default().Error(fmt.Sprintf(format, args...))
+}
 
 // recoveredPanicError converts a panic that escaped statement planning/execution
 // into a returned error. This is the Go "don't leak panics" API boundary (the

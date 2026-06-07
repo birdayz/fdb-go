@@ -57,6 +57,13 @@ NOT in the caller-visible message) + `conn_recover_test.go`
 replies carry the failure error, logged SERIOUS with loop + cause).
 
 ### [~] P0.3 — Panic/error discipline: errors on the data path, assert internally, recover at every goroutine boundary
+**Status (2026-06-07): policy fully realized; all sub-items closed except one acknowledged-shallow gap.**
+CLASSIFY ✓ · A1 (eval→error) ✓ · GATE ✓ · A2 (delete 6 recovers) ✓ · B (metadata typed error) ✓ ·
+C (network-goroutine recovers) ✓ · D (parser FFI recovers + fuzz) ✓ · E (resolver `.Get()`) ✓ ·
+G (intersection int32 coercion, RFC-092, Graefe+Torvalds ACK) ✓. **Only F remains** (the e2e
+SQL→QueryContext fuzz target) and is container-gated / shallow-by-nature — the boundary recover is
+the real backstop, so this is hardening, not a blocker. The library never panics to a caller; the
+data path returns errors; remaining panics are documented internal invariants / `Must*`-API boundary.
 **Governing policy (bradfitz — Go's "don't *leak* panics" convention, à la `encoding/json`):**
 a library must never let a panic cross its API boundary; it need not, and should not, avoid
 panic *internally*.
@@ -271,11 +278,18 @@ Confirmed green across the FULL layer post-`hadRead`-fix (18/18, 0 races).
 surface under `-race` (tests set it only in `TestMain`/serially), but it's still a process-global
 func pointer read on the eval hot path — convert to `atomic.Pointer`/set-once when convenient.
 
-### [ ] P1.2 — Observability: pluggable logger · M
-Zero logging surface (no slog, no logger interface). Add a pluggable `*slog.Logger` (nil =
-silent) on DB/store/runner; emit online-indexer progress + retry/conflict events. Builds on the
-`PlanGenerationLogger` hook (RFC-034). **Decision:** interfaces-only (no new core deps) vs direct
-OTel/Prometheus.
+### [~] P1.2 — Observability: pluggable logger · M — foundation done; event emission pairs with P1.3
+**Decision resolved: interfaces-only, no new core deps** (per the project's "simple code / no
+heavy deps" principles; an OTel/Prometheus adapter ships as a separate optional package — see P1.3).
+- [x] **Pluggable diagnostics via `log/slog`.** The SERIOUS panic-recovery logs (db/sql boundary
+  `connection.go`, network goroutines `conn.go`) now route through `slog.Default().Error` instead
+  of bare `log.Printf`. This makes the library's diagnostics pluggable via the *standard* Go
+  mechanism — apps call `slog.SetDefault` with their own handler (JSON, levels, collector) — with
+  zero record-layer-specific logging API to learn. (`seriousLogf` stays a test-capture seam.)
+- [ ] **Emit operational events** (retry attempt / `commit_conflict` 1020 / `commit_unknown_result`
+  / online-indexer progress) through the same slog path. This shares its source with P1.3's
+  counters (one event → both a log line and a metric), so it lands together with P1.3. Builds on
+  the `PlanGenerationLogger` hook (RFC-034).
 
 ### [ ] P1.3 — Observability: conflict/retry metrics + export hook · M
 `StoreTimer` is in-memory `atomic.Int64` only, no export, no commit-conflict/retry counters.

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"runtime/debug"
@@ -550,9 +550,12 @@ func (c *Conn) failConnection(err error) {
 }
 
 // seriousLogf reports unexpected, must-not-be-silent events (recovered panics in
-// the connection's background goroutines) to stderr. A var so P1.2's pluggable
-// logger can route it and tests can capture it.
-var seriousLogf = log.Printf
+// the connection's background goroutines) at ERROR level through log/slog. Routing
+// through slog makes these diagnostics pluggable via the standard Go mechanism
+// (slog.SetDefault) with no fdbgo-specific logging API. A var so tests can capture it.
+var seriousLogf = func(format string, args ...any) {
+	slog.Default().Error(fmt.Sprintf(format, args...))
+}
 
 // recoverLoop contains a panic in a long-lived connection goroutine. A malformed
 // frame or an internal bug must fail THIS connection — callers recover via retry /
