@@ -2541,8 +2541,85 @@ func buildLogicalPlanForInsertWithCatalog(
 	if upgraded, err := buildLogicalPlanForSelectWithCatalog(sq, md); err == nil && upgraded != nil {
 		insertOp.Source = upgraded
 	}
+	wrapBareAggregateInsertSource(insertOp, sq)
 	alignInsertSelectColumns(insertOp, md)
 	return insertOp
+}
+
+// wrapBareAggregateInsertSource fixes INSERT … SELECT … GROUP BY (RFC-084). A
+// plain GROUP BY SELECT builds a bare LogicalAggregate with NO Project (standalone
+// derives its schema from the physical plan), so its row datum is keyed by the
+// aggregate's own canonical column names (e.g. "G", "SUM(V)"). buildInsertRecord
+// maps by TARGET field name, finds none of them, and leaves every field unset —
+// so each grouped row collapses to the same all-default record (unset PK) and the
+// second group collides with the first → spurious 23505.
+//
+// Wrap the bare aggregate in the canonical post-aggregate Project (reusing the
+// same buildPostAggregateProjection the standalone builders use): visible-only,
+// canonical-named (matches the runtime datum key, not an alias), in SELECT order.
+// alignInsertSelectColumns (called next) then sets the target column aliases
+// positionally, so the projection re-keys the datum to the target names and
+// buildInsertRecord finds every field. The Project-source case (findProjection
+// non-nil) already aligns, so it's skipped here.
+//
+// Interim: RFC-079's builder unification moves this coercion into the Insert
+// expression and DELETES this wrap (one query path), not a third parallel path.
+func wrapBareAggregateInsertSource(insertOp *logical.LogicalInsert, sq *selectQuery) {
+	if insertOp == nil || insertOp.Source == nil || sq == nil {
+		return
+	}
+	if findProjection(insertOp.Source) != nil {
+		return
+	}
+	agg := findAggregate(insertOp.Source)
+	if agg == nil {
+		return
+	}
+	// A QUALIFIED aggregate operand or group key (e.g. `SUM(s.v)`) is a known
+	// SEPARATE defect on this insert-source path: the aggregate's operand is left
+	// unresolved (nil), so the aggregate computes NULL. Wrapping would align the
+	// (NULL) column and SILENTLY insert NULL; NOT wrapping leaves the original LOUD
+	// failure (unset PK → 23505). Until the qualified-operand resolution is fixed
+	// (follow-up), skip — a qualifier shows up as a '.' in the canonical
+	// aggregate/group-key name.
+	for _, a := range agg.Aggregates {
+		if strings.Contains(a, ".") {
+			return
+		}
+	}
+	for _, k := range agg.GroupKeys {
+		if strings.Contains(k, ".") {
+			return
+		}
+	}
+	// A sole `SELECT COUNT(*)` is tracked as sq.countStar (NOT an aggCol — the
+	// parser sets the flag only when COUNT(*) is the single SELECT element), so it
+	// is invisible to buildPostAggregateProjection. Synthesize its column (in
+	// SELECT position, i.e. before any HAVING-only aggCols) so the bare COUNT(*)
+	// insert is aligned too — else its row keys on "COUNT(*)" and buildInsertRecord
+	// leaves the target unset (silently wrong, or a 23505 under GROUP BY).
+	aggCols := sq.aggCols
+	if sq.countStar {
+		cs := aggSelectCol{aggFunc: "COUNT", aggArg: "*", outName: sq.countStarAlias, visible: true}
+		aggCols = append([]aggSelectCol{cs}, aggCols...)
+	}
+	// Identity strip — matches the stripPrefix="" buildLogicalPlanForSelectWithCatalog
+	// used to name this base-table aggregate's columns, so the Project's canonical
+	// names match the runtime datum keys. (Qualified operands, where the runtime
+	// key diverges from this naming, are filtered out above.)
+	strip := func(s string) string { return s }
+	proj, _ := buildPostAggregateProjection(insertOp.Source, aggCols, strip)
+	if proj == nil {
+		return
+	}
+	// A bare aggregate carries no post-aggregate antlr expressions, so
+	// upgradeProjectionValues never fills these slots — fill them with canonical
+	// FieldValue references (upper-cased to match the runtime upper-cased datum keys).
+	proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+	for i, name := range proj.Projections {
+		proj.ProjectedValues[i] = &values.FieldValue{Field: strings.ToUpper(name), Typ: values.UnknownType}
+	}
+	insertOp.Source = proj
 }
 
 // alignInsertSelectColumns sets the SELECT projection's output aliases to
