@@ -1035,7 +1035,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 			}
 		}
 		// Match embedded's "return int64 if no fractional part" rule.
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+		if result == math.Trunc(result) && float64FitsInt64(result) {
 			return int64(result), nil
 		}
 		return result, nil
@@ -1075,7 +1075,7 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		if math.IsNaN(result) || math.IsInf(result, 0) {
 			return nil, nil
 		}
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+		if result == math.Trunc(result) && float64FitsInt64(result) {
 			return int64(result), nil
 		}
 		return result, nil
@@ -1622,12 +1622,25 @@ func compareScalar(a, b any) (int, bool) {
 // evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
 // the conversion error. Mirrors the strictness of
 // embedded.functions.ToIntegerArg.
+// twoPow63 is 2^63 — the smallest float64 strictly greater than math.MaxInt64.
+// math.MaxInt64 (2^63-1) has no exact float64 representation and rounds UP to
+// this value, so it cannot be used as an inclusive upper bound in a float guard.
+const twoPow63 = 9223372036854775808.0
+
+// float64FitsInt64 reports whether a float64 is safely convertible to int64
+// (i.e. int64(f) does not overflow). The upper bound is EXCLUSIVE at 2^63: a
+// `f <= math.MaxInt64` guard rounds the constant up to 2^63 and wrongly admits
+// 2^63 itself, which overflows int64 (codex finding, RFC-087). The lower bound
+// math.MinInt64 (-2^63) IS exactly representable as float64, so it is inclusive.
+func float64FitsInt64(f float64) bool {
+	return f >= math.MinInt64 && f < twoPow63
+}
+
 func scalarFnInt64Arg(v any) (int64, bool) {
 	if i, ok := ToInt64(v); ok {
 		return i, true
 	}
-	if f, _, ok := ToFloat64(v); ok && f == math.Trunc(f) &&
-		f >= math.MinInt64 && f <= math.MaxInt64 {
+	if f, _, ok := ToFloat64(v); ok && f == math.Trunc(f) && float64FitsInt64(f) {
 		return int64(f), true
 	}
 	return 0, false
@@ -2058,7 +2071,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"}
 			}
 			rounded := math.Floor(val + 0.5)
-			if rounded > float64(math.MaxInt64) || rounded < float64(math.MinInt64) {
+			if !float64FitsInt64(rounded) {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)}
 			}
 			return int64(rounded), nil
