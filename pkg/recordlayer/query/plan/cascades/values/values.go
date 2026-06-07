@@ -1131,7 +1131,8 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		return strings.TrimRight(s, " \t\n\r"), nil
 	case "CONCAT":
-		// MySQL/Postgres semantics — NULL skips, doesn't poison.
+		// Postgres CONCAT semantics — NULL skips, doesn't poison (unlike
+		// MySQL CONCAT, which returns NULL if any arg is NULL).
 		// Pinned by trim_concat.yaml; the embedded path uses the
 		// same rule.
 		var b strings.Builder
@@ -2560,11 +2561,12 @@ func (a *AggregateValue) Type() Type {
 // Name returns the debug-print kind.
 func (*AggregateValue) Name() string { return "agg" }
 
-// Evaluate panics — aggregates are multi-row and don't have a
-// single-row Evaluate semantics. Rule / plan code type-asserts
+// Evaluate returns AggregateEvalError — aggregates are multi-row and have
+// no single-row Evaluate semantics. Rule / plan code type-asserts
 // AggregateValue and routes it to an accumulator instead of calling
-// Evaluate. The panic message is loud so nobody silently returns nil
-// and debugs for an hour.
+// Evaluate. The misuse path (an aggregate in a per-row scalar position,
+// e.g. WHERE COUNT(*) > 0) is reachable from user data, so it returns a
+// typed error rather than panicking (RFC-087 residual-panic audit).
 func (a *AggregateValue) Evaluate(any) (any, error) {
 	// Reachable from user data: an aggregate misused on the per-row scalar
 	// path (e.g. `WHERE COUNT(*) > 0`). Java rejects this at plan time; Go's

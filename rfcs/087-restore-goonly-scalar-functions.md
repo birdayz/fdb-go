@@ -133,8 +133,11 @@ all **46** panics in `values/` + `predicates/` (per-row `Evaluate`/`Eval`-reacha
   regression test that an un-lowerable K-NN fails at PLAN time, not row eval.
 
 Audit conclusion: **22 convert, 24 stay, 0 unresolved** — the stays-a-panic split is
-fully classified; the implementation can `grep panic\(` the two packages post-change
-and confirm exactly the 24 remain.
+fully classified; post-change `grep panic\(` the two packages confirms **22**
+remain (19 in `values/`, 3 in `predicates/`): the static "24" minus AggregateValue
+(converted — see audit correction below) minus the `tryCastConstant` default
+re-panic (removed with its recover). All 22 are construction / type-system /
+non-evaluable-marker invariants, none reachable from user query data.
 
 ### Implementation audit corrections (empirical, found by running all suites)
 
