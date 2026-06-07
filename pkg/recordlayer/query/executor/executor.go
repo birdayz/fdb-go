@@ -1399,6 +1399,28 @@ func buildIntersectionChildCursors(
 // return an error, so a Value eval failure is captured into *evalErr (first
 // error wins); the caller wraps the resulting cursor in an errCheckCursor that
 // surfaces *evalErr before any row is returned.
+// widenInt32 normalizes an intersection/union merge comparison-key element so the
+// FDB tuple layer can Pack it. The tuple layer has no int32 case — Pack panics on
+// it (tuple.go default arm) — and the index key encoding already widens int32
+// columns to int64 (key_expression_compiled.go), so widening here keeps the
+// in-memory merge key byte-identical to the children's sort order (int32→int64
+// sign-extension is value-preserving and tuple integer encoding is monotonic). It
+// matches Java, whose Tuple stores Long and never sees a 32-bit key element.
+//
+// Only int32 is handled: it's the unique order-preserving widening and the only
+// confirmed-reachable unpackable comparison-key type (field reads pre-widen at
+// query_result.go). uint32 is a symmetric, currently-unreachable gap (RFC-092,
+// Graefe note) — leave it on compareKeys' Pack-error path rather than risk a
+// non-monotonic coercion. Exotic types stay raw too: an ORDERING key is consumed
+// by bytes.Compare(Pack()), so a lexical "%T:%v" fallback (which extractKey uses
+// for its DEDUP key) could mis-order a merge — strictly worse than the clean error.
+func widenInt32(v any) any {
+	if i32, ok := v.(int32); ok {
+		return int64(i32)
+	}
+	return v
+}
+
 func intersectionCompKeyFunc(keyVals []values.Value, evalErr *error) recordlayer.ComparisonKeyFunc[QueryResult] {
 	return func(qr QueryResult) tuple.Tuple {
 		if len(keyVals) > 0 {
@@ -1411,7 +1433,7 @@ func intersectionCompKeyFunc(keyVals []values.Value, evalErr *error) recordlayer
 					}
 					return t
 				}
-				t[i] = v
+				t[i] = widenInt32(v)
 			}
 			return t
 		}

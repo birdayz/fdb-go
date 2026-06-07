@@ -155,9 +155,15 @@ accumulator / sumtype alternatives.
   *SQL-string + seed-rows → `QueryContext` → no-panic* target. Honest caveat (kept): e2e fuzz
   needs a container → shallow — which is exactly why the boundary recover stays the real backstop.
   Not "proven by fuzz"; fuzz reduces, the recover backstops.
-- [ ] **P0.3-G — comparison-key type coercion: make the 3 sibling builders consistent**
-  (`M`, query-engine, **Graefe-gated → RFC-092**). *Investigated 2026-06-07; framing corrected.*
-  Findings:
+- [x] **P0.3-G — comparison-key type coercion: make the 3 sibling builders consistent**
+  (`M`, query-engine) — **DONE (RFC-092, Graefe ACK + Torvalds ACK).** Both intersection
+  builders now widen `int32→int64` via a shared `widenInt32` helper; regression
+  (`intersection_compkey_test.go`) proven to fail pre-fix (`unencodable element ... type int32`)
+  and pass post-fix (byte-equal to `int64` encoding ⇒ order-preserving). Graefe verified the
+  index key encoding already widens int32→int64 (`key_expression_compiled.go:117`), so the merge
+  key matches the children's sort order and reproduces Java's uniform-`Long` semantics. uint32 is
+  a documented symmetric, currently-unreachable follow-up. *Investigated 2026-06-07; framing
+  corrected.* Findings:
   - `merge_cursor.go:24`'s recover is **already gone** — the executor `merge_cursor.go` was
     deleted in the A2 sweep; the real merge cursor is `pkg/recordlayer/merge_cursor.go`, whose
     `compareKeys` does `bytes.Compare(a.Pack(), b.Pack())` and **recovers** `tuple.Pack` panics

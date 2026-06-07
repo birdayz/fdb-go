@@ -158,7 +158,7 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value, keyErr *error) recordl
 					}
 					return t
 				}
-				t[i] = v
+				t[i] = widenInt32(v) // tuple has no int32; widen (RFC-092). See widenInt32.
 			}
 			return t
 		}
