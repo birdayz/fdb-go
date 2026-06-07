@@ -1,6 +1,7 @@
 # RFC-085 — `ORDER BY` over grouped output in a correlated scalar subquery
 
-**Status:** Draft — awaiting Graefe + Torvalds ACK.
+**Status:** Implemented — Torvalds ACK; Graefe ACK (re-review after adding the
+aggregate/alias/NULLS/EXPLAIN coverage + parse-tree FN(BAREARG) recovery).
 **TODO:** Known gaps line 63 (follow-up under RFC-047).
 **Framing:** This is a **Go-only read-side extension**, NOT Java parity. Java rejects
 correlated scalar subqueries at the grammar level entirely (zero wire impact); Go
@@ -59,15 +60,27 @@ Steps:
 2. Build an ordered list of post-agg output `(matchName → datumKey, SortKey.Value)`
    pairs from the aggregate being built: each group key → `(bare-upper, FieldValue{bare-upper})`,
    each visible aggregate → `(its materialised alias + its source text/operand form, FieldValue{alias})`.
-3. For each `sq.orderBy` ref, resolve it (case-insensitively, qualifier-stripped)
-   against that list and emit `SortKey{Value: FieldValue{datumKey}, Dir, NullsFirst}`
-   — set `.Value` (translateSort prefers it), not raw `.Expr`.
-   - **Reject** (clean `ErrCodeGroupingError`, the `validateGroupByProjection` wording)
-     any ref that resolves to neither a group key nor a visible aggregate — including
-     an **ORDER-BY-only aggregate** not in the SELECT (`ORDER BY COUNT(*)` while SELECT
-     projects `SUM`) and an **expression key** (`ORDER BY SUM(x)+1`). No silent drop /
-     no silent-nil sort. (Harvesting ORDER-BY-only aggregates into agg slots is a
-     future extension; reject loudly for now.)
+3. For each `sq.orderBy` ref, resolve it against that list and emit
+   `SortKey{Value: FieldValue{datumKey}, Dir, NullsFirst}` — set `.Value`
+   (translateSort prefers it), not raw `.Expr`. Resolution order: (a) a grouping
+   column (bare-upper); (b) a selected aggregate by its written/alias form
+   (`aggDatumKey[ToUpper(colName)]`); (c) a selected aggregate whose operand is
+   spelled with a *different* qualifier than the SELECT — recover the producer's
+   stable `FN(BAREARG)` key from the **parse tree** (`aggColRefFromExpr` →
+   `extractAwfFields`, NOT text surgery on `SUM(o.amount)`, which `parseColRef`
+   would split at the inner dot).
+   - **Reject** (clean `ErrCodeGroupingError` / 42803) any ref that resolves to
+     neither a group key nor a *selected* aggregate — including an **ORDER-BY-only
+     aggregate** not in the SELECT (`ORDER BY COUNT(*)` while SELECT projects `SUM`)
+     and an **expression key** (`ORDER BY SUM(x)+1`). No silent drop / no silent-nil
+     sort. (Harvesting ORDER-BY-only aggregates into agg slots is a future extension;
+     reject loudly for now.)
+   - **Residual limitation (loud, not silent):** an *expression-argument* aggregate
+     (`ORDER BY SUM(a*b)`) has no bare column name, so step (c) cannot form its key.
+     It resolves only via step (b) when the SELECT spells it identically (whitespace
+     and all); a differing spelling false-rejects with 42803. Acceptable for a Go
+     extension (master rejected *all* ORDER BY+GROUP BY here); full support needs the
+     consumer to run `canonicalAggName` over the resolved operand.
 4. Insert `LogicalSort(innerOp, keys)` between `innerOp = aggOp` and the `LIMIT 1`
    (so FirstOrDefault picks the ordered-first group), in **BOTH** aggregate paths:
    the `hasRealAgg` path AND the group-key-only path (`:4338-4360`) — the latter's
@@ -105,13 +118,18 @@ FDB integration (`*_fdb_test.go`):
 - `… (SELECT SUM(amount) FROM orders o WHERE o.cust = c.id GROUP BY o.status ORDER BY
   o.status LIMIT 1)` — deterministic first-group value across 10× runs (was rejected).
 - ORDER BY the **aggregate** (`ORDER BY SUM(amount) DESC`) → picks the max-sum group;
-  ASC → min; pin both directions.
-- ORDER BY a **group key** vs ORDER BY a **SELECT alias** of the aggregate.
+  ASC → min; pin both directions — AND a SELECT/ORDER-BY operand-qualifier mismatch
+  (`SELECT SUM(amount) … ORDER BY SUM(o.amount)`) that exercises the step-(c)
+  parse-tree `FN(BAREARG)` recovery (`*_ByAggregate`).
+- ORDER BY a **group key** vs ORDER BY a **SELECT alias** of the aggregate
+  (`*_ByAlias`).
 - ORDER BY a column that is neither grouped nor aggregated → **clean reject** (not a
   silent wrong / not a runtime nil).
-- NULLS FIRST/LAST honoured over the grouped output.
+- NULLS FIRST/LAST honoured over the grouped output (a NULL-SUM group sorts first/last
+  per the clause — `*_NullsOrdering`).
 - Determinism 10× (the whole point); EXPLAIN pins a Sort over the StreamingAgg under
-  the FlatMap; non-GROUP-BY ORDER BY scalar subquery unchanged; `just test` green.
+  the FlatMap (`*_ExplainSort`); non-GROUP-BY ORDER BY scalar subquery unchanged;
+  `just test` green.
 - **Qualified non-aggregate projection** (`SELECT o.amount …`) with and without
   ORDER BY → correct value, not NULL (regression for the sub-fix); qualified ORDER BY
   key in the non-GROUP-BY path → correct sorted row.

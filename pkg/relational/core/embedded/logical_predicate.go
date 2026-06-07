@@ -3926,6 +3926,36 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 	return nil
 }
 
+// aggColRefFromExpr inspects an ORDER BY expression for a column-argument
+// aggregate function — `SUM(o.amount)` → ("SUM", "o.amount", true),
+// `COUNT(*)` → ("COUNT", "", true) — by walking the parse tree (NOT text
+// matching). Returns isAgg=false for non-aggregate refs and for
+// expression-argument aggregates (`SUM(a*b)`), which have no bare column name
+// to form the producer's stable FN(BAREARG) key.
+func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isAgg bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return "", "", false
+	}
+	atom, ok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
+	if !ok {
+		return "", "", false
+	}
+	agg, ok := atom.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+	if !ok {
+		return "", "", false
+	}
+	awf, ok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+	if !ok {
+		return "", "", false
+	}
+	f, a, aExpr, _, _, ok := extractAwfFields(awf)
+	if !ok || aExpr != nil {
+		return "", "", false
+	}
+	return f, a, true
+}
+
 // groupedScalarSortKeys builds the ORDER BY sort keys for a correlated scalar
 // subquery's grouped output (RFC-085). Each key's .Value is a FieldValue keyed by
 // the EXACT datum key the aggregate cursor emits — a group key as
@@ -3955,10 +3985,25 @@ func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]lo
 				dk = v
 			}
 		}
-		if dk == "" {
-			return nil, &CorrelatedExistsError{
-				Message: fmt.Sprintf("correlated scalar subquery: ORDER BY %q must reference a grouping column or a selected aggregate", ob.colName),
+		// A selected aggregate spelled differently in ORDER BY than in SELECT
+		// (`SELECT SUM(amount) … ORDER BY SUM(o.amount)`): the raw-text forms
+		// above miss (parseColRef on `SUM(o.amount)` splits at the inner dot).
+		// Recover the producer's stable FN(BAREARG) key from the parse tree so a
+		// genuinely-selected aggregate resolves regardless of operand qualifier.
+		if dk == "" && ob.rawExpr != nil {
+			if fn, argCol, isAgg := aggColRefFromExpr(ob.rawExpr); isAgg {
+				canonKey := strings.ToUpper(fn) + "(*)"
+				if b := strings.ToUpper(parseColRef(argCol).bare()); b != "" {
+					canonKey = strings.ToUpper(fn) + "(" + b + ")"
+				}
+				if v, ok := aggDatumKey[canonKey]; ok {
+					dk = v
+				}
 			}
+		}
+		if dk == "" {
+			return nil, api.NewErrorf(api.ErrCodeGroupingError,
+				"ORDER BY %q must reference a grouping column or a selected aggregate in a grouped correlated scalar subquery", ob.colName)
 		}
 		dir := logical.SortAsc
 		if !ob.ascending {

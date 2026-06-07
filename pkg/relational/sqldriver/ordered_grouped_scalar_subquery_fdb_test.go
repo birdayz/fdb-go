@@ -3,6 +3,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,88 @@ func TestFDB_OrderedGroupedScalarSubquery(t *testing.T) {
 	desc := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status DESC LIMIT 1) FROM customers c WHERE c.id = 1"
 	if got, ok := ogsScalar(t, ctx, db, desc); !ok || got != 20 {
 		t.Fatalf("ORDER BY status DESC: got %d (valid=%v), want 20 (group 'b')", got, ok)
+	}
+}
+
+// TestFDB_OrderedGroupedScalarSubquery_ByAggregate pins ORDER BY the SELECTed
+// aggregate itself (the central aggDatumKey path): ASC picks the min-SUM group,
+// DESC the max-SUM group. Covers the aggregate spelled identically to SELECT,
+// and spelled with a DIFFERING operand qualifier (the parse-tree FN(BAREARG)
+// recovery in groupedScalarSortKeys).
+func TestFDB_OrderedGroupedScalarSubquery_ByAggregate(t *testing.T) {
+	t.Parallel()
+	db, ctx := ogsDB(t, "byagg")
+	// Customer 1 groups: 'a'→SUM 15, 'b'→SUM 20.
+	cases := []struct {
+		name string
+		q    string
+		want int64
+	}{
+		{"qualified_asc", "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY SUM(o.amount) LIMIT 1) FROM customers c WHERE c.id = 1", 15},
+		{"qualified_desc", "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY SUM(o.amount) DESC LIMIT 1) FROM customers c WHERE c.id = 1", 20},
+		// SELECT qualifies the operand, ORDER BY does not (and vice-versa) — both
+		// must resolve to the same selected aggregate via the FN(BAREARG) key.
+		{"select_qual_order_bare_asc", "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY SUM(amount) LIMIT 1) FROM customers c WHERE c.id = 1", 15},
+		{"select_bare_order_qual_desc", "SELECT (SELECT SUM(amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY SUM(o.amount) DESC LIMIT 1) FROM customers c WHERE c.id = 1", 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, ok := ogsScalar(t, ctx, db, tc.q); !ok || got != tc.want {
+				t.Fatalf("%s: got %d (valid=%v), want %d", tc.name, got, ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestFDB_OrderedGroupedScalarSubquery_ByAlias pins ORDER BY a SELECT alias of
+// the aggregate (`SELECT SUM(o.amount) AS total … ORDER BY total`).
+func TestFDB_OrderedGroupedScalarSubquery_ByAlias(t *testing.T) {
+	t.Parallel()
+	db, ctx := ogsDB(t, "byalias")
+	asc := "SELECT (SELECT SUM(o.amount) AS total FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY total LIMIT 1) FROM customers c WHERE c.id = 1"
+	if got, ok := ogsScalar(t, ctx, db, asc); !ok || got != 15 {
+		t.Fatalf("ORDER BY alias ASC: got %d (valid=%v), want 15", got, ok)
+	}
+	desc := "SELECT (SELECT SUM(o.amount) AS total FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY total DESC LIMIT 1) FROM customers c WHERE c.id = 1"
+	if got, ok := ogsScalar(t, ctx, db, desc); !ok || got != 20 {
+		t.Fatalf("ORDER BY alias DESC: got %d (valid=%v), want 20", got, ok)
+	}
+}
+
+// TestFDB_OrderedGroupedScalarSubquery_NullsOrdering pins NULLS FIRST/LAST over
+// the grouped output: a group whose SUM is NULL (its only order has a NULL
+// amount) sorts first or last per the clause.
+func TestFDB_OrderedGroupedScalarSubquery_NullsOrdering(t *testing.T) {
+	t.Parallel()
+	db, ctx := ogsDB(t, "nulls")
+	// Add status 'c' for customer 1 with a single NULL-amount order → SUM=NULL.
+	if _, err := db.ExecContext(ctx, "INSERT INTO orders VALUES (4,1,'c',NULL)"); err != nil {
+		t.Fatalf("seed null: %v", err)
+	}
+	// ASC NULLS FIRST: the NULL-SUM group 'c' sorts first → scalar NULL.
+	nf := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY SUM(o.amount) ASC NULLS FIRST LIMIT 1) FROM customers c WHERE c.id = 1"
+	if _, ok := ogsScalar(t, ctx, db, nf); ok {
+		t.Fatalf("ASC NULLS FIRST: want NULL (group 'c'), got a value")
+	}
+	// ASC NULLS LAST: NULL sorts last → min non-null group 'a' (SUM 15) first.
+	nl := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY SUM(o.amount) ASC NULLS LAST LIMIT 1) FROM customers c WHERE c.id = 1"
+	if got, ok := ogsScalar(t, ctx, db, nl); !ok || got != 15 {
+		t.Fatalf("ASC NULLS LAST: got %d (valid=%v), want 15 (group 'a')", got, ok)
+	}
+}
+
+// TestFDB_OrderedGroupedScalarSubquery_ExplainSort pins that the inner plan
+// actually materialises a Sort over the streaming aggregate — proving the ORDER
+// BY fires (not silently dropped, which would "pass" via an arbitrary group).
+func TestFDB_OrderedGroupedScalarSubquery_ExplainSort(t *testing.T) {
+	t.Parallel()
+	db, ctx := ogsDB(t, "explain")
+	plan := planExplainVia(t, ctx, db, "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status LIMIT 1) FROM customers c WHERE c.id = 1")
+	if !strings.Contains(plan, "Sort") {
+		t.Errorf("expected a Sort in the inner plan, got: %s", plan)
+	}
+	if !strings.Contains(plan, "StreamingAgg") {
+		t.Errorf("expected a StreamingAgg in the inner plan, got: %s", plan)
 	}
 }
 
