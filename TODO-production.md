@@ -110,18 +110,40 @@ accumulator / sumtype alternatives.
   (RFC-091; the `keep=false` silent-row-drop bug was pinned + fixed before the gate; `-race`
   surfaced + fixed the `hadRead` client race, see P1.1).
 - [x] **P0.3-A2 — delete the 6 eval/cursor control-flow recovers** (separate commit) — DONE (RFC-091).
-- [ ] **P0.3-B — record/metadata/key-expr panics → errors** (`M`). `metadata.go:476`
-  (unknown record type — real bug: DDL builder caller already expects nil), `key_expression.go:
-  1133`. Audit `catalog/metadata.go:48/56/63` non-nil assumptions.
+- [x] **P0.3-B — record/metadata/key-expr panics → errors** (`M`) — DONE (audited; one real
+  fix, the rest are correctly-classified construction-time guards).
+  - **`metadata.go:476` (`RecordMetaDataBuilder.GetRecordType`)**: confirmed the "caller expects
+    nil" bug — `metadata/builder.go:270` guarded the call with `if rt == nil` but the method
+    *panics* on a missing type, so the guard was dead. **Fixed** by pre-checking the
+    nil-returning `GetRecordTypes()` map so `Build()` (already `(*X, error)`) returns the typed
+    `ErrCodeInternalError` instead of a panic the boundary recover would flatten to a
+    context-free "internal error". `GetRecordType`'s panic contract is **kept** — its only other
+    callers are the catalog system-table fluent chains (`catalog/metadata.go:48/56/63`,
+    `b.GetRecordType(X).SetPrimaryKey(...)`) where a missing constant-named system table is a
+    genuine can't-happen invariant (programmer error, backstopped by the boundary recover).
+  - **`key_expression.go:1133` (`Literal`)**: **keep panic** — it's a construction-time
+    (`MustCompile`-class) type guard on a Go-API call building metadata, never reachable by a
+    tenant data path. Converting it would violate the bradfitz policy (don't thread errors
+    through can't-happen / programmer-error guards).
 - [x] **P0.3-C — network goroutines: ADD recover→failConnection** (`S`) — DONE (landed with
   P0.2: `recoverLoop` on writeLoop/connectionMonitor, inline recover in readLoop, comment +
   `exitErr` ordering fixed, `conn_recover_test.go`).
 - [ ] **P0.3-D — parser: KEEP the FFI recovers, expand fuzz** (`S`). *(Corrected: collecting
   listener already exists; recovers guard the ANTLR runtime — do NOT delete.)*
-- [ ] **P0.3-E — `Must*`: keep `panicToError`, switch internal callers to `.Get()`** (`S`).
-  *(Corrected per FDB C++ — do NOT delete `panicToError`; it's the `Must*` boundary.)* Switch
-  the 8 callers (`directory/directoryLayer.go:449/594/595/610`, `directory/node.go:63`,
-  `keyspace/fdb_resolver.go:65/72/148`) to `.Get()` for hygiene; the recover stays.
+- [x] **P0.3-E — `Must*`: keep `panicToError`, switch internal callers to `.Get()`** (`S`) — DONE
+  (split by parity, not blanket-converted). *(Corrected per FDB C++ — do NOT delete
+  `panicToError`; it's the `Must*` boundary.)*
+  - **`keyspace/fdb_resolver.go:65/72/148` → switched to `.Get()`.** This is record-layer code
+    mirroring Java's `LocatableResolver` (explicit `CompletableFuture` error handling), not an
+    Apple-binding port. A routine transaction conflict (1020) on these reads is an expected,
+    retryable event — flowing it back as an error for `db.Transact`/`ReadTransact` to retry is
+    correct (principle #4: don't panic for expected conditions); the old `.MustGet()` panicked
+    on every conflict and bounced through `panicToError`. Same outcome, no panic round-trip.
+  - **`directory/directoryLayer.go:449/594/595/610`, `directory/node.go:63` → KEPT `.MustGet()`.**
+    This package is a 1:1 port of Apple's Go directory layer, which deliberately uses `MustGet`
+    + Transact-level recovery throughout (`node.go:63` is even a `bool` method — converting it
+    would change the ported signature). Switching here would *diverge* from the Apple Go binding
+    (a client-spec violation), so parity wins. `panicToError` is the documented boundary.
 - [ ] **P0.3-F — fuzz net** (`M`). Build executor-package fuzz + an e2e **SQL-string +
   seed-rows → `QueryContext` → no-panic** target. Honest caveat: e2e fuzz needs a container →
   shallow — which is exactly why the boundary recover stays. Drop any "proven by fuzz"

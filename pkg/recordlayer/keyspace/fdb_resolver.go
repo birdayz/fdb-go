@@ -61,15 +61,24 @@ func (r *FDBResolver) Resolve(ctx context.Context, name string) (int64, error) {
 	// Slow path: transactional read + allocate if absent.
 	result, err := r.db.Transact(func(tx fdb.Transaction) (any, error) {
 		nameKey := r.subspace.Pack(tuple.Tuple{"n", name})
-		// Check if name is already mapped
-		existing := tx.Get(fdb.Key(nameKey)).MustGet()
+		// Check if name is already mapped. Use .Get() (explicit error) rather than
+		// .MustGet() (panic→panicToError): a routine transaction conflict (1020) on
+		// this read is an expected, retryable event, not an invariant violation — it
+		// should flow back as an error for db.Transact to retry, not via a panic.
+		existing, err := tx.Get(fdb.Key(nameKey)).Get()
+		if err != nil {
+			return nil, err
+		}
 		if len(existing) == 8 {
 			return int64(binary.BigEndian.Uint64(existing)), nil
 		}
 
 		// Allocate a new value from the counter
 		counterKey := r.subspace.Pack(tuple.Tuple{"c"})
-		counterBytes := tx.Get(fdb.Key(counterKey)).MustGet()
+		counterBytes, err := tx.Get(fdb.Key(counterKey)).Get()
+		if err != nil {
+			return nil, err
+		}
 		var next int64
 		if len(counterBytes) == 8 {
 			next = int64(binary.BigEndian.Uint64(counterBytes))
@@ -145,7 +154,10 @@ func (r *FDBResolver) ReverseLookup(ctx context.Context, value int64) (string, b
 	// Slow path: read from FDB.
 	result, err := r.db.ReadTransact(func(tx fdb.ReadTransaction) (any, error) {
 		revKey := r.subspace.Pack(tuple.Tuple{"r", value})
-		data := tx.Get(fdb.Key(revKey)).MustGet()
+		data, err := tx.Get(fdb.Key(revKey)).Get()
+		if err != nil {
+			return revResult{}, err
+		}
 		if data == nil {
 			return revResult{}, nil
 		}
