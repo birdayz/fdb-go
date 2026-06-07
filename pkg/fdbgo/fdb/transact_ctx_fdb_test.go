@@ -2,41 +2,48 @@ package fdb_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
-// TestFDB_TransactCtx_CommitNotCancelledByCtx pins RFC-090's core safety property: a
-// caller-ctx cancellation must NOT cancel a dispatched commit (the commit + its
-// commit_unknown_result idempotency barrier run on context.WithoutCancel). We cancel
-// the ctx INSIDE the closure, so the client loop reaches Commit with the ctx already
-// cancelled; the write must still commit durably. If the commit honored the ctx it
-// would fail (and the write would be lost or left commit-unknown).
-func TestFDB_TransactCtx_CommitNotCancelledByCtx(t *testing.T) {
+// TestFDB_TransactCtx_CancelDuringFnAbortsBeforeCommit pins the cancellation contract
+// (RFC-090 + codex review of PR #272): a cancel/deadline that arrives DURING fn — i.e.
+// BEFORE the commit is dispatched — must abort the transaction WITHOUT committing.
+//
+// At that point no commit RPC has been sent, so there is no commit_unknown_result
+// hazard to protect against: aborting is clean and the write simply does not apply.
+// ctx bounds the transaction's reads/GRV and the commit, so the client loop must not
+// run the commit path (incl. pre-commit ensureReadVersion) on an already-expired ctx.
+// The complementary property — that an *in-flight* commit (already dispatched) is NOT
+// torn by a late cancel (commit + commit_unknown_result barrier run on
+// context.WithoutCancel) — is preserved in the code after this abort point.
+func TestFDB_TransactCtx_CancelDuringFnAbortsBeforeCommit(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
-	key := fdb.Key("rfc090/commit-detach/" + t.Name())
+	key := fdb.Key("rfc090/cancel-before-commit/" + t.Name())
 	ctx, cancel := context.WithCancel(context.Background())
 
 	_, err := db.TransactCtx(ctx, func(tx fdb.Transaction) (any, error) {
 		tx.Set(key, []byte("v"))
-		cancel() // cancel mid-transaction, before the client loop commits
+		cancel() // cancel during fn, before the client loop dispatches the commit
 		return nil, nil
 	})
-	if err != nil {
-		t.Fatalf("a dispatched commit must run detached from the caller ctx; got %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancel before commit-dispatch must abort with context.Canceled; got %v", err)
 	}
 
+	// The write must NOT have committed — no commit RPC was dispatched.
 	got, rerr := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
 		return rtx.Get(key).MustGet(), nil
 	})
 	if rerr != nil {
 		t.Fatalf("read-back: %v", rerr)
 	}
-	if b, _ := got.([]byte); string(b) != "v" {
-		t.Fatalf("commit-detached write not durable: got %q, want %q", b, "v")
+	if b, _ := got.([]byte); b != nil {
+		t.Fatalf("a cancelled-before-commit write must not be durable; got %q", b)
 	}
 }
 

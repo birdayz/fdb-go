@@ -524,6 +524,17 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 			continue // tx has been reset in place, retryCount/backoff preserved
 		}
 
+		// Honor a cancellation/deadline that arrived *during* fn before starting the
+		// commit. The commit + barrier below run under WithoutCancel (see next
+		// comment), which also detaches the commit path's pre-commit GRV
+		// (ensureReadVersion) — so once we call Commit, a new read version can be
+		// fetched and a commit issued even on an already-expired ctx. ctx bounds
+		// reads/GRV, so the correct place to abort is here, before any commit-path
+		// read or RPC is issued; an in-flight commit (past this point) is protected.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		// RFC-090: run the dispatched commit and its commit_unknown_result
 		// idempotency barrier (commitDummyTransaction) on a context the caller cannot
 		// cancel. A caller-ctx cancellation must not yank an in-flight commit (already
