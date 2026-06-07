@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -225,13 +226,26 @@ func TestFDB_GroupByWrongQualifierRejected(t *testing.T) {
 		t.Fatalf("top-level wrong-qualifier GROUP BY: code = %s, want %s (42703)", apiErr.Code, api.ErrCodeUndefinedColumn)
 	}
 
-	// (2) Correlated-scalar-subquery path (validateGroupByProjection call site at
-	// buildCorrelatedScalar). The inner GROUP BY key d2.salary is wrong-qualified
-	// the same way; the correlated path's own GROUP-BY-key resolution must reject
-	// it rather than fall through to the qualifier-blind bare-name check.
+	// (2) Correlated-scalar-subquery path. Here validateGroupByProjection (~L4414)
+	// runs FIRST and the GROUP-BY-key resolver gate (resolveCorrelatedGroupKeyValues,
+	// ~L4654) runs AFTER — the inverse ordering of the top-level path. The inner
+	// subquery has a single source (dept d2), so d2.salary is a genuinely-absent
+	// column on dept and the resolver gate must reject it BY NAME (proving it's the
+	// GROUP-BY-key resolution catching it, not a generic parse failure).
+	//
+	// The richer "SALARY is in the join union but wrong-qualified" shape — the
+	// inverse of part (1) — is NOT reachable at this site: a correlated scalar
+	// subquery that itself contains an INNER JOIN + GROUP BY is unsupported (0A000),
+	// rejected before any GROUP-BY validation. So the cross-table mis-bind cannot
+	// arise here; the single-source absent-column rejection is the gate that
+	// matters, and the qualifier-blind union check (which only ever sees one
+	// source here) can't false-accept anything the resolver wouldn't also catch.
 	_, err2 := db.ExecContext(ctx,
 		"SELECT e.eid, (SELECT COUNT(*) FROM dept AS d2 WHERE d2.did = e.did GROUP BY d2.salary) FROM emp AS e")
 	if err2 == nil {
 		t.Fatal("correlated: inner GROUP BY d2.salary (salary not on dept) must be rejected")
+	}
+	if !strings.Contains(strings.ToUpper(err2.Error()), "SALARY") {
+		t.Fatalf("correlated: expected the GROUP-BY-key resolver to name the absent column, got %v", err2)
 	}
 }

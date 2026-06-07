@@ -2245,16 +2245,21 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 	// name against the UNION of all source fields, so it is deliberately
 	// qualifier-blind — `e.dname` (dname on the joined dept, not emp) would
 	// pass here because DNAME is in the union. That coarse check is SAFE only
-	// because the precise semantic resolver runs FIRST at every call site and
-	// rejects a wrong-qualifier / genuinely-undefined key before we get here:
+	// because EVERY call site is bracketed by a precise semantic resolver gate
+	// that has the final say on a wrong-qualifier / genuinely-undefined key —
+	// the union check never decides alone. The gate runs on DIFFERENT sides at
+	// the two sites:
 	//   - top-level GROUP BY: resolveColumnName(resolver, gb) (this file, ~L1002)
-	//     and plan_visitor's resolve steps;
-	//   - correlated scalar subquery: the GROUP-BY-key resolution in
-	//     buildCorrelatedScalar ("resolve GROUP BY key: ... not found on table").
-	// Both are pinned by TestFDB_GroupByWrongQualifierRejected. If any future
-	// change runs validateGroupByProjection BEFORE the resolver, this becomes a
-	// cross-table false-accept — converge the existence check onto
-	// resolver.ResolveIdentifier instead (TODO.md, RFC-088 follow-up).
+	//     runs BEFORE validateGroupByProjection (~L1019), so a wrong qualifier is
+	//     rejected before it ever reaches this union check.
+	//   - correlated scalar subquery: validateGroupByProjection (~L4414) runs
+	//     FIRST and may pass a wrong-qualifier key, but resolveCorrelatedGroupKeyValues
+	//     (~L4654, "resolve GROUP BY key: ... not found on table") runs AFTER and
+	//     rejects it — the net protection still holds, via the later gate.
+	// Both orderings are pinned by TestFDB_GroupByWrongQualifierRejected. The real
+	// hazard is a NEW call site with NO resolver gate on either side; converging
+	// the existence check onto resolver.ResolveIdentifier removes the coupling
+	// entirely (TODO.md, RFC-088 follow-up).
 	checkColumn := func(col string) error {
 		upper := strings.ToUpper(col)
 		bare := parseColRef(upper).bare()
