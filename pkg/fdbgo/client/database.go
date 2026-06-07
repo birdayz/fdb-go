@@ -524,7 +524,14 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 			continue // tx has been reset in place, retryCount/backoff preserved
 		}
 
-		if err := tx.Commit(ctx); err != nil {
+		// RFC-090: run the dispatched commit and its commit_unknown_result
+		// idempotency barrier (commitDummyTransaction) on a context the caller cannot
+		// cancel. A caller-ctx cancellation must not yank an in-flight commit (already
+		// bounded by the per-RPC timeout) and must not make the barrier no-op on a
+		// cancelled ctx (commitpath.go's `if ctx.Err()!=nil {return}`). The retry
+		// backoff below still honors ctx via OnError. WithoutCancel(Background) is a
+		// no-op, so the existing Background callers are unchanged.
+		if err := tx.Commit(context.WithoutCancel(ctx)); err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}

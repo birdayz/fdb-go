@@ -213,13 +213,22 @@ func (db Database) CreateTransaction() (Transaction, error) {
 
 // Transact runs a transactional function with automatic retry.
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
+	return db.TransactCtx(db.d.ctx, f)
+}
+
+// TransactCtx is Transact bounded by ctx (RFC-090 / fdb.CtxTransactor): ctx bounds the
+// retry loop, backoff, and reads. The dispatched commit and its commit_unknown_result
+// idempotency barrier run on a detached context (in client.Database.Transact), so the
+// caller's ctx never cancels an in-flight commit — which is already bounded by the
+// per-RPC timeout.
+func (db Database) TransactCtx(ctx context.Context, f func(Transaction) (any, error)) (any, error) {
 	var lastTx *transaction // capture for commitDone signaling
-	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer panicToError(&e)
 		t := &transaction{
 			inner:      tx,
 			db:         db,
-			ctx:        db.d.ctx,
+			ctx:        ctx,
 			commitDone: make(chan struct{}),
 		}
 		db.applyTxDefaults(t)
@@ -248,16 +257,22 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 
 // ReadTransact runs a read-only transactional function with automatic retry.
 func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
+	return db.ReadTransactCtx(db.d.ctx, f)
+}
+
+// ReadTransactCtx is ReadTransact bounded by ctx (RFC-090 / fdb.CtxReadTransactor):
+// ctx bounds the read-retry loop and backoff.
+func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error) {
 	// Use a reusable transaction wrapper to avoid per-call allocation.
 	// The transaction struct is stack-allocated (doesn't escape because
 	// the closure doesn't store it — it only stores the Transaction value
 	// which embeds a pointer to t).
-	result, err := db.d.inner.ReadTransact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+	result, err := db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer panicToError(&e)
 		t := transaction{
 			inner: tx,
 			db:    db,
-			ctx:   db.d.ctx,
+			ctx:   ctx,
 		}
 		db.applyTxDefaults(&t)
 		r, e = f(Transaction{t: &t})

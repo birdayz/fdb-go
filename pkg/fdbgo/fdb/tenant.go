@@ -1,6 +1,10 @@
 package fdb
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+import (
+	"context"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+)
 
 // Tenant is a handle to a FoundationDB tenant.
 // Operations on a Tenant are scoped to the tenant's key space.
@@ -16,15 +20,22 @@ func (t Tenant) ID() int64 { return t.tenantId }
 // this tenant's key space. Matches Database.Transact but sets the tenant ID
 // on the underlying transaction.
 func (t Tenant) Transact(f func(Transaction) (any, error)) (any, error) {
+	return t.TransactCtx(t.db.d.ctx, f)
+}
+
+// TransactCtx is Transact bounded by ctx (RFC-090 / fdb.CtxTransactor). The dispatched
+// commit + commit_unknown barrier run detached (in client.Database.Transact); ctx never
+// cancels an in-flight commit.
+func (t Tenant) TransactCtx(ctx context.Context, f func(Transaction) (any, error)) (any, error) {
 	var lastTx *transaction
-	result, err := t.db.d.inner.Transact(t.db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+	result, err := t.db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tx.SetTenantId(t.tenantId)
 		txn := &transaction{
 			inner:      tx,
 			db:         t.db,
-			ctx:        t.db.d.ctx,
+			ctx:        ctx,
 			commitDone: make(chan struct{}),
 		}
 		lastTx = txn
@@ -49,14 +60,19 @@ func (t Tenant) Transact(f func(Transaction) (any, error)) (any, error) {
 // ReadTransact runs a read-only transactional function with automatic retry,
 // scoped to this tenant's key space.
 func (t Tenant) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
-	result, err := t.db.d.inner.ReadTransact(t.db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+	return t.ReadTransactCtx(t.db.d.ctx, f)
+}
+
+// ReadTransactCtx is ReadTransact bounded by ctx (RFC-090 / fdb.CtxReadTransactor).
+func (t Tenant) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error) {
+	result, err := t.db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tx.SetTenantId(t.tenantId)
 		tr := Transaction{t: &transaction{
 			inner: tx,
 			db:    t.db,
-			ctx:   t.db.d.ctx,
+			ctx:   ctx,
 		}}
 		return f(tr)
 	})

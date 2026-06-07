@@ -1,6 +1,7 @@
 package chaos
 
 import (
+	"context"
 	"math/rand/v2"
 	"sync"
 
@@ -106,6 +107,18 @@ func (c *ChaosTransactor) InjectOnce(fault FaultType) {
 
 // Transact implements fdb.Transactor. Wraps the inner Transact with fault injection.
 func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, error) {
+	return c.TransactCtx(context.Background(), fn)
+}
+
+// TransactCtx implements fdb.CtxTransactor — same fault injection, threading ctx to the
+// inner transactor's ctx-aware path when present (RFC-090).
+func (c *ChaosTransactor) TransactCtx(ctx context.Context, fn func(fdb.Transaction) (any, error)) (any, error) {
+	runInner := func() (any, error) {
+		if ct, ok := c.inner.(fdb.CtxTransactor); ok {
+			return ct.TransactCtx(ctx, fn)
+		}
+		return c.inner.Transact(fn)
+	}
 	c.mu.Lock()
 	pending := c.pendingFault
 	if pending != nil {
@@ -130,7 +143,7 @@ func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, 
 	}
 
 	// Execute the real transaction.
-	result, err := c.inner.Transact(fn)
+	result, err := runInner()
 	if err != nil {
 		return result, err
 	}
@@ -140,7 +153,7 @@ func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, 
 	// This tests idempotency — the hardest property to get right.
 	if injectFault != nil {
 		c.logFault(opIdx, *injectFault)
-		return c.inner.Transact(fn)
+		return runInner()
 	}
 
 	return result, nil
@@ -148,6 +161,14 @@ func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, 
 
 // ReadTransact implements fdb.ReadTransactor. No fault injection on reads.
 func (c *ChaosTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return c.ReadTransactCtx(context.Background(), fn)
+}
+
+// ReadTransactCtx implements fdb.CtxReadTransactor (threads ctx to the inner read path).
+func (c *ChaosTransactor) ReadTransactCtx(ctx context.Context, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	if ct, ok := c.inner.(fdb.CtxReadTransactor); ok {
+		return ct.ReadTransactCtx(ctx, fn)
+	}
 	return c.inner.ReadTransact(fn)
 }
 

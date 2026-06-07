@@ -161,6 +161,7 @@ go_test(
         "cursor_seq_test.go",
         "cursor_test.go",
         "cursor_util_test.go",
+        "database_runctx_test.go",
         "database_test.go",
         "dedup_cursor_test.go",
         "edge_case_test.go",

@@ -43,6 +43,7 @@ go_test(
         "ryw_test.go",
         "tenant_test.go",
         "testmain_test.go",
+        "transact_ctx_fdb_test.go",
     ],
     embed = [":fdb"],
     deps = [
