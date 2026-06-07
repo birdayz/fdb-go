@@ -43,12 +43,11 @@ fdb-record-layer
 pkg/recordlayer/testdata/*.fvecs
 pkg/recordlayer/testdata/*.ivecs
 
-# Bazel symlinks
-bazel-bin
-bazel-out
-bazel-testlogs
-bazel-fdb-record-layer-go
-bazel-client-qualit
+# Bazel convenience symlinks. Root-anchored glob so it covers every worktree name
+# (bazel-bin/out/testlogs and the workspace-named bazel-<dir>, e.g. bazel-review)
+# without having to enumerate each — these are machine-local cache links and must
+# never be committed.
+/bazel-*
 .bazel-bep.jsonl
 test-report.html
 .tools/
