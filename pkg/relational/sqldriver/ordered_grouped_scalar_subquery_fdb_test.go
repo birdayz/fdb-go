@@ -54,6 +54,15 @@ func ogsScalar(t *testing.T, ctx context.Context, db *sql.DB, q string) (int64, 
 	return n.Int64, n.Valid
 }
 
+func ogsScalarStr(t *testing.T, ctx context.Context, db *sql.DB, q string) (string, bool) {
+	t.Helper()
+	var s sql.NullString
+	if err := db.QueryRowContext(ctx, q).Scan(&s); err != nil {
+		t.Fatalf("query %q: %v", q, err)
+	}
+	return s.String, s.Valid
+}
+
 // TestFDB_OrderedGroupedScalarSubquery pins RFC-085: ORDER BY over the grouped
 // output of a correlated scalar subquery makes the multi-group FirstOrDefault
 // choice deterministic (was rejected outright).
@@ -153,6 +162,26 @@ func TestFDB_OrderedGroupedScalarSubquery_ExplainSort(t *testing.T) {
 	}
 	if !strings.Contains(plan, "StreamingAgg") {
 		t.Errorf("expected a StreamingAgg in the inner plan, got: %s", plan)
+	}
+}
+
+// TestFDB_OrderedGroupedScalarSubquery_GroupKeyOnly pins the group-key-only
+// (NON-aggregate) GROUP BY + ORDER BY path — the subquery selects a grouping
+// column directly (no aggregate function), exercising the `!hasRealAgg +
+// groupBy + orderBy` branch that calls groupedScalarSortKeys(sq, nil). Without
+// this, a refactor could break that branch unnoticed (@claude PR #268).
+func TestFDB_OrderedGroupedScalarSubquery_GroupKeyOnly(t *testing.T) {
+	t.Parallel()
+	db, ctx := ogsDB(t, "gkonly")
+	// Customer 1 has statuses 'a' and 'b'. ORDER BY o.status DESC LIMIT 1 → 'b'.
+	desc := "SELECT (SELECT o.status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status DESC LIMIT 1) FROM customers c WHERE c.id = 1"
+	if got, ok := ogsScalarStr(t, ctx, db, desc); !ok || got != "b" {
+		t.Fatalf("group-key-only ORDER BY DESC: got %q (valid=%v), want \"b\"", got, ok)
+	}
+	// ASC → 'a'.
+	asc := "SELECT (SELECT o.status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status ASC LIMIT 1) FROM customers c WHERE c.id = 1"
+	if got, ok := ogsScalarStr(t, ctx, db, asc); !ok || got != "a" {
+		t.Fatalf("group-key-only ORDER BY ASC: got %q (valid=%v), want \"a\"", got, ok)
 	}
 }
 
