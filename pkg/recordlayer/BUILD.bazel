@@ -191,6 +191,7 @@ go_test(
         "intersection_resume_test.go",
         "key_expr_bug_verify_test.go",
         "key_expression_compiled_test.go",
+        "key_expression_concatenate_test.go",
         "key_expression_proto_test.go",
         "key_expression_test.go",
         "key_expression_validate_test.go",

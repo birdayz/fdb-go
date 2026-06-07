@@ -266,7 +266,7 @@ func (f *FieldKeyExpression) getNullResult() [][]any {
 	case FanTypeFanOut:
 		return nil // No entries — matching Java's Collections.emptyList()
 	case FanTypeConcatenate:
-		return [][]any{{[]any{}}} // One entry containing an empty list
+		return [][]any{{tuple.Tuple{}}} // One entry containing an empty nested tuple (packable; a raw []any panics)
 	default:
 		return [][]any{{nil}} // One entry with null
 	}
@@ -293,16 +293,20 @@ func (f *FieldKeyExpression) evaluateRepeated(m protoreflect.Message, fd protore
 		return result, nil
 
 	case FanTypeConcatenate:
-		values := make([]any, count)
+		// The repeated field's values become a single index-key element encoded as a
+		// NESTED TUPLE, matching Java's Tuple.addObject(List) → nested Tuple. It must
+		// be a tuple.Tuple, not a raw []any: the FDB tuple packer has no case for a
+		// bare []any and would panic ("unencodable element") on every save of a record
+		// with this index (index_maintainer pack path).
+		nested := make(tuple.Tuple, count)
 		for i := 0; i < count; i++ {
 			val, err := scalarToInterface(fd, list.Get(i))
 			if err != nil {
 				return nil, err
 			}
-			values[i] = val
+			nested[i] = val
 		}
-		// All values packed into a single tuple element (as a nested tuple)
-		return [][]any{{values}}, nil
+		return [][]any{{nested}}, nil
 
 	default: // FanTypeNone
 		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s is repeated with FanType.None", f.fieldName)}
