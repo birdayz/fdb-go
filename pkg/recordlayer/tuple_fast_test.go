@@ -119,6 +119,29 @@ func TestSplitKeySuffix(t *testing.T) {
 	}
 }
 
+// TestSplitKeySuffix_EmptyReturnsError pins that splitKeySuffix returns a typed
+// error — never panics — on an empty suffix. A record key is always prefix +
+// PK-tuple + suffix, but a stray/malformed key under the records subspace (a foreign
+// client, corruption, or a scan range that included the bare prefix) yields an empty
+// suffix; pre-fix the function's `tupleBytes[lastStart]` index-panicked on it,
+// crashing the main record-scan path (key_value_cursor loadNext). Don't-leak-panics:
+// malformed stored data must surface as an error.
+func TestSplitKeySuffix_EmptyReturnsError(t *testing.T) {
+	t.Parallel()
+	for _, in := range [][]byte{nil, {}} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("splitKeySuffix(%v) panicked instead of erroring: %v", in, r)
+				}
+			}()
+			if _, _, err := splitKeySuffix(in); err == nil {
+				t.Fatalf("splitKeySuffix(%v): want error, got nil", in)
+			}
+		}()
+	}
+}
+
 // TestTupleSkipNestedInNested is a targeted regression test for the bug where
 // tupleSkip would stop at the inner nested tuple's 0x00 terminator instead of
 // the outer one, causing the outer tuple to be measured as too short.

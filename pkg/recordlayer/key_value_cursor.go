@@ -222,6 +222,18 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 			return nil, nil, nil // exhausted
 		}
 
+		// A record key is always prefix + PK-tuple + suffix, i.e. strictly longer than
+		// the records-subspace prefix. A key at or under the prefix is a stray or
+		// malformed key (corruption, a foreign client, or a scan range whose begin
+		// included the bare prefix) — return a typed error rather than slice-panicking
+		// on kv.Key[prefixLen:] (key shorter than the prefix) or index-panicking inside
+		// splitKeySuffix on the empty suffix. The other splitKeySuffix callers
+		// (peekVersionKey, the chunk-reassembly loop) already guard this length; this is
+		// the primary record-scan path's matching guard.
+		if len(kv.Key) <= prefixLen {
+			return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), prefixLen)
+		}
+
 		// Fast path: extract suffix via zero-alloc tuple scan.
 		// Only call full tuple.Unpack for the PK when building the returned record.
 		tupleBytes := kv.Key[prefixLen:]

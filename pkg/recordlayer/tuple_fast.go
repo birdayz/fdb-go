@@ -388,6 +388,14 @@ func fastDecodeTuple(b []byte, nested bool) (tuple.Tuple, int, error) {
 // splitKeySuffix splits a tuple-encoded key into PK portion and trailing int64 suffix.
 // Zero allocation.
 func splitKeySuffix(tupleBytes []byte) (suffix int64, pkEnd int, err error) {
+	// Defense-in-depth: an empty suffix has no tuple element, so the scan loop below
+	// never runs and `tupleBytes[lastStart]` would index-panic. A record key is always
+	// prefix + PK-tuple + suffix, so callers should never pass an empty slice — but a
+	// stray/malformed key under the records subspace (foreign client, corruption) must
+	// surface as an error here, never a panic on the scan path (don't-leak-panics).
+	if len(tupleBytes) == 0 {
+		return 0, 0, fmt.Errorf("empty key suffix: no tuple element to parse")
+	}
 	pos := 0
 	lastStart := 0
 	for pos < len(tupleBytes) {
