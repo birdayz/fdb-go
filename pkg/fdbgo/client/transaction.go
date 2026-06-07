@@ -244,7 +244,13 @@ type Transaction struct {
 	// `reading.getFutureCount() > 0 || !cache.empty()` — the signal that
 	// SetReadYourWritesDisable must poison. A serverCache check alone is insufficient: the
 	// facade's Get uses GetPipelined, which does not populate serverCache (RFC-059).
-	hadRead bool
+	//
+	// atomic.Bool: pipelined reads (e.g. loadRecordStoreState issuing a Get + a
+	// Snapshot().GetRange together) resolve their futures on separate goroutines,
+	// each setting hadRead — concurrent writes. The =false resets and the commit-
+	// time read run single-goroutine between/after reads, but atomic keeps the
+	// whole field race-free.
+	hadRead atomic.Bool
 
 	// snapshotRYWDisableCount: snapshot reads bypass the RYW cache iff this is > 0.
 	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_{ENABLE,DISABLE}, which libfdb_c models as an
@@ -496,7 +502,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, nil, err
 	}
-	tx.hadRead = true // a read was issued; this path does NOT populate serverCache (RFC-059)
+	tx.hadRead.Store(true) // a read was issued; this path does NOT populate serverCache (RFC-059)
 	// Legal key range check BEFORE sending — matches Transaction.Get. The illegal
 	// key must be rejected at enqueue, not after the frame is on the wire. RFC-010 #3.
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
@@ -1682,7 +1688,7 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 // disabling RYW mid-transaction (RFC-059). A clean (pre-op) disable is unaffected.
 func (tx *Transaction) SetReadYourWritesDisable() {
 	tx.rywDisabled = true
-	if tx.hadRead || !tx.ryw.isEmpty() {
+	if tx.hadRead.Load() || !tx.ryw.isEmpty() {
 		tx.rywPoisonErr = &wire.FDBError{Code: 2000} // client_invalid_operation, surfaces on next op
 	}
 }
@@ -1843,7 +1849,7 @@ func (tx *Transaction) postCommitReset() {
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
-	tx.hadRead = false
+	tx.hadRead.Store(false)
 	// committedVersion and txnBatchId preserved intentionally.
 }
 
@@ -1872,7 +1878,7 @@ func (tx *Transaction) reset() {
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
-	tx.hadRead = false
+	tx.hadRead.Store(false)
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:
 	// onError does NOT update creationTime, so the timeout is an overall
 	// budget across all retries. Only user-facing Reset() updates creationTime.

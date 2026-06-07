@@ -176,6 +176,18 @@ P0.3-A1 sweep); root-cause any race surfaced (no skips). **Pull this forward to 
 with P0.3** (Torvalds) — a plan-cache race under `database/sql` concurrency is silent
 corruption, worse than a loud panic.
 
+**[x] First `-race` run on `//pkg/relational/...` done (RFC-091 GATE) — surfaced + FIXED a real
+pre-existing client race.** `tx.hadRead` (pure-Go client `Transaction`) is written `true` from
+concurrent pipelined-read resolution goroutines — `loadRecordStoreState` (store_state_cache.go:191)
+issues `tx.Get` + `tx.Snapshot().GetRange` in flight together and their futures resolve on
+separate goroutines, both setting the shared `bool`. 266 race instances across sqldriver +
+plandiff, all the same field. Unrelated to RFC-091 (the eval sweep touches none of the client
+read path) — exactly the class the audit predicted behind the no-`-race`-on-relational gap. Fix:
+`hadRead` → `atomic.Bool` (build + copylocks-vet clean; re-ran `-race` on both targets → green).
+**Still to do for P1.1:** wire the `-race` job into CI (not just this one-off run); the
+`ReportUnresolvedReference` global (`values.go:777`) did NOT surface in this run but remains a
+latent landmine to convert to `atomic.Pointer`/set-once.
+
 ### [ ] P1.2 — Observability: pluggable logger · M
 Zero logging surface (no slog, no logger interface). Add a pluggable `*slog.Logger` (nil =
 silent) on DB/store/runner; emit online-indexer progress + retry/conflict events. Builds on the
