@@ -2399,12 +2399,8 @@ func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(7)}
 	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"X": 1}}
-	var keyErr error
-	fn := intersectionCompKeyFunc(nil, &keyErr)
+	fn := intersectionCompKeyFunc(nil)
 	got := fn(qr)
-	if keyErr != nil {
-		t.Fatalf("unexpected key eval error: %v", keyErr)
-	}
 	if len(got) != 1 || got[0] != int64(7) {
 		t.Fatalf("expected PK tuple {7}, got %v", got)
 	}
@@ -2413,12 +2409,8 @@ func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"X": 1}}
-	var keyErr error
-	fn := intersectionCompKeyFunc(nil, &keyErr)
+	fn := intersectionCompKeyFunc(nil)
 	got := fn(qr)
-	if keyErr != nil {
-		t.Fatalf("unexpected key eval error: %v", keyErr)
-	}
 	if len(got) != 1 {
 		t.Fatalf("expected single-element tuple, got %v", got)
 	}
@@ -2434,12 +2426,8 @@ func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 		&values.FieldValue{Field: "NAME", Typ: values.TypeString},
 		&values.FieldValue{Field: "AGE", Typ: values.TypeInt},
 	}
-	var keyErr error
-	fn := intersectionCompKeyFunc(keyVals, &keyErr)
+	fn := intersectionCompKeyFunc(keyVals)
 	got := fn(qr)
-	if keyErr != nil {
-		t.Fatalf("unexpected key eval error: %v", keyErr)
-	}
 	if len(got) != 2 || got[0] != "alice" || got[1] != int64(30) {
 		t.Fatalf("expected {alice, 30}, got %v", got)
 	}
@@ -2713,7 +2701,10 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 		t.Fatalf("expected correlation binding 42, got %v (ok=%v)", v, ok)
 	}
 	qov := values.NewQuantifiedObjectValue(id)
-	result := mustEvaluate(qov, rc)
+	result, err := qov.Evaluate(rc)
+	if err != nil {
+		t.Fatalf("QOV.Evaluate(RowEvalContext) error: %v", err)
+	}
 	if result != int64(42) {
 		t.Fatalf("QOV.Evaluate(RowEvalContext) = %v, want 42", result)
 	}

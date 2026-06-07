@@ -82,7 +82,8 @@ func (p *Placeholder) IsConstraining() bool {
 // Children returns an empty slice — Placeholder is a leaf predicate.
 func (*Placeholder) Children() []QueryPredicate { return []QueryPredicate{} }
 
-// Eval is the error-returning twin (RFC-091). Never fails.
+// Eval returns TriUnknown — placeholders are planning-time constructs
+// and are never evaluated at runtime.
 func (*Placeholder) Eval(_ any) (TriBool, error) { return TriUnknown, nil }
 
 // Explain renders a textual form: "Placeholder(alias, value)".

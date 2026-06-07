@@ -123,10 +123,10 @@ type Value interface {
 	// subsystems can pass their own row shape — seed uses
 	// `map[string]any` in tests.
 	//
-	// User-reachable evaluation failures (arithmetic overflow,
-	// division by zero, invalid CAST, scalar/comparison type
-	// mismatch) are returned as typed errors instead of panicking;
-	// genuine "can't happen" invariant violations still panic.
+	// Returns (value, nil) on success — (nil, nil) is SQL NULL.
+	// (nil, err) signals a data-dependent runtime error (arithmetic
+	// overflow, division by zero, invalid cast, type mismatch);
+	// callers propagate it instead of recovering a panic.
 	Evaluate(evalCtx any) (any, error)
 }
 
@@ -144,11 +144,8 @@ type ConstantValue struct {
 	Typ   Type
 }
 
-func (c *ConstantValue) Children() []Value { return []Value{} }
-func (c *ConstantValue) Name() string      { return "constant" }
-
-// Evaluate is the error-returning twin (RFC-091). A constant
-// literal never fails.
+func (c *ConstantValue) Children() []Value         { return []Value{} }
+func (c *ConstantValue) Name() string              { return "constant" }
 func (c *ConstantValue) Evaluate(any) (any, error) { return c.Value, nil }
 
 // Type returns the constant's rich Type. Nullability is derived
@@ -208,17 +205,16 @@ func (f *FieldValue) Type() Type {
 	return f.Typ
 }
 
-// Evaluate is the error-returning twin (RFC-091).
 func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if f.Child != nil {
 		if qov, isQOV := f.Child.(*QuantifiedObjectValue); isQOV {
 			return f.evaluateCorrelated(qov, evalCtx), nil
 		}
-		child, err := f.Child.Evaluate(evalCtx)
+		cv, err := f.Child.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
-		evalCtx = child
+		evalCtx = cv
 	}
 	if evalCtx == nil {
 		return nil, nil
@@ -416,23 +412,26 @@ func IsConstantValue(v Value) bool {
 // constant sub-expression without writing an `if isConstant { eval
 // and wrap }` dance every time.
 //
-// A constant that ERRORS on evaluation (div0, overflow, bad CAST, type
-// mismatch) is reported as NOT foldable — folding it to NULL would diverge from
-// the runtime path, which raises the SQL error (e.g. 22012). Declining to fold
-// leaves the expression in place so the error surfaces at execution with the
-// correct SQLSTATE (RFC-091; previously these folded to NULL — a silent-wrong
-// plan-time divergence). A genuine invariant panic during folding (should never
-// happen — IsConstantValue gates it) propagates to the db/sql boundary recover
-// (folding runs under gen.Plan); it is not silently swallowed.
+// A data-dependent runtime error from Evaluate (arithmetic overflow,
+// division by zero, invalid cast, type mismatch) is reported as "not
+// foldable" — (nil, false). This is the plan-time decline-to-fold
+// path: the typed runtime-error family now returns via the error
+// channel, so the error is swallowed here (leave the node) rather
+// than surfacing a query error from the planner.
+//
+// Genuinely programmer-invariant panics (e.g. an AggregateValue buried
+// inside a constant tree that IsConstantValue should have excluded) are
+// planner bugs and now surface rather than being silently swallowed —
+// the residual recover that masked them has been collapsed.
 func EvaluateConstant(v Value) (out any, ok bool) {
 	if v == nil || !IsConstantValue(v) {
 		return nil, false
 	}
-	val, err := v.Evaluate(nil)
+	result, err := v.Evaluate(nil)
 	if err != nil {
 		return nil, false
 	}
-	return val, true
+	return result, true
 }
 
 // ContainsAggregate reports whether v has any AggregateValue in its
@@ -689,10 +688,8 @@ func NewNullValue(typ Type) *NullValue {
 	return &NullValue{Typ: typ}
 }
 
-func (*NullValue) Children() []Value { return []Value{} }
-func (*NullValue) Name() string      { return "null" }
-
-// Evaluate is the error-returning twin (RFC-091). NULL never fails.
+func (*NullValue) Children() []Value         { return []Value{} }
+func (*NullValue) Name() string              { return "null" }
 func (*NullValue) Evaluate(any) (any, error) { return nil, nil }
 
 // Type returns the typed-NULL annotation (UnknownType when
@@ -813,7 +810,6 @@ func (p *ParameterValue) Type() Type {
 	return WithNullability(p.Typ, true)
 }
 
-// Evaluate is the error-returning twin (RFC-091).
 func (p *ParameterValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
@@ -833,12 +829,11 @@ func (p *ParameterValue) Evaluate(evalCtx any) (any, error) {
 // via EvaluateConstant; `UPPER(name)` is non-constant because the
 // FieldValue arg is non-constant.
 //
-// Seed function set is intentionally narrow: UPPER, LOWER,
-// LENGTH/CHAR_LENGTH/CHARACTER_LENGTH (utf8 rune count),
-// OCTET_LENGTH (byte count). The full function catalog port is a
-// Phase 4.0 follow-up; the seam lives in evalScalarFunction so the
-// production registry can replace this switch without touching the
-// Value contract.
+// The supported family is the one gated by IsCascadesSafeScalarFunction
+// (string, math, date-part, bit, and null/comparison helpers); the
+// runtime semantics live in evalScalarFunction, the single dispatch seam
+// a future production registry can replace without touching the Value
+// contract.
 type ScalarFunctionValue struct {
 	FuncName string
 	Args     []Value
@@ -851,6 +846,24 @@ type ScalarFunctionValue struct {
 // must use this.
 func IsCascadesSafeScalarFunction(name string) bool {
 	switch name {
+	// String functions.
+	case "UPPER", "LOWER",
+		"LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
+		"SUBSTRING", "SUBSTR",
+		"TRIM", "LTRIM", "RTRIM",
+		"CONCAT", "CONCAT_WS",
+		"REPLACE",
+		"LEFT", "RIGHT",
+		"POSITION", "REVERSE":
+		return true
+	// Math functions.
+	case "ABS", "MOD",
+		"FLOOR", "CEIL", "CEILING", "ROUND",
+		"SQRT", "POWER", "POW",
+		"SIGN", "PI",
+		"EXP", "LN", "LOG":
+		return true
+	// Null/comparison helpers, bit ops, and date-part extraction.
 	case "COALESCE", "IFNULL",
 		"GREATEST", "LEAST",
 		"BITAND", "BITOR", "BITXOR",
@@ -887,7 +900,6 @@ func (s *ScalarFunctionValue) Type() Type {
 	return WithNullability(s.Typ, true)
 }
 
-// Evaluate is the error-returning twin (RFC-091).
 func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 	args := make([]any, len(s.Args))
 	for i, a := range s.Args {
@@ -900,138 +912,102 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 		}
 		args[i] = av
 	}
-	// GREATEST/LEAST are the only seed functions that can raise a user-facing
-	// error (incompatible argument types). Route them through the error-returning
-	// evalGreatestLeast so the mismatch flows through translateExecError as a typed
-	// SQL error instead of escaping this error-returning method as a panic
-	// (RFC-091; the executor control-flow recovers that used to catch it are gone).
-	// Every other seed function declines to nil and never errors, so
-	// evalScalarFunction's any return is correct for them.
-	switch s.FuncName {
-	case "GREATEST", "LEAST":
-		return evalGreatestLeast(s.FuncName, args)
-	default:
-		return evalScalarFunction(s.FuncName, args), nil
-	}
+	return evalScalarFunction(s.FuncName, args)
 }
 
-// evalGreatestLeast evaluates GREATEST/LEAST and returns a typed
-// *ScalarTypeMismatchError on incompatible argument types rather than panicking,
-// so it flows through translateExecError as a user-facing SQL error. Any NULL
-// argument yields NULL (Java conformance: GREATEST/LEAST propagate NULL). Shared
-// by ScalarFunctionValue.Evaluate (error path, production) and evalScalarFunction's
-// legacy any-returning GREATEST/LEAST case (which panics for its direct callers).
-func evalGreatestLeast(name string, args []any) (any, error) {
-	if len(args) == 0 {
-		return nil, nil
-	}
-	isGreatest := name == "GREATEST"
-	best := args[0]
-	if best == nil {
-		return nil, nil
-	}
-	for _, a := range args[1:] {
-		if a == nil {
-			return nil, nil
-		}
-		cmp, ok := compareScalar(best, a)
-		if !ok {
-			return nil, &ScalarTypeMismatchError{
-				Message: fmt.Sprintf("incompatible types for %s: %T vs %T", name, best, a),
-			}
-		}
-		if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
-			best = a
-		}
-	}
-	return best, nil
-}
-
-// evalScalarFunction dispatches the seed scalar function set. NULL
-// argument propagates to NULL result (SQL standard). Unknown function,
-// wrong arity, or wrong arg type returns nil — the seed errs on the
-// side of declining rather than erroring, so the embedded executor's
-// richer scalar_functions.go path remains the primary surface for now.
-func evalScalarFunction(name string, args []any) any {
+// evalScalarFunction dispatches the gated scalar function family
+// (IsCascadesSafeScalarFunction). NULL argument propagates to NULL result
+// (SQL standard), returned as (nil, nil). Genuine decline edges — unknown
+// function, wrong arity, a non-coercible arg type, or an out-of-domain math
+// input that SQL degrades to NULL — also return (nil, nil): the value
+// becomes SQL NULL rather than erroring. The data-dependent error edges
+// return a typed error so the executor maps it to a SQLSTATE:
+//
+//   - ABS(MinInt64)             → *ArithmeticOverflowError       (22003)
+//   - MOD(x, 0)                 → *ArithmeticDivisionByZeroError (22012)
+//   - SQRT(negative)            → *InvalidArgumentError          (22023)
+//   - GREATEST/LEAST mixed type → *ScalarTypeMismatchError       (22000)
+//
+// (nil, nil) is SQL NULL; (nil, err) is a runtime error — the two are now
+// unambiguous, which is the whole point of the error channel.
+func evalScalarFunction(name string, args []any) (any, error) {
 	switch name {
 	case "UPPER":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return strings.ToUpper(s)
+		return strings.ToUpper(s), nil
 	case "LOWER":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return strings.ToLower(s)
+		return strings.ToLower(s), nil
 	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
 		// Rune count — matches embedded.scalar_functions.go's LENGTH
 		// (utf8.RuneCountInString) so plan-time fold and runtime eval
 		// agree. The seed coerces []byte the same way for symmetry
 		// with OCTET_LENGTH (byte count there, rune count here).
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		switch v := args[0].(type) {
 		case string:
-			return int64(utf8.RuneCountInString(v))
+			return int64(utf8.RuneCountInString(v)), nil
 		case []byte:
-			return int64(utf8.RuneCount(v))
+			return int64(utf8.RuneCount(v)), nil
 		}
-		return nil
+		return nil, nil
 	case "OCTET_LENGTH":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		switch v := args[0].(type) {
 		case string:
-			return int64(len(v))
+			return int64(len(v)), nil
 		case []byte:
-			return int64(len(v))
+			return int64(len(v)), nil
 		}
-		return nil
+		return nil, nil
 	case "ABS":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		switch n := args[0].(type) {
 		case int64:
-			// MinInt64 abs overflows; embedded errors and we can't
-			// surface that from a fold path — decline (return nil)
-			// so the runtime evaluator handles it and reports the
-			// 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+			// MinInt64 abs overflows (two's-complement: -MinInt64 wraps
+			// back to MinInt64). Surface 22003 NUMERIC_VALUE_OUT_OF_RANGE.
 			if n == math.MinInt64 {
-				return nil
+				return nil, &ArithmeticOverflowError{}
 			}
 			if n < 0 {
-				return -n
+				return -n, nil
 			}
-			return n
+			return n, nil
 		case float64:
-			return math.Abs(n)
+			return math.Abs(n), nil
 		}
-		return nil
+		return nil, nil
 	case "FLOOR", "CEIL", "CEILING", "ROUND":
 		if len(args) < 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		var f float64
 		switch n := args[0].(type) {
 		case int64:
 			// Already an integer — short-circuit to mirror embedded.
-			return n
+			return n, nil
 		case float64:
 			f = n
 		default:
-			return nil
+			return nil, nil
 		}
 		var result float64
 		switch name {
@@ -1043,11 +1019,11 @@ func evalScalarFunction(name string, args []any) any {
 			decimals := int64(0)
 			if len(args) >= 2 {
 				if args[1] == nil {
-					return nil
+					return nil, nil
 				}
 				d, ok := scalarFnInt64Arg(args[1])
 				if !ok {
-					return nil
+					return nil, nil
 				}
 				decimals = d
 			}
@@ -1059,45 +1035,50 @@ func evalScalarFunction(name string, args []any) any {
 			}
 		}
 		// Match embedded's "return int64 if no fractional part" rule.
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
-			return int64(result)
+		if result == math.Trunc(result) && float64FitsInt64(result) {
+			return int64(result), nil
 		}
-		return result
+		return result, nil
 	case "PI":
 		// Zero-arg constant. Mirrors embedded.scalar_functions.go's PI.
 		if len(args) != 0 {
-			return nil
+			return nil, nil
 		}
-		return math.Pi
+		return math.Pi, nil
 	case "SQRT":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		f, _, ok := ToFloat64(args[0])
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		if f < 0 {
-			return nil
+			// SQL §6.27: SQRT of a negative argument raises 22023
+			// INVALID_PARAMETER_VALUE (Go-only divergence from the old
+			// embedded path, which returned NULL — RFC-087 step 3).
+			return nil, &InvalidArgumentError{
+				Message: fmt.Sprintf("SQRT of negative number: %v", f),
+			}
 		}
-		return math.Sqrt(f)
+		return math.Sqrt(f), nil
 	case "POWER", "POW":
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		base, _, bok := ToFloat64(args[0])
 		exp, _, eok := ToFloat64(args[1])
 		if !bok || !eok {
-			return nil
+			return nil, nil
 		}
 		result := math.Pow(base, exp)
 		if math.IsNaN(result) || math.IsInf(result, 0) {
-			return nil
+			return nil, nil
 		}
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
-			return int64(result)
+		if result == math.Trunc(result) && float64FitsInt64(result) {
+			return int64(result), nil
 		}
-		return result
+		return result, nil
 	case "COALESCE":
 		// First non-nil argument wins; all nil → nil. Empty argument
 		// list also folds to nil so a degenerate `COALESCE()` doesn't
@@ -1105,52 +1086,53 @@ func evalScalarFunction(name string, args []any) any {
 		// anyway, so this is just a defensive default).
 		for _, a := range args {
 			if a != nil {
-				return a
+				return a, nil
 			}
 		}
-		return nil
+		return nil, nil
 	case "NULLIF":
 		// NULLIF(a, b) → NULL when a == b; otherwise a. Compare via
 		// nullifEqual so int/float promotion mirrors embedded.
 		if len(args) != 2 {
-			return nil
+			return nil, nil
 		}
 		if args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		if args[1] != nil && nullifEqual(args[0], args[1]) {
-			return nil
+			return nil, nil
 		}
-		return args[0]
+		return args[0], nil
 	case "TRIM":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return strings.TrimSpace(s)
+		return strings.TrimSpace(s), nil
 	case "LTRIM":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return strings.TrimLeft(s, " \t\n\r")
+		return strings.TrimLeft(s, " \t\n\r"), nil
 	case "RTRIM":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return strings.TrimRight(s, " \t\n\r")
+		return strings.TrimRight(s, " \t\n\r"), nil
 	case "CONCAT":
-		// MySQL/Postgres semantics — NULL skips, doesn't poison.
+		// Postgres CONCAT semantics — NULL skips, doesn't poison (unlike
+		// MySQL CONCAT, which returns NULL if any arg is NULL).
 		// Pinned by trim_concat.yaml; the embedded path uses the
 		// same rule.
 		var b strings.Builder
@@ -1160,7 +1142,7 @@ func evalScalarFunction(name string, args []any) any {
 			}
 			b.WriteString(fmt.Sprintf("%v", a))
 		}
-		return b.String()
+		return b.String(), nil
 	case "CONCAT_WS":
 		// CONCAT With Separator — MySQL semantics: first arg is the
 		// separator (NULL → result is NULL); remaining args are
@@ -1168,11 +1150,11 @@ func evalScalarFunction(name string, args []any) any {
 		// NULL elements are skipped (different from CONCAT in
 		// Postgres, which poisons; matches embedded.scalar_functions.go).
 		if len(args) < 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		sep, ok := args[0].(string)
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		var b strings.Builder
 		first := true
@@ -1186,17 +1168,17 @@ func evalScalarFunction(name string, args []any) any {
 			b.WriteString(fmt.Sprintf("%v", a))
 			first = false
 		}
-		return b.String()
+		return b.String(), nil
 	case "SUBSTRING", "SUBSTR":
 		// SUBSTRING(s, pos[, len]) — 1-based position per SQL standard.
 		// pos < 1 normalises to 1 (matches embedded, MySQL).
 		if len(args) < 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		s := fmt.Sprintf("%v", args[0])
 		pos, ok := scalarFnInt64Arg(args[1])
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		if pos < 1 {
 			pos = 1
@@ -1204,295 +1186,319 @@ func evalScalarFunction(name string, args []any) any {
 		runes := []rune(s)
 		start := int(pos) - 1
 		if start >= len(runes) {
-			return ""
+			return "", nil
 		}
 		if len(args) >= 3 {
 			if args[2] == nil {
-				return nil
+				return nil, nil
 			}
 			n, ok := scalarFnInt64Arg(args[2])
 			if !ok {
-				return nil
+				return nil, nil
 			}
 			end := start + int(n)
 			if end > len(runes) {
 				end = len(runes)
 			}
 			if end < start {
-				return ""
+				return "", nil
 			}
-			return string(runes[start:end])
+			return string(runes[start:end]), nil
 		}
-		return string(runes[start:])
+		return string(runes[start:]), nil
 	case "REPLACE":
 		// REPLACE(s, from, to). NULL `to` is treated as empty (matches
 		// embedded). Pure-string semantics — non-string args coerce
 		// via fmt.Sprintf("%v", v) for parity with the embedded path.
 		if len(args) != 3 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		toStr := ""
 		if args[2] != nil {
 			toStr = fmt.Sprintf("%v", args[2])
 		}
-		return strings.ReplaceAll(fmt.Sprintf("%v", args[0]), fmt.Sprintf("%v", args[1]), toStr)
+		return strings.ReplaceAll(fmt.Sprintf("%v", args[0]), fmt.Sprintf("%v", args[1]), toStr), nil
 	case "SIGN":
 		// SIGN(numeric) — -1 / 0 / 1 in the input's numeric type. Mirrors
 		// embedded.scalar_functions.go's SIGN: int64 input → int64 sign,
 		// float64 input → float64 sign. Non-numeric input declines so
 		// the runtime evaluator surfaces 22018.
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		switch n := args[0].(type) {
 		case int64:
 			switch {
 			case n > 0:
-				return int64(1)
+				return int64(1), nil
 			case n < 0:
-				return int64(-1)
+				return int64(-1), nil
 			}
-			return int64(0)
+			return int64(0), nil
 		case float64:
 			switch {
 			case n > 0:
-				return float64(1)
+				return float64(1), nil
 			case n < 0:
-				return float64(-1)
+				return float64(-1), nil
 			}
-			return float64(0)
+			return float64(0), nil
 		}
-		return nil
+		return nil, nil
 	case "MOD":
 		// MOD(a, b) — int64%int64 stays int64, mixed promotes to float64
-		// via math.Mod. Division-by-zero declines (runtime errors with
-		// 22012 DIVISION_BY_ZERO). Mirrors embedded's MOD semantics.
+		// via math.Mod. Division-by-zero errors with 22012
+		// DIVISION_BY_ZERO. Mirrors embedded's MOD semantics.
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		ai, aIsInt := args[0].(int64)
 		bi, bIsInt := args[1].(int64)
 		if aIsInt && bIsInt {
 			if bi == 0 {
-				return nil
+				return nil, &ArithmeticDivisionByZeroError{}
 			}
-			return ai % bi
+			return ai % bi, nil
 		}
 		af, _, aok := ToFloat64(args[0])
 		bf, _, bok := ToFloat64(args[1])
 		if !aok || !bok {
-			return nil
+			return nil, nil
 		}
 		if bf == 0 {
-			return nil
+			return nil, &ArithmeticDivisionByZeroError{}
 		}
-		return math.Mod(af, bf)
+		return math.Mod(af, bf), nil
 	case "IFNULL":
 		// IFNULL(a, b) — `a` if non-null, else `b`. 2-arg COALESCE alias
 		// (MySQL/SQLite spelling). Type-uniform like embedded.
 		if len(args) != 2 {
-			return nil
+			return nil, nil
 		}
 		if args[0] != nil {
-			return args[0]
+			return args[0], nil
 		}
-		return args[1]
+		return args[1], nil
 	case "IF", "IIF":
 		// IF(cond, then, else) — evaluates condition first; returns
 		// `then` if truthy, `else` otherwise. Truthy: non-zero numeric,
 		// non-empty string, true bool. Mirrors embedded's IF.
 		if len(args) != 3 {
-			return nil
+			return nil, nil
 		}
 		switch v := args[0].(type) {
 		case bool:
 			if v {
-				return args[1]
+				return args[1], nil
 			}
-			return args[2]
+			return args[2], nil
 		case int64:
 			if v != 0 {
-				return args[1]
+				return args[1], nil
 			}
-			return args[2]
+			return args[2], nil
 		case float64:
 			if v != 0 {
-				return args[1]
+				return args[1], nil
 			}
-			return args[2]
+			return args[2], nil
 		case string:
 			if v != "" {
-				return args[1]
+				return args[1], nil
 			}
-			return args[2]
+			return args[2], nil
 		case nil:
 			// SQL §6.30: IF(NULL, …) returns the else branch (NULL is
 			// not truthy). embedded matches this.
-			return args[2]
+			return args[2], nil
 		}
 		// Unsupported condition type — decline so runtime can error.
-		return nil
+		return nil, nil
 	case "GREATEST", "LEAST":
-		// Shared logic in evalGreatestLeast. The only callers that reach this
-		// any-returning case are unit tests, which assert the legacy contract where a
-		// type mismatch is signalled by panic; the production eval path
-		// (ScalarFunctionValue.Evaluate) calls evalGreatestLeast directly and returns
-		// the *ScalarTypeMismatchError, so this panic is never reached during query
-		// execution. NULL args propagate to NULL (Java conformance).
-		v, err := evalGreatestLeast(name, args)
-		if err != nil {
-			panic(err)
+		// GREATEST/LEAST — Java conformance: any NULL arg → NULL result
+		// (Postgres skips, Oracle propagates; Java propagates). Mirror
+		// Java per embedded's behaviour. Cross-type comparisons error
+		// with 22000 CANNOT_CONVERT_TYPE.
+		if len(args) == 0 {
+			return nil, nil
 		}
-		return v
+		isGreatest := name == "GREATEST"
+		best := args[0]
+		if best == nil {
+			return nil, nil
+		}
+		for _, a := range args[1:] {
+			if a == nil {
+				return nil, nil
+			}
+			cmp, ok := compareScalar(best, a)
+			if !ok {
+				return nil, &ScalarTypeMismatchError{
+					Message: fmt.Sprintf("incompatible types for %s: %T vs %T", name, best, a),
+				}
+			}
+			if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
+				best = a
+			}
+		}
+		return best, nil
 	case "EXP":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		f, _, ok := ToFloat64(args[0])
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return math.Exp(f)
+		result := math.Exp(f)
+		// Overflow (e.g. EXP(1000) → +Inf) and NaN degrade to SQL NULL,
+		// matching the POWER/SQRT out-of-domain convention above and the
+		// pre-RFC embedded EXP semantics this ports verbatim.
+		if math.IsInf(result, 0) || math.IsNaN(result) {
+			return nil, nil
+		}
+		return result, nil
 	case "LN":
-		// Natural log. Domain: x > 0. Out-of-domain (≤ 0) declines so
-		// the runtime evaluator can surface 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+		// Natural log. Domain: x > 0. Out-of-domain (≤ 0) declines to
+		// SQL NULL (matches the old embedded path; SQRT<0 is the only
+		// math-domain edge RFC-087 promotes to a runtime error).
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		f, _, ok := ToFloat64(args[0])
 		if !ok || f <= 0 {
-			return nil
+			return nil, nil
 		}
-		return math.Log(f)
+		return math.Log(f), nil
 	case "LOG":
 		// 1-arg LOG(x) = log10(x). 2-arg LOG(base, x) = ln(x)/ln(base).
-		// Mirrors embedded; out-of-domain declines.
+		// Mirrors embedded; out-of-domain declines to SQL NULL.
 		switch len(args) {
 		case 1:
 			if args[0] == nil {
-				return nil
+				return nil, nil
 			}
 			f, _, ok := ToFloat64(args[0])
 			if !ok || f <= 0 {
-				return nil
+				return nil, nil
 			}
-			return math.Log10(f)
+			return math.Log10(f), nil
 		case 2:
 			if args[0] == nil || args[1] == nil {
-				return nil
+				return nil, nil
 			}
 			base, _, baseOK := ToFloat64(args[0])
 			x, _, xOK := ToFloat64(args[1])
 			if !baseOK || !xOK || base <= 0 || base == 1 || x <= 0 {
-				return nil
+				return nil, nil
 			}
-			return math.Log(x) / math.Log(base)
+			return math.Log(x) / math.Log(base), nil
 		}
-		return nil
+		return nil, nil
 	case "REVERSE":
 		// String reverse — rune-aware so multibyte UTF-8 stays valid.
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		s := fmt.Sprintf("%v", args[0])
 		runes := []rune(s)
 		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
 			runes[i], runes[j] = runes[j], runes[i]
 		}
-		return string(runes)
+		return string(runes), nil
 	case "POSITION":
 		// POSITION(substr, str) — 1-based rune index of first match,
 		// 0 if not found. Mirrors embedded POSITION (note: not the
 		// `POSITION(substr IN str)` SQL-standard grammar shape).
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		needle := fmt.Sprintf("%v", args[0])
 		haystack := fmt.Sprintf("%v", args[1])
 		byteIdx := strings.Index(haystack, needle)
 		if byteIdx < 0 {
-			return int64(0)
+			return int64(0), nil
 		}
-		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1)
+		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1), nil
 	case "LEFT":
 		// LEFT(str, n) — first n runes; whole string if n ≥ length.
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		s := fmt.Sprintf("%v", args[0])
 		n, ok := scalarFnInt64Arg(args[1])
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		if n < 0 {
 			n = 0
 		}
 		runes := []rune(s)
 		if int(n) >= len(runes) {
-			return s
+			return s, nil
 		}
-		return string(runes[:n])
+		return string(runes[:n]), nil
 	case "RIGHT":
 		// RIGHT(str, n) — last n runes; whole string if n ≥ length.
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		s := fmt.Sprintf("%v", args[0])
 		n, ok := scalarFnInt64Arg(args[1])
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		if n < 0 {
 			n = 0
 		}
 		runes := []rune(s)
 		if int(n) >= len(runes) {
-			return s
+			return s, nil
 		}
-		return string(runes[len(runes)-int(n):])
+		return string(runes[len(runes)-int(n):]), nil
 	case "BITAND":
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		a, aok := args[0].(int64)
 		b, bok := args[1].(int64)
 		if !aok || !bok {
-			return nil
+			return nil, nil
 		}
-		return a & b
+		return a & b, nil
 	case "BITOR":
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		a, aok := args[0].(int64)
 		b, bok := args[1].(int64)
 		if !aok || !bok {
-			return nil
+			return nil, nil
 		}
-		return a | b
+		return a | b, nil
 	case "BITXOR":
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
-			return nil
+			return nil, nil
 		}
 		a, aok := args[0].(int64)
 		b, bok := args[1].(int64)
 		if !aok || !bok {
-			return nil
+			return nil, nil
 		}
-		return a ^ b
+		return a ^ b, nil
 	case "YEAR", "MONTH", "DAY", "DAYOFMONTH",
 		"HOUR", "MINUTE", "SECOND",
 		"DAYOFWEEK", "DAYOFYEAR":
 		if len(args) != 1 || args[0] == nil {
-			return nil
+			return nil, nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
 			// Also handle time.Time if the argument was already parsed.
 			if t, tok := args[0].(time.Time); tok {
-				return datePartFromTime(name, t)
+				return datePartFromTime(name, t), nil
 			}
-			return nil
+			return nil, nil
 		}
 		var t time.Time
 		var err error
@@ -1507,15 +1513,15 @@ func evalScalarFunction(name string, args []any) any {
 			}
 		}
 		if err != nil {
-			return nil
+			return nil, nil
 		}
-		return datePartFromTime(name, t)
+		return datePartFromTime(name, t), nil
 	case "CURRENT_TIMESTAMP", "CURRENT_TIME", "LOCALTIME":
-		return time.Now().UTC().Format(timestampLayout)
+		return time.Now().UTC().Format(timestampLayout), nil
 	case "CURRENT_DATE":
-		return time.Now().UTC().Format(dateLayout)
+		return time.Now().UTC().Format(dateLayout), nil
 	}
-	return nil
+	return nil, nil
 }
 
 // datePartFromTime extracts an integer date-part from a time.Time value.
@@ -1620,11 +1626,24 @@ func scalarFnInt64Arg(v any) (int64, bool) {
 	if i, ok := ToInt64(v); ok {
 		return i, true
 	}
-	if f, _, ok := ToFloat64(v); ok && f == math.Trunc(f) &&
-		f >= math.MinInt64 && f <= math.MaxInt64 {
+	if f, _, ok := ToFloat64(v); ok && f == math.Trunc(f) && float64FitsInt64(f) {
 		return int64(f), true
 	}
 	return 0, false
+}
+
+// twoPow63 is 2^63 — the smallest float64 strictly greater than math.MaxInt64.
+// math.MaxInt64 (2^63-1) has no exact float64 representation and rounds UP to
+// this value, so it cannot be used as an inclusive upper bound in a float guard.
+const twoPow63 = 9223372036854775808.0
+
+// float64FitsInt64 reports whether a float64 is safely convertible to int64
+// (i.e. int64(f) does not overflow). The upper bound is EXCLUSIVE at 2^63: a
+// `f <= math.MaxInt64` guard rounds the constant up to 2^63 and wrongly admits
+// 2^63 itself, which overflows int64 (codex finding, RFC-087). The lower bound
+// math.MinInt64 (-2^63) IS exactly representable as float64, so it is inclusive.
+func float64FitsInt64(f float64) bool {
+	return f >= math.MinInt64 && f < twoPow63
 }
 
 // nullifEqual is the equality test used by NULLIF's plan-time fold.
@@ -1710,9 +1729,6 @@ func arithOperandCode(v Value) TypeCode {
 	return TypeCodeUnknown
 }
 
-// Evaluate is the error-returning twin (RFC-091).
-// Arithmetic overflow, division by zero, and type mismatch are
-// returned as typed errors instead of panicking.
 func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 	l, err := a.Left.Evaluate(evalCtx)
 	if err != nil {
@@ -1820,27 +1836,27 @@ func toInt64ForArith(v any) (int64, bool) {
 	return 0, false
 }
 
-// ArithmeticDivisionByZeroError is panicked by ArithmeticValue.Evaluate
+// ArithmeticDivisionByZeroError is returned by ArithmeticValue.Evaluate
 // when division or modulo by zero is attempted. Callers (the executor)
-// recover this and convert to the appropriate SQL error.
+// convert this to the appropriate SQL error.
 type ArithmeticDivisionByZeroError struct{}
 
 func (*ArithmeticDivisionByZeroError) Error() string {
 	return "division by zero"
 }
 
-// ArithmeticOverflowError is panicked by ArithmeticValue.Evaluate
-// when integer arithmetic overflows. Callers (the executor) recover
-// this and convert to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+// ArithmeticOverflowError is returned by ArithmeticValue.Evaluate
+// when integer arithmetic overflows. Callers (the executor) convert
+// this to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
 type ArithmeticOverflowError struct{}
 
 func (*ArithmeticOverflowError) Error() string {
 	return "integer overflow"
 }
 
-// ScalarTypeMismatchError is panicked by scalar functions (GREATEST,
-// LEAST) when arguments have incompatible types. The executor catches
-// this and converts to SQLSTATE 22000 DATA_EXCEPTION.
+// ScalarTypeMismatchError is returned by scalar functions (GREATEST,
+// LEAST) when arguments have incompatible types. The executor
+// converts this to SQLSTATE 22000 DATA_EXCEPTION.
 type ScalarTypeMismatchError struct {
 	Message string
 }
@@ -1849,14 +1865,44 @@ func (e *ScalarTypeMismatchError) Error() string {
 	return e.Message
 }
 
-// InvalidCastError is panicked by CastValue.Evaluate when a cast
+// InvalidCastError is returned by CastValue.Evaluate when a cast
 // is out of range or structurally invalid (NaN→INT, overflow, etc.).
-// The executor catches this and converts to SQLSTATE 22F3H INVALID_CAST.
+// The executor converts this to SQLSTATE 22F3H INVALID_CAST.
 type InvalidCastError struct {
 	Message string
 }
 
 func (e *InvalidCastError) Error() string {
+	return e.Message
+}
+
+// InvalidArgumentError is returned by a scalar function when an argument
+// is outside the function's mathematical domain — currently SQRT of a
+// negative number. The executor converts this to SQLSTATE 22023
+// INVALID_PARAMETER_VALUE. Distinct from ScalarTypeMismatchError (wrong
+// argument *type*); this is a wrong argument *value* of the right type.
+type InvalidArgumentError struct {
+	Message string
+}
+
+func (e *InvalidArgumentError) Error() string {
+	return e.Message
+}
+
+// AggregateEvalError is returned by AggregateValue.Evaluate when an
+// aggregate node is reached on the per-row scalar evaluation path —
+// e.g. an aggregate used in WHERE (`WHERE COUNT(*) > 0`). Java rejects
+// this shape at plan time ("unable to eval an aggregation function with
+// eval()"); Go's planner does not yet (TODO: plan-time rejection of
+// aggregate-in-scalar-context), so the misuse reaches row eval. It is
+// genuinely reachable from user query data, so it must return an error
+// rather than panic (RFC-087 residual-panic audit, gate #1). The
+// executor maps this to SQLSTATE 42803 (grouping error).
+type AggregateEvalError struct {
+	Message string
+}
+
+func (e *AggregateEvalError) Error() string {
 	return e.Message
 }
 
@@ -1936,8 +1982,6 @@ func (b *BooleanValue) Type() Type {
 	return NotNullBoolean
 }
 
-// Evaluate is the error-returning twin (RFC-091). A boolean
-// literal never fails.
 func (b *BooleanValue) Evaluate(any) (any, error) {
 	if b.Value == nil {
 		return nil, nil
@@ -1973,9 +2017,6 @@ func (c *CastValue) Type() Type {
 	return WithNullability(c.Target, true)
 }
 
-// Evaluate is the error-returning twin (RFC-091).
-// Out-of-range / structurally-invalid casts are returned as
-// *InvalidCastError instead of panicking.
 func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 	v, err := c.Child.Evaluate(evalCtx)
 	if err != nil {
@@ -2030,7 +2071,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"}
 			}
 			rounded := math.Floor(val + 0.5)
-			if rounded > float64(math.MaxInt64) || rounded < float64(math.MinInt64) {
+			if !float64FitsInt64(rounded) {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)}
 			}
 			return int64(rounded), nil
@@ -2247,7 +2288,9 @@ func (r *RecordConstructorValue) Type() Type {
 // Name returns the debug-print kind.
 func (*RecordConstructorValue) Name() string { return "record" }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate produces a map[string]any with each field evaluated.
+// Downstream consumers (projections, field-access) index into this
+// map by field name.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 	out := make(map[string]any, len(r.Fields))
 	for _, f := range r.Fields {
@@ -2314,7 +2357,10 @@ func (p *PromoteValue) Type() Type {
 // Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate delegates to the child — the seed treats Promote as a
+// no-op at runtime since cmpAny already handles cross-width
+// promotion. Plan-time inspection (explain, rewrite rules) is where
+// Promote earns its keep.
 func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 	return p.Child.Evaluate(evalCtx)
 }
@@ -2369,7 +2415,26 @@ func (q *QuantifiedObjectValue) Type() Type {
 // Name returns the debug-print kind.
 func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate extracts the row bound to this quantifier's correlation.
+// Eval context shapes this impl handles:
+//
+//   - map[CorrelationIdentifier]map[string]any — multi-source shape,
+//     returns the nested map for this correlation (nil if missing).
+//   - map[string]any — single-source compat shim: IGNORES q.Correlation
+//     and returns the whole map. Safe only when there's one
+//     QuantifiedObjectValue in play; multi-source callers MUST use
+//     the per-correlation shape or two quantifiers with different
+//     correlations silently evaluate to the same row.
+//   - anything else — nil.
+//
+// The single-source shim exists so existing single-table tests /
+// callers that feed a bare row map keep working while the eval
+// path migrates. New callers MUST NOT rely on it — thread the
+// per-correlation shape end-to-end. The shim is scheduled for
+// removal once no caller needs it.
+//
+// Downstream FieldValue / nested-field resolvers then index into the
+// returned map to pick a specific column.
 func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
@@ -2509,12 +2574,19 @@ func (a *AggregateValue) Type() Type {
 // Name returns the debug-print kind.
 func (*AggregateValue) Name() string { return "agg" }
 
-// Evaluate is the error-returning twin (RFC-091). Aggregates have
-// no single-row eval — this is a genuine invariant violation, so it
-// stays a panic (bradfitz policy: invariant asserts are not threaded
-// as errors).
+// Evaluate returns AggregateEvalError — aggregates are multi-row and have
+// no single-row Evaluate semantics. Rule / plan code type-asserts
+// AggregateValue and routes it to an accumulator instead of calling
+// Evaluate. The misuse path (an aggregate in a per-row scalar position,
+// e.g. WHERE COUNT(*) > 0) is reachable from user data, so it returns a
+// typed error rather than panicking (RFC-087 residual-panic audit).
 func (a *AggregateValue) Evaluate(any) (any, error) {
-	panic("AggregateValue.Evaluate: aggregate must be evaluated over rows by the aggregator, not per-row")
+	// Reachable from user data: an aggregate misused on the per-row scalar
+	// path (e.g. `WHERE COUNT(*) > 0`). Java rejects this at plan time; Go's
+	// planner doesn't yet, so it reaches here — return an error (not a panic)
+	// per the RFC-087 residual-panic audit. The correct aggregate path goes
+	// through the aggregator, which never calls Evaluate.
+	return nil, &AggregateEvalError{Message: "aggregate function is not allowed here (e.g. in WHERE); use HAVING or a subquery"}
 }
 
 // GetIndexTypeName returns the FDB index-type name that backs this

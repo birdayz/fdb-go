@@ -55,7 +55,6 @@ func (n *NotValue) Type() Type {
 	return NullableBoolean
 }
 
-// Evaluate is the error-returning twin (RFC-091).
 func (n *NotValue) Evaluate(evalCtx any) (any, error) {
 	if n.Child == nil {
 		return nil, nil

@@ -92,9 +92,11 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if expl, ok := member.(*expressions.ExplodeExpression); ok {
 					cv := expl.GetCollectionValue()
 					if cv != nil {
-						cvVal, err := cv.Evaluate(nil)
-						if err == nil {
-							if arr, ok := cvVal.([]any); ok {
+						// Plan-time IN-list extraction: an erroring value
+						// declines (leaves the source nil) rather than
+						// failing planning.
+						if ev, err := cv.Evaluate(nil); err == nil {
+							if arr, ok := ev.([]any); ok {
 								inSources[i] = arr
 							}
 						}

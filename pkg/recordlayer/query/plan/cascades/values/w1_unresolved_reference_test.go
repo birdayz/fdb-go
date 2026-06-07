@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // RFC-048 W1: the executor "no unresolved reference" invariant. A top-level
@@ -44,7 +46,9 @@ func TestFieldValue_Strict_ReportsMissingLocalReference(t *testing.T) {
 		Strict: true,
 	}
 	missing := &FieldValue{Field: "COUNT(1)"}
-	if v := mustEvaluate(missing, row); v != nil {
+	v, errEv0 := missing.Evaluate(row)
+	require.NoError(t, errEv0)
+	if v != nil {
 		t.Fatalf("missing local ref should still evaluate to nil, got %v", v)
 	}
 	if want := []string{"COUNT(1)"}; !reflect.DeepEqual(*got, want) {
@@ -62,10 +66,14 @@ func TestFieldValue_Strict_PresentReferenceNotReported(t *testing.T) {
 	// A present key whose value is a legitimate SQL NULL must NOT report:
 	// the distinction is "name absent" (bug) vs "value nil" (NULL).
 	row.Datum["SUM(AMOUNT)"] = nil
-	if v := mustEvaluate((&FieldValue{Field: "SUM(AMOUNT)"}), row); v != nil {
+	v, errEv0 := (&FieldValue{Field: "SUM(AMOUNT)"}).Evaluate(row)
+	require.NoError(t, errEv0)
+	if v != nil {
 		t.Fatalf("present nil-valued key: want nil value, got %v", v)
 	}
-	if v := mustEvaluate((&FieldValue{Field: "COUNT(*)"}), row); v != int64(3) {
+	v, errEv1 := (&FieldValue{Field: "COUNT(*)"}).Evaluate(row)
+	require.NoError(t, errEv1)
+	if v != int64(3) {
 		t.Fatalf("present key: want 3, got %v", v)
 	}
 	if len(*got) != 0 {
@@ -83,7 +91,9 @@ func TestFieldValue_NonStrict_DoesNotReport(t *testing.T) {
 		Datum:  map[string]any{"ID": int64(1)},
 		Strict: false,
 	}
-	if v := mustEvaluate((&FieldValue{Field: "OPTIONAL_UNSET"}), row); v != nil {
+	v, errEv0 := (&FieldValue{Field: "OPTIONAL_UNSET"}).Evaluate(row)
+	require.NoError(t, errEv0)
+	if v != nil {
 		t.Fatalf("absent optional field: want nil, got %v", v)
 	}
 	if len(*got) != 0 {
@@ -99,7 +109,9 @@ func TestFieldValue_Strict_NilHookIsNoOp(t *testing.T) {
 	t.Cleanup(func() { ReportUnresolvedReference = prev })
 
 	row := &RowEvalContext{Datum: map[string]any{"A": 1}, Strict: true}
-	if v := mustEvaluate((&FieldValue{Field: "B"}), row); v != nil {
+	v, errEv0 := (&FieldValue{Field: "B"}).Evaluate(row)
+	require.NoError(t, errEv0)
+	if v != nil {
 		t.Fatalf("nil hook: want nil, got %v", v)
 	}
 }
@@ -120,7 +132,8 @@ func TestFieldValue_Strict_ReportsAvailableKeys(t *testing.T) {
 		Datum:  map[string]any{"A": 1, "COUNT(*)": 2},
 		Strict: true,
 	}
-	mustEvaluate((&FieldValue{Field: "B"}), row)
+	_, errEv0 := (&FieldValue{Field: "B"}).Evaluate(row)
+	require.NoError(t, errEv0)
 	sort.Strings(availForB)
 	if want := []string{"A", "COUNT(*)"}; !reflect.DeepEqual(availForB, want) {
 		t.Fatalf("available keys: want %v, got %v", want, availForB)

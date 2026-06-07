@@ -55,7 +55,8 @@ func (*DatabaseObjectDependenciesPredicate) GetCorrelatedTo() map[CorrelationIde
 	return map[CorrelationIdentifier]struct{}{}
 }
 
-// Eval is the error-returning twin (RFC-091). Never fails.
+// Eval returns TriTrue. Plan-cache index validation is not yet
+// ported; this predicate exists for structural conformance.
 func (*DatabaseObjectDependenciesPredicate) Eval(_ any) (TriBool, error) {
 	return TriTrue, nil
 }

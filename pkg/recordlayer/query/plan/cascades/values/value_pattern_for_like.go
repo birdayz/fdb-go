@@ -63,16 +63,17 @@ func (*PatternForLikeValue) Name() string { return "patternForLike" }
 // Type returns NotNullString.
 func (*PatternForLikeValue) Type() Type { return NotNullString }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate produces the regex-form string with `^...$` anchors.
+// Returns nil if the pattern is NULL or the escape is malformed.
 func (v *PatternForLikeValue) Evaluate(evalCtx any) (any, error) {
 	if v.PatternChild == nil {
 		return nil, nil
 	}
-	patVal, err := v.PatternChild.Evaluate(evalCtx)
+	patRaw, err := v.PatternChild.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
-	pat, ok := patVal.(string)
+	pat, ok := patRaw.(string)
 	if !ok {
 		return nil, nil
 	}

@@ -44,7 +44,9 @@ func (*DotProductDistanceRowNumberValue) Type() Type { return NotNullLong }
 // HNSW index traversal and cannot be reproduced from base records.
 func (*DotProductDistanceRowNumberValue) IsIndexOnly() bool { return true }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate returns the current row number from the row-shape harness
+// pattern (_row_number key). Real execution wires the HNSW search
+// graph; the harness exposes the per-row counter for testability.
 func (*DotProductDistanceRowNumberValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil

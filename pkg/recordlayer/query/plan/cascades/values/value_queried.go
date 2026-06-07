@@ -61,6 +61,7 @@ func (*QueriedValue) Name() string { return "queried" }
 // Type returns the bound result type.
 func (v *QueriedValue) Type() Type { return v.ResultType }
 
-// Evaluate is the error-returning twin (RFC-091). Placeholder eval
-// never fails.
+// Evaluate returns nil — QueriedValue is a placeholder. Specialized
+// planner rewrites resolve it to concrete Field / QuantifiedObject
+// values before any row-level eval.
 func (*QueriedValue) Evaluate(any) (any, error) { return nil, nil }

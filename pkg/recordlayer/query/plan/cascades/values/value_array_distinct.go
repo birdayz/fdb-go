@@ -52,7 +52,12 @@ func (v *ArrayDistinctValue) Type() Type {
 	return v.Typ
 }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate returns the deduped array (first-seen order). Returns
+// nil if Child evaluates to nil or non-slice.
+//
+// Element equality uses bytes.Equal for []byte and Go's == for
+// other types (matching values.equalsAny semantics — see
+// value_in.go for the byte-slice-safe contract).
 func (v *ArrayDistinctValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		return nil, nil

@@ -92,8 +92,12 @@ func (*ToOrderedBytesValue) Name() string { return "to_ordered_bytes" }
 // of input.
 func (*ToOrderedBytesValue) Type() Type { return NotNullBytes }
 
-// Evaluate is the error-returning twin (RFC-091). Placeholder eval
-// never fails.
+// Evaluate is currently a placeholder — returns nil. Real eval
+// wires tuple.PackOrdered (the Go equivalent of Java's
+// TupleOrdering.pack). The Value-shape is reachable for
+// planner / matcher / serialisation work today; runtime
+// integration lands when index-key-construction port reaches
+// this branch.
 func (*ToOrderedBytesValue) Evaluate(any) (any, error) { return nil, nil }
 
 // CreateInverse returns the FromOrderedBytesValue that decodes the
@@ -163,6 +167,7 @@ func (v *FromOrderedBytesValue) Type() Type {
 	return WithNullability(v.TargetType, true)
 }
 
-// Evaluate is the error-returning twin (RFC-091). Placeholder eval
-// never fails.
+// Evaluate is currently a placeholder — returns nil. Real eval
+// wires tuple.UnpackOrdered (the Go equivalent of Java's
+// TupleOrdering.unpack). Same gating as ToOrderedBytesValue.
 func (*FromOrderedBytesValue) Evaluate(any) (any, error) { return nil, nil }

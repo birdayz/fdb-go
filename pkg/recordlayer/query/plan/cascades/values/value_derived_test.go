@@ -37,5 +37,5 @@ func TestDerivedValue_EvaluatePanics(t *testing.T) {
 			t.Fatal("DerivedValue.Evaluate should panic")
 		}
 	}()
-	mustEvaluate(v, nil)
+	_, _ = v.Evaluate(nil)
 }

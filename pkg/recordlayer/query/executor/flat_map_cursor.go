@@ -112,9 +112,9 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 					continue
 				}
 
-				outputRow, crErr := c.computeResult(*c.currentOuter, innerRow)
-				if crErr != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, crErr
+				outputRow, err := c.computeResult(*c.currentOuter, innerRow)
+				if err != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, err
 				}
 				cont := c.buildContinuation(result.GetContinuation(), false)
 				return recordlayer.NewResultWithValue(outputRow, cont), nil
@@ -142,9 +142,9 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
 			if c.leftOuter && !c.innerHadMatch {
-				outputRow, crErr := c.computeResult(*c.currentOuter, QueryResult{Datum: map[string]any{}})
-				if crErr != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, crErr
+				outputRow, err := c.computeResult(*c.currentOuter, QueryResult{Datum: map[string]any{}})
+				if err != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, err
 				}
 				cont := c.buildContinuation(innerCont, false)
 				return recordlayer.NewResultWithValue(outputRow, cont), nil

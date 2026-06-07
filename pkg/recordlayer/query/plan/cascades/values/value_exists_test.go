@@ -30,7 +30,7 @@ func TestExistsValue_EvaluatePanics(t *testing.T) {
 			t.Fatal("ExistsValue.Evaluate should panic")
 		}
 	}()
-	mustEvaluate(v, nil)
+	_, _ = v.Evaluate(nil)
 }
 
 func TestExistsValue_CorrelatedToAlias(t *testing.T) {

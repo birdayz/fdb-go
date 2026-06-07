@@ -18,7 +18,7 @@ import (
 func BenchmarkConstantValue_Evaluate(b *testing.B) {
 	v := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, _ = v.Evaluate(nil)
 	}
 }
 
@@ -26,7 +26,7 @@ func BenchmarkFieldValue_Evaluate(b *testing.B) {
 	v := &values.FieldValue{Field: "age", Typ: values.TypeInt}
 	row := map[string]any{"age": int64(30)}
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, row)
+		_, _ = v.Evaluate(row)
 	}
 }
 
@@ -47,7 +47,7 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 	}
 	row := map[string]any{"a": int64(3), "b": int64(4), "c": int64(10), "d": int64(5)}
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, row)
+		_, _ = v.Evaluate(row)
 	}
 }
 
@@ -58,7 +58,7 @@ func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 	)
 	row := map[string]any{"age": int64(30)}
 	for i := 0; i < b.N; i++ {
-		_ = mustEval(pred, row)
+		_, _ = pred.Eval(row)
 	}
 }
 
@@ -77,7 +77,7 @@ func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
 	)
 	row := map[string]any{"age": int64(18), "cutoff": int64(18)}
 	for i := 0; i < b.N; i++ {
-		_ = mustEval(pred, row)
+		_, _ = pred.Eval(row)
 	}
 }
 
@@ -93,7 +93,7 @@ func BenchmarkKleeneAnd_Eval(b *testing.B) {
 	)
 	row := map[string]any{"age": int64(30), "rank": int64(3), "score": int64(80)}
 	for i := 0; i < b.N; i++ {
-		_ = mustEval(tree, row)
+		_, _ = tree.Eval(row)
 	}
 }
 

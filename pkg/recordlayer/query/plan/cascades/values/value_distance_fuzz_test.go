@@ -3,6 +3,8 @@ package values
 import (
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // FuzzDistanceValue_NumericProperties fuzzes the 4 distance metrics
@@ -52,7 +54,9 @@ func FuzzDistanceValue_NumericProperties(f *testing.F) {
 			DistanceDotProduct,
 		} {
 			d1 := NewDistanceValue(op, LiteralValue(a), LiteralValue(b))
-			r1, ok := mustEvaluate(d1, nil).(float64)
+			tmpEv0, errEv0 := d1.Evaluate(nil)
+			require.NoError(t, errEv0)
+			r1, ok := tmpEv0.(float64)
 			if !ok {
 				t.Fatalf("op=%v: Evaluate returned non-float64", op)
 			}
@@ -62,7 +66,9 @@ func FuzzDistanceValue_NumericProperties(f *testing.F) {
 
 			// Symmetry: d(a, b) == d(b, a) for all 4 metrics.
 			d2 := NewDistanceValue(op, LiteralValue(b), LiteralValue(a))
-			r2, _ := mustEvaluate(d2, nil).(float64)
+			tmpEv1, errEv1 := d2.Evaluate(nil)
+			require.NoError(t, errEv1)
+			r2, _ := tmpEv1.(float64)
 			if math.Abs(r1-r2) > 1e-9 {
 				t.Fatalf("op=%v: symmetry broken d(a,b)=%v d(b,a)=%v",
 					op, r1, r2)
@@ -71,7 +77,9 @@ func FuzzDistanceValue_NumericProperties(f *testing.F) {
 			// Self-distance: d(a, a) is 0 for L2 / L2-sq / Cosine
 			// (assuming non-zero vector); not for DotProduct.
 			dSelf := NewDistanceValue(op, LiteralValue(a), LiteralValue(a))
-			rSelf, _ := mustEvaluate(dSelf, nil).(float64)
+			tmpEv2, errEv2 := dSelf.Evaluate(nil)
+			require.NoError(t, errEv2)
+			rSelf, _ := tmpEv2.(float64)
 			switch op {
 			case DistanceEuclidean, DistanceEuclideanSquare:
 				if math.Abs(rSelf) > 1e-9 {

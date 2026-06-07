@@ -63,7 +63,12 @@ func (*ConditionSelectorValue) Name() string { return "ConditionSelector" }
 // selector's nil-runtime-result.
 func (*ConditionSelectorValue) Type() Type { return NotNullInt }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate walks implications in order. Returns the 0-based int64
+// index of the first TRUE implication, nil if none match.
+//
+// Strict-TRUE check: only `bool == true` triggers the index return.
+// Boolean.FALSE, NULL, or non-boolean results don't match. Mirrors
+// Java's `Boolean.TRUE.equals(result)` strict check.
 func (v *ConditionSelectorValue) Evaluate(evalCtx any) (any, error) {
 	for i, impl := range v.Implications {
 		if impl == nil {

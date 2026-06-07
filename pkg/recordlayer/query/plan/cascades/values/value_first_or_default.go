@@ -53,7 +53,11 @@ func (*FirstOrDefaultValue) Name() string { return "first_or_default" }
 // Type returns the bound result type.
 func (v *FirstOrDefaultValue) Type() Type { return v.Typ }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate returns Array[0] OR Default.Evaluate when Array is empty.
+//
+// Returns nil if:
+//   - Array is nil-Value or evaluates to nil.
+//   - Array doesn't evaluate to a slice.
 func (v *FirstOrDefaultValue) Evaluate(evalCtx any) (any, error) {
 	if v.Array == nil {
 		return nil, nil

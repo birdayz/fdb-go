@@ -53,8 +53,9 @@ func (*RowNumberHighOrderValue) Name() string { return "ROW_NUMBER_HIGH_ORDER" }
 // the high-order superclass which doesn't pin a type.
 func (*RowNumberHighOrderValue) Type() Type { return UnknownType }
 
-// Evaluate is the error-returning twin (RFC-091). High-order values
-// have no per-row eval; the placeholder never fails.
+// Evaluate is a placeholder — high-order values don't have a
+// per-row eval. The Apply path lands when the higher-order
+// resolution machinery wires in.
 func (*RowNumberHighOrderValue) Evaluate(any) (any, error) { return nil, nil }
 
 // Apply produces a fully-configured RowNumberValue from this

@@ -104,11 +104,7 @@ func (v *AndOrValue) Type() Type {
 	return NullableBoolean
 }
 
-// Evaluate is the error-returning twin (RFC-091).
-// Kleene short-circuit error semantics are preserved: a dominant
-// LEFT (FALSE for AND, TRUE for OR) returns before the RIGHT operand
-// is evaluated, so `FALSE AND <err>` → FALSE; `<err> AND FALSE` →
-// error; `UNKNOWN AND <err>` → error.
+// Evaluate computes the Kleene 3VL result with short-circuit.
 func (v *AndOrValue) Evaluate(evalCtx any) (any, error) {
 	if v.Left == nil || v.Right == nil {
 		return nil, nil

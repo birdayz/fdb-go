@@ -35,5 +35,5 @@ func (*EmptyValue) Type() Type {
 	return NewRecordType("", false, nil)
 }
 
-// Evaluate is the error-returning twin (RFC-091). Never fails.
+// Evaluate returns nil — empty record has no value to extract.
 func (*EmptyValue) Evaluate(any) (any, error) { return nil, nil }

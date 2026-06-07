@@ -66,7 +66,8 @@ func (*CompatibleTypeEvolutionPredicate) GetCorrelatedTo() map[CorrelationIdenti
 	return map[CorrelationIdentifier]struct{}{}
 }
 
-// Eval is the error-returning twin (RFC-091). Never fails.
+// Eval returns TriTrue. Plan-cache schema validation is not yet
+// ported; this predicate exists for structural conformance.
 func (*CompatibleTypeEvolutionPredicate) Eval(_ any) (TriBool, error) {
 	return TriTrue, nil
 }

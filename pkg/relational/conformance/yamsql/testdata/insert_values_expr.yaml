@@ -35,7 +35,9 @@ tests:
   - query: SELECT n FROM t WHERE id = 5
     rows:
       - [50]
-  # Verify ABS itself is rejected on the INSERT-VALUES path.
+  # ABS is a Go-only READ-side scalar function (RFC-087, Cascades SELECT
+  # path); the INSERT-VALUES write path is out of that scope and still
+  # rejects it ("Unsupported operator ABS"), matching Java.
   - query: INSERT INTO t VALUES (50, ABS(-7))
     error_code: "42883"
   # INSERT VALUES with COALESCE.

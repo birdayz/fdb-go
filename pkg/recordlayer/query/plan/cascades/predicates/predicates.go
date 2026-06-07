@@ -193,12 +193,10 @@ type QueryPredicate interface {
 
 	// Eval returns the predicate's truth value given an
 	// opaque evaluation context. Concrete eval context is
-	// impl-defined; the seed predicates ignore it.
-	//
-	// User-reachable evaluation failures from underlying Values
-	// (arithmetic overflow, division by zero, invalid CAST, type
-	// mismatch) are returned as typed errors instead of panicking,
-	// preserving Kleene short-circuit semantics.
+	// impl-defined; the seed predicates ignore it. A non-nil
+	// error signals a runtime evaluation failure (e.g. a
+	// type-mismatch comparison or an erroring child Value); the
+	// returned TriBool is TriUnknown in that case.
 	Eval(evalCtx any) (TriBool, error)
 
 	// Explain renders a parenthesised textual form suitable for
@@ -245,10 +243,7 @@ func NewConstantPredicate(v TriBool) *ConstantPredicate {
 	return &ConstantPredicate{Value: v}
 }
 
-func (*ConstantPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
-
-// Eval is the error-returning twin (RFC-091). A constant predicate
-// never fails.
+func (*ConstantPredicate) Children() []QueryPredicate  { return []QueryPredicate{} }
 func (p *ConstantPredicate) Eval(any) (TriBool, error) { return p.Value, nil }
 
 // GetCorrelatedTo returns the empty set — constants reference no
@@ -295,16 +290,17 @@ func (p *AndPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct
 	return out
 }
 
-// Eval is the error-returning twin (RFC-091). Kleene
-// short-circuit error semantics are preserved by checking each child's
-// error in source order BEFORE the TriBool decision: `FALSE AND <err>`
-// short-circuits to FALSE (the erroring child is never reached);
-// `<err> AND FALSE` returns the error; `UNKNOWN AND <err>` returns the
-// error. Matches Java's AndOrPredicate.
 func (p *AndPredicate) Eval(evalCtx any) (TriBool, error) {
 	// Kleene AND: TRUE ∧ x = x; FALSE ∧ x = FALSE; UNKNOWN ∧ TRUE
 	// = UNKNOWN; UNKNOWN ∧ UNKNOWN = UNKNOWN; UNKNOWN ∧ FALSE =
 	// FALSE (short-circuit). Scan once, tracking sawUnknown.
+	//
+	// Error handling preserves the existing left-to-right short-circuit
+	// order: a child's error propagates immediately (it would in Java,
+	// where eval throws), exactly as a FALSE short-circuits to FALSE —
+	// whichever the scan reaches first in document order wins. A FALSE
+	// still beats a later UNKNOWN (sawUnknown is only consulted after a
+	// clean full scan), so the three-valued logic is unchanged.
 	sawUnknown := false
 	for _, sp := range p.SubPredicates {
 		v, err := sp.Eval(evalCtx)
@@ -361,13 +357,14 @@ func (p *OrPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{
 	return out
 }
 
-// Eval is the error-returning twin (RFC-091). Kleene
-// short-circuit error semantics are preserved: `TRUE OR <err>`
-// short-circuits to TRUE; `<err> OR TRUE` returns the error;
-// `UNKNOWN OR <err>` returns the error. Matches Java's AndOrPredicate.
 func (p *OrPredicate) Eval(evalCtx any) (TriBool, error) {
 	// Kleene OR: FALSE ∨ x = x; TRUE ∨ x = TRUE; UNKNOWN ∨ FALSE
 	// = UNKNOWN; UNKNOWN ∨ UNKNOWN = UNKNOWN; UNKNOWN ∨ TRUE = TRUE.
+	//
+	// Error handling mirrors AndPredicate: a child error propagates
+	// immediately in document order, just as a TRUE short-circuits to
+	// TRUE; a TRUE still beats a later UNKNOWN (sawUnknown is consulted
+	// only after a clean full scan).
 	sawUnknown := false
 	for _, sp := range p.SubPredicates {
 		v, err := sp.Eval(evalCtx)
@@ -433,8 +430,6 @@ func (p *ValuePredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]stru
 	return out
 }
 
-// Eval is the error-returning twin (RFC-091). The carried
-// Value's evaluation error is threaded instead of panicking.
 func (p *ValuePredicate) Eval(evalCtx any) (TriBool, error) {
 	if p.Value == nil {
 		return TriUnknown, nil
@@ -490,8 +485,6 @@ func (p *NotPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct
 	return p.Child.GetCorrelatedTo()
 }
 
-// Eval is the error-returning twin (RFC-091). The child's
-// evaluation error is threaded before the Kleene NOT is applied.
 func (p *NotPredicate) Eval(evalCtx any) (TriBool, error) {
 	v, err := p.Child.Eval(evalCtx)
 	if err != nil {

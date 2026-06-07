@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestVersionValue_ExtractsVersionFromMap(t *testing.T) {
 	t.Parallel()
@@ -11,7 +15,8 @@ func TestVersionValue_ExtractsVersionFromMap(t *testing.T) {
 		"id":      int64(42),
 	}}
 	v := NewVersionValue(child)
-	got := mustEvaluate(v, nil)
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	gb, ok := got.([]byte)
 	if !ok {
 		t.Fatalf("VersionValue.Evaluate = %v (%T), want []byte", got, got)
@@ -24,7 +29,9 @@ func TestVersionValue_ExtractsVersionFromMap(t *testing.T) {
 func TestVersionValue_NilChildReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewVersionValue(nil)
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("VersionValue with nil child = %v, want nil", got)
 	}
 }
@@ -33,7 +40,9 @@ func TestVersionValue_MissingVersionKeyReturnsNil(t *testing.T) {
 	t.Parallel()
 	child := &constMapValue{m: map[string]any{"id": int64(42)}}
 	v := NewVersionValue(child)
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("VersionValue with no version key = %v, want nil", got)
 	}
 }

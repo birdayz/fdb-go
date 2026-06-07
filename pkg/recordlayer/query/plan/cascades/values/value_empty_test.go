@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestEmptyValue_IsLeaf(t *testing.T) {
 	t.Parallel()
@@ -30,7 +34,9 @@ func TestEmptyValue_TypeIsEmptyRecord(t *testing.T) {
 func TestEmptyValue_EvaluateReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewEmptyValue()
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("EmptyValue.Evaluate = %v, want nil", got)
 	}
 }

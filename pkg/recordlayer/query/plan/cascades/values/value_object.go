@@ -39,8 +39,8 @@ func (*ObjectValue) Name() string { return "object" }
 // Type returns the bound result type.
 func (v *ObjectValue) Type() Type { return v.ResultType }
 
-// Evaluate is the error-returning twin (RFC-091). Placeholder eval
-// never fails.
+// Evaluate returns nil — ObjectValue is a placeholder. Specialized
+// evaluation paths handle it before reaching per-row Eval.
 func (*ObjectValue) Evaluate(any) (any, error) { return nil, nil }
 
 // GetCorrelatedTo returns the singleton set containing the bound

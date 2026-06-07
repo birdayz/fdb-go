@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestDistanceRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
@@ -70,7 +74,9 @@ func TestDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 	t.Parallel()
 	v := NewDistanceRowNumberValue(DistanceEuclidean, nil, nil, nil, nil)
 	row := map[string]any{"_row_number": int64(7)}
-	if got := mustEvaluate(v, row); got != int64(7) {
+	got, errEv0 := v.Evaluate(row)
+	require.NoError(t, errEv0)
+	if got != int64(7) {
 		t.Fatalf("Evaluate = %v, want 7", got)
 	}
 }
@@ -78,7 +84,9 @@ func TestDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 func TestDistanceRowNumberValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewDistanceRowNumberValue(DistanceEuclidean, nil, nil, nil, nil)
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }

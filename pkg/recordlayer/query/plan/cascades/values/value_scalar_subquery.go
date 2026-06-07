@@ -25,7 +25,9 @@ func (*ScalarSubqueryValue) Children() []Value { return nil }
 func (*ScalarSubqueryValue) Name() string      { return "scalar_subquery" }
 func (*ScalarSubqueryValue) Type() Type        { return UnknownType }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate retrieves the pre-computed scalar subquery result from
+// the evaluation context. The executor stores scalar subquery results
+// under a dedicated ScalarSubqueryBinding key.
 func (v *ScalarSubqueryValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil

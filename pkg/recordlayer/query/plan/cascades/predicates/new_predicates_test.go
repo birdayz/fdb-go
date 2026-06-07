@@ -35,7 +35,7 @@ func TestPredicateWithValueAndRanges_IsLeafPredicate(t *testing.T) {
 	if len(p.Children()) != 0 {
 		t.Fatal("should be a leaf predicate")
 	}
-	if mustEval(p, nil) != TriUnknown {
+	if got, _ := p.Eval(nil); got != TriUnknown {
 		t.Fatal("Eval should return TriUnknown")
 	}
 }
@@ -254,7 +254,7 @@ func TestCompatibleTypeEvolutionPredicate_LeafBehavior(t *testing.T) {
 	if len(p.Children()) != 0 {
 		t.Fatal("should be a leaf predicate")
 	}
-	if mustEval(p, nil) != TriTrue {
+	if got, _ := p.Eval(nil); got != TriTrue {
 		t.Fatal("Eval should return TriTrue (plan cache not ported)")
 	}
 }
@@ -298,7 +298,7 @@ func TestDatabaseObjectDependenciesPredicate_LeafBehavior(t *testing.T) {
 	if len(p.Children()) != 0 {
 		t.Fatal("should be a leaf predicate")
 	}
-	if mustEval(p, nil) != TriTrue {
+	if got, _ := p.Eval(nil); got != TriTrue {
 		t.Fatal("Eval should return TriTrue (plan cache not ported)")
 	}
 }

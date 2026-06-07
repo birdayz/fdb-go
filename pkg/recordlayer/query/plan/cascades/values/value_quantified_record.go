@@ -66,7 +66,8 @@ func (*QuantifiedRecordValue) Name() string { return "qrv" }
 // Type returns the bound record's type.
 func (v *QuantifiedRecordValue) Type() Type { return v.ResultType }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate looks up the queried record bound to alias in the eval
+// context. Returns nil if evalCtx is nil or not a row-shape map.
 func (v *QuantifiedRecordValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil

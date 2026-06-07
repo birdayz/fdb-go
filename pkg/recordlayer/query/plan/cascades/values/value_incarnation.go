@@ -50,7 +50,17 @@ func (*IncarnationValue) Name() string { return "get_versionstamp_incarnation" }
 // incarnation (zero is a valid initial value, not absence).
 func (*IncarnationValue) Type() Type { return NotNullInt }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate returns the incarnation from the evalCtx if present.
+// Mirrors VersionValue's row-shape harness pattern: when evalCtx is
+// a `map[string]any` the evaluator looks up the "incarnation" key.
+//
+// Returns nil if:
+//   - evalCtx is nil.
+//   - evalCtx is not a row-shape map.
+//   - The map has no "incarnation" key.
+//
+// Real store-bound evaluation lands when execution integration
+// surfaces FDBRecordStore.GetIncarnation() through the eval context.
 func (*IncarnationValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil

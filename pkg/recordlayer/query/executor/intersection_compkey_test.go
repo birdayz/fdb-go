@@ -36,23 +36,13 @@ func TestIntersectionCompKeyFunc_Int32Widened(t *testing.T) {
 		}
 	}
 
+	// The two builders take only keyVals (a comparison-key eval error is a planner
+	// invariant -> panic, master RFC-087); constant args here never error.
 	t.Run("intersectionCompKeyFunc", func(t *testing.T) {
-		var err error
-		kf := intersectionCompKeyFunc(keyVals, &err)
-		tup := kf(QueryResult{Datum: int64(0)})
-		if err != nil {
-			t.Fatalf("unexpected eval error: %v", err)
-		}
-		assertPacks(t, tup)
+		assertPacks(t, intersectionCompKeyFunc(keyVals)(QueryResult{Datum: int64(0)}))
 	})
 
 	t.Run("multiIntersectionCompKeyFunc", func(t *testing.T) {
-		var err error
-		kf := multiIntersectionCompKeyFunc(keyVals, &err)
-		tup := kf(QueryResult{Datum: int64(0)})
-		if err != nil {
-			t.Fatalf("unexpected eval error: %v", err)
-		}
-		assertPacks(t, tup)
+		assertPacks(t, multiIntersectionCompKeyFunc(keyVals)(QueryResult{Datum: int64(0)}))
 	})
 }

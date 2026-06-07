@@ -332,11 +332,11 @@ func executeVectorIndexScan(
 		if cr == nil || !cr.IsEquality() {
 			break
 		}
-		v, err := cr.GetEqualityComparison().Operand.Evaluate(evalCtx)
+		op, err := cr.GetEqualityComparison().Operand.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
-		prefix = append(prefix, v)
+		prefix = append(prefix, op)
 	}
 
 	queryVec, err := evalFloat64Slice(p.GetQueryVector(), evalCtx)
@@ -385,11 +385,11 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 	if v == nil {
 		return nil, fmt.Errorf("nil query vector")
 	}
-	vec, err := v.Evaluate(binder)
+	ev, err := v.Evaluate(binder)
 	if err != nil {
 		return nil, err
 	}
-	switch s := vec.(type) {
+	switch s := ev.(type) {
 	case []float64:
 		return s, nil
 	case []float32:
@@ -409,7 +409,7 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("query vector is not a numeric slice (%T)", vec)
+		return nil, fmt.Errorf("query vector is not a numeric slice (%T)", ev)
 	}
 }
 
@@ -418,12 +418,12 @@ func evalPositiveInt(v values.Value, binder values.ParameterBinder) (int, error)
 	if v == nil {
 		return 0, fmt.Errorf("nil value")
 	}
-	val, err := v.Evaluate(binder)
+	var k int
+	ev, err := v.Evaluate(binder)
 	if err != nil {
 		return 0, err
 	}
-	var k int
-	switch n := val.(type) {
+	switch n := ev.(type) {
 	case int:
 		k = n
 	case int32:
@@ -431,7 +431,7 @@ func evalPositiveInt(v values.Value, binder values.ParameterBinder) (int, error)
 	case int64:
 		k = int(n)
 	default:
-		return 0, fmt.Errorf("not an integer (%T)", val)
+		return 0, fmt.Errorf("not an integer (%T)", ev)
 	}
 	if k <= 0 {
 		return 0, fmt.Errorf("must be positive, got %d", k)
@@ -510,11 +510,11 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 	for _, ineq := range nextRange.GetInequalityComparisons() {
 		var comparand any
 		if ineq.Operand != nil {
-			c, err := ineq.Operand.Evaluate(binder)
+			var err error
+			comparand, err = ineq.Operand.Evaluate(binder)
 			if err != nil {
 				return recordlayer.TupleRange{}, err
 			}
-			comparand = c
 		}
 		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
 		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
@@ -748,14 +748,7 @@ func executeFilter(
 	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
-		pred: func(qr QueryResult) (keep bool, err error) {
-			// RFC-091 A2: eval errors now return via pred.Eval below; the old
-			// recover (which re-panicked typed errors and silently dropped the row
-			// — keep=false — on any other panic) is gone. A genuine invariant panic
-			// propagates loudly: the db/sql boundary recover catches it during
-			// planning / the eager first page, but later-page iteration (driver
-			// Rows.Next) has no recover above the cursor, so it fail-stops — correct
-			// for an invariant violation (bradfitz policy).
+		pred: func(qr QueryResult) (bool, error) {
 			var rowCtx any = qr.Datum
 			if m, ok := qr.Datum.(map[string]any); ok {
 				switch {
@@ -768,9 +761,9 @@ func executeFilter(
 				}
 			}
 			for _, pred := range preds {
-				res, perr := pred.Eval(rowCtx)
-				if perr != nil {
-					return false, perr
+				res, err := pred.Eval(rowCtx)
+				if err != nil {
+					return false, err
 				}
 				if res != predicates.TriTrue {
 					return false, nil
@@ -934,39 +927,29 @@ func executeProjection(
 			}
 		}
 		for i, proj := range projections {
-			func() {
-				// RFC-091 A2: proj.Evaluate returns eval errors into evalErr
-				// below; the old recover is gone. A genuine invariant panic
-				// propagates loudly (the db/sql boundary recover catches it during
-				// planning / the eager first page; later-page iteration fail-stops,
-				// correct for an invariant violation).
-				key := projectionColumnName(proj)
-				val, err := proj.Evaluate(rowCtx)
-				if err != nil {
-					evalErr = err
-					return
-				}
-				projected[key] = val
-				// Also store under the alias so that outer projections
-				// (e.g. CTE consumers) can resolve the aliased name.
-				if i < len(aliases) && aliases[i] != "" {
-					aliasKey := strings.ToUpper(aliases[i])
-					if aliasKey != key {
-						projected[aliasKey] = val
-					}
-				}
-				// For computed expressions, also store under the
-				// positional key (_0, _1, ...) so Java-compatible
-				// column name lookups work.
-				if _, isField := proj.(*values.FieldValue); !isField {
-					posKey := fmt.Sprintf("_%d", i)
-					if posKey != key {
-						projected[posKey] = val
-					}
-				}
-			}()
-			if evalErr != nil {
+			key := projectionColumnName(proj)
+			val, err := proj.Evaluate(rowCtx)
+			if err != nil {
+				evalErr = err
 				return qr
+			}
+			projected[key] = val
+			// Also store under the alias so that outer projections
+			// (e.g. CTE consumers) can resolve the aliased name.
+			if i < len(aliases) && aliases[i] != "" {
+				aliasKey := strings.ToUpper(aliases[i])
+				if aliasKey != key {
+					projected[aliasKey] = val
+				}
+			}
+			// For computed expressions, also store under the
+			// positional key (_0, _1, ...) so Java-compatible
+			// column name lookups work.
+			if _, isField := proj.(*values.FieldValue); !isField {
+				posKey := fmt.Sprintf("_%d", i)
+				if posKey != key {
+					projected[posKey] = val
+				}
 			}
 		}
 		return QueryResult{
@@ -1337,13 +1320,11 @@ func executeIntersection(
 	}
 
 	keyVals := p.GetComparisonKeyValues()
-	var evalErr error
-	compKeyFunc := intersectionCompKeyFunc(keyVals, &evalErr)
-	inner := &errCheckCursor{
-		inner: recordlayer.IntersectionResume(cursors, compKeyFunc, false, resume),
-		err:   &evalErr,
-	}
-	return applySkipLimit(inner, props.Skip, props.ReturnedRowLimit), nil
+	compKeyFunc := intersectionCompKeyFunc(keyVals)
+	return applySkipLimit(
+		recordlayer.IntersectionResume(cursors, compKeyFunc, false, resume),
+		props.Skip, props.ReturnedRowLimit,
+	), nil
 }
 
 // buildIntersectionChildCursors decodes a parent IntersectionContinuation into
@@ -1395,25 +1376,17 @@ func buildIntersectionChildCursors(
 // tuple-encoded comparison key from a QueryResult. Uses the plan's
 // comparison-key values when available, falls back to PrimaryKey, then
 // to a string representation of the datum.
-// intersectionCompKeyFunc builds a ComparisonKeyFunc. ComparisonKeyFunc cannot
-// return an error, so a Value eval failure is captured into *evalErr (first
-// error wins); the caller wraps the resulting cursor in an errCheckCursor that
-// surfaces *evalErr before any row is returned.
 // widenInt32 normalizes an intersection/union merge comparison-key element so the
 // FDB tuple layer can Pack it. The tuple layer has no int32 case — Pack panics on
-// it (tuple.go default arm) — and the index key encoding already widens int32
-// columns to int64 (key_expression_compiled.go), so widening here keeps the
-// in-memory merge key byte-identical to the children's sort order (int32→int64
-// sign-extension is value-preserving and tuple integer encoding is monotonic). It
-// matches Java, whose Tuple stores Long and never sees a 32-bit key element.
-//
-// Only int32 is handled: it's the unique order-preserving widening and the only
-// confirmed-reachable unpackable comparison-key type (field reads pre-widen at
-// query_result.go). uint32 is a symmetric, currently-unreachable gap (RFC-092,
-// Graefe note) — leave it on compareKeys' Pack-error path rather than risk a
-// non-monotonic coercion. Exotic types stay raw too: an ORDERING key is consumed
-// by bytes.Compare(Pack()), so a lexical "%T:%v" fallback (which extractKey uses
-// for its DEDUP key) could mis-order a merge — strictly worse than the clean error.
+// it — and the index key encoding already widens int32 columns to int64
+// (key_expression_compiled.go), so widening here keeps the in-memory merge key
+// byte-identical to the children's sort order (int32->int64 sign-extension is
+// value-preserving and tuple integer encoding is monotonic). Matches Java, whose
+// Tuple stores Long and never sees a 32-bit key element. Only int32 is handled:
+// it's the unique order-preserving widening and the only confirmed-reachable
+// unpackable comparison-key type (field reads pre-widen at query_result.go); a
+// genuinely exotic type stays raw so compareKeys' Pack-error path catches it rather
+// than risk a non-monotonic coercion. See RFC-092.
 func widenInt32(v any) any {
 	if i32, ok := v.(int32); ok {
 		return int64(i32)
@@ -1421,19 +1394,21 @@ func widenInt32(v any) any {
 	return v
 }
 
-func intersectionCompKeyFunc(keyVals []values.Value, evalErr *error) recordlayer.ComparisonKeyFunc[QueryResult] {
+func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
 	return func(qr QueryResult) tuple.Tuple {
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
+				// Comparison/merge keys are field extractions over the
+				// datum; the runtime typed-error family is unreachable
+				// here. ComparisonKeyFunc has no error channel, so a
+				// stray error is a planner invariant violation (panic,
+				// matching the prior no-recover behaviour).
 				v, err := kv.Evaluate(qr.Datum)
 				if err != nil {
-					if *evalErr == nil {
-						*evalErr = err
-					}
-					return t
+					panic(err)
 				}
-				t[i] = widenInt32(v)
+				t[i] = widenInt32(v) // tuple has no int32; widen (RFC-092)
 			}
 			return t
 		}
@@ -2567,10 +2542,6 @@ type filterResultCursor struct {
 }
 
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
-	// RFC-091 A2: c.pred returns eval errors (perr) which the loop propagates; the
-	// old recover is gone. A genuine invariant panic propagates loudly (db/sql
-	// boundary recover during planning / first page; later-page iteration via
-	// driver Rows.Next fail-stops — correct for an invariant violation).
 	for {
 		if err = ctx.Err(); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -2951,13 +2922,11 @@ func executeInMemorySort(
 				var ci, cj any
 				if k.ValueExpr != nil {
 					var err error
-					ci, err = k.ValueExpr.Evaluate(results[i].Datum)
-					if err != nil {
+					if ci, err = k.ValueExpr.Evaluate(results[i].Datum); err != nil {
 						sortErr = err
 						return false
 					}
-					cj, err = k.ValueExpr.Evaluate(results[j].Datum)
-					if err != nil {
+					if cj, err = k.ValueExpr.Evaluate(results[j].Datum); err != nil {
 						sortErr = err
 						return false
 					}

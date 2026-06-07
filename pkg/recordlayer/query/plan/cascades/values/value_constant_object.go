@@ -64,7 +64,14 @@ type ConstantDeref interface {
 	DereferenceConstant(alias CorrelationIdentifier, constantID string) any
 }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate dereferences the constant via evalCtx's ConstantDeref
+// capability. Returns nil if evalCtx doesn't implement
+// ConstantDeref or if the binding is missing.
+//
+// Matches Java's ConstantObjectValue.eval: after dereferencing,
+// applies numeric type promotion when the runtime object's type
+// doesn't match the bound ResultType. Relation-typed results are
+// returned as-is (no promotion for structured stream types).
 func (v *ConstantObjectValue) Evaluate(evalCtx any) (any, error) {
 	deref, ok := evalCtx.(ConstantDeref)
 	if !ok {

@@ -864,6 +864,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_SUR (id BIGINT, name STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_SUR VALUES (1, 'abc')"},
 			Query:          "SELECT UPPER(name) FROM T_SUR WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('abc')='ABC'. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"ABC"},
+				},
+			},
 		},
 		{
 			// STRING-family map-eval path: UPPER inside a CTE's WHERE
@@ -878,6 +885,13 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_SUW VALUES (1, 'abc')"},
 			Query: "WITH cte AS (SELECT id, name FROM T_SUW) " +
 				"SELECT name FROM cte WHERE UPPER(name) = 'ABC'",
+			Divergence: &Divergence{
+				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('abc')='ABC' in the CTE WHERE and returns the matching row. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"abc"},
+				},
+			},
 		},
 		{
 			// STRING-family multi-arg: SUBSTRING — Java rejects the
@@ -888,6 +902,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_SSR (id BIGINT, name STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_SSR VALUES (1, 'abcdef')"},
 			Query:          "SELECT SUBSTRING(name, 1, 3) FROM T_SSR WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "SUBSTRING is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTRING('abcdef',1,3)='abc' (1-based). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"abc"},
+				},
+			},
 		},
 		{
 			// ARITHMETIC-family: ABS. fdb-relational 4.11.1.0's
@@ -899,6 +920,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_ABS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_ABS VALUES (1, -5)"},
 			Query:          "SELECT ABS(v) FROM T_ABS WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-5)=5. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(5)},
+				},
+			},
 		},
 		{
 			// ARITHMETIC-family: POWER (multi-arg). Pins the
@@ -907,6 +935,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_POW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_POW VALUES (1, 3)"},
 			Query:          "SELECT POWER(v, 2) FROM T_POW WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "POWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates POWER(3,2)=9. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(9)},
+				},
+			},
 		},
 		{
 			// Math-family: FLOOR. Same registry-miss as ABS/SQRT/POWER.
@@ -916,6 +951,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_FLR (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FLR VALUES (1, 3.7)"},
 			Query:          "SELECT FLOOR(v) FROM T_FLR WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "FLOOR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates FLOOR(3.7)=3. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(3)},
+				},
+			},
 		},
 		{
 			// DATETIME-family: NOW() — MySQL-style alias not in
@@ -15187,6 +15229,15 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SF_07 VALUES (1, 'hello'), (2, 'World'), (3, 'FOO')",
 			},
 			Query: "SELECT id, UPPER(name) FROM T_SF_07 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER over each row. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), "HELLO"},
+					{float64(2), "WORLD"},
+					{float64(3), "FOO"},
+				},
+			},
 		},
 		{
 			Name:           "str_lower",
@@ -15195,6 +15246,15 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SF_08 VALUES (1, 'HELLO'), (2, 'World'), (3, 'foo')",
 			},
 			Query: "SELECT id, LOWER(name) FROM T_SF_08 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER over each row. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), "hello"},
+					{float64(2), "world"},
+					{float64(3), "foo"},
+				},
+			},
 		},
 		// ===== BETWEEN patterns =====
 		{
@@ -15943,6 +16003,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_01 (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_01 VALUES (1, 'foo', 'bar')"},
 			Query:          "SELECT CONCAT(a, b) FROM T_CSL_01 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('foo','bar')='foobar'. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"foobar"},
+				},
+			},
 		},
 		{
 			// CONCAT with three args — pins arity doesn't change the message.
@@ -15950,6 +16017,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_02 (id BIGINT, a STRING, b STRING, c STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_02 VALUES (1, 'x', 'y', 'z')"},
 			Query:          "SELECT CONCAT(a, b, c) FROM T_CSL_02 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('x','y','z')='xyz'. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"xyz"},
+				},
+			},
 		},
 		{
 			// CONCAT with a NULL arg — still rejected (registry miss before eval).
@@ -15957,6 +16031,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_03 (id BIGINT, a STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_03 VALUES (1, 'foo')"},
 			Query:          "SELECT CONCAT(a, NULL) FROM T_CSL_03 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('foo',NULL)='foo' (MySQL/Postgres NULL-skip semantics). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"foo"},
+				},
+			},
 		},
 		{
 			// LENGTH of a normal string — not in Java's registry.
@@ -15964,6 +16045,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_04 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_04 VALUES (1, 'hello')"},
 			Query:          "SELECT LENGTH(s) FROM T_CSL_04 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH('hello')=5 (rune count). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(5)},
+				},
+			},
 		},
 		{
 			// LENGTH of empty string — still rejected (registry miss).
@@ -15971,6 +16059,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_05 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_05 VALUES (1, '')"},
 			Query:          "SELECT LENGTH(s) FROM T_CSL_05 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH('')=0. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(0)},
+				},
+			},
 		},
 		{
 			// LENGTH of NULL — still rejected.
@@ -15978,6 +16073,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_06 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_06 VALUES (1, NULL)"},
 			Query:          "SELECT LENGTH(s) FROM T_CSL_06 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH(NULL)=NULL. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{nil},
+				},
+			},
 		},
 		{
 			// SUBSTR with two args (start position only).
@@ -15985,6 +16087,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_07 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_07 VALUES (1, 'abcdef')"},
 			Query:          "SELECT SUBSTR(s, 3) FROM T_CSL_07 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('abcdef',3)='cdef' (1-based, to end). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"cdef"},
+				},
+			},
 		},
 		{
 			// SUBSTR with three args (start + length).
@@ -15992,6 +16101,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_08 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_08 VALUES (1, 'abcdef')"},
 			Query:          "SELECT SUBSTR(s, 2, 3) FROM T_CSL_08 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('abcdef',2,3)='bcd' (1-based start, length 3). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"bcd"},
+				},
+			},
 		},
 		{
 			// SUBSTR starting at position 1 — boundary position.
@@ -15999,6 +16115,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_09 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_09 VALUES (1, 'hello')"},
 			Query:          "SELECT SUBSTR(s, 1, 2) FROM T_CSL_09 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('hello',1,2)='he' (1-based boundary). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"he"},
+				},
+			},
 		},
 		{
 			// SUBSTR on empty string — still rejected.
@@ -16006,6 +16129,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_10 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_10 VALUES (1, '')"},
 			Query:          "SELECT SUBSTR(s, 1, 1) FROM T_CSL_10 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('',1,1)='' (empty input → empty string). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{""},
+				},
+			},
 		},
 
 		// ===== UPPER/LOWER — both rejected by fdb-relational 4.11.1.0 =====
@@ -16015,6 +16145,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_01 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_01 VALUES (1, 'HELLO')"},
 			Query:          "SELECT LOWER(s) FROM T_UCL_01 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('HELLO')='hello'. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"hello"},
+				},
+			},
 		},
 		{
 			// LOWER with a NULL value — registry miss fires before eval.
@@ -16022,6 +16159,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_02 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_02 VALUES (1, NULL)"},
 			Query:          "SELECT LOWER(s) FROM T_UCL_02 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER(NULL)=NULL. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{nil},
+				},
+			},
 		},
 		{
 			// UPPER in WHERE clause — map-eval path, same rejection.
@@ -16029,6 +16173,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_03 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_03 VALUES (1, 'hello')"},
 			Query:          "SELECT id FROM T_UCL_03 WHERE UPPER(s) = 'HELLO'",
+			Divergence: &Divergence{
+				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('hello')='HELLO' in WHERE and returns the matching row. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)},
+				},
+			},
 		},
 		{
 			// LOWER in WHERE clause — symmetric to upper_in_where.
@@ -16036,16 +16187,25 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_04 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_04 VALUES (1, 'WORLD')"},
 			Query:          "SELECT id FROM T_UCL_04 WHERE LOWER(s) = 'world'",
+			Divergence: &Divergence{
+				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('WORLD')='world' in WHERE and returns the matching row. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)},
+				},
+			},
 		},
 		{
-			Name:           "upper_concat_nested_rejected",
+			Name:           "upper_concat_nested",
 			SchemaTemplate: "CREATE TABLE T_UCL_05 (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_05 VALUES (1, 'foo', 'bar')"},
 			Query:          "SELECT UPPER(CONCAT(a, b)) FROM T_UCL_05 WHERE id = 1",
 			Divergence: &Divergence{
-				Reason:          "Both reject nested unsupported functions but evaluation order differs: Java hits CONCAT first (inner), Go hits UPPER first (outer).",
-				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "Unsupported operator UPPER",
+				Reason:    "UPPER/CONCAT are Go-only read-side scalar functions (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects the nested call, while Go evaluates UPPER(CONCAT('foo','bar')) = 'FOOBAR'. Wire-neutral (read-side only).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"FOOBAR"},
+				},
 			},
 		},
 		{
@@ -16054,6 +16214,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_06 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_06 VALUES (1, 'TEST')"},
 			Query:          "SELECT CASE WHEN LOWER(s) = 'test' THEN 1 ELSE 0 END FROM T_UCL_06 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('TEST')='test' so the CASE yields 1. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)},
+				},
+			},
 		},
 		{
 			// UPPER with empty string — registry miss before any length check.
@@ -16061,6 +16228,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_07 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_07 VALUES (1, '')"},
 			Query:          "SELECT UPPER(s) FROM T_UCL_07 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('')=''. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{""},
+				},
+			},
 		},
 		{
 			// LOWER with mixed-case input — same as plain LOWER.
@@ -16068,6 +16242,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_08 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_08 VALUES (1, 'HeLLo WoRLd')"},
 			Query:          "SELECT LOWER(s) FROM T_UCL_08 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('HeLLo WoRLd')='hello world'. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"hello world"},
+				},
+			},
 		},
 		{
 			// UPPER on a multi-row table — still rejected at plan time.
@@ -16075,6 +16256,15 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_09 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_09 VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
 			Query:          "SELECT id, UPPER(s) FROM T_UCL_09 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER over each row. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), "A"},
+					{float64(2), "B"},
+					{float64(3), "C"},
+				},
+			},
 		},
 		{
 			// LOWER after string comparison — function lookup still fires.
@@ -16082,6 +16272,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_10 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_10 VALUES (1, 'APPLE'), (2, 'BANANA')"},
 			Query:          "SELECT id FROM T_UCL_10 WHERE LOWER(s) > 'apple' ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER(s)>'apple' — only 'banana' qualifies. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)},
+				},
+			},
 		},
 
 		// ===== ABS/MOD — both rejected by fdb-relational 4.11.1.0 =====
@@ -16093,6 +16290,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_01 VALUES (1, 5)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_01 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(5)=5. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(5)},
+				},
+			},
 		},
 		{
 			// ABS of a negative value — registry miss.
@@ -16100,6 +16304,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_02 VALUES (1, -5)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_02 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-5)=5. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(5)},
+				},
+			},
 		},
 		{
 			// ABS of zero — registry miss.
@@ -16107,6 +16318,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_03 VALUES (1, 0)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_03 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(0)=0. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(0)},
+				},
+			},
 		},
 		{
 			// ABS of NULL — registry miss fires before eval.
@@ -16114,6 +16332,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_04 VALUES (1, NULL)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_04 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(NULL)=NULL. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{nil},
+				},
+			},
 		},
 		{
 			// ABS in WHERE clause — same registry miss.
@@ -16121,6 +16346,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_05 VALUES (1, -10), (2, 5)"},
 			Query:          "SELECT id FROM T_AMM_05 WHERE ABS(v) > 7 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(v)>7 — only ABS(-10)=10 qualifies. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)},
+				},
+			},
 		},
 		{
 			// MOD(x, y) function — distinct from `x % y` operator.
@@ -16129,6 +16361,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_06 VALUES (1, 17)"},
 			Query:          "SELECT MOD(v, 5) FROM T_AMM_06 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(17,5)=2. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)},
+				},
+			},
 		},
 		{
 			// MOD of zero dividend — registry miss before division.
@@ -16136,6 +16375,14 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_07 VALUES (1, 0)"},
 			Query:          "SELECT MOD(v, 3) FROM T_AMM_07 WHERE id = 1",
+			Divergence: &Divergence{
+				// Zero DIVIDEND, not zero divisor: MOD(0,3)=0, no 22012.
+				Reason:    "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(0,3)=0 (zero dividend, divisor 3 — no division-by-zero). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(0)},
+				},
+			},
 		},
 		{
 			// ABS on DOUBLE column — registry miss.
@@ -16143,6 +16390,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_08 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_08 VALUES (1, -3.14)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_08 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-3.14)=3.14 on the DOUBLE column. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(3.14)},
+				},
+			},
 		},
 		{
 			// ABS combined with arithmetic — outer add still hits ABS miss.
@@ -16150,6 +16404,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_09 VALUES (1, -7)"},
 			Query:          "SELECT ABS(v) + 1 FROM T_AMM_09 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-7)+1=8. Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(8)},
+				},
+			},
 		},
 		{
 			// MOD with column as divisor — registry miss.
@@ -16157,6 +16418,13 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_10 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_10 VALUES (1, 17, 5)"},
 			Query:          "SELECT MOD(x, y) FROM T_AMM_10 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(17,5)=2 (column divisor). Wire-neutral.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)},
+				},
+			},
 		},
 
 		// ===== Complex WHERE =====

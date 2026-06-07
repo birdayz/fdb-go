@@ -11,8 +11,8 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TypeMismatchError is panicked when a comparison encounters incompatible
-// types (e.g., int64 vs string). The executor recovers it and surfaces
+// TypeMismatchError is returned when a comparison encounters incompatible
+// types (e.g., int64 vs string). The executor surfaces it as
 // SQLSTATE 22000 (CANNOT_CONVERT_TYPE), matching Java's SemanticException.
 type TypeMismatchError struct {
 	Left  any
@@ -309,9 +309,21 @@ func NewLiteralComparison(typ ComparisonType, lit any) Comparison {
 	return Comparison{Type: typ, Operand: values.LiteralValue(lit)}
 }
 
-// Eval is the error-returning twin (RFC-091). The RHS
-// Value's evaluation error is threaded, and type-mismatch is returned
-// as a *TypeMismatchError instead of panicking.
+// Eval compares left against c's (plan-time-evaluated) RHS per c's
+// ComparisonType. The RHS is produced by c.Operand.Evaluate(nil) —
+// i.e. RHS evaluation without a row context. Constant-RHS callers
+// (the common case, and the only shape that can fold at plan time)
+// get their literal back. Non-constant RHS — a FieldValue or an
+// ArithmeticValue over row columns — evaluates to nil here and
+// degrades to UNKNOWN, which is the right answer when no row is in
+// scope. For row-aware evaluation use ComparisonPredicate.Eval,
+// which evaluates both sides against the given eval context.
+//
+// NULL (nil) on either side returns UNKNOWN per SQL 3VL for binary
+// comparators; unary (IS [NOT] NULL) and null-safe
+// (IS [NOT] DISTINCT FROM) types resolve even on NULL. Numeric
+// operands promote via cmpAny so mixed-width int/float pairs don't
+// degrade to UNKNOWN.
 func (c Comparison) Eval(left any) (TriBool, error) {
 	var right any
 	if c.Operand != nil && !c.Type.IsUnary() {
@@ -324,10 +336,11 @@ func (c Comparison) Eval(left any) (TriBool, error) {
 	return c.EvalAgainst(left, right)
 }
 
-// EvalAgainst is the error-returning twin (RFC-091).
-// Numeric/string type mismatch is returned as a *TypeMismatchError
-// instead of panicking; the DistanceRank "reached row evaluation"
-// case stays a panic (genuine planner invariant, not user-reachable).
+// EvalAgainst is the pure dispatch: given already-evaluated LHS and
+// RHS Go-natives, return the Kleene truth value. ComparisonPredicate
+// evaluates both sides against the row's eval context and calls
+// EvalAgainst — separating eval from dispatch is what lets a
+// non-constant RHS (`a = b + 1`) work row-by-row.
 func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
 	// even when the LHS is NULL, and ignore Operand entirely.
@@ -410,7 +423,10 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 	// transformComparisonMaybe → VectorIndexScanMatchCandidate), never
 	// evaluated row-by-row. Reaching here means the planner failed to match the
 	// vector index — fail loud rather than silently returning UNKNOWN (which
-	// would drop every row and make a broken K-NN query pass green).
+	// would drop every row and make a broken K-NN query pass green). This stays
+	// a panic (programmer-invariant): an executable plan always has the K-NN
+	// lowered (logical_qualify.go rejects un-lowerable K-NN at build time), so
+	// reaching here is a planner bug, never user data — see RFC-087.
 	switch c.Type {
 	case ComparisonDistanceRankEquals, ComparisonDistanceRankLessThan, ComparisonDistanceRankLessThanOrEq:
 		panic(fmt.Sprintf("DistanceRank comparison %v reached row evaluation: "+
@@ -702,9 +718,6 @@ func (p *ComparisonPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier
 	return out
 }
 
-// Eval is the error-returning twin (RFC-091). The LHS and
-// RHS Value evaluation errors are threaded, and type-mismatch is
-// returned as a *TypeMismatchError instead of panicking.
 func (p *ComparisonPredicate) Eval(evalCtx any) (TriBool, error) {
 	if p.Operand == nil {
 		return TriUnknown, nil

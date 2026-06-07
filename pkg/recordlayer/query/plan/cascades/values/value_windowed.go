@@ -54,9 +54,10 @@ func (w *WindowedValue) Children() []Value {
 	return out
 }
 
-// Evaluate is the error-returning twin (RFC-091). The base windowed
-// value has no per-row eval; the placeholder never fails. Concrete
-// subclasses that override Evaluate also override Evaluate.
+// Evaluate returns nil — windowed aggregates can't eval per-row
+// without a full partition context. Concrete subclasses MAY override
+// to evaluate against a window-frame harness (see RankValue.Evaluate
+// for the rank-tracking eval seed).
 func (*WindowedValue) Evaluate(any) (any, error) { return nil, nil }
 
 // SplitNewChildren splits a flat newChildren slice back into

@@ -93,6 +93,8 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// Plan-time IN-list extraction: an erroring or non-list comparand
+	// declines to transform (returns) rather than failing planning.
 	rhs, err := inPred.Comparison.Operand.Evaluate(nil)
 	if err != nil {
 		return

@@ -82,7 +82,8 @@ func (u *UdfValue) Name() string { return u.FunctionName }
 // Type returns the declared return type.
 func (u *UdfValue) Type() Type { return u.ResultType }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate walks each arg's Evaluate and hands the resulting `[]any`
+// to Call. Returns nil if Call is nil (placeholder mode).
 func (u *UdfValue) Evaluate(evalCtx any) (any, error) {
 	if u.Call == nil {
 		return nil, nil

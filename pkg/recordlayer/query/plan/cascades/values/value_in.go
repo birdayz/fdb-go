@@ -115,7 +115,20 @@ func (*InOpValue) Name() string { return "in" }
 // 3VL forces nullable).
 func (*InOpValue) Type() Type { return NullableBoolean }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate computes probe IN list with SQL three-valued semantics.
+//
+// Returns:
+//   - true if probe matches any non-NULL element of the list.
+//   - false if probe doesn't match any list element AND the list
+//     contains no NULLs.
+//   - nil (UNKNOWN) if probe is NULL, OR probe doesn't match a non-
+//     NULL element AND the list contains a NULL (NULL propagation).
+//   - nil if probe or list is nil-Value, or list doesn't evaluate
+//     to a slice.
+//
+// equalsAny performs numeric coercion for mixed int/float
+// comparisons, matching Java's Comparisons.evalComparison(EQUALS).
+// See D-10 in CASCADES_DIVERGENCE.md.
 func (v *InOpValue) Evaluate(evalCtx any) (any, error) {
 	if v.Probe == nil || v.List == nil {
 		return nil, nil

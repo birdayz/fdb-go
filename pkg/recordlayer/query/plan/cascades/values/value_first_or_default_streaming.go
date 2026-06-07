@@ -50,7 +50,8 @@ func (v *FirstOrDefaultStreamingValue) Type() Type {
 	return v.ChildValue.Type()
 }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate pulls the first element from the streaming child, or
+// returns the default value if the stream is empty.
 func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) (any, error) {
 	if v.ChildValue == nil {
 		return nil, nil

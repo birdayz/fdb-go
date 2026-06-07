@@ -44,7 +44,11 @@ func (*RecordTypeValue) Name() string { return "recordtype" }
 // always present on a valid record.
 func (*RecordTypeValue) Type() Type { return NotNullLong }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate extracts the record-type discriminator. Looks up the
+// "_recordType" key in the row map; returns nil if not present.
+//
+// Other row shapes (proto messages, structs) require dedicated
+// extractors per shape — wired when execution lands.
 func (v *RecordTypeValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		return nil, nil

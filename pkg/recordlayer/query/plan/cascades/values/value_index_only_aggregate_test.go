@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestIndexOnlyAggregateOp_String(t *testing.T) {
 	t.Parallel()
@@ -67,7 +71,9 @@ func TestIndexOnlyAggregateValue_NilChildEmptyChildren(t *testing.T) {
 func TestIndexOnlyAggregateValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, &FieldValue{Field: "x", Typ: NotNullLong})
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (compile-time-only)", got)
 	}
 }

@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestOrderedBytesDirection_String(t *testing.T) {
 	t.Parallel()
@@ -70,7 +74,9 @@ func TestToOrderedBytesValue_NilChildEmptyChildren(t *testing.T) {
 func TestToOrderedBytesValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewToOrderedBytesValue(LiteralValue(int64(7)), OrderedBytesAscNullsFirst)
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }
@@ -126,7 +132,9 @@ func TestFromOrderedBytesValue_NilTargetTypeFallsBackToUnknown(t *testing.T) {
 func TestFromOrderedBytesValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewFromOrderedBytesValue(LiteralValue([]byte{}), OrderedBytesAscNullsFirst, NotNullLong)
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

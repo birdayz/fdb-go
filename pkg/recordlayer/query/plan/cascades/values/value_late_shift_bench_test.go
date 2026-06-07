@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // Benchmarks for the late-shift swingshift-59 Value ports — pin
 // baseline allocation + ns/op numbers so future regressions surface
@@ -15,7 +19,8 @@ func BenchmarkConditionSelectorValue_FirstTrueWins(b *testing.B) {
 	})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -28,7 +33,8 @@ func BenchmarkConditionSelectorValue_AllFalse(b *testing.B) {
 	})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -47,7 +53,8 @@ func BenchmarkPickValue_OverConditionSelector(b *testing.B) {
 	pick := NewPickValue(selector, alts, NotNullString)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(pick, nil)
+		_, errEv0 := pick.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -64,7 +71,8 @@ func BenchmarkArrayConstructorValue_8Elements(b *testing.B) {
 	})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -72,7 +80,8 @@ func BenchmarkArrayConstructorValue_Empty(b *testing.B) {
 	v := NewArrayConstructorValue(NotNullLong, nil)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -97,7 +106,8 @@ func BenchmarkRankValue_FromHarness(b *testing.B) {
 	row := map[string]any{"_rank": int64(5)}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(r, row)
+		_, errEv0 := r.Evaluate(row)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -106,7 +116,8 @@ func BenchmarkRowNumberValue_FromHarness(b *testing.B) {
 	row := map[string]any{"_row_number": int64(42)}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(r, row)
+		_, errEv0 := r.Evaluate(row)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -120,7 +131,8 @@ func BenchmarkUdfValue_EvalSum2Args(b *testing.B) {
 		sum)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -128,7 +140,8 @@ func BenchmarkPatternForLikeValue_NoEscape(b *testing.B) {
 	v := NewPatternForLikeValue(LiteralValue("a%b_c.d+e"), LiteralValue(nil))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -142,7 +155,8 @@ func BenchmarkDistanceValue_Euclidean_64Dim(b *testing.B) {
 	v := NewDistanceValue(DistanceEuclidean, LiteralValue(a), LiteralValue(c))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }
 
@@ -156,6 +170,7 @@ func BenchmarkDistanceValue_Cosine_64Dim(b *testing.B) {
 	v := NewDistanceValue(DistanceCosine, LiteralValue(a), LiteralValue(c))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mustEvaluate(v, nil)
+		_, errEv0 := v.Evaluate(nil)
+		require.NoError(b, errEv0)
 	}
 }

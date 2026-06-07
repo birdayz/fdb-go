@@ -83,8 +83,9 @@ func (v *IndexOnlyAggregateValue) Type() Type {
 	return v.Child.Type()
 }
 
-// Evaluate is the error-returning twin (RFC-091). Placeholder eval
-// never fails.
+// Evaluate is a placeholder — Java throws IllegalStateException
+// since this aggregate is compile-time-only. Go surfaces nil per
+// the placeholder pattern.
 func (*IndexOnlyAggregateValue) Evaluate(any) (any, error) { return nil, nil }
 
 // IsIndexOnly returns true — this aggregate MUST be backed by an

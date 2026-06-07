@@ -43,8 +43,9 @@ func (p *ExistsPredicate) GetExistentialAlias() values.CorrelationIdentifier {
 	return p.ExistentialAlias
 }
 
-// Eval is the error-returning twin (RFC-091). EXISTS isn't
-// evaluated at the per-row predicate level; never fails here.
+// Eval returns TriUnknown — EXISTS evaluation isn't done at the
+// per-row predicate level; specialized planner rules / executor
+// handling does the row-level test.
 func (p *ExistsPredicate) Eval(_ any) (TriBool, error) { return TriUnknown, nil }
 
 // Children returns the empty slice — leaf.

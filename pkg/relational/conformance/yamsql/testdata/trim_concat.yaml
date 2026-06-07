@@ -1,9 +1,11 @@
 # trim_concat.yaml
 #
-# TRIM / LTRIM / RTRIM / CONCAT / REPLACE — all rejected by
-# fdb-relational 4.11.1.0 with `Unsupported operator <NAME>`.
-# Coverage in string_functions.yaml; this file pins a few additional
-# nesting + NULL-arg shapes that were Go-only behaviour pre-cleanup.
+# TRIM / LTRIM / RTRIM / CONCAT / REPLACE — a Go-only read-side extension
+# (RFC-087); Java's BuiltInFunction registry has no entries, so
+# fdb-relational rejects them ("Unsupported operator <NAME>"). Go gates
+# the family and evaluates it on the Cascades values path. This file pins
+# the nesting + NULL-arg shapes (CONCAT skips NULL, REPLACE treats a NULL
+# replacement as empty) — zero wire impact.
 name: trim_concat
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
@@ -11,23 +13,35 @@ setup:
   - INSERT INTO t VALUES (1, '  hello  '), (2, 'abc'), (3, null)
 tests:
   - query: SELECT TRIM(s) FROM t WHERE id = 1
-    error_code: "42883"
+    rows:
+      - ['hello']
   - query: SELECT LTRIM(s) FROM t WHERE id = 1
-    error_code: "42883"
+    rows:
+      - ['hello  ']
   - query: SELECT RTRIM(s) FROM t WHERE id = 1
-    error_code: "42883"
+    rows:
+      - ['  hello']
   - query: SELECT CONCAT('a', 'b', 'c') FROM t WHERE id = 1
-    error_code: "42883"
+    rows:
+      - ['abc']
   - query: SELECT CONCAT('>> ', s, ' <<') FROM t WHERE id = 2
-    error_code: "42883"
+    rows:
+      - ['>> abc <<']
   - query: SELECT REPLACE(s, 'b', 'X') FROM t WHERE id = 2
-    error_code: "42883"
-  # Nested function calls — outer rejection fires first.
+    rows:
+      - ['aXc']
+  # Nested function calls.
   - query: SELECT UPPER(TRIM(s)) FROM t WHERE id = 1
-    error_code: "42883"
+    rows:
+      - ['HELLO']
   - query: SELECT LOWER(CONCAT('ABC', 'xyz')) FROM t WHERE id = 1
-    error_code: "42883"
+    rows:
+      - ['abcxyz']
+  # CONCAT skips NULL (MySQL/Postgres semantics), doesn't poison.
   - query: SELECT CONCAT('a', NULL, 'c') FROM t WHERE id = 1
-    error_code: "42883"
+    rows:
+      - ['ac']
+  # REPLACE with a NULL replacement drops the matched substring.
   - query: SELECT REPLACE(s, 'b', NULL) FROM t WHERE id = 2
-    error_code: "42883"
+    rows:
+      - ['ac']

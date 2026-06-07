@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestFirstOrDefaultStreamingValue_TypeFromChild(t *testing.T) {
 	t.Parallel()
@@ -43,7 +47,9 @@ func TestFirstOrDefaultStreamingValue_NonEmptyRange(t *testing.T) {
 	// range(5, 10, 1) = [5, 6, 7, 8, 9]; first = 5
 	r := NewRangeValue(LiteralValue(int64(5)), LiteralValue(int64(10)), LiteralValue(int64(1)))
 	v := NewFirstOrDefaultStreamingValue(r, LiteralValue(int64(-1)))
-	if got := mustEvaluate(v, nil); got != int64(5) {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(5) {
 		t.Fatalf("Evaluate non-empty = %v, want 5", got)
 	}
 }
@@ -53,7 +59,9 @@ func TestFirstOrDefaultStreamingValue_EmptyRangeReturnsDefault(t *testing.T) {
 	// range(0, 0, 1) is empty (begin == end); default kicks in.
 	r := NewRangeValue(LiteralValue(int64(0)), LiteralValue(int64(0)), LiteralValue(int64(1)))
 	v := NewFirstOrDefaultStreamingValue(r, LiteralValue(int64(-1)))
-	if got := mustEvaluate(v, nil); got != int64(-1) {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(-1) {
 		t.Fatalf("Evaluate empty = %v, want -1 (default)", got)
 	}
 }
@@ -62,7 +70,9 @@ func TestFirstOrDefaultStreamingValue_NonRangeChildReturnsNil(t *testing.T) {
 	t.Parallel()
 	// Non-streaming child → placeholder returns nil.
 	v := NewFirstOrDefaultStreamingValue(LiteralValue(int64(7)), LiteralValue(int64(-1)))
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(non-RangeValue) = %v, want nil (placeholder)", got)
 	}
 }
@@ -71,7 +81,9 @@ func TestFirstOrDefaultStreamingValue_NilDefaultOnEmptyReturnsNil(t *testing.T) 
 	t.Parallel()
 	r := NewRangeValue(LiteralValue(int64(0)), LiteralValue(int64(0)), LiteralValue(int64(1)))
 	v := NewFirstOrDefaultStreamingValue(r, nil)
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate empty + nil default = %v, want nil", got)
 	}
 }
@@ -85,7 +97,9 @@ func TestFirstOrDefaultStreamingValue_WithChildren(t *testing.T) {
 		NewRangeValue(LiteralValue(int64(100)), LiteralValue(int64(105)), LiteralValue(int64(1))),
 		LiteralValue(int64(-2)),
 	})
-	if got := mustEvaluate(rebuilt, nil); got != int64(100) {
+	got, errEv0 := rebuilt.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(100) {
 		t.Fatalf("rebuilt.Evaluate = %v, want 100 (first of new range)", got)
 	}
 }

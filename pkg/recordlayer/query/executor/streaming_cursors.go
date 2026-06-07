@@ -530,8 +530,8 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		if !result.HasNext() {
 			reason := result.GetNoNextReason()
 			if reason == recordlayer.SourceExhausted {
-				if err := c.sortFn(c.buf); err != nil {
-					return recordlayer.RecordCursorResult[QueryResult]{}, err
+				if sortErr := c.sortFn(c.buf); sortErr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, sortErr
 				}
 				c.loaded = true
 				return c.emitNext()
@@ -854,11 +854,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				innerRow := c.innerRows[idx]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				pass, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
+				passes, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
 				if perr != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, perr
 				}
-				if !pass {
+				if !passes {
 					continue
 				}
 				if c.matchedInner != nil {
@@ -890,11 +890,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.innerIdx++
 
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				pass, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
+				passes, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
 				if perr != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, perr
 				}
-				if !pass {
+				if !passes {
 					continue
 				}
 				if c.matchedInner != nil {

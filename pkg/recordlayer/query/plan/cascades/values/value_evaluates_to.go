@@ -57,7 +57,17 @@ func (*EvaluatesToValue) Name() string { return "evaluates_to" }
 // IS [NOT] {NULL,TRUE,FALSE} semantics).
 func (*EvaluatesToValue) Type() Type { return NotNullBoolean }
 
-// Evaluate is the error-returning twin (RFC-091).
+// Evaluate computes the predicate.
+//
+// Rules:
+//   - x IS TRUE: true iff x evaluates to bool true; false otherwise.
+//   - x IS FALSE: true iff x evaluates to bool false; false otherwise.
+//   - x IS NULL: true iff x evaluates to nil; false otherwise.
+//   - x IS NOT NULL: true iff x evaluates to non-nil; false otherwise.
+//
+// Type mismatches (non-bool x with IS TRUE / IS FALSE) return false —
+// the runtime value isn't a boolean true / false, so the predicate
+// is false (not UNKNOWN).
 func (v *EvaluatesToValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		switch v.Eval {

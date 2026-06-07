@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestCollateValue_Type(t *testing.T) {
 	t.Parallel()
@@ -54,7 +58,9 @@ func TestCollateValue_ChildrenWithStrength(t *testing.T) {
 func TestCollateValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewCollateValue(LiteralValue("hello"), nil, nil)
-	if got := mustEvaluate(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

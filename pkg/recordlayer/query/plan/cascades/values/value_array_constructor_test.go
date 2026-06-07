@@ -3,6 +3,8 @@ package values
 import (
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestArrayConstructorValue_Type(t *testing.T) {
@@ -58,7 +60,8 @@ func TestArrayConstructorValue_EvaluateConcreteValues(t *testing.T) {
 		LiteralValue(int64(2)),
 		LiteralValue(int64(3)),
 	})
-	got := mustEvaluate(v, nil)
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	want := []any{int64(1), int64(2), int64(3)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Evaluate = %v, want %v", got, want)
@@ -68,7 +71,8 @@ func TestArrayConstructorValue_EvaluateConcreteValues(t *testing.T) {
 func TestArrayConstructorValue_EvaluateEmptyArray(t *testing.T) {
 	t.Parallel()
 	v := NewArrayConstructorValue(NotNullLong, nil)
-	got := mustEvaluate(v, nil)
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	gotSlice, ok := got.([]any)
 	if !ok {
 		t.Fatalf("Evaluate = %T, want []any", got)
@@ -88,7 +92,8 @@ func TestArrayConstructorValue_EvaluatePassesThroughNULLs(t *testing.T) {
 		LiteralValue(nil), // SQL NULL
 		LiteralValue(int64(3)),
 	})
-	got := mustEvaluate(v, nil)
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	want := []any{int64(1), nil, int64(3)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Evaluate w/ NULL = %v, want %v", got, want)
@@ -105,7 +110,8 @@ func TestArrayConstructorValue_NilChildToleratedAsNil(t *testing.T) {
 		nil,
 		LiteralValue(int64(3)),
 	})
-	got := mustEvaluate(v, nil)
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	want := []any{int64(1), any(nil), int64(3)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Evaluate w/ nil child = %v, want %v", got, want)
@@ -121,7 +127,8 @@ func TestArrayConstructorValue_HeterogeneousElements(t *testing.T) {
 		LiteralValue("hello"),
 		LiteralValue(int64(42)), // int in a string-typed array
 	})
-	got := mustEvaluate(v, nil)
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	want := []any{"hello", int64(42)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Evaluate hetero = %v, want %v", got, want)
@@ -133,7 +140,9 @@ func TestArrayConstructorValue_DefensiveCopyOfElements(t *testing.T) {
 	original := []Value{LiteralValue(int64(1))}
 	v := NewArrayConstructorValue(NotNullLong, original)
 	original[0] = LiteralValue(int64(999))
-	got := mustEvaluate(v, nil).([]any)
+	tmpEv0, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	got := tmpEv0.([]any)
 	if got[0] == int64(999) {
 		t.Fatalf("Elements aliased caller's slice — not defensively copied")
 	}
@@ -146,7 +155,8 @@ func TestArrayConstructorValue_WithChildren(t *testing.T) {
 		LiteralValue(int64(10)),
 		LiteralValue(int64(20)),
 	})
-	got := mustEvaluate(rebuilt, nil)
+	got, errEv0 := rebuilt.Evaluate(nil)
+	require.NoError(t, errEv0)
 	want := []any{int64(10), int64(20)}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("rebuilt.Evaluate = %v, want %v", got, want)

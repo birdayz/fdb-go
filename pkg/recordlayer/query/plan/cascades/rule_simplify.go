@@ -378,6 +378,9 @@ func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
 			return
 		}
 	}
+	// Plan-time constant folding: a type-mismatch (e.g. WHERE 5 = 'abc')
+	// declines to fold — leave the predicate node untouched rather than
+	// propagating a runtime error from the planner.
 	result, err := cp.Comparison.Eval(lhs)
 	if err != nil {
 		return
